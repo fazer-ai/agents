@@ -976,6 +976,69 @@ describe.skipIf(!dbUp)("debounce", () => {
     });
   });
 
+  test("a gate closed by ANOTHER BOT leaves the ledger alone", async () => {
+    // The same exit, closed by the one state whose settlement may not widen.
+    //
+    // Chatwoot fans a message to up to two routes — `agent_bots_for` returns the conversation's
+    // assignee bot and the inbox's bot, each with its own delivery id — so a message inside this
+    // burst can have a SECOND ledger row belonging to the bot that now owns the conversation, and
+    // that row can be `PROCESSING` because its turn is running right now. A range write turns it
+    // `PROCESSED`, the one state the sweep never revisits; if that route then dies, the customer it
+    // was answering is unanswered with nothing anywhere saying so.
+    //
+    // The direct webhook path already scopes to its own row here. The flush has no row of its own to
+    // scope to, so it retires nothing: the price is a strand of OURS staying in the loss list while
+    // another bot answers the customer, which is wrong and visible rather than quiet and wrong.
+    //
+    // The watermark still advances, and that half is not a detail: it is what keeps a later flush
+    // from re-coalescing this burst and answering over the bot that took the conversation.
+    const convId = 890;
+    await seedConversation(convId, {
+      assigneeType: "AgentBot",
+      // Not 9, which is the bot this job runs as.
+      assigneeId: 77,
+      lastHandledMessageId: 2,
+    });
+    const sibling = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `flush-gate-sibling-${process.pid}`,
+        event: "message_created",
+        status: "PROCESSING",
+        receivedAt: new Date(Date.now() - 60_000),
+        claimedAt: new Date(Date.now() - 60_000),
+        conversationId: convId,
+        // Squarely inside the range this exit would otherwise take.
+        inboundMessageId: 4,
+      },
+      select: { id: true },
+    });
+    const out = await flushDebounceJob({
+      job: jobFor(convId, { lastMessageId: 5 }),
+      base: appDb,
+      deps: {
+        makeModel: () => {
+          throw new Error("the gate must close before any model call");
+        },
+        makeClient: async () => {
+          throw new Error("the gate must close before any Chatwoot fetch");
+        },
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(out).toEqual({ outcome: "done" });
+
+    const row = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+      where: { id: sibling.id },
+      select: { status: true },
+    });
+    expect(row.status).toBe("PROCESSING");
+    expect(await watermarkOf(convId)).toBe(5);
+
+    await suDb.chatwootWebhookDelivery.delete({ where: { id: sibling.id } });
+  });
+
   test("an EMPTY turn closes a reported loss the same way: consumed, not answered", async () => {
     // The gate exits are silence by construction, but the flush's own success path is not: it fires
     // for every outcome that consumed the burst, and only "posted" reached the customer. An empty
@@ -2048,6 +2111,58 @@ describe.skipIf(!dbUp)("debounce", () => {
       expect(await watermarkOf(840)).toBe(7);
     });
 
+    test("a refused contact settles the ledger by RANGE: the conversation is still ours", async () => {
+      // The third gate exit, and the one that keeps the wide scope. The other two close because
+      // somebody else owns the conversation; this one closes because of a decision about the
+      // CONTACT, taken while this route still owns it — so there is no sibling delivery racing it,
+      // and a strand inside the burst is one this exit is entitled to close.
+      //
+      // Scoped down to nothing here, every refused burst would leave behind a reported loss for a
+      // message the product deliberately declined to answer, which is the silence issue #228 exists
+      // to remove.
+      await seedConversation(846);
+      await seedContactOn(846, 67);
+      const stranded = await suDb.chatwootWebhookDelivery.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          deliveryId: `auth-refused-strand-${process.pid}`,
+          event: "message_created",
+          status: "PROCESSING",
+          receivedAt: new Date(Date.now() - 60_000),
+          claimedAt: new Date(Date.now() - 60_000),
+          conversationId: 846,
+          inboundMessageId: 4,
+        },
+        select: { id: true },
+      });
+      const out = await flushDebounceJob({
+        job: jobFor(846, { lastMessageId: 7 }),
+        base: appDb,
+        deps: {
+          makeModel: fakeModel,
+          makeClient: makeStub({
+            pages: [page([{ id: 7, content: "oi" }])],
+            sent: [],
+            calls: { getMessages: 0 },
+          }),
+          checkpointer: new MemorySaver(),
+          contactAuthFetch: answering(false, { n: 0 }),
+        },
+      });
+      expect(out).toEqual({ outcome: "done" });
+      expect(
+        (
+          await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+            where: { id: stranded.id },
+            select: { status: true },
+          })
+        ).status,
+      ).toBe("PROCESSED");
+
+      await suDb.chatwootWebhookDelivery.delete({ where: { id: stranded.id } });
+    });
+
     // The authorization call is a round-trip to somebody else's endpoint with a ten-second ceiling.
     // A message arriving and being REFUSED during it has already had the watermark advanced past it
     // by its own delivery, so the burst must be chosen against the watermark as it stands THEN, not
@@ -2131,6 +2246,23 @@ describe.skipIf(!dbUp)("debounce", () => {
     test("a human taking over during the authorization call ends the flush before the model", async () => {
       await seedConversation(843);
       await seedContactOn(843, 64);
+      // A strand inside the burst, to pin WHICH settlement a human takeover takes. A human answers
+      // the message whichever route carried it, so this exit keeps the wide range — the narrow
+      // scoping below is for another BOT and for nothing else.
+      const stranded = await suDb.chatwootWebhookDelivery.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          deliveryId: `auth-human-strand-${process.pid}`,
+          event: "message_created",
+          status: "PROCESSING",
+          receivedAt: new Date(Date.now() - 60_000),
+          claimedAt: new Date(Date.now() - 60_000),
+          conversationId: 843,
+          inboundMessageId: 4,
+        },
+        select: { id: true },
+      });
       const sent: Array<[number, string]> = [];
       const calls = { getMessages: 0 };
       let modelBuilds = 0;
@@ -2166,6 +2298,90 @@ describe.skipIf(!dbUp)("debounce", () => {
       // Handled all the same: the human owns the burst now, so the next flush after they hand the
       // conversation back must not re-answer it. Same rule as a gate that was already closed.
       expect(await watermarkOf(843)).toBe(9);
+      expect(
+        (
+          await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+            where: { id: stranded.id },
+            select: { status: true },
+          })
+        ).status,
+      ).toBe("PROCESSED");
+
+      await suDb.chatwootWebhookDelivery.delete({ where: { id: stranded.id } });
+    });
+
+    test("ANOTHER BOT taking over during the authorization call leaves the ledger alone", async () => {
+      // The same window, closed by the other kind of owner, and the settlement differs because the
+      // two owners mean different things. A human answers the message whichever route carried it;
+      // another BOT has a delivery of its own that may be running right now, and Chatwoot fans a
+      // message to up to two routes (`agent_bots_for`). Retiring by range here turns that live row
+      // `PROCESSED`, the one state the sweep never revisits.
+      //
+      // This exit is the second place the rule has to hold, and it is not reachable from the first:
+      // the gate on the way in passed, and the conversation moved during a ten-second round-trip to
+      // somebody else's endpoint.
+      await seedConversation(845);
+      await seedContactOn(845, 66);
+      const sibling = await suDb.chatwootWebhookDelivery.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          deliveryId: `auth-recheck-sibling-${process.pid}`,
+          event: "message_created",
+          status: "PROCESSING",
+          receivedAt: new Date(Date.now() - 60_000),
+          claimedAt: new Date(Date.now() - 60_000),
+          conversationId: 845,
+          inboundMessageId: 4,
+        },
+        select: { id: true },
+      });
+      const sent: Array<[number, string]> = [];
+      let modelBuilds = 0;
+      const botTakesOverThenAllow = (async () => {
+        await suDb.conversation.updateMany({
+          where: { tenantId, chatwootConversationId: 845 },
+          // Still `pending`, and assigned to a bot that is not the 9 this job runs as: the state
+          // `describeClosedGate` calls `ownership_lost` rather than `taken_over`.
+          data: { assigneeType: "AgentBot", assigneeId: 77 },
+        });
+        return new Response(JSON.stringify({ authorized: true }), {
+          status: 200,
+        });
+      }) as unknown as typeof fetch;
+      const out = await flushDebounceJob({
+        job: jobFor(845, { lastMessageId: 9 }),
+        base: appDb,
+        deps: {
+          makeModel: () => {
+            modelBuilds += 1;
+            return fakeModel();
+          },
+          makeClient: makeStub({
+            pages: [page([{ id: 1, content: "oi" }])],
+            sent,
+            calls: { getMessages: 0 },
+          }),
+          checkpointer: new MemorySaver(),
+          contactAuthFetch: botTakesOverThenAllow,
+        },
+      });
+      expect(out).toEqual({ outcome: "done" });
+      expect(modelBuilds).toBe(0);
+      expect(sent).toEqual([]);
+      // Untouched, and the watermark still advances so a later flush cannot answer over the bot
+      // that took the conversation.
+      expect(
+        (
+          await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+            where: { id: sibling.id },
+            select: { status: true },
+          })
+        ).status,
+      ).toBe("PROCESSING");
+      expect(await watermarkOf(845)).toBe(9);
+
+      await suDb.chatwootWebhookDelivery.delete({ where: { id: sibling.id } });
     });
   });
 

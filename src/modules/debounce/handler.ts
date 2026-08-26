@@ -20,7 +20,10 @@ import {
   pendingIncoming,
   toRenderable,
 } from "@/modules/chatwoot/messages";
-import { shouldBotHandle } from "@/modules/chatwoot/normalize";
+import {
+  heldByAnotherParty,
+  shouldBotHandle,
+} from "@/modules/chatwoot/normalize";
 import { renderInboundMessage } from "@/modules/chatwoot/render";
 import type { AuthContext } from "@/modules/contact-auth/check";
 import {
@@ -349,9 +352,28 @@ async function settleGateExit(params: {
   // this gate knows nothing about, and reaching back over one hides a real loss for good.
   afterMessageId: number | null;
   upToMessageId: number;
+  // Whether the state that closed the gate is ANOTHER AgentBot, as opposed to a human, a status
+  // change or a decision about the contact. The one thing about the gate this exit is scoped by.
+  heldByAnotherBot: boolean;
   base: PrismaClient;
   label: string;
 }): Promise<void> {
+  // Another BOT holding the conversation is the exit that may not widen, and the rule is the direct
+  // path's, at its own gate tail. Chatwoot fans a message to up to two routes (`agent_bots_for`: the
+  // assignee bot and the inbox bot, each with its own delivery id), so the OWNER's delivery for a
+  // message in this range may be `PROCESSING` right now — and a range write turns it `PROCESSED`,
+  // the one state the sweep never looks at again. If that route then dies, a customer the owner was
+  // answering goes unanswered with nothing anywhere saying so.
+  //
+  // Skipped whole rather than narrowed, because there is nothing here to narrow TO: the direct path
+  // scopes to its own row, and a flush has none — every delivery that armed or extended this burst
+  // reached `PROCESSED` at its own tx2, and what this exit retires is rows OTHER deliveries
+  // stranded. Standing to close those comes from being the route that decided the silence, and once
+  // another bot owns the conversation the silence is only about us.
+  //
+  // The cost is a strand of ours staying in the loss list while another bot answers the customer:
+  // wrong and VISIBLE, correctable by the first turn that runs over the message.
+  if (params.heldByAnotherBot) return;
   try {
     await retireCoveredDeliveries({
       tenantId: params.tenantId,
@@ -432,6 +454,11 @@ export async function flushDebounceJob(
       )
     ) {
       return {
+        // Tagged with a literal, like the unbound exit below, rather than left to be told apart by
+        // the presence of `gateClosed`. TypeScript gives every sibling of a union of object literals
+        // an implicit `?: undefined` for the properties it lacks, so an `in` check narrows nothing
+        // and every field read out of this branch comes back widened with `undefined`.
+        gateExit: true as const,
         // NOTE: Classified WITH the gate, not after it: a second read would answer about a
         // different moment, and the whole point of the line is which state closed THIS gate.
         gateClosed: describeClosedGate({
@@ -445,6 +472,15 @@ export async function flushDebounceJob(
         // rows of the burst it consumed, and this is that burst's LOWER bound. Missing, the range is
         // open at the bottom and reaches back over a strand an earlier message left behind.
         watermark: conv.lastHandledMessageId,
+        // WHICH other party, when there is one. A human taking the conversation is a statement about
+        // the message — they answer it, whichever route carried it — and another BOT is not. Read
+        // from the same conversation row the gate just judged, for the same reason `gateClosed` is.
+        heldByAnotherBot:
+          conv.assigneeType === "AgentBot" &&
+          heldByAnotherParty(
+            { assigneeType: conv.assigneeType, assigneeId: conv.assigneeId },
+            { ourAgentBotId: agentBotId },
+          ),
       };
     }
     if (!inbox?.agentId) {
@@ -504,7 +540,7 @@ export async function flushDebounceJob(
   // NOTE: the line is what this branch was missing (issue #271). The escalation closes THIS gate
   // rather than the runtime's recheck — no turn ever starts — so without a line here the case the
   // distinction exists for is the one case nothing records.
-  if ("gateClosed" in ctx) {
+  if (ctx.gateExit) {
     emitFlowEvent(
       {
         tenantId,
@@ -537,6 +573,7 @@ export async function flushDebounceJob(
         conversationRowId: ctx.convDbId,
         afterMessageId: ctx.watermark ?? null,
         upToMessageId: last,
+        heldByAnotherBot: ctx.heldByAnotherBot,
         base,
         label: "debounce flush",
       });
@@ -611,6 +648,10 @@ export async function flushDebounceJob(
           conversationRowId: ctx.convDbId,
           afterMessageId: ctx.watermark ?? null,
           upToMessageId: last,
+          // False, and not read from anywhere: the gate above already proved this route owns the
+          // conversation, and what closed THIS exit is a decision about the CONTACT. That decision
+          // holds for whichever route carried the message, so the wide scope is the honest one.
+          heldByAnotherBot: false,
           base,
           label: "debounce flush",
         });
@@ -652,6 +693,18 @@ export async function flushDebounceJob(
           assigneeType: conv?.assigneeType ?? null,
           status: conv?.status ?? null,
         }),
+        // Same question as at the gate on the way in, and asked here for the same reason: this is
+        // the exit that runs when the conversation moved to another bot DURING the authorization
+        // call, which is precisely the window in which that bot's own delivery is in flight.
+        heldByAnotherBot:
+          conv?.assigneeType === "AgentBot" &&
+          heldByAnotherParty(
+            {
+              assigneeType: conv.assigneeType,
+              assigneeId: conv.assigneeId ?? null,
+            },
+            { ourAgentBotId: agentBotId },
+          ),
       };
     });
     if (!recheck.ours) {
@@ -692,6 +745,7 @@ export async function flushDebounceJob(
           conversationRowId: ctx.convDbId,
           afterMessageId: ctx.watermark ?? null,
           upToMessageId: last,
+          heldByAnotherBot: recheck.heldByAnotherBot,
           base,
           label: "debounce flush",
         });

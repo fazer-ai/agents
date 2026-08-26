@@ -5,6 +5,7 @@ import { useNavigate, useSearchParams } from "react-router";
 import { Badge, Button, Logo, Skeleton } from "@/client/components";
 import { useAuth } from "@/client/contexts/AuthContext";
 import { api } from "@/client/lib/api";
+import { apiErrorMessage } from "@/client/lib/apiError";
 
 // Standalone OAuth 2.1 consent screen (outside the app shell, like Login). /authorize parks a
 // pending authorization and redirects here with ?req=<id>; we fetch its details, the user approves
@@ -78,6 +79,10 @@ export function OAuthConsentPage() {
   }, [req, navigate]);
 
   const decide = async (decision: Decision) => {
+    const generic = t(
+      "oauth.consent.genericError",
+      "Something went wrong. Reconnect from the application to try again.",
+    );
     if (!details || inFlightRef.current) return;
     inFlightRef.current = true;
     setSubmitting(decision);
@@ -87,23 +92,16 @@ export function OAuthConsentPage() {
         .consent({ req })
         .post({ decision, csrfToken: details.csrfToken });
       if (apiError || !data?.redirect) {
-        setError(
-          t(
-            "oauth.consent.genericError",
-            "Something went wrong. Reconnect from the application to try again.",
-          ),
-        );
+        // The server's own words when it sent any: the consent request can be refused for a reason
+        // the person can act on (the request expired, the client was revoked), and this page has no
+        // input to attach it to — so the sentence IS the whole answer. Issue #329.
+        setError(apiErrorMessage(apiError) ?? generic);
         return;
       }
       // Hand control back to the MCP client (full navigation to its redirect URI).
       window.location.assign(data.redirect);
-    } catch {
-      setError(
-        t(
-          "oauth.consent.genericError",
-          "Something went wrong. Reconnect from the application to try again.",
-        ),
-      );
+    } catch (e) {
+      setError(apiErrorMessage(e) ?? generic);
     } finally {
       inFlightRef.current = false;
       setSubmitting(null);

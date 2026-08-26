@@ -1,4 +1,4 @@
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Badge,
@@ -10,13 +10,17 @@ import {
   useUnsavedChanges,
 } from "@/client/components";
 import { useAuth } from "@/client/contexts/AuthContext";
+import { useFieldRefusal } from "@/client/hooks/useFieldRefusal";
 import { api } from "@/client/lib/api";
 import { isAdminRole } from "@/client/lib/roles";
-import type { ApiErrorPayload } from "@/client/lib/types";
 
 // t('common.email', 'Email')
 // t('common.role', 'Role')
 // t('common.notAvailable', 'N/A')
+
+// The two keys this form patches. A wrong current password is refused by name, which is the whole
+// difference between "could not change the password" and a mark on the box that is wrong.
+const PASSWORD_FIELDS = ["currentPassword", "newPassword"] as const;
 
 export function SettingsProfilePage() {
   const { t } = useTranslation();
@@ -47,6 +51,10 @@ export function SettingsProfilePage() {
   // the endpoint still guards Google-only accounts with a clear error.
   const googleOnly = user?.hasPassword === false;
 
+  const refusal = useFieldRefusal(PASSWORD_FIELDS);
+  const sentRef = useRef({ currentPassword, newPassword });
+  sentRef.current = { currentPassword, newPassword };
+
   // Page form (no modal): arms the native beforeunload prompt while any password
   // field is filled, so a refresh/tab-close does not silently drop the entry.
   useUnsavedChanges(
@@ -63,26 +71,27 @@ export function SettingsProfilePage() {
       return;
     }
     setBusy(true);
+    const sent = { currentPassword, newPassword };
+    const held = (e2: unknown) =>
+      refusal.capture(
+        e2,
+        t("settings.passwordChangeError", "Could not change the password."),
+        sent,
+        sentRef.current,
+      ) ?? "";
     try {
-      const { error: apiError } = await api.api.auth.password.patch({
-        currentPassword,
-        newPassword,
-      });
+      const { error: apiError } = await api.api.auth.password.patch(sent);
       if (apiError) {
-        setError(
-          (apiError.value as ApiErrorPayload)?.error ||
-            t("settings.passwordChangeError", "Could not change the password."),
-        );
+        setError(held(apiError));
         return;
       }
+      refusal.clear();
       setCurrentPassword("");
       setNewPassword("");
       setConfirmPassword("");
       showToast(t("settings.passwordChanged", "Password changed."), "success");
-    } catch {
-      setError(
-        t("settings.passwordChangeError", "Could not change the password."),
-      );
+    } catch (e2) {
+      setError(held(e2));
     } finally {
       setBusy(false);
     }
@@ -138,6 +147,7 @@ export function SettingsProfilePage() {
             )}
             <FormField
               label={t("settings.currentPassword", "Current password")}
+              error={refusal.at("currentPassword", currentPassword)}
             >
               <Input
                 type="password"
@@ -149,7 +159,10 @@ export function SettingsProfilePage() {
                 autoComplete="current-password"
               />
             </FormField>
-            <FormField label={t("settings.newPassword", "New password")}>
+            <FormField
+              label={t("settings.newPassword", "New password")}
+              error={refusal.at("newPassword", newPassword)}
+            >
               <Input
                 type="password"
                 showPasswordToggle

@@ -87,11 +87,11 @@ export async function createIntegrationInstance(
   const tenantId = ctx.tenantId as bigint;
   const created = await runScopedOn(base, ctx, async (db) => {
     const credentialRef = params.credentialRef
-      ? await requireVaultRef(db, params.credentialRef)
+      ? await requireVaultRef(db, params.credentialRef, "credentialRef")
       : null;
     const inboundSecretRef =
       minted && params.inboundSecretRef
-        ? await requireVaultRef(db, params.inboundSecretRef)
+        ? await requireVaultRef(db, params.inboundSecretRef, "inboundSecretRef")
         : null;
     return db.integrationInstance.create({
       data: {
@@ -267,10 +267,10 @@ export async function updateIntegrationInstance(
       );
     }
     const credentialRef = params.credentialRef
-      ? await requireVaultRef(db, params.credentialRef)
+      ? await requireVaultRef(db, params.credentialRef, "credentialRef")
       : null;
     const inboundSecretRef = params.inboundSecretRef
-      ? await requireVaultRef(db, params.inboundSecretRef)
+      ? await requireVaultRef(db, params.inboundSecretRef, "inboundSecretRef")
       : null;
     await db.integrationInstance.update({
       where: { id },

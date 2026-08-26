@@ -244,12 +244,19 @@ export async function resolveVaultRefByName(
 export async function requireVaultRef(
   db: ScopedDb,
   ref: string,
-  // The server's own name for the input this ref arrived in, when the caller has one — a dotted path
-  // into a bag it owns (`settings.tts.normalizeCredentialRef`). Optional because most callers refuse
-  // a column the client already named in the patch it sent; the agent's two bags are the ones that
-  // need it, where a ref can be any of eight fields across three editor tabs and the sentence alone
-  // would leave the console guessing which input to mark. See src/api/lib/refusal.ts.
-  field?: string,
+  // The server's own name for the input this ref arrived in — a column (`credentialRef`) or a dotted
+  // path into a bag it owns (`settings.tts.normalizeCredentialRef`). See src/api/lib/refusal.ts.
+  //
+  // REQUIRED, and that is the whole guard: every caller here already holds the name, and eleven of
+  // the thirteen were still omitting it. The argument for optional was that most callers "refuse a
+  // column the client already named in the patch it sent" — but what the client SENT and what the
+  // server REFUSED are different questions, which is the premise of #231. An integrations write
+  // carries `credentialRef` and `inboundSecretRef` in one body; a tool write carries `credentialRef`
+  // among sixteen keys. A refusal with no field is unplaceable by any form, however well wired.
+  //
+  // A required parameter and not a sweep: the omission is invisible at every call site, so the type
+  // is the only reader that sees the next one. Issue #320.
+  field: string,
 ): Promise<string> {
   const malformed = () =>
     new AppError(
@@ -613,6 +620,7 @@ export async function createVaultEntry(
       throw new ConflictError(
         "vault entry name and type already in use",
         "errors.vaultNameInUse",
+        "name",
       );
     }
     const blob = encryptJson(rawValue);
@@ -634,6 +642,7 @@ export async function createVaultEntry(
         throw new ConflictError(
           "vault entry name and type already in use",
           "errors.vaultNameInUse",
+          "name",
         );
       }
       throw e;
@@ -715,6 +724,7 @@ export async function createPendingVaultEntry(
       throw new ConflictError(
         "vault entry name and type already in use",
         "errors.vaultNameInUse",
+        "name",
       );
     }
     // Placeholder blob: an empty object, never a real secret. `status` discriminates it from active.
@@ -738,6 +748,7 @@ export async function createPendingVaultEntry(
         throw new ConflictError(
           "vault entry name and type already in use",
           "errors.vaultNameInUse",
+          "name",
         );
       }
       throw e;
@@ -791,6 +802,7 @@ export async function updateVaultEntry(
         throw new ConflictError(
           "vault entry name and type already in use",
           "errors.vaultNameInUse",
+          "name",
         );
       }
       data.name = newName;
@@ -834,6 +846,7 @@ export async function updateVaultEntry(
         throw new ConflictError(
           "vault entry name and type already in use",
           "errors.vaultNameInUse",
+          "name",
         );
       }
       throw e;

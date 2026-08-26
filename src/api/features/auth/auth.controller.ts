@@ -196,6 +196,9 @@ const baseAuthController = new Elysia({
         set.status = 400;
         return {
           error: translate("errors.emailInUse", "Email already in use"),
+          // The one input the operator fixes, named the way every other refusal names one (#231).
+          // Built by hand here rather than raised as an AppError, so `refusalBody` never sees it.
+          field: "email",
         };
       }
 
@@ -510,6 +513,7 @@ const baseAuthController = new Elysia({
           set.status = 409;
           return {
             error: translate("errors.emailInUse", "Email already in use"),
+            field: "email",
           };
         }
         throw error;

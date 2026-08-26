@@ -180,7 +180,11 @@ async function assertNameFree(
     select: { id: true },
   });
   if (existing && existing.id !== exceptId) {
-    throw new ConflictError("tool name already in use", "errors.toolNameTaken");
+    throw new ConflictError(
+      "tool name already in use",
+      "errors.toolNameTaken",
+      "name",
+    );
   }
 }
 
@@ -212,7 +216,7 @@ export async function createToolDefinition(
   return runScopedOn(base, ctx, async (db) => {
     await assertNameFree(db, data.name);
     const credentialRef = data.credentialRef
-      ? await requireVaultRef(db, data.credentialRef)
+      ? await requireVaultRef(db, data.credentialRef, "credentialRef")
       : null;
     const row = await db.toolDefinition.create({
       data: {
@@ -310,7 +314,7 @@ export async function updateToolDefinition(
       patchData.body = shapes.body as Prisma.InputJsonValue;
     if (data.credentialRef !== undefined)
       patchData.credentialRef = data.credentialRef
-        ? await requireVaultRef(db, data.credentialRef)
+        ? await requireVaultRef(db, data.credentialRef, "credentialRef")
         : null;
     if (data.enabled !== undefined) patchData.enabled = data.enabled;
     if (data.expectedStatuses !== undefined)

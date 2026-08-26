@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { placeRefusal, readRefusal } from "@/client/lib/fieldRefusal";
+import {
+  placeRefusal,
+  readRefusal,
+  sameValue,
+} from "@/client/lib/fieldRefusal";
 
 // A form's held refusal: which input the server refused, what it said about it, and the value it was
 // about.
@@ -90,9 +94,14 @@ export function useFieldRefusal(rendered: readonly string[]): FieldRefusal {
 
   const clear = useCallback(() => setHeld(null), []);
 
+  // By VALUE and not by identity, for the same reason the staleness check is: a form rebuilds its
+  // body every render, so a list or an object read twice is never `===` and the mark would never
+  // render at all. See sameValue.
   const at = useCallback(
     (field: string, value: unknown) =>
-      held?.field === field && held.value === value ? held.message : null,
+      held?.field === field && sameValue(held.value, value)
+        ? held.message
+        : null,
     [held],
   );
 

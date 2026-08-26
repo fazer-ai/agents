@@ -33,6 +33,7 @@ import {
   useToast,
 } from "@/client/components";
 import { ServiceLogo } from "@/client/components/icons/ServiceLogo";
+import { useFieldRefusal } from "@/client/hooks/useFieldRefusal";
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
 import { credentialCompat } from "@/client/lib/credentialCompat";
@@ -480,6 +481,29 @@ function emptyForm(): Form {
 // renders a SERVICE-specific form (Asaas charges + webhook, Calendar allowlist, Drive folder), lists
 // the tools the integration exposes (label/description/args, never internal names), and reveals the
 // inbound webhook URL once after creating an Asaas instance. `onSaved` lets the caller refetch.
+// The keys of the body this modal writes. Two of them are vault refs, and `requireVaultRef` names
+// which one it refused — the reason a sentence alone cannot answer here.
+//
+// `config` is not here: it is a per-toolpack section of many controls, and a refusal about the bag
+// as a whole has no single box to sit under, so it belongs in the toast.
+const INTEGRATION_FIELDS = [
+  "name",
+  "credentialRef",
+  "inboundSecretRef",
+] as const;
+
+// The body, from the form. ONE function, because it is also what a refusal is matched against.
+function currentOf(form: Form) {
+  return {
+    name: form.name.trim(),
+    credentialRef: form.credentialRef || null,
+    config: form.config,
+    inboundAuthStrategy: form.inboundAuthStrategy,
+    inboundSecretRef: form.inboundSecretRef || null,
+    enabled: form.enabled,
+  };
+}
+
 export function IntegrationEditModal({
   modal,
   onSaved,
@@ -556,6 +580,10 @@ export function IntegrationEditModal({
   const [rotating, setRotating] = useState(false);
   const [catalog, setCatalog] = useState<CatalogEntry[]>([]);
   const [form, setForm] = useState<Form>(emptyForm());
+  // The CURRENT form, readable from inside a request that started before it.
+  const formRef = useRef(form);
+  formRef.current = form;
+  const refusal = useFieldRefusal(INTEGRATION_FIELDS);
   const [saving, setSaving] = useState(false);
   const [loadingForm, setLoadingForm] = useState(false);
   const [loadError, setLoadError] = useState(false);
@@ -767,20 +795,17 @@ export function IntegrationEditModal({
 
   async function save() {
     if (!form.name.trim() || !form.catalogType) return;
+    // The body this modal writes, minus the create-only `catalogType`. One expression, because it is
+    // also what the refusal is matched against.
+    const sent = currentOf(form);
     setSaving(true);
     try {
       if (editId) {
         const { data, error: err } = await api.api.v1.integrations
           .instances({ id: editId })
-          .patch({
-            name: form.name.trim(),
-            credentialRef: form.credentialRef || null,
-            config: form.config,
-            inboundAuthStrategy: form.inboundAuthStrategy,
-            inboundSecretRef: form.inboundSecretRef || null,
-            enabled: form.enabled,
-          });
+          .patch(sent);
         if (err || !data) throw err ?? new Error("no data");
+        refusal.clear();
         showToast(t("integrations.saved", "Integration saved."), "success");
         modal.close();
         onSaved?.(
@@ -791,14 +816,10 @@ export function IntegrationEditModal({
         const { data, error: err } =
           await api.api.v1.integrations.instances.post({
             catalogType: form.catalogType,
-            name: form.name.trim(),
-            credentialRef: form.credentialRef || null,
-            config: form.config,
-            inboundAuthStrategy: form.inboundAuthStrategy,
-            inboundSecretRef: form.inboundSecretRef || null,
-            enabled: form.enabled,
+            ...sent,
           });
         if (err || !data) throw err ?? new Error("no data");
+        refusal.clear();
         showToast(t("integrations.created", "Integration created."), "success");
         modal.close();
         onSaved?.({ id: data.id, name: form.name.trim() }, true);
@@ -811,10 +832,15 @@ export function IntegrationEditModal({
         }
       }
     } catch (e) {
-      showToast(
-        apiErrorMessage(e) || t("integrations.saveError", "Could not save."),
-        "error",
+      // `requireVaultRef` names the ref column it refused, and this form carries TWO of them:
+      // `credentialRef` and `inboundSecretRef`. A sentence in a toast cannot say which picker.
+      const toast = refusal.capture(
+        e,
+        t("integrations.saveError", "Could not save."),
+        sent,
+        currentOf(formRef.current),
       );
+      if (toast) showToast(toast, "error");
     } finally {
       setSaving(false);
     }
@@ -1069,14 +1095,22 @@ export function IntegrationEditModal({
               </p>
             )}
 
-            <FormField label={t("integrations.name", "Name")} required>
+            <FormField
+              label={t("integrations.name", "Name")}
+              required
+              error={refusal.at("name", form.name.trim())}
+            >
               <Input
                 value={form.name}
                 onChange={(e) => setForm({ ...form, name: e.target.value })}
               />
             </FormField>
 
-            <FormField label={t("integrations.credential", "Credential")} group>
+            <FormField
+              label={t("integrations.credential", "Credential")}
+              group
+              error={refusal.at("credentialRef", form.credentialRef || null)}
+            >
               <CredentialPicker
                 value={form.credentialRef}
                 onChange={setCredential}
@@ -1829,6 +1863,10 @@ export function IntegrationEditModal({
                     <FormField
                       label={t("integrations.inboundSecret", "Webhook secret")}
                       group
+                      error={refusal.at(
+                        "inboundSecretRef",
+                        form.inboundSecretRef || null,
+                      )}
                     >
                       <CredentialPicker
                         value={form.inboundSecretRef}

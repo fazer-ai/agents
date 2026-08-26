@@ -24,6 +24,7 @@ import { McpOAuthSection } from "@/client/components/McpOAuthSection";
 import { useUnsavedChanges } from "@/client/components/Modal";
 import { Textarea } from "@/client/components/Textarea";
 import { useToast } from "@/client/components/Toast";
+import { useFieldRefusal } from "@/client/hooks/useFieldRefusal";
 import { providerLink } from "@/client/lib/affiliateLinks";
 import { api } from "@/client/lib/api";
 import {
@@ -208,6 +209,16 @@ export function CredentialForm({
 
   const fields = secretTypeFields(kind);
   const hasFields = !!fields && fields.length > 0;
+  // The names this form can render a sentence under. The per-field keys of a multi-field type are in
+  // the list because that is how the server refuses them: `assertNoSurroundingWhitespace` names the
+  // inner key (`api_key`), and this form draws one input per key.
+  const refusal = useFieldRefusal([
+    "name",
+    "value",
+    "baseUrl",
+    "paramName",
+    ...(fields ?? []).map((f) => f.key),
+  ]);
   const needsParamName = secretTypeNeedsParamName(kind);
   const supportsBaseUrl = secretTypeSupportsBaseUrl(kind);
   const requiresBaseUrl = secretTypeRequiresBaseUrl(kind);
@@ -426,18 +437,36 @@ export function CredentialForm({
     }
   }
 
-  function mapSaveError(
-    status: number | undefined,
-    apiMessage?: string,
-  ): string {
-    if (status === 409)
-      return t(
-        "vault.nameInUse",
-        "A secret with this name and type already exists.",
-      );
-    if (status === 400 && apiMessage) return apiMessage;
-    return t("vault.saveError", "Could not save the secret.");
-  }
+  // What the inputs hold right now, in the server's vocabulary. Each write below sends a subset of
+  // these, and `capture` compares only the key it was refused about.
+  const currentRef = useRef<Record<string, unknown>>({});
+  currentRef.current = {
+    name: name.trim(),
+    value,
+    baseUrl: baseUrl.trim() || null,
+    paramName: paramName.trim() || undefined,
+    ...Object.fromEntries(
+      (fields ?? []).map((f) => [f.key, fieldValues[f.key] ?? ""]),
+    ),
+  };
+
+  // The refusal, at the input it names.
+  //
+  // What this replaces was `mapSaveError`, which answered its OWN localized sentence for a 409 and
+  // the server's for a 400. The premise was that a 409 arrives unlocalized, and it does not: the
+  // server translates `errors.vaultNameInUse` for the request's Accept-Language, and its pt-BR
+  // sentence ("Já existe um segredo com esse nome e tipo") names the type as well, which the console
+  // copy did not. So the override was a shorter duplicate of a better sentence.
+  //
+  // The declared names include the per-field keys of a multi-field type (`api_key`, `public_key`):
+  // `assertNoSurroundingWhitespace` refuses by the inner key, and the form draws one input per key.
+  const held = (e: unknown, sent: Record<string, unknown>) =>
+    refusal.capture(
+      e,
+      t("vault.saveError", "Could not save the secret."),
+      sent,
+      currentRef.current,
+    );
 
   async function save(skipTest = false) {
     if (!canSave) return;
@@ -476,28 +505,22 @@ export function CredentialForm({
             ? buildMultiFieldValue()
             : undefined
           : value || undefined;
+        const sent = {
+          name: renaming ? name.trim() : undefined,
+          value: newValue,
+          // PUT schema: baseUrl is Optional(Nullable(String)); paramName is Optional(String).
+          baseUrl: supportsBaseUrl ? baseUrl.trim() || null : undefined,
+          paramName: needsParamName ? paramName.trim() || undefined : undefined,
+        };
         const { data, error: err } = await api.api.v1
           .vault({ id: initialId })
-          .put({
-            name: renaming ? name.trim() : undefined,
-            value: newValue,
-            // PUT schema: baseUrl is Optional(Nullable(String)); paramName is Optional(String).
-            baseUrl: supportsBaseUrl ? baseUrl.trim() || null : undefined,
-            paramName: needsParamName
-              ? paramName.trim() || undefined
-              : undefined,
-          });
+          .put(sent);
         if (err || !data) {
-          const apiErr = err as {
-            status?: number;
-            value?: { error?: string };
-          } | null;
-          showToast(
-            mapSaveError(apiErr?.status, apiErr?.value?.error),
-            "error",
-          );
+          const toast = held(err, sent);
+          if (toast) showToast(toast, "error");
           return;
         }
+        refusal.clear();
         showToast(t("vault.saved", "Secret saved."), "success");
         onSaved(data.ref, name.trim(), kind === "generic" ? null : kind);
       } else {
@@ -506,25 +529,21 @@ export function CredentialForm({
           : isManagedBlob
             ? {}
             : value;
-        const { data, error: err } = await api.api.v1.vault.post({
+        const sent = {
           name: name.trim(),
           value: newValue,
           kind: kind === "generic" ? null : kind,
           // POST schema: baseUrl/paramName are Optional(String) — no null allowed; omit when empty.
           baseUrl: supportsBaseUrl ? baseUrl.trim() || undefined : undefined,
           paramName: needsParamName ? paramName.trim() || undefined : undefined,
-        });
+        };
+        const { data, error: err } = await api.api.v1.vault.post(sent);
         if (err || !data) {
-          const apiErr = err as {
-            status?: number;
-            value?: { error?: string };
-          } | null;
-          showToast(
-            mapSaveError(apiErr?.status, apiErr?.value?.error),
-            "error",
-          );
+          const toast = held(err, sent);
+          if (toast) showToast(toast, "error");
           return;
         }
+        refusal.clear();
         showToast(t("vault.saved", "Secret saved."), "success");
         // google_oauth / mcp_oauth: stay open to show the connect section after create. Store the
         // payload so "Done" can call onSaved once the operator has (optionally) connected.
@@ -570,24 +589,20 @@ export function CredentialForm({
     setSaving(true);
     try {
       if (!existingId) {
-        const { data, error: err } = await api.api.v1.vault.post({
+        const sent = {
           name: name.trim(),
           value: buildMultiFieldValue(),
           kind,
           baseUrl: supportsBaseUrl ? baseUrl.trim() || undefined : undefined,
           paramName: needsParamName ? paramName.trim() || undefined : undefined,
-        });
+        };
+        const { data, error: err } = await api.api.v1.vault.post(sent);
         if (err || !data) {
-          const apiErr = err as {
-            status?: number;
-            value?: { error?: string };
-          } | null;
-          showToast(
-            mapSaveError(apiErr?.status, apiErr?.value?.error),
-            "error",
-          );
+          const toast = held(err, sent);
+          if (toast) showToast(toast, "error");
           return null;
         }
+        refusal.clear();
         savedOAuthPayloadRef.current = {
           ref: data.ref,
           name: name.trim(),
@@ -597,22 +612,21 @@ export function CredentialForm({
         setFieldValues({});
         return data.id;
       }
+      const sent = {
+        name: renaming ? name.trim() : undefined,
+        value: buildMultiFieldValue(),
+        baseUrl: supportsBaseUrl ? baseUrl.trim() || null : undefined,
+        paramName: needsParamName ? paramName.trim() || undefined : undefined,
+      };
       const { data, error: err } = await api.api.v1
         .vault({ id: existingId })
-        .put({
-          name: renaming ? name.trim() : undefined,
-          value: buildMultiFieldValue(),
-          baseUrl: supportsBaseUrl ? baseUrl.trim() || null : undefined,
-          paramName: needsParamName ? paramName.trim() || undefined : undefined,
-        });
+        .put(sent);
       if (err || !data) {
-        const apiErr = err as {
-          status?: number;
-          value?: { error?: string };
-        } | null;
-        showToast(mapSaveError(apiErr?.status, apiErr?.value?.error), "error");
+        const toast = held(err, sent);
+        if (toast) showToast(toast, "error");
         return null;
       }
+      refusal.clear();
       setFieldValues({});
       return existingId;
     } catch {
@@ -664,7 +678,7 @@ export function CredentialForm({
         error={
           name && !NAME_RE.test(name.trim())
             ? t("vault.invalidName", "Must be between 1 and 128 characters.")
-            : null
+            : refusal.at("name", name.trim())
         }
       >
         <Input
@@ -909,7 +923,7 @@ export function CredentialForm({
               ? t("vault.baseUrlRequired", "Base URL is required.")
               : baseUrlInvalid && baseUrl.trim()
                 ? t("common.invalidUrl", "Must be a valid http(s) URL.")
-                : null
+                : refusal.at("baseUrl", baseUrl.trim() || null)
           }
         >
           <Input
@@ -987,6 +1001,7 @@ export function CredentialForm({
                         "Stored encrypted and never shown again.",
                       )
                 }
+                error={refusal.at(f.key, fieldValues[f.key] ?? "")}
               >
                 {f.masked ? (
                   <Input
@@ -1041,6 +1056,7 @@ export function CredentialForm({
                     "Stored encrypted and never shown again.",
                   )
             }
+            error={refusal.at("value", value)}
           >
             <Input
               type="password"

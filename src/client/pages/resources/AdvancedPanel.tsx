@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Button,
@@ -10,12 +10,18 @@ import {
   useToast,
 } from "@/client/components";
 import { ServiceLogo } from "@/client/components/icons/ServiceLogo";
+import { useFieldRefusal } from "@/client/hooks/useFieldRefusal";
 import { api } from "@/client/lib/api";
-import { apiErrorMessage } from "@/client/lib/apiError";
 
 type Settings = NonNullable<
   Awaited<ReturnType<(typeof api.api.v1)["tenant-settings"]["get"]>>["data"]
 >;
+
+// The two blocks here are two FORMS, and the server names their credentials by the dotted path into
+// the settings bag it owns — `requireVaultRef(db, incoming, "embedding.credentialRef")`. Separate
+// hooks because they save separately: a refusal about one must not mark the other's picker.
+const EMBEDDING_FIELDS = ["embedding.credentialRef"] as const;
+const LANGFUSE_FIELDS = ["langfuse.credentialRef"] as const;
 
 // Pinned server-side (see updateEmbeddingSettings); shown read-only until flexible embeddings ship.
 const EMBEDDING_MODEL = "text-embedding-3-small";
@@ -36,12 +42,18 @@ export function AdvancedPanel() {
   // Embedding (only the credential is configurable; provider/model are pinned server-side).
   const [embCredential, setEmbCredential] = useState("");
   const [embSaving, setEmbSaving] = useState(false);
+  const embRefusal = useFieldRefusal(EMBEDDING_FIELDS);
+  const embRef = useRef(embCredential);
+  embRef.current = embCredential;
 
   const [lfEnabled, setLfEnabled] = useState(false);
   const [lfCredentialRef, setLfCredentialRef] = useState<string | null>(null);
   const [lfSendContent, setLfSendContent] = useState(false);
   const [lfDebug, setLfDebug] = useState(false);
   const [lfSaving, setLfSaving] = useState(false);
+  const lfRefusal = useFieldRefusal(LANGFUSE_FIELDS);
+  const lfRefRef = useRef(lfCredentialRef);
+  lfRefRef.current = lfCredentialRef;
 
   const apply = useCallback((s: Settings) => {
     setEmbCredential(s.embedding.credentialRef ?? "");
@@ -71,24 +83,25 @@ export function AdvancedPanel() {
 
   async function saveEmbedding() {
     setEmbSaving(true);
+    const ref = embCredential || null;
     try {
       const { error: err } = await api.api.v1["tenant-settings"].embedding.put({
-        credentialRef: embCredential || null,
+        credentialRef: ref,
       });
       if (err) throw err;
+      embRefusal.clear();
       showToast(
         t("advanced.embedding.saved", "Embedding settings saved."),
         "success",
       );
     } catch (e) {
-      showToast(
-        apiErrorMessage(e) ||
-          t(
-            "advanced.embedding.saveError",
-            "Could not save embedding settings.",
-          ),
-        "error",
+      const toast = embRefusal.capture(
+        e,
+        t("advanced.embedding.saveError", "Could not save embedding settings."),
+        { "embedding.credentialRef": ref },
+        { "embedding.credentialRef": embRef.current || null },
       );
+      if (toast) showToast(toast, "error");
     } finally {
       setEmbSaving(false);
     }
@@ -106,20 +119,23 @@ export function AdvancedPanel() {
         debug: lfDebug,
       });
       if (err || !data) throw err ?? new Error("no data");
+      lfRefusal.clear();
       setLfCredentialRef(data.langfuse.credentialRef);
       showToast(
         t("advanced.observability.saved", "Observability settings saved."),
         "success",
       );
     } catch (e) {
-      showToast(
-        apiErrorMessage(e) ||
-          t(
-            "advanced.observability.saveError",
-            "Could not save observability settings.",
-          ),
-        "error",
+      const toast = lfRefusal.capture(
+        e,
+        t(
+          "advanced.observability.saveError",
+          "Could not save observability settings.",
+        ),
+        { "langfuse.credentialRef": lfCredentialRef },
+        { "langfuse.credentialRef": lfRefRef.current },
       );
+      if (toast) showToast(toast, "error");
     } finally {
       setLfSaving(false);
     }
@@ -174,6 +190,17 @@ export function AdvancedPanel() {
                   compatibleTypes={["openai"]}
                   ariaLabel={t("advanced.embedding.credential", "Credential")}
                 />
+                {embRefusal.at(
+                  "embedding.credentialRef",
+                  embCredential || null,
+                ) && (
+                  <p className="mt-1 text-error text-xs">
+                    {embRefusal.at(
+                      "embedding.credentialRef",
+                      embCredential || null,
+                    )}
+                  </p>
+                )}
               </div>
               <Button size="sm" onClick={saveEmbedding} loading={embSaving}>
                 {t("common.save", "Save")}
@@ -218,6 +245,7 @@ export function AdvancedPanel() {
               "advanced.observability.credentialHint",
               "Public key, secret key and host are stored in the credential. Use the Vault tab to create or update it.",
             )}
+            error={lfRefusal.at("langfuse.credentialRef", lfCredentialRef)}
           >
             <CredentialPicker
               value={lfCredentialRef ?? ""}

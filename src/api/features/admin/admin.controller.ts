@@ -311,6 +311,7 @@ export const adminController = new Elysia({
           set.status = 409;
           return {
             error: translate("errors.emailInUse", "Email already in use"),
+            field: "email",
           };
         }
         throw error;

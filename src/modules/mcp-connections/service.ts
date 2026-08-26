@@ -179,6 +179,7 @@ async function assertNameFree(
     throw new ConflictError(
       "mcp connection name already in use",
       "errors.mcpNameTaken",
+      "name",
     );
   }
 }
@@ -195,7 +196,7 @@ export async function createMcpConnection(
   return runScopedOn(base, ctx, async (db) => {
     await assertNameFree(db, data.name);
     const credentialRef = data.credentialRef
-      ? await requireVaultRef(db, data.credentialRef)
+      ? await requireVaultRef(db, data.credentialRef, "credentialRef")
       : null;
     const row = await db.mcpServerConnection.create({
       data: {
@@ -241,7 +242,7 @@ export async function updateMcpConnection(
   return runScopedOn(base, ctx, async (db) => {
     if (data.name) await assertNameFree(db, data.name, id);
     const credentialRef = data.credentialRef
-      ? await requireVaultRef(db, data.credentialRef)
+      ? await requireVaultRef(db, data.credentialRef, "credentialRef")
       : null;
     await db.mcpServerConnection.update({
       where: { id },

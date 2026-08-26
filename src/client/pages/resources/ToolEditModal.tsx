@@ -19,6 +19,7 @@ import {
   useToast,
 } from "@/client/components";
 import { Tooltip } from "@/client/components/Tooltip";
+import { useFieldRefusal } from "@/client/hooks/useFieldRefusal";
 import { api } from "@/client/lib/api";
 import { cn } from "@/client/lib/utils";
 import { isValidUrlTemplate } from "@/client/lib/validation";
@@ -213,6 +214,76 @@ export function parseExpectedStatuses(raw: string): number[] {
     .map((part) => Number(part))
     .filter((n) => Number.isInteger(n) && n > 0);
 }
+
+type ToolForm = ReturnType<typeof emptyForm>;
+
+// The body this modal writes, from the form it renders. ONE function, because it is also what a
+// refusal is matched against: `capture` compares the value that was SENT with the value the inputs
+// hold NOW, and two spellings of "the payload" would disagree about a field nobody edited.
+//
+// `null` when the headers are not parseable JSON, which is a client-side check with no server
+// sentence behind it.
+export function payloadOf(form: ToolForm) {
+  let headers: Record<string, unknown>;
+  try {
+    headers =
+      form.headersMode === "raw"
+        ? parseJsonOr(form.headersRaw, {})
+        : kvToObj(form.headerRows);
+  } catch {
+    return null;
+  }
+  const isWrite =
+    form.method === "POST" || form.method === "PUT" || form.method === "PATCH";
+  return {
+    // The model-facing identifier is always derived from the display name (single source of truth).
+    name: normalizeToolName(form.label.trim()),
+    label: form.label.trim(),
+    description: form.description.trim() || undefined,
+    method: form.method,
+    urlTemplate: form.urlTemplate.trim(),
+    allowedHosts: form.allowedHosts
+      .split(",")
+      .map((h) => h.trim())
+      .filter(Boolean),
+    headers,
+    // inputSchema is the AI contract only; fixed values live as literal rows in query/headers/body.
+    inputSchema: schemaFromAiFields(form.aiFields),
+    query: kvToObj(form.queryRows),
+    body: isWrite
+      ? form.bodyMode === "raw"
+        ? { mode: "raw", raw: form.bodyRaw }
+        : {
+            mode: "kv",
+            rows: form.bodyRows
+              .filter((r) => r.key.trim())
+              .map((r) => ({ key: r.key.trim(), value: r.value })),
+          }
+      : { mode: "kv", rows: [] },
+    credentialRef: form.credentialRef || null,
+    expectedStatuses: parseExpectedStatuses(form.expectedStatuses),
+    ackEnabled: form.ackEnabled,
+    ackMessage: form.ackEnabled ? form.ackMessage.trim() || null : null,
+  };
+}
+
+// The server's own names for what this modal renders, which are the keys of the body above. `name`
+// is derived from the label rather than typed, so a refusal about it is marked on the label — the
+// input the operator can actually change.
+const TOOL_FIELDS = [
+  "name",
+  "label",
+  "description",
+  "method",
+  "urlTemplate",
+  "headers",
+  "inputSchema",
+  "query",
+  "body",
+  "credentialRef",
+  "expectedStatuses",
+  "ackMessage",
+] as const;
 
 export function formFromTool(tool: Tool) {
   // NOTE: legacy rows authored programmatically may still carry pre-normalization shapes
@@ -573,6 +644,12 @@ export function ToolEditModal({
   const ackId = useId();
   const { showToast } = useToast();
   const [form, setForm] = useState(emptyForm());
+  // The CURRENT form, readable from inside a request that started before it: the operator can type
+  // during the save, and a refusal about a value they have already replaced belongs in the banner
+  // rather than under a box that no longer holds it.
+  const formRef = useRef(form);
+  formRef.current = form;
+  const refusal = useFieldRefusal(TOOL_FIELDS);
   const [saving, setSaving] = useState(false);
   const [loadingForm, setLoadingForm] = useState(false);
   const [loadError, setLoadError] = useState(false);
@@ -591,6 +668,10 @@ export function ToolEditModal({
   const aiFieldNames = form.aiFields.map((f) => f.name.trim()).filter(Boolean);
   const isWriteMethod =
     form.method === "POST" || form.method === "PUT" || form.method === "PATCH";
+  // What the inputs hold right now, in the server's vocabulary. The marks are keyed by VALUE, so
+  // this has to be the same function the save sends. Null only while the headers are unparseable,
+  // which is a client-side check the banner already answers.
+  const current = payloadOf(form) ?? ({} as Record<string, unknown>);
 
   useOnModalOpen(modal, () => {
     setFormError(null);
@@ -637,64 +718,29 @@ export function ToolEditModal({
 
   async function save() {
     setFormError(null);
-    let headers: Record<string, unknown>;
-    try {
-      headers =
-        form.headersMode === "raw"
-          ? parseJsonOr(form.headersRaw, {})
-          : kvToObj(form.headerRows);
-    } catch {
+    const payload = payloadOf(form);
+    if (payload === null) {
       setFormError(t("tools.invalidJson", "Headers must be valid JSON."));
       return;
     }
-    const payload = {
-      // The model-facing identifier is always derived from the display name (single source of truth).
-      name: normalizeToolName(form.label.trim()),
-      label: form.label.trim(),
-      description: form.description.trim() || undefined,
-      method: form.method,
-      urlTemplate: form.urlTemplate.trim(),
-      allowedHosts: form.allowedHosts
-        .split(",")
-        .map((h) => h.trim())
-        .filter(Boolean),
-      headers,
-      // inputSchema is the AI contract only; fixed values live as literal rows in query/headers/body.
-      inputSchema: schemaFromAiFields(form.aiFields),
-      query: kvToObj(form.queryRows),
-      body: isWriteMethod
-        ? form.bodyMode === "raw"
-          ? { mode: "raw", raw: form.bodyRaw }
-          : {
-              mode: "kv",
-              rows: form.bodyRows
-                .filter((r) => r.key.trim())
-                .map((r) => ({ key: r.key.trim(), value: r.value })),
-            }
-        : { mode: "kv", rows: [] },
-      credentialRef: form.credentialRef || null,
-      expectedStatuses: parseExpectedStatuses(form.expectedStatuses),
-      ackEnabled: form.ackEnabled,
-      ackMessage: form.ackEnabled ? form.ackMessage.trim() || null : null,
-    };
     setSaving(true);
+    const fallback = t("tools.saveError", "Could not save.");
+    const held = (e: unknown) =>
+      refusal.capture(e, fallback, payload, payloadOf(formRef.current) ?? {});
     try {
       const { data, error: err } = editId
         ? await api.api.v1.tools({ id: editId }).patch(payload)
         : await api.api.v1.tools.post(payload);
       if (err || !data) {
-        setFormError(
-          t("tools.saveError", "Could not save (check the name and URL)."),
-        );
+        setFormError(held(err));
         return;
       }
+      refusal.clear();
       showToast(t("tools.saved", "Tool saved."), "success");
       modal.close();
       onSaved?.({ id: data.tool.id, name: data.tool.name }, !editId);
-    } catch {
-      setFormError(
-        t("tools.saveError", "Could not save (check the name and URL)."),
-      );
+    } catch (e) {
+      setFormError(held(e));
     } finally {
       setSaving(false);
     }
@@ -781,6 +827,10 @@ export function ToolEditModal({
               "tools.nameHint",
               "How the tool is shown in the console. Spaces and accents are allowed; the identifier the AI calls is derived from it automatically.",
             )}
+            error={
+              refusal.at("label", current.label) ??
+              refusal.at("name", current.name)
+            }
           >
             <Input
               value={form.label}
@@ -799,7 +849,10 @@ export function ToolEditModal({
             )}
           </FormField>
 
-          <FormField label={t("tools.description", "Description")}>
+          <FormField
+            label={t("tools.description", "Description")}
+            error={refusal.at("description", current.description)}
+          >
             <Textarea
               value={form.description}
               onChange={(e) =>
@@ -814,6 +867,7 @@ export function ToolEditModal({
           </FormField>
 
           <FormField
+            error={refusal.at("inputSchema", current.inputSchema)}
             label={t("tools.aiFields", "AI fields")}
             group
             description={t(
@@ -828,7 +882,10 @@ export function ToolEditModal({
           </FormField>
 
           <div className="grid gap-4 sm:grid-cols-[120px_1fr]">
-            <FormField label={t("tools.method", "Method")}>
+            <FormField
+              label={t("tools.method", "Method")}
+              error={refusal.at("method", current.method)}
+            >
               <Select
                 value={form.method}
                 onChange={(e) =>
@@ -867,7 +924,7 @@ export function ToolEditModal({
                       "tools.invalidUrlTemplate",
                       "Must start with / or be a full http(s) URL.",
                     )
-                  : null
+                  : refusal.at("urlTemplate", current.urlTemplate)
               }
             >
               {credBaseUrl && (
@@ -910,6 +967,7 @@ export function ToolEditModal({
           </div>
 
           <FormField
+            error={refusal.at("credentialRef", current.credentialRef)}
             label={t("tools.credential", "Credential")}
             group
             description={
@@ -942,6 +1000,7 @@ export function ToolEditModal({
           </FormField>
 
           <FormField
+            error={refusal.at("query", current.query)}
             label={t("tools.query", "Query string")}
             group
             description={t(
@@ -961,6 +1020,7 @@ export function ToolEditModal({
           </FormField>
 
           <FormField
+            error={refusal.at("headers", current.headers)}
             label={t("tools.headers", "Headers")}
             group
             description={
@@ -1024,6 +1084,7 @@ export function ToolEditModal({
 
           {isWriteMethod && (
             <FormField
+              error={refusal.at("body", current.body)}
               label={t("tools.body", "Request body")}
               group
               description={
@@ -1103,6 +1164,7 @@ export function ToolEditModal({
               "tools.expectedStatusesHint",
               "Comma-separated, e.g. 404. Use it when this API answers with an error status for an ordinary answer — a lookup that returns 404 for 'no record'. Those responses stop counting as integration failures, so they no longer raise alerts. The AI reads the same reply either way. Leave empty and every non-2xx is treated as a failure.",
             )}
+            error={refusal.at("expectedStatuses", current.expectedStatuses)}
           >
             <Input
               value={form.expectedStatuses}
@@ -1153,14 +1215,17 @@ export function ToolEditModal({
                     "tools.ackPlaceholder",
                     "Let me look into that for you…",
                   )}
-                  error={ackInvalid}
+                  error={
+                    ackInvalid || !!refusal.at("ackMessage", current.ackMessage)
+                  }
                   errorMessage={
                     ackInvalid
                       ? t(
                           "tools.ackRequired",
                           "Add a tone example, or turn this off.",
                         )
-                      : undefined
+                      : (refusal.at("ackMessage", current.ackMessage) ??
+                        undefined)
                   }
                 />
               </div>

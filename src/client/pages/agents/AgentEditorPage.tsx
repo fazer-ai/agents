@@ -47,6 +47,7 @@ import { BusinessHoursForm } from "@/client/components/BusinessHoursForm";
 import type { DiscoveredMcpTool } from "@/client/components/mcp/DiscoveredMcpTools";
 import { useBreadcrumbLabel } from "@/client/contexts/BreadcrumbContext";
 import { useNavGuard } from "@/client/contexts/NavGuardContext";
+import { useFieldRefusal } from "@/client/hooks/useFieldRefusal";
 import { useTenantEvents } from "@/client/hooks/useTenantEvents";
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
@@ -568,6 +569,13 @@ function AgentEditorSkeleton() {
 // the thing it clears will be repopulated, and answering that per field is how a discard ends up
 // stranding a value the form still needs. A different agent is a different form. `:tab` is NOT in
 // the key, so moving between tabs of the same agent keeps everything, which is what it is for.
+// The two names this page renders a control for, out of everything an agent write can be refused
+// about. The rest of the editor's values live in bags — `settings.tts.normalizeCredentialRef`,
+// `guardrails.output.templateMessage` — behind tabs, and placing a refusal on one of those means
+// also taking the operator to the tab that holds it, which is its own change (fazer-ai/agents#349;
+// the abstention is recorded in tests/client/field-refusal-fence.test.ts).
+const EDITOR_FIELDS = ["name", "systemPrompt"] as const;
+
 export function AgentEditorPage() {
   const { id = "" } = useParams();
   return <AgentEditor key={id} />;
@@ -611,6 +619,11 @@ function AgentEditor() {
   // Agent fields
   const [name, setName] = useState("");
   const [systemPrompt, setSystemPrompt] = useState("");
+  const refusal = useFieldRefusal(EDITOR_FIELDS);
+  // What the two placeable inputs hold right now, readable from inside a save that started before
+  // them: this page's saves are long and the operator keeps typing during them.
+  const currentRef = useRef<Record<string, unknown>>({});
+  currentRef.current = { name: name.trim(), systemPrompt };
   const [enabled, setEnabled] = useState(true);
   const [agentMode, setAgentMode] = useState<"test" | "production">(
     "production",
@@ -2193,15 +2206,20 @@ function AgentEditor() {
       else applyBehavior(data.agent);
       markSynced(String(data.agent.updatedAt));
       bumpSync(section);
+      refusal.clear();
       showToast(t("editor.saved", "Agent saved."), "success");
     } catch (e) {
-      // NOTE: surface the backend's localized message when present (the prompt-size cap, the
-      // settings text caps) instead of the generic failure toast.
-      showToast(
-        apiErrorMessage(e) ||
-          t("editor.saveError", "Could not save the agent."),
-        "error",
+      // The backend's localized message, at the input it names when this page renders one. The
+      // prompt-size cap and the name are the two it can place today; a settings-bag path
+      // (`guardrails.output.templateMessage`) still answers in the toast, which is where the
+      // sentence has always gone.
+      const toast = refusal.capture(
+        e,
+        t("editor.saveError", "Could not save the agent."),
+        patch,
+        currentRef.current,
       );
+      if (toast) showToast(toast, "error");
     } finally {
       savingRef.current -= 1;
       setSavingAgent(false);
@@ -2860,6 +2878,8 @@ function AgentEditor() {
 
             {tab === "general" && (
               <GeneralTab
+                nameError={refusal.at("name", name.trim())}
+                promptError={refusal.at("systemPrompt", systemPrompt)}
                 availability={promptAvailability}
                 name={name}
                 setName={setName}

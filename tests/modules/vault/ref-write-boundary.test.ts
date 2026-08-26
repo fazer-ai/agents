@@ -88,11 +88,12 @@ const uniq = (p: string) => `${p}-${process.pid}-${++seq}`;
 interface Boundary {
   // What the operator sees in the API, so a failure names the field rather than the test row.
   field: string;
-  // The name the REFUSAL puts on the wire (#231/#245), when this boundary names one. Absent for the
-  // six columns of #124: the patch key the client sent already is the name, and extending #245's
-  // sweep to them is its own change. Asserted in both directions so "these were checked" cannot be
-  // read into a boundary that answers without one.
-  wireField?: string;
+  // The name the REFUSAL puts on the wire (#231/#245), and every boundary here names one. The six
+  // columns of #124 were the holdout, on the argument that "the patch key the client sent already is
+  // the name" — which is what the client SENT, not what the server REFUSED, and an integrations
+  // write carries two ref keys in one body. A refusal with no field is unplaceable by any form
+  // (#320), so `requireVaultRef` now takes the name as a required argument.
+  wireField: string;
   create: (ref: string) => Promise<bigint>;
   update: (id: bigint, ref: string) => Promise<unknown>;
   read: (id: bigint) => Promise<string | null>;
@@ -101,6 +102,7 @@ interface Boundary {
 const boundaries: Boundary[] = [
   {
     field: "integrationInstance.inboundSecretRef",
+    wireField: "inboundSecretRef",
     create: async (ref) =>
       (
         await createIntegrationInstance(
@@ -126,6 +128,7 @@ const boundaries: Boundary[] = [
   },
   {
     field: "integrationInstance.credentialRef",
+    wireField: "credentialRef",
     create: async (ref) =>
       (
         await createIntegrationInstance(
@@ -150,6 +153,7 @@ const boundaries: Boundary[] = [
   },
   {
     field: "toolDefinition.credentialRef",
+    wireField: "credentialRef",
     create: async (ref) => {
       const dto = await createToolDefinition(
         ctx(),
@@ -176,6 +180,7 @@ const boundaries: Boundary[] = [
   },
   {
     field: "mcpServerConnection.credentialRef",
+    wireField: "credentialRef",
     create: async (ref) => {
       const dto = await createMcpConnection(
         ctx(),
@@ -201,6 +206,7 @@ const boundaries: Boundary[] = [
   },
   {
     field: "alertChannel.secretRef",
+    wireField: "secretRef",
     create: async (ref) => {
       const dto = await createAlertChannel(
         ctx(),
@@ -226,6 +232,7 @@ const boundaries: Boundary[] = [
   },
   {
     field: "webhookSubscription.secretRef",
+    wireField: "secretRef",
     create: async (ref) => {
       const dto = await createWebhookSubscription(
         ctx(),
@@ -682,14 +689,12 @@ describe.skipIf(!dbUp)("vault ref write boundary", () => {
         expect(await b.read(id)).toBe(pendingRef);
       });
 
-      test("says which field it refused, or says nothing at all", async () => {
-        // The refusal is the only thing the console can key on: the sentence is localized and the
-        // agent keeps eight of these across three tabs, so without a name there is nothing to put
-        // the message next to. Both directions, so an entry that quietly stops naming one fails.
+      test("names the input it refused, by the server's own name for it", async () => {
+        // The name is the only thing the console can key on: the sentence is localized and the agent
+        // keeps eight of these across three tabs, so without one there is nothing to put the message
+        // next to. Asserted by VALUE, so a boundary that starts naming a different input fails too.
         const raised = await b.create("live-key").catch((e: unknown) => e);
-        expect((raised as { field?: string }).field).toBe(
-          b.wireField as string,
-        );
+        expect((raised as { field?: string }).field).toBe(b.wireField);
       });
 
       test("refuses a bare NAME and a dead ref on update too", async () => {

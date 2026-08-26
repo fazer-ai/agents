@@ -70,6 +70,13 @@ export interface FormAtAnswer {
 // (`guardrails.output.templateMessage`), and a form that wants to catch a subtree can say so by
 // listing what it renders. Guessing that a form showing `guardrails` also shows every leaf under it
 // is how a refusal ends up marked on a control that is not about it.
+//
+// With ONE exception, and it is not a prefix rule: a trailing NUMERIC segment is an element of the
+// declared list, not a different value. The schema boundary refuses arrays per element and says so —
+// measured on this tree: `redirectUris.0`, `windows.0`, `accountIds.0`, `grants.0` — while the form
+// renders the whole list through one control. Exact matching alone means every array input in the
+// console can never receive its own refusal. A named segment stays unmatched, because `guardrails`
+// and `guardrails.output` are two different values and only the form knows which one it draws.
 export function placeRefusal(
   refusal: Refusal | null,
   rendered: readonly string[],
@@ -78,13 +85,48 @@ export function placeRefusal(
 ): RefusalPlacement {
   if (!refusal) return { toast: fallback };
   const { field, message } = refusal;
-  if (!field || !rendered.includes(field)) return { toast: message };
+  if (!field) return { toast: message };
+  const declared = rendered.includes(field)
+    ? field
+    : rendered.find((name) =>
+        new RegExp(`^${escapeName(name)}\\.\\d+$`).test(field),
+      );
+  if (declared === undefined) return { toast: message };
   if (!form.mounted) return { toast: message };
   // Only when the request carried this field. A refusal about a value this write did not change is
   // about what is stored, and the input has not moved relative to it, so there is nothing stale.
-  const carried = Object.hasOwn(form.sent, field);
-  if (carried && form.sent[field] !== form.current[field]) {
+  const carried = Object.hasOwn(form.sent, declared);
+  if (carried && !sameValue(form.sent[declared], form.current[declared])) {
     return { toast: message };
   }
-  return { at: field, message, value: form.current[field] };
+  return { at: declared, message, value: form.current[declared] };
+}
+
+// "The box still holds what the server was talking about", for a value of any shape.
+//
+// Reference identity is wrong for everything that is not a primitive, and wrong in the direction that
+// SILENCES the mechanism: a form rebuilds its request body on every render, so an array or an object
+// read twice is two values that are never `===`. Every such field would read as edited-during-the-
+// request and be sent to the toast — measured the moment the first list control was wired, and
+// invisible before it because the six fields of the reference card are all strings.
+//
+// Structural rather than deep-equal by hand: these values are request bodies, so they are JSON by
+// construction, and a shape that cannot be serialised is one this comparison should not claim to
+// answer for. It falls back to identity there rather than throwing inside a submit handler.
+export function sameValue(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if (a === null || b === null) return false;
+  if (typeof a !== "object" || typeof b !== "object") return false;
+  try {
+    return JSON.stringify(a) === JSON.stringify(b);
+  } catch {
+    return false;
+  }
+}
+
+// A declared name inside a regex. The names are the server's own — columns and dotted paths — so the
+// dot is the only metacharacter any of them carries today, and escaping the set rather than the one
+// character is what keeps that true of the next name too.
+function escapeName(name: string): string {
+  return name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

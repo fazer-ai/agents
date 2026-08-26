@@ -79,7 +79,12 @@ describe("readRefusal", () => {
 });
 
 describe("placeRefusal", () => {
-  const RENDERED = ["name", "document", "guardrails.output.templateMessage"];
+  const RENDERED = [
+    "name",
+    "document",
+    "guardrails.output.templateMessage",
+    "redirectUris",
+  ];
   const FALLBACK = "Could not save.";
 
   // A form that is on screen and whose inputs still hold exactly what the request carried: the
@@ -138,6 +143,26 @@ describe("placeRefusal", () => {
       name: "a parent of a rendered path is not a rendered path either",
       refusal: { message: "too long", field: "guardrails.output" },
       want: { toast: "too long" },
+    },
+    {
+      // The schema boundary refuses an array PER ELEMENT (`refused body.redirectUris.0`), and one
+      // control renders the whole list. Without this the array inputs of the console — redirect
+      // URIs, service windows, account ids, tool grants — could never receive their own refusal.
+      name: "an element of a rendered list is that list",
+      refusal: { message: "not a URL", field: "redirectUris.0" },
+      form: {
+        mounted: true,
+        sent: { redirectUris: ["nope"] },
+        current: { redirectUris: ["nope"] },
+      },
+      want: { at: "redirectUris", message: "not a URL", value: ["nope"] },
+    },
+    {
+      // And the index is the whole of the exception: a NAMED segment under a rendered list is a
+      // different value, and the form has not said it draws it.
+      name: "a named child of a rendered list is not that list",
+      refusal: { message: "not a URL", field: "redirectUris.first" },
+      want: { toast: "not a URL" },
     },
     {
       name: "a refusal about no input is a toast, in the server's words",

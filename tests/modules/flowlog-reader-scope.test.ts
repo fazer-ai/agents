@@ -209,17 +209,26 @@ const FLOWLOG_READERS: Record<string, number> = {
 const SELF = "tests/modules/flowlog-reader-scope.test.ts";
 
 // A clear of `execution_logs` written by hand, in any spelling a test has reached for. `TRUNCATE` is
-// listed because it is the same act under a different verb, and a guard that only knew `DELETE` would
-// wave it through.
+// listed because it is the same act under a different verb, and a guard that only knew `DELETE`
+// would wave it through. `\s` inside the pattern rather than a literal space for the same reason
+// the scan below is whole-file: `executionLog\n  .deleteMany(…)` and a `DELETE\nFROM execution_logs`
+// inside a template literal are what the formatter produces on a long enough line, and a predicate
+// run per line would report the file as clean.
 const RAW_CLEAR =
-  /executionLog\.deleteMany\s*\(|(?:DELETE\s+FROM|TRUNCATE(?:\s+TABLE)?)\s+"?execution_logs"?/i;
+  /executionLog\s*\.\s*deleteMany\s*\(|(?:DELETE\s+FROM|TRUNCATE(?:\s+TABLE)?)\s+"?execution_logs"?/gi;
 
 export function rawClearLines(src: string): number[] {
   const out: number[] = [];
-  src.split("\n").forEach((line, i) => {
-    if (RAW_CLEAR.test(line)) out.push(i + 1);
-  });
-  return out;
+  // A fresh regex per call: a `g` pattern carries `lastIndex` between calls, so a shared instance
+  // would start the second file mid-way through and miss whatever sits before that offset.
+  const re = new RegExp(RAW_CLEAR.source, "gi");
+  for (;;) {
+    const hit = re.exec(src);
+    if (!hit) return out;
+    // The line the match STARTS on, counted from the offset rather than from a per-line loop, which
+    // is what lets the match itself span lines.
+    out.push(src.slice(0, hit.index).split("\n").length);
+  }
 }
 
 // `clearFlowLog` is the one correct spelling. Three files are exempt and each for its own reason:
@@ -373,6 +382,31 @@ describe("nothing empties the flow log by hand", () => {
         'await db.$executeRawUnsafe(`TRUNCATE TABLE "execution_logs"`);',
       ),
     ).toEqual([1]);
+  });
+
+  test("the spellings the formatter produces do not escape it", () => {
+    // The hole round 1 of review found, pinned. The predicate was applied per line, so any clear the
+    // formatter had broken across lines read as clean — and these are not exotic spellings, they are
+    // what Biome emits once the chain or the template is long enough.
+    expect(
+      rawClearLines("await suDb.executionLog\n  .deleteMany({ where });"),
+    ).toEqual([1]);
+    expect(
+      rawClearLines(
+        "await db.$executeRawUnsafe(`DELETE\n  FROM execution_logs\n  WHERE x`);",
+      ),
+    ).toEqual([1]);
+    expect(
+      rawClearLines(
+        "const a = 1;\nconst b = 2;\nawait db.executionLog.deleteMany({ w });",
+      ),
+    ).toEqual([3]);
+    // Two of them, so the scan cannot stop at the first and call the rest of the file clean.
+    expect(
+      rawClearLines(
+        "await db.executionLog.deleteMany({ a });\nawait db.executionLog.deleteMany({ b });",
+      ),
+    ).toEqual([1, 2]);
   });
 
   test("it does not flag the helper call, nor another table's clear", () => {

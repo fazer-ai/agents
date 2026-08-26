@@ -16,6 +16,7 @@ type TransactionCapable = Pick<PrismaClient, "$extends" | "$transaction">;
 // boundary; this extension only supplies tenant_id on insert (so WITH CHECK passes and
 // callers need not pass it) and overrides any caller-supplied tenant_id (anti-spoof).
 const TENANT_SCOPED_MODELS = new Set<string>([
+  "Appointment",
   "ChatwootInstance",
   "ChatwootWebhookDelivery",
   "Inbox",

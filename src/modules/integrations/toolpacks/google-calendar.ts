@@ -1319,19 +1319,25 @@ function buildCreateEventTool(
           logger.warn({ err }, "gcal: meet-link re-read failed");
         }
       }
-      // Arm deterministic reminders for the new appointment (best-effort; no-op when the Calendar
-      // integration has reminders disabled / on the playground). The policy (offsets/confirmation) is
-      // read from THIS integration's config. startISO from the canonical response, then the input.
+      // Tell the platform an appointment now stands here (best-effort; unwired on the playground).
+      // The reminder POLICY is read from THIS integration's config and is what the toggle decides;
+      // the RECORD is written either way, because the follow-up pause, the console indicator and the
+      // agent's own prompt read it and none of them is about sending a reminder (issue #376).
+      // startISO from the canonical response, then the input.
       const startISO = flattenTime(data.start) ?? input.start;
       const apptCfg = readAppointmentReminderConfig(sel.config);
-      if (apptCfg.enabled && ctx.scheduleAppointmentReminders && startISO) {
-        await ctx.scheduleAppointmentReminders({
+      if (ctx.appointmentBooked && startISO) {
+        await ctx.appointmentBooked({
           eventId,
           calendarId,
           startISO,
           credentialRef: sel.credentialRef,
-          offsetsHours: apptCfg.offsetsHours,
-          askConfirmationOnLast: apptCfg.askConfirmationOnLast,
+          reminders: apptCfg.enabled
+            ? {
+                offsetsHours: apptCfg.offsetsHours,
+                askConfirmationOnLast: apptCfg.askConfirmationOnLast,
+              }
+            : null,
           summary:
             typeof data.summary === "string" ? data.summary : input.summary,
           calendarLabel: labels[calendarId] ?? null,
@@ -1488,25 +1494,26 @@ function buildUpdateEventTool(
         );
       }
       const data = (res.json ?? {}) as Record<string, unknown>;
-      // A reschedule (start changed) re-arms reminders against the new time: cancel the old ones, then
-      // re-enqueue (best-effort). Cancel always runs so stale reminders clear even if reminders are now
-      // off; re-arm only when scheduling is wired (enabled + real conversation).
+      // A reschedule (start changed) re-states the appointment against the new time: retire the old
+      // record and reminders, then book again (best-effort). The cancel always runs so a stale
+      // reminder clears even if reminders are now off; the re-book restores the record, which the
+      // cancel just retired, and it must therefore run whether or not reminders are enabled.
       if (input.start !== undefined) {
-        await ctx.cancelAppointmentReminders?.(input.eventId);
+        await ctx.cancelAppointment?.(input.eventId);
         const newStartISO = flattenTime(data.start) ?? input.start;
         const apptCfg = readAppointmentReminderConfig(sel.config);
-        if (
-          apptCfg.enabled &&
-          newStartISO &&
-          ctx.scheduleAppointmentReminders
-        ) {
-          await ctx.scheduleAppointmentReminders({
+        if (newStartISO && ctx.appointmentBooked) {
+          await ctx.appointmentBooked({
             eventId: input.eventId,
             calendarId,
             startISO: newStartISO,
             credentialRef: sel.credentialRef,
-            offsetsHours: apptCfg.offsetsHours,
-            askConfirmationOnLast: apptCfg.askConfirmationOnLast,
+            reminders: apptCfg.enabled
+              ? {
+                  offsetsHours: apptCfg.offsetsHours,
+                  askConfirmationOnLast: apptCfg.askConfirmationOnLast,
+                }
+              : null,
             summary:
               typeof data.summary === "string"
                 ? data.summary
@@ -1578,15 +1585,26 @@ function buildCancelEventTool(
         );
       }
       // 204 No Content is the success shape; 410 Gone means it was already cancelled (idempotent).
-      if (res.status === 410) return "The appointment was already cancelled.";
-      if (res.status !== 204 && (res.status < 200 || res.status >= 300)) {
+      // BOTH retire the local record, and 410 is the one that used to slip past: the appointment is
+      // gone in Google either way, and leaving the record behind keeps the follow-up paused and the
+      // appointment in the agent's prompt until its start passes. The ownership gate has already run
+      // by here — the owner fetch succeeded and its stamp matched — so this is known to be THIS
+      // customer's appointment. The 404 and stamp-mismatch exits above deliberately retire nothing:
+      // there the event id is model-supplied and unverified, and retiring on it would let one
+      // conversation cancel another's appointment.
+      if (
+        res.status !== 204 &&
+        res.status !== 410 &&
+        (res.status < 200 || res.status >= 300)
+      ) {
         return toolFailure(
           `Google Calendar rejected the cancellation (HTTP ${res.status}).`,
         );
       }
-      // Drop any pending reminders for this appointment (best-effort).
-      await ctx.cancelAppointmentReminders?.(input.eventId);
-      return "The appointment was cancelled.";
+      await ctx.cancelAppointment?.(input.eventId);
+      return res.status === 410
+        ? "The appointment was already cancelled."
+        : "The appointment was cancelled.";
     },
     {
       name: "calendar_cancel_event",

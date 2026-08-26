@@ -11,6 +11,12 @@ import {
   parseStartMs,
 } from "@/modules/appointments/context";
 import {
+  cancelAppointmentRecord,
+  cancelThreadAppointmentRecords,
+  type RecordAppointmentResult,
+  recordAppointment,
+} from "@/modules/appointments/record";
+import {
   type ClaimedJob,
   cancelPendingJobsByPrefix,
   enqueueJob,
@@ -26,8 +32,13 @@ import { ensureFreshGoogleAccessToken } from "@/modules/vault/google-oauth";
 // the handler verifies the event is still alive + in the future, then runAgentNudge injects a system
 // turn so the agent sends a (service-window-gated) reminder — and, on the LAST reminder, may ask the
 // customer to confirm attendance (the agent marks the event via calendar_confirm_appointment).
-// Cancel / reschedule the appointment ⇒ cancelAppointmentReminders drops the pending jobs (re-armed
-// on reschedule). Reminders live ONLY as scheduler rows; nothing is polled.
+// Cancel / reschedule the appointment ⇒ cancelAppointment drops the pending jobs (re-armed on
+// reschedule). Reminders live ONLY as scheduler rows; nothing is polled.
+//
+// These rows are jobs and nothing more. Whether an appointment EXISTS is `appointments` (record.ts),
+// written by appointmentBooked below whether or not a single reminder is ever armed. The two were
+// one object until issue #376, and every reason a job is legitimately not written was then also a
+// reason the platform forgot the appointment.
 
 const GCAL_ORIGIN = "https://www.googleapis.com/calendar/v3";
 const FETCH_TIMEOUT_MS = 10_000;
@@ -36,7 +47,7 @@ function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
 }
 
-// The dedupeKey prefix for ALL of an event's reminders — cancelAppointmentReminders drops them by it.
+// The dedupeKey prefix for ALL of an event's reminders — cancelAppointment drops them by it.
 function reminderPrefix(eventId: string): string {
   return `reminder:${eventId}:`;
 }
@@ -56,8 +67,11 @@ export function computeReminderJobs(
   offsetsHours: number[],
   now: Date,
 ): ReminderJob[] {
-  const startMs = Date.parse(startISO);
-  if (Number.isNaN(startMs)) return [];
+  // parseStartMs, never a bare Date.parse: the arming and the liveness of the SAME appointment have
+  // to read one parser. Date.parse rolls "2026-02-30" forward to March 2, so a start the record
+  // refuses would still have armed reminders judged against a day that does not exist.
+  const startMs = parseStartMs(startISO);
+  if (!Number.isFinite(startMs)) return [];
   const offsets = [
     ...new Set(offsetsHours.filter((h) => Number.isFinite(h) && h > 0)),
   ].sort((a, b) => b - a);
@@ -105,7 +119,7 @@ export async function enqueueAppointmentReminders(
       kind: "APPOINTMENT_REMINDER",
       dedupeKey: `${reminderPrefix(args.eventId)}${j.offsetHours}`,
       // NOTE: Armed when a customer books or reschedules, so the row being reused means the
-      // appointment MOVED: the previous arm was cancelled (cancelAppointmentReminders) and this is
+      // appointment MOVED: the previous arm was cancelled (cancelAppointment) and this is
       // a different send, at a different time, for a start the previous one no longer describes.
       rearm: "new-work",
       runAt: j.runAt,
@@ -127,12 +141,118 @@ export async function enqueueAppointmentReminders(
   return jobs.length;
 }
 
-// Cancel every pending reminder for an appointment (on cancel / before a reschedule re-arms them).
-export async function cancelAppointmentReminders(
+export interface AppointmentBookedArgs {
+  tenantId: bigint;
+  threadId: string;
+  eventId: string;
+  startISO: string;
+  summary?: string | null;
+  calendarId?: string | null;
+  calendarLabel?: string | null;
+  credentialRef?: string | null;
+  // The reminder POLICY, or null for "arm nothing". Null is an ordinary answer, not an error: an
+  // integration with reminders switched off books real appointments.
+  reminders: {
+    offsetsHours: number[];
+    askConfirmationOnLast: boolean;
+  } | null;
+  base?: PrismaClient;
+  now?: Date;
+}
+
+export interface AppointmentBookedResult {
+  record: RecordAppointmentResult;
+  remindersArmed: number;
+}
+
+// An appointment was booked in this conversation: write the RECORD, then arm whatever reminders the
+// policy asks for.
+//
+// ONE entry point rather than two, and that is the whole correction. While the caller chose between
+// "arm reminders" and "do nothing", every reason not to arm was also a reason to forget the
+// appointment: reminders switched off for the integration, and a booking sooner than the smallest
+// offset (`computeReminderJobs` drops offsets whose time has passed). Both left
+// `followUp.pauseWhileAppointment` inert, with no error anywhere, and both were reachable from an
+// ordinary configuration (issue #376). Two members on the context would let the next caller
+// reintroduce exactly that.
+//
+// ARM FIRST, RECORD LAST, and the record is written on the error path too.
+//
+// THE REASON IS THE ERROR PATH. If arming throws, the appointment still has to be known: forgetting
+// it is the entire defect this unit exists for, so the record cannot be the thing that gets skipped
+// when the scheduler write fails. Recording first would satisfy that; recording last and writing it
+// anyway satisfies it as well, and also gets the ordering below right.
+//
+// The order additionally decides which side of a `/reset` the two writes land on, and that matters
+// much less than it did when this was written. `/reset` now REFUSES while the thread is claimed
+// (webhook.ts asks `threadBusyForResetOn`, issue #203), and a turn holds that claim across its whole
+// invoke — tool calls included — so on a thread keyed by contact inbox the command cannot land
+// between these two writes at all. What is left is the keys with no row to claim, where the fence is
+// still the in-process Map. There, recording FIRST would leave the one pair that is worse than the
+// code this replaces: the record cancelled while reminders that arm a moment later are not, so the
+// follow-up pause is off while a reminder still reaches the customer. Recording LAST cannot produce
+// it, because the record's upsert clears the tombstone exactly as `enqueueJob`'s upsert revives a
+// retired row, so both halves come back live together — which is what the base already did with the
+// reminder rows alone.
+export async function appointmentBooked(
+  args: AppointmentBookedArgs,
+  // Injectable for the same reason enqueueAppointmentReminders takes it: a hermetic test of what
+  // happens when arming fails cannot make a real enqueue fail without breaking the record write too.
+  enqueue: typeof enqueueJob = enqueueJob,
+): Promise<AppointmentBookedResult> {
+  let remindersArmed = 0;
+  let armError: unknown;
+  try {
+    if (args.reminders) {
+      remindersArmed = await enqueueAppointmentReminders(
+        {
+          tenantId: args.tenantId,
+          threadId: args.threadId,
+          eventId: args.eventId,
+          calendarId: args.calendarId ?? "primary",
+          credentialRef: args.credentialRef ?? null,
+          startISO: args.startISO,
+          offsetsHours: args.reminders.offsetsHours,
+          askConfirmationOnLast: args.reminders.askConfirmationOnLast,
+          summary: args.summary,
+          calendarLabel: args.calendarLabel,
+          base: args.base,
+          now: args.now,
+        },
+        enqueue,
+      );
+    }
+  } catch (e) {
+    armError = e;
+  }
+  const record = await recordAppointment({
+    tenantId: args.tenantId,
+    threadId: args.threadId,
+    externalId: args.eventId,
+    startISO: args.startISO,
+    summary: args.summary,
+    calendarId: args.calendarId,
+    calendarLabel: args.calendarLabel,
+    base: args.base,
+  });
+  // Rethrown AFTER the record lands, so the caller still reports the failed arming (prepare.ts binds
+  // it to a flowlog warn) while the appointment itself is known.
+  if (armError !== undefined) throw armError;
+  return { record, remindersArmed };
+}
+
+// The appointment stopped standing (cancelled, or about to be re-armed by a reschedule): retire the
+// RECORD first, then the pending reminder jobs.
+//
+// Record first, because it is the one every reader consults. If the job cleanup throws halfway, an
+// appointment that no longer stands is already unknown to the follow-up pause and to the prompt, and
+// what is left behind is a reminder that the handler's own tombstone check will drop.
+export async function cancelAppointment(
   tenantId: bigint,
   eventId: string,
   base: PrismaClient = basePrisma,
 ): Promise<void> {
+  await cancelAppointmentRecord(tenantId, eventId, base);
   await cancelPendingJobsByPrefix(
     tenantId,
     "APPOINTMENT_REMINDER",
@@ -201,11 +321,12 @@ export async function cancelAppointmentReminders(
 // there the stamp has no reader but jobRetired, so it can).
 //
 // Returns the number of rows the command reached — retired or merely tombstoned.
-export async function cancelThreadAppointmentReminders(
+export async function cancelThreadAppointments(
   tenantId: bigint,
   threadId: string,
   base: PrismaClient = basePrisma,
 ): Promise<number> {
+  await cancelThreadAppointmentRecords(tenantId, threadId, base);
   return runScopedOn(base, sysCtx(tenantId), async (db) => {
     const stamp = JSON.stringify({ cancelledAt: new Date().toISOString() });
     return db.$executeRaw`
@@ -224,13 +345,11 @@ export async function cancelThreadAppointmentReminders(
   });
 }
 
-// True while this conversation (by thread) has at least one LIVE appointment — a queued reminder row
-// (PENDING/CLAIMED) or an already-fired one whose start is still ahead, tombstones excluded: the shared
-// projectAppointmentEvents predicate, via loadAppointmentContext. The follow-up handler uses it to
-// pause re-engagement while a booking is live (FollowUpConfig.pauseWhileAppointment): a customer who
-// just booked should not get "still there?" nudges until the appointment passes / is cancelled.
-// NOTE: Anchoring on PENDING rows alone went blind after the LAST reminder fired (issue #39).
-// Tenant-scoped.
+// True while this conversation (by thread) holds at least one LIVE appointment: a record that has
+// not been cancelled and whose start is still ahead, read through loadAppointmentContext so this and
+// the prompt block cannot disagree. The follow-up handler uses it to pause re-engagement while a
+// booking stands (FollowUpConfig.pauseWhileAppointment): a customer who just booked should not get
+// "still there?" nudges until the appointment passes or is cancelled. Tenant-scoped.
 export async function hasLiveAppointment(
   tenantId: bigint,
   threadId: string,
@@ -401,7 +520,7 @@ export async function appointmentReminderHandler(
   // Was this reminder retired while it sat claimed? `cancelPendingJob` and its prefix sibling reach
   // PENDING rows only, so a row the worker had already picked up survives every cancellation — and
   // the reminder then fires at the customer about an appointment the operator was told had been
-  // cleared. The tombstone is the fence: `cancelThreadAppointmentReminders` (and the per-event
+  // cleared. The tombstone is the fence: `cancelThreadAppointments` (and the per-event
   // cancel) stamp `cancelledAt` on EVERY row of the match, claimed ones included, precisely so an
   // in-flight handler has something to see. The handler is the half that was missing.
   //

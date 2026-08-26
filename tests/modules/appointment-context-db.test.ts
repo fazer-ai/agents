@@ -6,15 +6,19 @@ import { loadAgentConfig } from "@/graph/prepare";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { loadAppointmentContext } from "@/modules/appointments/context";
 import {
-  cancelAppointmentReminders,
-  enqueueAppointmentReminders,
+  appointmentBooked,
+  cancelAppointment,
   hasLiveAppointment,
 } from "@/modules/appointments/reminders";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
-// DB-backed mirror of issue #22: the appointment identity block must reach the system prompt on the
-// turn AFTER the last reminder fired (job DONE, start still ahead) — and a cancelled appointment
-// must never resurface.
+// DB-backed mirror of issue #22: the appointment identity block must reach the system prompt after
+// the last reminder fired, and a cancelled appointment must never resurface.
+//
+// And of issue #376: the block, and the follow-up pause behind it, follow the RECORD and not the
+// reminder jobs. The two configurations that used to write no job at all — reminders switched off,
+// and a booking sooner than the smallest offset — have a test each below, and both fail against a
+// build where booking and arming are the same call.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -118,6 +122,7 @@ describe.skipIf(!dbUp)("per-turn appointment context (issue #22)", () => {
   afterAll(async () => {
     if (tenantId) {
       for (const table of [
+        "appointments",
         "scheduler_jobs",
         "conversations",
         "agents",
@@ -134,29 +139,29 @@ describe.skipIf(!dbUp)("per-turn appointment context (issue #22)", () => {
     await app?.$disconnect();
   });
 
-  test("the turn after the LAST reminder still sees the appointment (DONE row, future start)", async () => {
+  test("the turn after the LAST reminder still sees the appointment (record, future start)", async () => {
     await seedConversation(101);
-    await suDb.schedulerJob.create({
-      data: {
-        tenantId,
-        kind: "APPOINTMENT_REMINDER",
-        dedupeKey: "reminder:ev_ctx1:1",
-        status: "DONE",
-        runAt: new Date(Date.now() - 3_600_000),
-        payload: {
-          threadId: threadOf(101),
-          eventId: "ev_ctx1",
-          calendarId: "cal_x@group.calendar.google.com",
-          credentialRef: null,
-          startISO: inHours(2),
-          offsetHours: 1,
-          isLast: true,
-          askConfirmation: true,
-          summary: "Consulta – Ana",
-          calendarLabel: "Agenda Dra. Ana",
-        },
-      },
+    await appointmentBooked({
+      tenantId,
+      threadId: threadOf(101),
+      eventId: "ev_ctx1",
+      calendarId: "cal_x@group.calendar.google.com",
+      credentialRef: null,
+      startISO: inHours(2),
+      summary: "Consulta – Ana",
+      calendarLabel: "Agenda Dra. Ana",
+      // Every offset of [24, 1] is already in the past for a booking 2h out except the 1h one, and
+      // after it fires no job is left. The record is what carries the appointment into this turn.
+      reminders: { offsetsHours: [24, 1], askConfirmationOnLast: true },
+      base: appDb,
     });
+    // NOTE: suDb, not appDb. The app connection is the RLS-fenced runtime role, and a statement
+    // that does not go through runScopedOn carries no `app.tenant_id`, so it matches ZERO rows and
+    // reports success. Written on appDb this DELETE removed nothing, and the test then proved the
+    // prompt block survives reminder rows that were still sitting there — not what it says.
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM scheduler_jobs WHERE tenant_id = ${tenantId}`,
+    );
     const prompt = await promptFor(101);
     expect(prompt).toContain("## Agendamentos deste atendimento");
     expect(prompt).toContain('event_id="ev_ctx1"');
@@ -172,19 +177,18 @@ describe.skipIf(!dbUp)("per-turn appointment context (issue #22)", () => {
     expect(prompt).not.toContain("## Agendamentos deste atendimento");
   });
 
-  test("cancelAppointmentReminders tombstones the rows: the appointment never resurfaces", async () => {
+  test("cancelAppointment retires the record: the appointment never resurfaces", async () => {
     await seedConversation(103);
-    await enqueueAppointmentReminders({
+    await appointmentBooked({
       tenantId,
       threadId: threadOf(103),
       eventId: "ev_ctx2",
       calendarId: "primary",
       credentialRef: null,
       startISO: inHours(48),
-      offsetsHours: [24, 1],
-      askConfirmationOnLast: true,
       summary: "Retorno",
       calendarLabel: null,
+      reminders: { offsetsHours: [24, 1], askConfirmationOnLast: true },
       base: appDb,
     });
     const before = await runScopedOn(appDb, sysCtx(), (db) =>
@@ -193,7 +197,7 @@ describe.skipIf(!dbUp)("per-turn appointment context (issue #22)", () => {
     expect(before.map((e) => e.eventId)).toEqual(["ev_ctx2"]);
     expect(before[0]?.summary).toBe("Retorno");
 
-    await cancelAppointmentReminders(tenantId, "ev_ctx2", appDb);
+    await cancelAppointment(tenantId, "ev_ctx2", appDb);
     const after = await runScopedOn(appDb, sysCtx(), (db) =>
       loadAppointmentContext(db, tenantId, threadOf(103)),
     );
@@ -202,46 +206,208 @@ describe.skipIf(!dbUp)("per-turn appointment context (issue #22)", () => {
     expect(prompt).not.toContain("## Agendamentos deste atendimento");
   });
 
-  // NOTE: hasLiveAppointment is the follow-up suppression predicate (issue #39) — the same shared
-  // liveness projection, adapted from a base PrismaClient. Covered here because this file already
-  // owns the enqueue/cancel fixtures.
-  test("hasLiveAppointment: true after the last reminder fired (DONE, future start)", async () => {
+  // NOTE: hasLiveAppointment is the follow-up suppression predicate (issue #39), reading the same
+  // record the block above does. Covered here because this file already owns the fixtures.
+  test("hasLiveAppointment: true while the start is ahead, false once cancelled", async () => {
     await seedConversation(104);
-    await suDb.schedulerJob.create({
-      data: {
-        tenantId,
-        kind: "APPOINTMENT_REMINDER",
-        dedupeKey: "reminder:ev_ctx3:1",
-        status: "DONE",
-        runAt: new Date(Date.now() - 3_600_000),
-        payload: {
-          threadId: threadOf(104),
-          eventId: "ev_ctx3",
-          startISO: inHours(2),
-        },
-      },
-    });
-    expect(await hasLiveAppointment(tenantId, threadOf(104), appDb)).toBe(true);
-  });
-
-  test("hasLiveAppointment: false once the appointment is cancelled (tombstoned)", async () => {
-    await seedConversation(105);
-    await enqueueAppointmentReminders({
+    await appointmentBooked({
       tenantId,
-      threadId: threadOf(105),
-      eventId: "ev_ctx4",
+      threadId: threadOf(104),
+      eventId: "ev_ctx3",
       calendarId: "primary",
       credentialRef: null,
       startISO: inHours(48),
-      offsetsHours: [24, 1],
-      askConfirmationOnLast: true,
       summary: null,
       calendarLabel: null,
+      reminders: { offsetsHours: [24, 1], askConfirmationOnLast: true },
       base: appDb,
     });
-    expect(await hasLiveAppointment(tenantId, threadOf(105), appDb)).toBe(true);
-    await cancelAppointmentReminders(tenantId, "ev_ctx4", appDb);
-    expect(await hasLiveAppointment(tenantId, threadOf(105), appDb)).toBe(
+    expect(await hasLiveAppointment(tenantId, threadOf(104), appDb)).toBe(true);
+    await cancelAppointment(tenantId, "ev_ctx3", appDb);
+    expect(await hasLiveAppointment(tenantId, threadOf(104), appDb)).toBe(
+      false,
+    );
+  });
+
+  // (#376) The two configurations that used to write no scheduler row, and so left the platform with
+  // no appointment at all. Both assert the RECORD's consequences, not the row count: the pause
+  // predicate and the prompt block.
+  test("(#376) an appointment booked with reminders switched off still stands", async () => {
+    await seedConversation(106);
+    const res = await appointmentBooked({
+      tenantId,
+      threadId: threadOf(106),
+      eventId: "ev_noreminders",
+      calendarId: "primary",
+      credentialRef: null,
+      startISO: inHours(48),
+      summary: "Avaliação",
+      calendarLabel: null,
+      // What the Calendar toolpack passes when `appointments.enabled` is off for the integration.
+      reminders: null,
+      base: appDb,
+    });
+    expect(res).toEqual({ record: "recorded", remindersArmed: 0 });
+    expect(await hasLiveAppointment(tenantId, threadOf(106), appDb)).toBe(true);
+    const prompt = await promptFor(106);
+    expect(prompt).toContain('event_id="ev_noreminders"');
+  });
+
+  test("(#376) an appointment sooner than the smallest offset arms nothing and still stands", async () => {
+    await seedConversation(107);
+    const res = await appointmentBooked({
+      tenantId,
+      threadId: threadOf(107),
+      eventId: "ev_soon",
+      calendarId: "primary",
+      credentialRef: null,
+      // 30 minutes out: both default offsets are already behind us, so computeReminderJobs yields
+      // nothing to enqueue. That is correct for a JOB and was fatal for the record.
+      startISO: inHours(0.5),
+      summary: "Encaixe",
+      calendarLabel: null,
+      reminders: { offsetsHours: [24, 1], askConfirmationOnLast: true },
+      base: appDb,
+    });
+    expect(res).toEqual({ record: "recorded", remindersArmed: 0 });
+    // Scoped, and by THIS appointment's dedupe prefix. Two ways to read zero here are wrong: an
+    // unscoped count on the app connection answers zero under RLS whatever is in the table (the
+    // assertion would hold with the fix reverted), and a tenant-wide count is answered by the rows
+    // the tests above left behind.
+    expect(
+      await runScopedOn(appDb, sysCtx(), (db) =>
+        db.schedulerJob.count({
+          where: {
+            tenantId,
+            kind: "APPOINTMENT_REMINDER",
+            dedupeKey: { startsWith: "reminder:ev_soon:" },
+          },
+        }),
+      ),
+    ).toBe(0);
+    // The control, on the same connection and the same shape: a booking far enough out DOES arm.
+    expect(
+      await runScopedOn(appDb, sysCtx(), (db) =>
+        db.schedulerJob.count({
+          where: {
+            tenantId,
+            kind: "APPOINTMENT_REMINDER",
+            dedupeKey: { startsWith: "reminder:ev_ctx2:" },
+          },
+        }),
+      ),
+    ).toBeGreaterThan(0);
+    expect(await hasLiveAppointment(tenantId, threadOf(107), appDb)).toBe(true);
+    const prompt = await promptFor(107);
+    expect(prompt).toContain('event_id="ev_soon"');
+  });
+
+  // (#376) A reschedule is cancel-then-book on the SAME id, which is what `calendar_update_event`
+  // does when the start changes. If the re-book did not clear the tombstone the appointment would
+  // vanish from the platform at the exact moment the customer moved it, taking the pause and the
+  // prompt block with it.
+  test("(#376) rescheduling an appointment leaves it standing, at the new time", async () => {
+    await seedConversation(109);
+    await appointmentBooked({
+      tenantId,
+      threadId: threadOf(109),
+      eventId: "ev_resched",
+      calendarId: "primary",
+      credentialRef: null,
+      startISO: inHours(48),
+      summary: "Consulta",
+      calendarLabel: null,
+      reminders: { offsetsHours: [24, 1], askConfirmationOnLast: true },
+      base: appDb,
+    });
+    await cancelAppointment(tenantId, "ev_resched", appDb);
+    expect(await hasLiveAppointment(tenantId, threadOf(109), appDb)).toBe(
+      false,
+    );
+
+    const movedTo = inHours(72);
+    await appointmentBooked({
+      tenantId,
+      threadId: threadOf(109),
+      eventId: "ev_resched",
+      calendarId: "primary",
+      credentialRef: null,
+      startISO: movedTo,
+      summary: "Consulta",
+      calendarLabel: null,
+      reminders: { offsetsHours: [24, 1], askConfirmationOnLast: true },
+      base: appDb,
+    });
+    expect(await hasLiveAppointment(tenantId, threadOf(109), appDb)).toBe(true);
+    const events = await runScopedOn(appDb, sysCtx(), (db) =>
+      loadAppointmentContext(db, tenantId, threadOf(109)),
+    );
+    // One appointment, not two: the record is keyed by the booking's own id.
+    expect(events).toHaveLength(1);
+    expect(events[0]?.startISO).toBe(movedTo);
+  });
+
+  // (#376) The order inside appointmentBooked is load-bearing in two directions, and this is the
+  // one a concurrency test cannot reach: arming fails, and the appointment still has to be known,
+  // because "the platform forgot the appointment" is the entire defect this unit exists for.
+  test("(#376) arming that throws still leaves the appointment recorded, and still reports", async () => {
+    await seedConversation(110);
+    let thrown: unknown;
+    try {
+      await appointmentBooked(
+        {
+          tenantId,
+          threadId: threadOf(110),
+          eventId: "ev_armfail",
+          calendarId: "primary",
+          credentialRef: null,
+          startISO: inHours(48),
+          summary: "Consulta",
+          calendarLabel: null,
+          reminders: { offsetsHours: [24, 1], askConfirmationOnLast: true },
+          base: appDb,
+        },
+        async () => {
+          throw new Error("scheduler unavailable");
+        },
+      );
+    } catch (e) {
+      thrown = e;
+    }
+    // Reported, not swallowed: prepare.ts turns this into the operator-visible warn.
+    expect((thrown as Error)?.message).toBe("scheduler unavailable");
+    // And the appointment stands anyway.
+    expect(await hasLiveAppointment(tenantId, threadOf(110), appDb)).toBe(true);
+    expect(
+      await runScopedOn(appDb, sysCtx(), (db) =>
+        db.schedulerJob.count({
+          where: {
+            tenantId,
+            kind: "APPOINTMENT_REMINDER",
+            dedupeKey: { startsWith: "reminder:ev_armfail:" },
+          },
+        }),
+      ),
+    ).toBe(0);
+  });
+
+  test("(#376) a start nobody can parse yields no record, and says so", async () => {
+    await seedConversation(108);
+    const res = await appointmentBooked({
+      tenantId,
+      threadId: threadOf(108),
+      eventId: "ev_impossible",
+      calendarId: "primary",
+      credentialRef: null,
+      // Date.parse rolls this to March 2; parseStartMs refuses it, and so must both halves.
+      startISO: "2026-02-30T10:00:00Z",
+      summary: "Impossível",
+      calendarLabel: null,
+      reminders: { offsetsHours: [24, 1], askConfirmationOnLast: true },
+      base: appDb,
+    });
+    expect(res).toEqual({ record: "unreadable-start", remindersArmed: 0 });
+    expect(await hasLiveAppointment(tenantId, threadOf(108), appDb)).toBe(
       false,
     );
   });

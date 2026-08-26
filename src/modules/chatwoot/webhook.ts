@@ -22,7 +22,7 @@ import { AppError, UnauthorizedError } from "@/lib/errors";
 import { withKeyedQueue } from "@/lib/locks";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { shouldRunReset } from "@/modules/agents/test-mode";
-import { cancelThreadAppointmentReminders } from "@/modules/appointments/reminders";
+import { cancelThreadAppointments } from "@/modules/appointments/reminders";
 import {
   awayMessageDue,
   readAvailabilityConfig,
@@ -1787,7 +1787,7 @@ async function maybeConsumeCommandOrGate(params: {
     // cleanup runs a turn that can book, reschedule, or re-enter the funnel, and a retirement running
     // after it kills work that belongs to the NEXT episode. Sparing that work by age does not
     // discriminate — enqueueJob re-arms by upsert, so `created_at` stays put and `updated_at` moves on
-    // a claim (see cancelThreadAppointmentReminders). Retiring first needs no such test: the upsert
+    // a claim (see cancelThreadAppointments). Retiring first needs no such test: the upsert
     // that re-arms writes `status: PENDING` with a fresh payload, so anything armed afterwards revives
     // its own row.
     //
@@ -1843,7 +1843,7 @@ async function maybeConsumeCommandOrGate(params: {
         "cancel appointment reminders",
         "lembretes de agendamento",
         () =>
-          cancelThreadAppointmentReminders(
+          cancelThreadAppointments(
             tenantId,
             chatwootThreadId(tenantId, instanceId, convId),
             base,

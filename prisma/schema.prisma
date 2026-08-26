@@ -149,6 +149,7 @@ model Tenant {
   mcpOAuthAccessTokens          McpOAuthAccessToken[]
   mcpOAuthRefreshTokens         McpOAuthRefreshToken[]
   mcpOAuthPendingAuthorizations McpOAuthPendingAuthorization[]
+  appointments                  Appointment[]
 
   @@map("tenants")
 }
@@ -1233,6 +1234,48 @@ model OutboundWebhookDelivery {
   @@index([tenantId, id])
   @@index([tenantId, status, id])
   @@map("outbound_webhook_deliveries")
+}
+
+// ─────────────────────────────────────────────────── appointments ──
+
+// The platform's record that a commitment exists in this conversation. It is written whenever an
+// appointment is booked, and it is NOT a reminder: reminder jobs are written because something has
+// to be SENT, and this row exists because something has to be KNOWN.
+//
+// The two used to be one object — an appointment was "live" iff an APPOINTMENT_REMINDER scheduler
+// row was live — so the record inherited every reason a job might legitimately not be written: an
+// integration with reminders switched off, and a booking sooner than the smallest configured offset,
+// both left `followUp.pauseWhileAppointment` inert with no error anywhere (issue #376).
+//
+// `startAt` is the instant every decision reads; `startIso` is the string the customer is told out
+// loud, kept verbatim with whatever offset it arrived with. Re-rendering the instant would move the
+// time the customer reads into another zone, and comparing the strings is what forced the sweep's
+// SQL and the JS reader to keep two normalizations in agreement by hand.
+model Appointment {
+  id            BigInt    @id @default(autoincrement())
+  tenantId      BigInt    @map("tenant_id")
+  // The per-conversation thread (`tenant:instance:convId`), the same one the reminder payloads carry.
+  threadId      String    @map("thread_id")
+  // The booking's identity in whatever system owns it (a Google Calendar event id today). Unique per
+  // tenant, so a re-book of the same appointment updates the record rather than duplicating it.
+  externalId    String    @map("external_id")
+  startAt       DateTime  @map("start_at")
+  startIso      String    @map("start_iso")
+  summary       String?
+  calendarId    String?   @map("calendar_id")
+  calendarLabel String?   @map("calendar_label")
+  // Set when the appointment stops standing (cancelled, or the conversation was /reset). Never
+  // deleted: a cancelled appointment has to stay distinguishable from one that never existed.
+  cancelledAt   DateTime? @map("cancelled_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, externalId])
+  // The access path of all four readers: this tenant's conversation, live rows first.
+  @@index([tenantId, threadId])
+  @@map("appointments")
 }
 
 // ──────────────────────────────────────────────────── scheduler ──

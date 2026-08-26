@@ -2,6 +2,10 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import type { TenantContext } from "@/lib/tenancy";
+import {
+  cancelAppointmentRecord,
+  recordAppointment,
+} from "@/modules/appointments/record";
 import { getConversationDetail } from "@/modules/conversations/service";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
@@ -817,38 +821,31 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
       },
     });
     if (reminder) {
-      await suDb.schedulerJob.create({
-        data: {
-          tenantId: tenant,
-          kind: "APPOINTMENT_REMINDER",
-          dedupeKey: `reminder:ev_${chatwootId}:1`,
-          // DONE on purpose: anchoring on PENDING rows alone went blind after the last reminder
-          // fired, which is what #39 fixed in the sweep. The indicator reads the same projection.
-          status: "DONE",
-          runAt: new Date(Date.now() - 3_600_000),
-          payload: {
-            threadId: `${tenant}:${inst}:${chatwootId}`,
-            eventId: `ev_${chatwootId}`,
-            calendarId: "cal_x@group.calendar.google.com",
-            credentialRef: null,
-            startISO: reminder.startISO,
-            offsetHours: 1,
-            isLast: true,
-            askConfirmation: false,
-            summary: "Consulta",
-            calendarLabel: "Agenda",
-            ...(reminder.cancelledAt
-              ? { cancelledAt: reminder.cancelledAt }
-              : {}),
-          },
-        },
+      // The RECORD, not a reminder job: the indicator reads the same one predicate the sweep and the
+      // handler do (issue #376). Its reminder is deliberately left unwritten — an appointment whose
+      // last reminder already fired, or whose integration never armed one, still stands.
+      await recordAppointment({
+        tenantId: tenant,
+        threadId: `${tenant}:${inst}:${chatwootId}`,
+        externalId: `ev_${chatwootId}`,
+        startISO: reminder.startISO,
+        summary: "Consulta",
+        calendarId: "cal_x@group.calendar.google.com",
+        calendarLabel: "Agenda",
+        base: appDb,
       });
+      if (reminder.cancelledAt) {
+        await cancelAppointmentRecord(tenant, `ev_${chatwootId}`, appDb);
+      }
     }
     return c.id;
   }
 
   afterAll(async () => {
     if (tenant) {
+      await suDb.$executeRawUnsafe(
+        `DELETE FROM appointments WHERE tenant_id = ${tenant}`,
+      );
       await suDb.$executeRawUnsafe(
         `DELETE FROM scheduler_jobs WHERE tenant_id = ${tenant}`,
       );

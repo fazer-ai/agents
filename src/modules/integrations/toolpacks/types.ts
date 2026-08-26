@@ -47,27 +47,36 @@ export interface ToolpackCtx {
   // bound bookable slots to the service hours; null when unset/deleted/other-tenant ⇒ "always on".
   // Injected in prepare.ts; stubbed in tests.
   resolveBusinessHours?: (id: string) => Promise<Schedule | null>;
-  // Schedules deterministic reminders for an appointment the agent just booked (Calendar create). A
-  // closure bound to the tenant + this conversation's thread; it is a pure MECHANISM (enqueue the
-  // scheduler jobs). The POLICY (offsetsHours + askConfirmationOnLast) lives in the Calendar
-  // integration's config and is read + passed by the toolpack. The credentialRef is the integration's,
-  // never the secret. Undefined on the playground / when no contact is in scope, so the toolpack treats
-  // it as best-effort. NEVER a model arg. Injected in prepare.ts; stubbed in tests.
-  scheduleAppointmentReminders?: (args: {
+  // An appointment was booked in this conversation. A closure bound to the tenant + this
+  // conversation's thread; it is a pure MECHANISM (write the record, arm the scheduler jobs). The
+  // POLICY lives in the integration's config and is read + passed by the toolpack, as `reminders`.
+  // The credentialRef is the integration's, never the secret. Undefined on the playground / when no
+  // contact is in scope, so the toolpack treats it as best-effort. NEVER a model arg. Injected in
+  // prepare.ts; stubbed in tests.
+  //
+  // `reminders: null` means "arm nothing", and it is the ordinary answer for an integration with
+  // reminders switched off. It does NOT mean "do not record": the record is what the follow-up
+  // pause, the console indicator and the agent's own prompt read, and it is written either way. The
+  // two used to be one call, which is how an operator could turn reminders off and silently lose the
+  // pause as well (issue #376).
+  appointmentBooked?: (args: {
     eventId: string;
     calendarId: string;
     startISO: string;
     credentialRef: string | null;
-    offsetsHours: number[];
-    askConfirmationOnLast: boolean;
-    // Snapshot for the job payload: lets the reminder turn and the per-turn appointment context
-    // describe the event without a Google call.
+    reminders: {
+      offsetsHours: number[];
+      askConfirmationOnLast: boolean;
+    } | null;
+    // Snapshot for the record and the job payload: lets the reminder turn and the per-turn
+    // appointment context describe the event without a Google call.
     summary: string | null;
     calendarLabel: string | null;
   }) => Promise<void>;
-  // Cancels an appointment's pending reminders (Calendar cancel; the toolpack re-arms on reschedule by
-  // calling scheduleAppointmentReminders again). Same gating as scheduleAppointmentReminders.
-  cancelAppointmentReminders?: (eventId: string) => Promise<void>;
+  // The appointment stopped standing: retire the record and its pending reminders (Calendar cancel;
+  // the toolpack re-arms on reschedule by calling appointmentBooked again). Same gating as
+  // appointmentBooked.
+  cancelAppointment?: (eventId: string) => Promise<void>;
   // NOTE: Reports a side effect that failed INSIDE a tool that still returns success to the model
   // (e.g. the Asaas charge exists but persisting the correlation ref failed). prepare.ts binds this to a
   // flowlog `tool`-stage warn so the failure reaches the Logs page and alert channels; absent

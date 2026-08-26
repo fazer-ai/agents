@@ -16,8 +16,8 @@ import {
   loadAppointmentContext,
 } from "@/modules/appointments/context";
 import {
-  cancelAppointmentReminders,
-  enqueueAppointmentReminders,
+  appointmentBooked,
+  cancelAppointment,
 } from "@/modules/appointments/reminders";
 import { parseSchedule, type Schedule } from "@/modules/business-hours/hours";
 import { readSchedule } from "@/modules/business-hours/service";
@@ -926,71 +926,90 @@ export async function buildToolset(
           errorMessage: e.err instanceof Error ? e.err.message : String(e.err),
         })
     : undefined;
-  // Deterministic appointment reminders: when the Calendar toolpack books an appointment, arm one
-  // scheduler job per configured offset; cancel them on cancel/reschedule. Bound to the tenant + THIS
-  // conversation's thread (the per-conversation `tenant:instance:convId`, which runAgentNudge parses —
-  // NOT the per-contact-inbox memory thread). The POLICY (offsets/confirmation) lives in the Calendar
-  // integration's config and is passed in by the toolpack; here we only wire the MECHANISM. Both are
-  // wired on any real conversation so reminders can be armed and stale ones cleaned up regardless of
-  // the per-integration toggle.
+  // An appointment booked by a toolpack: write the record, then arm the reminders the integration
+  // asks for. Bound to the tenant + THIS conversation's thread (the per-conversation
+  // `tenant:instance:convId`, which runAgentNudge parses — NOT the per-contact-inbox memory thread).
+  // The POLICY (offsets/confirmation, or none at all) lives in the integration's config and is
+  // passed in by the toolpack; here we only wire the MECHANISM. Both are wired on any real
+  // conversation so appointments can be recorded and stale ones cleaned up regardless of the
+  // per-integration reminder toggle.
   const apptThreadId =
     ctx.conversationId > 0
       ? chatwootThreadId(ctx.tenantId, ctx.instanceId, ctx.conversationId)
       : null;
-  const scheduleAppointmentReminders = apptThreadId
+  const appointmentBookedFn = apptThreadId
     ? async (a: {
         eventId: string;
         calendarId: string;
         startISO: string;
         credentialRef: string | null;
-        offsetsHours: number[];
-        askConfirmationOnLast: boolean;
+        reminders: {
+          offsetsHours: number[];
+          askConfirmationOnLast: boolean;
+        } | null;
         summary: string | null;
         calendarLabel: string | null;
       }) => {
         try {
-          await enqueueAppointmentReminders({
+          const res = await appointmentBooked({
             tenantId: ctx.tenantId,
             threadId: apptThreadId,
             eventId: a.eventId,
-            calendarId: a.calendarId,
-            credentialRef: a.credentialRef,
             startISO: a.startISO,
-            offsetsHours: a.offsetsHours,
-            askConfirmationOnLast: a.askConfirmationOnLast,
             summary: a.summary,
+            calendarId: a.calendarId,
             calendarLabel: a.calendarLabel,
+            credentialRef: a.credentialRef,
+            reminders: a.reminders,
             base: ctx.base,
           });
+          // NOTE: The booking exists in the calendar and the platform cannot judge its start, so it
+          // holds no record: the follow-up pause, the console indicator and the agent's own prompt
+          // all behave as if there were no appointment. Reported rather than thrown, because the
+          // appointment itself is real and already made.
+          if (res.record === "unreadable-start") {
+            logger.warn(
+              "appointment recorded with an unreadable start (event=%s start=%s)",
+              a.eventId,
+              a.startISO,
+            );
+            onSideEffectError?.({
+              tool: "google_calendar",
+              phase: "appointment_record",
+              detail: { eventId: a.eventId },
+              err: new Error(`unreadable appointment start: ${a.startISO}`),
+            });
+          }
         } catch (e) {
           logger.warn(
-            "appointment reminders enqueue failed: %s",
+            "appointment booked handling failed: %s",
             e instanceof Error ? e.message : String(e),
           );
-          // NOTE: The appointment exists in Google but its reminders were never armed — the customer
-          // silently misses them. `google_calendar` is the toolpack family name (the closure does not
-          // know which calendar tool called it).
+          // NOTE: The appointment exists in the calendar but the platform did not record it and its
+          // reminders were never armed — the customer silently misses them, and re-engagement is not
+          // held. `google_calendar` is the toolpack family name (the closure does not know which
+          // calendar tool called it).
           onSideEffectError?.({
             tool: "google_calendar",
-            phase: "reminders_enqueue",
+            phase: "appointment_booked",
             detail: { eventId: a.eventId },
             err: e,
           });
         }
       }
     : undefined;
-  const cancelAppointmentRemindersFn = apptThreadId
+  const cancelAppointmentFn = apptThreadId
     ? async (eventId: string) => {
         try {
-          await cancelAppointmentReminders(ctx.tenantId, eventId, ctx.base);
+          await cancelAppointment(ctx.tenantId, eventId, ctx.base);
         } catch (e) {
           logger.warn(
-            "appointment reminders cancel failed: %s",
+            "appointment cancel failed: %s",
             e instanceof Error ? e.message : String(e),
           );
           onSideEffectError?.({
             tool: "google_calendar",
-            phase: "reminders_cancel",
+            phase: "appointment_cancel",
             detail: { eventId },
             err: e,
           });
@@ -1049,8 +1068,8 @@ export async function buildToolset(
     contactDbId: cfg.contactDbId,
     resolveCredential,
     resolveBusinessHours,
-    scheduleAppointmentReminders,
-    cancelAppointmentReminders: cancelAppointmentRemindersFn,
+    appointmentBooked: appointmentBookedFn,
+    cancelAppointment: cancelAppointmentFn,
     onSideEffectError,
     // Only a real conversation gets the live handle (mirrors the emitAck gate); the playground
     // builds with conversationId 0 + a stub client, so customer-delivery tools degrade.

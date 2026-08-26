@@ -494,6 +494,7 @@
     "absolute": "#",
     "agent": "Agent #{{id}}",
     "agentCallsTokens": "{{calls}} requests · {{tokens}} tokens",
+    "attendance": "Team response",
     "calls": "{{n}} requests",
     "chart": {
       "ariaCalls": "Daily LLM requests and conversations over time",
@@ -515,6 +516,10 @@
     "funnel": "Automation funnel",
     "inbox": "Inbox #{{id}}",
     "kpi": {
+      "firstResponse": "First response",
+      "firstResponseHint": "median over {{sampled}} answered conversations",
+      "firstResponseNone": "no conversation in this period has been answered yet",
+      "firstResponseNote": "How long the team took to answer, as Chatwoot itself measures it: from the conversation's creation to its first reply from a person. The agent's own answers are not counted here, they are in the funnel above. On a conversation the business opened, the opening message counts as the reply, which is what this number means on the Chatwoot dashboard too.",
       "handoff": "Handoffs",
       "handoffHint": "{{handoff}} escalated to a human",
       "involvement": "Involvement",

@@ -7,6 +7,7 @@ import {
   Hash,
   MessagesSquare,
   Target,
+  Timer,
   TrendingUp,
   TriangleAlert,
 } from "lucide-react";
@@ -20,6 +21,7 @@ import {
   Skeleton,
 } from "@/client/components";
 import { api } from "@/client/lib/api";
+import { formatDuration } from "@/client/lib/duration";
 import { cn } from "@/client/lib/utils";
 import type { TrendPoint } from "./dashboard/CostTrendChart";
 
@@ -703,6 +705,46 @@ export function DashboardPage() {
                   </p>
                 )}
               </Card>
+            </section>
+
+            {/* The human half of an attendance. Everything above is derived from LlmUsage, so on an
+                inbox the agent never touched the whole funnel reads zero, which reads as failure
+                rather than as "the agent was not here". This one number is Chatwoot's own
+                first-response SLA, mirrored onto the conversation, and it still answers there.
+                Rendered even with no sample, and saying so: an absent median that showed up as 0 s
+                would be the same lie in a new place. */}
+            <section className="flex flex-col gap-3">
+              <h2 className="font-medium text-sm text-text-primary">
+                {t("dashboard.attendance", "Team response")}
+              </h2>
+              <div className="grid gap-4 sm:grid-cols-3">
+                <KpiCard
+                  icon={Timer}
+                  label={t("dashboard.kpi.firstResponse", "First response")}
+                  primary={
+                    formatDuration(kpis.firstResponseSeconds, i18n.language) ??
+                    "\u2014"
+                  }
+                  secondary={
+                    kpis.firstResponseSampled > 0
+                      ? t(
+                          "dashboard.kpi.firstResponseHint",
+                          "median over {{sampled}} answered conversations",
+                          { sampled: nf.format(kpis.firstResponseSampled) },
+                        )
+                      : t(
+                          "dashboard.kpi.firstResponseNone",
+                          "no conversation in this period has been answered yet",
+                        )
+                  }
+                />
+                <p className="text-text-tertiary text-xs sm:col-span-2">
+                  {t(
+                    "dashboard.kpi.firstResponseNote",
+                    "How long the team took to answer, as Chatwoot itself measures it: from the conversation's creation to its first reply from a person. The agent's own answers are not counted here, they are in the funnel above. On a conversation the business opened, the opening message counts as the reply, which is what this number means on the Chatwoot dashboard too.",
+                  )}
+                </p>
+              </div>
             </section>
 
             {/* Usage section: segmented by traffic source (real / playground / all). The toggle

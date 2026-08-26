@@ -496,6 +496,7 @@
     "absolute": "#",
     "agent": "Agente #{{id}}",
     "agentCallsTokens": "{{calls}} requisições · {{tokens}} tokens",
+    "attendance": "Resposta do time",
     "calls": "{{n}} requisições",
     "chart": {
       "ariaCalls": "Requisições de LLM e conversas por dia ao longo do tempo",
@@ -517,6 +518,10 @@
     "funnel": "Funil de automação",
     "inbox": "Inbox #{{id}}",
     "kpi": {
+      "firstResponse": "Primeira resposta",
+      "firstResponseHint": "mediana sobre {{sampled}} conversas respondidas",
+      "firstResponseNone": "nenhuma conversa deste período foi respondida ainda",
+      "firstResponseNote": "Quanto tempo o time levou para responder, medido pelo próprio Chatwoot: da criação da conversa até a primeira resposta de uma pessoa. As respostas do agente não entram aqui, elas estão no funil acima. Numa conversa aberta pelo negócio, a mensagem de abertura conta como resposta, que é o que este número significa no painel do Chatwoot também.",
       "handoff": "Transferências",
       "handoffHint": "{{handoff}} escaladas para um humano",
       "involvement": "Envolvimento",

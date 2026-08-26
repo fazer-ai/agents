@@ -565,6 +565,11 @@ export function ChannelsPage() {
       ...selected,
     ]),
   ];
+  // Readable from inside a PUT that started before it. The rows stay live while the save is out, so
+  // the list the request carried and the list the checkboxes hold are two different answers — which
+  // is the whole of what the staleness check compares.
+  const wantedRef = useRef(wantedAccountIds);
+  wantedRef.current = wantedAccountIds;
 
   async function applySelection() {
     const wanted = wantedAccountIds;
@@ -586,7 +591,7 @@ export function ChannelsPage() {
         e,
         t("channels.accountsSaveError", "Could not update the accounts."),
         { accountIds: wanted },
-        { accountIds: wanted },
+        { accountIds: wantedRef.current },
       );
       if (toast) showToast(toast, "error");
     } finally {

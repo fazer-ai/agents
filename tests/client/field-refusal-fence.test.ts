@@ -209,6 +209,92 @@ function sentAt(code: string): number {
   return -1;
 }
 
+// A caller that does not believe the hook's null.
+//
+// `capture` answers one question — is there anything left for YOU to say — and null is "no": the
+// sentence is on the control, or the form had left the screen and the hook raised the global toast
+// itself. Substituting a fallback for that null fires the second channel on top of the first, and
+// the two spellings of the mistake are the same operator experience: a message under the box AND a
+// toast repeating it, or two identical toasts. Measured on `CompanyProfileCard`, whose catch read
+// `toast ?? t("…saveError")`.
+export function distrustedNulls(src: string): string[] {
+  const code = codeSkeleton(src);
+  const carriers = capturingNames(code);
+  const ends: number[] = [];
+  for (const m of code.matchAll(/\.capture\(/g)) {
+    const open = (m.index as number) + ".capture".length;
+    ends.push(open + argumentOf(code, open).length + 2);
+  }
+  for (const n of carriers) {
+    for (const m of code.matchAll(new RegExp(`\\b${n}\\b`, "g"))) {
+      const after = (m.index as number) + n.length;
+      ends.push(
+        code[after] === "("
+          ? after + argumentOf(code, after).length + 2
+          : after,
+      );
+    }
+  }
+  const out: string[] = [];
+  for (const end of ends) {
+    const rest = code.slice(end);
+    const op = rest.match(/^\s*(\?\?|\|\|)\s*/);
+    if (!op) continue;
+    const at = end + (op[0] as string).length;
+    const width = (code.slice(at).split(/[,;)]/)[0] ?? "").length;
+    // Read from the SOURCE and not the skeleton, because the operand is the words themselves and the
+    // skeleton is exactly what blanks them out.
+    const right = src.slice(at, at + width);
+    // `?? ""` is a TYPE coercion, not a second sentence: the state it feeds is `string`, and an
+    // empty one renders nothing. What this rule is about is a caller answering the hook's "they have
+    // already been told" with words of its own.
+    if (/^\s*(?:""|''|``|null|undefined)\s*$/.test(right)) continue;
+    out.push(`${op[1]} ${right.trim().slice(0, 40)}`);
+  }
+  return [...new Set(out)];
+}
+
+// A staleness check that compares a value with itself.
+//
+// `capture` takes what the request CARRIED and what the inputs hold NOW, and refuses to mark a
+// control that has moved on. Handing it the same expression twice makes that comparison a tautology
+// — always "unchanged", always placed — while the render reads the live value and finds no mark for
+// it. The refusal then reaches neither channel. Measured on `ChannelsPage`'s account picker, whose
+// rows stay live while the PUT is out.
+export function tautologicalStaleness(src: string): string[] {
+  const code = codeSkeleton(src);
+  const out: string[] = [];
+  for (const m of code.matchAll(/\.capture\(/g)) {
+    const args = splitArgs(
+      argumentOf(code, (m.index as number) + ".capture".length),
+    );
+    if (args.length < 4) continue;
+    const [, , sent, current] = args as [string, string, string, string];
+    if (sent.trim() && sent.trim() === current.trim()) out.push(sent.trim());
+  }
+  return out;
+}
+
+// A call's arguments, split on the commas that belong to IT.
+function splitArgs(args: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let last = 0;
+  for (let i = 0; i < args.length; i++) {
+    const c = args[i];
+    if (c === "(" || c === "[" || c === "{") depth++;
+    else if (c === ")" || c === "]" || c === "}") depth--;
+    else if (c === "," && depth === 0) {
+      out.push(args.slice(last, i));
+      last = i + 1;
+    }
+  }
+  out.push(args.slice(last));
+  return out
+    .map((a) => a.trim())
+    .filter((a, i, all) => a || i < all.length - 1);
+}
+
 // A holder that is declared and then half-used. Either half alone is silence: a holder nobody
 // captures into can only ever answer null at every `at(…)` reading it, and a holder nobody reads
 // keeps the toast quiet about a refusal it has placed nowhere.
@@ -851,6 +937,83 @@ describe("a form that writes holds the refusal it gets", () => {
   };
     `;
     expect(unheldBranches(src)).toEqual([]);
+  });
+
+  test("no caller substitutes a sentence for the hook's null", () => {
+    const distrusted = sources(ROOT).flatMap((f) =>
+      distrustedNulls(readFileSync(f, "utf8")).map(
+        (d) => `${f.slice(`${ROOT}/`.length)} :: ${d}`,
+      ),
+    );
+    expect(
+      distrusted,
+      "null is the hook saying the operator has already been told: `if (toast) showToast(toast)`, never `toast ?? fallback`",
+    ).toEqual([]);
+  });
+
+  test("the predicate flags a fallback substituted for null", () => {
+    const src = `
+      const r = useFieldRefusal(m.isOpen ? F : []);
+  const save = async () => {
+    try {
+      await api.thing.post(body);
+    } catch (e) {
+      const toast = r.capture(e, fallback, sent, current);
+      showToast(toast ?? t("company.saveError", "Could not save."), "error");
+    }
+  };
+    `;
+    expect(distrustedNulls(src)).toEqual(['?? t("company.saveError"']);
+  });
+
+  test("coercing null to an empty string is not a second sentence", () => {
+    // The auth pages feed a `string` state, and `""` renders nothing. Only words are a second
+    // channel.
+    const src = `
+      const r = useFieldRefusal(m.isOpen ? F : []);
+  const submit = async () => {
+    const held = (e) => r.capture(e, fallback, sent, current);
+    setError(held(apiError) ?? "");
+  };
+    `;
+    expect(distrustedNulls(src)).toEqual([]);
+  });
+
+  test("guarding on the sentence is not distrusting the null", () => {
+    const src = `
+      const r = useFieldRefusal(m.isOpen ? F : []);
+  const save = async () => {
+    const toast = r.capture(e, fallback, sent, current);
+    if (toast) showToast(toast, "error");
+  };
+    `;
+    expect(distrustedNulls(src)).toEqual([]);
+  });
+
+  test("no staleness check compares a value with itself", () => {
+    const tautological = sources(ROOT).flatMap((f) =>
+      tautologicalStaleness(readFileSync(f, "utf8")).map(
+        (a) => `${f.slice(`${ROOT}/`.length)} :: ${a}`,
+      ),
+    );
+    expect(
+      tautological,
+      "`sent` and `current` are the request's value and the box's value: handing over the same one makes the check a tautology and the mark unreadable",
+    ).toEqual([]);
+  });
+
+  test("the predicate flags sent and current being one snapshot", () => {
+    const src = `
+      r.capture(e, fallback, { accountIds: wanted }, { accountIds: wanted });
+    `;
+    expect(tautologicalStaleness(src)).toEqual(["{ accountIds: wanted }"]);
+  });
+
+  test("a live read against the snapshot is not flagged", () => {
+    const src = `
+      r.capture(e, fallback, { accountIds: wanted }, { accountIds: ref.current });
+    `;
+    expect(tautologicalStaleness(src)).toEqual([]);
   });
 
   test("no holder is declared and half-used", () => {

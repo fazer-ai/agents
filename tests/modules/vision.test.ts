@@ -36,7 +36,7 @@ describe("vision providers", () => {
       "openai-compatible",
       "openrouter",
     ]);
-    expect(getVisionProvider("openai")?.supportsDocuments).toBe(false);
+    expect(getVisionProvider("openai")?.supportsDocuments).toBe(true);
     expect(getVisionProvider("openai-compatible")?.supportsDocuments).toBe(
       false,
     );
@@ -44,6 +44,106 @@ describe("vision providers", () => {
     expect(getVisionProvider("anthropic")?.supportsDocuments).toBe(true);
     expect(getVisionProvider("openrouter")?.supportsDocuments).toBe(false);
     expect(getVisionProvider("nope")).toBeNull();
+  });
+
+  // Measured against the live API (2026-08-26, gpt-4o), and the two directions are what force the
+  // choice to be made per kind rather than once:
+  //   - a PDF in an `image_url` part  -> 400 "Invalid MIME type. Only image types are supported."
+  //   - an image in a `file` part     -> 400 "unsupported MIME type 'image/png'"
+  // So the part is picked by `req.kind`, exactly as anthropicExtract already picks document vs image.
+  test("openai posts a document as a file content part, and an image as image_url", async () => {
+    const sent: unknown[] = [];
+    const fetchImpl = (async (_url: string | URL, init?: RequestInit) => {
+      sent.push(JSON.parse((init?.body as string) ?? "{}"));
+      return new Response(
+        JSON.stringify({ choices: [{ message: { content: "um recibo" } }] }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as unknown as typeof fetch;
+
+    const call = (kind: "image" | "document", mimeType: string) =>
+      getVisionProvider("openai")?.extract({
+        bytes: new ArrayBuffer(4),
+        mimeType,
+        kind,
+        prompt: "Leia o documento.",
+        model: "gpt-4o",
+        apiKey: "sk-openai",
+        baseURL: null,
+        fetchImpl,
+        timeoutMs: 5_000,
+      });
+
+    const doc = await call("document", "application/pdf");
+    expect(doc?.text).toBe("um recibo");
+    const docBody = sent[0] as {
+      messages: Array<{ content: Array<Record<string, never>> }>;
+    };
+    const docPart = docBody.messages[0]?.content[1] as unknown as {
+      type: string;
+      file?: { filename?: string; file_data?: string };
+    };
+    expect(docPart.type).toBe("file");
+    // Both fields are REQUIRED by the endpoint, measured: with no `filename` it answers
+    // "Missing required parameter: ... file.file_id" (it reads the part as a file-id reference),
+    // and a `file_data` without the `data:` prefix is rejected by name.
+    expect(typeof docPart.file?.filename).toBe("string");
+    expect((docPart.file?.filename ?? "").endsWith(".pdf")).toBe(true);
+    expect(
+      (docPart.file?.file_data ?? "").startsWith(
+        "data:application/pdf;base64,",
+      ),
+    ).toBe(true);
+
+    const img = await call("image", "image/png");
+    expect(img?.text).toBe("um recibo");
+    const imgBody = sent[1] as {
+      messages: Array<{ content: Array<Record<string, never>> }>;
+    };
+    const imgPart = imgBody.messages[0]?.content[1] as unknown as {
+      type: string;
+      image_url?: { url?: string };
+    };
+    expect(imgPart.type).toBe("image_url");
+    expect(
+      (imgPart.image_url?.url ?? "").startsWith("data:image/png;base64,"),
+    ).toBe(true);
+  });
+
+  // `visionKindForMime` classifies ANY `*/pdf` as a document (`application/x-pdf` included), and
+  // Chatwoot serves whatever content type the uploader's server declared. The endpoint accepts one
+  // spelling only, by name: "Expected a base64-encoded data URL with an application/pdf MIME type".
+  // So the document part carries the canonical type rather than the one that came off the wire.
+  test("a document part carries application/pdf even when the mime came in spelled otherwise", async () => {
+    let body: { messages: Array<{ content: Array<Record<string, never>> }> } = {
+      messages: [],
+    };
+    const fetchImpl = (async (_url: string | URL, init?: RequestInit) => {
+      body = JSON.parse((init?.body as string) ?? "{}");
+      return new Response(
+        JSON.stringify({ choices: [{ message: { content: "ok" } }] }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as unknown as typeof fetch;
+
+    await getVisionProvider("openai")?.extract({
+      bytes: new ArrayBuffer(4),
+      mimeType: "application/x-pdf",
+      kind: "document",
+      prompt: "Leia.",
+      model: "gpt-4o",
+      apiKey: "sk-openai",
+      baseURL: null,
+      fetchImpl,
+      timeoutMs: 5_000,
+    });
+
+    const part = body.messages[0]?.content[1] as unknown as {
+      file?: { file_data?: string };
+    };
+    expect(
+      (part.file?.file_data ?? "").startsWith("data:application/pdf;base64,"),
+    ).toBe(true);
   });
 
   test("openrouter extract posts chat-completions with an image_url data URI", async () => {

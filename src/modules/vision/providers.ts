@@ -40,8 +40,9 @@ export interface VisionResult {
 
 export interface VisionProvider {
   defaultModel: string;
-  // Whether the provider can extract from PDFs (all support images). OpenAI chat vision is
-  // image-only; Gemini and Anthropic accept PDF documents inline.
+  // Whether the provider can extract from PDFs (all support images). Every endpoint below takes a
+  // document through a DIFFERENT content part than an image, so this flag and the part chosen in
+  // `extract` answer the same question and have to agree.
   supportsDocuments: boolean;
   extract(req: VisionRequest): Promise<VisionResult>;
 }
@@ -98,25 +99,51 @@ function base64(bytes: ArrayBuffer): string {
   return Buffer.from(bytes).toString("base64");
 }
 
-// Shared OpenAI-compatible chat-completions vision call (image_url data URI). Image-only — used by
-// both `openai` and `openrouter` (OpenRouter is the same chat-completions shape at a different base
-// URL, mirroring src/graph/models.ts's createChatModel).
+// The file a chat-completions request carries, as the endpoint spells it. An image goes in an
+// `image_url` part and a PDF in a `file` part, and the endpoint refuses each in the other's place —
+// measured live against gpt-4o (2026-08-26): a PDF sent as `image_url` answers 400 "Invalid MIME
+// type. Only image types are supported.", and an image sent as a `file` part answers 400
+// "unsupported MIME type 'image/png'". So this is decided per REQUEST, the way anthropicExtract
+// already decides between its document and image blocks.
+function chatContentPart(req: VisionRequest): Record<string, unknown> {
+  if (req.kind !== "document")
+    return {
+      type: "image_url",
+      image_url: { url: `data:${req.mimeType};base64,${base64(req.bytes)}` },
+    };
+  return {
+    type: "file",
+    file: {
+      // Required: with no `filename` the endpoint reads the part as a file-id reference and answers
+      // "Missing required parameter: ... file.file_id". Nothing reads the name back — the type comes
+      // from the data URL below — so it is a label, not the attachment's own name (which this layer
+      // does not receive).
+      filename: "document.pdf",
+      // `application/pdf` and not `req.mimeType`: visionKindForMime classifies any `*/pdf` as a
+      // document (`application/x-pdf` is served by real uploaders), and this part accepts one
+      // spelling, by name — "Expected a base64-encoded data URL with an application/pdf MIME type".
+      // The `data:` prefix is required too; without it the endpoint rejects the value by name.
+      file_data: `data:application/pdf;base64,${base64(req.bytes)}`,
+    },
+  };
+}
+
+// Shared OpenAI-compatible chat-completions vision call. Used by `openai`, `openrouter` and
+// `openai-compatible` (the same chat-completions shape at a different base URL, mirroring
+// src/graph/models.ts's createChatModel). Whether a document ever reaches it is the registry's
+// call, per provider, through `supportsDocuments`.
 async function chatCompletionsExtract(
   req: VisionRequest,
   providerName: string,
   defaultBase: string,
 ): Promise<VisionResult> {
   const base = (req.baseURL ?? defaultBase).replace(/\/+$/, "");
-  const dataUri = `data:${req.mimeType};base64,${base64(req.bytes)}`;
   const body = {
     model: req.model,
     messages: [
       {
         role: "user",
-        content: [
-          { type: "text", text: req.prompt },
-          { type: "image_url", image_url: { url: dataUri } },
-        ],
+        content: [{ type: "text", text: req.prompt }, chatContentPart(req)],
       },
     ],
   };
@@ -165,8 +192,9 @@ async function openrouterExtract(req: VisionRequest): Promise<VisionResult> {
 }
 
 // Self-hosted / third-party OpenAI-compatible vision endpoint (e.g. a Qwen-VL server). The base URL is
-// REQUIRED (there is no canonical default); the model id is whatever the endpoint serves. Image-only
-// (chat-completions image_url), mirroring the stt `openai-compatible` provider.
+// REQUIRED (there is no canonical default); the model id is whatever the endpoint serves. What it
+// accepts is the registry's call below, not this function's: the request shape is the same one
+// `openai` uses, and only that provider is known to answer it for documents.
 async function openaiCompatibleExtract(
   req: VisionRequest,
 ): Promise<VisionResult> {
@@ -298,7 +326,11 @@ async function anthropicExtract(req: VisionRequest): Promise<VisionResult> {
 const PROVIDERS: Record<string, VisionProvider> = {
   openai: {
     defaultModel: "gpt-4o",
-    supportsDocuments: false,
+    // PDFs go through the `file` content part above, measured live against gpt-4o. The vision
+    // models are the ones that read them: OpenAI's file-input guide requires "models with vision
+    // capabilities, such as gpt-4o and later", which is the same set this provider already needs
+    // for images.
+    supportsDocuments: true,
     extract: openaiExtract,
   },
   gemini: {
@@ -312,14 +344,19 @@ const PROVIDERS: Record<string, VisionProvider> = {
     extract: anthropicExtract,
   },
   openrouter: {
-    // Vendor-prefixed OpenRouter model id; chat-completions image_url is image-only (same
-    // limitation as the openai adapter it reuses), so no PDF support here.
+    // Vendor-prefixed OpenRouter model id. NOT flipped along with `openai`: the request goes to a
+    // router in front of many vendors, so whether a `file` part is understood depends on the model
+    // behind the id — and OpenRouter charges PDF parsing as its own plugin. Nothing here can know
+    // that per id, and answering "supported" for a model that ignores the part costs the operator a
+    // silent wrong extraction instead of the skip they get today.
     defaultModel: "openai/gpt-4o",
     supportsDocuments: false,
     extract: openrouterExtract,
   },
   "openai-compatible": {
-    // Base URL required + model is whatever the endpoint serves, so no default model. Image-only.
+    // Base URL required + model is whatever the endpoint serves, so no default model. Same reason
+    // as openrouter for staying image-only: the endpoint is the operator's own, and a self-hosted
+    // server implementing the chat-completions shape need not implement `file` parts at all.
     defaultModel: "",
     supportsDocuments: false,
     extract: openaiCompatibleExtract,

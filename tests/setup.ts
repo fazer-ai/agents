@@ -1,4 +1,7 @@
 import "@testing-library/jest-dom";
+import { PrismaPg } from "@prisma/adapter-pg";
+import { PrismaClient } from "@/../generated/prisma/client";
+import { DB_GATE_OPT_OUT, missingDbConfig, unreachableDb } from "./db-gate";
 
 // NOTE: happy-dom registration and the Bun-native global capture live in
 // ./dom-setup.ts, which bunfig.toml preloads BEFORE this file. The DOM must
@@ -43,6 +46,28 @@ if (testSuUrl) {
     process.env.LANGGRAPH_DATABASE_URL = appUrl.toString();
   }
 }
+// THE GATE. Everything above points the suite at the test database; this refuses to start when
+// there is nothing at the other end, because a suite that skips its database-backed half exits 0 and
+// reads as green. The reasoning, the measurements and the opt-out live in ./db-gate.ts.
+const missing = missingDbConfig(process.env);
+if (missing) throw new Error(`tests: ${missing}`);
+if (process.env[DB_GATE_OPT_OUT] !== "1") {
+  const probeUrl = process.env.MIGRATION_DATABASE_URL as string;
+  const probe = new PrismaClient({
+    adapter: new PrismaPg({ connectionString: probeUrl }),
+  });
+  try {
+    // The same question every guarded file asks, asked once and early. Asked of the MIGRATION role:
+    // it is the one that creates and drops the fixtures, so a database that answers it answers for
+    // the app role too (they share a host and differ only in privilege).
+    await probe.$queryRaw`SELECT 1`;
+  } catch (err) {
+    throw new Error(`tests: ${unreachableDb(probeUrl, err)}`);
+  } finally {
+    await probe.$disconnect();
+  }
+}
+
 process.env.JWT_SECRET = "test-secret-key-for-testing-only";
 // NOTE: Force a deterministic Google client id so the auth controller registers
 // `/auth/google` regardless of the developer's local `.env` and so tests can

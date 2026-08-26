@@ -47,7 +47,10 @@ import { providerLabel } from "@/client/lib/providerLabels";
 import { serverNow, serverNowDate } from "@/client/lib/serverClock";
 import { isValidHttpUrl } from "@/client/lib/validation";
 import { MODEL_PROVIDERS } from "@/graph/model-config";
-import { PROVIDER_DEFAULT_MODEL } from "@/graph/model-defaults";
+import {
+  modelOptionalFor,
+  PROVIDER_DEFAULT_MODEL,
+} from "@/graph/model-defaults";
 import {
   EXTRACTION_PROMPT_MAX,
   FOLLOW_UP_INSTRUCTIONS_MAX,
@@ -1177,7 +1180,9 @@ export function BehaviorTab({
   // (`assertSettingsModelFallback`, which is what covers the MCP patch); this is what keeps the
   // operator from meeting that refusal as a 400 on a button they were never stopped from pressing.
   const fallbackModelMissing = !!(
-    modelFallback.provider.trim() && !modelFallback.model.trim()
+    modelFallback.provider.trim() &&
+    !modelFallback.model.trim() &&
+    !modelOptionalFor(modelFallback.provider)
   );
   const fallbackSource = overridePickerSource(
     fallbackOverride,

@@ -62,6 +62,7 @@ import { McpEditModal } from "@/client/pages/resources/McpEditModal";
 import { ToolEditModal } from "@/client/pages/resources/ToolEditModal";
 import { useKnowledgeManager } from "@/client/pages/resources/useKnowledgeManager";
 import { readModelFallbackConfig } from "@/graph/fallback-settings";
+import { modelOptionalFor } from "@/graph/model-defaults";
 import { collectOversizedTextChanges } from "@/modules/agents/text-caps";
 import type { Schedule } from "@/modules/business-hours/hours";
 import {
@@ -1131,7 +1132,7 @@ function AgentEditor() {
   function guardModelBeforeSave(): boolean {
     if (
       model.provider &&
-      model.provider !== "openai-compatible" &&
+      !modelOptionalFor(model.provider) &&
       !model.model.trim()
     ) {
       showToast(

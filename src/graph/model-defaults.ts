@@ -17,3 +17,18 @@ export const PROVIDER_DEFAULT_MODEL: Record<string, string> = {
   openrouter: "openai/gpt-5.4-mini",
   "openai-compatible": "",
 };
+
+// WHETHER AN EMPTY MODEL IS A REAL CHOICE FOR THIS PROVIDER, which is the same question the table
+// above answers with `""` and the reason the two live together.
+//
+// Single-model servers (llama.cpp and friends) ignore the name they are sent, so `openai-compatible`
+// is the one provider where naming nothing is a configuration rather than an omission — everywhere
+// else an empty model reaches the vendor verbatim and the call is refused. The rule was written out
+// inline in three places (`modelConfigSchema`, the editor's save guard, and this table's empty
+// entry), which is the shape that grows an N+1: the fallback provider (#143) was written as
+// "a provider AND a model, always", and an operator pointing a fallback at their own single-model
+// server could not configure one at all without inventing a model name for a server that discards
+// it. Review found it; there is one predicate now.
+export function modelOptionalFor(provider: string): boolean {
+  return provider === "openai-compatible";
+}

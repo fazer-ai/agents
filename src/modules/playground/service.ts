@@ -312,7 +312,11 @@ async function buildPlaygroundGraph(params: {
     model: string;
     reason: string;
   }) => void;
-  onModelFallbackUnavailable?: (info: { reason: string }) => void;
+  onModelFallbackUnavailable?: (info: {
+    provider: string;
+    model: string;
+    reason: string;
+  }) => void;
   onHistoryTrim?: (info: {
     kept: number;
     dropped: number;
@@ -528,11 +532,13 @@ export async function runPlaygroundTurn(
           model,
           detail: { fallbackFailed: reason },
         }),
-      onModelFallbackUnavailable: ({ reason }) =>
+      onModelFallbackUnavailable: ({ provider, model, reason }) =>
         emitFlowEvent(flow, {
           stage: "generate",
           level: "warn",
           status: "ok",
+          provider,
+          model,
           detail: { fallbackUnavailable: reason },
         }),
       onHistoryTrim: ({ kept, dropped, tokens }) =>
@@ -884,11 +890,13 @@ export async function runPlaygroundFollowup(
           model,
           detail: { fallbackFailed: reason },
         }),
-      onModelFallbackUnavailable: ({ reason }) =>
+      onModelFallbackUnavailable: ({ provider, model, reason }) =>
         emitFlowEvent(flow, {
           stage: "generate",
           level: "warn",
           status: "ok",
+          provider,
+          model,
           detail: { fallbackUnavailable: reason },
         }),
       onHistoryTrim: ({ kept, dropped, tokens }) =>

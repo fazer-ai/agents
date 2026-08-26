@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { AppError } from "@/lib/errors";
+import { modelOptionalFor } from "./model-defaults";
 import { REASONING_EFFORTS } from "./openai-reasoning";
 
 // Per-agent/per-node model config SCHEMA — deliberately LangChain-free so the config/HTTP layer
@@ -88,7 +89,7 @@ export const modelConfigSchema = z
     reasoningEffort: z.enum(REASONING_EFFORTS).optional(),
   })
   .superRefine((cfg, ctx) => {
-    if (!cfg.model.trim() && cfg.provider !== "openai-compatible") {
+    if (!cfg.model.trim() && !modelOptionalFor(cfg.provider)) {
       ctx.addIssue({
         code: "custom",
         path: ["model"],

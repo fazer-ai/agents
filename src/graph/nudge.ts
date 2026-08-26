@@ -841,13 +841,13 @@ export async function runAgentNudge(
     // cannot be built leaves the turn with nothing behind it, which is indistinguishable from having
     // configured none. Reported once per turn build rather than on the failure, because by then it
     // is too late to be the warning it needs to be.
-    onModelFallbackUnavailable: ({ reason }) =>
+    onModelFallbackUnavailable: ({ provider, model, reason }) =>
       emitFlowEvent(flow, {
         stage: "generate",
         level: "warn",
         status: "ok",
-        provider: cfg.mc.provider,
-        model: cfg.mc.model,
+        provider,
+        model,
         detail: { fallbackUnavailable: reason },
       }),
     // The proactive turn runs on the SAME thread as the reactive one, so it is subject to the same

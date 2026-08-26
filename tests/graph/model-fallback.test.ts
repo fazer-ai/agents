@@ -2,7 +2,15 @@ import { describe, expect, test } from "bun:test";
 import { AIMessage, HumanMessage } from "@langchain/core/messages";
 import { DynamicStructuredTool } from "@langchain/core/tools";
 import { z } from "zod";
+import {
+  hasModelFallback,
+  readModelFallbackConfig,
+} from "@/graph/fallback-settings";
 import { buildAgentGraph, lastAssistantText } from "@/graph/graph";
+import {
+  modelOptionalFor,
+  PROVIDER_DEFAULT_MODEL,
+} from "@/graph/model-defaults";
 import {
   isFallbackWorthy,
   PRIMARY_MAX_RETRIES,
@@ -597,6 +605,45 @@ describe("the fallback keeps the turn once it has it", () => {
 // refused at the WRITE rather than in the editor alone: the editor is one of three transports that
 // reach this bag (REST create, REST update, MCP patch), and the save gate only covers the first
 // operator who meets it.
+describe("hasModelFallback reads the repo's own model rule", () => {
+  const cfg = (provider: string | null, model: string | null) =>
+    readModelFallbackConfig({
+      modelFallback: { provider, model, credentialRef: null, baseURL: null },
+    } as never);
+
+  test("a provider is what names a destination, so absent means no fallback", () => {
+    expect(hasModelFallback(cfg(null, null))).toBe(false);
+    expect(hasModelFallback(cfg(null, "gpt-5.4-mini"))).toBe(false);
+  });
+
+  test("openai-compatible needs no model: the server picks", () => {
+    expect(hasModelFallback(cfg("openai-compatible", null))).toBe(true);
+    expect(modelOptionalFor("openai-compatible")).toBe(true);
+  });
+
+  test("every other provider does", () => {
+    for (const p of [
+      "openai",
+      "anthropic",
+      "google",
+      "deepseek",
+      "openrouter",
+    ]) {
+      expect(modelOptionalFor(p)).toBe(false);
+      expect(hasModelFallback(cfg(p, null))).toBe(false);
+      expect(hasModelFallback(cfg(p, "some-model"))).toBe(true);
+    }
+  });
+
+  // The predicate and the default-model table answer the same question and must not drift: an empty
+  // default is exactly the provider where empty is a real choice, which is why they live together.
+  test("the predicate agrees with the default-model table", () => {
+    for (const [provider, def] of Object.entries(PROVIDER_DEFAULT_MODEL)) {
+      expect(modelOptionalFor(provider)).toBe(def === "");
+    }
+  });
+});
+
 describe("assertSettingsModelFallback", () => {
   const bag = (over: Record<string, unknown> | undefined) =>
     over === undefined ? { stt: {} } : { modelFallback: over };
@@ -639,6 +686,48 @@ describe("assertSettingsModelFallback", () => {
     expect(
       refuses(bag({ provider: null, model: "gpt-5.4-mini" }), {}),
     ).toContain("provider is missing");
+  });
+
+  // THE MODEL IS NOT REQUIRED FOR EVERY PROVIDER, and this rule is not this block's to invent. An
+  // `openai-compatible` endpoint that serves a single model discards the name it is sent, which is
+  // why `modelConfigSchema` lets the PRIMARY through empty there and `createChatModel` sends
+  // "default". Asking for both halves unconditionally made an operator's own llama.cpp server
+  // impossible to name as a fallback without inventing a model id for it — refused by the write
+  // boundary and by the save gate at once. Review found it; there is one predicate now
+  // (`modelOptionalFor`), read here, by the schema and by the editor's save guard.
+  test("openai-compatible with no model is a whole fallback, not half of one", () => {
+    expect(
+      refuses(
+        bag({
+          provider: "openai-compatible",
+          model: null,
+          baseURL: "https://llama.internal/v1",
+        }),
+        {},
+      ),
+    ).toBeNull();
+  });
+
+  test("and every other provider still needs one", () => {
+    for (const provider of [
+      "openai",
+      "anthropic",
+      "google",
+      "deepseek",
+      "openrouter",
+    ]) {
+      expect(refuses(bag({ provider, model: null }), {})).toContain(
+        "model is missing",
+      );
+    }
+  });
+
+  // The exemption is about the MODEL, not about the pair: a model with no provider is still no
+  // destination, whichever provider would have been named.
+  test("a model with no provider is refused on that path too", () => {
+    expect(refuses(bag({ provider: null, model: "llama-3" }), {})).toContain(
+      "provider is missing",
+    );
   });
 
   // Whitespace is not a name, and this is the one the editor's own trim already agreed with.

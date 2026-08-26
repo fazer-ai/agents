@@ -379,6 +379,34 @@ describe("computeConfigIssues — redirect enabled but incomplete", () => {
       ).toEqual([ISSUE]);
     });
 
+    test("an openai-compatible endpoint with no address at all is flagged", () => {
+      expect(
+        computeConfigIssues(
+          fb({ provider: "openai-compatible", model: "llama" }),
+        ),
+      ).toEqual([ISSUE]);
+    });
+
+    // The model is optional there and the ENDPOINT is not, so the two have to be judged apart: a
+    // fallback naming that provider and nothing else is a fallback (`hasModelFallback` says so) and
+    // still cannot run, which is exactly the state this panel exists to name.
+    test("that provider with no model and no address is a configured, broken fallback", () => {
+      expect(
+        computeConfigIssues(fb({ provider: "openai-compatible" })),
+      ).toEqual([ISSUE]);
+    });
+
+    test("and with an address it runs, model or no model", () => {
+      expect(
+        computeConfigIssues(
+          fb({
+            provider: "openai-compatible",
+            baseURL: "https://llama.internal/v1",
+          }),
+        ),
+      ).toEqual([]);
+    });
+
     // The endpoint the runtime uses comes off the CREDENTIAL when it carries one, and it outranks
     // the bag. Same rule as the summariser's, and the same false alarm without it.
     test("an endpoint carried by the credential is not reported as missing", () => {

@@ -92,7 +92,7 @@ import {
 } from "./fallback-settings";
 import { buildAgentGraph, type FallbackModel } from "./graph";
 import { PRIMARY_MAX_RETRIES, PRIMARY_TIMEOUT_MS } from "./model-fallback";
-import type { ModelRetryInfo } from "./model-limit";
+import type { ModelLabels, ModelRetryInfo } from "./model-limit";
 import {
   createChatModel,
   type ModelConfig,
@@ -1459,7 +1459,14 @@ export interface GraphBuildDeps {
     model: string;
     reason: string;
   }) => void;
-  onModelFallbackUnavailable?: (info: { reason: string }) => void;
+  // WHICH FALLBACK could not be built, carried and NOT optional, for the reason the other three
+  // fallback events carry it: the line is written by handlers whose only other labels are the
+  // PRIMARY's, so a `reason` on its own gets published under the name of the model that is working.
+  // Measured on all three consumers before this: the webhook and the nudge stamped the primary's
+  // provider and model onto a warning about the fallback, and the playground stamped neither, so a
+  // filter by model showed it under the wrong one or not at all. Only reached after
+  // `hasModelFallback` said yes, so the configured labels always exist.
+  onModelFallbackUnavailable?: (info: ModelLabels & { reason: string }) => void;
   // Fired when a turn dropped history to fit maxHistoryTokens (runtime records it in the trail).
   onHistoryTrim?: (info: {
     kept: number;
@@ -1490,7 +1497,11 @@ function buildFallbackModel(
       String(cfg.agentId),
       reason,
     );
-    deps.onModelFallbackUnavailable?.({ reason });
+    deps.onModelFallbackUnavailable?.({
+      provider: cfg.modelFallback.provider ?? "",
+      model: cfg.modelFallback.model ?? "",
+      reason,
+    });
     return undefined;
   };
   const resolved = resolveFallbackModel(
@@ -1541,7 +1552,11 @@ function buildFallbackModel(
       { err, agentId: String(cfg.agentId) },
       "model fallback config is not runnable",
     );
-    deps.onModelFallbackUnavailable?.({ reason: "model_not_runnable" });
+    deps.onModelFallbackUnavailable?.({
+      provider: mc.provider,
+      model: mc.model,
+      reason: "model_not_runnable",
+    });
     return undefined;
   }
 }

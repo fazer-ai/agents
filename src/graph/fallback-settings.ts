@@ -1,3 +1,4 @@
+import { modelOptionalFor } from "./model-defaults";
 import {
   type ModelOverrideResolution,
   type OverrideAgentModel,
@@ -50,12 +51,20 @@ export function readModelFallbackConfig(settings: unknown): FallbackConfig {
   };
 }
 
-// A fallback exists only when the operator named BOTH halves of a destination. Half a destination is
-// what `resolveModelOverride` would happily complete from the agent's own config, and completing it
-// here produces the one configuration that must never exist: a second attempt against the provider
-// that just answered 503, indistinguishable in the settings from a real fallback.
+// A fallback exists once the operator named a DESTINATION, and the provider is what names it. Absent,
+// `resolveModelOverride` would happily complete the destination from the agent's own config and
+// produce the one configuration that must never exist: a second attempt against the provider that
+// just answered 503, indistinguishable in the settings from a real fallback.
+//
+// The model is required on top of that for every provider that needs one, which is the repo's
+// existing rule and not a rule of this block's own — `modelOptionalFor` is the single predicate the
+// model config's schema and the editor's save guard read too. This asked for BOTH halves for one
+// round, which made an `openai-compatible` fallback pointed at a single-model server impossible to
+// configure: that server discards the model name it is sent, so the operator would have had to
+// invent one, and the write boundary and the save gate were both refusing the empty field.
 export function hasModelFallback(cfg: FallbackConfig): boolean {
-  return cfg.provider !== null && cfg.model !== null;
+  if (cfg.provider === null) return false;
+  return cfg.model !== null || modelOptionalFor(cfg.provider);
 }
 
 export function resolveFallbackModel(

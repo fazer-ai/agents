@@ -4,6 +4,7 @@ import { broadcastAgentConfigEvent } from "@/api/features/realtime/realtime.serv
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
 import { DEFAULT_MODEL_CONFIG, modelConfigSchema } from "@/graph/model-config";
+import { modelOptionalFor } from "@/graph/model-defaults";
 import { NATIVE_TOOL_NAMES, RAG_TOOL_NAMES } from "@/graph/tools/catalog";
 import { parseDbId } from "@/lib/db-id";
 import {
@@ -339,8 +340,14 @@ export class DebugWindowTooLongError extends AppError {
 // statement when the stored block already names a provider.
 export class HalfConfiguredFallbackError extends AppError {
   constructor(missing: "provider" | "model") {
+    // Names WHICH half, and does not promise both: the model is not required for every provider (see
+    // `modelOptionalFor`), so "needs a provider and a model" would send an operator on
+    // `openai-compatible` looking for a field they do not need. ONE literal with one placeholder,
+    // matching the catalog entry and sitting directly after `super(` — the error-catalog reader
+    // pairs the sentence with the key by regex, and it can span neither a ternary of two literals
+    // nor a comment between the paren and the string.
     super(
-      `settings.modelFallback needs both a provider and a model; ${missing} is missing`,
+      `settings.modelFallback is only half configured: ${missing} is missing`,
       400,
       "errors.halfConfiguredFallback",
       { missing },
@@ -397,7 +404,12 @@ export function assertSettingsModelFallback(
   const model = namedOrNull(
     inherit && !next.sets.model ? prev?.model : next.model,
   );
-  if ((provider === null) === (model === null)) return;
+  // The model is required for every provider that needs one, which is not all of them: an
+  // `openai-compatible` endpoint that serves a single model discards the name it is sent, and the
+  // repo has said so since the primary's own schema. `modelOptionalFor` is that one predicate.
+  if (provider !== null && (model !== null || modelOptionalFor(provider)))
+    return;
+  if (provider === null && model === null) return;
   // ONLY WHAT THE WRITE CHANGES. A bag that already holds a half-named pair is re-sent untouched by
   // every save that edits some other section, and refusing those would freeze the agent on a field
   // nobody is editing. By VALUE, not by which half is filled: swapping the provider of a broken

@@ -589,13 +589,13 @@ export async function runLoadedTurn(
     // cannot be built leaves the turn with nothing behind it, which is indistinguishable from having
     // configured none. Reported once per turn build rather than on the failure, because by then it
     // is too late to be the warning it needs to be.
-    onModelFallbackUnavailable: ({ reason }) =>
+    onModelFallbackUnavailable: ({ provider, model, reason }) =>
       emitFlowEvent(flow, {
         stage: "generate",
         level: "warn",
         status: "ok",
-        provider: loaded.mc.provider,
-        model: loaded.mc.model,
+        provider,
+        model,
         detail: { fallbackUnavailable: reason },
       }),
     // The history ceiling dropped older attendances from this turn. INFO, not warn: emitFlowEvent

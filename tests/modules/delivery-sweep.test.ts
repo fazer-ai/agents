@@ -10,7 +10,7 @@ import type { ChatwootClient } from "@/modules/chatwoot/client";
 import {
   ensureDeliverySweep,
   finish,
-  type retireCoveredDeliveries,
+  retireCoveredDeliveries,
   sweepStrandedDeliveries,
 } from "@/modules/chatwoot/delivery-sweep";
 import { setConnectedAccounts } from "@/modules/chatwoot/management";
@@ -1131,6 +1131,124 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     expect(call.slice(0, call.indexOf("});"))).toContain("stillWanted: null,");
   });
 
+  test("a gate taken because ANOTHER BOT holds it settles only our own row", async () => {
+    // Chatwoot fans one message to up to TWO bot routes — `agent_bots_for` returns the conversation's
+    // assignee bot and the inbox's active bot, each with its own `delivery_id` — so a message can
+    // hold two ledger rows that differ only by which bot received it.
+    //
+    // On the route that loses, the gate closes because ANOTHER PARTY holds the conversation. That is
+    // a statement about US, not about the message: the other party here is a bot whose own delivery
+    // may be running right now. Retiring its row by conversation and message would take a live loss
+    // out of the list, and if that process then died nothing would ever report it — the exact
+    // silence this whole change exists to end.
+    //
+    // A human holding the conversation is the opposite and keeps the wider scope: the test above is
+    // that case, and it is the common one.
+    const convId = 8827;
+    const messageId = 9761;
+    const other = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `otherbot-${process.pid}`,
+        event: "message_created",
+        status: "PROCESSING",
+        receivedAt: new Date(Date.now() - 60_000),
+        claimedAt: new Date(Date.now() - 60_000),
+        conversationId: convId,
+        inboundMessageId: messageId,
+      },
+      select: { id: true },
+    });
+    await seedConversation(convId);
+
+    // The winning route belongs to agent bot 4242, which is not ours.
+    await deliverThrough(convId, messageId, "incoming", {
+      deliveryId: `ourroute-${process.pid}`,
+      assignee: { type: "AgentBot", id: 4242 },
+    });
+
+    // Ours is settled — tx2 takes it either way, and the gate settled it before that.
+    expect(
+      (
+        await suDb.chatwootWebhookDelivery.findFirstOrThrow({
+          where: { tenantId, deliveryId: `ourroute-${process.pid}` },
+          select: { status: true },
+        })
+      ).status,
+    ).toBe("PROCESSED");
+    // And the other route's row is untouched, still working, still reportable if it dies.
+    expect((await statusOf(other.id)).status).toBe("PROCESSING");
+
+    await suDb.chatwootWebhookDelivery.deleteMany({
+      where: { conversationId: convId },
+    });
+    await suDb.executionLog.deleteMany({ where: { tenantId } });
+  });
+
+  test("the correction reaches the channel the loss paged, not just the Logs page", async () => {
+    // A channel's `minLevel` defaults to "error". The loss line is an error and pages; the closing
+    // line is a `warn`, because it is good news — and routed at its own level it would reach the
+    // Logs page and nobody else, leaving the operator who was paged holding an alert about a
+    // customer who was, in fact, answered. `alertAs` is the routing level, and it is the one the
+    // line it CLOSES used.
+    const convId = 8828;
+    const conv = await seedConversation(convId);
+    const channel = await suDb.alertChannel.create({
+      data: {
+        tenantId,
+        name: `live-loss-${process.pid}`,
+        type: "webhook",
+        url: "enc",
+        // The default, and the whole point: this channel ignores warnings.
+        minLevel: "error",
+      },
+      select: { id: true },
+    });
+    const reported = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `alert-corr-${process.pid}`,
+        event: "message_created",
+        status: "DEAD",
+        receivedAt: new Date(Date.now() - 60_000),
+        claimedAt: new Date(Date.now() - 60_000),
+        conversationId: convId,
+        inboundMessageId: 9771,
+      },
+      select: { id: true },
+    });
+
+    await retireCoveredDeliveries({
+      tenantId,
+      instanceId,
+      conversationId: convId,
+      conversationRowId: conv.id,
+      settlement: "answered",
+      messageIds: [9771],
+      base: appDb,
+    });
+
+    expect((await statusOf(reported.id)).status).toBe("PROCESSED");
+    const deadline = Date.now() + 2000;
+    let queued: Array<{ level: string; stage: string | null }> = [];
+    while (Date.now() < deadline) {
+      queued = await suDb.alertDelivery.findMany({
+        where: { tenantId, channelId: channel.id },
+        select: { level: true, stage: true },
+      });
+      if (queued.length > 0) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(queued).toEqual([{ level: "error", stage: "delivery" }]);
+
+    await suDb.alertDelivery.deleteMany({ where: { channelId: channel.id } });
+    await suDb.alertChannel.delete({ where: { id: channel.id } });
+    await suDb.chatwootWebhookDelivery.delete({ where: { id: reported.id } });
+    await suDb.executionLog.deleteMany({ where: { tenantId } });
+  });
+
   test("a redelivery of a LEGACY row fills in what that row could not record", async () => {
     // The previous release wrote neither id, and the CAS that follows a redelivery stamps
     // `claimed_at` on the row it finds — which is exactly the signature the sweep reads as "this
@@ -1258,7 +1376,12 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     convId: number,
     messageId: number,
     direction: "incoming" | "outgoing",
-    over: { event?: string; deliveryId?: string } = {},
+    over: {
+      event?: string;
+      deliveryId?: string;
+      // Who holds the conversation, when it is not our bot. A human by default.
+      assignee?: { type: string; id: number };
+    } = {},
   ) {
     const n = normalizeChatwootEvent({
       event: over.event ?? "message_created",
@@ -1275,8 +1398,8 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
         status: "open",
         contact_inbox: { id: 61_000 + convId },
         meta: {
-          assignee_type: "User",
-          assignee: { id: 5, name: "Ana" },
+          assignee_type: over.assignee?.type ?? "User",
+          assignee: { id: over.assignee?.id ?? 5, name: "Ana" },
           sender: { id: 77, name: "Cliente" },
         },
         channel: "Channel::Api",

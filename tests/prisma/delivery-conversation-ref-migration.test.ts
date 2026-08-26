@@ -1,28 +1,24 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Client } from "pg";
 import { PrismaClient } from "@/../generated/prisma/client";
-import { seedChatwootInstance } from "../utils/chatwoot";
 
-// Runs the ACTUAL migration file against the test database (issue #228).
+// WHAT THE MIGRATION SHIPS, asked of the file and of the catalog (issue #228).
 //
-// The promise this backfill carries is narrow and load-bearing: every delivery still non-terminal at
-// upgrade time is abandoned by definition, and it must land in the DEAD list. Left behind, those
-// rows keep both new id columns null — which is exactly what the sweep reads as "carried no
-// message" — so each one would be closed as PROCESSED and never reported, on the population most
-// likely to contain real losses.
+// It carries no data statement at all, and that is the decision under test as much as the shapes
+// below are. An earlier version closed every pre-existing non-terminal row here, because those rows
+// predate both id columns and the sweep could not read them. `classifyStrandedDelivery` asks the
+// EVENT NAME first now, and `event` is a column every build has always written — so the sweep reads
+// a legacy row as well as any UPDATE here could, and better in two ways: it can see `claimed_at`,
+// which tells a redelivered row from an abandoned one, and it writes the conversation-level line
+// that a blanket UPDATE could never fill in. tests/modules/delivery-sweep.test.ts is where that is
+// proved, on rows carrying exactly the legacy shape.
 //
-// `chatwoot_webhook_deliveries` carries FORCE ROW LEVEL SECURITY, so `tenant_isolation` binds the
-// table OWNER as well. A managed-Postgres admin role (RDS/Neon/Supabase) is typically owner WITHOUT
-// rolsuper, and there the backfill matches zero rows and reports success. The negative twin below
-// runs the file as the APP role with and without the `SET`, so the guard cannot be dropped without a
-// red test. The repo-wide version of the same question is in ./migration-rls-bypass.test.ts.
-//
-// The file is executed from DISK on purpose: a copy pasted in here would drift, and Prisma's
-// $executeRawUnsafe rejects multiple statements anyway, which would silently swallow the `SET`.
+// What is left is DDL, and DDL is invisible to every behavioural test in the suite: an index changes
+// no result, and a name only matters the day Postgres shortens it. Both halves are read here — the
+// FILE for what the statement says, the CATALOG for what a database built from it holds.
 
 const suUrl = process.env.MIGRATION_DATABASE_URL;
-const appUrl = process.env.TEST_APP_DATABASE_URL;
 const MIGRATION =
   "prisma/migrations/20260825140100_delivery_conversation_ref/migration.sql";
 
@@ -30,7 +26,7 @@ let dbUp = false;
 let sql = "";
 let su: Client | undefined;
 let prisma: PrismaClient | undefined;
-if (suUrl && appUrl) {
+if (suUrl) {
   try {
     su = new Client({ connectionString: suUrl });
     await su.connect();
@@ -48,230 +44,63 @@ if (suUrl && appUrl) {
 const suDb = su as Client;
 const db = prisma as PrismaClient;
 
-// The columns already exist (the test DB was built by running every migration), so only the data
-// half of the file is replayed. Splitting on the `SET` keeps the SET/UPDATE/RESET trio intact —
-// that trio is what is under test.
-function dataHalf(file: string): string {
-  const i = file.indexOf("SET app.is_super_admin");
-  if (i < 0) throw new Error("the migration no longer sets the RLS bypass");
-  return file.slice(i);
-}
-
-const STATES = ["PENDING", "PROCESSING", "PROCESSED", "DEAD"] as const;
-let tenantId = 0n;
-let instanceId = 0n;
-const ids: Record<string, bigint> = {};
-
-async function statusOf(name: string): Promise<string> {
-  const r = await suDb.query(
-    'SELECT status FROM "chatwoot_webhook_deliveries" WHERE id = $1',
-    [String(ids[name])],
-  );
-  return r.rows[0]?.status ?? "";
-}
-
-async function processedAtOf(name: string): Promise<string | null> {
-  const r = await suDb.query(
-    'SELECT processed_at FROM "chatwoot_webhook_deliveries" WHERE id = $1',
-    [String(ids[name])],
-  );
-  return r.rows[0]?.processed_at ?? null;
-}
-
-// What the two already-terminal rows carried before the file ran, so a statement that widens its
-// status list is caught restamping them.
-const stamps: Record<string, string | null> = {};
-
-async function resetStates(): Promise<void> {
-  for (const s of STATES) {
-    await suDb.query(
-      'UPDATE "chatwoot_webhook_deliveries" SET status = $1, processed_at = NULL WHERE id = $2',
-      [s, String(ids[s])],
-    );
-  }
-  await suDb.query(
-    `UPDATE "chatwoot_webhook_deliveries" SET status = 'PROCESSING', processed_at = NULL WHERE id = $1`,
-    [String(ids.BENIGN)],
-  );
-  await suDb.query(
-    `UPDATE "chatwoot_webhook_deliveries" SET status = 'PENDING', processed_at = NULL WHERE id = $1`,
-    [String(ids.WRITEBACK)],
-  );
-  await suDb.query(
-    `UPDATE "chatwoot_webhook_deliveries" SET status = 'PENDING', processed_at = NULL, received_at = now() WHERE id = $1`,
-    [String(ids.LIVE)],
-  );
-  await suDb.query(
-    `UPDATE "chatwoot_webhook_deliveries" SET status = 'PENDING', processed_at = NULL, received_at = now() WHERE id = $1`,
-    [String(ids.LIVEBENIGN)],
-  );
-  await suDb.query(
-    `UPDATE "chatwoot_webhook_deliveries" SET status = 'PROCESSED' WHERE id = $1`,
-    [String(ids.DONEBENIGN)],
-  );
-  for (const s of ["PROCESSED", "DEAD", "DONEBENIGN"] as const) {
-    await suDb.query(
-      `UPDATE "chatwoot_webhook_deliveries" SET processed_at = $1 WHERE id = $2`,
-      [new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(), String(ids[s])],
-    );
-    stamps[s] = await processedAtOf(s);
-  }
-}
-
-describe.skipIf(!dbUp)("migration: the stranded-delivery backfill", () => {
-  beforeAll(async () => {
-    const t = await db.tenant.create({
-      data: { name: "DELBF", slug: `delbf-${process.pid}` },
-    });
-    tenantId = t.id;
-    const inst = await seedChatwootInstance(db, {
-      tenantId,
-      accountId: 93,
-      baseUrl: "https://cw.example",
-      adminToken: "enc",
-    });
-    instanceId = inst.id;
-    for (const status of STATES) {
-      const row = await db.chatwootWebhookDelivery.create({
-        data: {
-          tenantId,
-          chatwootInstanceId: instanceId,
-          deliveryId: `bf-${process.pid}-${status}`,
-          event: "message_created",
-          status,
-          // Old enough to be abandoned by the backfill's own definition. A row received seconds ago
-          // is deliberately out of its reach — see the fence's own case below.
-          receivedAt: new Date(Date.now() - 2 * 60 * 60 * 1000),
-        },
-        select: { id: true },
-      });
-      ids[status] = row.id;
-    }
-    // A stranded event that could never have owed a customer a turn. `event` is not one of the
-    // columns this migration adds — every build has always written it — so the backfill can read it,
-    // and blanket-DEAD would put a conversation update in the list of unanswered customers.
-    const benign = await db.chatwootWebhookDelivery.create({
-      data: {
-        tenantId,
-        chatwootInstanceId: instanceId,
-        deliveryId: `bf-${process.pid}-BENIGN`,
-        event: "conversation_updated",
-        status: "PROCESSING",
-        receivedAt: new Date(Date.now() - 2 * 60 * 60 * 1000),
-      },
-      select: { id: true },
-    });
-    ids.BENIGN = benign.id;
-    // Our own media write-back coming around: a message event, and still one no turn was ever owed
-    // for. The rule is the event NAME, which is why this is separate from the one above.
-    const writeback = await db.chatwootWebhookDelivery.create({
-      data: {
-        tenantId,
-        chatwootInstanceId: instanceId,
-        deliveryId: `bf-${process.pid}-WRITEBACK`,
-        event: "message_updated",
-        status: "PENDING",
-        receivedAt: new Date(Date.now() - 2 * 60 * 60 * 1000),
-      },
-      select: { id: true },
-    });
-    ids.WRITEBACK = writeback.id;
-    // The live twin of the two above: a non-turn event the PREVIOUS release inserted seconds ago.
-    // The age fence has to hold on BOTH statements — closed here, its own CAS matches nothing and
-    // the mirror write that event carried never runs.
-    const liveBenign = await db.chatwootWebhookDelivery.create({
-      data: {
-        tenantId,
-        chatwootInstanceId: instanceId,
-        deliveryId: `bf-${process.pid}-LIVEBENIGN`,
-        event: "conversation_updated",
-        status: "PENDING",
-      },
-      select: { id: true },
-    });
-    ids.LIVEBENIGN = liveBenign.id;
-    // A benign event that already FINISHED. Both statements carry the same status list, and each
-    // one only ever sees its own half of the events — so a list widened on the benign statement is
-    // invisible until a benign row is sitting in a terminal state to be restamped.
-    const doneBenign = await db.chatwootWebhookDelivery.create({
-      data: {
-        tenantId,
-        chatwootInstanceId: instanceId,
-        deliveryId: `bf-${process.pid}-DONEBENIGN`,
-        event: "conversation_updated",
-        status: "PROCESSED",
-        receivedAt: new Date(Date.now() - 2 * 60 * 60 * 1000),
-      },
-      select: { id: true },
-    });
-    ids.DONEBENIGN = doneBenign.id;
-    // And one the PREVIOUS release inserted while this migration ran: about to be claimed by it.
-    const live = await db.chatwootWebhookDelivery.create({
-      data: {
-        tenantId,
-        chatwootInstanceId: instanceId,
-        deliveryId: `bf-${process.pid}-LIVE`,
-        event: "message_created",
-        status: "PENDING",
-      },
-      select: { id: true },
-    });
-    ids.LIVE = live.id;
+describe.skipIf(!dbUp)("migration: the stranded-delivery columns", () => {
+  test("writes no data statement: the sweep classifies what it finds", async () => {
+    // The rule, held against the FILE. A statement here cannot read `claimed_at`, so a legacy
+    // `PENDING` row whose receipt is hours old but which was REDELIVERED a second ago — sitting one
+    // instant from its `PENDING -> PROCESSING` CAS — would be closed by it, that CAS would match
+    // nothing, and the upgrade itself would discard a live customer message Chatwoot never resends.
+    // An age fence does not save that row: its receipt is old and only the claim says otherwise.
+    expect(sql).not.toMatch(/^\s*UPDATE\s/im);
+    expect(sql).not.toMatch(/^\s*DELETE\s/im);
+    // And with no write, nothing here needs the RLS bypass. The repo-wide rule that every migration
+    // writing to a FORCE-RLS table carries one is in ./migration-rls-bypass.test.ts; this asserts
+    // the other direction, so re-adding a write without the bypass cannot pass quietly.
+    expect(sql).not.toContain("app.is_super_admin");
   });
 
-  afterAll(async () => {
-    if (tenantId) {
-      await db.tenant.delete({ where: { id: tenantId } }).catch(() => {});
+  test("builds both indexes CONCURRENTLY, and can be run again after one fails", async () => {
+    // The lock, which is the only thing in this file about the UPGRADE rather than about the sweep.
+    // A plain CREATE INDEX holds a SHARE lock for the whole build and blocks INSERT on the table it
+    // indexes; this migration runs while the previous release is still acking webhooks and writing
+    // this very table AFTER the 200 has gone out, on a bounded retry. Nothing prunes the ledger, so
+    // the build time is bounded by the install's whole history.
+    //
+    // Measured: `prisma migrate deploy` in this repo does not wrap a migration in a transaction, so
+    // Postgres accepts CONCURRENTLY — applied to a scratch database through the real command, both
+    // indexes came out `indisvalid`.
+    const creates = [
+      ...sql.matchAll(/CREATE INDEX(\s+CONCURRENTLY)?\s+"([^"]+)"/g),
+    ];
+    expect(creates.length).toBeGreaterThan(0);
+    for (const m of creates) {
+      expect(m[1]?.trim()).toBe("CONCURRENTLY");
+      // A concurrent build that fails leaves an INVALID index: never used for a query, still
+      // maintained on every write, and a bare re-run collides with the name. The DROP is what makes
+      // the file re-runnable, and it has to name the same index.
+      expect(sql).toContain(`DROP INDEX IF EXISTS "${m[2]}";`);
     }
-    await suDb.end();
-    await db.$disconnect();
-  });
-
-  test("closes every non-terminal row and touches nothing else", async () => {
-    await resetStates();
-    await suDb.query(dataHalf(sql));
-    expect(await statusOf("PENDING")).toBe("DEAD");
-    expect(await statusOf("PROCESSING")).toBe("DEAD");
-    // A row that already finished is not a loss, and a row already reported as one stays reported.
-    expect(await statusOf("PROCESSED")).toBe("PROCESSED");
-    expect(await statusOf("DEAD")).toBe("DEAD");
-    // And the fence that keeps the upgrade from eating a live message: this migration runs while the
-    // PREVIOUS release is still serving, so a row it inserted seconds ago is about to be claimed by
-    // it. Closed here, that `PENDING -> PROCESSING` CAS matches nothing, the delivery returns
-    // "skipped", and a customer message is discarded by the upgrade itself.
-    expect(await statusOf("LIVE")).toBe("PENDING");
-    // And the terminal state is chosen, not blanket. Only a legacy `message_created` is ambiguous
-    // enough to report: the id columns arrive with this migration and neither is backfilled, so a
-    // `message_created` may or may not have carried an incoming message and DEAD is the conservative
-    // reading. Everything else is closed — reported, they would arrive as a deploy-day pile of
-    // "customer went unanswered" rows no customer was ever waiting on, in the one list whose value
-    // is that every row in it is real.
-    expect(await statusOf("BENIGN")).toBe("PROCESSED");
-    expect(await statusOf("WRITEBACK")).toBe("PROCESSED");
-    expect(await statusOf("LIVEBENIGN")).toBe("PENDING");
-    // A row already terminal keeps the timestamp that recorded when it FINISHED. Two statements now
-    // carry the same status list, and widening either to include a terminal state reads as a no-op
-    // on `status` while quietly restamping when the work actually ended.
-    expect(await processedAtOf("PROCESSED")).toEqual(stamps.PROCESSED ?? null);
-    expect(await processedAtOf("DEAD")).toEqual(stamps.DEAD ?? null);
-    expect(await statusOf("DONEBENIGN")).toBe("PROCESSED");
-    expect(await processedAtOf("DONEBENIGN")).toEqual(
-      stamps.DONEBENIGN ?? null,
+    // And the sweep's is PARTIAL, asked of the FILE for the same reason the name is: the catalog
+    // below answers about the index an earlier `migrate deploy` built, not about this statement.
+    // Nothing prunes this ledger, so a full index over `status` would carry every delivery the
+    // install has ever handled, forever, and pay for it on every insert.
+    expect(sql).toMatch(
+      /CREATE INDEX CONCURRENTLY "chatwoot_webhook_deliveries_sweep_idx"[\s\S]*?WHERE status IN \('PENDING', 'PROCESSING'\);/,
     );
   });
 
   test("names every index it creates short enough for Postgres to keep the name", async () => {
     // Read from the FILE, not the catalog. The test below asks the database what it has, and the
     // database was built by an earlier `migrate deploy` — so it answers about the index that exists,
-    // not about the statement that would create one now. This is the half that pins the statement.
+    // not about the statement that would create one now.
     //
     // Postgres truncates an identifier to 63 bytes and keeps the FIRST 63; Prisma truncates its
     // implicit `@@index` name so the `_idx` suffix survives. The two disagree above 63, so an
     // implicit name creates an index whose name does not match schema.prisma and every later
     // `migrate dev` reports drift against a database that is actually correct.
-    const names = [...sql.matchAll(/CREATE INDEX\s+"([^"]+)"/g)].map(
-      (m) => m[1],
-    );
+    const names = [
+      ...sql.matchAll(/CREATE INDEX(?:\s+CONCURRENTLY)?\s+"([^"]+)"/g),
+    ].map((m) => m[1]);
     expect(names.length).toBeGreaterThan(0);
     for (const name of names) {
       expect(new TextEncoder().encode(name ?? "").length).toBeLessThanOrEqual(
@@ -309,10 +138,6 @@ describe.skipIf(!dbUp)("migration: the stranded-delivery backfill", () => {
     expect(sweep).toContain("PENDING");
     expect(sweep).toContain("PROCESSING");
 
-    // Asked by NAME, because the name is the half that drifts. Prisma's implicit name for these
-    // three columns is 87 bytes: Postgres keeps the first 63 and Prisma truncates so `_idx`
-    // survives, so left implicit the created index and schema.prisma disagree and every later
-    // `migrate dev` reports drift against a database that is actually correct.
     const retire = byName.get("chatwoot_webhook_deliveries_retire_idx");
     expect(retire).toBeDefined();
     expect(retire).toContain(
@@ -323,40 +148,29 @@ describe.skipIf(!dbUp)("migration: the stranded-delivery backfill", () => {
     for (const name of byName.keys()) {
       expect(new TextEncoder().encode(name).length).toBeLessThanOrEqual(63);
     }
+    // And every one of them is VALID: a concurrent build that failed would leave one behind that no
+    // query uses and every write maintains.
+    const valid = await suDb.query<{ n: string; v: boolean }>(
+      "SELECT i.relname AS n, x.indisvalid AS v FROM pg_index x JOIN pg_class i ON i.oid = x.indexrelid JOIN pg_class t ON t.oid = x.indrelid WHERE t.relname = $1",
+      ["chatwoot_webhook_deliveries"],
+    );
+    expect(valid.rows.filter((r) => !r.v).map((r) => r.n)).toEqual([]);
   });
 
-  // The negative twin, run through the FILE rather than a copy of the UPDATE, so deleting the
-  // `SET app.is_super_admin` line turns this red. FORCE RLS binds a non-superuser owner exactly like
-  // any other role, which is what a managed-Postgres migration role usually is.
-  describe("run by a NON-superuser role (managed Postgres)", () => {
-    async function runAsApp(statements: string): Promise<void> {
-      const app = new Client({ connectionString: appUrl });
-      await app.connect();
-      try {
-        await app.query(statements);
-      } finally {
-        await app.end();
-      }
+  test("adds the three columns the sweep reads, and no column for the payload", async () => {
+    // The other half of the file. The sweep needs the delivery's identity and nothing about what the
+    // customer wrote — no ciphertext column, no retention window, no second copy at rest.
+    const cols = await suDb.query<{ column_name: string }>(
+      "SELECT column_name FROM information_schema.columns WHERE table_name = 'chatwoot_webhook_deliveries'",
+    );
+    const names = cols.rows.map((r) => r.column_name);
+    expect(names).toContain("conversation_id");
+    expect(names).toContain("inbound_message_id");
+    expect(names).toContain("claimed_at");
+    for (const forbidden of ["payload", "body", "content", "message_text"]) {
+      expect(names).not.toContain(forbidden);
     }
-
-    test("without the bypass the backfill silently matches nothing", async () => {
-      await resetStates();
-      const withoutSet = dataHalf(sql)
-        .split("\n")
-        .filter((line) => !line.trim().startsWith("SET app.is_super_admin"))
-        .join("\n");
-      // No error, no warning: that is the whole problem.
-      await runAsApp(withoutSet);
-      expect(await statusOf("PENDING")).toBe("PENDING");
-      expect(await statusOf("PROCESSING")).toBe("PROCESSING");
-    });
-
-    test("with the bypass, as shipped, it reaches the stranded rows", async () => {
-      await resetStates();
-      await runAsApp(dataHalf(sql));
-      expect(await statusOf("PENDING")).toBe("DEAD");
-      expect(await statusOf("PROCESSING")).toBe("DEAD");
-      expect(await statusOf("PROCESSED")).toBe("PROCESSED");
-    });
+    await db.$disconnect();
+    await suDb.end();
   });
 });

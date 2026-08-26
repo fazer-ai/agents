@@ -2872,6 +2872,14 @@ export async function processChatwootDelivery(
     },
     { ourAgentBotId: params.agentBotId },
   );
+  // Who is holding it, when somebody else is. A HUMAN taking a conversation is a statement about the
+  // message: they will answer it, whichever bot route carried it here. ANOTHER BOT is not — its own
+  // delivery of this same message may be running right now, and Chatwoot fans a message to two
+  // routes whenever a conversation's assignee bot differs from the inbox's (`agent_bots_for`). The
+  // settlement at the gate tail is scoped by this, and by nothing else about the gate.
+  const heldByAnotherBot =
+    (assigneeKnown ? (n.assigneeType ?? null) : mirror.assigneeType) ===
+      "AgentBot" && !act;
   const convLabel = n.conversationId === null ? "?" : String(n.conversationId);
 
   // ── A conversation this agent manages just transitioned TO resolved (by anyone: the agent's own
@@ -3175,9 +3183,21 @@ export async function processChatwootDelivery(
   // whether a message was lost to a PROCESS DEATH, and one a gate consumed or a turn answered with
   // silence was not lost. A delivery that armed a flush settles NOTHING here: the flush is what
   // will, and it retires the rows itself when it runs.
+  // `scope` is which rows this settlement speaks for, and it is not always the conversation's.
+  //
+  //   "conversation"  every row for this message, whichever bot route received it. What a TURN can
+  //                   say: it ran over the message and answered or deliberately did not, and that is
+  //                   true of the message rather than of one delivery of it. It is also what rescues
+  //                   a row an earlier attempt stranded.
+  //   "this-delivery" only the row this process is working. What a gate taken because ANOTHER PARTY
+  //                   holds the conversation can say. Chatwoot fans a message to up to two bot
+  //                   routes (`agent_bots_for`: the assignee bot and the inbox bot, each with its
+  //                   own delivery id), so the other party may be a bot whose own delivery is in
+  //                   flight right now. Retiring its row would take a live loss out of the list.
   const settleDelivery = async (
     messageId: number,
     settlement: "answered" | "consumed",
+    scope: "conversation" | "this-delivery" = "conversation",
   ): Promise<void> => {
     // Narrows for the call below, which takes a number. Every caller is already inside a branch that
     // needs a conversation, so nothing reaches here without one and removing this kills no test.
@@ -3189,7 +3209,9 @@ export async function processChatwootDelivery(
         conversationId: n.conversationId,
         conversationRowId: mirror.conversationRowId,
         settlement,
-        messageIds: [messageId],
+        ...(scope === "this-delivery"
+          ? { deliveryRowId: params.deliveryRowId }
+          : { messageIds: [messageId] }),
         base,
       });
     } catch (e) {
@@ -3522,7 +3544,18 @@ export async function processChatwootDelivery(
     // The same fact the watermark records here, on the ledger: a human owns the conversation, or a
     // command or a gate consumed the message. Nothing further is coming for it, deliberately, so it
     // is not a message a crash lost — and a gate is silence by construction, never an answer.
-    await settleDelivery(n.message.id, "consumed");
+    //
+    // SCOPED to this delivery in exactly one case: another BOT holds the conversation. Then the
+    // silence is about US, and the row this message also has on that bot's route belongs to a
+    // delivery that may be working right now — retiring it takes a live loss out of the list. A
+    // human holding the conversation is the opposite: they answer the message, whichever route
+    // carried it, and so is a command or a test-mode gate consuming it. Both keep the wider scope,
+    // which is also what rescues a strand an earlier attempt left behind.
+    await settleDelivery(
+      n.message.id,
+      "consumed",
+      heldByAnotherBot ? "this-delivery" : "conversation",
+    );
     try {
       await advanceHandledWatermark({
         tenantId: params.tenantId,

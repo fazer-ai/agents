@@ -76,9 +76,23 @@ function sysCtx(tenantId: bigint): TenantContext {
 // non-terminal row on the conversation and closes whatever loss was sitting there. A `not: null`
 // alarm was what stood between that call and the damage, on a filter whose whole job is to be
 // narrow. There is now no such call to write.
+//
+//   The third is ONE ROW, and it exists because one of the callers does not speak for the
+//   conversation. Chatwoot fans a message to up to TWO bot routes — `agent_bots_for` returns the
+//   conversation's assignee bot AND the inbox's active bot, each with its own `delivery_id` — so a
+//   message can hold two ledger rows that differ only by which bot received it. A gate exit taken
+//   because the conversation is held by ANOTHER PARTY is not a statement that the message was
+//   handled; it is a statement that WE are not handling it. Keyed by conversation and message, that
+//   exit retires the other route's row, and if that route's process then dies the loss is invisible.
+//   `deliveryRowId` is the caller saying "only the delivery I am".
 type CoveredMessages =
   // The burst a turn ran over, known exactly because the thread was re-fetched.
-  | { messageIds: number[]; afterMessageId?: never; upToMessageId?: never }
+  | {
+      messageIds: number[];
+      afterMessageId?: never;
+      upToMessageId?: never;
+      deliveryRowId?: never;
+    }
   // The gate exits, which decide before any fetch and can only say what the watermark they advance
   // says. That is a RANGE, and it is bounded at BOTH ends: the burst they consume is everything
   // after the watermark as it stood, up to the payload's newest id. Open at the bottom, it reaches
@@ -96,6 +110,13 @@ type CoveredMessages =
       messageIds?: never;
       afterMessageId: number | null;
       upToMessageId: number;
+      deliveryRowId?: never;
+    }
+  | {
+      deliveryRowId: bigint;
+      messageIds?: never;
+      afterMessageId?: never;
+      upToMessageId?: never;
     };
 
 export async function retireCoveredDeliveries(
@@ -121,19 +142,28 @@ export async function retireCoveredDeliveries(
     base: PrismaClient;
   },
 ): Promise<number> {
-  const where = {
+  // The account and the conversation fence every shape, including the single-row one: an id alone
+  // would be enough to find the row, and carrying the other two keeps every write on this path
+  // narrowed the same way, so a wrong id cannot reach across a tenant's other account.
+  const scope = {
     chatwootInstanceId: params.instanceId,
     conversationId: params.conversationId,
-    inboundMessageId:
-      params.messageIds !== undefined
-        ? { in: params.messageIds }
-        : {
-            lte: params.upToMessageId,
-            ...(params.afterMessageId !== null
-              ? { gt: params.afterMessageId }
-              : {}),
-          },
   };
+  const where =
+    params.deliveryRowId !== undefined
+      ? { ...scope, id: params.deliveryRowId }
+      : {
+          ...scope,
+          inboundMessageId:
+            params.messageIds !== undefined
+              ? { in: params.messageIds }
+              : {
+                  lte: params.upToMessageId,
+                  ...(params.afterMessageId !== null
+                    ? { gt: params.afterMessageId }
+                    : {}),
+                },
+        };
 
   // TWO writes, and the split is what makes the correction exact rather than nearly exact.
   //
@@ -222,6 +252,11 @@ export async function retireCoveredDeliveries(
       {
         stage: "delivery",
         level: "warn",
+        // ROUTED as the error it closes. A channel's `minLevel` defaults to "error", so written and
+        // routed at "warn" this line reaches the Logs page and nobody else — the operator the loss
+        // paged keeps holding an alert about a customer who was, in fact, answered. The severity is
+        // still "warn": this is good news, and the line says so.
+        alertAs: "error",
         status: "ok",
         detail: {
           outcome: answered ? "answered_late" : "consumed_late",

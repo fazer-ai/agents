@@ -222,19 +222,30 @@ function tzOffsetMs(at: number, tz: string): number {
   return asUtc - at;
 }
 
-// The UTC instant a LOCAL wall clock names in an IANA timezone (DST-correct: one refinement pass
-// covers an offset shift between the UTC guess and the target instant). NaN when the string is not
-// a wall clock at all, so callers can tell "unreadable" from a real instant.
-export function zonedWallClockMs(local: string, tz: string): number {
+// The UTC instant a LOCAL wall clock names in an IANA timezone, and whether that wall clock EXISTS.
+// One refinement pass covers an offset shift between the UTC guess and the target instant, which is
+// DST-correct everywhere except the hour a spring-forward SKIPS: 02:30 on a day whose clocks jump
+// 02:00 → 03:00 is not a time, and `ms` is then the instant the shift landed on.
+//
+// The two callers want opposite things with that, which is why it is reported instead of decided
+// here. A day boundary still exists on a day that starts at 01:00, so midnight takes the instant.
+// An appointment does not: guessing which instant Google will pick for a time that does not exist
+// is the divergence between judge and store that this whole path exists to remove.
+export function zonedWallClock(
+  local: string,
+  tz: string,
+): { ms: number; exists: boolean } {
   const utcGuess = Date.parse(`${local}Z`);
-  if (Number.isNaN(utcGuess)) return Number.NaN;
+  if (Number.isNaN(utcGuess)) return { ms: Number.NaN, exists: false };
   const first = utcGuess - tzOffsetMs(utcGuess, tz);
-  return utcGuess - tzOffsetMs(first, tz);
+  const ms = utcGuess - tzOffsetMs(first, tz);
+  // Round trip: read `ms` back as a wall clock. A skipped hour comes back as a different one.
+  return { ms, exists: ms + tzOffsetMs(ms, tz) === utcGuess };
 }
 
 // The UTC instant of local midnight for a YYYY-MM-DD in an IANA timezone.
 export function zonedMidnightMs(date: string, tz: string): number {
-  return zonedWallClockMs(`${date}T00:00:00`, tz);
+  return zonedWallClock(`${date}T00:00:00`, tz).ms;
 }
 
 // How many bookable times a refusal offers back. Enough for the model to propose a real choice,
@@ -258,12 +269,16 @@ export interface BookingVerdict {
 }
 
 // The local day containing an instant, as the range the availability read has to cover. The END is
-// widened by the appointment itself, so a booking that runs past local midnight is still judged
-// whole instead of being cut by the window that was supposed to hold it. The start needs no such
-// guard: local midnight of the day holding an instant is never after it.
+// widened by one SLOT, so a booking that runs past local midnight is still judged whole instead of
+// being cut by the window that was supposed to hold it. The start needs no such guard: local
+// midnight of the day holding an instant is never after it.
+//
+// One slot, not the requested span: the span is a model argument and nothing bounds it, so widening
+// by it would let a `end` years after `start` turn a one-day freeBusy query into a decades-long one
+// before anything had a chance to refuse it. A request longer than a slot is not a slot either way.
 export function bookingWindow(
   startMs: number,
-  endMs: number,
+  slotMs: number,
   timezone: string,
 ): { timeMin: string; timeMax: string } {
   const dayStart = zonedMidnightMs(
@@ -277,7 +292,7 @@ export function bookingWindow(
   );
   return {
     timeMin: new Date(dayStart).toISOString(),
-    timeMax: new Date(Math.max(dayEnd, endMs)).toISOString(),
+    timeMax: new Date(Math.max(dayEnd, startMs + slotMs)).toISOString(),
   };
 }
 
@@ -294,7 +309,11 @@ export function bookingWindow(
 // availability read that answers the question already covers the whole day.
 export function judgeBooking(input: BookingInput): BookingVerdict {
   const { startMs, endMs, ...slotInput } = input;
-  const window = bookingWindow(startMs, endMs, input.schedule.timezone);
+  const window = bookingWindow(
+    startMs,
+    input.slotMinutes * 60_000,
+    input.schedule.timezone,
+  );
   const offered = computeAvailableSlots({ ...slotInput, ...window });
   const bookable = offered.some(
     (s) => Date.parse(s.start) === startMs && Date.parse(s.end) === endMs,

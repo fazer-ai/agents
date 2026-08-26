@@ -14,7 +14,7 @@ import {
   type Slot,
   subtractWindow,
   zonedMidnightMs,
-  zonedWallClockMs,
+  zonedWallClock,
 } from "./calendar-slots";
 import {
   type IntegrationSelection,
@@ -1068,10 +1068,15 @@ const HAS_OFFSET_RE = /(?:Z|[+-]\d{2}:?\d{2})$/i;
 function timedInstantMs(value: string, timeZone: string): number | null {
   const v = value.trim();
   if (ALL_DAY_RE.test(v)) return null;
-  const ms = HAS_OFFSET_RE.test(v)
-    ? Date.parse(v)
-    : zonedWallClockMs(v, timeZone);
-  return Number.isNaN(ms) ? null : ms;
+  if (HAS_OFFSET_RE.test(v)) {
+    const ms = Date.parse(v);
+    return Number.isNaN(ms) ? null : ms;
+  }
+  // A wall clock the timezone SKIPS (the spring-forward hour) names no instant. Refusing it is the
+  // same rule as everywhere else here: this tool does not guess a timestamp, and an explicit offset
+  // is always available to say exactly which side of the shift was meant.
+  const { ms, exists } = zonedWallClock(v, timeZone);
+  return exists && !Number.isNaN(ms) ? ms : null;
 }
 
 // A Calendar start/end the booking rule can judge: a real instant, not an all-day date. All-day is
@@ -1152,7 +1157,20 @@ async function judgeWrite(opts: {
     exceptions: [],
     timezone: opts.timeZone,
   };
-  const window = bookingWindow(startMs, endMs, effective.timezone);
+  // The appointment length the operator sells: pinned by config when there is one, otherwise the
+  // length the model asked for. Both go through resolveSlotDuration so the write is judged against
+  // the very same clamping the availability answer was built with. Resolved BEFORE the read,
+  // because it is what bounds the range the read asks Google for.
+  const preset = configuredSlotDuration(opts.sel.config);
+  const slotMinutes = resolveSlotDuration(
+    opts.sel.config,
+    preset === null ? (endMs - startMs) / 60_000 : undefined,
+  );
+  const window = bookingWindow(
+    startMs,
+    slotMinutes * 60_000,
+    effective.timezone,
+  );
   const read = await readBusySources(
     [opts.calendarId],
     opts.labels,
@@ -1181,20 +1199,13 @@ async function judgeWrite(opts: {
     { ...source, busy: subtractWindow(source.busy, opts.excludeBusy) },
     blocked.windows,
   );
-  // The appointment length the operator sells: pinned by config when there is one, otherwise the
-  // length the model asked for. Both go through resolveSlotDuration so the write is judged against
-  // the very same clamping the availability answer was built with.
-  const preset = configuredSlotDuration(opts.sel.config);
   const verdict = judgeBooking({
     startMs,
     endMs,
     now: new Date(),
     schedule: effective,
     busy,
-    slotMinutes: resolveSlotDuration(
-      opts.sel.config,
-      preset === null ? (endMs - startMs) / 60_000 : undefined,
-    ),
+    slotMinutes,
     granularityMinutes: resolveSlotGranularity(opts.sel.config),
     minLeadMinutes: resolveMinLead(opts.sel.config),
   });
@@ -1367,11 +1378,12 @@ function buildUpdateEventTool(
       const body: Record<string, unknown> = {};
       if (input.summary !== undefined) body.summary = input.summary;
       if (input.description !== undefined) body.description = input.description;
-      if (input.start !== undefined)
-        body.start = toEventTimePatch(input.start, timeZone);
-      if (input.end !== undefined)
-        body.end = toEventTimePatch(input.end, timeZone);
-      if (Object.keys(body).length === 0) {
+      if (
+        input.summary === undefined &&
+        input.description === undefined &&
+        input.start === undefined &&
+        input.end === undefined
+      ) {
         return "No fields provided. Set at least one of summary, start, end or description.";
       }
       // Ownership gate: re-fetch the event and refuse unless it carries THIS customer's stamp, so the
@@ -1412,7 +1424,16 @@ function buildUpdateEventTool(
       const moved =
         (input.start !== undefined || input.end !== undefined) &&
         (at(nextStart) !== at(currentStart) || at(nextEnd) !== at(currentEnd));
+      // The times go in the patch only when they MOVED, which is the same condition that decides
+      // whether to judge them. Echoing an unchanged value back would rewrite its representation for
+      // no reason, and for a legacy all-day appointment that rewrite is invalid: `toEventTimePatch`
+      // emits the timed shape, so a bare `YYYY-MM-DD` resent alongside a rename would reach Google
+      // as a `dateTime` of "2099-06-22" with the `date` cleared, and be rejected.
       if (moved) {
+        if (input.start !== undefined)
+          body.start = toEventTimePatch(input.start, timeZone);
+        if (input.end !== undefined)
+          body.end = toEventTimePatch(input.end, timeZone);
         if (nextStart === null || nextEnd === null) {
           return toolFailure(
             "Google Calendar did not return the appointment's current times, so the new time cannot be checked. Try again shortly.",
@@ -1435,6 +1456,9 @@ function buildUpdateEventTool(
           excludeBusy: eventBusyWindow(ownerEv, timeZone),
         });
         if (!judged.ok) return judged.refusal;
+      }
+      if (Object.keys(body).length === 0) {
+        return "The appointment already has those times, and nothing else was given to change.";
       }
       let res: GcalResponse;
       try {

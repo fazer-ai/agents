@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { PrismaClient } from "@/../generated/prisma/client";
+import { zonedWallClock } from "@/modules/integrations/toolpacks/calendar-slots";
 import { googleCalendarToolpack } from "@/modules/integrations/toolpacks/google-calendar";
 import type {
   IntegrationSelection,
@@ -537,5 +538,100 @@ describe("calendar writes honor availability — round 1 (#345)", () => {
     });
     expect(writes(calls)).toHaveLength(1);
     expect(calls.filter((c) => c.url.includes("/freeBusy"))).toHaveLength(0);
+  });
+});
+
+// Round 2 and 3 of the review: three ways the boundary between the string the model sends and the
+// instant the rule judges leaked.
+describe("calendar writes honor availability — round 3 (#345)", () => {
+  test("unchanged all-day values are left out of the patch, not reshaped", async () => {
+    // The timed patch shape would reach Google as a `dateTime` of "2099-06-22" with `date` cleared,
+    // and be rejected — an edit that changes nothing about the time breaking the rename it carried.
+    const { impl, calls } = routeFetch((url, init) => {
+      if (url.includes("/freeBusy"))
+        return { json: { calendars: { primary: { busy: [] } } } };
+      if (init.method === "GET")
+        return {
+          json: {
+            id: "ev_legacy",
+            extendedProperties: stampedExt,
+            start: { date: DAY },
+            end: { date: "2099-06-23" },
+          },
+        };
+      return { json: { id: "ev_legacy" } };
+    });
+    await toolFor(
+      "calendar_update_event",
+      HOURLY,
+      baseCtx({ fetchImpl: impl }),
+    )?.invoke({
+      eventId: "ev_legacy",
+      summary: "Feriado (nome novo)",
+      start: DAY,
+      end: "2099-06-23",
+    });
+    const patch = writes(calls)[0];
+    expect(patch).toBeDefined();
+    const body = JSON.parse(String(patch?.init.body)) as Record<
+      string,
+      unknown
+    >;
+    expect(body.summary).toBe("Feriado (nome novo)");
+    expect(body.start).toBeUndefined();
+    expect(body.end).toBeUndefined();
+  });
+
+  test("a runaway end does not widen the range the availability read asks Google for", async () => {
+    // `end` is a model argument and nothing bounds it. Widening the window by the requested span
+    // would turn one day of freeBusy into centuries before anything got the chance to refuse it.
+    const { impl, calls } = freeCalendar();
+    const out = (await toolFor(
+      "calendar_create_event",
+      HOURLY,
+      baseCtx({ fetchImpl: impl }),
+    )?.invoke({
+      summary: "Consulta",
+      start: AT("14:00"),
+      end: "2200-06-22T15:00:00-03:00",
+    })) as string;
+    const freeBusy = calls.find((c) => c.url.includes("/freeBusy"));
+    const range = JSON.parse(String(freeBusy?.init.body)) as {
+      timeMin: string;
+      timeMax: string;
+    };
+    expect(Date.parse(range.timeMax) - Date.parse(range.timeMin)).toBeLessThan(
+      36 * 3_600_000,
+    );
+    expect(writes(calls)).toHaveLength(0);
+    expect(out).toContain("not a bookable");
+  });
+
+  test("a wall clock the timezone skips is refused before any request", async () => {
+    // 02:30 does not exist on the day New York jumps 02:00 to 03:00. Resolving it anyway lands on a
+    // different instant than the string Google receives, which is the divergence being removed.
+    const { impl, calls } = freeCalendar();
+    const out = (await toolFor(
+      "calendar_create_event",
+      { ...HOURLY, timeZone: "America/New_York" },
+      baseCtx({ fetchImpl: impl }),
+    )?.invoke({
+      summary: "Consulta",
+      start: "2026-03-08T02:30:00",
+      end: "2026-03-08T03:30:00",
+    })) as string;
+    expect(calls).toHaveLength(0);
+    expect(out).toContain("ISO 8601 timestamps with an offset");
+  });
+
+  test("a wall clock the timezone keeps is still accepted", () => {
+    // The control: the refusal above has to be about the skipped hour, not about offset-less input.
+    expect(zonedWallClock("2026-03-08T04:30:00", "America/New_York")).toEqual({
+      ms: Date.parse("2026-03-08T04:30:00-04:00"),
+      exists: true,
+    });
+    expect(
+      zonedWallClock("2026-03-08T02:30:00", "America/New_York").exists,
+    ).toBe(false);
   });
 });

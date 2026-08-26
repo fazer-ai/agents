@@ -528,7 +528,7 @@ model Conversation {
   // Timestamp of the last INCOMING customer message — the WhatsApp 24h service-window anchor. A
   // proactive (follow-up/nudge) free-form send is only allowed within the window; outside it, an
   // approved template (HSM) is required. NULL = no inbound seen yet.
-  lastInboundAt          DateTime? @map("last_inbound_at")
+  lastInboundAt            DateTime? @map("last_inbound_at")
   // Chatwoot's own first-response SLA, mirrored rather than derived. Chatwoot computes both from
   // the messages table and ships them on every conversation payload, so the pair answers "how long
   // did the team take to answer" on an inbox the agent never touched — the one question the
@@ -550,8 +550,8 @@ model Conversation {
   // NULL = the payload never carried it: a conversation with no qualifying reply yet, or one no
   // event has been seen for since these columns existed. The KPI needs both, and reports the size
   // of its sample beside the median so a partial backfill can be seen instead of assumed away.
-  chatwootCreatedAt      DateTime? @map("chatwoot_created_at")
-  chatwootFirstReplyAt   DateTime? @map("chatwoot_first_reply_at")
+  chatwootCreatedAt        DateTime? @map("chatwoot_created_at")
+  chatwootFirstReplyAt     DateTime? @map("chatwoot_first_reply_at")
   // Watermark for follow-up single-shot semantics: set after each follow-up (sent or silenced).
   // Another follow-up can only fire once the client speaks again (lastInboundAt > lastFollowUpAt).
   // NULL = no follow-up has ever been attempted for this conversation.

@@ -467,6 +467,103 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
     });
   };
 
+  // Review round 10 of #355. A timed close (`closeChat: true`) posts the goodbye on the chat and
+  // resolves it BEFORE it looks the WhatsApp sibling up, and every fence past that first send is
+  // deliberately skipped — half a goodbye is worse than a duplicate. So the sibling lookup is the one
+  // read that happens after this run is already committed to an episode, and re-reading the pairing
+  // there lets a re-entry landing inside those round trips redirect the WhatsApp half: a move sends
+  // the goodbye to, and RESOLVES, the conversation the NEW episode just paired with.
+  test("a re-entry during the chat close cannot move which sibling is closed", async () => {
+    await restoreAnchor();
+    const DECOY_CONV = 7173;
+    const entry = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: ENTRY_CONV },
+      select: { inboxId: true, contactId: true },
+    });
+    await suDb.conversation.upsert({
+      where: {
+        tenantId_chatwootInstanceId_chatwootConversationId: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: DECOY_CONV,
+        },
+      },
+      create: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        inboxId: entry.inboxId,
+        contactId: entry.contactId,
+        chatwootConversationId: DECOY_CONV,
+        status: "pending",
+        threadId: `${tenantId}:${instanceId}:${DECOY_CONV}`,
+        lastEventAt: new Date(Date.now() + 120_000),
+        lastInboundAt: new Date(),
+      },
+      update: {},
+    });
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: WIDGET_CONV },
+      data: {
+        redirectOriginDisplayId: ENTRY_CONV,
+        chatwootRedirectOriginAt: 1_786_000_000.5,
+      },
+    });
+
+    const s = stubClient();
+    const moving = {
+      ...s,
+      makeClient: async () => {
+        const inner = await s.makeClient();
+        return {
+          ...inner,
+          sendMessage: async (c: number, t: string) => {
+            // The chat half has left. From here the run cannot stop, and this is where a second
+            // redirect lands.
+            if (c === WIDGET_CONV) {
+              await suDb.conversation.updateMany({
+                where: { tenantId, chatwootConversationId: WIDGET_CONV },
+                data: {
+                  redirectOriginDisplayId: DECOY_CONV,
+                  chatwootRedirectOriginAt: 1_786_000_090.5,
+                },
+              });
+            }
+            return inner.sendMessage(c, t);
+          },
+        } as unknown as Awaited<ReturnType<typeof s.makeClient>>;
+      },
+    };
+
+    try {
+      await deliverRedirectClosing({
+        tenantId,
+        instanceId,
+        widgetConversationId: WIDGET_CONV,
+        entryInboxId: 110,
+        closingMessage: "Vamos encerrar por aqui.",
+        closeChat: true,
+        base: appDb,
+        deps: { makeClient: moving.makeClient },
+      });
+
+      // The episode this run claimed is the one it closes, on both halves.
+      expect(s.sent.map(([c]) => c)).toEqual([WIDGET_CONV, ENTRY_CONV]);
+      expect(s.resolved).toEqual([WIDGET_CONV, ENTRY_CONV]);
+    } finally {
+      await suDb.conversation.updateMany({
+        where: { tenantId, chatwootConversationId: WIDGET_CONV },
+        data: {
+          redirectOriginDisplayId: null,
+          chatwootRedirectOriginAt: null,
+        },
+      });
+      await suDb.conversation
+        .deleteMany({ where: { tenantId, chatwootConversationId: DECOY_CONV } })
+        .catch(() => {});
+      await restoreAnchor();
+    }
+  });
+
   test("a closing whose anchor was cleared mid-run sends nothing", async () => {
     await restoreAnchor();
     const s = stubClient();

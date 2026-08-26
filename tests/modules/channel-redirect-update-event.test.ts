@@ -287,15 +287,23 @@ describe.skipIf(!dbUp)(
       });
     });
 
-    // Review round 9 of #355. The retirement runs inside the mirror's transaction, and a statement
-    // Postgres REJECTS there aborts the whole transaction at the server: every statement after it
-    // fails with `current transaction is aborted`, whatever JavaScript did with the rejection. A
-    // plain catch would therefore read as a degradation and deliver a rollback of the pairing —
-    // and this path is detached with Chatwoot's 200 already sent, so that event never comes back.
+    // Rounds 9 and 10 of #355, and they settle two halves of one question.
     //
-    // Reproduced with a genuinely failing statement rather than a thrown Error, because a thrown
-    // Error does not abort a Postgres transaction and would prove nothing.
-    test("a scheduler statement Postgres rejects does not cost the pairing", async () => {
+    // The savepoint is round 9: the retirement runs inside the mirror's transaction, and a statement
+    // Postgres REJECTS there aborts the whole transaction at the server. Every statement after it
+    // fails with `current transaction is aborted`, whatever JavaScript did with the rejection, so a
+    // plain catch read as a degradation and delivered a rollback. Reproduced with a genuinely failing
+    // statement rather than a thrown Error, because a thrown Error does not abort a Postgres
+    // transaction and would prove nothing.
+    //
+    // What round 10 adds is WHAT survives that rollback. Committing the new pairing over a ladder
+    // that could not be retired is the one combination that must not happen: the ladder carries no
+    // episode of its own, so it would re-read the pairing and run the PREVIOUS episode's schedule
+    // against the NEW one — a nudge and a resolve on a conversation that just started. So the pairing
+    // stands still with it. Nothing is lost by that: every later payload for this conversation
+    // restates the pairing, and the mark it is ordered by has not moved either, so the next delivery
+    // applies both together.
+    test("a scheduler statement Postgres rejects holds the pairing back", async () => {
       const FOURTH = 6204;
       const breaking = appDb.$extends({
         query: {
@@ -314,15 +322,69 @@ describe.skipIf(!dbUp)(
         },
       }) as unknown as PrismaClient;
 
-      await armLadder();
+      const key = await armLadder();
+      const stamped = new Date();
+      await suDb.conversation.updateMany({
+        where: { tenantId, chatwootConversationId: WIDGET_CONV },
+        data: { redirectLinkedAt: stamped, redirectClosedAt: stamped },
+      });
+      const before = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: WIDGET_CONV },
+        select: {
+          redirectOriginDisplayId: true,
+          chatwootRedirectOriginAt: true,
+        },
+      });
       await deliver(
         widgetConversation(FOURTH),
         "conversation_updated",
         breaking,
       );
 
-      // The pairing survived the aborted statement, rolled back to the savepoint.
-      expect((await widgetRow()).redirectOriginDisplayId).toBe(FOURTH);
+      // Nothing about the episode moved: not the pairing, not the mark it is ordered by, not the
+      // one-shots. The mark matters as much as the value — advanced on its own it would describe a
+      // pairing the row never took, and refuse the payload that comes to deliver it. And releasing
+      // the watermarks here would re-run the cross-link on an episode that is still the current one.
+      const after = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: WIDGET_CONV },
+        select: {
+          redirectOriginDisplayId: true,
+          chatwootRedirectOriginAt: true,
+          redirectLinkedAt: true,
+          redirectClosedAt: true,
+        },
+      });
+      expect(after.redirectOriginDisplayId).toBe(
+        before.redirectOriginDisplayId,
+      );
+      expect(after.chatwootRedirectOriginAt).toBe(
+        before.chatwootRedirectOriginAt,
+      );
+      expect(after.redirectLinkedAt).not.toBeNull();
+      expect(after.redirectClosedAt).not.toBeNull();
+      expect(await ladderState(key)).toEqual({
+        status: "PENDING",
+        cancelled: false,
+      });
+
+      // And the next ordinary delivery applies both. The event never had to come back from
+      // Chatwoot for this: every payload for the conversation restates the pairing.
+      await deliver(widgetConversation(FOURTH), "conversation_updated");
+      const applied = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: WIDGET_CONV },
+        select: {
+          redirectOriginDisplayId: true,
+          redirectLinkedAt: true,
+          redirectClosedAt: true,
+        },
+      });
+      expect(applied.redirectOriginDisplayId).toBe(FOURTH);
+      expect(applied.redirectLinkedAt).toBeNull();
+      expect(applied.redirectClosedAt).toBeNull();
+      expect(await ladderState(key)).toEqual({
+        status: "DONE",
+        cancelled: true,
+      });
     });
 
     test("the cloned message that follows is what links the episode", async () => {

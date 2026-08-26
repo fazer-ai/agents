@@ -243,9 +243,6 @@ export async function mirrorChatwootEvent(
       // Written with the pairing wherever the pairing is written, the stale branch included: that
       // branch is where the pairing's own conversation_updated ORDINARILY lands, since
       // `last_activity_at` does not move on a column write.
-      const episodeRelease = releasesEpisode
-        ? { redirectLinkedAt: null, redirectClosedAt: null }
-        : {};
       // The other half of the release, and it has to be ATOMIC with the pairing write, not merely
       // after it. The ladder messages the paired WhatsApp thread and RESOLVES it, and retiring is the
       // one signal that reaches a worker which has already claimed — a cancel touches PENDING rows
@@ -260,22 +257,23 @@ export async function mirrorChatwootEvent(
       // racing it blocks and lands after. Work armed for the next episode survives; work armed for
       // the previous one does not.
       //
-      // Best-effort for the DOMAIN, like the outbound emit above: a scheduler write must not be able
-      // to fail the mirror. A ladder left standing re-reads the pairing before it acts and its
-      // closing claim carries the origin it read, so the fences downstream are the floor.
-      //
-      // A SAVEPOINT, because catching the rejection is not enough to make it best-effort. A statement
-      // that Postgres rejects — a deadlock, a statement timeout — aborts the whole transaction at the
+      // A SAVEPOINT, because catching the rejection would not contain the failure. A statement that
+      // Postgres rejects — a deadlock, a statement timeout — aborts the whole transaction at the
       // server, and every statement after it fails with `current transaction is aborted` no matter
-      // what JavaScript did with the error. Without the savepoint the catch reads as a degradation
-      // and delivers a rollback: the pairing itself would be lost.
+      // what JavaScript did with the error. Without the savepoint this catch reads as a degradation
+      // and delivers a rollback of the whole mirror write.
       //
-      // Losing the mirror write is the worse end of the trade, and not by a little. This path is
-      // detached and Chatwoot already has its 200, so a rejection escaping here leaves the delivery
-      // row on PROCESSING with nothing running and that event never comes back — a transient
-      // deadlock in the scheduler would drop the pairing permanently. Rolling back to the savepoint
-      // keeps the pairing and leaves the ladder standing, which is the degradation the paragraph
-      // above already describes and the downstream fences already handle.
+      // And letting it escape is worse still: this path is detached with Chatwoot's 200 already sent,
+      // so a rejection leaves the delivery row on PROCESSING with nothing running and that event
+      // never comes back — a transient deadlock in the scheduler would drop the pairing permanently.
+      //
+      // What must NOT survive the rollback is the pairing. The ladder carries no episode of its own,
+      // so committing the new pairing over a ladder that could not be retired hands the PREVIOUS
+      // episode's schedule to the NEW one: its next stage re-reads the pairing and nudges, then
+      // resolves, a conversation that has just started. So the pairing stands still with it, and
+      // nothing is lost by that — every later payload for this conversation restates the pairing and
+      // the mark it is ordered by has not moved either, so the next delivery applies both together.
+      let retiredLadder = true;
       if (releasesEpisode && opts.redirectLadderDedupeKey) {
         await db.$executeRawUnsafe("SAVEPOINT retire_redirect_ladder");
         try {
@@ -292,13 +290,22 @@ export async function mirrorChatwootEvent(
           await db.$executeRawUnsafe(
             "ROLLBACK TO SAVEPOINT retire_redirect_ladder",
           );
+          retiredLadder = false;
           logger.warn(
-            "chatwoot: could not retire the previous redirect episode's ladder (conv=%s): %s",
+            "chatwoot: could not retire the previous redirect episode's ladder, holding the pairing back (conv=%s): %s",
             String(convId),
             err instanceof Error ? err.message : String(err),
           );
         }
       }
+      // The pairing moves only with a ladder that stood down. Everything else this event carries is
+      // unaffected: the mirror writes each field on its own terms.
+      const writesRedirectOrigin = decision.redirectOrigin && retiredLadder;
+      const redirectOriginAt = retiredLadder ? decision.redirectOriginAt : null;
+      const episodeRelease =
+        releasesEpisode && retiredLadder
+          ? { redirectLinkedAt: null, redirectClosedAt: null }
+          : {};
 
       if (existing && decision.stale) {
         // NOTE: A stale event says nothing about the conversation's STATE, with three exceptions, all
@@ -333,11 +340,11 @@ export async function mirrorChatwootEvent(
           ...(dropsResolutionOrigin && existing.resolvedBy != null
             ? { resolvedBy: null, resolvedByAt: null }
             : {}),
-          ...(decision.redirectOrigin
+          ...(writesRedirectOrigin
             ? { redirectOriginDisplayId: n.redirectOriginDisplayId ?? null }
             : {}),
-          ...(decision.redirectOriginAt != null
-            ? { chatwootRedirectOriginAt: decision.redirectOriginAt }
+          ...(redirectOriginAt != null
+            ? { chatwootRedirectOriginAt: redirectOriginAt }
             : {}),
           ...episodeRelease,
           ...staleSla,
@@ -482,11 +489,11 @@ export async function mirrorChatwootEvent(
           // fork records the pairing, so ordering this field by recency would both miss the race and
           // discard the conversation_updated that announces the change. The consumer messages AND
           // resolves the conversation this names, so a regression acts on the wrong thread.
-          ...(decision.redirectOrigin
+          ...(writesRedirectOrigin
             ? { redirectOriginDisplayId: n.redirectOriginDisplayId ?? null }
             : {}),
-          ...(decision.redirectOriginAt != null
-            ? { chatwootRedirectOriginAt: decision.redirectOriginAt }
+          ...(redirectOriginAt != null
+            ? { chatwootRedirectOriginAt: redirectOriginAt }
             : {}),
           ...episodeRelease,
         },

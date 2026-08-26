@@ -272,22 +272,35 @@ async function resolveWhatsAppSibling(
   widgetConversationId: number,
   entryInboxId: number,
   base: PrismaClient,
+  // The episode to resolve FOR, when the caller is holding one. A closing that has already posted on
+  // the chat is committed to an episode: re-reading the pairing at that point lets a re-entry landing
+  // during those round trips redirect the WhatsApp half — a clear leaves the original thread open, a
+  // move sends the goodbye to (and RESOLVES) the conversation the new episode just paired with. The
+  // ladder's own stage-2 send has no such commitment and keeps reading fresh, which is what lets a
+  // /reset stand it down.
+  pinned?: {
+    contactId: bigint | null;
+    redirectOriginDisplayId: number | null;
+    chatwootRedirectOriginAt: number | null;
+  },
 ): Promise<WhatsAppSibling | null> {
   return runScopedOn(base, sysCtx(tenantId), async (db) => {
-    const widgetConv = await db.conversation.findUnique({
-      where: {
-        tenantId_chatwootInstanceId_chatwootConversationId: {
-          tenantId,
-          chatwootInstanceId: instanceId,
-          chatwootConversationId: widgetConversationId,
+    const widgetConv =
+      pinned ??
+      (await db.conversation.findUnique({
+        where: {
+          tenantId_chatwootInstanceId_chatwootConversationId: {
+            tenantId,
+            chatwootInstanceId: instanceId,
+            chatwootConversationId: widgetConversationId,
+          },
         },
-      },
-      select: {
-        contactId: true,
-        redirectOriginDisplayId: true,
-        chatwootRedirectOriginAt: true,
-      },
-    });
+        select: {
+          contactId: true,
+          redirectOriginDisplayId: true,
+          chatwootRedirectOriginAt: true,
+        },
+      }));
     if (!widgetConv) return null;
     const originQuery = episodeOriginQuery({
       tenantId,
@@ -915,6 +928,7 @@ export async function deliverRedirectClosing(
         status: true,
         chatwootStatusAt: true,
         lastInboundAt: true,
+        contactId: true,
         redirectOriginDisplayId: true,
         chatwootRedirectOriginAt: true,
         inbox: { select: { agentId: true, channelType: true, provider: true } },
@@ -1160,6 +1174,14 @@ export async function deliverRedirectClosing(
     p.widgetConversationId,
     p.entryInboxId,
     base,
+    // The episode this run CLAIMED, not whatever the row says now. By here the chat half may already
+    // have had its goodbye and its resolve, so this run is committed to an episode; a re-entry
+    // landing during those round trips must not move the conversation the WhatsApp half closes.
+    {
+      contactId: cx.widget.contactId,
+      redirectOriginDisplayId: cx.widget.redirectOriginDisplayId,
+      chatwootRedirectOriginAt: cx.widget.chatwootRedirectOriginAt,
+    },
   );
   // NOTE: ONE watermark read and ONE fence, in that order, and nothing between the fence and the
   // send. Asking the watermark again after the fence — which is what a second `stillDelivering()`

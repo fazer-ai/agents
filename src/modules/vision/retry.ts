@@ -20,8 +20,8 @@ const TRANSIENT_STATUSES = new Set([408, 429, 500, 502, 503, 504, 529]);
 // A connection that never opened is deliberately absent: it reads transient and is just as often a
 // base URL that will never resolve, which the operator needs to see fail on the first attempt.
 export function isTransientVisionFailure(err: unknown): boolean {
-  // "Was this a timeout?" already has an owner, and the second copy is the one that gets it wrong:
-  // `provider-failure` learned by measurement that both vendor SDKs raise a CLASS instead of
+  // NOTE: "Was this a timeout?" already has an owner, and the second copy is the one that gets it
+  // wrong: `provider-failure` learned by measurement that both vendor SDKs raise a CLASS instead of
   // setting `name`.
   if (providerFailure(err) === "timeout") return true;
   const status = statusOf(err);

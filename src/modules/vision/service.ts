@@ -98,19 +98,24 @@ export async function extractWithRetry(args: {
   now?: () => number;
 }): Promise<VisionResult> {
   const { kind } = args.req;
-  // A `baseURL` means the operator chose the endpoint, so the latency is their hardware's and none
-  // of our measurements describe it — the ceiling stands down and the attempt keeps the full total.
+  // NOTE: A `baseURL` means the operator chose the endpoint, so the latency is their hardware's and
+  // none of our measurements describe it — the ceiling stands down and the attempt keeps the total.
   const customEndpoint = args.req.baseURL !== null;
   const sleep = args.sleep ?? realSleep;
-  const now = args.now ?? Date.now;
+  // NOTE: `performance.now`, not `Date.now`: this is a hard deadline, and a wall clock can move
+  // BACKWARD (an NTP correction, a VM resuming from a snapshot — this project has seen the Docker
+  // VM's clock drift after sleep). A negative elapsed would hand an attempt more than the total has
+  // left. The monotonic source cannot, and only differences are read here, so its arbitrary origin
+  // does not matter.
+  const now = args.now ?? (() => performance.now());
   const startedAt = now();
   let lastErr: unknown;
   for (let attempt = 1; attempt <= VISION_MAX_ATTEMPTS; attempt++) {
     const delayMs = retryDelayMs(attempt);
     if (delayMs === null) break;
-    // Two readings of the same question, because the wait sits between them. The first asks whether
-    // waiting is worth it AT ALL — a wait that lands past the total costs the turn hundreds of
-    // milliseconds to buy nothing.
+    // NOTE: Two readings of the same question, because the wait sits between them. The first asks
+    // whether waiting is worth it AT ALL — a wait that lands past the total costs the turn hundreds
+    // of milliseconds to buy nothing.
     if (
       attemptBudgetMs({
         kind,
@@ -121,9 +126,9 @@ export async function extractWithRetry(args: {
     )
       break;
     if (delayMs > 0) await sleep(delayMs);
-    // The second is the one the provider gets, and it is read AFTER the wait: `sleep` is what a
-    // stalled or suspended process oversleeps, and a deadline computed from the nominal delay would
-    // hand that process time the total no longer has.
+    // NOTE: The second is the one the provider gets, and it is read AFTER the wait: `sleep` is what
+    // a stalled or suspended process oversleeps, and a deadline computed from the nominal delay
+    // would hand that process time the total no longer has.
     const budgetMs = attemptBudgetMs({
       kind,
       attempt,
@@ -138,26 +143,26 @@ export async function extractWithRetry(args: {
         {
           provider: args.providerName,
           model: args.model,
-          // `budgetMs` is what THIS attempt was allowed, and the two lines of one extraction do
-          // not carry the same number: the last attempt gets what is left of the total. Without it
-          // a 39s timeout reads as a slow provider rather than as the budget running out.
+          // NOTE: `budgetMs` is what THIS attempt was allowed, and the two lines of one extraction
+          // do not carry the same number: the last attempt gets what is left of the total. Without
+          // it a 39s timeout reads as a slow provider rather than as the budget running out.
           detail: { kind, attempt, budgetMs },
-          // Recovered (→ "couldn't extract" marker), so a failure reads as an advisory, not a red
-          // error — same contract as TTS.
+          // NOTE: Recovered (→ "couldn't extract" marker), so a failure reads as an advisory, not
+          // a red error — same contract as TTS.
           errorLevel: "warn",
         },
         () => args.provider.extract({ ...args.req, timeoutMs: budgetMs }),
       );
     } catch (err) {
-      // A permanent failure (a bad key, a model id that does not exist, a file the provider
+      // NOTE: A permanent failure (a bad key, a model id that does not exist, a file the provider
       // rejects) answers the same way every time, so asking again only makes the turn slower.
       if (!isTransientVisionFailure(err)) throw err;
       lastErr = err;
     }
   }
-  // Reached when the attempts or the budget ran out, and by the loop's own bound — so stopping
-  // never depends only on a rule that lives elsewhere. `lastErr` is always set here: attempt 1 is
-  // asked at zero elapsed, so it always gets a budget and always either returns or fills it.
+  // NOTE: Reached when the attempts or the budget ran out, and by the loop's own bound — so
+  // stopping never depends only on a rule that lives elsewhere. `lastErr` is always set here:
+  // attempt 1 is asked at zero elapsed, so it always gets a budget and either returns or fills it.
   throw lastErr;
 }
 

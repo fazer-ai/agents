@@ -266,12 +266,18 @@ export async function webhookDeliveryRequeue(
   if (typeof id !== "bigint") return id;
   const target = `webhook_delivery:${id}`;
   try {
-    const current = await getWebhookDelivery(ctx, id, base);
-    if (current.status !== "DEAD")
-      return err(
-        `only a dead delivery can be requeued (this one is ${current.status})`,
-      );
+    // The preview reads the row; the APPLY does not. They are different questions: a preview says
+    // what would happen if the write ran now, and an unlocked read is the only thing it can say it
+    // from — while an apply that repeated that read would refuse cases the service accepts. The
+    // worker turning SENDING into DEAD is the case: uncommitted, it still reads SENDING here, and
+    // the service is built to wait on that transition and requeue the row that comes out of it.
+    // So the apply defers to the locked check, and its refusal is the service's own.
     if (args.dry_run !== false) {
+      const current = await getWebhookDelivery(ctx, id, base);
+      if (current.status !== "DEAD")
+        return err(
+          `only a dead delivery can be requeued (this one is ${current.status})`,
+        );
       return ok({
         dryRun: true,
         action: "requeue",
@@ -293,10 +299,9 @@ export async function webhookDeliveryRequeue(
         },
       });
     }
-    // `before` comes from the service's own LOCKED read, never from `current` above: between that
-    // read and the write, another operator can requeue this row and the worker can drive it back
-    // to DEAD (one tick, for a URL the SSRF guard refuses), and the audit would then describe the
-    // previous death instead of the one this call undid.
+    // `before` is the service's own LOCKED read, which is what makes the audit describe the write
+    // that happened: any read this tool took first would be one the row can move away from, and
+    // for a URL the SSRF guard refuses that takes a single tick.
     const { delivery: after, before } = await requeueWebhookDelivery(
       ctx,
       id,

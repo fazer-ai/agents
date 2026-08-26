@@ -188,6 +188,44 @@ describe.skipIf(!dbUp)("MCP delivery tools (DB)", () => {
     expect([row.status, row.attempts]).toEqual(["SENDING", 3]);
   });
 
+  test("an apply waits for the worker to finish dying instead of refusing", async () => {
+    // The row the tool must NOT refuse: the worker has decided it is dead and has not committed
+    // yet, so an unlocked read still answers SENDING. The service is built to wait on exactly that
+    // transition, so the apply defers to its locked check rather than repeating the read — a
+    // preview may say SENDING here, but an apply that did would refuse a delivery that is dead by
+    // the time it would have written.
+    const id = await seed("SENDING", 7);
+    const holder = suDb.$transaction(
+      async (tx) => {
+        await tx.$executeRawUnsafe(
+          `UPDATE outbound_webhook_deliveries SET status = 'DEAD', attempts = 8 WHERE id = ${id}`,
+        );
+        await Bun.sleep(500);
+      },
+      { timeout: 10_000 },
+    );
+    await Bun.sleep(120);
+    const [, r] = await Promise.all([
+      holder,
+      webhookDeliveryRequeue(
+        principal({ tenantId }),
+        { delivery_id: String(id), dry_run: false },
+        { base: appDb },
+      ),
+    ]);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.data.applied).toBe(true);
+    const row = await suDb.outboundWebhookDelivery.findUniqueOrThrow({
+      where: { id },
+    });
+    expect([row.status, row.attempts]).toEqual(["PENDING", 0]);
+    const audit = await suDb.auditLog.findFirstOrThrow({
+      where: { tenantId, target: `webhook_delivery:${id}` },
+      orderBy: { id: "desc" },
+    });
+    expect(audit.before).toMatchObject({ status: "DEAD", attempts: 8 });
+  });
+
   test("the audit records the state the LOCKED write undid, not an earlier look", async () => {
     // The window: the tool reads the row to build its preview, and between that read and the write
     // the row can move — another operator requeues it and the worker kills it again, which for a

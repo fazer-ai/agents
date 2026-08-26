@@ -353,6 +353,38 @@ function validateParamName(raw: string, kind: string): string {
   return trimmed;
 }
 
+// A credential is stored as its exact bytes, so a paste artifact is not a detail: an HTTP field
+// value has its surrounding whitespace stripped before any handler sees it, so a token stored with a
+// trailing newline can never be matched by the one that arrives, and the refusal that follows is
+// byte-identical to a wrong token (issue #338).
+//
+// This REFUSES rather than trimming, and the difference is the whole point. Trimming would repair
+// the header case silently while breaking the one where the bytes are shared rather than sent: an
+// HMAC key never travels, both sides hold it, and `createHmac` uses it verbatim — so rewriting ours
+// would fail every signature at the provider instead of here. Refusing changes no secret, needs no
+// per-kind exception, and hands the operator the one fact they could not see.
+// The sentence names the field when there is one, because that is the only place the name survives:
+// `AppError.field` is dropped by the MCP writer (`failOf` sends `e.message`) and by the console's
+// save-error path, so a padded Langfuse key would otherwise refuse with a sentence that cannot say
+// WHICH of the two is padded — for whitespace, of all things, which the operator cannot see.
+function assertNoSurroundingWhitespace(value: string, field?: string): void {
+  if (value === value.trim()) return;
+  if (field !== undefined) {
+    throw new AppError(
+      `value.${field} must not begin or end with whitespace`,
+      400,
+      "errors.vaultFieldWhitespace",
+      { field },
+      field,
+    );
+  }
+  throw new AppError(
+    "vault secret must not begin or end with whitespace",
+    400,
+    "errors.vaultSecretWhitespace",
+  );
+}
+
 // Validates the secret value against the kind's declared shape.
 // - kinds with `fields` declared: must be a Record<string, string> with exactly those keys, all non-empty.
 // - all other kinds: must be a non-empty string.
@@ -394,6 +426,7 @@ function validateVaultValue(kind: string, value: unknown): void {
           key,
         );
       }
+      assertNoSurroundingWhitespace(v, key);
     }
     // Reject extra keys not in the declared field list.
     const declaredKeys = new Set(fields.map((f) => f.key));
@@ -415,6 +448,7 @@ function validateVaultValue(kind: string, value: unknown): void {
         "errors.emptyVaultSecret",
       );
     }
+    assertNoSurroundingWhitespace(value);
   }
 }
 
@@ -831,6 +865,12 @@ export async function testVaultValue(
 ): Promise<SecretTestResult> {
   if (kind && !isSecretTypeId(kind)) {
     throw new AppError("invalid secret type", 400, "errors.invalidSecretType");
+  }
+  // A value the write would refuse is not a connectivity question, and probing it answers the wrong
+  // one: fetch strips the padding out of a header, so a fixed-header kind reports "Connection OK"
+  // and the save then refuses the same bytes.
+  if (value !== value.trim()) {
+    return { testable: true, ok: false, code: "surrounding_whitespace" };
   }
   return runSecretTest({ kind, value, baseURL, paramName }, deps);
 }

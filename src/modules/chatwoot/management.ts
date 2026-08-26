@@ -1330,6 +1330,126 @@ export async function bindInbox(
   });
 }
 
+// Whether Chatwoot ANSWERED that this inbox does not exist. This is the single fact that authorizes
+// destroying an operator's mirror row, so it is deliberately narrow: only our own error type, and
+// only a 404. Everything else — a refusal, a broken Chatwoot, a wrong credential, a request that
+// never left — means we did not get an answer, and "we could not ask" must never read as "it is
+// gone". Measured live against the fork (2026-08-25): a live inbox answers 200, an absent one 404
+// {"error":"Resource could not be found"}, a missing token 401. A 403 is the interesting one: the
+// controller runs `authorize @inbox, :show?` AFTER the `find`, so a 403 proves the inbox EXISTS.
+//
+// Shares a body with `unbindNeedsNothingRemote` and is deliberately a different function. That one
+// asks "is there nothing left to disconnect?" of a POST to /set_agent_bot; this asks "does this
+// inbox exist?" of a GET on the inbox. They agree only because both routes happen to resolve through
+// the same `find`, and either route's 404 semantics could change without the other. The costs differ
+// too: a wrong answer there skips a call, a wrong answer here deletes a row.
+export function remoteInboxIsGone(err: unknown): boolean {
+  return err instanceof ChatwootApiError && err.status === 404;
+}
+
+// Read the mirror row and ask Chatwoot whether its inbox still exists. Shared by the removal and by
+// the removal's PREVIEW, so a dry run answers the same question the write answers: a preview that
+// replies from its arguments alone approves exactly what the write then refuses.
+async function loadInboxAndAsk(
+  ctx: TenantContext,
+  inboxId: bigint,
+  deps: LoadChatwootClientDeps,
+  base: PrismaClient,
+): Promise<{ inbox: InboxDto; gone: boolean }> {
+  if (ctx.tenantId === null) throw new AppError("tenant required", 400);
+  const tenantId = ctx.tenantId;
+
+  const row = await runScopedOn(base, ctx, (db) =>
+    db.inbox.findUnique({ where: { id: inboxId }, select: INBOX_SELECT }),
+  );
+  if (!row) {
+    throw new NotFoundError("inbox not found", "errors.inboxNotFound");
+  }
+
+  // Ask, OUTSIDE any tx. NOTE: unlike `bindInbox`, an AppError raised while loading the client is
+  // NOT rethrown as itself — every way of failing to get an answer collapses into the same refusal,
+  // because the only thing that matters downstream is that we did not get the 404.
+  try {
+    const client = await loadChatwootClient(tenantId, row.chatwootInstanceId, {
+      base,
+      makeClient: deps.makeClient,
+    });
+    await client.getInbox(row.chatwootInboxId);
+  } catch (err) {
+    if (!remoteInboxIsGone(err)) {
+      // NOTE: the sentence says CONFIRM and not "reach", because this branch also carries answers
+      // that did reach us (401, 403, 500). "Could not reach Chatwoot" would be false for those, and
+      // a sentence that is false on a branch it covers is the defect issue #292 spent a PR removing.
+      throw new AppError(
+        "could not confirm with Chatwoot that this inbox was deleted",
+        502,
+        "errors.chatwootInboxProbeFailed",
+      );
+    }
+    return { inbox: toInboxDto(row), gone: true };
+  }
+  return { inbox: toInboxDto(row), gone: false };
+}
+
+// The preview half, for a transport that offers a dry run before it writes.
+export async function previewInboxRemoval(
+  ctx: TenantContext,
+  inboxId: bigint,
+  deps: LoadChatwootClientDeps = {},
+  base: PrismaClient = basePrisma,
+): Promise<{ inbox: InboxDto; gone: boolean }> {
+  return loadInboxAndAsk(ctx, inboxId, deps, base);
+}
+
+// Remove the mirror of an inbox that no longer exists in Chatwoot — the explicit action that the
+// comment in `syncInboxes` points at. Pruning on sync was considered and rejected there (a sync that
+// cannot reach an inbox would otherwise delete a binding the operator configured), which left the
+// orphan with no lifecycle at all.
+//
+// THE FENCE IS THE FEATURE. The mirror recreates an `Inbox` row for any inbox that sends us traffic
+// (`upsertInbox`, deliberately: mirroring has to work before an operator binds anything), so
+// deleting the mirror of a LIVE inbox does not remove anything — the next message rebuilds the row
+// with no agent bound, and the customer lands in `emitUnroutedMessage` with nobody to answer. A
+// removal is therefore only ever correct for an inbox Chatwoot states is gone.
+//
+// Reads Chatwoot, never writes to it, and needs no remote cleanup: the inbox is gone, so no persona
+// bot of ours is connected to it. Conversations are kept (`Inbox.conversations` is `onDelete:
+// SetNull`); `llm_usage.inbox_id` and `execution_logs.inbox_id` are bare columns with no foreign
+// key, so past spend and past log lines survive with a dangling id and the dashboard renders them as
+// an unnamed bucket. That trade is the point: the operator asked for the row to go.
+export async function removeInbox(
+  ctx: TenantContext,
+  inboxId: bigint,
+  deps: LoadChatwootClientDeps = {},
+  base: PrismaClient = basePrisma,
+): Promise<void> {
+  const { gone } = await loadInboxAndAsk(ctx, inboxId, deps, base);
+  if (!gone) {
+    throw new AppError(
+      "this inbox still exists in Chatwoot; delete it there first",
+      409,
+      "errors.inboxStillExists",
+    );
+  }
+
+  // NOTE: a writer that is ALREADY in flight can put the row back, and that is deliberate rather
+  // than unhandled. Two can: a `syncInboxes` whose remote list was fetched before the upstream
+  // deletion, and a webhook delivery being mirrored. Neither is worth a tombstone, and a tombstone
+  // would be the harmful fix: `upsertInbox` recreating a row because TRAFFIC arrived is the
+  // behaviour this whole fence rests on, so a row that refuses to be recreated is an inbox whose
+  // customers reach nobody and whose messages are mirrored nowhere — silently, and with no operator
+  // action that repairs it. What the window costs today is a row reappearing unbound, which the
+  // operator removes again; what a tombstone would cost is traffic. The window is also small by
+  // construction: a sync started after the upstream deletion cannot list the inbox at all.
+  // `deleteMany`, not `delete`: the row was read, then the network was asked, so a concurrent
+  // removal can land in between and `delete` would answer that window with a P2025 — a 500 for two
+  // operators doing the same correct thing. A DELETE is idempotent, and "it is already gone" is the
+  // outcome the caller asked for.
+  await runScopedOn(base, ctx, async (db) => {
+    await db.inbox.deleteMany({ where: { id: inboxId } });
+  });
+}
+
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }

@@ -175,6 +175,7 @@ describe.skipIf(!dbUp)("scheduler lanes", () => {
     const ids = new Map<bigint, SchedulerJobKind>();
     for (const kind of ALL_KINDS) {
       const id = await enqueueJob({
+        rearm: "same-work",
         tenantId,
         kind,
         dedupeKey: `lane-${kind}`,
@@ -252,6 +253,7 @@ describe.skipIf(!dbUp)("scheduler lanes", () => {
     });
 
     await enqueueJob({
+      rearm: "same-work",
       tenantId,
       kind: "HEARTBEAT",
       dedupeKey: "drain-first",
@@ -259,6 +261,7 @@ describe.skipIf(!dbUp)("scheduler lanes", () => {
       base: appDb,
     });
     await enqueueJob({
+      rearm: "same-work",
       tenantId,
       kind: "FLOWLOG_SWEEP",
       dedupeKey: "drain-second",
@@ -326,6 +329,7 @@ describe.skipIf(!dbUp)("scheduler lanes", () => {
 
     for (let i = 0; i < N; i++) {
       await enqueueJob({
+        rearm: "same-work",
         tenantId,
         kind: "APPOINTMENT_REMINDER",
         dedupeKey: `bound-costly-${i}`,
@@ -333,6 +337,7 @@ describe.skipIf(!dbUp)("scheduler lanes", () => {
         base: appDb,
       });
       await enqueueJob({
+        rearm: "same-work",
         tenantId,
         kind: "HEARTBEAT",
         dedupeKey: `bound-cheap-${i}`,
@@ -411,6 +416,7 @@ describe.skipIf(!dbUp)("scheduler lanes", () => {
     });
     try {
       const foreign = await enqueueJob({
+        rearm: "same-work",
         tenantId: other.id,
         kind: "WEBHOOK_RETRY",
         dedupeKey: "foreign",
@@ -449,6 +455,7 @@ describe.skipIf(!dbUp)("scheduler lanes", () => {
   // change that a function was covered and its call site was not.
   test("the shared tick drains both halves of its lane", async () => {
     const fixed = await enqueueJob({
+      rearm: "same-work",
       tenantId,
       kind: "WEBHOOK_RETRY",
       dedupeKey: "dk-tick-fixed",
@@ -456,6 +463,7 @@ describe.skipIf(!dbUp)("scheduler lanes", () => {
       base: appDb,
     });
     const traffic = await enqueueJob({
+      rearm: "same-work",
       tenantId,
       kind: "INGEST_MESSAGE",
       dedupeKey: "dk-tick-traffic",
@@ -512,6 +520,7 @@ describe.skipIf(!dbUp)("scheduler lanes", () => {
 
     for (const key of ["reject-a", "reject-b"]) {
       await enqueueJob({
+        rearm: "same-work",
         tenantId,
         kind: "WEBHOOK_RETRY",
         dedupeKey: key,

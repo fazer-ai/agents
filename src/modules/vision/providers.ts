@@ -2,8 +2,6 @@
 // turns a file (image or PDF) + an instruction into extracted text. Adding a provider = one function
 // + one registry entry. The key never lands in the URL or logs.
 
-const VISION_TIMEOUT_MS = 60_000;
-
 export type VisionKind = "image" | "document";
 
 export interface VisionRequest {
@@ -15,6 +13,10 @@ export interface VisionRequest {
   apiKey: string;
   baseURL: string | null;
   fetchImpl: typeof fetch;
+  // This attempt's deadline, decided by the caller (see ./retry). It is per-ATTEMPT and not a
+  // constant here on purpose: the caller owns the total, so it can spend what is left of it rather
+  // than granting every attempt the whole ceiling.
+  timeoutMs: number;
 }
 
 // What a vision call cost, in the provider's own numbers. Every one of the three endpoints below
@@ -126,7 +128,7 @@ async function chatCompletionsExtract(
     },
     body: JSON.stringify(body),
     redirect: "error",
-    signal: AbortSignal.timeout(VISION_TIMEOUT_MS),
+    signal: AbortSignal.timeout(req.timeoutMs),
   });
   if (!res.ok) throw new VisionError(providerName, res.status);
   const json = (await res.json()) as {
@@ -198,7 +200,7 @@ async function geminiExtract(req: VisionRequest): Promise<VisionResult> {
       },
       body: JSON.stringify(body),
       redirect: "error",
-      signal: AbortSignal.timeout(VISION_TIMEOUT_MS),
+      signal: AbortSignal.timeout(req.timeoutMs),
     },
   );
   if (!res.ok) throw new VisionError("gemini", res.status);
@@ -266,7 +268,7 @@ async function anthropicExtract(req: VisionRequest): Promise<VisionResult> {
     },
     body: JSON.stringify(body),
     redirect: "error",
-    signal: AbortSignal.timeout(VISION_TIMEOUT_MS),
+    signal: AbortSignal.timeout(req.timeoutMs),
   });
   if (!res.ok) throw new VisionError("anthropic", res.status);
   const json = (await res.json()) as {

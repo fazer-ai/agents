@@ -1753,6 +1753,7 @@ describe.skipIf(!dbUp)(
     test("a reschedule during the cleanup keeps its reminders", async () => {
       const threadId = `${tenantId}:${instanceId}:${CONV_ID}`;
       await enqueueJob({
+        rearm: "same-work",
         tenantId,
         kind: "APPOINTMENT_REMINDER",
         dedupeKey: "reminder:evt-1:60",
@@ -1767,6 +1768,7 @@ describe.skipIf(!dbUp)(
         if (!rearmed && String(input).includes("/kanban/tasks/")) {
           rearmed = true;
           await enqueueJob({
+            rearm: "same-work",
             tenantId,
             kind: "APPOINTMENT_REMINDER",
             dedupeKey: "reminder:evt-1:60",
@@ -1802,6 +1804,7 @@ describe.skipIf(!dbUp)(
     test("a redirect ladder re-armed during the cleanup survives", async () => {
       const threadId = `${tenantId}:${instanceId}:${CONV_ID}`;
       await enqueueJob({
+        rearm: "same-work",
         tenantId,
         kind: "REDIRECT_FOLLOWUP",
         dedupeKey: `redirect-followup:${threadId}`,
@@ -1816,6 +1819,7 @@ describe.skipIf(!dbUp)(
         if (!rearmed && String(input).includes("/kanban/tasks/")) {
           rearmed = true;
           await enqueueJob({
+            rearm: "same-work",
             tenantId,
             kind: "REDIRECT_FOLLOWUP",
             dedupeKey: `redirect-followup:${threadId}`,

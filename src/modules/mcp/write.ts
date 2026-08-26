@@ -39,6 +39,7 @@ import {
   updateAgent,
 } from "@/modules/agents/service";
 import { type AuditEntry, recordAudit } from "@/modules/audit/service";
+import type { LoadChatwootClientDeps } from "@/modules/chatwoot/instance";
 import {
   createPendingVaultEntry,
   isVaultIdRef,
@@ -71,6 +72,10 @@ export const err = (error: string): WriteResult => ({ ok: false, error });
 
 export interface WriteDeps {
   base?: PrismaClient;
+  // NOTE: injectable Chatwoot client factory, for the writes whose PREVIEW calls Chatwoot rather
+  // than answering from its arguments (`inbox_remove`: the write refuses a live inbox, so a preview
+  // that cannot ask would approve what the apply rejects). Defaults to the real SSRF-validated one.
+  makeClient?: LoadChatwootClientDeps["makeClient"];
 }
 
 // The one id parser for every MCP surface, read and write alike.

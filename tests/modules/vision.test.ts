@@ -65,6 +65,7 @@ describe("vision providers", () => {
       apiKey: "sk-or",
       baseURL: null,
       fetchImpl,
+      timeoutMs: 5_000,
     });
 
     expect(out?.text).toBe("um gato");

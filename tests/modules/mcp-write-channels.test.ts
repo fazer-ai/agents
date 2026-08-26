@@ -3,6 +3,10 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import {
+  ChatwootApiError,
+  type ChatwootClient,
+} from "@/modules/chatwoot/client";
+import {
   disconnectChatwootDeployment,
   reconnectChatwootInstance,
   softDisconnectChatwootInstance,
@@ -12,9 +16,30 @@ import {
   deploymentConnect,
   deploymentSetAccounts,
   inboxBind,
+  inboxRemove,
   instanceDisconnect,
 } from "@/modules/mcp/write-channels";
 import { seedChatwootInstance } from "../utils/chatwoot";
+
+// A Chatwoot that answers the inbox-detail GET the way the fork does: 404 for an inbox that is not
+// there, 200 for one that is. `inbox_remove` is the one write whose PREVIEW asks, so the seam has to
+// reach the dry run and not only the apply.
+function fakeChatwoot(live: number[]) {
+  const calls: number[] = [];
+  return {
+    calls,
+    makeClient: async () =>
+      ({
+        getInbox: async (id: number) => {
+          calls.push(id);
+          if (!live.includes(id)) {
+            throw new ChatwootApiError(404, `GET /inboxes/${id}`);
+          }
+          return { id };
+        },
+      }) as unknown as ChatwootClient,
+  };
+}
 
 // Deployment + account + inbox write tools: gate is DB-free; dry-run, secret-by-reference and DB-only
 // apply paths (disconnect) need a real Postgres (skipIf). Network actions (connect probe, set-accounts
@@ -194,6 +219,86 @@ describe.skipIf(!dbUp)("MCP channel tools (DB)", () => {
       where: { tenantId: tenantA, baseUrl: "https://new.example.com" },
     });
     expect(count).toBe(0);
+  });
+
+  test("inbox_remove dry-run asks Chatwoot and removes nothing", async () => {
+    const cw = fakeChatwoot([]);
+    const r = await inboxRemove(
+      principal({ tenantId: tenantA }),
+      { inbox_id: String(inboxA) },
+      { base: appDb, makeClient: cw.makeClient },
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.data.dryRun).toBe(true);
+      expect(r.data.goneFromChatwoot).toBe(true);
+    }
+    // It ASKED, and it asked about the Chatwoot id rather than our row id.
+    expect(cw.calls).toEqual([11]);
+    expect(await suDb.inbox.count({ where: { id: inboxA } })).toBe(1);
+  });
+
+  // The reason the preview calls Chatwoot at all: without it this dry run would report a removal
+  // that the apply refuses, which is the shape of defect issue #248 removed one layer up.
+  test("inbox_remove dry-run says so when the inbox is still live", async () => {
+    const cw = fakeChatwoot([11]);
+    const r = await inboxRemove(
+      principal({ tenantId: tenantA }),
+      { inbox_id: String(inboxA) },
+      { base: appDb, makeClient: cw.makeClient },
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.data.dryRun).toBe(true);
+      expect(r.data.goneFromChatwoot).toBe(false);
+      expect(String(r.data.note)).toMatch(/still exists in Chatwoot/i);
+    }
+    expect(await suDb.inbox.count({ where: { id: inboxA } })).toBe(1);
+  });
+
+  test("inbox_remove apply is refused while the inbox is live, and writes no audit", async () => {
+    const cw = fakeChatwoot([11]);
+    const r = await inboxRemove(
+      principal({ tenantId: tenantA }),
+      { inbox_id: String(inboxA), dry_run: false },
+      { base: appDb, makeClient: cw.makeClient },
+    );
+    expect(r.ok).toBe(false);
+    expect(await suDb.inbox.count({ where: { id: inboxA } })).toBe(1);
+    expect(
+      await suDb.auditLog.count({
+        where: { tenantId: tenantA, action: "mcp.inbox_remove" },
+      }),
+    ).toBe(0);
+  });
+
+  test("inbox_remove apply removes the mirror and records the audit", async () => {
+    const doomed = await suDb.inbox.create({
+      data: {
+        tenantId: tenantA,
+        chatwootInstanceId: instanceA,
+        chatwootInboxId: 12,
+        name: "Gone",
+      },
+    });
+    const cw = fakeChatwoot([]);
+    const r = await inboxRemove(
+      principal({ tenantId: tenantA }),
+      { inbox_id: String(doomed.id), dry_run: false },
+      { base: appDb, makeClient: cw.makeClient },
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.data.applied).toBe(true);
+    expect(await suDb.inbox.count({ where: { id: doomed.id } })).toBe(0);
+    expect(
+      await suDb.auditLog.count({
+        where: {
+          tenantId: tenantA,
+          action: "mcp.inbox_remove",
+          target: `inbox:${doomed.id}`,
+        },
+      }),
+    ).toBe(1);
   });
 
   test("inbox_bind dry-run previews current vs new agent (no network)", async () => {

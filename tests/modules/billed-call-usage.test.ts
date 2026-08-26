@@ -597,6 +597,7 @@ describe("a vision provider carries every count it was billed for", () => {
         apiKey: "k",
         baseURL: null,
         fetchImpl: fetchReturning(c.body),
+        timeoutMs: 5_000,
       });
       expect(out?.text).toBe("ok");
       expect(out?.usage).toEqual(c.want);
@@ -615,6 +616,7 @@ describe("a vision provider carries every count it was billed for", () => {
       apiKey: "k",
       baseURL: null,
       fetchImpl: fetchReturning({ choices: [{ message: { content: "ok" } }] }),
+      timeoutMs: 5_000,
     });
     expect(out?.usage).toBeNull();
   });

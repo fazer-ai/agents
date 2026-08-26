@@ -92,6 +92,7 @@ describe.skipIf(!dbUp)("scheduler", () => {
 
   test("enqueue is idempotent per (tenant, kind, dedupeKey)", async () => {
     const id1 = await enqueueJob({
+      rearm: "same-work",
       tenantId,
       kind: "WEBHOOK_RETRY",
       dedupeKey: "dk-idem",
@@ -99,6 +100,7 @@ describe.skipIf(!dbUp)("scheduler", () => {
       base: appDb,
     });
     const id2 = await enqueueJob({
+      rearm: "same-work",
       tenantId,
       kind: "WEBHOOK_RETRY",
       dedupeKey: "dk-idem",
@@ -114,6 +116,7 @@ describe.skipIf(!dbUp)("scheduler", () => {
 
   test("re-enqueue with a payload overwrites it; without one preserves it", async () => {
     const id = await enqueueJob({
+      rearm: "same-work",
       tenantId,
       kind: "FOLLOWUP",
       dedupeKey: "dk-payload",
@@ -123,6 +126,7 @@ describe.skipIf(!dbUp)("scheduler", () => {
     });
     // The follow-up sweep restarts a sequence: re-enqueue with the step-0 payload must reset it.
     await enqueueJob({
+      rearm: "same-work",
       tenantId,
       kind: "FOLLOWUP",
       dedupeKey: "dk-payload",
@@ -138,6 +142,7 @@ describe.skipIf(!dbUp)("scheduler", () => {
 
     // A payload-less re-enqueue preserves the existing payload (e.g. the SWEEP heartbeat).
     await enqueueJob({
+      rearm: "same-work",
       tenantId,
       kind: "FOLLOWUP",
       dedupeKey: "dk-payload",
@@ -158,6 +163,7 @@ describe.skipIf(!dbUp)("scheduler", () => {
   // buys nothing.
   test("the shared lane claims neither debounce nor compaction jobs", async () => {
     const shared = await enqueueJob({
+      rearm: "same-work",
       tenantId,
       kind: "WEBHOOK_RETRY",
       dedupeKey: "dk-lane-shared",
@@ -165,6 +171,7 @@ describe.skipIf(!dbUp)("scheduler", () => {
       base: appDb,
     });
     const debounce = await enqueueJob({
+      rearm: "same-work",
       tenantId,
       kind: "DEBOUNCE",
       dedupeKey: "dk-lane-debounce",
@@ -172,6 +179,7 @@ describe.skipIf(!dbUp)("scheduler", () => {
       base: appDb,
     });
     const compaction = await enqueueJob({
+      rearm: "same-work",
       tenantId,
       kind: "MEMORY_COMPACT",
       dedupeKey: "dk-lane-compaction",
@@ -202,6 +210,7 @@ describe.skipIf(!dbUp)("scheduler", () => {
   // Staged at the boundary that matters: the batch is smaller than the ingestion backlog.
   test("a batch full of ingestion still leaves room for a due reminder", async () => {
     const reminder = await enqueueJob({
+      rearm: "same-work",
       tenantId,
       kind: "APPOINTMENT_REMINDER",
       dedupeKey: "dk-share-reminder",
@@ -214,6 +223,7 @@ describe.skipIf(!dbUp)("scheduler", () => {
     for (let i = 0; i < 8; i++) {
       ingest.push(
         await enqueueJob({
+          rearm: "same-work",
           tenantId,
           kind: "INGEST_MESSAGE",
           dedupeKey: `dk-share-ingest-${i}`,
@@ -243,6 +253,7 @@ describe.skipIf(!dbUp)("scheduler", () => {
   // on id + CLAIMED).
   test("an excluded id is left PENDING, not claimed", async () => {
     const busy = await enqueueJob({
+      rearm: "same-work",
       tenantId,
       kind: "MEMORY_COMPACT",
       dedupeKey: "dk-lane-busy",
@@ -250,6 +261,7 @@ describe.skipIf(!dbUp)("scheduler", () => {
       base: appDb,
     });
     const free = await enqueueJob({
+      rearm: "same-work",
       tenantId,
       kind: "MEMORY_COMPACT",
       dedupeKey: "dk-lane-free",
@@ -272,6 +284,7 @@ describe.skipIf(!dbUp)("scheduler", () => {
 
   test("claim → complete", async () => {
     const id = await enqueueJob({
+      rearm: "same-work",
       tenantId,
       kind: "WEBHOOK_RETRY",
       dedupeKey: "dk-complete",
@@ -292,6 +305,7 @@ describe.skipIf(!dbUp)("scheduler", () => {
   // already carried, so it passed either way and pinned nothing.
   test("reschedule re-pends and clears the failure budget a completed pass earned", async () => {
     const id = await enqueueJob({
+      rearm: "same-work",
       tenantId,
       kind: "WEBHOOK_RETRY",
       dedupeKey: "dk-resched",
@@ -321,6 +335,7 @@ describe.skipIf(!dbUp)("scheduler", () => {
   // what bounds that work, not the scheduler's budget.
   test("the merging reschedule clears the budget too", async () => {
     const id = await enqueueJob({
+      rearm: "same-work",
       tenantId,
       kind: "APPOINTMENT_REMINDER",
       dedupeKey: "dk-resched-patch",
@@ -355,6 +370,7 @@ describe.skipIf(!dbUp)("scheduler", () => {
   // Measured before the fix: DEAD after the fifth, with four healthy passes in between.
   test("a perpetual job outlives more lifetime failures than the cap", async () => {
     const id = await enqueueJob({
+      rearm: "same-work",
       tenantId,
       kind: "FLOWLOG_SWEEP",
       dedupeKey: "dk-perpetual",
@@ -396,6 +412,7 @@ describe.skipIf(!dbUp)("scheduler", () => {
   // with a backoff and the next claim fails again.
   test("consecutive failures still dead-letter at the cap", async () => {
     const id = await enqueueJob({
+      rearm: "same-work",
       tenantId,
       kind: "FLOWLOG_SWEEP",
       dedupeKey: "dk-consecutive",
@@ -423,8 +440,139 @@ describe.skipIf(!dbUp)("scheduler", () => {
     expect(status).toBe("DEAD");
   });
 
+  // Issue #339, and the other half of #287. `rescheduleJob` clears the budget a completed pass
+  // earned; DONE is the same pass with a different ending, and it did not. Every kind whose
+  // dedupeKey names a permanent identity (a thread, a document) finishes its work with this call, so
+  // the budget one attendance spent was still on the row when the next one re-armed it.
+  test("completing a job clears the failure budget the pass earned", async () => {
+    const id = await enqueueJob({
+      tenantId,
+      kind: "WEBHOOK_RETRY",
+      dedupeKey: "dk-complete-budget",
+      runAt: past(),
+      rearm: "same-work",
+      base: appDb,
+    });
+    await suDb.schedulerJob.update({ where: { id }, data: { attempts: 3 } });
+    await claimDueJobs(10, appDb, new Date(), tenantId);
+    await completeJob(tenantId, id, await seqOf(id), "WEBHOOK_RETRY", appDb);
+    const s = await statusOf(id);
+    expect(s.status).toBe("DONE");
+    expect(s.attempts).toBe(0);
+  });
+
+  // The defect #339 reports, in the shape that produces it: MEMORY_COMPACT's dedupeKey is the
+  // THREAD, so one physical row serves every attendance that contact ever has. A transient failure
+  // in one of them was inherited by the next, and the fifth, months later with healthy attendances in
+  // between, retired compaction for that contact for good.
+  //
+  // The re-arm here declares "same-work" ON PURPOSE, which is the declaration that keeps the budget:
+  // the row survives because the passes COMPLETED, not because the caller asked for a clean slate.
+  test("a row re-armed by new work outlives more lifetime failures than the cap", async () => {
+    const key = "dk-rearmed-lifetime";
+    for (let attendance = 0; attendance < 8; attendance++) {
+      const id = await enqueueJob({
+        tenantId,
+        kind: "MEMORY_COMPACT",
+        dedupeKey: key,
+        runAt: past(),
+        rearm: "same-work",
+        base: appDb,
+      });
+      await claimDueCompactionJobs(10, appDb, new Date(), tenantId);
+      const before = await statusOf(id);
+      await failJob(
+        tenantId,
+        id,
+        await seqOf(id),
+        before.attempts,
+        "blip",
+        appDb,
+      );
+      expect((await statusOf(id)).status).toBe("PENDING");
+      // The retry succeeds, which is what a transient blip looks like: the attendance compacted.
+      await suDb.schedulerJob.update({
+        where: { id },
+        data: { runAt: past() },
+      });
+      await claimDueCompactionJobs(10, appDb, new Date(), tenantId);
+      await completeJob(tenantId, id, await seqOf(id), "MEMORY_COMPACT", appDb);
+      expect((await statusOf(id)).status).toBe("DONE");
+    }
+    const row = await suDb.schedulerJob.findFirstOrThrow({
+      where: { tenantId, kind: "MEMORY_COMPACT", dedupeKey: key },
+      select: { status: true, attempts: true },
+    });
+    expect(row.status).toBe("DONE");
+    expect(row.attempts).toBe(0);
+  });
+
+  // What a re-arm MEANS is the caller's knowledge, and it is the only thing left deciding the budget
+  // once a completed pass clears it: the row still carries a count when its LAST pass failed. Both
+  // directions are asserted here, because a field that only ever reads one way is a field nothing
+  // measures.
+  test("a re-arm declares whether the budget survives it", async () => {
+    const id = await enqueueJob({
+      tenantId,
+      kind: "WEBHOOK_RETRY",
+      dedupeKey: "dk-rearm-declares",
+      runAt: past(),
+      rearm: "same-work",
+      base: appDb,
+    });
+    await suDb.schedulerJob.update({ where: { id }, data: { attempts: 3 } });
+    await enqueueJob({
+      tenantId,
+      kind: "WEBHOOK_RETRY",
+      dedupeKey: "dk-rearm-declares",
+      runAt: past(),
+      rearm: "same-work",
+      base: appDb,
+    });
+    expect((await statusOf(id)).attempts).toBe(3);
+    await enqueueJob({
+      tenantId,
+      kind: "WEBHOOK_RETRY",
+      dedupeKey: "dk-rearm-declares",
+      runAt: past(),
+      rearm: "new-work",
+      base: appDb,
+    });
+    expect((await statusOf(id)).attempts).toBe(0);
+  });
+
+  // A DEAD row re-armed for new work is the case `rearm` exists for, and the one a completed pass
+  // cannot reach: five consecutive failures retired it, and every later unit of work would get ONE
+  // attempt instead of five until something cleared the count.
+  test("new work gets the whole budget on a row that dead-lettered", async () => {
+    const id = await enqueueJob({
+      tenantId,
+      kind: "MEMORY_COMPACT",
+      dedupeKey: "dk-dead-rearm",
+      runAt: past(),
+      rearm: "new-work",
+      base: appDb,
+    });
+    await suDb.schedulerJob.update({
+      where: { id },
+      data: { attempts: 5, status: "DEAD" },
+    });
+    await enqueueJob({
+      tenantId,
+      kind: "MEMORY_COMPACT",
+      dedupeKey: "dk-dead-rearm",
+      runAt: past(),
+      rearm: "new-work",
+      base: appDb,
+    });
+    const s = await statusOf(id);
+    expect(s.status).toBe("PENDING");
+    expect(s.attempts).toBe(0);
+  });
+
   test("reschedule with a payload REPLACES the row payload (step advance)", async () => {
     const id = await enqueueJob({
+      rearm: "same-work",
       tenantId,
       kind: "FOLLOWUP",
       dedupeKey: "dk-resched-payload",
@@ -468,6 +616,7 @@ describe.skipIf(!dbUp)("scheduler", () => {
 
   test("fail retries until the cap, then DEAD", async () => {
     const id = await enqueueJob({
+      rearm: "same-work",
       tenantId,
       kind: "WEBHOOK_RETRY",
       dedupeKey: "dk-fail",
@@ -499,6 +648,7 @@ describe.skipIf(!dbUp)("scheduler", () => {
       ["dk-retire-dead", "DEAD"],
     ] as const) {
       ids[key] = await enqueueJob({
+        rearm: "same-work",
         tenantId,
         kind: "FOLLOWUP",
         dedupeKey: key,
@@ -542,6 +692,7 @@ describe.skipIf(!dbUp)("scheduler", () => {
   test("the retirement predicate agrees with the retirement read, in both forms", async () => {
     const claimOf = async (dedupeKey: string): Promise<ClaimedJob> => {
       const id = await enqueueJob({
+        rearm: "same-work",
         tenantId,
         kind: "FOLLOWUP",
         dedupeKey,
@@ -610,6 +761,7 @@ describe.skipIf(!dbUp)("scheduler", () => {
   // the fence inside the claim would answer "keep going" every single time.
   test("the retirement read answers inside a pinned transaction, on a pool of one", async () => {
     const id = await enqueueJob({
+      rearm: "same-work",
       tenantId,
       kind: "FOLLOWUP",
       dedupeKey: "dk-pool-one",
@@ -658,6 +810,7 @@ describe.skipIf(!dbUp)("scheduler", () => {
   // one, so swapping it in at a call site does not change the ordinary path.
   test("the strict probe still answers when the read succeeds", async () => {
     const id = await enqueueJob({
+      rearm: "same-work",
       tenantId,
       kind: "FOLLOWUP",
       dedupeKey: "dk-strict-ok",
@@ -674,6 +827,7 @@ describe.skipIf(!dbUp)("scheduler", () => {
 
   test("reaper requeues a stranded CLAIMED job", async () => {
     const id = await enqueueJob({
+      rearm: "same-work",
       tenantId,
       kind: "WEBHOOK_RETRY",
       dedupeKey: "dk-reap",
@@ -703,6 +857,7 @@ describe.skipIf(!dbUp)("scheduler", () => {
       return { outcome: "done" };
     });
     const id = await enqueueJob({
+      rearm: "same-work",
       tenantId,
       kind: "WEBHOOK_RETRY",
       dedupeKey: "dk-run",

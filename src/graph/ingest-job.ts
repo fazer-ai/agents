@@ -67,6 +67,10 @@ export async function armIngest(params: ArmIngestParams): Promise<void> {
     tenantId: params.tenantId,
     kind: "INGEST_MESSAGE",
     dedupeKey: dedupeKey(params.graphThreadId, params.messageId),
+    // NOTE: The key names ONE message, so a re-arm is that same append being armed again, never a
+    // second one. The row is also deleted on DONE (JOB_DELETE_ON_DONE), so a completed ingest
+    // leaves nothing for a later arm to inherit in the first place.
+    rearm: "same-work",
     // Now: the fast tick drains this lane, and what waits behind a queued ingestion is the next
     // turn's context rather than a customer reading a reply.
     runAt: new Date(),

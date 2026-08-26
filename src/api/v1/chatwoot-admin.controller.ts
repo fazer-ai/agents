@@ -27,6 +27,7 @@ import {
   reconnectChatwootInstance,
   reconnectInbox,
   removeChatwootInstance,
+  removeInbox,
   rotateChatwootDeploymentToken,
   setConnectedAccounts,
   softDisconnectChatwootInstance,
@@ -52,6 +53,8 @@ import {
 // translate('errors.chatwootProfileFailed', 'Chatwoot could not be reached with the URL and token provided.')
 // translate('errors.inboxNotBound', 'This inbox has no agent to reconnect.')
 // translate('errors.inboxNotFound', 'Inbox not found.')
+// translate('errors.inboxStillExists', 'This inbox still exists in Chatwoot. Delete it there first.')
+// translate('errors.chatwootInboxProbeFailed', 'Could not confirm with Chatwoot that this inbox was deleted.')
 
 // Chatwoot instance + inbox management (per-tenant). TENANT_ADMIN. SEPARATE from the public webhook
 // receiver controller (same /v1/chatwoot prefix; no path overlap: /instances* + /inboxes* here vs
@@ -542,6 +545,27 @@ export const chatwootAdminController = new Elysia({
         }),
       }),
       response: errors(400, 401, 403, 404, 422, 502),
+    },
+  )
+  // Remove the mirror row of an inbox that was deleted in Chatwoot. Refuses (409) while the inbox
+  // still exists there: the mirror is rebuilt by the next message that inbox sends, so removing a
+  // live one silently drops the binding instead of removing anything.
+  .delete(
+    "/inboxes/:id",
+    async ({ tenantContext, params }) => {
+      await removeInbox(ctxOrThrow(tenantContext), BigInt(params.id));
+      return { instance: instanceIdentity, success: true };
+    },
+    {
+      requireRole: "TENANT_ADMIN",
+      detail: doc(
+        "Remove inbox mirror",
+        "Remove the local mirror of an inbox that was deleted in Chatwoot. Only allowed once Chatwoot answers that the inbox is gone: 409 while it still exists there (delete it in Chatwoot first), 502 when that could not be confirmed. Past conversations are kept and stop naming an inbox; past usage and log lines are kept and keep naming the removed one.",
+      ),
+      params: t.Object({
+        id: t.String({ description: "Inbox id (BigInt string)." }),
+      }),
+      response: errors(400, 401, 403, 404, 409, 502),
     },
   )
   // Re-provision + reconnect the bound inbox's persona bot (recovery when the bot was deleted on

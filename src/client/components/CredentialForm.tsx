@@ -279,11 +279,13 @@ export function CredentialForm({
     }
   }, [typeOpen]);
 
-  // Build the value to send for multi-field types.
+  // Build the value to send for multi-field types. Sent VERBATIM, like the single-value path: the
+  // server refuses a secret that begins or ends in whitespace rather than repairing it (#338), and
+  // trimming here would hide that refusal from the console while the MCP surface still got it.
   function buildMultiFieldValue(): Record<string, string> {
     const result: Record<string, string> = {};
     for (const f of fields ?? []) {
-      result[f.key] = (fieldValues[f.key] ?? "").trim();
+      result[f.key] = fieldValues[f.key] ?? "";
     }
     return result;
   }
@@ -636,13 +638,16 @@ export function CredentialForm({
   const genericTypes = GENERIC_TYPE_ORDER.filter(matchesTypeSearch);
   const noTypeResults = serviceTypes.length === 0 && genericTypes.length === 0;
 
-  // The Save button label changes to "Save anyway" after a failed test.
-  const saveLabel =
-    testResult?.kind === "fail"
-      ? t("vault.saveAnyway", "Save anyway")
-      : t("common.save", "Save");
-  const onSaveClick =
-    testResult?.kind === "fail" ? () => save(true) : () => save();
+  // The Save button label changes to "Save anyway" after a failed test — but only for a failure the
+  // operator can decide to ignore. `surrounding_whitespace` is the write's own verdict, not a
+  // connectivity one, so saving anyway is refused by createVaultEntry/updateVaultEntry every time:
+  // offering it advertises an action that cannot succeed (#338).
+  const testFailedRecoverably =
+    testResult?.kind === "fail" && testResult.code !== "surrounding_whitespace";
+  const saveLabel = testFailedRecoverably
+    ? t("vault.saveAnyway", "Save anyway")
+    : t("common.save", "Save");
+  const onSaveClick = testFailedRecoverably ? () => save(true) : () => save();
 
   // Param-name placeholder depends on the kind.
   const paramNamePlaceholder =

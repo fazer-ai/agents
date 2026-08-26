@@ -161,7 +161,9 @@ const FLOWLOG_READERS: Record<string, number> = {
   "tests/graph/runtime.test.ts": 7,
   "tests/graph/side-effect-flowlog.test.ts": 1,
   "tests/graph/tool-flowlog.test.ts": 1,
+  "tests/modules/chatwoot-command-dropped.test.ts": 2,
   "tests/modules/chatwoot-gate-trail.test.ts": 1,
+  "tests/modules/chatwoot-inbox-remove.test.ts": 1,
   "tests/modules/chatwoot-unbound-inbox.test.ts": 1,
   "tests/modules/contact-auth-gate-e2e.test.ts": 3,
   "tests/modules/debounce.test.ts": 4,
@@ -178,6 +180,7 @@ const FLOWLOG_READERS: Record<string, number> = {
   "tests/modules/stt.test.ts": 1,
   "tests/modules/tts-normalize-observability.test.ts": 1,
   "tests/modules/tts.test.ts": 2,
+  "tests/modules/vision-retry.test.ts": 1,
 };
 
 // Lives beside the rest of the flowlog family rather than in tests/tooling/, which the manifest

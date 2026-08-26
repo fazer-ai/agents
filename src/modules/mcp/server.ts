@@ -99,6 +99,7 @@ import {
   inboxBind,
   inboxReconcile,
   inboxReconnect,
+  inboxRemove,
   instanceDisconnect,
   instanceListAccounts,
   instanceSyncInboxes,
@@ -1784,6 +1785,22 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
         },
         eff,
       ) => writeContent(await inboxBind(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "inbox_remove",
+      {
+        description:
+          "Remove the LOCAL mirror of an inbox that was deleted in Chatwoot. Refused while the inbox still exists there. Previews whether Chatwoot says it is gone and applies NOTHING unless dry_run is false.",
+        inputSchema: {
+          inbox_id: z.string(),
+          dry_run: z.boolean().optional(),
+        },
+      },
+      async (args: { inbox_id: string; dry_run?: boolean }, eff) =>
+        writeContent(await inboxRemove(eff, args)),
     );
 
     registerTenantTool(

@@ -176,28 +176,20 @@ export async function retireCoveredDeliveries(
   // scope instead, next to the sibling window this design already accepts on purpose (a delivery
   // that dies between its insert and its CAS).
   //
-  // The rows that need a closing line are the ones that were DEAD, and READING them first would race
-  // the sweep in both directions: a row turning DEAD between the read and the write loses its
-  // correction, and two retirees reading the same DEAD row both write one. An UPDATE that names DEAD
-  // in its own predicate and returns what it moved answers both at once — only one statement can
-  // move a given row out of DEAD, and it is the one holding the rows.
+  // THE ORDINARY CASE FIRST, and the order is the fix for a race rather than a preference.
   //
-  // DEAD is a correction rather than a contradiction. The sweep reaches its verdict by INFERENCE —
-  // nothing has moved this row — while a turn that ran over the message is direct evidence, and it
-  // wins. Nothing is erased: `WHERE status = 'DEAD'` is what is STILL unanswered, and the line that
-  // reported the loss stays where it was written, joined by the one below saying how it ended.
-  const corrected = await runScopedOn(
-    params.base,
-    sysCtx(params.tenantId),
-    (db) =>
-      db.chatwootWebhookDelivery.updateManyAndReturn({
-        where: { ...where, status: "DEAD" },
-        data: { status: "PROCESSED", processedAt: new Date() },
-        select: { deliveryId: true, inboundMessageId: true },
-      }),
-  );
-
-  // And the ordinary case. PROCESSING only, and never PENDING: that is the state whose owner has not
+  // The sweep's own write turns a covered row PROCESSING -> DEAD. Run the DEAD statement first and
+  // that transition lands BETWEEN the two: the DEAD read finds nothing (the row was still
+  // PROCESSING), the sweep marks it DEAD and dispatches the loss, and the PROCESSING statement then
+  // finds nothing either. The row stays DEAD for good, reported as a customer nobody answered, with
+  // no owner left to run tx2 over it — permanent, and exactly backwards.
+  //
+  // This way round, the same interleaving is harmless in both directions. Landing after this
+  // statement, the sweep's terminal CAS is on the status it READ (`PROCESSING`) and matches nothing,
+  // so it counts the row as raced and writes no line. Landing before it, this statement finds
+  // nothing and the DEAD statement below catches the row and writes the correction.
+  //
+  // PROCESSING only, and never PENDING: that is the state whose owner has not
   // arrived yet, and this write cannot tell "abandoned before the claim" from "claimed a millisecond
   // from now". The ack is spent before the row is even inserted, so a burst re-read from Chatwoot
   // legitimately contains a message whose own delivery sits between its insert and its CAS —
@@ -214,6 +206,28 @@ export async function retireCoveredDeliveries(
       db.chatwootWebhookDelivery.updateMany({
         where: { ...where, status: "PROCESSING" },
         data: { status: "PROCESSED", processedAt: new Date() },
+      }),
+  );
+
+  // AND THE ROWS THAT NEED A CLOSING LINE, which are the ones that were DEAD.
+  //
+  // READING them first would race the sweep in both directions: a row turning DEAD between the read
+  // and the write loses its correction, and two retirees reading the same DEAD row both write one.
+  // An UPDATE that names DEAD in its own predicate and returns what it moved answers both at once —
+  // only one statement can move a given row out of DEAD, and it is the one holding the rows.
+  //
+  // DEAD is a correction rather than a contradiction. The sweep reaches its verdict by INFERENCE —
+  // nothing has moved this row — while a turn that ran over the message is direct evidence, and it
+  // wins. Nothing is erased: `WHERE status = 'DEAD'` is what is STILL unanswered, and the line that
+  // reported the loss stays where it was written, joined by the one below saying how it ended.
+  const corrected = await runScopedOn(
+    params.base,
+    sysCtx(params.tenantId),
+    (db) =>
+      db.chatwootWebhookDelivery.updateManyAndReturn({
+        where: { ...where, status: "DEAD" },
+        data: { status: "PROCESSED", processedAt: new Date() },
+        select: { deliveryId: true, inboundMessageId: true },
       }),
   );
 

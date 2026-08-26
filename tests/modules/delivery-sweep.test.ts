@@ -1228,6 +1228,28 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     await suDb.executionLog.deleteMany({ where: { tenantId } });
   });
 
+  test("retires the PROCESSING rows before it looks for DEAD ones", async () => {
+    // The order of the two writes, asserted at the SOURCE, because the interleaving it protects
+    // against is a write by another process landing between them and no end state can show which
+    // way round they ran.
+    //
+    // The sweep's own write turns a covered row PROCESSING -> DEAD. DEAD first, and that transition
+    // lands between the two: the DEAD statement finds nothing (the row was still PROCESSING), the
+    // sweep marks it DEAD and dispatches the loss, and the PROCESSING statement finds nothing
+    // either. The row stays DEAD for good, reported as a customer nobody answered, with no owner
+    // left to run tx2 over it. This way round the same interleaving is harmless in both directions:
+    // after, the sweep's terminal CAS is on the status it READ and matches nothing; before, the DEAD
+    // statement catches the row and writes the correction.
+    const src = await Bun.file("src/modules/chatwoot/delivery-sweep.ts").text();
+    const body = src.slice(
+      src.indexOf("export async function retireCoveredDeliveries"),
+    );
+    expect(body.indexOf('status: "PROCESSING"')).toBeGreaterThan(-1);
+    expect(body.indexOf('status: "DEAD"')).toBeGreaterThan(
+      body.indexOf('status: "PROCESSING"'),
+    );
+  });
+
   test("the correction does NOT page, and the reason is written down", async () => {
     // The gap, pinned so it stays a decision. A channel's `minLevel` defaults to "error": the loss
     // pages, and the `warn` that closes it reaches the Logs page and nobody else, so an operator who

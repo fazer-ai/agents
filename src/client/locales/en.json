@@ -518,8 +518,8 @@
     "kpi": {
       "firstResponse": "First response",
       "firstResponseHint": "median over {{sampled}} answered conversations",
-      "firstResponseNone": "no conversation in this period has been answered yet",
-      "firstResponseNote": "How long the team took to answer, as Chatwoot itself measures it: from the conversation's creation to its first reply from a person. The agent's own answers are not counted here, they are in the funnel above. On a conversation the business opened, the opening message counts as the reply, which is what this number means on the Chatwoot dashboard too.",
+      "firstResponseNone": "no data for this period yet",
+      "firstResponseNote": "How long the team took to answer, as Chatwoot itself measures it: from the conversation's creation to its first reply from a person. The agent's own answers are not counted here, they are in the funnel above. On a conversation the business opened, the opening message counts as the reply, which is what this number means on the Chatwoot dashboard too. A conversation joins this count the next time Chatwoot sends an event for it, so one already closed before this version may never appear, and an empty period means there is nothing to read rather than that nobody answered.",
       "handoff": "Handoffs",
       "handoffHint": "{{handoff}} escalated to a human",
       "involvement": "Involvement",

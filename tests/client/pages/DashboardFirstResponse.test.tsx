@@ -123,15 +123,20 @@ describe("dashboard: the team's first response", () => {
 
   // The reason the whole issue exists, asserted where the operator meets it: no sample is NOT the
   // same claim as a zero-second response, and the card has to be able to say so.
+  //
+  // The caption is asserted for what it does NOT claim, which is the second half of the same point.
+  // An empty sample proves only that no mirrored pair is available: right after this ships, and
+  // indefinitely for a conversation closed before it that receives no further event, both columns
+  // stay NULL although a person did answer. A caption reading "nobody has answered yet" would be a
+  // false statement about the world, made by the very card built to stop reading absence as zero.
   test("no sample reads as no data, never as an instant answer", async () => {
     await renderWith({ firstResponseSeconds: null, firstResponseSampled: 0 });
     expect(cardValue()).toBe("—");
     expect(cardValue()).not.toContain("0");
-    expect(
-      screen.queryAllByText(
-        "no conversation in this period has been answered yet",
-      ).length,
-    ).toBe(1);
+    const caption =
+      screen.getByText(/no data for this period/i).textContent ?? "";
+    expect(caption.length > 0).toBe(true);
+    expect(/answered|respond/i.test(caption)).toBe(false);
   });
 
   // The funnel above is all zeros in every case here (involved = 0, the inbox the agent never

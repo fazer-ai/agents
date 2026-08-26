@@ -520,8 +520,8 @@
     "kpi": {
       "firstResponse": "Primeira resposta",
       "firstResponseHint": "mediana sobre {{sampled}} conversas respondidas",
-      "firstResponseNone": "nenhuma conversa deste período foi respondida ainda",
-      "firstResponseNote": "Quanto tempo o time levou para responder, medido pelo próprio Chatwoot: da criação da conversa até a primeira resposta de uma pessoa. As respostas do agente não entram aqui, elas estão no funil acima. Numa conversa aberta pelo negócio, a mensagem de abertura conta como resposta, que é o que este número significa no painel do Chatwoot também.",
+      "firstResponseNone": "ainda sem dado para este período",
+      "firstResponseNote": "Quanto tempo o time levou para responder, medido pelo próprio Chatwoot: da criação da conversa até a primeira resposta de uma pessoa. As respostas do agente não entram aqui, elas estão no funil acima. Numa conversa aberta pelo negócio, a mensagem de abertura conta como resposta, que é o que este número significa no painel do Chatwoot também. Uma conversa entra nesta conta quando o Chatwoot manda o próximo evento dela, então uma que já estava fechada antes desta versão pode nunca aparecer, e um período vazio quer dizer que não há o que ler, não que ninguém respondeu.",
       "handoff": "Transferências",
       "handoffHint": "{{handoff}} escaladas para um humano",
       "involvement": "Envolvimento",

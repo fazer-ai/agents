@@ -134,6 +134,18 @@ const REFUSED: Array<[path: string, param: string]> = [
   ["/v1/logs/export?source=all&maxRows=abc", "maxRows"],
   ["/v1/metrics/timeseries?tz=Not/AZone", "tz"],
   ["/v1/metrics/timeseries?tz=", "tz"],
+  // Round 2: `Number` reads spellings a count does not have, and two of them as a DIFFERENT
+  // number. All of these passed `Number.isInteger` before the decimal regex.
+  ["/v1/logs?source=all&limit=1e3", "limit"],
+  ["/v1/logs?source=all&limit=0x10", "limit"],
+  ["/v1/logs?source=all&limit=0b11", "limit"],
+  ["/v1/logs?source=all&limit=%2B7", "limit"],
+  ["/v1/logs?source=all&limit=12.0", "limit"],
+  ["/v1/logs?source=all&limit=%2012%20", "limit"],
+  ["/v1/logs?source=all&limit=-5", "limit"],
+  // `9007199254740993` comes back from `Number` as `...992`: a count the caller never named.
+  ["/v1/logs?source=all&limit=9007199254740993", "limit"],
+  ["/v1/conversations/1/messages?before=9007199254740993", "before"],
 ];
 
 describe("a query filter the server cannot use is a 400 that names it", () => {
@@ -180,12 +192,28 @@ describe("the admin tenant filter, which only a SUPER_ADMIN can send", () => {
     }
   }
 
-  for (const value of ["abc", "", "9223372036854775808"]) {
-    test(`tenantId=${value} → 400`, async () => {
-      const res = await asSuperAdmin(`/admin/users?tenantId=${value}`);
-      expect(`tenantId=${value}: ${res.status}`).toBe(`tenantId=${value}: 400`);
-      expect(((await res.json()) as { field?: string }).field).toBe("tenantId");
-    });
+  // Every route that reads the shared `resolveScope`, not just the one the issue named: round 2 of
+  // review found /admin/stats and /v1/mcp/admin/tokens publishing only 401/403 while their handlers
+  // could now answer 400, and sweeping the callers turned up /admin/invitations as a third.
+  const SUPER_ADMIN_ROUTES = [
+    "/admin/users",
+    "/admin/stats",
+    "/admin/invitations",
+    "/v1/mcp/admin/tokens",
+  ];
+
+  for (const route of SUPER_ADMIN_ROUTES) {
+    for (const value of ["abc", "", "9223372036854775808"]) {
+      test(`${route}?tenantId=${value} → 400`, async () => {
+        const res = await asSuperAdmin(`${route}?tenantId=${value}`);
+        expect(`${route} ${value}: ${res.status}`).toBe(
+          `${route} ${value}: 400`,
+        );
+        expect(((await res.json()) as { field?: string }).field).toBe(
+          "tenantId",
+        );
+      });
+    }
   }
 
   test("a usable tenant id still scopes the listing", async () => {

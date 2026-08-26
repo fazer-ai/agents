@@ -169,7 +169,7 @@ export const mcpAdminController = new Elysia({
           }),
         ),
       }),
-      response: errors(401, 403),
+      response: errors(400, 401, 403),
     },
   )
   .delete(

@@ -90,7 +90,7 @@ export const adminController = new Elysia({
         "Admin stats",
         "Return user and admin counts for the resolved tenant scope.",
       ),
-      response: errors(401, 403),
+      response: errors(400, 401, 403),
     },
   )
   .get(
@@ -367,7 +367,7 @@ export const adminController = new Elysia({
         "List invitations",
         "Return pending invitations for the resolved tenant scope.",
       ),
-      response: errors(401, 403),
+      response: errors(400, 401, 403),
     },
   )
   .delete(

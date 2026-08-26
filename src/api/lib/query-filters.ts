@@ -45,12 +45,24 @@ export function parseQueryId(
 
 // Syntax only; the RANGE belongs to whichever service owns the parameter, so a caller that never
 // sees a query string (MCP, the console's own service calls) is held to the same bound.
+//
+// DIGITS, not `Number`, for the same reason `parseDbId` uses a regex: `Number` reads spellings a
+// count parameter does not have, and reads two of them as a DIFFERENT NUMBER. Measured on Bun
+// 1.4.0 — `1e3` → 1000, `0x10` → 16, `0b11` → 3, `0o17` → 15, `+7` → 7, ` 12 ` → 12, `12.0` → 12,
+// and every one of those passes `Number.isInteger`. The one that bites hardest is precision:
+// `9007199254740993` comes back as `...992`, so `?before=9007199254740993` would page from a
+// message the caller never named. `Number.isSafeInteger` closes that, and the regex closes the
+// rest — a sign included, because a count has none and the refusal names the same parameter either
+// way.
+const DECIMAL = /^\d+$/;
+
 export function parseQueryCount(
   s: string | undefined,
   param: string,
 ): number | undefined {
   if (s === undefined) return undefined;
+  if (!DECIMAL.test(s)) badQueryParam(param);
   const n = Number(s);
-  if (s.trim() === "" || !Number.isInteger(n)) badQueryParam(param);
+  if (!Number.isSafeInteger(n)) badQueryParam(param);
   return n;
 }

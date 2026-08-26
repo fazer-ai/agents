@@ -37,6 +37,17 @@ describe("assertUsableCount", () => {
   });
 });
 
+describe("assertUsableCount still owns the range a parser cannot see", () => {
+  test("a value that never passed through a query string is still bounded", () => {
+    // MCP hands the service a plain number. `parseQueryCount`'s regex never runs on this path, so
+    // the two halves are not redundant: delete either and one transport stops being held.
+    expect(() => assertUsableCount(0, "limit")).toThrow(AppError);
+    expect(() => assertUsableCount(-1, "limit")).toThrow(AppError);
+    expect(() => assertUsableCount(3.5, "limit")).toThrow(AppError);
+    expect(() => assertUsableCount(1, "limit")).not.toThrow();
+  });
+});
+
 describe("badQueryParam", () => {
   test("carries the 400, the field, and the translation key the API localizes", () => {
     let err: unknown = null;

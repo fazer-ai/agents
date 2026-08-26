@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import type { ModelFallbackState } from "@/client/pages/agents/BehaviorTab";
 import {
+  fallbackIsConfigured,
+  fallbackModelIsMissing,
   modelFallbackReaderKeys,
   modelFallbackToForm,
   modelFallbackToStored,
@@ -8,7 +11,10 @@ import {
   overrideBaseUrlInvalid,
   overrideBaseUrlUnsupported,
 } from "@/client/pages/agents/modelOverrideForm";
-import { readModelFallbackConfig } from "@/graph/fallback-settings";
+import {
+  hasModelFallback,
+  readModelFallbackConfig,
+} from "@/graph/fallback-settings";
 
 // The Behavior save REPLACES the whole `modelFallback` block with what the form holds, so a field
 // the form does not carry is not merely un-editable: it is DELETED on the next save. That already
@@ -111,5 +117,96 @@ describe("the fallback's endpoint never freezes a hidden section", () => {
         false,
       ),
     ).toBe(false);
+  });
+});
+
+// THE EDITOR'S TWO VERDICTS, as a table. They answer the same question the backend answers, and a
+// divergence is silent in both directions: `fallbackIsConfigured` gates the endpoint checks, so
+// answering NO switches off the checks that block the save; `fallbackModelIsMissing` renders the
+// field error AND blocks it. Review found both halves of that, one round apart.
+describe("the editor's fallback verdicts", () => {
+  const form = (over: Partial<ModelFallbackState>): ModelFallbackState => ({
+    provider: "",
+    model: "",
+    credentialRef: "",
+    baseURL: "",
+    ...over,
+  });
+
+  const ROWS: Array<{
+    name: string;
+    state: Partial<ModelFallbackState>;
+    configured: boolean;
+    modelMissing: boolean;
+  }> = [
+    {
+      name: "nothing picked",
+      state: {},
+      configured: false,
+      modelMissing: false,
+    },
+    {
+      name: "provider and model",
+      state: { provider: "anthropic", model: "claude-haiku-4-5" },
+      configured: true,
+      modelMissing: false,
+    },
+    {
+      name: "a provider that needs a model, without one",
+      state: { provider: "anthropic" },
+      configured: false,
+      modelMissing: true,
+    },
+    // THE ROW THE REVIEW WAS ABOUT: the backend calls this configured, so the editor must too, or
+    // it stops checking the endpoint this provider cannot run without.
+    {
+      name: "openai-compatible with no model",
+      state: { provider: "openai-compatible", baseURL: "https://llm.local/v1" },
+      configured: true,
+      modelMissing: false,
+    },
+    {
+      name: "openai-compatible with no model and no endpoint",
+      state: { provider: "openai-compatible" },
+      configured: true,
+      modelMissing: false,
+    },
+    {
+      name: "a model with no provider is no destination",
+      state: { model: "claude-haiku-4-5" },
+      configured: false,
+      modelMissing: false,
+    },
+    {
+      name: "whitespace is not a name",
+      state: { provider: "  ", model: "  " },
+      configured: false,
+      modelMissing: false,
+    },
+    {
+      name: "a real provider with a whitespace model still owes one",
+      state: { provider: "openai", model: "   " },
+      configured: false,
+      modelMissing: true,
+    },
+  ];
+
+  for (const row of ROWS) {
+    test(`${row.name}: configured=${row.configured}, modelMissing=${row.modelMissing}`, () => {
+      expect(fallbackIsConfigured(form(row.state))).toBe(row.configured);
+      expect(fallbackModelIsMissing(form(row.state))).toBe(row.modelMissing);
+    });
+  }
+
+  // The editor and the backend answer the SAME question, so they are checked against each other
+  // rather than each against its own idea of the rule.
+  test("configured agrees with the backend's own predicate, row by row", () => {
+    for (const row of ROWS) {
+      const f = form(row.state);
+      const stored = modelFallbackToStored(f);
+      expect(fallbackIsConfigured(f)).toBe(
+        hasModelFallback(readModelFallbackConfig({ modelFallback: stored })),
+      );
+    }
   });
 });

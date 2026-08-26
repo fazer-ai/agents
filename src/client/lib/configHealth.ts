@@ -304,6 +304,33 @@ function credIssue(
 // the referenced credential is not in the vault at all ("unresolved"). An OpenAI-compatible model
 // can authenticate via its base URL alone, so it is not flagged (mirrors the editor's
 // `required={provider !== "openai-compatible"}`).
+// WHETHER AN ENDPOINT THE VAULT HAS NOT ANSWERED FOR YET COULD STILL ARRIVE FOR THIS OVERRIDE, which
+// is what decides whether a refusal is a verdict or a paint too early. Three model overrides ask it
+// (the speech rewrite, the summariser and the fallback provider), and it was written out three times
+// as "either credential is unread", which is right about the override's own key and wrong about the
+// agent's.
+//
+// The agent's credential can only ever carry the endpoint for an override that INHERITS the agent's
+// destination. Once the operator names a different provider the request goes to a different vendor,
+// and nothing on the agent's key can supply that vendor's host — so waiting on it means the panel
+// stays silent about a configuration that is definitely unrunnable, for as long as the vault is
+// unavailable. Measured, on the fallback and on the summariser alike: an `openai-compatible`
+// override with no address, on an agent that has a credential, reported NOTHING while `knownRefs`
+// was null.
+//
+// An override that names no provider at all is the inheriting case by definition, which is how the
+// two blocks whose default is "run this on the agent's model" keep the wait they need.
+function endpointCouldStillArrive(
+  endpointsKnown: boolean,
+  override: { provider?: string | null; credentialRef?: string | null },
+  agent: { provider?: string | null; credentialRef?: string | null },
+): boolean {
+  if (endpointsKnown) return false;
+  if (override.credentialRef) return true;
+  const inherits = !override.provider || override.provider === agent.provider;
+  return inherits && Boolean(agent.credentialRef);
+}
+
 export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
   const issues: ConfigIssue[] = [];
   const pending = input.pendingRefs;
@@ -410,9 +437,17 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
   // string with a working host. What settles it is having no credential to hear from, which is the
   // case in the reviewer's example — a keyless openai-compatible rewrite pointed at `llama:8080`.
   const endpointsKnown = known !== null;
-  const endpointStillOwed =
-    !endpointsKnown &&
-    Boolean(input.ttsNormalizeCredentialRef || input.savedModelCredentialRef);
+  const endpointStillOwed = endpointCouldStillArrive(
+    endpointsKnown,
+    {
+      provider: input.ttsNormalizeProvider,
+      credentialRef: input.ttsNormalizeCredentialRef,
+    },
+    {
+      provider: input.savedModelProvider,
+      credentialRef: input.savedModelCredentialRef,
+    },
+  );
   const refusalHolds =
     normalizeResolution !== null &&
     !normalizeResolution.runnable &&
@@ -479,9 +514,14 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
   // The same wait as the rewrite's, for the same reason: an endpoint can still arrive on a
   // credential the vault has not answered for yet, and announcing a runnable summariser as broken is
   // the false alarm the null-until-loaded rule exists to prevent.
-  const compactionEndpointOwed =
-    !endpointsKnown &&
-    Boolean(compaction.credentialRef || input.savedModelCredentialRef);
+  const compactionEndpointOwed = endpointCouldStillArrive(
+    endpointsKnown,
+    { provider: compaction.provider, credentialRef: compaction.credentialRef },
+    {
+      provider: input.savedModelProvider,
+      credentialRef: input.savedModelCredentialRef,
+    },
+  );
   const compactionRefusalHolds =
     compactionResolution !== null &&
     !compactionResolution.runnable &&
@@ -544,9 +584,14 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
   // The same wait the two overrides above take: an endpoint can still arrive on a credential the
   // vault has not answered for yet, and calling a runnable fallback broken is the false alarm the
   // null-until-loaded rule exists to prevent.
-  const fallbackEndpointOwed =
-    !endpointsKnown &&
-    Boolean(fallback.credentialRef || input.savedModelCredentialRef);
+  const fallbackEndpointOwed = endpointCouldStillArrive(
+    endpointsKnown,
+    { provider: fallback.provider, credentialRef: fallback.credentialRef },
+    {
+      provider: input.savedModelProvider,
+      credentialRef: input.savedModelCredentialRef,
+    },
+  );
   const fallbackRefusalHolds =
     fallbackResolution !== null &&
     !fallbackResolution.runnable &&

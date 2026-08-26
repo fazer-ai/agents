@@ -47,10 +47,7 @@ import { providerLabel } from "@/client/lib/providerLabels";
 import { serverNow, serverNowDate } from "@/client/lib/serverClock";
 import { isValidHttpUrl } from "@/client/lib/validation";
 import { MODEL_PROVIDERS } from "@/graph/model-config";
-import {
-  modelOptionalFor,
-  PROVIDER_DEFAULT_MODEL,
-} from "@/graph/model-defaults";
+import { PROVIDER_DEFAULT_MODEL } from "@/graph/model-defaults";
 import {
   EXTRACTION_PROMPT_MAX,
   FOLLOW_UP_INSTRUCTIONS_MAX,
@@ -67,6 +64,10 @@ import {
 import { FOLLOW_UP_MAX_STEPS } from "@/modules/followups/settings";
 import { visionAcceptsDocuments } from "@/modules/vision/document-support";
 import { DEFAULT_EXTRACTION_PROMPT } from "@/modules/vision/prompt-default";
+import {
+  fallbackIsConfigured,
+  fallbackModelIsMissing,
+} from "./modelFallbackFormState";
 import {
   overrideBaseUrlInvalid,
   overrideBaseUrlUnsupported,
@@ -1166,24 +1167,20 @@ export function BehaviorTab({
     credentialRef: modelFallback.credentialRef,
     baseURL: modelFallback.baseURL,
   };
-  // A fallback is CONFIGURED once both halves are named, and that is the flag every check below
-  // reads. Half-named is the state the runtime refuses to build, so the editor has to be the place
-  // it becomes visible: after a save there is nothing to see but a turn that fails the way it
-  // always did.
-  const fallbackConfigured = !!(
-    modelFallback.provider.trim() && modelFallback.model.trim()
-  );
+  // A fallback is CONFIGURED once a destination is named, and that is the flag every check below
+  // reads — including the endpoint ones, which is why it has to agree with the backend rather than
+  // approximate it. Written as "both halves are named", it answered NO for a model-less
+  // `openai-compatible` fallback, which the backend calls configured: the base-URL checks switched
+  // themselves off, Save went through on a missing or malformed endpoint, the server stored it, and
+  // the runtime could not build it. Same rule, same predicate, one place.
+  const fallbackConfigured = fallbackIsConfigured(modelFallback);
   // Named, and on the save gate, because the round trip does not survive it: `modelFallbackToStored`
   // persists `{provider: "openai", model: null}`, `hasModelFallback` answers false, and the form
   // reader maps that straight back to "No fallback" — so the provider the operator picked is gone on
   // the next load with nothing on screen to say why. The write boundary refuses it too
   // (`assertSettingsModelFallback`, which is what covers the MCP patch); this is what keeps the
   // operator from meeting that refusal as a 400 on a button they were never stopped from pressing.
-  const fallbackModelMissing = !!(
-    modelFallback.provider.trim() &&
-    !modelFallback.model.trim() &&
-    !modelOptionalFor(modelFallback.provider)
-  );
+  const fallbackModelMissing = fallbackModelIsMissing(modelFallback);
   const fallbackSource = overridePickerSource(
     fallbackOverride,
     agentModel,

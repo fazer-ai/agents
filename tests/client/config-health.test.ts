@@ -302,6 +302,33 @@ describe("computeConfigIssues — redirect enabled but incomplete", () => {
       ).toEqual([]);
     });
 
+    // The summariser shares that rule, and shared it with the same defect: this row is what the
+    // extraction changed here. A summariser switched to another vendor with no address is
+    // unrunnable whatever the vault later says about the AGENT's key.
+    test("a SWITCHED provider with no address is reported even while the vault is silent", () => {
+      expect(
+        computeConfigIssues({
+          ...mem({ provider: "openai-compatible", model: "llama" }),
+          savedModelProvider: "openai",
+          savedModelCredentialRef: "vault:1",
+          knownRefs: null,
+        }),
+      ).toEqual([{ key: "memoryModel", tab: "behavior", sectionId: "memory" }]);
+    });
+
+    // And the case the wait exists for is untouched: an override on the agent's OWN provider does
+    // inherit its endpoint, so a credential the vault has not read yet can still supply one.
+    test("an override on the agent's own provider still waits for its credential", () => {
+      expect(
+        computeConfigIssues({
+          ...mem({ provider: "openai-compatible", model: "llama" }),
+          savedModelProvider: "openai-compatible",
+          savedModelCredentialRef: "vault:1",
+          knownRefs: null,
+        }),
+      ).toEqual([]);
+    });
+
     test("its credential being a pending vault entry is flagged as pending", () => {
       expect(
         computeConfigIssues({
@@ -432,6 +459,33 @@ describe("computeConfigIssues — redirect enabled but incomplete", () => {
             model: "llama",
             credentialRef: "vault:3",
           }),
+          knownRefs: null,
+        }),
+      ).toEqual([]);
+    });
+
+    // ...but the wait is about a credential that could CARRY that endpoint, and the agent's cannot
+    // once the override names a different vendor. Written as "either credential is unread", this
+    // reported nothing at all for a fallback that is definitely unrunnable, for as long as the vault
+    // was unavailable. The same three lines guarded the speech rewrite and the summariser, so the
+    // rule is one function now and the two rows below are the two halves of it.
+    test("a SWITCHED provider with no address is reported even while the vault is silent", () => {
+      expect(
+        computeConfigIssues({
+          ...fb({ provider: "openai-compatible", model: "llama" }),
+          savedModelProvider: "openai",
+          savedModelCredentialRef: "vault:1",
+          knownRefs: null,
+        }),
+      ).toEqual([ISSUE]);
+    });
+
+    test("and one that inherits the agent's provider still waits for it", () => {
+      expect(
+        computeConfigIssues({
+          ...fb({ provider: "openai-compatible", model: "llama" }),
+          savedModelProvider: "openai-compatible",
+          savedModelCredentialRef: "vault:1",
           knownRefs: null,
         }),
       ).toEqual([]);

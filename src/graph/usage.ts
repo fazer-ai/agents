@@ -353,7 +353,12 @@ export class UsageCapture extends BaseCallbackHandler {
     metadata?: Record<string, unknown>,
   ): Promise<void> {
     const named = metadata?.[USAGE_MODEL_METADATA_KEY];
-    if (typeof named === "string" && named) this.runModel.set(runId, named);
+    // PRESENT, not truthy. An empty name is what a model-less `openai-compatible` fallback is
+    // called — the server picks, so there is no id to record, and `""` is exactly what this ledger
+    // already stores for a PRIMARY pointed at such an endpoint (`cfg.mc.model`). Discarding it as
+    // falsy sent the row to `this.model` instead, which is the primary's name: a call that never
+    // reached that vendor, billed to it, in the one column this table has for saying who answered.
+    if (typeof named === "string") this.runModel.set(runId, named);
   }
 
   override async handleLLMError(_err: unknown, runId: string): Promise<void> {

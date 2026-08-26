@@ -129,6 +129,13 @@ export interface RedirectFollowUpPayload {
   // Agent.id, serialized as a string — scheduler job payloads are plain JSON.
   agentId: string;
   entryInboxId: number | null;
+  // The redirect episode this ladder was armed for, as the pairing stood in the EVENT that armed it
+  // — not as the row read, which can still be holding the previous pairing back (see the savepoint
+  // in chatwoot/mirror.ts). The dedupe key names the conversation and every episode it ever has
+  // shares it, so this is the only thing that tells the retirement which ladder is the one it means.
+  // Absent ⇒ armed before this field existed, or by a Chatwoot that does not speak about pairings;
+  // `null` ⇒ the event stated there is no pairing.
+  originDisplayId?: number | null;
 }
 
 // Parse (and validate) a claimed job's raw payload. Pure — no I/O — so "is this payload usable" is
@@ -150,7 +157,20 @@ export function parseRedirectFollowUpPayload(
   const entryInboxId =
     typeof payload.entryInboxId === "number" ? payload.entryInboxId : null;
   if (!stage || !widgetThreadId || !agentId) return null;
-  return { stage, widgetThreadId, agentId, entryInboxId };
+  // Read as three states, and put back the same way: a stage advance rebuilds the payload field by
+  // field, so anything this drops is gone from the job for good.
+  const origin = payload.originDisplayId;
+  return {
+    stage,
+    widgetThreadId,
+    agentId,
+    entryInboxId,
+    ...(typeof origin === "number"
+      ? { originDisplayId: origin }
+      : origin === null
+        ? { originDisplayId: null }
+        : {}),
+  };
 }
 
 // Pure: the nudge content for each stage, kept separate from I/O so "what do we say" is trivially
@@ -176,6 +196,9 @@ export interface ArmRedirectChatFollowUpParams {
   widgetThreadId: string;
   agentId: bigint;
   entryInboxId: number | null;
+  // The episode this message belongs to, taken from the EVENT. Omitted when the payload said
+  // nothing about a pairing, which is every Chatwoot without fazer-ai/chatwoot#418.
+  originDisplayId?: number | null;
   cfg: {
     chatFollowupEnabled: boolean;
     chatFollowupDelayValue: number;
@@ -237,6 +260,9 @@ export async function armRedirectChatFollowUp(
       widgetThreadId: p.widgetThreadId,
       agentId: p.agentId.toString(),
       entryInboxId: p.entryInboxId,
+      ...(p.originDisplayId !== undefined
+        ? { originDisplayId: p.originDisplayId }
+        : {}),
     },
     base: p.base,
   });
@@ -679,6 +705,9 @@ export async function redirectFollowUpHandler(
             widgetThreadId: payload.widgetThreadId,
             agentId: payload.agentId,
             entryInboxId,
+            ...(payload.originDisplayId !== undefined
+              ? { originDisplayId: payload.originDisplayId }
+              : {}),
           },
         };
 
@@ -732,6 +761,9 @@ export async function redirectFollowUpHandler(
                   agentId: payload.agentId,
                   entryInboxId,
                   nudgeRetries: retry.attempt,
+                  ...(payload.originDisplayId !== undefined
+                    ? { originDisplayId: payload.originDisplayId }
+                    : {}),
                 },
               };
         }

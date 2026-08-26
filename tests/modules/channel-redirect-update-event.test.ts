@@ -233,7 +233,9 @@ describe.skipIf(!dbUp)(
     // messages the paired WhatsApp thread and RESOLVES it, and a worker that already read its sibling
     // passes every fence it has left — so the episode change has to retire it, which is the one
     // signal that reaches a run already claimed.
-    async function armLadder() {
+    // `origin` omitted ⇒ a payload with no episode on it, which is every ladder armed before this
+    // field existed and every one armed from a Chatwoot that does not speak about pairings.
+    async function armLadder(origin?: number | null) {
       const key = followUpDedupeKey(
         chatwootThreadId(tenantId, instanceId, WIDGET_CONV),
       );
@@ -245,7 +247,10 @@ describe.skipIf(!dbUp)(
           tenantId,
           kind: "REDIRECT_FOLLOWUP",
           dedupeKey: key,
-          payload: { stage: "whatsapp" },
+          payload: {
+            stage: "whatsapp",
+            ...(origin !== undefined ? { originDisplayId: origin } : {}),
+          },
           status: "PENDING",
           runAt: new Date(Date.now() + 600_000),
         },
@@ -384,6 +389,69 @@ describe.skipIf(!dbUp)(
       expect(await ladderState(key)).toEqual({
         status: "DONE",
         cancelled: true,
+      });
+    });
+
+    // Review round 12 of #355. The dedupe key names the CONVERSATION, and until now the retirement
+    // took every job under it — so a retirement running AFTER the new episode's ladder was armed
+    // killed the ladder it exists to protect. That ordering is reachable, and by the failure path
+    // right above: a delivery whose retirement was rejected holds the pairing back and then goes on
+    // to arm anyway, because the arm keys off the widget INBOX and never reads the pairing. The next
+    // payload restates the pairing, retires successfully, and takes the new episode's ladder with
+    // it. Nothing re-arms it either: `redirectLinkedAt` is cleared by the release, but the cross-link
+    // that reads it only runs on an INBOUND event, and the lead that was just redirected has stopped
+    // talking — which is the silence the ladder was armed to chase.
+    //
+    // So the job carries the episode it was armed for, and a retirement keeps its own. A payload
+    // with no episode on it is the previous episode's by construction: it predates the field.
+    test("a ladder armed for the episode being written survives the retirement", async () => {
+      const FIFTH = 6205;
+      const key = await armLadder(FIFTH);
+      await deliver(widgetConversation(FIFTH), "conversation_updated");
+      expect((await widgetRow()).redirectOriginDisplayId).toBe(FIFTH);
+      expect(await ladderState(key)).toEqual({
+        status: "PENDING",
+        cancelled: false,
+      });
+    });
+
+    // And the whole chain, in the order it actually happens: the retirement is rejected, the delivery
+    // arms the new episode's ladder anyway, and the payload that finally applies the pairing must
+    // leave that ladder standing.
+    test("a retirement that was rejected does not cost the new episode its ladder", async () => {
+      const SIXTH = 6206;
+      const breaking = appDb.$extends({
+        query: {
+          async $executeRaw({ args, query }) {
+            const sql = Array.isArray(args)
+              ? String((args as unknown[])[0])
+              : String(
+                  (args as { strings?: string[] }).strings?.join("") ?? "",
+                );
+            if (sql.includes("scheduler_jobs")) {
+              return query(["SELECT 1 / 0"] as never);
+            }
+            return query(args);
+          },
+        },
+      }) as unknown as PrismaClient;
+
+      await armLadder(null);
+      await deliver(
+        widgetConversation(SIXTH),
+        "conversation_updated",
+        breaking,
+      );
+      // Held back, so the row still names the previous episode.
+      expect((await widgetRow()).redirectOriginDisplayId).not.toBe(SIXTH);
+      // What the same delivery arms next, from the cloned message: the NEW episode's ladder.
+      const key = await armLadder(SIXTH);
+
+      await deliver(widgetConversation(SIXTH), "conversation_updated");
+      expect((await widgetRow()).redirectOriginDisplayId).toBe(SIXTH);
+      expect(await ladderState(key)).toEqual({
+        status: "PENDING",
+        cancelled: false,
       });
     });
 

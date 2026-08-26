@@ -40,6 +40,34 @@ describe("parseRedirectFollowUpPayload", () => {
     });
   });
 
+  // The stage advance rebuilds this payload field by field, so a state parse drops is gone from the
+  // job for good — and the one it would drop is the episode the retirement reads.
+  test("the episode survives the round trip in all three states", () => {
+    expect(
+      parseRedirectFollowUpPayload({
+        stage: "chat",
+        widgetThreadId: "1:2:3",
+        agentId: "9",
+        originDisplayId: 6203,
+      }),
+    ).toMatchObject({ originDisplayId: 6203 });
+    expect(
+      parseRedirectFollowUpPayload({
+        stage: "chat",
+        widgetThreadId: "1:2:3",
+        agentId: "9",
+        originDisplayId: null,
+      }),
+    ).toMatchObject({ originDisplayId: null });
+    expect(
+      parseRedirectFollowUpPayload({
+        stage: "chat",
+        widgetThreadId: "1:2:3",
+        agentId: "9",
+      }),
+    ).not.toHaveProperty("originDisplayId");
+  });
+
   test("valid whatsapp-stage payload with a null entryInboxId", () => {
     expect(
       parseRedirectFollowUpPayload({
@@ -166,6 +194,67 @@ describe("armRedirectChatFollowUp", () => {
       agentId: "9",
       entryInboxId: 7,
     });
+  });
+
+  // Review round 12 of #355. The stamp is what lets the mirror's retirement tell the ladder it is
+  // ending from the one it is starting, and both directions matter: an event that states an episode
+  // must put it on the job, and an event that states none must leave the key OFF rather than write
+  // a null that reads as "the cleared episode".
+  test("stamps the episode the arming event stated", async () => {
+    const { fn, calls } = fakeEnqueue();
+    await armRedirectChatFollowUp(
+      {
+        tenantId: 1n,
+        instanceId: 2n,
+        widgetThreadId: "1:2:30",
+        agentId: 9n,
+        entryInboxId: 7,
+        originDisplayId: 6203,
+        cfg,
+        now,
+      },
+      fn,
+    );
+    expect(calls[0]?.payload).toEqual({
+      stage: "chat",
+      widgetThreadId: "1:2:30",
+      agentId: "9",
+      entryInboxId: 7,
+      originDisplayId: 6203,
+    });
+  });
+
+  test("a stated clear is stamped as the episode it is; silence is stamped not at all", async () => {
+    const cleared = fakeEnqueue();
+    await armRedirectChatFollowUp(
+      {
+        tenantId: 1n,
+        instanceId: 2n,
+        widgetThreadId: "1:2:30",
+        agentId: 9n,
+        entryInboxId: 7,
+        originDisplayId: null,
+        cfg,
+        now,
+      },
+      cleared.fn,
+    );
+    expect(cleared.calls[0]?.payload).toMatchObject({ originDisplayId: null });
+
+    const silent = fakeEnqueue();
+    await armRedirectChatFollowUp(
+      {
+        tenantId: 1n,
+        instanceId: 2n,
+        widgetThreadId: "1:2:30",
+        agentId: 9n,
+        entryInboxId: 7,
+        cfg,
+        now,
+      },
+      silent.fn,
+    );
+    expect(silent.calls[0]?.payload).not.toHaveProperty("originDisplayId");
   });
 
   test("no-ops only when EVERY follow-up step is disabled", async () => {
@@ -1057,12 +1146,14 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
 
   const claimed = async (
     stage: "chat" | "whatsapp" | "closing" = "chat",
+    originDisplayId?: number | null,
   ): Promise<ClaimedJob> => {
     const payload = {
       stage,
       widgetThreadId: widgetThread,
       agentId: agentId.toString(),
       entryInboxId: 110,
+      ...(originDisplayId !== undefined ? { originDisplayId } : {}),
     };
     const row = await suDb.schedulerJob.upsert({
       where: {
@@ -1130,6 +1221,69 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
       });
     }
   }
+
+  // Review round 12 of #355. Every reschedule here rebuilds the payload field by field, so the
+  // episode stamp the retirement reads has to be listed on each one or the ladder loses it at the
+  // first stage advance — and a ladder with no stamp reads as the PREVIOUS episode's, which is
+  // exactly the job the next pairing change retires.
+  test("a stage advance carries the episode stamp forward", async () => {
+    const job = await claimed("chat", 6203);
+    const s = stubClient();
+
+    const result = await withUnresolvableCredential(() =>
+      redirectFollowUpHandler(job, appDb, {
+        ...deps(),
+        makeClient: s.makeClient,
+      }),
+    );
+
+    expect(result.outcome).toBe("reschedule");
+    if (result.outcome === "reschedule") {
+      expect(result.payload).toMatchObject({ originDisplayId: 6203 });
+    }
+
+    // And the ordinary escalation, which is a different reschedule with a payload of its own. Driven
+    // by switching stage 1 OFF rather than by letting it run: the advance is what is under test, and
+    // a real model turn behind it would only add a way for this to fail for another reason.
+    const before = await suDb.agent.findUniqueOrThrow({
+      where: { id: agentId },
+      select: { settings: true },
+    });
+    const settings = before.settings as {
+      channelRedirect: Record<string, unknown>;
+    };
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: {
+        settings: {
+          ...settings,
+          channelRedirect: {
+            ...settings.channelRedirect,
+            chatFollowupEnabled: false,
+          },
+        },
+      },
+    });
+    try {
+      const escalated = await redirectFollowUpHandler(
+        await claimed("chat", 6203),
+        appDb,
+        deps(),
+      );
+      expect(escalated.outcome).toBe("reschedule");
+      if (escalated.outcome === "reschedule") {
+        expect(escalated.payload).toMatchObject({
+          stage: "whatsapp",
+          originDisplayId: 6203,
+        });
+      }
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { settings: before.settings ?? {} },
+      });
+    }
+  });
 
   test("a chat stage whose agent cannot author retries the stage instead of escalating", async () => {
     const job = await claimed("chat");

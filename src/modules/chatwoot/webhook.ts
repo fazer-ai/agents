@@ -3510,6 +3510,11 @@ export async function processChatwootDelivery(
               ),
               agentId: rt.agentId,
               entryInboxId: redirectCfg.entryInboxId,
+              // From the EVENT, not from the mirrored row: a mirror write whose ladder retirement
+              // was rejected holds the pairing back, and this same delivery still arms. Reading the
+              // row there would stamp the episode being left behind, and the payload that finally
+              // applies the pairing would retire the ladder it had just armed.
+              originDisplayId: n.redirectOriginDisplayId,
               cfg: redirectCfg,
               base,
             });

@@ -275,13 +275,31 @@ export async function retireJobsByDedupeKey(
 // blocks and lands AFTER the retirement rather than before it. That ordering is the whole point for
 // the mirror's episode release: work armed for the NEW episode must survive the retirement of the
 // old one, and outside the transaction there is a window where it does not.
+//
+// `keepEpisode` is for a caller whose dedupe key outlives the thing being retired. The key names the
+// CONVERSATION, so every episode that conversation ever has shares it, and a retirement that runs
+// after the NEXT episode's work was armed would take that with it — which is reachable, not
+// theoretical: a mirror write whose retirement was rejected holds the pairing back and the same
+// delivery goes on to arm anyway, so the payload that finally applies the pairing is the one that
+// would kill it. Given, the retirement leaves the named episode's own work standing. A payload that
+// does not state an episode is the previous one's by construction: it predates the field, or it came
+// from a Chatwoot that does not speak about pairings at all.
 export async function retireJobsByDedupeKeyOn(
   db: ScopedDb,
   tenantId: bigint,
   kind: SchedulerJobKind,
   dedupeKey: string,
+  keepEpisode?: { originDisplayId: number | null },
 ): Promise<number> {
   const stamp = JSON.stringify({ cancelledAt: new Date().toISOString() });
+  // Two questions, not one: whether an episode was named at all, and which. A cleared pairing names
+  // the episode `null`, and that is a real episode with work of its own — distinct from "no episode
+  // given", which retires everything the way this always did.
+  const keeps = keepEpisode !== undefined;
+  const keepOrigin =
+    keepEpisode?.originDisplayId != null
+      ? String(keepEpisode.originDisplayId)
+      : null;
   return db.$executeRaw`
       UPDATE scheduler_jobs
          SET status = 'DONE',
@@ -291,7 +309,12 @@ export async function retireJobsByDedupeKeyOn(
        WHERE tenant_id = ${tenantId}
          AND kind = ${kind}::"SchedulerJobKind"
          AND dedupe_key = ${dedupeKey}
-         AND status IN ('PENDING', 'CLAIMED')`;
+         AND status IN ('PENDING', 'CLAIMED')
+         AND NOT (
+               ${keeps}::boolean
+           AND jsonb_exists(payload, 'originDisplayId')
+           AND payload->>'originDisplayId' IS NOT DISTINCT FROM ${keepOrigin}::text
+         )`;
 }
 
 function readJobRetirement(

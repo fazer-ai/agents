@@ -282,6 +282,9 @@ export async function mirrorChatwootEvent(
             tenantId,
             "REDIRECT_FOLLOWUP",
             opts.redirectLadderDedupeKey,
+            // The episode this write is moving TO. Work already armed for it is the new episode's,
+            // and the retirement is only about the one being left behind.
+            { originDisplayId: n.redirectOriginDisplayId ?? null },
           );
           await db.$executeRawUnsafe(
             "RELEASE SAVEPOINT retire_redirect_ladder",

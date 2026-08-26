@@ -126,8 +126,9 @@ function chatContentPart(req: VisionRequest): Record<string, unknown> {
 
 // Shared OpenAI-compatible chat-completions vision call. Used by `openai`, `openrouter` and
 // `openai-compatible` (the same chat-completions shape at a different base URL, mirroring
-// src/graph/models.ts's createChatModel). Whether a document ever reaches it is the registry's
-// call, per provider, through `supportsDocuments`.
+// src/graph/models.ts's createChatModel). Whether a document ever reaches it is decided before the
+// call by `visionAcceptsDocuments` (./document-support), per provider AND per endpoint: the three
+// share this request shape, and only one of them is known to answer the `file` part.
 async function chatCompletionsExtract(
   req: VisionRequest,
   providerName: string,

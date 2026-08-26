@@ -267,7 +267,6 @@ describe("extractWithRetry", () => {
       budgets,
       provider: {
         defaultModel: "m",
-        supportsDocuments: true,
         extract: async (req: VisionRequest) => {
           budgets.push(req.timeoutMs);
           const r = results[Math.min(i++, results.length - 1)] ?? "ok";
@@ -376,7 +375,6 @@ describe("extractWithRetry", () => {
     const waited: number[] = [];
     const provider = {
       defaultModel: "m",
-      supportsDocuments: true,
       extract: async (r: VisionRequest) => {
         budgets.push(r.timeoutMs);
         clock += VISION_TOTAL_BUDGET_MS; // the call ran until the whole budget was gone

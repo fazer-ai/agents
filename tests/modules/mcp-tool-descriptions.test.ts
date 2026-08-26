@@ -143,7 +143,18 @@ const SETTINGS_DESC_CEILING = 2_000;
 // reads as configured and can never run — the same silent-failure shape every raise above paid for.
 // The remaining 527 is the shape (four fields, the provider enum, the nullable wrappers) and does
 // not compress. Headroom over 12,347 stays tighter than a block, as before.
-const SETTINGS_SCHEMA_CEILING = 12_400;
+//
+// RAISED from 12,400 for issue #103, and the trim was measured first, against the 53 characters
+// #143 left. `ignoreAppointmentPause` on a follow-up step costs 201 with the note it was written
+// with; rewriting the note to its shortest honest form buys 48 and lands at 153, which still does
+// not fit. Dropping the note entirely WOULD fit, and that is precisely the trade every raise above
+// refuses: what it says is the one thing a caller cannot get by trying, because the flag is INERT
+// unless `followUp.pauseWhileAppointment` is on. Without it a caller exempts a step, stores a block
+// that reads as configured, and nothing about that step ever fires differently — the same
+// silent-failure shape as `includeMessageText` and the half-named `modelFallback` above. The
+// remaining 153 is the field name, the boolean, and that sentence. Headroom over 12,500 stays
+// tighter than a block, as before.
+const SETTINGS_SCHEMA_CEILING = 12_550;
 
 describe("MCP tool descriptions", () => {
   test("agent_settings_set stays under its ceiling", async () => {
@@ -255,6 +266,10 @@ describe("MCP tool descriptions", () => {
   // description and 41,852 of schema. The DESCRIPTION ceiling therefore does NOT move for #143 —
   // this block publishes a schema and no new tool, so #305's number still has room and raising it
   // would have been a number nobody had measured. The schema ceiling does, to 41,950.
+  //
+  // #103 moves the schema figure again and not the description one, for the same reason: the
+  // follow-up step gains one boolean and its note, and no tool is added. Measured at 42,027 of
+  // schema after the trim documented at SETTINGS_SCHEMA_CEILING, so the ceiling goes to 42,100.
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;
@@ -264,7 +279,7 @@ describe("MCP tool descriptions", () => {
       schema += t.schema.length;
     }
     expect(desc).toBeLessThanOrEqual(27_250);
-    expect(schema).toBeLessThanOrEqual(41_950);
+    expect(schema).toBeLessThanOrEqual(42_100);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

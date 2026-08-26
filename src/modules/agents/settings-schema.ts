@@ -225,7 +225,7 @@ const followUpStep = z.looseObject({
     .boolean()
     .optional()
     .describe(
-      "let THIS step fire while a booking stands, with followUp.pauseWhileAppointment left on for the others; decides nothing when that flag is off",
+      "let THIS step fire while a booking stands; no-op unless followUp.pauseWhileAppointment is on",
     ),
 });
 

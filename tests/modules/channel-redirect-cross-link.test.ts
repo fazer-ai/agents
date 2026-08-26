@@ -285,6 +285,61 @@ describe.skipIf(!dbUp)(
       expect(out.testActivatedAt).toBeNull();
     });
 
+    // Review round 7 of #355. Since round 6, `(origin=null, mark=null)` and `(origin=null, mark=set)`
+    // are DIFFERENT states — never told, versus told there is none — and a claim that compares only
+    // the origin reads them as one. This call resolved its sibling through the recency fallback,
+    // which is what "never told" licenses; a stated clear landing under it revokes that licence, and
+    // the notes would go to a WhatsApp conversation the source just said is not this episode's.
+    test("does not stamp when a stated clear lands on the legacy state", async () => {
+      const cfg: ChannelRedirectConfig = {
+        ...CHANNEL_REDIRECT_DEFAULTS,
+        enabled: true,
+        entryInboxId: ENTRY_INBOX,
+        widgetInboxId: WIDGET_INBOX,
+      };
+      await suDb.conversation.update({
+        where: { id: widgetRowId },
+        data: {
+          redirectLinkedAt: null,
+          testActivatedAt: null,
+          // What the mirror wrote while this call was reading: same null, and a mark that turns it
+          // from silence into an answer.
+          redirectOriginDisplayId: null,
+          chatwootRedirectOriginAt: 1_786_000_000.5,
+        },
+      });
+
+      const out = await linkRedirectConversations({
+        tenantId,
+        instanceId,
+        agentId: 1n,
+        mode: "test",
+        cfg,
+        widgetConv: {
+          id: widgetRowId,
+          displayId: WIDGET_CONV,
+          testActivatedAt: null,
+          contactId,
+          // The snapshot this delivery started from: nobody had said anything yet.
+          redirectOriginDisplayId: null,
+          chatwootRedirectOriginAt: null,
+        },
+        base: appDb,
+      });
+
+      const row = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: WIDGET_CONV },
+        select: { testActivatedAt: true, redirectLinkedAt: true },
+      });
+      expect(row.redirectLinkedAt).toBeNull();
+      expect(row.testActivatedAt).toBeNull();
+      expect(out.testActivatedAt).toBeNull();
+      await suDb.conversation.update({
+        where: { id: widgetRowId },
+        data: { chatwootRedirectOriginAt: null },
+      });
+    });
+
     // The claim is the one-shot, not the caller's fence. That fence reads `redirectLinkedAt` at the
     // top of the delivery and this write lands a dozen awaits later, so two inbounds arriving
     // together both passed it — and an unconditional stamp let both post their pair of private notes.

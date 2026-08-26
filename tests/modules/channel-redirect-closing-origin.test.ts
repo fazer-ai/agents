@@ -386,6 +386,45 @@ describe.skipIf(!dbUp)(
       });
     };
 
+    // Review round 7 of #355, and the same question one state deeper. A closing that starts from
+    // `(origin=null, mark=null)` resolved its sibling through the recency fallback; a stated clear
+    // landing under it makes that answer wrong, and the claim compares only the origin, so both
+    // nulls match and the goodbye goes out on a thread the source just disowned.
+    test("a stated clear landing under the closing stops the claim", async () => {
+      await rearm();
+      const flipping = appDb.$extends({
+        query: {
+          conversation: {
+            async findUnique({ args, query }) {
+              const res = await query(args);
+              const sel = args.select as Record<string, unknown> | undefined;
+              if (sel?.chatwootStatusAt && sel?.lastInboundAt && sel?.inbox) {
+                await suDb.conversation.updateMany({
+                  where: { tenantId: tid, chatwootConversationId: WIDGET },
+                  data: { chatwootRedirectOriginAt: 1_786_000_000.5 },
+                });
+              }
+              return res;
+            },
+          },
+        },
+      }) as unknown as PrismaClient;
+      try {
+        await resolveWidget(flipping);
+        expect(wire.filter((u) => u.includes("/messages"))).toEqual([]);
+        const widget = await suDb.conversation.findFirstOrThrow({
+          where: { tenantId: tid, chatwootConversationId: WIDGET },
+          select: { redirectClosedAt: true },
+        });
+        expect(widget.redirectClosedAt).toBeNull();
+      } finally {
+        await suDb.conversation.updateMany({
+          where: { tenantId: tid, chatwootConversationId: WIDGET },
+          data: { chatwootRedirectOriginAt: null },
+        });
+      }
+    });
+
     // Review round 6 of #355, and the effect rather than the decision table. A STATED clear reaches
     // this consumer as a stored null, which is also what "the fork never spoke about this
     // conversation" looks like — and the old predicate answers the second one. Read as a gap it

@@ -916,6 +916,7 @@ export async function deliverRedirectClosing(
         chatwootStatusAt: true,
         lastInboundAt: true,
         redirectOriginDisplayId: true,
+        chatwootRedirectOriginAt: true,
         inbox: { select: { agentId: true, channelType: true, provider: true } },
       },
     });
@@ -998,6 +999,12 @@ export async function deliverRedirectClosing(
   // them, until fazer-ai/chatwoot#418 is deployed) matches only while it still has none, so the
   // arrival of a first pairing stands this run down rather than letting it act on the recency
   // fallback it read.
+  //
+  // And the mark goes with it, because the origin alone cannot say which null this is. `(null, null)`
+  // is nobody ever told us and licenses the recency fallback this run may have used; `(null, set)` is
+  // the fork saying this episode has no WhatsApp half. A clear landing between the read and this
+  // write turns the first into the second without changing the origin, and a claim comparing only the
+  // origin would carry the goodbye through to a thread the source just disowned.
   const won = await runScopedOn(base, sysCtx(p.tenantId), async (db) => {
     const res = await db.conversation.updateMany({
       where: {
@@ -1007,6 +1014,7 @@ export async function deliverRedirectClosing(
         redirectClosedAt: null,
         lastInboundAt: cx.widget.lastInboundAt,
         redirectOriginDisplayId: cx.widget.redirectOriginDisplayId,
+        chatwootRedirectOriginAt: cx.widget.chatwootRedirectOriginAt,
       },
       data: { redirectClosedAt: now },
     });

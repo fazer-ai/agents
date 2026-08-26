@@ -131,6 +131,13 @@ export async function linkRedirectConversations(
   // finds the watermark set and links nothing, ever. Losing the claim is not a failure: it means
   // another episode owns this conversation now, and its own first inbound will link it.
   //
+  // `chatwootRedirectOriginAt` is the third, and it is what makes the origin condition mean the same
+  // thing the lookup meant. Since the stated clear became an answer of its own, `(origin=null,
+  // mark=null)` and `(origin=null, mark=set)` are different states — never told, versus told there is
+  // none — and a claim comparing only the origin reads them as one. A call that resolved its sibling
+  // through the recency fallback did so on the licence of the first state; a clear landing under it
+  // revokes that licence, and the notes would go to a conversation the source just disowned.
+  //
   // `redirectLinkedAt: null` is the caller's fence, moved into the same statement. It was read a
   // dozen awaits ago, so two inbounds arriving together both passed it and both posted a pair of
   // private notes. Asked here it costs nothing and the one-shot is one for real.
@@ -143,6 +150,7 @@ export async function linkRedirectConversations(
         id: p.widgetConv.id,
         redirectLinkedAt: null,
         redirectOriginDisplayId: p.widgetConv.redirectOriginDisplayId,
+        chatwootRedirectOriginAt: p.widgetConv.chatwootRedirectOriginAt,
       },
       data: {
         redirectLinkedAt: now,

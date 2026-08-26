@@ -1,7 +1,13 @@
 import "@testing-library/jest-dom";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
-import { DB_GATE_OPT_OUT, missingDbConfig, unreachableDb } from "./db-gate";
+import {
+  DB_GATE_OPT_OUT,
+  missingDbConfig,
+  PROBE_DEADLINE_MS,
+  unreachableDb,
+  withDeadline,
+} from "./db-gate";
 
 // NOTE: happy-dom registration and the Bun-native global capture live in
 // ./dom-setup.ts, which bunfig.toml preloads BEFORE this file. The DOM must
@@ -52,19 +58,34 @@ if (testSuUrl) {
 const missing = missingDbConfig(process.env);
 if (missing) throw new Error(`tests: ${missing}`);
 if (process.env[DB_GATE_OPT_OUT] !== "1") {
-  const probeUrl = process.env.MIGRATION_DATABASE_URL as string;
-  const probe = new PrismaClient({
-    adapter: new PrismaPg({ connectionString: probeUrl }),
-  });
-  try {
-    // The same question every guarded file asks, asked once and early. Asked of the MIGRATION role:
-    // it is the one that creates and drops the fixtures, so a database that answers it answers for
-    // the app role too (they share a host and differ only in privilege).
-    await probe.$queryRaw`SELECT 1`;
-  } catch (err) {
-    throw new Error(`tests: ${unreachableDb(probeUrl, err)}`);
-  } finally {
-    await probe.$disconnect();
+  // BOTH connections, because both are what a guarded file asks for. Every `describe.skipIf(!dbUp)`
+  // block sits behind a `SELECT 1` on the migration role AND one on the app role, and the two
+  // authenticate as different roles with different credentials. Probing only the first passes a run
+  // whose app role cannot log in, which skips the same blocks just as silently: measured with a
+  // valid migration URL and a nonexistent app role, one file reported `6 pass, 14 skip, 0 fail`,
+  // exit 0. The URLs read here are the ones forced above, so this asks the question in exactly the
+  // shape the guarded files will ask it.
+  for (const variable of [
+    "MIGRATION_DATABASE_URL",
+    "TEST_APP_DATABASE_URL",
+  ] as const) {
+    const url = process.env[variable] as string;
+    const probe = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: url }),
+    });
+    try {
+      await withDeadline(
+        probe.$queryRaw`SELECT 1`,
+        PROBE_DEADLINE_MS,
+        variable,
+      );
+      await probe.$disconnect();
+    } catch (err) {
+      // Not awaited: the connection this is trying to close is the one that just failed to answer,
+      // and waiting on it is the stall the deadline above exists to end.
+      void probe.$disconnect().catch(() => {});
+      throw new Error(`tests: ${unreachableDb(variable, url, err)}`);
+    }
   }
 }
 

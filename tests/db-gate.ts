@@ -1,7 +1,7 @@
 // WHY A RUN WITHOUT A DATABASE MUST NOT BE GREEN.
 //
-// 154 `describe` blocks in this suite are guarded by `describe.skipIf(!dbUp)`, and `dbUp` is a
-// CONNECTION ATTEMPT made by each file against TEST_MIGRATION_DATABASE_URL / TEST_APP_DATABASE_URL.
+// More than 150 `describe` blocks in this suite are guarded by `describe.skipIf(!dbUp)`, and `dbUp`
+// is a CONNECTION ATTEMPT each file makes against TEST_MIGRATION_DATABASE_URL / TEST_APP_DATABASE_URL.
 // When those are unset or the database does not answer, every one of those blocks is skipped, the
 // run exits 0, and the line a reader checks says `0 fail`. Measured on one file, with the variable
 // pointed at a database that does not exist: `0 pass, 10 skip, 0 fail`, exit 0. Measured on a real
@@ -43,10 +43,54 @@ export function missingDbConfig(env: {
   ].join("\n");
 }
 
-export function unreachableDb(url: string, err: unknown): string {
+// Named after the VARIABLE, not after the database: both connections point at the same database and
+// differ only in the role they authenticate as, so the database name alone cannot say which of the
+// two failed.
+export function unreachableDb(
+  variable: string,
+  url: string,
+  err: unknown,
+): string {
   return [
     `the test database did not answer, so every database-backed test in this suite would be SKIPPED and the run would still exit 0.`,
-    `  ${new URL(url).pathname.replace(/^\//, "")}: ${err instanceof Error ? err.message.split("\n")[0] : String(err)}`,
+    `  ${variable} (${new URL(url).pathname.replace(/^\//, "")}): ${oneLine(err)}`,
     HOW,
   ].join("\n");
+}
+
+// COLLAPSED, not truncated to the first line. Every driver error that matters here arrives as a
+// multi-line block whose FIRST line is empty: Prisma's is
+// "\nInvalid `prisma.$queryRaw()` invocation:\n\n\nRaw query failed. Code: `28P01`. Message: `...`",
+// so taking line one prints the variable, the database, and then nothing at all. Measured on the
+// four failures a reader actually hits (bad password, closed port, unknown host, missing database),
+// none of which echo the connection string, so no credential travels in here.
+function oneLine(err: unknown): string {
+  const collapsed = (err instanceof Error ? err.message : String(err))
+    .replace(/\s+/g, " ")
+    .trim();
+  return collapsed.length > 200 ? `${collapsed.slice(0, 200)}...` : collapsed;
+}
+
+// An endpoint that ACCEPTS the connection and then says nothing is not a slow database, it is a
+// refusal that never arrives: measured against a listener that accepts and stays silent, the preload
+// was still hanging at 45s with no output at all. A deadline is what keeps this a gate rather than a
+// second way to stall. 10s is far above a `SELECT 1` on a loaded machine and far below any OS-level
+// socket timeout, which is the wait it replaces.
+export const PROBE_DEADLINE_MS = 10_000;
+
+export function withDeadline<T>(
+  work: Promise<T>,
+  ms: number,
+  what: string,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    work,
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`${what} did not answer within ${ms / 1000}s`)),
+        ms,
+      );
+    }),
+  ]).finally(() => clearTimeout(timer));
 }

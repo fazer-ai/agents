@@ -674,10 +674,14 @@ const ALWAYS_ON_SCREEN: Record<string, string> = {
 // A form that holds SOME of its refusals, with what is left. Neither rule above can see this — rule
 // 1 is satisfied by the hook being called at all — so it is a declaration, pinned by size, and the
 // only thing keeping the sweep honest about where it stopped.
-const PARTIALLY_HELD: Record<string, string> = {
-  "pages/agents/AgentEditorPage.tsx":
-    "Holds `name` and `systemPrompt`, the two values it renders a control for directly. Everything else it writes lives in bags (`settings.tts.normalizeCredentialRef`, `guardrails.output.templateMessage`) behind eight tabs, so placing one of those means also taking the operator to the tab that holds it — the deep-link TEXT_CAP_TARGETS already maps for config-health warnings. Left to fazer-ai/agents#349.",
-};
+// EMPTY since #349, and kept rather than deleted: the shape is the place a future form declares what
+// it stopped at, and a pin of zero makes adding one cost the second edit the ledger exists to force.
+//
+// What emptied it: the agent editor now declares every value it writes — twenty-three names over four
+// tabs — and hands the answers to the tabs that draw them. The half that was missing was never the
+// mark, it was that a mark on a tab nobody is looking at is silence, so the editor announces the ones
+// it holds off screen in a banner that carries the way to the control (see `refusalAway`).
+const PARTIALLY_HELD: Record<string, string> = {};
 
 describe("a form that writes holds the refusal it gets", () => {
   test("every partially held form still holds something", () => {
@@ -692,7 +696,7 @@ describe("a form that writes holds the refusal it gets", () => {
   });
 
   test("the partial ledger is pinned to its size", () => {
-    expectWaiverLedger("PARTIALLY_HELD", PARTIALLY_HELD, 1);
+    expectWaiverLedger("PARTIALLY_HELD", PARTIALLY_HELD, 0);
   });
 
   test("the predicate sees a form that writes", () => {

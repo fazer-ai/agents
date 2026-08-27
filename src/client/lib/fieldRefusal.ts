@@ -30,18 +30,30 @@ export function readRefusal(e: unknown): Refusal | null {
   return field ? { message, field } : { message };
 }
 
-// The two channels a refusal can reach the operator through, as an EITHER: exactly one of them
-// fires, always.
+// The channels a refusal can reach the operator through. THREE outcomes, and the third one is the
+// whole of #349.
 //
-// Both halves of that are load-bearing. Silence is what a mechanism like this breaks first — a form
-// that holds every refusal at an input holds the ones it has no input for as well, and the operator
-// gets a save button that does nothing. And a message rendered at the control AND repeated in a
-// toast is the noise that trains people to dismiss toasts without reading them.
+//   1. `{ at }`          the control is on screen. The mark is the message; nothing else fires.
+//   2. `{ at, toast }`   the form OWNS the control and is not drawing it. The mark is written for
+//                        when the operator gets there, and the sentence still has to be said now,
+//                        because a mark on a tab nobody is looking at is silence.
+//   3. `{ toast }`       not this form's input. The sentence is the only channel.
+//
+// It began as an EITHER of two, and that was right while every form drew everything it owned. The
+// agent editor does not: it writes about thirty values across eight tabs and draws one tab's worth,
+// so "is this name one the form renders" and "is this name one the form can place" stopped being the
+// same question. Collapsing them either way loses something real — answer only the first and the
+// mark never appears after the operator switches tabs; answer only the second and `capture` reports
+// "it is on the control" about a control on another tab, and the save fails into silence.
+//
+// What did NOT change is the rule underneath: the operator is told exactly once. In case 2 the two
+// channels do not overlap, because the caller stops announcing the moment the control is on screen —
+// see the editor's banner.
 //
 // `value` travels with a placement because the mark expires by VALUE and not by a call: `at` shows
 // it only while the input still holds what was refused (see the hook).
 export type RefusalPlacement =
-  | { at: string; message: string; value: unknown }
+  | { at: string; message: string; value: unknown; toast?: string }
   | { at?: undefined; toast: string };
 
 // What the form was doing when the answer landed. The first round of review on #313 found three ways
@@ -60,6 +72,15 @@ export interface FormAtAnswer {
   // the request was out, and marking the box would put "this is not valid" under a value the server
   // never saw.
   current: Record<string, unknown>;
+  // Every name this form can place a mark on, drawn or not. Defaults to `rendered`, which is the
+  // right answer for a form whose controls are all on screen together — twenty-three of the
+  // twenty-four here.
+  //
+  // Separate from `rendered` rather than replacing it, because the two answer different questions and
+  // the difference is what decides whether the caller must speak: `rendered` says whether the mark is
+  // READABLE right now, `owned` says whether it is worth WRITING at all. A form that answered only
+  // the second would silence its toast about an input the operator cannot see.
+  owned?: readonly string[];
 }
 
 // `rendered` is what the FORM declares it can show, by the server's names.
@@ -88,11 +109,10 @@ export function placeRefusal(
   if (!refusal) return { toast: fallback };
   const { field, message } = refusal;
   if (!field) return { toast: message };
-  const declared = rendered.includes(field)
-    ? field
-    : rendered.find((name) =>
-        new RegExp(`^${escapeName(name)}\\.\\d+(?:\\.|$)`).test(field),
-      );
+  const drawn = resolveName(field, rendered);
+  // `owned` is only consulted for a name `rendered` did not answer, so a form that draws everything it
+  // owns takes exactly the path it took before this existed.
+  const declared = drawn ?? resolveName(field, form.owned ?? rendered);
   if (declared === undefined) return { toast: message };
   if (!form.mounted) return { toast: message };
   // Only when the request carried this field. A refusal about a value this write did not change is
@@ -101,7 +121,22 @@ export function placeRefusal(
   if (carried && !sameValue(form.sent[declared], form.current[declared])) {
     return { toast: message };
   }
-  return { at: declared, message, value: form.current[declared] };
+  const placed = { at: declared, message, value: form.current[declared] };
+  // Owned but not drawn: the mark is written for the tab the operator has yet to open, and the
+  // sentence goes out now so the save does not fail into silence.
+  return drawn === undefined ? { ...placed, toast: message } : placed;
+}
+
+// The declared name a refused field belongs to, or undefined.
+function resolveName(
+  field: string,
+  names: readonly string[],
+): string | undefined {
+  return names.includes(field)
+    ? field
+    : names.find((name) =>
+        new RegExp(`^${escapeName(name)}\\.\\d+(?:\\.|$)`).test(field),
+      );
 }
 
 // "The box still holds what the server was talking about", for a value of any shape.

@@ -32,6 +32,19 @@ function renderWithProvider(
   const noop = () => {};
   const props: React.ComponentProps<typeof BehaviorTab> &
     Record<string, unknown> = {
+    // Nothing refused: this file is about the vision section, not about a refusal landing on it.
+    refusals: {
+      sttCredential: null,
+      ttsCredential: null,
+      ttsNormalizeCredential: null,
+      visionCredential: null,
+      visionExtractionPrompt: null,
+      contactAuthCredential: null,
+      contactAuthDenyMessage: null,
+      memoryCredential: null,
+      awayMessage: null,
+      followUpSteps: [],
+    },
     agentId: "1",
     hours: [],
     businessHoursId: "",

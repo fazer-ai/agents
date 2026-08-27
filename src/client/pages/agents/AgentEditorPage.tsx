@@ -52,6 +52,13 @@ import { useTenantEvents } from "@/client/hooks/useTenantEvents";
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
 import { computeConfigIssues, issueHasAction } from "@/client/lib/configHealth";
+import {
+  type EditorTab,
+  editorRefusalFields,
+  editorTargetFor,
+  followUpStepField,
+} from "@/client/lib/editorRefusal";
+import { readRefusal } from "@/client/lib/fieldRefusal";
 import { formatRelativeTime, slugify } from "@/client/lib/utils";
 import {
   invalidateVault,
@@ -559,7 +566,6 @@ function AgentEditorSkeleton() {
 // `guardrails.output.templateMessage` — behind tabs, and placing a refusal on one of those means
 // also taking the operator to the tab that holds it, which is its own change (fazer-ai/agents#349;
 // the abstention is recorded in tests/client/field-refusal-fence.test.ts).
-const EDITOR_FIELDS = ["name", "systemPrompt"] as const;
 const CLONE_FIELDS = ["name"] as const;
 
 export function AgentEditorPage() {
@@ -609,11 +615,6 @@ function AgentEditor() {
   // only mounted while `tab === "general"`, so a save that answers after the operator has moved on —
   // or the "Save and export" that writes General from wherever they are — would place its mark on a
   // control nobody is rendering. Off that tab the sentence goes to the toast.
-  const refusal = useFieldRefusal(tab === "general" ? EDITOR_FIELDS : []);
-  // What the two placeable inputs hold right now, readable from inside a save that started before
-  // them: this page's saves are long and the operator keeps typing during them.
-  const currentRef = useRef<Record<string, unknown>>({});
-  currentRef.current = { name: name.trim(), systemPrompt };
   const [enabled, setEnabled] = useState(true);
   const [agentMode, setAgentMode] = useState<"test" | "production">(
     "production",
@@ -845,6 +846,127 @@ function AgentEditor() {
   const fillCredModal = useModalController<VaultEntry>();
   const exportModal = useModalController();
   const [cloneName, setCloneName] = useState("");
+  // WHERE A REFUSAL ABOUT THIS EDITOR GOES. One holder for the page, declaring two different lists:
+  // what the OPEN TAB is drawing, and everything the editor can mark at all.
+  //
+  // The second is the whole of #349. Every value this page writes other than the name and the prompt
+  // lives in a bag edited behind one of eight tabs, so a refusal about
+  // `guardrails.output.templateMessage` names a control that exists and is not on screen. Marking it
+  // and falling silent is the failure this mechanism is against; dropping it into a toast is what the
+  // page did before, and the toast scrolls away carrying the only copy of the reason. So the mark is
+  // written for the tab the operator has yet to open, and the banner below says it is there.
+  //
+  // Declared AFTER the state it reads, and not beside the other hooks: the lists are a function of
+  // the open tab and of how many follow-up steps the Proactive section is drawing.
+  const refusalFields = editorRefusalFields({
+    tab,
+    followUpSteps: followUp.steps.length,
+  });
+  const refusal = useFieldRefusal(refusalFields.drawn, refusalFields.owned);
+  // What every placeable input holds right now, keyed by the SERVER'S name for it, readable from
+  // inside a save that started before them: this page's saves are long and the operator keeps typing
+  // during them. Keyed by the wire name rather than by the state variable because that is the name a
+  // refusal arrives carrying, and the name `placeRefusal` compares against what the request sent.
+  const currentRef = useRef<Record<string, unknown>>({});
+  currentRef.current = {
+    name: name.trim(),
+    systemPrompt,
+    "modelConfig.credentialRef": model.credentialRef,
+    "settings.stt.credentialRef": stt.credentialRef,
+    "settings.tts.credentialRef": tts.credentialRef,
+    "settings.tts.normalizeCredentialRef": tts.normalizeCredentialRef,
+    "settings.vision.credentialRef": vision.credentialRef,
+    "settings.contactAuth.credentialRef": contactAuth.credentialRef,
+    "settings.memory.compaction.credentialRef": memory.credentialRef,
+    "settings.guardrails.credentialRef": guardrails.credentialRef,
+    "availability.awayMessage": awayMessage.trim(),
+    "contactAuth.denyMessage": contactAuth.denyMessage.trim(),
+    "vision.extractionPrompt": vision.extractionPrompt,
+    "guardrails.customPolicy": guardrails.customPolicy,
+    "guardrails.input.templateMessage": guardrails.input.templateMessage,
+    "guardrails.output.templateMessage": guardrails.output.templateMessage,
+    "guardrails.output.generationPrompt": guardrails.output.generationPrompt,
+    "handoff.instructions": handoff.instructions,
+    "kanban.instructions": kanbanInstructions,
+    "toolGuidance.set_custom_attribute": customAttributeInstructions,
+    "toolGuidance.assign_label": labelInstructions,
+    "toolGuidance.update_kanban_task": updateKanbanTaskInstructions,
+    ...Object.fromEntries(
+      followUp.steps.map((step, i) => [
+        followUpStepField(i),
+        step.instructions,
+      ]),
+    ),
+  };
+  // The values THIS write carried, by the server's names, snapshotted before the request goes out.
+  //
+  // Scoped to the section being written rather than taken whole: a General save does not carry the
+  // guardrails policy, and claiming it did would put the staleness check on a value the request never
+  // mentioned. `drawn` for that section is exactly the set each save handler builds its patch from.
+  function sentFor(section: string): Record<string, unknown> {
+    const { drawn } = editorRefusalFields({
+      tab: section,
+      followUpSteps: followUp.steps.length,
+    });
+    return Object.fromEntries(drawn.map((f) => [f, currentRef.current[f]]));
+  }
+
+  // Every save on this page answers a refusal the same way, so the decision is written once.
+  //
+  // `capture` places the mark and hands back whatever is left to say, and what is left depends on
+  // where the control is. On the open tab there is nothing: the mark IS the message. On another tab
+  // the banner above the tabs renders it with a button that goes there, so a toast would be the
+  // duplicate this mechanism exists to avoid. And for a refusal about no control of this page's at
+  // all — a 403, a conflict, a transport failure with no body behind it — the toast is still the only
+  // channel there is.
+  function answerRefusal(e: unknown, fallback: string, section: string): void {
+    const left = refusal.capture(
+      e,
+      fallback,
+      sentFor(section),
+      currentRef.current,
+    );
+    if (!left) return;
+    const named = readRefusal(e)?.field;
+    const placeable = named
+      ? editorTargetFor(named, { guardrailsEnabled: guardrails.enabled })
+      : null;
+    if (!placeable) showToast(left, "error");
+  }
+
+  // THE STANDING REFUSAL, WHEN ITS CONTROL IS NOT ON SCREEN.
+  //
+  // The other half of the placement `placeRefusal` hands back for a value this editor owns and is
+  // not drawing. The mark is already written and will render the moment the operator opens that tab;
+  // until then it is invisible, and invisible is the one outcome this mechanism may not produce.
+  //
+  // Derived rather than stored, which is what keeps the two channels from ever saying the same thing
+  // twice: the banner exists exactly while the control is elsewhere, so arriving at the tab takes it
+  // away and leaves the mark, and answering the refusal takes both.
+  const heldField = refusal.field;
+  const heldMessage = heldField
+    ? refusal.at(heldField, currentRef.current[heldField])
+    : null;
+  const heldTarget = heldField
+    ? editorTargetFor(heldField, { guardrailsEnabled: guardrails.enabled })
+    : null;
+  const refusalAway =
+    heldMessage && heldTarget && heldTarget.tab !== tab
+      ? { message: heldMessage, target: heldTarget }
+      : null;
+
+  // A save that goes through answers for the section it WROTE, and only that one. The holder covers
+  // every tab now, so clearing it unconditionally would take a standing refusal off another tab
+  // without anything having answered it — the operator comes back to a form that looks fine and is
+  // still refused.
+  function clearRefusalFor(section: string): void {
+    const held = refusal.field;
+    const target = held
+      ? editorTargetFor(held, { guardrailsEnabled: guardrails.enabled })
+      : null;
+    if (target?.tab === section) refusal.clear();
+  }
+
   // The clone dialog is its own form: one input, and the route refuses a name already taken by name.
   // Separate from the editor's holder, because the two are on screen together.
   const cloneRefusal = useFieldRefusal(cloneModal.isOpen ? CLONE_FIELDS : []);
@@ -1629,11 +1751,24 @@ function AgentEditor() {
       navigate("/resources/advanced");
       return;
     }
+    goToEditorTarget({
+      tab: issue.tab as EditorTab,
+      sectionId: issue.sectionId,
+    });
+  }
+
+  // Switch to a tab (URL-driven) carrying the focus marker the effect above reads to scroll to the
+  // section and highlight it. One function, because a config-health warning and a refusal are the
+  // same act from here: both hold a place in this editor and have to take the operator to it.
+  function goToEditorTarget(target: {
+    tab: EditorTab;
+    sectionId?: string;
+  }): void {
     navigate(
-      `/agents/${id}/${issue.tab}${
+      `/agents/${id}/${target.tab}${
         backToConversation ? `?from=${backToConversation}` : ""
       }`,
-      { state: { focusSection: issue.sectionId } },
+      { state: { focusSection: target.sectionId } },
     );
   }
 
@@ -2238,20 +2373,14 @@ function AgentEditor() {
       // carries neither `name` nor `systemPrompt` — clearing there takes the standing refusal off
       // the General tab without anything having answered it, so the operator comes back to a form
       // that looks fine and is still refused.
-      if (section === "general") refusal.clear();
+      clearRefusalFor(section);
       showToast(t("editor.saved", "Agent saved."), "success");
     } catch (e) {
-      // The backend's localized message, at the input it names when this page renders one. The
-      // prompt-size cap and the name are the two it can place today; a settings-bag path
-      // (`guardrails.output.templateMessage`) still answers in the toast, which is where the
-      // sentence has always gone.
-      const toast = refusal.capture(
+      answerRefusal(
         e,
         t("editor.saveError", "Could not save the agent."),
-        patch,
-        currentRef.current,
+        section,
       );
-      if (toast) showToast(toast, "error");
     } finally {
       savingRef.current -= 1;
       setSavingAgent(false);
@@ -2276,12 +2405,13 @@ function AgentEditor() {
       setCatalog(data.catalog);
       markSynced(data.agentUpdatedAt ? String(data.agentUpdatedAt) : null);
       bumpSync("tools", "knowledge");
+      clearRefusalFor("tools");
       showToast(t("editor.grantsSaved", "Tools updated."), "success");
     } catch (e) {
-      showToast(
-        apiErrorMessage(e) ||
-          t("editor.grantsError", "Could not update tools."),
-        "error",
+      answerRefusal(
+        e,
+        t("editor.grantsError", "Could not update tools."),
+        "tools",
       );
     } finally {
       savingRef.current -= 1;
@@ -2397,12 +2527,13 @@ function AgentEditor() {
       }));
       markSynced(String(agentRes.data.agent.updatedAt));
       bumpSync("tools", "knowledge");
+      clearRefusalFor("tools");
       showToast(t("editor.grantsSaved", "Tools updated."), "success");
     } catch (e) {
-      showToast(
-        apiErrorMessage(e) ||
-          t("editor.grantsError", "Could not update tools."),
-        "error",
+      answerRefusal(
+        e,
+        t("editor.grantsError", "Could not update tools."),
+        "tools",
       );
     } finally {
       savingRef.current -= 1;
@@ -2471,12 +2602,13 @@ function AgentEditor() {
       setSettings((s) => ({ ...s, guardrails }));
       markSynced(String(data.agent.updatedAt));
       bumpSync("guardrails");
+      clearRefusalFor("guardrails");
       showToast(t("editor.saved", "Agent saved."), "success");
     } catch (e) {
-      showToast(
-        apiErrorMessage(e) ||
-          t("editor.saveError", "Could not save the agent."),
-        "error",
+      answerRefusal(
+        e,
+        t("editor.saveError", "Could not save the agent."),
+        "guardrails",
       );
     } finally {
       savingRef.current -= 1;
@@ -2924,10 +3056,36 @@ function AgentEditor() {
               </div>
             )}
 
+            {/* The refusal the server just sent about a control on ANOTHER tab. Not dismissible and not
+                a toast: the sentence is the only copy of the reason, and a toast takes it away after
+                five seconds while the input it is about is still refused. It goes when the operator
+                answers the refusal, or when they reach the tab that draws the mark. */}
+            {refusalAway && (
+              <div
+                role="alert"
+                className="flex items-baseline justify-between gap-3 rounded-lg border border-error bg-error-soft px-4 py-3"
+              >
+                <span className="min-w-0 text-sm text-text-primary">
+                  {refusalAway.message}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => goToEditorTarget(refusalAway.target)}
+                  className="shrink-0 rounded font-medium text-accent text-xs hover:underline focus-visible:underline"
+                >
+                  {t("editor.goToIssue", "Fix")}
+                </button>
+              </div>
+            )}
+
             {tab === "general" && (
               <GeneralTab
                 nameError={refusal.at("name", name.trim())}
                 promptError={refusal.at("systemPrompt", systemPrompt)}
+                modelCredentialError={refusal.at(
+                  "modelConfig.credentialRef",
+                  model.credentialRef,
+                )}
                 availability={promptAvailability}
                 name={name}
                 setName={setName}
@@ -3005,6 +3163,28 @@ function AgentEditor() {
                 setMcpCollapsed={setMcpCollapsed}
                 integrationCollapsed={integrationCollapsed}
                 setIntegrationCollapsed={setIntegrationCollapsed}
+                refusals={{
+                  handoffInstructions: refusal.at(
+                    "handoff.instructions",
+                    handoff.instructions,
+                  ),
+                  kanbanInstructions: refusal.at(
+                    "kanban.instructions",
+                    kanbanInstructions,
+                  ),
+                  attributeInstructions: refusal.at(
+                    "toolGuidance.set_custom_attribute",
+                    customAttributeInstructions,
+                  ),
+                  labelInstructions: refusal.at(
+                    "toolGuidance.assign_label",
+                    labelInstructions,
+                  ),
+                  updateKanbanInstructions: refusal.at(
+                    "toolGuidance.update_kanban_task",
+                    updateKanbanTaskInstructions,
+                  ),
+                }}
                 dirty={dirty.tools}
                 saving={savingGrants}
                 onSave={() => saveTools()}
@@ -3087,6 +3267,47 @@ function AgentEditor() {
                 attributeContext={attributeContext}
                 setAttributeContext={setAttributeContext}
                 onScheduleSaved={onScheduleSaved}
+                refusals={{
+                  sttCredential: refusal.at(
+                    "settings.stt.credentialRef",
+                    stt.credentialRef,
+                  ),
+                  ttsCredential: refusal.at(
+                    "settings.tts.credentialRef",
+                    tts.credentialRef,
+                  ),
+                  ttsNormalizeCredential: refusal.at(
+                    "settings.tts.normalizeCredentialRef",
+                    tts.normalizeCredentialRef,
+                  ),
+                  visionCredential: refusal.at(
+                    "settings.vision.credentialRef",
+                    vision.credentialRef,
+                  ),
+                  visionExtractionPrompt: refusal.at(
+                    "vision.extractionPrompt",
+                    vision.extractionPrompt,
+                  ),
+                  contactAuthCredential: refusal.at(
+                    "settings.contactAuth.credentialRef",
+                    contactAuth.credentialRef,
+                  ),
+                  contactAuthDenyMessage: refusal.at(
+                    "contactAuth.denyMessage",
+                    contactAuth.denyMessage.trim(),
+                  ),
+                  memoryCredential: refusal.at(
+                    "settings.memory.compaction.credentialRef",
+                    memory.credentialRef,
+                  ),
+                  awayMessage: refusal.at(
+                    "availability.awayMessage",
+                    awayMessage.trim(),
+                  ),
+                  followUpSteps: followUp.steps.map((step, i) =>
+                    refusal.at(followUpStepField(i), step.instructions),
+                  ),
+                }}
                 dirty={dirty.behavior}
                 saving={savingAgent}
                 onSave={() =>
@@ -3108,6 +3329,28 @@ function AgentEditor() {
               <GuardrailsTab
                 guardrails={guardrails}
                 setGuardrails={setGuardrails}
+                refusals={{
+                  credential: refusal.at(
+                    "settings.guardrails.credentialRef",
+                    guardrails.credentialRef,
+                  ),
+                  customPolicy: refusal.at(
+                    "guardrails.customPolicy",
+                    guardrails.customPolicy,
+                  ),
+                  inputTemplateMessage: refusal.at(
+                    "guardrails.input.templateMessage",
+                    guardrails.input.templateMessage,
+                  ),
+                  outputTemplateMessage: refusal.at(
+                    "guardrails.output.templateMessage",
+                    guardrails.output.templateMessage,
+                  ),
+                  outputGenerationPrompt: refusal.at(
+                    "guardrails.output.generationPrompt",
+                    guardrails.output.generationPrompt,
+                  ),
+                }}
                 dirty={dirty.guardrails}
                 saving={savingGuardrails}
                 onSave={() => saveGuardrails()}

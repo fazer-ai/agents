@@ -52,3 +52,45 @@ export interface ToolPreconditionRow {
   key: string;
   equals: string;
 }
+
+// THE MARKS THE EDITOR HANDS ITS TABS.
+//
+// One object per tab and not one prop per input, and the shape is forced rather than chosen. The
+// fence in `tests/client/field-refusal-fence.test.ts` asks that every name a form DECLARES be read
+// back by an `at(…)` call in the SAME file, so the readings have to stay in `AgentEditorPage` and
+// only their answers travel. Handing a tab a `refusalAt` callback instead would move the readings
+// into the tab and leave the declaration answered by nothing — which is the exact shape that rule
+// exists to catch, since a declared name with no control behind it makes `placeRefusal` report a
+// placement and the caller then keeps the toast quiet.
+//
+// Null is the normal value of every one of these: at most one input is refused at a time.
+export interface BehaviorRefusals {
+  sttCredential: string | null;
+  ttsCredential: string | null;
+  ttsNormalizeCredential: string | null;
+  visionCredential: string | null;
+  visionExtractionPrompt: string | null;
+  contactAuthCredential: string | null;
+  contactAuthDenyMessage: string | null;
+  memoryCredential: string | null;
+  awayMessage: string | null;
+  // By index, because the server refuses a follow-up note as `followUp.steps[2].instructions` and the
+  // step it names is the one that has to carry the mark.
+  followUpSteps: readonly (string | null)[];
+}
+
+export interface GuardrailsRefusals {
+  credential: string | null;
+  customPolicy: string | null;
+  inputTemplateMessage: string | null;
+  outputTemplateMessage: string | null;
+  outputGenerationPrompt: string | null;
+}
+
+export interface ToolRefusals {
+  handoffInstructions: string | null;
+  kanbanInstructions: string | null;
+  attributeInstructions: string | null;
+  labelInstructions: string | null;
+  updateKanbanInstructions: string | null;
+}

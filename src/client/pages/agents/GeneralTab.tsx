@@ -43,6 +43,8 @@ interface GeneralTabProps {
   // page decides where a refusal goes, this tab only renders what it is handed.
   nameError?: string | null;
   promptError?: string | null;
+  // The model's key is a column of its own, so the server refuses it as `modelConfig.credentialRef`.
+  modelCredentialError?: string | null;
   systemPrompt: string;
   setSystemPrompt: (v: string) => void;
   enabled: boolean;
@@ -76,6 +78,7 @@ export function GeneralTab({
   name,
   nameError,
   promptError,
+  modelCredentialError,
   setName,
   systemPrompt,
   setSystemPrompt,
@@ -225,7 +228,11 @@ export function GeneralTab({
           </FormField>
         </div>
         <div className="grid gap-4 sm:grid-cols-2">
-          <FormField label={t("editor.credential", "API key")} group>
+          <FormField
+            label={t("editor.credential", "API key")}
+            error={modelCredentialError}
+            group
+          >
             <CredentialPicker
               value={model.credentialRef}
               onChange={(v) => setModel({ ...model, credentialRef: v })}

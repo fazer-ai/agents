@@ -102,6 +102,13 @@ function renderEditor() {
           <ToastProvider>
             <ToolGrantsEditor
               agentId="1"
+              refusals={{
+                handoffInstructions: null,
+                kanbanInstructions: null,
+                attributeInstructions: null,
+                labelInstructions: null,
+                updateKanbanInstructions: null,
+              }}
               catalog={CATALOG as never}
               grants={[]}
               onChange={noop}

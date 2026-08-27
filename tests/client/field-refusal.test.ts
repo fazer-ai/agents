@@ -278,19 +278,117 @@ describe("placeRefusal", () => {
     });
   }
 
-  // The property the rows are individually asserting, stated once over all of them: never both, and
-  // never neither. A future row that answered `{ at, toast }` would read as correct in its own line.
-  test("exactly one channel fires, on every row", () => {
+  // The property the rows are individually asserting, stated once over all of them: never neither,
+  // and never both for a form that draws everything it owns. A future row that answered `{ at, toast }`
+  // without an `owned` list would read as correct in its own line.
+  test("exactly one channel fires, on every row that owns only what it draws", () => {
     for (const c of cases) {
+      const form = c.form ?? STEADY;
+      if (form.owned) continue;
       const placed = placeRefusal(
         c.refusal,
         c.rendered ?? RENDERED,
         FALLBACK,
-        c.form ?? STEADY,
+        form,
       );
       const at = "at" in placed && placed.at !== undefined;
-      const toast = "toast" in placed;
+      const toast = "toast" in placed && placed.toast !== undefined;
       expect([c.name, at !== toast]).toEqual([c.name, true]);
     }
+  });
+});
+
+// A FORM THAT OWNS AN INPUT IT IS NOT DRAWING.
+//
+// The agent editor writes about thirty values across eight tabs and draws one tab's worth, so a
+// refusal about `guardrails.output.templateMessage` is about a control that exists and is off screen.
+// Two answers were available before this and both lose something real: send it to the toast and the
+// mark never appears when the operator opens that tab; mark it and stay quiet and the save fails into
+// silence, because `capture` has reported "it is on the control".
+describe("placeRefusal with an owned list wider than the drawn one", () => {
+  const FALLBACK = "Could not save.";
+  const OWNED = ["name", "guardrails.customPolicy"];
+  const form = (over: Partial<FormAtAnswer> = {}): FormAtAnswer => ({
+    mounted: true,
+    sent: {},
+    current: { name: "a", "guardrails.customPolicy": "p" },
+    owned: OWNED,
+    ...over,
+  });
+
+  test("a name the form owns and is not drawing is held AND announced", () => {
+    const placed = placeRefusal(
+      { message: "too long", field: "guardrails.customPolicy" },
+      ["name"],
+      FALLBACK,
+      form(),
+    );
+    expect(placed).toEqual({
+      at: "guardrails.customPolicy",
+      message: "too long",
+      value: "p",
+      toast: "too long",
+    });
+  });
+
+  test("a name the form IS drawing is held and says nothing more", () => {
+    // The list is consulted only for a name `rendered` did not answer, so nothing changes for the
+    // control that is on screen: the mark is the whole message.
+    const placed = placeRefusal(
+      { message: "taken", field: "name" },
+      ["name"],
+      FALLBACK,
+      form(),
+    );
+    expect(placed).toEqual({ at: "name", message: "taken", value: "a" });
+  });
+
+  test("a name the form does not own at all is still only a toast", () => {
+    expect(
+      placeRefusal(
+        { message: "nope", field: "somethingElse" },
+        ["name"],
+        FALLBACK,
+        form(),
+      ),
+    ).toEqual({ toast: "nope" });
+  });
+
+  test("owning it does not survive the form leaving the screen", () => {
+    // A mark written to state nobody renders is silence whether the form owns the name or not, and
+    // the hook raises the global toast itself in that case.
+    expect(
+      placeRefusal(
+        { message: "too long", field: "guardrails.customPolicy" },
+        [],
+        FALLBACK,
+        form({ mounted: false }),
+      ),
+    ).toEqual({ toast: "too long" });
+  });
+
+  test("owning it does not survive the operator editing the value", () => {
+    // Same rule as a drawn control: the refusal is about what was SENT, and marking a value the
+    // server never saw is worse than saying it plainly.
+    expect(
+      placeRefusal(
+        { message: "too long", field: "guardrails.customPolicy" },
+        ["name"],
+        FALLBACK,
+        form({ sent: { "guardrails.customPolicy": "old" } }),
+      ),
+    ).toEqual({ toast: "too long" });
+  });
+
+  test("an absent owned list leaves the form exactly as it was", () => {
+    // Twenty-three of the twenty-four holders draw everything they own and pass nothing here.
+    expect(
+      placeRefusal(
+        { message: "too long", field: "guardrails.customPolicy" },
+        ["name"],
+        FALLBACK,
+        { mounted: true, sent: {}, current: {} },
+      ),
+    ).toEqual({ toast: "too long" });
   });
 });

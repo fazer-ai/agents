@@ -60,7 +60,14 @@ export interface FieldRefusal {
 // Read through a ref, because the answer is needed AFTER the await and a submit handler closes over
 // the render it started in. That was the point of the boolean's ref too; it is the same fix, applied
 // to the thing that was always the real question.
-export function useFieldRefusal(rendered: readonly string[]): FieldRefusal {
+// `owned` is every name this form can mark, drawn or not, and it is the second argument because
+// almost nobody needs it: a form whose controls are all on screen together owns exactly what it
+// renders, and leaving it out says so. The agent editor is the one that does — thirty-odd values
+// behind eight tabs — and for it the two lists are genuinely different questions. See placeRefusal.
+export function useFieldRefusal(
+  rendered: readonly string[],
+  owned?: readonly string[],
+): FieldRefusal {
   const { showToast } = useToast();
   const [held, setHeld] = useState<{
     field: string;
@@ -79,6 +86,8 @@ export function useFieldRefusal(rendered: readonly string[]): FieldRefusal {
   }, []);
   const fields = useRef(rendered);
   fields.current = rendered;
+  const ownedFields = useRef(owned);
+  ownedFields.current = owned;
 
   const capture = useCallback(
     (
@@ -89,11 +98,17 @@ export function useFieldRefusal(rendered: readonly string[]): FieldRefusal {
     ) => {
       // The form is where the operator is looking only if it is drawing something. An empty list is
       // a dismissed dialog, a tab left behind, a page unmounted — all the same answer.
-      const onForm = mounted.current && fields.current.length > 0;
+      // Drawing NOTHING is what takes the form off the screen, and a form that owns more than it
+      // draws is still on screen while the open tab happens to hold no placeable control: the empty
+      // list would otherwise read as a dismissed dialog.
+      const onForm =
+        mounted.current &&
+        (fields.current.length > 0 || (ownedFields.current?.length ?? 0) > 0);
       const placed = placeRefusal(readRefusal(e), fields.current, fallback, {
         mounted: onForm,
         sent,
         current,
+        owned: ownedFields.current,
       });
       if (placed.at !== undefined) {
         setHeld({
@@ -101,7 +116,10 @@ export function useFieldRefusal(rendered: readonly string[]): FieldRefusal {
           message: placed.message,
           value: placed.value,
         });
-        return null;
+        // Null unless the control is off screen. `placeRefusal` says which by handing back a
+        // sentence beside the mark, and the caller is the only one that can put that sentence
+        // somewhere the operator will read it AND take them to the control.
+        return placed.toast ?? null;
       }
       // NOTE: written even when nothing is placed, and that is the whole of "the capture is also the
       // clear": a mark left over from a refusal the server has stopped making would sit on a control

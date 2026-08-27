@@ -24,6 +24,7 @@ import type {
 } from "@/modules/guardrails/settings";
 import { Section, SectionNav } from "./SectionNav";
 import { TabActionBar } from "./TabActionBar";
+import type { GuardrailsRefusals } from "./types";
 
 // Agent editor "Guardrails" tab: input/output moderation (agent.settings.guardrails). Own Save +
 // dirty tracking (its own SECTION_KEY). A dedicated LLM screens the customer message (input) and/or
@@ -33,6 +34,9 @@ import { TabActionBar } from "./TabActionBar";
 interface GuardrailsTabProps {
   guardrails: GuardrailsConfig;
   setGuardrails: React.Dispatch<React.SetStateAction<GuardrailsConfig>>;
+  // The refused input this tab draws, if the standing refusal is about one of them. Read in
+  // AgentEditorPage and passed as answers -- see the note on the type.
+  refusals: GuardrailsRefusals;
   dirty: boolean;
   saving: boolean;
   onSave: () => void;
@@ -44,6 +48,7 @@ const ACTIONS: GuardrailAction[] = ["template", "generated", "silent"];
 export function GuardrailsTab({
   guardrails: g,
   setGuardrails: setG,
+  refusals,
   dirty,
   saving,
   onSave,
@@ -198,6 +203,11 @@ export function GuardrailsTab({
             {d.action !== "silent" && (
               <FormField
                 label={t("editor.guardrails.template", "Template message")}
+                error={
+                  dir === "input"
+                    ? refusals.inputTemplateMessage
+                    : refusals.outputTemplateMessage
+                }
                 description={
                   d.action !== "generated"
                     ? undefined
@@ -235,6 +245,7 @@ export function GuardrailsTab({
                   "editor.guardrails.generationPromptHint",
                   "Steers how the guardrails agent writes the replacement reply (tone, what to offer or avoid). Optional.",
                 )}
+                error={refusals.outputGenerationPrompt}
               >
                 <Textarea
                   value={d.generationPrompt}
@@ -296,7 +307,11 @@ export function GuardrailsTab({
                     ))}
                   </Select>
                 </FormField>
-                <FormField label={t("editor.credential", "API key")} group>
+                <FormField
+                  label={t("editor.credential", "API key")}
+                  error={refusals.credential}
+                  group
+                >
                   <CredentialPicker
                     value={g.credentialRef ?? ""}
                     onChange={(v) =>
@@ -375,6 +390,7 @@ export function GuardrailsTab({
                 </FormField>
                 <FormField
                   label={t("editor.guardrails.customPolicy", "Custom policy")}
+                  error={refusals.customPolicy}
                   description={t(
                     "editor.guardrails.customPolicyHint",
                     "Extra rules appended to every analysis.",

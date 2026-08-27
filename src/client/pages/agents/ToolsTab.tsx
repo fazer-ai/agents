@@ -10,6 +10,7 @@ import type {
   HandoffUiState,
   ToolCatalog,
   ToolPreconditionRow,
+  ToolRefusals,
 } from "./types";
 
 interface ToolsTabProps {
@@ -25,6 +26,7 @@ interface ToolsTabProps {
   kanbanInstructions: string;
   setKanbanInstructions: (v: string) => void;
   customAttributeInstructions: string;
+  refusals: ToolRefusals;
   setCustomAttributeInstructions: (v: string) => void;
   labelInstructions: string;
   setLabelInstructions: (v: string) => void;
@@ -72,6 +74,7 @@ export function ToolsTab({
   kanbanInstructions,
   setKanbanInstructions,
   customAttributeInstructions,
+  refusals,
   setCustomAttributeInstructions,
   labelInstructions,
   setLabelInstructions,
@@ -151,6 +154,7 @@ export function ToolsTab({
             kanbanInstructions={kanbanInstructions}
             setKanbanInstructions={setKanbanInstructions}
             customAttributeInstructions={customAttributeInstructions}
+            refusals={refusals}
             setCustomAttributeInstructions={setCustomAttributeInstructions}
             labelInstructions={labelInstructions}
             setLabelInstructions={setLabelInstructions}

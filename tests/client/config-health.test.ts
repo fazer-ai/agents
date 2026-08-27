@@ -1466,6 +1466,15 @@ describe("computeConfigIssues — text stored over its cap", () => {
     expect(
       target({ followUp: { steps: [{ instructions: "f".repeat(2001) }] } }),
     ).toBe("behavior/proactive");
+    // The two copy fields the CUSTOMER reads. Both have a control on the Behavior tab and neither
+    // was in the map, so a warning about either said "this note has no field in the console" and
+    // offered no jump -- about a textarea the operator is two clicks from.
+    expect(target({ availability: { awayMessage: "a".repeat(2001) } })).toBe(
+      "behavior/availability",
+    );
+    expect(target({ contactAuth: { denyMessage: "d".repeat(2001) } })).toBe(
+      "behavior/contactAuth",
+    );
   });
 
   // GuardrailsTab renders gr-input/gr-output/gr-policy only when guardrails are ON, so with them off

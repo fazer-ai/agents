@@ -2,6 +2,7 @@ import {
   canonicalVaultRef,
   VAULT_REF_PREFIX,
 } from "@/client/lib/credentialRef";
+import { editorTargetFor } from "@/client/lib/editorRefusal";
 import { isValidHttpUrl } from "@/client/lib/validation";
 import {
   hasModelFallback,
@@ -90,34 +91,6 @@ export interface ConfigIssue {
   inboxNames?: string[];
 }
 
-// Where a capped field is edited, by the path the walker reports. A path with no entry has no control
-// in the editor: `toolGuidance` accepts a note for all thirteen native tools and only three of them
-// have a field, so the rest can only have been written through REST or MCP. Those still get a
-// warning — being cut in silence is the whole defect — just without a place to send the operator.
-const TEXT_CAP_TARGETS: Array<{
-  match: RegExp;
-  tab: NonNullable<ConfigIssue["tab"]>;
-  sectionId: string;
-}> = [
-  { match: /^handoff\.instructions$/, tab: "tools", sectionId: "tools-native" },
-  { match: /^kanban\.instructions$/, tab: "tools", sectionId: "tools-native" },
-  {
-    match:
-      /^toolGuidance\.(set_custom_attribute|assign_label|update_kanban_task)$/,
-    tab: "tools",
-    sectionId: "tools-native",
-  },
-  {
-    match: /^guardrails\.customPolicy$/,
-    tab: "guardrails",
-    sectionId: "gr-policy",
-  },
-  { match: /^guardrails\.input\./, tab: "guardrails", sectionId: "gr-input" },
-  { match: /^guardrails\.output\./, tab: "guardrails", sectionId: "gr-output" },
-  { match: /^vision\.extractionPrompt$/, tab: "behavior", sectionId: "vision" },
-  { match: /^followUp\.steps\[/, tab: "behavior", sectionId: "proactive" },
-];
-
 // Whether the warning row can offer an action. Everything else in this list has a fix the editor can
 // reach — a section to scroll to, a vault entry to fill, a knowledge base to index — but a textCap
 // issue for a note with no control in the console has nowhere to send anyone.
@@ -131,18 +104,15 @@ function textCapIssues(
 ): ConfigIssue[] {
   // Against nothing stored: every over-cap value in the bag is one the operator should know about,
   // which is the opposite question from the write boundary's (what does this write change).
+  // Where the field is edited comes from editorRefusal, which is the same map a REFUSAL about the
+  // same path routes on. One list, because the two used to disagree: this one had no entry for
+  // `availability.awayMessage` or `contactAuth.denyMessage`, so a warning about either claimed the
+  // console has no field for it while the textarea sat on the Behavior tab.
   return collectOversizedTextChanges(settings, undefined).map((o) => {
-    const target = TEXT_CAP_TARGETS.find((t) => t.match.test(o.path));
-    // The guardrails sections other than gr-model are rendered only while guardrails are ON, so with
-    // them off the anchor is not in the DOM and the jump silently does nothing. gr-model is always
-    // mounted and holds the switch that brings the rest back.
-    const sectionId =
-      target?.tab === "guardrails" && !guardrailsEnabled
-        ? "gr-model"
-        : target?.sectionId;
+    const target = editorTargetFor(o.path, { guardrailsEnabled });
     return {
       key: "textCap" as const,
-      ...(target ? { tab: target.tab, sectionId } : {}),
+      ...(target ? { tab: target.tab, sectionId: target.sectionId } : {}),
       field: o.path,
       length: o.length,
       max: o.max,

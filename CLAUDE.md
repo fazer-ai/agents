@@ -72,7 +72,7 @@ The three operational **skills** (`.claude/skills/agents-{onboarding,operation,d
 | `bun prisma:migrate`               | Run database migrations                                                                  |
 | `bun db:bootstrap`                 | Provision the NON-superuser runtime role + schema grants (run after any reset)           |
 | `bun db:reset`                     | Reset the database AND re-provision runtime-role grants (never bare `migrate reset`)     |
-| `bun db:test:setup`                | Provision/migrate the isolated test database                                             |
+| `bun db:test:setup`                | Provision/migrate this checkout's test database (name derived per checkout; reprovisions it when another branch left a migration behind) |
 | `bun prisma:generate`              | Generate Prisma client                                                                   |
 | `bun i18n:extract`                 | Extract translation keys (also part of `bun check`)                                      |
 | `bun set-admin <email> [password]` | Promote a user to admin (creates the user if it doesn't exist; optionally sets password) |

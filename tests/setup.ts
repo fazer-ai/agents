@@ -1,13 +1,17 @@
 import "@testing-library/jest-dom";
+import { readdirSync } from "node:fs";
+import { join } from "node:path";
 import {
   DB_GATE_OPT_OUT,
   missingDbConfig,
   PROBE_BACKSTOP_MS,
   probePoolConfig,
   probeTargets,
+  schemaOutOfStep,
   unreachableDb,
   withDeadline,
 } from "./db-gate";
+import { testDbNameFor, withDbName } from "./db-name";
 
 // NOTE: happy-dom registration and the Bun-native global capture live in
 // ./dom-setup.ts, which bunfig.toml preloads BEFORE this file. The DOM must
@@ -28,16 +32,31 @@ process.env.DATABASE_URL = "postgresql://test:test@localhost:5432/test";
 // test DB *name* from TEST_MIGRATION_DATABASE_URL. The `_test` guard refuses any other target, so
 // the destructive suite (unscoped `DELETE FROM scheduler_jobs`, tenant create/drop) can never hit
 // the dev DB. This preload never runs for `prisma migrate`, so the CLI keeps using the dev URLs.
+const REPO_ROOT = new URL("..", import.meta.url).pathname;
 const testSuUrl = process.env.TEST_MIGRATION_DATABASE_URL;
 if (testSuUrl) {
-  const testDbPath = new URL(testSuUrl).pathname;
-  const dbName = testDbPath.replace(/^\//, "");
-  if (!dbName.endsWith("_test")) {
+  const declared = new URL(testSuUrl).pathname.replace(/^\//, "");
+  if (!declared.endsWith("_test")) {
     throw new Error(
-      `TEST_MIGRATION_DATABASE_URL must point at a *_test database (got "${dbName}") — refusing to run the destructive test suite against it.`,
+      `TEST_MIGRATION_DATABASE_URL must point at a *_test database (got "${declared}") — refusing to run the destructive test suite against it.`,
     );
   }
-  process.env.MIGRATION_DATABASE_URL = testSuUrl;
+  // The `.env` name is the BASE, not the target. Every checkout on a machine copies one `.env` (the
+  // worktree step is `cp ../main/.env .env`), so a constant name puts them all on one database and a
+  // migration applied from any of them stays applied under all the others — see ./db-name.ts and
+  // tests/lib/test-db-identity.test.ts for what that cost when it happened. The guard above still
+  // reads the DECLARED name, because it is a statement about what the developer pointed at.
+  const dbName = testDbNameFor(declared, REPO_ROOT);
+  const testDbPath = `/${dbName}`;
+  process.env.MIGRATION_DATABASE_URL = withDbName(testSuUrl, dbName);
+  // BOTH spellings, and this line is the whole reason the derivation is safe to add. Three test
+  // files build their superuser client from the RAW `TEST_MIGRATION_DATABASE_URL` rather than the
+  // derived `MIGRATION_DATABASE_URL`, which was equivalent while the two named the same database
+  // and stopped being equivalent the moment one of them was derived: those files then SEEDED one
+  // database and READ another, silently. Measured before this line existed — 36 failures across
+  // exactly those three files, all of them assertions about rows that had been written to the
+  // underived database. tests/lib/db-gate.test.ts fences the two against each other.
+  process.env.TEST_MIGRATION_DATABASE_URL = process.env.MIGRATION_DATABASE_URL;
   if (process.env.TEST_APP_DATABASE_URL) {
     const appUrl = new URL(process.env.TEST_APP_DATABASE_URL);
     appUrl.pathname = testDbPath;
@@ -89,6 +108,42 @@ if (process.env[DB_GATE_OPT_OUT] !== "1") {
       void probe.$disconnect().catch(() => {});
       throw new Error(`tests: ${unreachableDb(variable, url, err)}`);
     }
+  }
+
+  // AND WHETHER IT IS THIS TREE'S DATABASE. The probes above prove a database ANSWERS; this asks
+  // whether its schema is the one prisma/migrations describes, in both directions. It is the same
+  // preventive shape as the gate above and for the same reason: the alternative is reading the
+  // answer off dozens of failures that name code nobody broke, one run too late (issue #417).
+  const suUrl = process.env.MIGRATION_DATABASE_URL as string;
+  const reader = new PrismaClient({
+    adapter: new PrismaPg(probePoolConfig(suUrl)),
+  });
+  try {
+    // `to_regclass` rather than a bare SELECT: a database that exists and has never been migrated
+    // has no `_prisma_migrations` at all, and that is a real state (a fresh CREATE DATABASE), not an
+    // error. It reports as every local migration being unapplied, which is the truth and names the
+    // same command.
+    const rows = await withDeadline(
+      reader.$queryRaw<{ migration_name: string }[]>`
+        SELECT migration_name FROM _prisma_migrations
+        WHERE to_regclass('_prisma_migrations') IS NOT NULL`,
+      PROBE_BACKSTOP_MS,
+      "TEST_MIGRATION_DATABASE_URL",
+    ).catch(() => [] as { migration_name: string }[]);
+    const applied = rows.map((r) => r.migration_name);
+    const local = readdirSync(join(REPO_ROOT, "prisma", "migrations"), {
+      withFileTypes: true,
+    })
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name);
+    const drift = schemaOutOfStep(
+      new URL(suUrl).pathname.replace(/^\//, ""),
+      applied,
+      local,
+    );
+    if (drift) throw new Error(`tests: ${drift}`);
+  } finally {
+    await reader.$disconnect().catch(() => {});
   }
 }
 

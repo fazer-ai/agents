@@ -28,9 +28,14 @@ export const DB_GATE_OPT_OUT = "ALLOW_NO_DB";
 // chained command loses the race against a cold Postgres (measured, `read ECONNRESET`). The whole
 // line was run from a clone with no `.env`, against a cold container, and ends with a suite that
 // runs.
+//
+// The worktree line carries the setup too, and that is the whole of what #417 changed here: since
+// the database name is derived per checkout (./db-name.ts), a new worktree that only copies the
+// `.env` has a reachable Postgres and no database of its own, and the refusal it gets would
+// otherwise point at the copy it had just made.
 const HOW = [
   `  - fresh clone: cp .env.example .env && docker compose up -d --wait && bun run db:test:setup`,
-  `  - in a worktree, with the database already up: cp ../main/.env .env`,
+  `  - in a worktree, with the database already up: cp ../main/.env .env && bun run db:test:setup`,
   `  - deliberately without a database: ${DB_GATE_OPT_OUT}=1 bun test`,
 ].join("\n");
 
@@ -137,3 +142,70 @@ export function withDeadline<T>(
     }),
   ]).finally(() => clearTimeout(timer));
 }
+
+// WHEN THE DATABASE ANSWERS AND IS THE WRONG DATABASE (issue #417).
+//
+// Everything above this line asks whether there is a database. This asks whether it is THIS TREE'S
+// database, which is a different question and fails in the opposite direction: the run does not exit
+// 0 with a third of the suite skipped, it exits non-zero with a number of failures that name code
+// nobody broke. Measured on `main`, clean, against a database carrying one migration from an
+// unmerged branch: 31 failures on three consecutive runs, plus 29 tests that never executed because
+// their `beforeAll` died first and the failure count does not include those.
+//
+// `prisma migrate status` does not answer it. It reports PENDING and FAILED migrations, and a
+// migration that is applied while the tree has never heard of it is neither — it said "Database
+// schema is up to date!" about that exact database. The set difference has to be taken by hand, and
+// it is taken in both directions because they are one invariant: THE DATABASE MATCHES THE TREE. The
+// other direction is what a `git pull` produces, and it reaches a reader as a missing column rather
+// than as a missing migration, which is no more readable than the incident above.
+//
+// Pure, like `missingDbConfig`, so the decision can be proved with fixtures instead of with a
+// database that has to be broken to test the breakage.
+
+export function foreignMigrations(
+  applied: string[],
+  local: string[],
+): string[] {
+  const known = new Set(local);
+  return applied.filter((m) => !known.has(m)).sort();
+}
+
+export function pendingMigrations(
+  applied: string[],
+  local: string[],
+): string[] {
+  const done = new Set(applied);
+  return local.filter((m) => !done.has(m)).sort();
+}
+
+export function schemaOutOfStep(
+  dbName: string,
+  applied: string[],
+  local: string[],
+): string | null {
+  const foreign = foreignMigrations(applied, local);
+  const pending = pendingMigrations(applied, local);
+  if (foreign.length === 0 && pending.length === 0) return null;
+  const lines = [
+    `the test database "${dbName}" does not match this tree, so failures below would be about its schema and not about the code.`,
+  ];
+  if (foreign.length > 0) {
+    lines.push(
+      `  applied here but absent from prisma/migrations (left by another branch):`,
+      ...foreign.map((m) => `    ${m}`),
+    );
+  }
+  if (pending.length > 0) {
+    lines.push(
+      `  in prisma/migrations and never applied:`,
+      ...pending.map((m) => `    ${m}`),
+    );
+  }
+  // One command for both directions, and it has to REPROVISION rather than deploy: a foreign
+  // migration is already recorded in `_prisma_migrations`, so nothing is pending and a plain
+  // `migrate deploy` is a no-op that leaves the schema exactly as wrong as it found it.
+  lines.push(`  - ${RESYNC}`);
+  return lines.join("\n");
+}
+
+const RESYNC = "bun run db:test:setup";

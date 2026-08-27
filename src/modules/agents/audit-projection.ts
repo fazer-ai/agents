@@ -145,6 +145,10 @@ function carriesCredential(v: unknown): boolean {
 // `modelConfig.baseURL`. A guard written on one of the nine is a guard on none of the other eight,
 // and the tenth arrives with the next block.
 function dropUnvouchableUrls(v: unknown): unknown {
+  // The ROOT is a position too. An audited scalar can BE the endpoint — a `name` or a
+  // `systemPrompt` that is nothing but a URL — and a walk that only inspects object values and array
+  // elements never asks about the value it was handed.
+  if (carriesCredential(v)) return undefined;
   // Array ELEMENTS are checked, not just object values: `guardrails.competitors` is a list of bare
   // strings, and recursing into one without asking returns it untouched.
   if (Array.isArray(v))
@@ -199,7 +203,13 @@ function residue(
     return out;
   }
   if (raw === null || typeof raw !== "object") {
-    return undefined;
+    // A primitive the canonical form dropped entirely — the only way that happens is the rule above
+    // — is unread by definition, and a rotation of it has to be visible. Wrapped rather than
+    // returned bare so the caller's emptiness check reads it as content; the residue is COMPARED and
+    // never projected, so the value itself does not leave this function.
+    return canon === undefined && raw !== undefined
+      ? { value: raw }
+      : undefined;
   }
   const c =
     canon !== null && typeof canon === "object" && !Array.isArray(canon)

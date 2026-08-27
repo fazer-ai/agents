@@ -1104,6 +1104,31 @@ describe.skipIf(!dbUp)("the agent family records its own changes", () => {
     expect(dump).not.toContain("two@");
   });
 
+  test("an audited scalar that IS the endpoint is covered at the root", async () => {
+    // A walk that inspects object values and array elements never asks about the value it was
+    // handed, and an audited scalar can be the endpoint itself.
+    const agent = await seedAgent({
+      systemPrompt: "https://u:hunter2@prompts.example.com/p",
+    });
+    await clearAudit();
+
+    await updateAgent(
+      ctx(),
+      BigInt(agent.id),
+      { systemPrompt: "https://u:rotated@prompts.example.com/p" },
+      appDb,
+    );
+
+    const got = await rows();
+    expect(got.map((r) => r.action)).toEqual(["agent.prompt_set"]);
+    // Under the field, not at the top: only the settings branch flattens its projection.
+    const marked = got[0]?.after as Record<string, unknown> | undefined;
+    expect(marked?.systemPrompt).toEqual({ unreadConfigChanged: true });
+    const dump = JSON.stringify([got[0]?.before, got[0]?.after]);
+    expect(dump).not.toContain("hunter2");
+    expect(dump).not.toContain("rotated");
+  });
+
   test("a base URL with no credential in it is recorded as itself", async () => {
     const agent = await seedAgent({
       modelConfig: {

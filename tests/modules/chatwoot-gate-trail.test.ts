@@ -256,7 +256,6 @@ describe.skipIf(!dbUp)("the webhook gate leaves a trail", () => {
   // surely. Reported from the payload, a conversation the operator had already resolved was recorded
   // as `ownership_lost` at `pending`, which sends an investigation after a missing assignee.
   test("the status reported is the one the gate closed on, not the one proposed", async () => {
-    const info = spyOn(logger, "info");
     const T = Math.floor(Date.now() / 1000);
     // One delivery to put the conversation in the mirror, then the resolve written onto the row with
     // its mark ahead of the message. Written rather than delivered because this file's `deliver`
@@ -273,11 +272,24 @@ describe.skipIf(!dbUp)("the webhook gate leaves a trail", () => {
     });
     // The stranded message, serialized a minute BEFORE that resolve. Behind the status mark on its
     // own clock, so the reopen exception refuses it and the mirror stays `resolved`.
-    await deliver(9107, {
-      status: "pending",
-      lastActivityAt: T - 60,
-      updatedAt: T - 60,
-    });
+    //
+    // The spy is taken HERE, around the one delivery whose line this is about, and restored in a
+    // `finally`. `logger` is a module singleton shared by every test in the process, so a spy left
+    // standing is seen by the next file's own `spyOn` — measured on CI, where it made a neighbouring
+    // suite read this file's line instead of its own. `mockRestore` also clears `mock.calls` in Bun,
+    // so the lines are copied out first.
+    const info = spyOn(logger, "info");
+    let lines: unknown[][] = [];
+    try {
+      await deliver(9107, {
+        status: "pending",
+        lastActivityAt: T - 60,
+        updatedAt: T - 60,
+      });
+      lines = info.mock.calls.map((c) => [...c]);
+    } finally {
+      info.mockRestore();
+    }
 
     // The first delivery answered normally and wrote no handoff line, so the only row here belongs
     // to the message the gate refused.
@@ -292,7 +304,7 @@ describe.skipIf(!dbUp)("the webhook gate leaves a trail", () => {
     // do not yet. The two are written from separate arguments, so one can drift from the other —
     // and drifting is the whole defect this test exists for.
     expect(
-      info.mock.calls.find(
+      lines.find(
         (c) => typeof c[0] === "string" && c[0].includes("bot silent by gate"),
       ),
     ).toEqual([

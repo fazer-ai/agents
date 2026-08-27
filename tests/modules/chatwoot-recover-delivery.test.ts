@@ -88,6 +88,10 @@ interface Stub {
 // real account reports for a conversation whose newest event IS that message.
 function stubChatwoot(opts: {
   page?: unknown;
+  // What the UNANCHORED read returns — the newest page, which is what says whether the customer has
+  // written again since the strand. Defaults to the anchored page, which is the ordinary case: a
+  // conversation whose newest message still IS the stranded one.
+  recent?: unknown;
   throwOnRead?: boolean;
   conv?: {
     status?: string;
@@ -122,6 +126,8 @@ function stubChatwoot(opts: {
     getMessages: async (conversationId: number, o?: { before?: number }) => {
       asked.push([conversationId, o?.before]);
       if (opts.throwOnRead) throw new Error("connect ECONNREFUSED");
+      if (o?.before === undefined)
+        return opts.recent ?? opts.page ?? { payload: [] };
       return opts.page ?? { payload: [] };
     },
     sendMessage: async (conversationId: number, content: string) => {
@@ -425,6 +431,106 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       select: { status: true },
     });
     expect(row.status).toBe("pending");
+  });
+
+  test("a customer who wrote again is not answered about the older message", async () => {
+    // The delivery path CANNOT answer a message a newer one has passed: `shouldPost` re-fetches,
+    // sees the newer incoming id and withholds the reply, and the turn comes back "superseded". The
+    // path still settles the row, so without this check the recovery spends a model call, posts
+    // nothing, marks the row PROCESSED and writes a closing line saying the loss ended — with the
+    // customer never answered about the message that was stranded.
+    //
+    // And nothing else covers it: the direct turn feeds the graph its OWN trigger text, so the
+    // newer message's turn answered the newer message. The stranded one was never ingested, because
+    // ingestion is the turn its delivery died before reaching.
+    //
+    // `unrecoverable`, asked before the claim: a newer message never un-arrives, so no attempt can
+    // change the answer, and the row stays DEAD in the worklist where an operator can still read it.
+    const convId = 8940;
+    const messageId = 9443;
+    const conv = await seedConversation(convId, {
+      lastEventAt: new Date((SENT_AT - 600) * 1000),
+    });
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const stub = stubChatwoot({
+      page: pageWith([{ id: messageId, content: "tem alguém?" }]),
+      // The customer wrote again while the row sat stranded.
+      recent: pageWith([
+        { id: messageId, content: "tem alguém?" },
+        { id: messageId + 4, content: "esqueça, já resolvi" },
+      ]),
+    });
+    const turns = { built: 0 };
+
+    expect(
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: depsWith(stub, turns),
+      }),
+    ).toBe("unrecoverable");
+    expect(stub.sent).toEqual([]);
+    // No turn is even built: the refusal is asked before the claim, so it spends neither an attempt
+    // nor a model call.
+    expect(turns.built).toBe(0);
+    expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 0 });
+    // And no closing line: the loss is still open, which is the honest state.
+    const lines = await deliveryLines(conv.id, 400);
+    expect(
+      lines.filter(
+        (l) => (l.detail as Record<string, unknown>).outcome === "recovered",
+      ),
+    ).toEqual([]);
+  });
+
+  test("a newer OUTGOING message does not block the recovery", async () => {
+    // The predicate is the delivery path's own (`maxIncomingId`), so only what the CUSTOMER said
+    // counts. An away message, an operator's note or our own reply posted after the strand moves the
+    // conversation forward without answering the stranded message, and refusing there would leave a
+    // recoverable customer message sitting in the worklist forever.
+    const convId = 8941;
+    const messageId = 9444;
+    await seedConversation(convId, {
+      lastEventAt: new Date((SENT_AT - 600) * 1000),
+    });
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const page = pageWith([{ id: messageId, content: "tem alguém?" }]);
+    const stub = stubChatwoot({
+      page,
+      recent: {
+        payload: [
+          ...page.payload,
+          {
+            id: messageId + 4,
+            content: "Estamos fora do horário de atendimento.",
+            // OUTGOING, in the integer spelling the REST read uses.
+            message_type: 1,
+            private: false,
+            inbox_id: CHATWOOT_INBOX_ID,
+            created_at: SENT_AT,
+            sender: { id: 5, name: "Atendente" },
+            attachments: [],
+          },
+        ],
+      },
+    });
+
+    expect(
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: depsWith(stub),
+      }),
+    ).toBe("recovered");
+    expect(stub.sent).toEqual([[convId, REPLY]]);
   });
 
   test("a mirror that never learned the inbox rebuilds it from the live message", async () => {

@@ -9,6 +9,7 @@ import { writeFlowEvent } from "@/modules/flowlog/service";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 import { agentBotChatwootId, loadChatwootClient } from "./instance";
+import { maxIncomingId, parseChatwootMessages } from "./messages";
 import {
   controlCommand,
   isNewIncomingMessage,
@@ -308,6 +309,7 @@ async function runRecovery(params: {
   // The message read stays what it was: the one thing no mirror holds. `before` anchors the page
   // that ENDS at this id, so the message is in it whatever the conversation's length.
   let raw: unknown;
+  let recent: ReturnType<typeof parseChatwootMessages> = [];
   let live: ReturnType<typeof parseLiveConversation> = null;
   try {
     const client = await loadChatwootClient(params.tenantId, instanceId, {
@@ -320,6 +322,12 @@ async function runRecovery(params: {
     });
     live = parseLiveConversation(await client.getConversation(conversationId));
     raw = await client.getMessages(conversationId, { before: messageId + 1 });
+    // The NEWEST page, unanchored, and it answers a different question from the one above: whether
+    // the customer has written again since. Two reads because one page cannot hold both ends — the
+    // anchored page ends at the stranded message and says nothing about what came after, and the
+    // newest page need not contain the stranded message at all (MEASURED: on a 30-message
+    // conversation the default page of 20 did not).
+    recent = parseChatwootMessages(await client.getMessages(conversationId));
   } catch (e) {
     // The account is unreachable or the token no longer works. Both are repairable by an operator,
     // so this is a DEFERRAL rather than a verdict: the row keeps its attempt budget and the next
@@ -355,6 +363,34 @@ async function runRecovery(params: {
   // won, and whatever outranked it where it lost. Null only if the mirror row vanished between the
   // two reads, and the row read above is then the best thing left.
   const state = reconciled.state ?? conv;
+
+  // A CUSTOMER WHO WROTE AGAIN CANNOT BE ANSWERED ABOUT THE OLDER MESSAGE, and the delivery path is
+  // what decides that rather than this: `shouldPost` re-fetches immediately before posting, sees a
+  // newer incoming id and withholds the reply, and the turn comes back "superseded". The path still
+  // settles the row — correctly, for a LIVE delivery, because there the newer message's own delivery
+  // carries the reply. For a recovery that premise is gone: the newer message's delivery already
+  // ran, and it answered the newer message. A direct turn feeds the graph its OWN trigger text, so
+  // the stranded one was never seen — its ingestion is the turn its delivery died before reaching.
+  //
+  // Left to run, the recovery spends a model call, posts nothing, marks the row PROCESSED and writes
+  // a closing line saying the loss ended. So it is asked HERE, before the claim: no attempt, no
+  // turn, and the row stays DEAD in the worklist, which is the honest place for a message this
+  // design cannot answer.
+  //
+  // `unrecoverable` rather than a deferral, because a newer message never un-arrives. Asked through
+  // `maxIncomingId`, the delivery path's OWN predicate, so the two cannot start disagreeing about
+  // what counts — an outgoing away message or an operator's note moves the conversation forward
+  // without answering anything, and must not block a recovery.
+  const newest = maxIncomingId(recent, messageId);
+  if (newest > messageId) {
+    logger.info(
+      "chatwoot recovery: %s is behind message %d on conversation %d; not answered",
+      row.deliveryId,
+      newest,
+      conversationId,
+    );
+    return "unrecoverable";
+  }
 
   const message = findRawMessage(raw, messageId);
   // Chatwoot no longer has the message: deleted, or the conversation was. There is nothing to

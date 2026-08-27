@@ -298,12 +298,66 @@ function splitArgs(args: string): string[] {
 // A holder that is declared and then half-used. Either half alone is silence: a holder nobody
 // captures into can only ever answer null at every `at(…)` reading it, and a holder nobody reads
 // keeps the toast quiet about a refusal it has placed nowhere.
+// A holder can also be used through a REGISTER: the agent editor keeps one per writing form (#415)
+// and reaches them as `refusals[section].capture(...)`, so no holder is ever named at a call site.
+// The obligation is unchanged and so is its force, since a holder that is declared and left out of
+// the register is exactly the orphan this flags, but the proof moves: the register is what has to be
+// captured and read, and each holder has to be IN it.
+//
+// Deliberately keyed off the `Record<_, FieldRefusal>` annotation rather than any object that
+// mentions a holder. An unannotated bag would let a file opt out of this check by listing its
+// holders somewhere, which is the same hole as not checking at all.
+function registeredHolders(src: string): {
+  register: string | null;
+  members: Set<string>;
+} {
+  const m = /const (\w+): Record<[^,]+, FieldRefusal> = \{/.exec(src);
+  if (!m) return { register: null, members: new Set() };
+  const open = m.index + m[0].length - 1;
+  let depth = 0;
+  let close = -1;
+  for (let i = open; i < src.length; i++) {
+    if (src[i] === "{") depth += 1;
+    else if (src[i] === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        close = i;
+        break;
+      }
+    }
+  }
+  if (close < 0) return { register: null, members: new Set() };
+  const body = src.slice(open + 1, close);
+  const members = new Set<string>();
+  for (const entry of body.matchAll(/[\w"']+\s*:\s*(\w+)\s*,/g)) {
+    members.add(entry[1] as string);
+  }
+  return { register: m[1] as string, members };
+}
+
 export function halfUsedHolders(src: string): string[] {
   const out: string[] = [];
+  const { register, members } = registeredHolders(src);
+  // The register itself answers for its members, so it has to be whole on both sides. Read through
+  // any name, because the aggregator that consults every holder is not the register variable.
+  const registerCaptures =
+    !!register &&
+    new RegExp(`\\b${register}\\[[^\\]]+\\]\\??\\.capture\\(`).test(src);
+  // `.at\b` rather than `.at(`: a page with several holders reads them through an aggregate, and
+  // the natural spelling passes the method as a REFERENCE (`refusals[s].at`) instead of calling it
+  // there. Requiring the call site would have forced a worse shape to satisfy the guard.
+  const registerReads =
+    !!register &&
+    new RegExp(`\\b${register}\\[[^\\]]+\\]\\??\\.at\\b`).test(src);
   for (const m of src.matchAll(/const (\w+) = useFieldRefusal\(/g)) {
     const name = m[1] as string;
-    const captures = new RegExp(`\\b${name}\\.capture\\(`).test(src);
-    const reads = new RegExp(`\\b${name}\\.at\\(`).test(src);
+    const viaRegister = members.has(name);
+    const captures = viaRegister
+      ? registerCaptures
+      : new RegExp(`\\b${name}\\.capture\\(`).test(src);
+    const reads = viaRegister
+      ? registerReads
+      : new RegExp(`\\b${name}\\.at\\(`).test(src);
     if (!captures || !reads)
       out.push(`${name} (${captures ? "never read" : "never captured"})`);
   }

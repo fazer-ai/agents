@@ -47,6 +47,7 @@ import { BusinessHoursForm } from "@/client/components/BusinessHoursForm";
 import type { DiscoveredMcpTool } from "@/client/components/mcp/DiscoveredMcpTools";
 import { useBreadcrumbLabel } from "@/client/contexts/BreadcrumbContext";
 import { useNavGuard } from "@/client/contexts/NavGuardContext";
+import type { FieldRefusal } from "@/client/hooks/useFieldRefusal";
 import { useFieldRefusal } from "@/client/hooks/useFieldRefusal";
 import { useTenantEvents } from "@/client/hooks/useTenantEvents";
 import { api } from "@/client/lib/api";
@@ -61,7 +62,11 @@ import {
   hasNoConsoleControl,
   sentFromPatch,
 } from "@/client/lib/editorRefusal";
-import { readRefusal } from "@/client/lib/fieldRefusal";
+import {
+  firstRefusalAt,
+  readRefusal,
+  settlesRefusal,
+} from "@/client/lib/fieldRefusal";
 import { formatRelativeTime, slugify } from "@/client/lib/utils";
 import {
   invalidateVault,
@@ -571,6 +576,17 @@ function AgentEditorSkeleton() {
 // the abstention is recorded in tests/client/field-refusal-fence.test.ts).
 const CLONE_FIELDS = ["name"] as const;
 
+// The forms that write, as a union rather than loose strings: each one holds its own refusal (#415),
+// and a section name that does not match a holder would otherwise be a holder nobody ever captures
+// into, which is the orphan the fence exists to catch.
+type RefusalSection =
+  | "general"
+  | "behavior"
+  | "knowledge"
+  | "tools"
+  | "guardrails"
+  | "channelRedirect";
+
 export function AgentEditorPage() {
   const { id = "" } = useParams();
   return <AgentEditor key={id} />;
@@ -618,10 +634,11 @@ function AgentEditor() {
   //
   // Written by every `capture` and read only while the holder has a sentence, so neither can go stale
   // against it.
-  const [refusedSave, setRefusedSave] = useState<{
-    section: string;
-    named: string | null;
-  } | null>(null);
+  // Keyed by section since #415: each writing form holds its own, so a second refused save no longer
+  // erases what the first one had to say about a different form.
+  const [refusedSave, setRefusedSave] = useState<
+    Partial<Record<RefusalSection, { named: string | null } | null>>
+  >({});
   const refusedSaveRef = useRef(refusedSave);
   refusedSaveRef.current = refusedSave;
   const [savingGrants, setSavingGrants] = useState(false);
@@ -895,15 +912,80 @@ function AgentEditor() {
     followUpSteps: followUp.steps.length,
   };
   const refusalFields = editorRefusalFields(refusalView);
-  const refusal = useFieldRefusal(refusalFields.drawn, refusalFields.owned);
+
+  // ONE HELD REFUSAL PER FORM THAT WRITES, WHICH IS WHAT THE HOLDER ALWAYS ASKED FOR (#415).
+  //
+  // `useFieldRefusal` says it in its own header: "PER FORM, not per page and not in a context". This
+  // page had six independently savable forms behind ONE holder, and `capture` is also the clear, so
+  // the second refusal erased the first. No concurrency needed: refuse a Behavior save, switch to
+  // Guardrails, refuse that one, and the operator returns to a Behavior form that looks clean and is
+  // still refused.
+  //
+  // Six fixed calls rather than a loop, because hooks cannot be called in one. Every holder is given
+  // the SAME drawn/owned lists on purpose: a refusal does not stay inside the section that produced
+  // it. `saveAgent("behavior")` sends the whole settings bag and can be refused about
+  // `guardrails.output.templateMessage`, whose control the Guardrails tab draws. Splitting the lists
+  // per section would mean a holder that cannot place the very refusal its own save provoked.
+  const generalRefusal = useFieldRefusal(
+    refusalFields.drawn,
+    refusalFields.owned,
+  );
+  const behaviorRefusal = useFieldRefusal(
+    refusalFields.drawn,
+    refusalFields.owned,
+  );
+  const knowledgeRefusal = useFieldRefusal(
+    refusalFields.drawn,
+    refusalFields.owned,
+  );
+  const toolsRefusal = useFieldRefusal(
+    refusalFields.drawn,
+    refusalFields.owned,
+  );
+  const guardrailsRefusal = useFieldRefusal(
+    refusalFields.drawn,
+    refusalFields.owned,
+  );
+  // Sixth, and it did not answer a refusal at all before this. `saveChannelRedirect` writes the whole
+  // settings bag and its catch showed a bare toast, so a refusal naming a value this editor draws
+  // came back with no mark and nothing to jump to. That is the defect #349 fixed, at the one form
+  // #349 did not reach.
+  const channelRedirectRefusal = useFieldRefusal(
+    refusalFields.drawn,
+    refusalFields.owned,
+  );
+  const refusals: Record<RefusalSection, FieldRefusal> = {
+    general: generalRefusal,
+    behavior: behaviorRefusal,
+    knowledge: knowledgeRefusal,
+    tools: toolsRefusal,
+    guardrails: guardrailsRefusal,
+    channelRedirect: channelRedirectRefusal,
+  };
+  const REFUSAL_SECTIONS = Object.keys(refusals) as RefusalSection[];
+
+  // The reading every marked control does, now that there is more than one holder to ask. First
+  // match wins: a control draws ONE value, so two holders answering for it would be two refusals
+  // about the same box, and the older one is the one the operator has already been shown.
+  //
+  // Each holder still expires its own mark by value, so a stale one is silent here rather than
+  // shadowing a live one behind it.
+  const refusal = {
+    at: (field: string, value: unknown): string | null =>
+      firstRefusalAt(
+        REFUSAL_SECTIONS.map((section) => refusals[section].at),
+        field,
+        value,
+      ),
+  };
   // The holder as it is NOW, for the success and failure paths of a request that started earlier.
   //
   // Same reason the hook keeps its own refs: a save handler closes over the render that launched it,
   // and this page's saves are long enough for another tab's save to fail while one is still in
   // flight. Answering from the closure would let an older success clear a refusal that arrived after
   // it — `refusal.at` is memoized on the hold, so even the comparison would be the old one.
-  const refusalRef = useRef(refusal);
-  refusalRef.current = refusal;
+  const refusalRef = useRef(refusals);
+  refusalRef.current = refusals;
   // What every placeable input holds right now, keyed by the SERVER'S name for it, readable from
   // inside a save that started before them: this page's saves are long and the operator keeps typing
   // during them. Keyed by the wire name rather than by the state variable because that is the name a
@@ -986,13 +1068,23 @@ function AgentEditor() {
   function answerRefusal(
     e: unknown,
     fallback: string,
-    section: string,
+    section: RefusalSection,
     sent: Record<string, unknown>,
   ): void {
-    const left = refusal.capture(e, fallback, sent, currentRef.current);
-    setRefusedSave(
-      left ? { section, named: readRefusal(e)?.field ?? null } : null,
+    // The holder of the form that WROTE, so a refusal about another section's save is not
+    // overwritten by this one. Indexed directly rather than through a local: `RefusalSection` is a
+    // union, so there is no missing entry to guard against, and the direct spelling is what lets the
+    // fence prove every declared holder is reachable.
+    const left = refusals[section].capture(
+      e,
+      fallback,
+      sent,
+      currentRef.current,
     );
+    setRefusedSave((prev) => ({
+      ...prev,
+      [section]: left ? { named: readRefusal(e)?.field ?? null } : null,
+    }));
     setRefusalSeq((n) => n + 1);
   }
 
@@ -1011,20 +1103,41 @@ function AgentEditor() {
   //
   // A refusal the holder could place nowhere is about a SAVE rather than a value, so its own section
   // answers it.
-  function settleRefusalFor(section: string): void {
-    const now = refusalRef.current;
-    const held = now.field;
-    const target = held
-      ? editorTargetFor(held, { guardrailsEnabled: guardrails.enabled })
-      : null;
-    if (
-      held
-        ? target?.tab === section
-        : refusedSaveRef.current?.section === section
-    ) {
-      now.clear();
+  // Scoped by the tab that DRAWS the value, across EVERY holder, and that is the half of this the
+  // per-form split does not get for free. The obvious reading of "one holder per form" is that a
+  // form's own save settles its own holder, and that is wrong here for the same reason the split is
+  // right: a refusal does not stay inside the section that produced it. Refuse a Behavior save about
+  // `guardrails.output.templateMessage`, then go to Guardrails, fix the value and save it: the
+  // refusal is answered, and it is sitting in the BEHAVIOR holder. Settling only the saving form's
+  // own holder would leave that mark standing on a value the server has since accepted, which is the
+  // stale hold #349 removed.
+  //
+  // So the question stays "whose value is this", answered by the tab, and the loop is what makes it
+  // reach all six. A refusal the holder could place nowhere is about a SAVE rather than a value, so
+  // there the holder's own section answers it.
+  function settleRefusalFor(section: RefusalSection): void {
+    for (const owner of REFUSAL_SECTIONS) {
+      const now = refusalRef.current[owner];
+      const held = now.field;
+      const target = held
+        ? editorTargetFor(held, { guardrailsEnabled: guardrails.enabled })
+        : null;
+      if (
+        settlesRefusal({
+          drawnBy: held ? (target?.tab ?? null) : null,
+          owner,
+          settled: section,
+        })
+      ) {
+        now.clear();
+      }
     }
-    setRefusedSave((prev) => (prev?.section === section ? null : prev));
+    setRefusedSave((prev) => {
+      if (!prev?.[section]) return prev;
+      const next = { ...prev };
+      delete next[section];
+      return next;
+    });
   }
 
   // WHAT THE BANNER SAYS: every standing refusal, whichever of them is standing.
@@ -1045,40 +1158,49 @@ function AgentEditor() {
   // input, and the same sentence above the tabs. That is the shape a form-level error summary has
   // everywhere it is used, it does not interrupt and it does not scroll away, and it is the trade
   // this takes over being silent on a case nobody enumerated yet.
-  const heldField = refusal.field;
-  const heldMessage = heldField
-    ? refusal.at(heldField, currentRef.current[heldField])
-    : null;
-  // The mark expires by VALUE, so a placed sentence has to be asked for through `at`; one the holder
-  // could place nowhere has no value to expire against and is read straight off the holder. Either
-  // way there is one copy, and it is the holder's.
-  const bannerMessage = heldField ? heldMessage : refusal.message;
-  // A jump only when there is somewhere to send them: a mark on the open tab is already as close as
-  // the operator can get, and a sentence with no mark has no control to point at.
-  const heldTarget = heldField
-    ? editorTargetFor(heldField, { guardrailsEnabled: guardrails.enabled })
-    : null;
-  // Somewhere to send them, from the mark when there is one and from the name the server used when
-  // there is not: a refusal this editor cannot MARK can still be about a value it draws (a tool
-  // precondition is edited as a list, so there is no single box to put the sentence in).
-  const namedTarget =
-    !heldField && refusedSave?.named
-      ? editorTargetFor(refusedSave.named, {
-          guardrailsEnabled: guardrails.enabled,
-        })
-      : null;
-  const jumpTo = heldMessage ? heldTarget : namedTarget;
-  const bannerTarget = jumpTo && jumpTo.tab !== tab ? jumpTo : null;
-  // Said only when the server NAMED a value and this editor draws no control for it. Not for a
-  // refusal about no input at all (a 403, a conflict), where there is no value to go and change.
-  // BRING IT INTO VIEW, because the banner sits above the tabs and the button that produced it does
-  // not. Behavior and Tools are long, their Save lives in a sticky bar at the bottom, and the toast
-  // that used to answer from down there is gone — so a sighted operator would watch the save stop
-  // and see nothing until they scrolled back up. `role="alert"` already answers for a screen reader;
-  // this is the other half.
+  // WITH SIX HOLDERS THE BANNER IS A LIST, because "the refusal in force" stopped being one thing.
+  // Two forms can each be refused about something different, and a banner that showed the newest
+  // would be the erasure this issue is about, moved from the holder into the render.
   //
-  // Once per sentence, not once per render: the banner stays up until the refusal is answered, and
-  // re-scrolling on every keystroke would take the page out from under whoever is fixing the value.
+  // Built in section order rather than in arrival order, so the list does not reshuffle under the
+  // operator when one entry settles and another arrives.
+  const refusalRows = REFUSAL_SECTIONS.flatMap((section) => {
+    const holder = refusals[section];
+    const held = holder.field;
+    // The mark expires by VALUE, so a placed sentence has to be asked for through `at`; one the
+    // holder could place nowhere has no value to expire against and is read straight off the holder.
+    // Either way there is one copy, and it is the holder's.
+    const placed = held ? holder.at(held, currentRef.current[held]) : null;
+    const message = held ? placed : holder.message;
+    if (!message) return [];
+    const named = refusedSave[section]?.named ?? null;
+    // A jump only when there is somewhere to send them: a mark on the open tab is already as close
+    // as the operator can get, and a sentence with no mark has no control to point at. From the mark
+    // when there is one and from the name the server used when there is not, because a refusal this
+    // editor cannot MARK can still be about a value it draws (a tool precondition is edited as a
+    // list, so there is no single box to put the sentence in).
+    const target = held
+      ? placed
+        ? editorTargetFor(held, { guardrailsEnabled: guardrails.enabled })
+        : null
+      : named
+        ? editorTargetFor(named, { guardrailsEnabled: guardrails.enabled })
+        : null;
+    return [
+      {
+        section,
+        message,
+        // Said only where it can be PROVED. It used to be read off a map having no entry, and absence
+        // proves nothing about the console: the map was missing `settings.modelFallback.model` and
+        // `observability.fullDetailUntil`, both of which have a visible control, so the banner told
+        // the operator the opposite of the truth about them. `hasNoConsoleControl` answers from the
+        // closed set it can derive, the ten native-tool notes the editor draws no field for.
+        noControl: !held && named != null && hasNoConsoleControl(named),
+        target: target && target.tab !== tab ? target : null,
+      },
+    ];
+  });
+
   const bannerRef = useRef<HTMLDivElement | null>(null);
   // Counted, not compared by text. Two transport failures in a row produce the SAME fallback
   // sentence, and a second failure the operator has scrolled away from would have scrolled nothing
@@ -1086,21 +1208,12 @@ function AgentEditor() {
   // Every answered request bumps this, so each one is announced once whatever it says.
   const [refusalSeq, setRefusalSeq] = useState(0);
   const announcedRef = useRef(0);
+  const hasRefusalRow = refusalRows.length > 0;
   useEffect(() => {
-    if (!bannerMessage || announcedRef.current === refusalSeq) return;
+    if (!hasRefusalRow || announcedRef.current === refusalSeq) return;
     announcedRef.current = refusalSeq;
     bannerRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
-  }, [bannerMessage, refusalSeq]);
-
-  // Said only where it can be PROVED. It used to be read off this map having no entry, and absence
-  // proves nothing about the console: the map was missing `settings.modelFallback.model` and
-  // `observability.fullDetailUntil`, both of which have a visible control, so the banner told the
-  // operator the opposite of the truth about them. `hasNoConsoleControl` answers from the closed set
-  // it can derive -- the ten native-tool notes the editor draws no field for.
-  const bannerNoControl =
-    !heldField &&
-    refusedSave?.named != null &&
-    hasNoConsoleControl(refusedSave.named);
+  }, [hasRefusalRow, refusalSeq]);
 
   // The clone dialog is its own form: one input, and the route refuses a name already taken by name.
   // Separate from the editor's holder, because the two are on screen together.
@@ -2441,9 +2554,11 @@ function AgentEditor() {
       danger: true,
       confirmLabel: t("editor.discardAll", "Discard all"),
       onConfirm: () => {
-        // Every section at once, so every refusal goes with them.
-        refusalRef.current.clear();
-        setRefusedSave(null);
+        // Every section at once, so every refusal goes with them: six holders now, and a discard
+        // that cleared only one would put values back while a mark about them stayed up.
+        for (const owner of REFUSAL_SECTIONS)
+          refusalRef.current[owner]?.clear();
+        setRefusedSave({});
         const a = syncedAgentRef.current;
         if (a) {
           applyAgent(a);
@@ -2705,6 +2820,9 @@ function AgentEditor() {
   async function saveChannelRedirect(force = false) {
     savingRef.current += 1;
     setSavingChannelRedirect(true);
+    // Declared out here so the catch can read it: the snapshot has to be taken before the request,
+    // and a `const` inside the try would not be in scope where the refusal is answered.
+    let sent: Record<string, unknown> = {};
     try {
       const expected = expectedFor(force);
       const syncedSettings = (syncedAgentRef.current?.settings ?? {}) as Record<
@@ -2712,10 +2830,14 @@ function AgentEditor() {
         unknown
       >;
       const crJson = fromChannelRedirectForm(channelRedirect);
-      const { data, error: err } = await api.api.v1.agents({ id }).patch({
+      const patch = {
         settings: { ...syncedSettings, channelRedirect: crJson },
         ...(expected ? { expectedUpdatedAt: expected } : {}),
-      });
+      };
+      // Snapshot BEFORE the request, never read in the catch: `currentRef` is live, so comparing it
+      // with itself there can never fire the staleness check.
+      sent = sentFor(patch);
+      const { data, error: err } = await api.api.v1.agents({ id }).patch(patch);
       if (handleConflict(err, () => void saveChannelRedirect(true))) return;
       if (err || !data) throw err ?? new Error("no data");
       applyChannelRedirect(data.agent);
@@ -2725,11 +2847,16 @@ function AgentEditor() {
       markSynced(String(data.agent.updatedAt));
       bumpSync("channelRedirect");
       showToast(t("editor.saved", "Agent saved."), "success");
+      settleRefusalFor("channelRedirect");
     } catch (e) {
-      showToast(
-        apiErrorMessage(e) ||
-          t("editor.saveError", "Could not save the agent."),
-        "error",
+      // It writes the WHOLE settings bag, so it can be refused about any value in it, and until #415
+      // this catch showed a bare toast: the sentence named a field, the field had a control, and
+      // nothing marked it or offered to go there.
+      answerRefusal(
+        e,
+        t("editor.saveError", "Could not save the agent."),
+        "channelRedirect",
+        sent,
       );
     } finally {
       savingRef.current -= 1;
@@ -3221,32 +3348,38 @@ function AgentEditor() {
                 a toast: the sentence is the only copy of the reason, and a toast takes it away after
                 five seconds while the input it is about is still refused. It goes when the operator
                 answers the refusal, or when they reach the tab that draws the mark. */}
-            {bannerMessage && (
-              <div
-                ref={bannerRef}
-                role="alert"
-                className="flex scroll-mt-4 items-baseline justify-between gap-3 rounded-lg border border-error bg-error-soft px-4 py-3"
-              >
-                <span className="min-w-0 text-sm text-text-primary">
-                  {bannerMessage}
-                  {bannerNoControl && (
-                    <span className="block text-text-secondary text-xs">
-                      {t(
-                        "editor.refusalNoControl",
-                        "This value has no field in the console, so it can only be changed through the API.",
+            {refusalRows.length > 0 && (
+              <div ref={bannerRef} className="flex scroll-mt-4 flex-col gap-2">
+                {refusalRows.map((entry) => (
+                  <div
+                    key={entry.section}
+                    role="alert"
+                    className="flex items-baseline justify-between gap-3 rounded-lg border border-error bg-error-soft px-4 py-3"
+                  >
+                    <span className="min-w-0 text-sm text-text-primary">
+                      {entry.message}
+                      {entry.noControl && (
+                        <span className="block text-text-secondary text-xs">
+                          {t(
+                            "editor.refusalNoControl",
+                            "This value has no field in the console, so it can only be changed through the API.",
+                          )}
+                        </span>
                       )}
                     </span>
-                  )}
-                </span>
-                {bannerTarget && (
-                  <button
-                    type="button"
-                    onClick={() => goToEditorTarget(bannerTarget)}
-                    className="shrink-0 rounded font-medium text-accent text-xs hover:underline focus-visible:underline"
-                  >
-                    {t("editor.goToIssue", "Fix")}
-                  </button>
-                )}
+                    {entry.target && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          entry.target && goToEditorTarget(entry.target)
+                        }
+                        className="shrink-0 rounded font-medium text-accent text-xs hover:underline focus-visible:underline"
+                      >
+                        {t("editor.goToIssue", "Fix")}
+                      </button>
+                    )}
+                  </div>
+                ))}
               </div>
             )}
 

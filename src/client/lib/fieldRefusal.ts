@@ -167,3 +167,55 @@ export function sameValue(a: unknown, b: unknown): boolean {
 function escapeName(name: string): string {
   return name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
+
+// THE TWO RULES A PAGE WITH MORE THAN ONE HOLDER NEEDS, AS FUNCTIONS RATHER THAN AS SHAPE (#415).
+//
+// The agent editor keeps one holder per writing form. Both rules below were first written inline in
+// the page and guarded by reading its source, and a mutation battery showed what that is worth: a
+// loop narrowed to its first entry still contains the text the guard looked for, so the check
+// stayed green while the aggregate consulted one holder out of six. Behaviour is what was being
+// claimed, so behaviour is what is tested.
+
+/** What a holder answers for one control: its sentence, or null. */
+export type RefusalReader = (field: string, value: unknown) => string | null;
+
+// FIRST match wins. One control draws ONE value, so two holders answering for it would be two
+// refusals about the same box, and the older is the one the operator has already been shown. A
+// holder whose mark has expired by value is silent here rather than shadowing a live one behind it,
+// which is what makes the order safe to fix.
+export function firstRefusalAt(
+  readers: readonly RefusalReader[],
+  field: string,
+  value: unknown,
+): string | null {
+  for (const read of readers) {
+    const message = read(field, value);
+    if (message) return message;
+  }
+  return null;
+}
+
+// WHOSE VALUE IS THIS, asked of one holder at a time.
+//
+// The half that one-holder-per-form does not get for free, and the reason this is a function with a
+// name. The obvious reading is that a form's own save settles its own holder, and it is wrong: a
+// refusal does not stay inside the section that produced it. A Behavior save can be refused about
+// `guardrails.output.templateMessage`, and the operator answers that by fixing the value on the
+// GUARDRAILS tab and saving THERE, while the mark sits in the Behavior holder. Settling only the
+// saving form's own holder would leave it standing on a value the server has since accepted, which
+// is the stale hold #349 removed.
+//
+// So a PLACED refusal is settled by the tab that draws its value, whoever wrote it, and one the
+// holder could place nowhere is about a SAVE rather than a value, so its own section answers it.
+export function settlesRefusal(args: {
+  /** The tab that draws the refused value, or null when the refusal was placed nowhere. */
+  drawnBy: string | null;
+  /** The section whose holder is being visited. */
+  owner: string;
+  /** The section that just saved or discarded. */
+  settled: string;
+}): boolean {
+  return args.drawnBy !== null
+    ? args.drawnBy === args.settled
+    : args.owner === args.settled;
+}

@@ -106,6 +106,60 @@ describe.skipIf(!dbUp)("the four blocks reach the agent through MCP", () => {
     });
   });
 
+  // THE THIRD SCOPE ITEM OF #402, which asks to VERIFY rather than to build: `guardrails.credentialRef`
+  // is already in SETTINGS_CREDENTIAL_PATHS, so the MCP's name ↔ `vault:<id>` translation should need
+  // no change for the block this PR publishes. Reading the constant proves the path is listed; it does
+  // not prove the translation runs for this block, which is what the issue asked. Both directions,
+  // through the same functions the transport calls.
+  //
+  // The failure it rules out is specific and silent: the write stores the NAME verbatim, and the
+  // guardrails model then resolves a credential that does not exist — at turn time, on the reply path.
+  test("guardrails.credentialRef travels as a NAME and is stored as a ref", async () => {
+    const keyId = (
+      await suDb.vaultEntry.create({
+        data: {
+          tenantId,
+          name: `gr-key-${process.pid}`,
+          secret: "placeholder",
+          kind: "openai",
+        },
+        select: { id: true },
+      })
+    ).id;
+    const r = await agentSettingsSet(
+      principal(),
+      {
+        agent_id: String(agentId),
+        dry_run: false,
+        guardrails: { credentialRef: `gr-key-${process.pid}` },
+      } as never,
+      { base: appDb },
+    );
+    expect(r.ok).toBe(true);
+
+    const stored = (
+      await suDb.agent.findUniqueOrThrow({
+        where: { id: agentId },
+        select: { settings: true },
+      })
+    ).settings as Record<string, Record<string, unknown>>;
+    expect(stored.guardrails?.credentialRef).toBe(`vault:${keyId}`);
+
+    // And back out as the NAME, which is the half the issue's own history is about: the read handing
+    // back an id where it promises a name is what the credential-paths guard was written for.
+    const got = await agentSettingsGet(
+      principal(),
+      { agent_id: String(agentId) } as never,
+      { base: appDb },
+    );
+    expect(got.ok).toBe(true);
+    if (!got.ok) return;
+    const settings = (
+      got.data as { settings: Record<string, Record<string, unknown>> }
+    ).settings;
+    expect(settings.guardrails?.credentialRef).toBe(`gr-key-${process.pid}`);
+  });
+
   test("and agent_settings_get gives them back", async () => {
     const r = await agentSettingsGet(
       principal(),

@@ -1036,6 +1036,74 @@ describe.skipIf(!dbUp)("the agent family records its own changes", () => {
     expect(marked?.unreadConfigChanged).toBe(true);
   });
 
+  test("a credential inside a LIST is dropped too, not just one under a key", async () => {
+    // `guardrails.competitors` is a list of bare strings. Recursing into an element without asking
+    // returns it untouched, so the rule has to run on elements as well as on object values.
+    const agent = await seedAgent({
+      settings: {
+        guardrails: {
+          enabled: true,
+          competitors: ["https://u:hunter2@rival.example.com/x", "acme"],
+        },
+      },
+    });
+    await clearAudit();
+
+    await updateAgent(
+      ctx(),
+      BigInt(agent.id),
+      {
+        settings: {
+          guardrails: {
+            enabled: true,
+            competitors: ["https://u:rotated@rival.example.com/x", "acme"],
+          },
+        },
+      },
+      appDb,
+    );
+
+    const got = await rows();
+    expect(got.length).toBe(1);
+    const dump = JSON.stringify([got[0]?.before, got[0]?.after]);
+    expect(dump).not.toContain("hunter2");
+    expect(dump).not.toContain("rotated");
+  });
+
+  test("a value the reader DISCARDS is unread, not accounted for", async () => {
+    // `readContactAuthUrl` answers `null` for a URL carrying userinfo, on both sides of a change, so
+    // the canonical forms agree. The key is present in the canonical form all the same, and a
+    // residue that looked only at presence would call the value accounted for while nothing reads it.
+    const agent = await seedAgent({
+      settings: {
+        contactAuth: { enabled: true, url: "https://u:one@auth.example.com/x" },
+      },
+    });
+    await clearAudit();
+
+    await updateAgent(
+      ctx(),
+      BigInt(agent.id),
+      {
+        settings: {
+          contactAuth: {
+            enabled: true,
+            url: "https://u:two@auth.example.com/x",
+          },
+        },
+      },
+      appDb,
+    );
+
+    const got = await rows();
+    expect(got.map((r) => r.action)).toEqual(["agent.settings_set"]);
+    const marked = got[0]?.after as Record<string, unknown> | undefined;
+    expect(marked?.unreadConfigChanged).toBe(true);
+    const dump = JSON.stringify([got[0]?.before, got[0]?.after]);
+    expect(dump).not.toContain("one@");
+    expect(dump).not.toContain("two@");
+  });
+
   test("a base URL with no credential in it is recorded as itself", async () => {
     const agent = await seedAgent({
       modelConfig: {

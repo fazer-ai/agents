@@ -145,7 +145,10 @@ function carriesCredential(v: unknown): boolean {
 // `modelConfig.baseURL`. A guard written on one of the nine is a guard on none of the other eight,
 // and the tenth arrives with the next block.
 function dropUnvouchableUrls(v: unknown): unknown {
-  if (Array.isArray(v)) return v.map(dropUnvouchableUrls);
+  // Array ELEMENTS are checked, not just object values: `guardrails.competitors` is a list of bare
+  // strings, and recursing into one without asking returns it untouched.
+  if (Array.isArray(v))
+    return v.filter((el) => !carriesCredential(el)).map(dropUnvouchableUrls);
   if (v === null || typeof v !== "object") return v;
   const out: Record<string, unknown> = {};
   for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
@@ -168,15 +171,30 @@ function residue(
   canon: unknown,
 ): Record<string, unknown> | undefined {
   if (Array.isArray(raw)) {
-    // A typed reader normalizes the elements of a list it knows (`followUp.steps`), so an unread
-    // field inside one of them survives in storage and is absent from the canonical element. Indexed
-    // rather than skipped: stopping at the array made every such write invisible.
+    // By VALUE and not by position. A typed reader normalizes the elements of a list it knows
+    // (`followUp.steps`), so an unread field inside one survives in storage and is absent from the
+    // canonical element; and an element the sanitization removed (a competitor entry that was a
+    // credential-bearing URL) shifts every index after it. Either way, a raw element the canonical
+    // array does not contain is one nothing reads — which is the whole question — and an index-wise
+    // comparison answered it wrong in both cases.
     const canonArr = Array.isArray(canon) ? canon : [];
+    const canonSeen = new Set(canonArr.map((x) => JSON.stringify(x)));
     const out: Record<string, unknown> = {};
     raw.forEach((el, i) => {
-      const nested = residue(el, canonArr[i]);
-      if (nested !== undefined && Object.keys(nested).length > 0)
-        out[String(i)] = nested;
+      if (el !== null && typeof el === "object") {
+        // Recursed against the element at the same index: the reader rewrites these in place
+        // (defaults materialize), so asking whether the element appears VERBATIM in the canonical
+        // array would answer "unread" for every list it normalized — the same false positive the
+        // clamp case is deliberately silent about.
+        const nested = residue(el, canonArr[i]);
+        if (nested !== undefined && Object.keys(nested).length > 0)
+          out[String(i)] = nested;
+        return;
+      }
+      // A primitive is not rewritten, it is kept or dropped, and dropping one shifts every index
+      // after it — so this half asks by VALUE. It is what sees a competitor entry removed for being
+      // a credential-bearing URL.
+      if (!canonSeen.has(JSON.stringify(el))) out[String(i)] = el;
     });
     return out;
   }
@@ -189,7 +207,12 @@ function residue(
       : {};
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
-    if (!Object.hasOwn(c, k)) {
+    // Absent from the canonical form, or DISCARDED by it. The second is the same thing said a
+    // different way: a reader that rejects a value returns `null` for it rather than dropping the
+    // key, so `contactAuth.url` carrying userinfo reads as `null` on both sides of a change and the
+    // key alone would say the value is accounted for. It is not — nothing reads it, which is what
+    // the residue is for.
+    if (!Object.hasOwn(c, k) || (c[k] === null && v !== null)) {
       setOwn(out, k, v);
       continue;
     }

@@ -8,7 +8,11 @@ import {
 } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
-import { contactAuthPolicyHash } from "@/modules/contact-auth/grants";
+import {
+  clearContactAuthGrantState,
+  contactAuthPolicyHash,
+  unclearedRefusalCount,
+} from "@/modules/contact-auth/grants";
 import { authorizeContact } from "@/modules/contact-auth/service";
 import {
   CONTACT_AUTH_DEFAULTS,
@@ -108,13 +112,18 @@ const allowed = (context?: Record<string, unknown>) =>
 const denied = () => new Response('{"authorized":false}', { status: 200 });
 const broken = () => new Response("boom", { status: 500 });
 
-// A client whose GRANT READ fails and whose every other statement works: the transient database blip
-// that separates "nobody stored a verdict" from "we could not find out". The seam is `params.base`,
-// which `runScopedOn` turns into `$extends(...).$transaction(...)`, so the wrapper has to follow it
-// down to the transaction client the module actually calls. Binding to `target` rather than
-// forwarding the proxy as the receiver keeps Prisma's own accessors (several are getters closing
-// over the client) working.
-function baseWithFailingGrantRead(real: PrismaClient): PrismaClient {
+// A client whose GRANT statements misbehave and whose every other statement works: the transient
+// database trouble that separates "nobody stored a verdict" from "we could not find out", and the
+// saturated pool that separates a slow gate from a slow endpoint. The seam is `params.base`, which
+// `runScopedOn` turns into `$extends(...).$transaction(...)`, so the wrapper has to follow it down to
+// the transaction client the module actually calls. Binding to `target` rather than forwarding the
+// proxy as the receiver keeps Prisma's own accessors (several are getters closing over the client)
+// working.
+function baseWithGrantHook(
+  real: PrismaClient,
+  // biome-ignore lint/suspicious/noExplicitAny: the delegate surface is not expressible here
+  hook: (method: string) => ((...args: any[]) => unknown) | undefined,
+): PrismaClient {
   const wrap = <T extends object>(obj: T, patch: (p: string) => unknown) =>
     new Proxy(obj, {
       get(target, prop, receiver) {
@@ -143,13 +152,7 @@ function baseWithFailingGrantRead(real: PrismaClient): PrismaClient {
                       fn(
                         wrap(tx, (m) =>
                           m === "contactAuthGrant"
-                            ? wrap(tx.contactAuthGrant, (call) =>
-                                call === "findUnique"
-                                  ? () => {
-                                      throw new Error("grant read is down");
-                                    }
-                                  : undefined,
-                              )
+                            ? wrap(tx.contactAuthGrant, hook)
                             : undefined,
                         ),
                       ),
@@ -253,6 +256,7 @@ describe.skipIf(!dbUp)("contact authorization: reusing a verdict", () => {
 
   beforeEach(async () => {
     clearContactAuthState();
+    clearContactAuthGrantState();
     await suDb.contactAuthGrant.deleteMany({ where: { tenantId } });
     await suDb.contact.update({
       where: { id: contactId },
@@ -413,11 +417,71 @@ describe.skipIf(!dbUp)("contact authorization: reusing a verdict", () => {
     const second = await ask({
       cfg: cfg(),
       fetchImpl: ep.fetchImpl,
-      base: baseWithFailingGrantRead(appDb),
+      base: baseWithGrantHook(appDb, (m) =>
+        m === "findUnique"
+          ? () => {
+              throw new Error("grant read is down");
+            }
+          : undefined,
+      ),
     });
     expect(second.outcome).toBe("denied");
     expect(ep.calls).toHaveLength(2);
     expect(await grants()).toHaveLength(0);
+  });
+
+  test("a refusal whose DELETE fails is not forgotten", async () => {
+    const ep = endpoint(allowed, denied, allowed);
+    await ask({ cfg: cfg(), ...ep });
+    expect(await grants()).toHaveLength(1);
+    // The refusal arrives with the reuse switched off, which is when a grant is reachable by one at
+    // all (under `once` a standing grant is what stops the message from asking in the first place).
+    // The delete is the one write that ENDS an authorization, and here the database refuses it.
+    const denial = await ask({
+      cfg: cfg({ mode: "perMessage" }),
+      fetchImpl: ep.fetchImpl,
+      base: baseWithGrantHook(appDb, (m) =>
+        m === "deleteMany"
+          ? () => {
+              throw new Error("delete is down");
+            }
+          : undefined,
+      ),
+    });
+    expect(denial.outcome).toBe("denied");
+    // The row is still there, because the delete really did fail...
+    expect(await grants()).toHaveLength(1);
+    expect(unclearedRefusalCount()).toBe(1);
+    // ...and it is not served when the operator switches the reuse back on. The next check asks the
+    // endpoint, and the delete is retried there.
+    const after = await ask({ cfg: cfg(), ...ep });
+    expect(after.reused).toBeFalsy();
+    expect(ep.calls).toHaveLength(3);
+    expect(unclearedRefusalCount()).toBe(0);
+  });
+
+  test("a stored-verdict read that hangs spends the gate's budget, not more", async () => {
+    const ep = endpoint(allowed);
+    const before = Date.now();
+    const verdict = await ask({
+      cfg: cfg({ timeoutMs: 1000 }),
+      fetchImpl: ep.fetchImpl,
+      base: baseWithGrantHook(appDb, (m) =>
+        m === "findUnique"
+          ? async () => {
+              await Bun.sleep(5000);
+              return null;
+            }
+          : undefined,
+      ),
+    });
+    const elapsed = Date.now() - before;
+    // `timeoutMs` covers every step that waits, and a saturated pool is as capable of holding the
+    // webhook as a slow endpoint is. Five seconds of read against a one-second budget: the gate
+    // comes back on its own deadline, and it comes back as the fail-closed answer.
+    expect(elapsed).toBeLessThan(2500);
+    expect(verdict.outcome).toBe("error");
+    expect(verdict.reason).toBe("timeout");
   });
 
   test("the endpoint changing re-asks", async () => {

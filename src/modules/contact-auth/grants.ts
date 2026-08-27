@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
-import { type AuthContext, readAuthContext } from "./check";
+import { type AuthContext, readAuthContext, underSignal } from "./check";
 import type { ContactAuthConfig } from "./settings";
 
 // STORING A POSITIVE VERDICT, AND EVERY WAY BACK OUT OF IT (issue #189).
@@ -39,9 +39,46 @@ import type { ContactAuthConfig } from "./settings";
 // verdict that already stands, so a database that refuses the read costs an extra call to the
 // endpoint, and one that refuses the write costs the same on the next message. Neither may turn an
 // answered check into a failed one.
+//
+// The DELETE is the exception, because it is the one write that ENDS an authorization. Swallowed,
+// it leaves a grant standing after the endpoint refused the contact, and the refusal is not repeated
+// until that contact writes again — which under `mode: "once"` may never happen, since a surviving
+// grant is exactly what stops the next message from asking. So a failed delete is REMEMBERED
+// (`unclearedRefusals` below): while a refusal is unrecorded for a contact, no grant of theirs is
+// served, and the delete is retried on the next read. That is fail-closed for the process; a restart
+// before the retry succeeds is the residual, bounded by the grant's own TTL.
+//
+// Every call here is bound by the CALLER'S deadline (`signal`), the same `timeoutMs` budget that
+// covers the credential, the SSRF check, the request and the body. A saturated pool therefore spends
+// the gate's budget instead of adding to it, which is what docs/contact-auth.md promises.
 
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
+}
+
+// Contacts whose refusal could not be written down. Memory only, like the notice cooldown in
+// ./state.ts and for the same reason: what it protects is a decision the next read re-derives, and
+// losing it on a restart costs a stale grant that the TTL still bounds, never a wrong refusal.
+const unclearedRefusals = new Set<string>();
+
+function refusalKey(key: GrantKey): string {
+  return `${key.tenantId}:${key.agentId}:${key.contactId}`;
+}
+
+// NOTE: Test isolation only; production clears an entry by finally landing the delete.
+export function clearContactAuthGrantState(): void {
+  unclearedRefusals.clear();
+}
+
+export function unclearedRefusalCount(): number {
+  return unclearedRefusals.size;
+}
+
+// `underSignal` where there is a deadline, the bare promise where there is not (a direct caller, a
+// test). Awaiting the signal is what keeps a saturated pool inside the gate's budget instead of
+// beside it; the statement itself keeps running, which is fine for bookkeeping nobody reads back.
+function underSignalMaybe<T>(p: Promise<T>, signal?: AbortSignal): Promise<T> {
+  return signal ? underSignal(p, signal) : p;
 }
 
 export interface GrantIdentity {
@@ -115,19 +152,30 @@ export async function readContactAuthGrant(
   base: PrismaClient,
   key: GrantKey,
   fingerprints: { identityHash: string; policyHash: string },
-  nowMs: number = Date.now(),
+  opts: { signal?: AbortSignal; nowMs?: number } = {},
 ): Promise<{ context: AuthContext | null } | null> {
+  const nowMs = opts.nowMs ?? Date.now();
+  // A refusal this process could not write down outranks anything on disk: serve nothing, and take
+  // the retry here, where a caller is already waiting on the database anyway. Ordered before the
+  // read so a failing delete cannot be worked around by a row that still looks valid.
+  if (unclearedRefusals.has(refusalKey(key))) {
+    await dropContactAuthGrant(base, key, opts.signal);
+    return null;
+  }
   try {
-    const row = await runScopedOn(base, sysCtx(key.tenantId), (db) =>
-      db.contactAuthGrant.findUnique({
-        where: whereKey(key),
-        select: {
-          identityHash: true,
-          policyHash: true,
-          context: true,
-          expiresAt: true,
-        },
-      }),
+    const row = await underSignalMaybe(
+      runScopedOn(base, sysCtx(key.tenantId), (db) =>
+        db.contactAuthGrant.findUnique({
+          where: whereKey(key),
+          select: {
+            identityHash: true,
+            policyHash: true,
+            context: true,
+            expiresAt: true,
+          },
+        }),
+      ),
+      opts.signal,
     );
     if (!row) return null;
     const holds =
@@ -157,8 +205,9 @@ export async function writeContactAuthGrant(
     context: AuthContext | null | undefined;
     ttlSeconds: number;
   },
-  nowMs: number = Date.now(),
+  opts: { signal?: AbortSignal; nowMs?: number } = {},
 ): Promise<void> {
+  const nowMs = opts.nowMs ?? Date.now();
   const context = contextToJson(grant.context);
   const expiresAt = new Date(nowMs + grant.ttlSeconds * 1000);
   const data = {
@@ -168,12 +217,15 @@ export async function writeContactAuthGrant(
     expiresAt,
   };
   try {
-    await runScopedOn(base, sysCtx(key.tenantId), (db) =>
-      db.contactAuthGrant.upsert({
-        where: whereKey(key),
-        create: { ...key, ...data },
-        update: data,
-      }),
+    await underSignalMaybe(
+      runScopedOn(base, sysCtx(key.tenantId), (db) =>
+        db.contactAuthGrant.upsert({
+          where: whereKey(key),
+          create: { ...key, ...data },
+          update: data,
+        }),
+      ),
+      opts.signal,
     );
   } catch (err) {
     logger.warn(
@@ -190,20 +242,28 @@ export async function writeContactAuthGrant(
 export async function dropContactAuthGrant(
   base: PrismaClient,
   key: GrantKey,
+  signal?: AbortSignal,
 ): Promise<void> {
   try {
-    await runScopedOn(base, sysCtx(key.tenantId), (db) =>
-      db.contactAuthGrant.deleteMany({
-        where: {
-          tenantId: key.tenantId,
-          agentId: key.agentId,
-          contactId: key.contactId,
-        },
-      }),
+    await underSignalMaybe(
+      runScopedOn(base, sysCtx(key.tenantId), (db) =>
+        db.contactAuthGrant.deleteMany({
+          where: {
+            tenantId: key.tenantId,
+            agentId: key.agentId,
+            contactId: key.contactId,
+          },
+        }),
+      ),
+      signal,
     );
+    unclearedRefusals.delete(refusalKey(key));
   } catch (err) {
-    logger.warn(
-      "contact-auth: dropping the stored grant failed (agent=%s): %s",
+    // NOT swallowed, unlike the other two: this is the write that ends an authorization, so what
+    // fails here is remembered until it lands. `error` rather than `warn` for the same reason.
+    unclearedRefusals.add(refusalKey(key));
+    logger.error(
+      "contact-auth: a refusal could not be written down, so no stored verdict will be served for this contact until it is (agent=%s): %s",
       String(key.agentId),
       err instanceof Error ? err.message : String(err),
     );

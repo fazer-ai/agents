@@ -74,7 +74,7 @@ read, so a malformed bag can never break the webhook.
 | `enabled`               | `false` | The gate as a whole. Strict boolean: anything else reads as off.    |
 | `url`                   | `null`  | The endpoint. Fixed origin, no placeholders; http(s) only, and a URL carrying `user:pass@` is refused whole (credentials belong in the vault). |
 | `credentialRef`         | `null`  | Optional `vault:<id>`, injected per the entry's kind (bearer / header / query; managed-OAuth kinds send a fresh access token). A kind the vault marks as never-injected (`mcp_env`, `langfuse`) is refused as an error rather than falling back to a Bearer, which would hand an unrelated secret to the endpoint. |
-| `timeoutMs`             | `5000`  | Clamped 1000-10000. Past it the check counts as an error. Covers every step that waits, and the clock starts at the FIRST of them: resolving the credential (a managed-OAuth entry refreshes its token there, over the network, under a ceiling of its own), the SSRF/DNS check on the final URL, the request, and the body. One budget for the lot — timed from the request instead, a gate set to one second could hold the webhook turn behind it for eleven. |
+| `timeoutMs`             | `5000`  | Clamped 1000-10000. Past it the check counts as an error. Covers every step that waits, and the clock starts at the FIRST of them: reading the stored verdict under `mode: "once"` (a saturated pool holds the webhook exactly as a slow endpoint does), resolving the credential (a managed-OAuth entry refreshes its token there, over the network, under a ceiling of its own), the SSRF/DNS check on the final URL, the request, the body, and the grant bookkeeping after the answer. One budget for the lot — timed from the request instead, a gate set to one second could hold the webhook turn behind it for eleven. |
 | `noticeCooldownSeconds` | `60`    | Clamped 0-3600. Cooldown on the NOTICES for a refused message (the customer copy and the operator note, per conversation), never on the verdict: the endpoint is asked on every message regardless. 0 = notify on every refused message. |
 | `includeMessageText`    | `false` | Forward the triggering message's text as `message.text`, so the endpoint can accept an unlock code the customer sends. Under its own key, never inside `contact`. |
 | `denyMessage`           | `null`  | Fixed copy the CUSTOMER receives on a denial (≤ `TEMPLATE_MESSAGE_MAX`). `null` = say nothing, which is a real choice: with the handoff on, a human takes the conversation and may not want an automated refusal ahead of them, and towards an unknown number a reply confirms the channel exists. Null AND the handoff off means a refused customer gets nothing at all, so the editor raises `contactAuthSilentRefusal` for that pair. |
@@ -385,6 +385,12 @@ and a NEW grant written under the nudged policy, which the restore then invalida
 way the operator ends up with a grant under whichever policy was in force when the contact last
 wrote, never with an empty table. Both shapes are pinned in
 `tests/modules/contact-auth-grant.test.ts`.
+
+**A refusal this process could not write down is not forgotten.** The DELETE is the one write here
+that ENDS an authorization, so unlike the read and the write it is not best-effort: a failure is
+remembered per contact, no stored verdict is served for that contact while it stands (the endpoint is
+asked instead, which is the fail-closed answer), and the delete is retried on the next check.
+Restarting the process before that retry lands is the residual, bounded by the grant's own TTL.
 
 **There is no clear-everything lever, deliberately.** What ends reuse is the TTL elapsing, the
 identity moving, a refusal, and `mode: "perMessage"` — the last of which is immediate and complete

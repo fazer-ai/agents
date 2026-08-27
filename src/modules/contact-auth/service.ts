@@ -150,18 +150,27 @@ export async function authorizeContact(
         identityHash: contactAuthIdentityHash({ phone, email, identifier }),
         policyHash: contactAuthPolicyHash(cfg),
       };
-      if (cfg.mode === "once") {
-        const stored = await readContactAuthGrant(base, grantKey, fingerprints);
-        if (stored) return reusedVerdict(stored.context);
-      }
-      // The deadline starts HERE, not inside the request, because the credential is resolved first
-      // and a managed-OAuth entry refreshes its token to produce it — a network call with a
-      // ten-second ceiling of its own. Timed from the request, a gate configured for one second
-      // could hold the webhook for eleven, while `timeoutMs` promises to cover every step that
-      // waits. From this line to the answer is one budget.
+      // The deadline starts HERE, before the first step that can wait. The credential is resolved
+      // under it because a managed-OAuth entry refreshes its token to produce it — a network call
+      // with a ten-second ceiling of its own — and the stored-verdict read is under it because a
+      // saturated pool is exactly as capable of holding the webhook as a slow endpoint is. Timed
+      // from the request instead, a gate configured for one second could hold the webhook for
+      // eleven, while `timeoutMs` promises to cover every step that waits. From this line to the
+      // answer is one budget, and the grant bookkeeping after the answer is inside it too.
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), cfg.timeoutMs);
       try {
+        if (cfg.mode === "once") {
+          const stored = await readContactAuthGrant(
+            base,
+            grantKey,
+            fingerprints,
+            {
+              signal: ctrl.signal,
+            },
+          );
+          if (stored) return reusedVerdict(stored.context);
+        }
         let credential: InjectableCredential | null = null;
         if (cfg.credentialRef) {
           let timedOut = false;
@@ -237,13 +246,18 @@ export async function authorizeContact(
         // retries), and a blip of the endpoint must not cost a contact the verdict they were
         // legitimately given.
         if (verdict.outcome === "denied") {
-          await dropContactAuthGrant(base, grantKey);
+          await dropContactAuthGrant(base, grantKey, ctrl.signal);
         } else if (cfg.mode === "once" && verdict.outcome === "allowed") {
-          await writeContactAuthGrant(base, grantKey, {
-            ...fingerprints,
-            context: verdict.context,
-            ttlSeconds: cfg.grantTtlSeconds,
-          });
+          await writeContactAuthGrant(
+            base,
+            grantKey,
+            {
+              ...fingerprints,
+              context: verdict.context,
+              ttlSeconds: cfg.grantTtlSeconds,
+            },
+            { signal: ctrl.signal },
+          );
         }
         return verdict;
       } finally {

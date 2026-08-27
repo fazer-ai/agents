@@ -99,16 +99,23 @@ export interface RecoveryMessage {
 export function buildRecoveryPayload(params: {
   conversation: RecoveryConversation;
   // The CHATWOOT inbox id, not the mirror's foreign key. The mirror stores the FK, so the caller
-  // resolves it; the body must carry what a real one carries.
+  // resolves it; the body must carry what a real one carries. Null omits both spellings, which is
+  // what a body carrying no route looks like — and the caller refuses to build one rather than pass
+  // it, because `runAgentTurn` returns "skipped" on an event with no inbox.
   inboxId: number | null;
-  // The inbox's name, from the same row the id came from.
+  // The inbox's name, from whichever row the id resolved to.
   //
-  // Carried even though nothing would break without it, and the reason is the rule rather than this
-  // field: its only consumer is the mirror's inbox upsert, where null means "preserve" and the
-  // create-with-placeholder branch cannot be reached by a conversation the mirror already knows. So
-  // it is harmless to drop — and "the rebuild reproduces the body" is an invariant worth more than
-  // "the rebuild reproduces the body except where I argued the gap was harmless", because the second
-  // one has to be re-argued every time a field is added. The A/B test is what found it.
+  // Carried even though little would break without it, and the reason is the rule rather than this
+  // field: its only consumer is the mirror's inbox upsert, where null means "preserve". "The rebuild
+  // reproduces the body" is an invariant worth more than "the rebuild reproduces the body except
+  // where I argued the gap was harmless", because the second one has to be re-argued every time a
+  // field is added. The A/B test is what found it.
+  //
+  // Null is reachable, and it costs a placeholder rather than a wrong answer: an inbox the mirror
+  // has no row for at all (the route came off the live message) upserts as `inbox <id>` until a real
+  // webhook renames it. The REST reads carry no inbox NAME anywhere — the conversation renders the
+  // scalar `inbox_id` and the channel type, nothing more — so the alternative is a third call to the
+  // account for a field only that placeholder depends on.
   inboxName: string | null;
   message: RecoveryMessage;
 }): Record<string, unknown> {

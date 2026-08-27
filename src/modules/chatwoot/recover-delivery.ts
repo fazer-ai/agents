@@ -286,24 +286,6 @@ async function runRecovery(params: {
   // whether they still may. A row this old with no mirror row is not going to grow one.
   if (!conv) return "unrecoverable";
 
-  // WHICH BOT answers, derived rather than stored, and the derivation is the more correct of the
-  // two. The ledger does not record the route a delivery arrived on, and adding a column would
-  // answer the wrong question: Chatwoot fans one message to up to two bot routes (`agent_bots_for`:
-  // the conversation's assignee bot and the inbox's, each with its own delivery id — MEASURED), so
-  // "the route it came from" is not "who should answer it now". The inbox's agent's bot is, and if
-  // the conversation has since moved to a different bot the ownership gate closes on that fact,
-  // which is the right outcome rather than a missed one.
-  //
-  // Asked of `agentBotChatwootId`, which is the repo's existing answer to it: it reads the unique
-  // (tenant, instance, agent) row and deliberately does NOT decrypt the token, which a caller that
-  // merely wants to know WHICH bot cannot survive doing. A second reader here would be the same
-  // question in one more place, which is the defect this repo keeps paying for.
-  const agentId = conv.inbox?.agentId ?? null;
-  const agentBotId =
-    agentId === null
-      ? null
-      : await agentBotChatwootId(params.tenantId, instanceId, agentId, base);
-
   // TWO READS OFF THE ACCOUNT, and the first one exists because a review round refuted the premise
   // the other half of this file was written on.
   //
@@ -379,6 +361,54 @@ async function runRecovery(params: {
   // answer, and no number of retries will change that.
   if (!message) return "unrecoverable";
 
+  // THE ROUTE, AND IT COMES FROM THE MESSAGE RATHER THAN THE MIRROR. `Conversation.inboxId` is
+  // nullable, and the mirror writes it null for every event that named no inbox — `upsertInbox`
+  // returns null and the create stores that — so a conversation whose first mirrored event was
+  // sparse holds no route at all, and the delivery that would have taught it one is the row being
+  // recovered. A body rebuilt from that mirror carries no `inbox_id`, and `runAgentTurn` returns
+  // "skipped" on its first line: no turn, row marked PROCESSED, closing line saying the loss ended,
+  // customer still waiting. The same quiet failure a missing `message_type` produces.
+  //
+  // The message answers it and we already hold the page: every message the index serializes renders
+  // `inbox_id` beside `message_type` (MEASURED at the fork's `api/v1/models/_message.json.jbuilder`),
+  // and it is the message's OWN inbox — which is what `Message#webhook_data` builds the body's
+  // `inbox` from, so this reproduces the wire rather than approximating it. The mirror stays as a
+  // second reading for an account that renders no such scalar.
+  const routeInboxId =
+    typeof message.inbox_id === "number"
+      ? message.inbox_id
+      : (conv.inbox?.chatwootInboxId ?? null);
+  // Neither reading can name the route. The rebuild is degraded, and closing the row on it would be
+  // the failure above with an extra step. `unreachable` for the same reason a degraded message shape
+  // is: the account answered with something unusable, which the next attempt may not.
+  if (routeInboxId === null) {
+    logger.warn(
+      "chatwoot recovery: %s names no inbox on either reading (conversation %d); the REST read is degraded",
+      row.deliveryId,
+      conversationId,
+    );
+    return "unreachable";
+  }
+  // The local row for THAT inbox, which is where the bound agent and the name live. Re-read only
+  // when the live answer is not the one the mirror already gave, so the ordinary recovery pays for
+  // no extra query.
+  const inbox =
+    conv.inbox?.chatwootInboxId === routeInboxId
+      ? conv.inbox
+      : await runScopedOn(base, sysCtx(params.tenantId), (db) =>
+          db.inbox.findUnique({
+            where: {
+              tenantId_chatwootInstanceId_chatwootInboxId: {
+                tenantId: params.tenantId,
+                chatwootInstanceId: instanceId,
+                chatwootInboxId: routeInboxId,
+              },
+            },
+            select: { chatwootInboxId: true, name: true, agentId: true },
+          }),
+        );
+  const agentId = inbox?.agentId ?? null;
+
   const normalized = normalizeChatwootEvent(
     buildRecoveryPayload({
       conversation: {
@@ -393,8 +423,13 @@ async function runRecovery(params: {
         assigneeId: state.assigneeId,
         assigneeName: state.assigneeName,
       },
-      inboxId: conv.inbox?.chatwootInboxId ?? null,
-      inboxName: conv.inbox?.name ?? null,
+      inboxId: routeInboxId,
+      // The name is the mirror's copy of what the wire carried, and it is the one field here that
+      // nothing observable turns on: its only consumer is the inbox upsert, which would write this
+      // value back onto the very row it was read from. Carried because the rebuild reproduces the
+      // body — null where the mirror has no row for the route, which is the placeholder case named
+      // on the parameter.
+      inboxName: inbox?.name ?? null,
       message: {
         id: messageId,
         content: typeof message.content === "string" ? message.content : null,
@@ -502,6 +537,25 @@ async function runRecovery(params: {
   // the state it left it in, so a late tx2 that got through is never overwritten. `unreachable`
   // rather than a rethrow, so the scheduler's own backoff runs and the retry finds a DEAD row it can
   // claim.
+  // WHICH BOT answers, derived rather than stored, and the derivation is the more correct of the
+  // two. The ledger does not record the route a delivery arrived on, and adding a column would
+  // answer the wrong question: Chatwoot fans one message to up to two bot routes (`agent_bots_for`:
+  // the conversation's assignee bot and the inbox's, each with its own delivery id — MEASURED), so
+  // "the route it came from" is not "who should answer it now". The inbox's agent's bot is, and if
+  // the conversation has since moved to a different bot the ownership gate closes on that fact,
+  // which is the right outcome rather than a missed one.
+  //
+  // Asked of `agentBotChatwootId`, which is the repo's existing answer to it: it reads the unique
+  // (tenant, instance, agent) row and deliberately does NOT decrypt the token, which a caller that
+  // merely wants to know WHICH bot cannot survive doing. A second reader here would be the same
+  // question in one more place, which is the defect this repo keeps paying for.
+  //
+  // Asked HERE, below every refusal above, so a pass that answers nobody spends no query on the
+  // identity of the bot that was not going to speak.
+  const agentBotId =
+    agentId === null
+      ? null
+      : await agentBotChatwootId(params.tenantId, instanceId, agentId, base);
   let outcome: Awaited<ReturnType<typeof processChatwootDelivery>>;
   try {
     outcome = await processChatwootDelivery({
@@ -555,7 +609,7 @@ async function runRecovery(params: {
       turnId: crypto.randomUUID(),
       source: "inbox",
       conversationId: conv.id,
-      agentId: conv.inbox?.agentId ?? null,
+      agentId,
       base,
     },
     {

@@ -159,9 +159,13 @@ function depsWith(
 }
 
 // One incoming message, in the shape the REST read returns it: `message_type` as an INTEGER, which
-// is the divergence from the webhook wire that `messageTypeOf` exists for.
+// is the divergence from the webhook wire that `messageTypeOf` exists for, and `inbox_id` as a
+// scalar beside it (MEASURED at the fork: `api/v1/models/_message.json.jbuilder` renders
+// `json.inbox_id message.inbox_id` on every message the index serializes).
 function pageWith(
   msgs: Array<{ id: number; content: string; createdAt?: number }>,
+  // `null` drops the key, which is what a Chatwoot that does not render it looks like from here.
+  inboxId: number | null = CHATWOOT_INBOX_ID,
 ) {
   return {
     payload: msgs.map((m) => ({
@@ -169,6 +173,7 @@ function pageWith(
       content: m.content,
       message_type: 0,
       private: false,
+      ...(inboxId !== null ? { inbox_id: inboxId } : {}),
       // Epoch SECONDS, as the REST read gives it.
       created_at: m.createdAt ?? SENT_AT,
       sender: { id: 77, name: "Cliente", type: "contact" },
@@ -184,7 +189,7 @@ async function deliveryLines(convDbId: bigint, waitMs = 2000) {
   while (true) {
     const rows = await suDb.executionLog.findMany({
       where: { tenantId, stage: "delivery", conversationId: convDbId },
-      select: { level: true, source: true, detail: true },
+      select: { level: true, source: true, agentId: true, detail: true },
     });
     if (rows.length > 0 || Date.now() - started > waitMs) return rows;
     await Bun.sleep(25);
@@ -200,6 +205,10 @@ async function seedConversation(
     status?: string;
     redirectOriginDisplayId?: number | null;
     redirectOriginAt?: number;
+    // The mirror's inbox FK, nullable in the schema and left null by every event that named no
+    // inbox (`upsertInbox` returns null, and the create writes it). Overridable so the recovery can
+    // be asked what it rebuilds from a mirror that never learned the route.
+    inboxId?: bigint | null;
   } = {},
 ) {
   return suDb.conversation.create({
@@ -210,7 +219,7 @@ async function seedConversation(
       status: over.status ?? "pending",
       assigneeType: over.assigneeType ?? null,
       assigneeId: over.assigneeId ?? null,
-      inboxId: inboxDbId,
+      inboxId: over.inboxId === undefined ? inboxDbId : over.inboxId,
       threadId: threadOf(convId),
       lastEventAt: over.lastEventAt ?? new Date(),
       contactInboxId: 71_000 + convId,
@@ -418,6 +427,146 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     expect(row.status).toBe("pending");
   });
 
+  test("a mirror that never learned the inbox rebuilds it from the live message", async () => {
+    // The route is the one thing the rebuilt body cannot get wrong quietly. `Conversation.inboxId`
+    // is nullable and the mirror writes it null for any event that named no inbox (`upsertInbox`
+    // returns null and the create stores it), so a conversation whose first mirrored event was
+    // sparse holds no route at all — and the delivery that would have taught it is the one that
+    // died. Built from that row, the body carries no `inbox_id`, `runAgentTurn` returns "skipped" on
+    // its first line, and the row is still marked PROCESSED with a closing line saying the loss
+    // ended.
+    //
+    // Chatwoot knows the answer and we already hold it: every message the index serializes carries
+    // `inbox_id` (MEASURED at the fork's `_message.json.jbuilder`).
+    const convId = 8936;
+    const messageId = 9439;
+    const conv = await seedConversation(convId, {
+      inboxId: null,
+      lastEventAt: new Date((SENT_AT - 600) * 1000),
+    });
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const stub = stubChatwoot({
+      page: pageWith([{ id: messageId, content: "tem alguém?" }]),
+    });
+
+    expect(
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: depsWith(stub),
+      }),
+    ).toBe("recovered");
+    expect(stub.sent).toEqual([[convId, REPLY]]);
+    expect(await ledger(rowId)).toEqual({ status: "PROCESSED", attempts: 1 });
+    // And the mirror learns the route on the way through, like any other delivery.
+    const row = await suDb.conversation.findUniqueOrThrow({
+      where: { id: conv.id },
+      select: { inboxId: true },
+    });
+    expect(row.inboxId).toBe(inboxDbId);
+  });
+
+  test("the route the message names is what decides which bot we are", async () => {
+    // The other half of the same read, and the one that costs a wrong ANSWER rather than a missing
+    // one. `agentBotChatwootId` is asked about the agent bound to the route, so a route resolved
+    // from a mirror that holds none leaves `agentBotId` null — and with no bot identity
+    // `heldByAnotherParty` cannot compare ids, so the ownership gate goes LOOSE and the recovery
+    // answers over a bot that owns the conversation.
+    const convId = 8939;
+    const messageId = 9442;
+    await seedConversation(convId, {
+      inboxId: null,
+      assigneeType: "AgentBot",
+      assigneeId: AGENT_BOT_ID + 500,
+      lastEventAt: new Date((SENT_AT - 600) * 1000),
+    });
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const stub = stubChatwoot({
+      page: pageWith([{ id: messageId, content: "oi" }]),
+      conv: { assigneeType: "AgentBot", assigneeId: AGENT_BOT_ID + 500 },
+    });
+    const turns = { built: 0 };
+
+    expect(
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: depsWith(stub, turns),
+      }),
+    ).toBe("recovered");
+    expect(stub.sent).toEqual([]);
+    expect(turns.built).toBe(0);
+  });
+
+  test("the mirror answers the route when the account renders no inbox scalar", async () => {
+    // The second reading, and it is the one the code had before: an account whose message JSON
+    // carries no `inbox_id` is still recoverable while the mirror knows the conversation's route.
+    // Demoted rather than dropped — the live message wins where the two disagree, because it is the
+    // field `Message#webhook_data` builds the wire's `inbox` from.
+    const convId = 8938;
+    const messageId = 9441;
+    await seedConversation(convId, {
+      lastEventAt: new Date((SENT_AT - 600) * 1000),
+    });
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const stub = stubChatwoot({
+      page: pageWith([{ id: messageId, content: "tem alguém?" }], null),
+    });
+
+    expect(
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: depsWith(stub),
+      }),
+    ).toBe("recovered");
+    expect(stub.sent).toEqual([[convId, REPLY]]);
+  });
+
+  test("a rebuild that can name no inbox at all leaves the loss open", async () => {
+    // Both readings silent: the account rendered no `inbox_id` on the message and the mirror never
+    // learned one. The body would then be routed nowhere, which is the same degraded rebuild the
+    // missing `message_type` produces — so it fails closed rather than marking the row PROCESSED
+    // with nobody answered. `unreachable`, not `unrecoverable`: the account answered with something
+    // unusable, which the next attempt may not.
+    const convId = 8937;
+    const messageId = 9440;
+    await seedConversation(convId, {
+      inboxId: null,
+      lastEventAt: new Date((SENT_AT - 600) * 1000),
+    });
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const stub = stubChatwoot({
+      page: pageWith([{ id: messageId, content: "tem alguém?" }], null),
+    });
+
+    expect(
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: depsWith(stub),
+      }),
+    ).toBe("unreachable");
+    expect(stub.sent).toEqual([]);
+    expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 0 });
+  });
+
   test("a live snapshot that cannot be trusted defers instead of falling back", async () => {
     // `parseLiveConversation` returns null for a snapshot it cannot trust — no status, or an
     // AgentBot assignee with no readable id, which is unverifiable ownership. Falling back to the
@@ -486,6 +635,10 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     // `warn`, matching the correction it stands in for: it must not page the channel the loss paged.
     expect(closing[0]?.level).toBe("warn");
     expect(closing[0]?.source).toBe("inbox");
+    // And it names the agent whose route the message arrived on. A line attributed to nobody is the
+    // defect #317 was about: the operator filters the Logs page BY agent, so an unattributed row is
+    // one they never see.
+    expect(closing[0]?.agentId).toBe(agentDbId);
   });
 
   test("a closing line that could not be written is not swallowed", async () => {

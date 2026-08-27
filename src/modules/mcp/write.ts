@@ -600,32 +600,25 @@ export async function agentSettingsSet(
       (patch as Record<string, unknown>)[key] = value;
     }
   }
-  // NOTE: An EMPTY tool-keyed block is refused, and the reason is a key that no longer exists by the
-  // time this runs. `__proto__` survives JSON.parse as an own property and is then dropped inside
-  // zod's loose-object rebuild — inside the SDK's own argument parse, so it is gone before this
-  // function is entered. The patch arrives as `{}`, reaches neither the write boundary nor the
-  // merge, and the call answered `{"dryRun":true,"diff":{}}`: for a tombstone, "the rule you asked
-  // to delete is gone" while the runtime still enforces it.
+  // NOTE: `__proto__` IS LOST IN TRANSIT, and this is the note that says so rather than a guard that
+  // pretends otherwise. It survives JSON.parse as an own property and is then dropped inside zod's
+  // loose-object rebuild, in the SDK's own argument parse, before this function is entered — so a
+  // rule or tombstone named that way never reaches the write boundary and the call answers ok.
   //
-  // It cannot be refused BY NAME (the name is gone) and it cannot be refused inside the schema
-  // either: the shapes that see the raw value — z.custom, z.preprocess — do not survive into the
-  // published JSON Schema, and docs/mcp.md is explicit that a constraint the schema enforces and
-  // cannot publish is one the two ends read differently. What IS publishable is the rule itself:
-  // these maps merge by key, so an empty one is a no-op in every case, and a caller who sent one
-  // meant something the transport lost.
+  // Round 9 refused an empty tool map to catch it. That was worse than the hole: a default agent
+  // returns `toolGuidance: {}` and `toolPreconditions: {}` from agent_settings_get, so echoing the
+  // config back — the documented partial-patch round trip — was refused for an unrelated edit. And
+  // it did not even close the hole, since `__proto__` alongside a real entry leaves a NON-empty map.
   //
-  // Answered BEFORE any database access, like the check below it: this is a question about the
-  // patch's shape, and answering it after a lookup would make the message depend on whether the
-  // agent happens to exist.
-  for (const block of ["toolPreconditions", "toolGuidance"] as const) {
-    const sub = patch[block];
-    if (sub && Object.keys(sub).length === 0) {
-      return err(
-        `${block} was sent with no usable entries — an empty map changes nothing (a key such as "__proto__" is dropped in transit)`,
-      );
-    }
-  }
-
+  // What is left is the honest boundary, and it is narrow on purpose:
+  //   * the name is gone before any of our code runs, so it cannot be refused by name;
+  //   * the zod shapes that see the raw value (z.custom, z.preprocess) cannot be published in the
+  //     JSON Schema, and docs/mcp.md forbids a constraint the two ends read differently;
+  //   * reaching the raw request means changing registerTenantTool for all ~107 tools.
+  // The runtime is already defended (#378 keys these maps null-prototype and looks up with
+  // Object.hasOwn), `__proto__` is not the name of any tool, and a rule under it would be inert and
+  // reported by the unmatched-precondition line. tests/modules/agent-settings-mcp-parity.test.ts
+  // pins the CURRENT behaviour so a future SDK or zod change is noticed rather than assumed.
   if (Object.keys(patch).length === 0) {
     // `filter`, not `slice`: the astral-cap sweep reads every bare `.slice(` in src/ as a possible
     // surrogate cut, and a list of keys is not worth an entry in that registry.

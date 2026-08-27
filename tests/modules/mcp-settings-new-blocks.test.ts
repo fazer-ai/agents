@@ -471,6 +471,43 @@ describe.skipIf(!dbUp)("the four blocks reach the agent through MCP", () => {
     }
   });
 
+  // ROUND 10, and it is a regression round 9 introduced: refusing an empty tool map to catch a
+  // transport-lost key also refused the DOCUMENTED round trip, because a default agent returns both
+  // maps empty from agent_settings_get. Echoing the config back for an unrelated edit is the most
+  // ordinary thing a client does.
+  test("a default agent's own config can be echoed back, empty maps and all", async () => {
+    const fresh = await suDb.agent.create({
+      data: { tenantId, name: "Fresh", systemPrompt: "p" },
+    });
+    try {
+      const got = await agentSettingsGet(
+        principal(),
+        { agent_id: String(fresh.id) },
+        { base: appDb },
+      );
+      expect(got.ok).toBe(true);
+      if (!got.ok) return;
+      const settings = (got.data as { settings: Record<string, unknown> })
+        .settings;
+      // The precondition for this test: the maps really are empty on a default agent.
+      expect(settings.toolGuidance).toEqual({});
+      expect(settings.toolPreconditions).toEqual({});
+
+      const back = await agentSettingsSet(
+        principal(),
+        {
+          agent_id: String(fresh.id),
+          dry_run: false,
+          ...settings,
+        } as never,
+        { base: appDb },
+      );
+      expect(back.ok).toBe(true);
+    } finally {
+      await suDb.agent.delete({ where: { id: fresh.id } }).catch(() => {});
+    }
+  });
+
   test("null clears one rule and leaves the others", async () => {
     const r = await agentSettingsSet(
       principal(),

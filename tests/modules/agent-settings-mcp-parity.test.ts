@@ -590,7 +590,16 @@ describe("the guardrail directions publish only what their direction uses", () =
 // Refused as an EMPTY BLOCK, because by the time any of our code runs the name is gone, and the zod
 // shapes that could see the raw value (z.custom, z.preprocess) cannot be published in the JSON
 // Schema — which docs/mcp.md forbids, since the two ends would then read different rules.
-describe("a tool map emptied in transit is refused", () => {
+// ROUND 10 replaced round 9's guard with a PIN. `__proto__` is dropped inside the SDK's argument
+// parse, before any of our code runs, and the three ways to catch it are all closed: not by name
+// (it is gone), not in the schema (z.custom/z.preprocess do not survive into the published JSON
+// Schema, which docs/mcp.md forbids), and not by refusing empty maps — round 9 tried that and broke
+// the documented round trip, since a default agent returns both maps empty.
+//
+// So the behaviour is pinned rather than fixed: it is not the name of any tool, a rule under it
+// would be inert and reported by the unmatched-precondition line, and the runtime is already
+// defended (#378). If a future SDK or zod version stops dropping it, this test says so.
+describe("__proto__ in a tool map: a measured transport limitation", () => {
   async function callThroughTransport(args: unknown) {
     const server = buildMcpServer(principal);
     const [clientT, serverT] = InMemoryTransport.createLinkedPair();
@@ -608,35 +617,29 @@ describe("a tool map emptied in transit is refused", () => {
     }
   }
 
-  test("a __proto__-only patch is refused instead of reporting an empty diff", async () => {
-    for (const block of ["toolPreconditions", "toolGuidance"]) {
-      const out = await callThroughTransport(
-        JSON.parse(`{"agent_id":"1","${block}":{"__proto__":null}}`),
-      );
-      expect(out).toContain("changes nothing");
-      // The shape it used to answer with, pinned so a regression is unmistakable.
-      expect(out).not.toContain('\\"dryRun\\":true');
-    }
-  });
-
-  test("and the refusal happens before any database access", async () => {
-    // agent_id 1 need not exist: this is a question about the patch's shape, and answering it after
-    // a lookup would make the message depend on whether the agent happens to be there.
+  test("the key does not reach the write boundary", async () => {
     const out = await callThroughTransport(
       JSON.parse(
         '{"agent_id":"999999999","toolPreconditions":{"__proto__":null}}',
       ),
     );
-    expect(out).toContain("changes nothing");
-    expect(out).not.toContain("not found");
+    // The call proceeds PAST the shape checks — it fails later, on the agent lookup, which is proof
+    // enough that `__proto__` never became a refusal. If this ever starts saying "not a valid
+    // precondition", the transport began preserving the key and the boundary is now answering, which
+    // is the outcome we want and the reason this is pinned rather than left implicit.
+    expect(out).not.toContain("not a valid precondition");
+    expect(out).not.toContain("no updatable fields");
   });
 
-  test("a patch with a real entry still goes through", async () => {
-    const out = await callThroughTransport(
-      JSON.parse(
-        '{"agent_id":"999999999","toolPreconditions":{"handoff_to_human":{"kind":"attribute","scope":"conversation","key":"k"}}}',
+  test("but the write boundary DOES refuse it whenever it arrives", () => {
+    // Called directly, the key survives — which is why the pin above has to go through the
+    // transport, and why a function-level test would prove nothing about this.
+    expect(
+      invalidToolPreconditions(
+        JSON.parse(
+          '{"toolPreconditions":{"__proto__":{"kind":"attribute","scope":"conversation","key":"k"}}}',
+        ),
       ),
-    );
-    expect(out).not.toContain("changes nothing");
+    ).toEqual(["__proto__"]);
   });
 });

@@ -1276,11 +1276,15 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
 
   test("a conversation RESOLVED mid-rescue is seen, though the live snapshot never was", async () => {
     // The live snapshot is read FIRST, before the two message reads and the reconcile, so an
-    // operator acting inside that window is invisible to it. What the body states is therefore not
-    // the snapshot but `reconciled.state` — the row after the reconcile, which is the live snapshot
-    // where it won the ordering and whatever outranked it where it lost. This pins that choice,
-    // because the delivery path gates on what the BODY says: `shouldBotHandle` reads the status
-    // straight off it with no fallback at all.
+    // operator acting inside that window is invisible to it. What the body states is therefore the
+    // MIRROR ROW — the live snapshot where it won the ordering and whatever outranked it where it
+    // lost. This pins that choice, because the delivery path gates on what the BODY says:
+    // `shouldBotHandle` reads the status straight off it with no fallback at all.
+    //
+    // WHICH READING of that row is not what this measures, and no test can be: the body takes the
+    // later of the two (`mirrorNow`, beside the pairing) rather than `reconciled.state`, and the only
+    // difference between them is a write landing while the route queries run — a stretch with no
+    // seam to hook. What IS measured is that neither of them is the snapshot.
     //
     // STATUS is the field that isolates the rule, and picking it was measured rather than guessed:
     // the ASSIGNEE has a fallback — a body that says nothing about it sends `shouldBotHandle` to the
@@ -1324,6 +1328,62 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     // No turn was even built: the operator closed the conversation, and a reply landing after that
     // reopens it in Chatwoot on top of a customer message they had already dealt with.
     expect(turns.built).toBe(0);
+  });
+
+  test("a route the mirror never learned reaches the GATES, not just the turn", async () => {
+    // The worst outcome this module could produce, and it was reachable. Rebuilding the body from
+    // the live message answers `runAgentTurn`, which resolves the agent from the inbox the EVENT
+    // carries. Nothing else in the delivery path reads it from there: `maybeConsumeCommandOrGate`
+    // resolves it from `Conversation.inboxId`, and with that column null it finds no agent and
+    // returns having run NOTHING — not the test-mode gate, not availability, not contact
+    // authorization — while the turn runs anyway on the route this module supplied.
+    //
+    // MEASURED before the repair: agent in TEST mode, conversation never activated, and the recovery
+    // posted "Desculpe a demora, estou aqui!" to a real customer. That is the one thing test mode
+    // exists to prevent.
+    //
+    // The event is made STALE on purpose (the mirror's activity is ahead of the message, as it is
+    // whenever the conversation moved on after the strand), because the mirror writes that column
+    // only when the event WINS the ordering. Leaving the repair to the handoff's own mirror write is
+    // exactly what does not happen here.
+    const convId = 8969;
+    const messageId = 9470;
+    const conv = await seedConversation(convId, {
+      inboxId: null,
+      lastEventAt: new Date((SENT_AT + 600) * 1000),
+    });
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const stub = stubChatwoot({
+      page: pageWith([{ id: messageId, content: "oi" }]),
+      conv: { lastActivityAt: SENT_AT + 600 },
+    });
+    const turns = { built: 0 };
+
+    await asTestModeAgent(() =>
+      recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: depsWith(stub, turns),
+      }),
+    );
+
+    // The customer heard nothing from a test-mode agent they never activated.
+    expect(stub.sent).toEqual([]);
+    expect(turns.built).toBe(0);
+    // And the mirror learned its route, which is what let the gate find the agent at all — repaired
+    // rather than bypassed, the same way the conversation's state is.
+    expect(
+      (
+        await suDb.conversation.findUniqueOrThrow({
+          where: { id: conv.id },
+          select: { inboxId: true },
+        })
+      ).inboxId,
+    ).toBe(inboxDbId);
   });
 
   test("a mirror that never learned the inbox rebuilds it from the live message", async () => {

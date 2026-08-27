@@ -574,7 +574,7 @@ async function runRecovery(params: {
           chatwootInboxId: routeInboxId,
         },
       },
-      select: { chatwootInboxId: true, name: true, agentId: true },
+      select: { id: true, chatwootInboxId: true, name: true, agentId: true },
     });
     const agent =
       found?.agentId == null
@@ -588,6 +588,38 @@ async function runRecovery(params: {
   const inbox = route.inbox;
   const agentId = inbox?.agentId ?? null;
   const agentMode = route.mode;
+
+  // THE MIRROR LEARNS THE ROUTE, and this is a repair rather than a convenience. Rebuilding the body
+  // from the live message answers `runAgentTurn`, which resolves the agent from the inbox the EVENT
+  // carries — and nothing else in the delivery path reads it from there. `maybeConsumeCommandOrGate`
+  // resolves it from `Conversation.inboxId`, the mirror's own column, and when that column is null it
+  // finds no agent and returns having run NOTHING: not the test-mode gate, not availability, not
+  // contact authorization. The turn then runs anyway, on the route this module supplied.
+  //
+  // MEASURED, and it is the worst outcome this module can produce: a conversation whose mirror never
+  // learned its inbox, on an agent in TEST mode, never activated — the recovery built a turn and
+  // posted a reply to a real customer, which is the one thing test mode exists to prevent.
+  //
+  // Ordinary events write this column too, but only when they win the ordering
+  // (`decision.unversioned` in ./mirror.ts), and the rebuilt body is stale by construction whenever
+  // the conversation moved on after the strand. So the repair cannot be left to the mirror write the
+  // handoff performs; it happens here, on the row, before the gates read it.
+  //
+  // Only from NULL. A column that already names an inbox is a statement, and this module has no
+  // standing to overrule it: a conversation that moved between inboxes is the mirror's business, and
+  // the route the body carries is about this MESSAGE.
+  //
+  // The `if` is the cheap answer and the WHERE is the one that holds: they are not the same check,
+  // and no test can separate them, because what the WHERE refuses is a route arriving between the
+  // read at the top and this write. It is the shape every other guarded write here uses.
+  if (conv.inbox === null && inbox != null) {
+    await runScopedOn(base, sysCtx(params.tenantId), (db) =>
+      db.conversation.updateMany({
+        where: { id: conv.id, inboxId: null },
+        data: { inboxId: inbox.id },
+      }),
+    );
+  }
 
   // RE-READ rather than carried from the load at the top. `contactInboxId` is one of the fields a
   // webhook arriving during the two REST reads and the reconcile can move (./mirror.ts writes it on
@@ -613,6 +645,16 @@ async function runRecovery(params: {
         contactInboxId: true,
         redirectOriginDisplayId: true,
         chatwootRedirectOriginAt: true,
+        // The conversation's own STATE, taken from HERE rather than from `reconciled.state` above.
+        // Both are the same row and neither is the live snapshot — that distinction was measured
+        // when a review round asked for a re-read on the grounds that the body carried the snapshot,
+        // and it does not. This is the later of the two readings, which is the only thing that
+        // separates them: a handoff or a resolve landing while the route queries run is in this one
+        // and not in that one. ONE reading is stated, not two, so there is no second source to drift.
+        status: true,
+        assigneeType: true,
+        assigneeId: true,
+        assigneeName: true,
       },
     }),
   );
@@ -628,15 +670,25 @@ async function runRecovery(params: {
         contactInboxId,
         redirectOriginDisplayId: mirrorNow?.redirectOriginDisplayId ?? null,
         redirectOriginAt: mirrorNow?.chatwootRedirectOriginAt ?? null,
-        // `state` is the row AFTER the reconcile, not the live snapshot — see where it is bound. A
-        // review round read it as the snapshot and asked for the state to be re-read beside the
-        // pairing below; that was written and MEASURED to change nothing, because both readings are
-        // the same row and no input can tell them apart. The pairing and the contact inbox DO need
-        // the later read, and their own tests say so; these four do not.
-        status: state.status,
-        assigneeType: state.assigneeType,
-        assigneeId: state.assigneeId,
-        assigneeName: state.assigneeName,
+        // Neither of these is the live snapshot: `reconciled.state` is the row after the reconcile,
+        // and `mirrorNow` is that same row read again, later. The later one is stated, because the
+        // only difference between them is what landed while the route queries ran. `state` remains
+        // the fallback for the row vanishing under us, which the load at the top already refuses —
+        // per FIELD it would be wrong, since a mirror that says `null` is STATING that nobody holds
+        // the conversation and `??` would read that statement as an absence.
+        ...(mirrorNow
+          ? {
+              status: mirrorNow.status,
+              assigneeType: mirrorNow.assigneeType,
+              assigneeId: mirrorNow.assigneeId,
+              assigneeName: mirrorNow.assigneeName,
+            }
+          : {
+              status: state.status,
+              assigneeType: state.assigneeType,
+              assigneeId: state.assigneeId,
+              assigneeName: state.assigneeName,
+            }),
       },
       inboxId: routeInboxId,
       // The name is the mirror's copy of what the wire carried, and it is the one field here that

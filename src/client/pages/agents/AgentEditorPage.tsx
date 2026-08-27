@@ -341,6 +341,10 @@ function readBehaviorState(a: Agent) {
       noticeCooldownSeconds: num(ca.noticeCooldownSeconds) || "60",
       includeMessageText: ca.includeMessageText === true,
       denyMessage: str(ca.denyMessage),
+      // NOTE: The reader is strict about the mode for the same reason it is strict about the
+      // switch, so anything else reads back as the default.
+      mode: ca.mode === "once" ? "once" : "perMessage",
+      grantTtlSeconds: num(ca.grantTtlSeconds) || "86400",
       handoffEnabled:
         typeof ca.handoffEnabled === "boolean" ? ca.handoffEnabled : true,
       handoffTeamId: num(ca.handoffTeamId),
@@ -628,6 +632,8 @@ function AgentEditor() {
     noticeCooldownSeconds: "60",
     includeMessageText: false,
     denyMessage: "",
+    mode: "perMessage",
+    grantTtlSeconds: "86400",
     handoffEnabled: true,
     handoffTeamId: "",
     handoffTeamInstanceId: "",
@@ -1169,6 +1175,8 @@ function AgentEditor() {
         // method back and forth does not lose the choice.
         includeMessageText: contactAuth.includeMessageText,
         denyMessage: contactAuth.denyMessage.trim() || null,
+        mode: contactAuth.mode === "once" ? "once" : "perMessage",
+        grantTtlSeconds: Number(contactAuth.grantTtlSeconds) || 86_400,
         handoffEnabled: contactAuth.handoffEnabled,
         handoffTeamId: Number(contactAuth.handoffTeamId) || null,
         // The account the team was picked from, saved with it. Never on its own: without a team it

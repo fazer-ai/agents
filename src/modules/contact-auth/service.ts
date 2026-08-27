@@ -9,6 +9,7 @@ import {
 } from "@/modules/vault/injectable";
 import { isNonInjectableSecret } from "@/modules/vault/secret-types";
 import {
+  type AuthContext,
   type CheckDeps,
   type ContactAuthVerdict,
   channelSlug,
@@ -16,14 +17,26 @@ import {
   reasonSlug,
   underSignal,
 } from "./check";
+import {
+  contactAuthIdentityHash,
+  contactAuthPolicyHash,
+  dropContactAuthGrant,
+  readContactAuthGrant,
+  writeContactAuthGrant,
+} from "./grants";
 import type { ContactAuthConfig } from "./settings";
 import { contactAuthFlightKey, singleFlight } from "./state";
 
 // The contact authorization check as the runtime calls it: identity from the mirrored contact,
 // credential from the vault, one request per incoming message (single-flight coalesces concurrent
-// deliveries; no verdict is cached, so the endpoint's answer is always current), and a verdict the
-// two callers (the webhook gate, the proactive nudge) act on the same way. The DB reads here are
-// short and scoped; the network call runs outside any transaction (docs/tenancy.md, rule 3).
+// deliveries), and a verdict the four callers (the webhook gate, the debounce flush, the proactive
+// nudge, the manual re-engage) act on the same way. The DB reads here are short and scoped; the
+// network call runs outside any transaction (docs/tenancy.md, rule 3).
+//
+// Under the default mode nothing is cached, so the endpoint's answer is always current. Under
+// `mode: "once"` a positive verdict is stored per contact and reused until it expires (issue #189,
+// grants.ts) — the reuse lives HERE, in the one function all four callers already go through, so no
+// caller has to remember it and none of them can disagree about when a stored verdict applies.
 
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
@@ -36,6 +49,18 @@ export interface ContactAuthResult extends ContactAuthVerdict {
   // request (single-flight). The gate acts (message, handoff, note) only on the leader's verdict,
   // so two deliveries racing do not act twice.
   shared: boolean;
+}
+
+// A verdict served from a stored grant carries the same outcome and the same facts as the ask that
+// produced it, so every caller acts on it exactly as before. What `reused` adds is the operator's
+// half: the flow line has to be able to say "the endpoint allowed this" apart from "we did not ask",
+// or a trail of allows looks like a trail of calls the endpoint never received.
+function reusedVerdict(context: AuthContext | null): ContactAuthVerdict {
+  return {
+    outcome: "allowed",
+    reused: true,
+    ...(context ? { context } : {}),
+  };
 }
 
 export interface AuthorizeContactParams {
@@ -115,6 +140,20 @@ export async function authorizeContact(
         return { outcome: "no_identity", reason: "no_identifiers" };
       }
       if (!cfg.url) return { outcome: "error", reason: "not_configured" };
+      // The stored verdict, when the operator asked for one (issue #189). Read here rather than
+      // before the identity, because what a grant is ABOUT is the identity the mirror holds right
+      // now: a contact whose phone changed since is not necessarily the person the endpoint said
+      // yes to. Read before the credential too, so a reuse costs neither the vault round-trip nor
+      // the managed-OAuth refresh that a real ask would.
+      const grantKey = { tenantId, agentId, contactId: contactDbId };
+      const fingerprints = {
+        identityHash: contactAuthIdentityHash({ phone, email, identifier }),
+        policyHash: contactAuthPolicyHash(cfg),
+      };
+      if (cfg.mode === "once") {
+        const stored = await readContactAuthGrant(base, grantKey, fingerprints);
+        if (stored) return reusedVerdict(stored.context);
+      }
       // The deadline starts HERE, not inside the request, because the credential is resolved first
       // and a managed-OAuth entry refreshes its token to produce it — a network call with a
       // ten-second ceiling of its own. Timed from the request, a gate configured for one second
@@ -166,7 +205,7 @@ export async function authorizeContact(
             return { outcome: "error", reason: "credential_not_injectable" };
           }
         }
-        return await checkContactAuthorization(
+        const verdict = await checkContactAuthorization(
           cfg,
           {
             phone,
@@ -186,6 +225,22 @@ export async function authorizeContact(
             signal: ctrl.signal,
           },
         );
+        if (cfg.mode === "once") {
+          // An allow is stored; a REFUSAL drops whatever was stored, so asking again can only ever
+          // take a grant away. An error stores and drops nothing: it is transient by contract (the
+          // next message retries), and a blip of the endpoint must not cost a contact the verdict
+          // they were legitimately given.
+          if (verdict.outcome === "allowed") {
+            await writeContactAuthGrant(base, grantKey, {
+              ...fingerprints,
+              context: verdict.context,
+              ttlSeconds: cfg.grantTtlSeconds,
+            });
+          } else if (verdict.outcome === "denied") {
+            await dropContactAuthGrant(base, grantKey);
+          }
+        }
+        return verdict;
       } finally {
         clearTimeout(timer);
       }
@@ -214,6 +269,9 @@ export function contactAuthFlowEvent(result: ContactAuthResult): FlowEvent {
     detail: {
       outcome: result.outcome,
       shared: result.shared,
+      // Only when true: the ordinary line is an ask, and a key on every line to say "this was the
+      // ordinary case" is a key readers learn to skip.
+      ...(result.reused ? { reused: true } : {}),
       ...(result.status !== undefined ? { status: result.status } : {}),
       ...(reason ? { reason } : {}),
     },

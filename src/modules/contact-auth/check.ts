@@ -48,6 +48,11 @@ export interface ContactAuthVerdict {
   status?: number;
   reason?: string;
   endpointReason?: string;
+  // True when the endpoint was not asked at all: the answer is a grant it gave earlier, kept under
+  // `contactAuth.mode = "once"` (issue #189, ./grants.ts). Absent on every other verdict, including
+  // the ask that WROTE the grant. There is no `status` on a reused verdict for the same reason the
+  // endpoint's own `reason` is not carried over: neither is a fact about this message.
+  reused?: boolean;
 }
 
 // The identity the request carries. ALWAYS from trusted context (the mirrored Chatwoot contact),

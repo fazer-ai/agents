@@ -154,6 +154,10 @@ export interface ContactAuthState {
   noticeCooldownSeconds: string;
   includeMessageText: boolean;
   denyMessage: string;
+  // "perMessage" | "once" — kept as a plain string like every other select in this file; the
+  // runtime reader is what decides, and it treats anything but "once" as the default.
+  mode: string;
+  grantTtlSeconds: string;
   handoffEnabled: boolean;
   handoffTeamId: string;
   // The ChatwootInstance the team above was picked from, recorded with it: a team id belongs to one
@@ -2304,7 +2308,7 @@ export function BehaviorTab({
             title={t("editor.contactAuth", "Contact authorization")}
             description={t(
               "editor.contactAuthHint",
-              "Before answering, ask an external system whether this contact may be served, by the identity Chatwoot holds for them (phone, email, identifier). Every message is re-checked, so revoking on your side takes effect immediately. While the check denies or cannot answer, the agent stays silent to the customer and the operator gets a private note. It does not run in the playground.",
+              "Before answering, ask an external system whether this contact may be served, by the identity Chatwoot holds for them (phone, email, identifier). By default every message is re-checked, so revoking on your side takes effect immediately. While the check denies or cannot answer, the agent stays silent to the customer and the operator gets a private note. It does not run in the playground.",
             )}
           >
             <SwitchField
@@ -2393,7 +2397,7 @@ export function BehaviorTab({
                     )}
                     description={t(
                       "editor.contactAuthNoticeCooldownHint",
-                      "Every message is re-checked; this only spaces the deny message and the private note for the same conversation. 0-3,600; 0 notifies on every refused message.",
+                      "This only spaces the deny message and the private note for the same conversation; it never spaces the check itself. 0-3,600; 0 notifies on every refused message.",
                     )}
                   >
                     <Input
@@ -2428,6 +2432,61 @@ export function BehaviorTab({
                     )}
                   </p>
                 </div>
+                <FormField
+                  label={t(
+                    "editor.contactAuthMode",
+                    "How often the endpoint is asked",
+                  )}
+                  description={t(
+                    "editor.contactAuthModeHint",
+                    "Every message is the default: your endpoint owns the answer, so revoking there takes effect on the contact's next message. Reusing calls it until it first says yes, which suits an expensive endpoint and an unlock flow.",
+                  )}
+                >
+                  <Select
+                    value={contactAuth.mode}
+                    onChange={(e) =>
+                      setContactAuth({ ...contactAuth, mode: e.target.value })
+                    }
+                  >
+                    <option value="perMessage">
+                      {t(
+                        "editor.contactAuthModePerMessage",
+                        "On every message (recommended)",
+                      )}
+                    </option>
+                    <option value="once">
+                      {t(
+                        "editor.contactAuthModeOnce",
+                        "Once per contact, then reuse the answer",
+                      )}
+                    </option>
+                  </Select>
+                </FormField>
+                {contactAuth.mode === "once" && (
+                  <FormField
+                    label={t(
+                      "editor.contactAuthGrantTtl",
+                      "Reuse the answer for (s)",
+                    )}
+                    description={t(
+                      "editor.contactAuthGrantTtlHint",
+                      "60-2,592,000 (30 days). A refusal is never stored, and a stored answer stops counting when the contact's phone, email or identifier changes. Changing this field, the URL, the credential or the message-text switch drops every stored answer, which is how you clear them.",
+                    )}
+                  >
+                    <Input
+                      type="number"
+                      min={60}
+                      max={2592000}
+                      value={contactAuth.grantTtlSeconds}
+                      onChange={(e) =>
+                        setContactAuth({
+                          ...contactAuth,
+                          grantTtlSeconds: e.target.value,
+                        })
+                      }
+                    />
+                  </FormField>
+                )}
                 <FormField
                   label={t(
                     "editor.contactAuthDenyMessage",

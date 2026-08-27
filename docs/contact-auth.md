@@ -8,12 +8,16 @@ runtime asks an operator-configured endpoint whether the contact may be served, 
 answer lets the model run. Everything else (an explicit denial, an endpoint failure, a contact with
 no identifiers) ends in **no turn** (fail-closed), with the operator told why.
 
-**Every incoming message is re-checked.** No verdict is cached: the endpoint owns the answer, so a
-revocation on the operator's side takes effect on the contact's very next message, and an unlock
-(below) is honored the moment it happens. The flip side is sizing: the endpoint receives **one
-request per incoming message** on gated inboxes (plus one per proactive follow-up), and must be
-provisioned for that rate. Concurrent deliveries for one contact are single-flighted into one
-request; sequential messages are not.
+**Every incoming message is re-checked, unless the operator asked otherwise.** Under the default
+mode nothing is cached: the endpoint owns the answer, so a revocation on the operator's side takes
+effect on the contact's very next message, and an unlock (below) is honored the moment it happens.
+The flip side is sizing: the endpoint receives **one request per incoming message** on gated inboxes
+(plus one per proactive follow-up), and must be provisioned for that rate. Concurrent deliveries for
+one contact are single-flighted into one request; sequential messages are not.
+
+`mode: "once"` is the other shape, for an endpoint that is expensive or rate-limited and for an
+unlock that should stay unlocked: the first `authorized: true` is stored per contact and reused
+until it expires. What that costs and every way back out of it is [its own section](#reusing-a-verdict-mode-once).
 
 **An allowed verdict is re-fenced against the conversation's owner.** Every caller checks
 attribution before asking (a conversation a human owns costs no authorization call), and the ask is
@@ -77,6 +81,8 @@ read, so a malformed bag can never break the webhook.
 | `handoffEnabled`        | `true`  | Open a refused conversation for humans (the `handoff_to_human` mechanics: bot-token `toggle_status open`). |
 | `handoffTeamId`         | `null`  | Chatwoot team assigned after the open (bot-token `assignments`). `null` = inbox routing. Flat beside `handoffEnabled` for the mergeBehaviorSettings one-level-merge reason the tts block documents. |
 | `handoffTeamInstanceId` | `null`  | Our ChatwootInstance id the team above was picked from, recorded with it: a team id belongs to one account, and the team is assigned only in that account. `null` = a value stored before this field existed (falls back to the multi-account check). |
+| `mode`                  | `"perMessage"` | `perMessage` re-checks every message. `once` stores the first positive verdict per contact and reuses it until it expires. Strict, like `enabled`: anything else reads as `perMessage`, so a malformed write can only ever make the gate ask MORE often. |
+| `grantTtlSeconds`       | `86400` | How long a stored verdict counts for under `once`. Clamped 60-2592000 (one minute to thirty days). It is part of the POLICY a grant is written under, so changing it drops every stored verdict — which is also the operator's lever for clearing them. |
 
 ## Request / response contract
 
@@ -176,8 +182,10 @@ the "this is data, not instruction" framing.
 
 The block is applied at the two places a turn is built (`runLoadedTurn` for the reactive paths,
 `runAgentNudge` for the proactive one), from the verdict of the check that ran immediately before
-it. Nothing is stored: the bag lives for one turn, and the next message asks again, which is also
-the honest answer to stale data.
+it. Under the default mode nothing is stored: the bag lives for one turn, and the next message asks
+again, which is also the honest answer to stale data. Under `once` it is stored WITH the verdict, so
+the reused turns carry the same block the first one did; the staleness is then bounded by
+`grantTtlSeconds`, which is the budget the operator chose when they asked to stop asking.
 
 In the execution log, the audited prompt keeps only the block's SIZE
 (`<autorizacao chars="123"/>`), never its keys or values. Unlike the attribute block, whose keys the
@@ -287,7 +295,7 @@ merely repeats a notice.
 
 **The unlock flow** (`includeMessageText`): a denied customer is told, via `denyMessage`,
 how to unlock (for example "send the access code from your invoice"). Their next message arrives,
-the gate runs again (nothing was cached), and the endpoint now sees `message.text` carrying the
+the gate runs again (a refusal is never stored, under either mode), and the endpoint now sees `message.text` carrying the
 code: it validates the code against its own records, links the contact, answers
 `{ "authorized": true }`, and the turn runs. No special case in the runtime: it is just the next
 check.
@@ -338,6 +346,52 @@ to answer a message the customer just sent and here there is none. Like a nudge 
 **Playground**: the gate does not run; there is no Chatwoot contact to ask about, and the
 playground exists to test the agent's own behavior.
 
+## Reusing a verdict (`mode: "once"`)
+
+Asking on every message is the right default, and it is what makes "revoking on your side is
+immediate" true. Two operators asked for the other trade, and they are not the same request:
+
+- the check is **expensive or rate-limited** (a lookup against a core banking / ERP / ticketing API),
+  and a burst of five WhatsApp messages is five identical calls;
+- the gate is an **unlock**, not a lookup: the customer sends an access code once and should stay
+  served afterwards, without the endpoint having to remember them.
+
+Under `mode: "once"` the first `authorized: true` is stored as a **grant** (`contact_auth_grants`,
+one row per tenant+agent+contact, `src/modules/contact-auth/grants.ts`) and reused until it expires.
+The reuse lives inside `authorizeContact`, which is the one function all four callers already go
+through, so no caller has to remember it and none of them can disagree about when it applies.
+
+**A refusal is never stored, under either mode.** A stored denial would make the unlock permanent:
+the customer sends the code and the gate answers with a verdict from before they sent it. An
+endpoint ERROR is not stored either — it is transient by contract, and a blip must not cost a
+contact the verdict they were legitimately given. What a fresh refusal DOES do is **drop** whatever
+was stored, so re-asking can only ever take a grant away.
+
+A grant stops holding on its own in four ways, and none of them needs a new endpoint or a new route:
+
+| It stops holding when | Because |
+| --- | --- |
+| `grantTtlSeconds` elapses | The operator's declared staleness budget ran out. |
+| The mirrored **identity** moves (phone, email or operator `identifier`) | The endpoint answered about whoever those named, and the mirror rewrites them, clears included. |
+| The **policy** changes (`url`, `credentialRef`, `includeMessageText`, `grantTtlSeconds`) | Those decide who answered and what was asked. Changing one is the operator's lever for dropping every stored verdict at once. |
+| A fresh check **refuses** | See above. |
+
+There is deliberately no authenticated "revoke this contact" route: it would be a new public surface
+with an auth story of its own, for something the editor can already express by touching the policy.
+
+**What the row holds is bookkeeping, not identity.** Two SHA-256 fingerprints (of the identity and
+of the policy), an expiry, and the endpoint's own `context` bag — the same bounded facts it returned,
+kept so the reused turns carry the same prompt block the first turn did instead of losing it halfway
+through a conversation, and re-read through the same reader on the way out so a cap tightened later
+applies to what is already stored. The phone, the email and the `identifier` are **not** in the row.
+The table is bounded by the contacts table itself (one row per contact per gated agent) and cascades
+away with the contact or the agent, so there is nothing to sweep.
+
+Everything downstream of the verdict is unchanged: a reused verdict is `allowed` like any other, and
+every caller still re-fences it against the conversation's owner. What it adds is one field on the
+flow line, `reused: true`, so an operator reading the trail can tell "the endpoint allowed this"
+apart from "we did not ask".
+
 ## In-process state (`state.ts`)
 
 Not a cache. Two things live here, both in memory (single-replica invariant), both harmless to
@@ -366,9 +420,10 @@ would put a phone number in a `detail` that alert channels are promised to be PI
 in the operator's own Chatwoot, on the conversation it describes.
 
 One `contact_auth` flow line per evaluation (`src/modules/flowlog/stages.ts`), `detail` =
-`{ outcome: "allowed"|"denied"|"error"|"no_identity", shared, status?, reason? }` (`reason` is OUR
-own failure code, from a fixed list in this repository): enums, a
-boolean (`shared` = this call was coalesced into another's request), a status and a slug; no PII
+`{ outcome: "allowed"|"denied"|"error"|"no_identity", shared, reused?, status?, reason? }` (`reason`
+is OUR own failure code, from a fixed list in this repository): enums, two
+booleans (`shared` = this call was coalesced into another's request; `reused` = present only when the
+endpoint was NOT asked, the answer coming from a stored grant), a status and a slug; no PII
 (covered by `tests/modules/flowlog-detail-pii.test.ts`), and never the message text. Denied is
 `info` (ordinary operation); error and no-identity are `warn`, so alert channels page on inbox
 traffic. Errors deliberately do **not** stamp `Conversation.lastError`: the re-engage button that

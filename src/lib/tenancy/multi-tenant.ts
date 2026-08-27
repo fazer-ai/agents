@@ -21,6 +21,7 @@ const TENANT_SCOPED_MODELS = new Set<string>([
   "ChatwootWebhookDelivery",
   "Inbox",
   "Contact",
+  "ContactAuthGrant",
   "Conversation",
   "Agent",
   "BusinessHours",

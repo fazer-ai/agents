@@ -77,8 +77,14 @@ export function testDbNameFor(base: string, checkoutRoot: string): string {
   // The checkout's hash stays SEPARATE and last, because it is the one part recomputable from the
   // root alone, which is what lets the idempotence check above tell a name derived HERE from one
   // derived somewhere else without knowing the base it came from.
-  const stemText = identifierSafe(base.replace(/_test$/, ""));
-  const tail = `_${shortHash(stemText)}${hash}${SUFFIX}`;
+  // The hash is over the ORIGINAL base, and the normalized text is for reading only. Hashing the
+  // normalized form makes the identity as lossy as the display: `identifierSafe` folds every run of
+  // non-alphanumerics to one underscore, so `foo-bar_test` and `foo_bar_test` are two legal, distinct
+  // databases that both derived to `foo_bar_x_4928ca5cf696_test` — measured — and a destructive
+  // command aimed at one would reach the other.
+  const rawStem = base.replace(/_test$/, "");
+  const stemText = identifierSafe(rawStem);
+  const tail = `_${shortHash(rawStem)}${hash}${SUFFIX}`;
   const room = MAX_IDENTIFIER_BYTES - tail.length;
   // The base first: it is what tells two databases of the SAME checkout apart, so it is the half
   // whose truncation costs the most to a reader.

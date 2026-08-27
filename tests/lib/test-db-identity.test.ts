@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   appliedMigrations,
+  appliedOutOfOrder,
   changedMigrations,
   DB_GATE_OPT_OUT,
   foreignMigrations,
@@ -201,6 +202,19 @@ describe("the test database's name belongs to ONE checkout", () => {
       ),
     );
     expect(names.size).toBe(4);
+  });
+
+  // The hash's job is IDENTITY, so it is taken over the base as written. Hashing the normalized
+  // text makes identity as lossy as display: `identifierSafe` folds every run of non-alphanumerics
+  // to one underscore, so two legal, distinct databases became one — measured,
+  // `foo-bar_test` and `foo_bar_test` both derived to `foo_bar_x_4928ca5cf696_test`.
+  test("two bases that only NORMALIZE alike are still two databases", () => {
+    expect(testDbNameFor("foo-bar_test", "/dev/x")).not.toBe(
+      testDbNameFor("foo_bar_test", "/dev/x"),
+    );
+    expect(testDbNameFor("Foo_test", "/dev/x")).not.toBe(
+      testDbNameFor("foo_test", "/dev/x"),
+    );
   });
 
   // A name a human can read is the point of keeping the basename at all: `psql -l` has to say which
@@ -744,6 +758,85 @@ ${err}`;
       }
     },
     300_000,
+  );
+});
+
+// THE ORDER IT WAS BUILT IN, which the four sets stop being able to see once everything is applied.
+// `outOfOrderPending` catches the merge BEFORE the deploy; after it, every set is empty and a schema
+// assembled in an order no fresh database uses reads as healthy.
+describe("a schema assembled in an order no fresh database uses", () => {
+  const at = (name: string, ms: number): MigrationRow => ({
+    migration_name: name,
+    checksum: sumOf(name),
+    finished_at: new Date(ms),
+    rolled_back_at: null,
+  });
+
+  test("applying in filename order is silent", () => {
+    expect(
+      appliedOutOfOrder([at("20260101000000_a", 1), at("20260102000000_b", 2)]),
+    ).toEqual([]);
+  });
+
+  // The merge, after the deploy: `_b` was applied on a branch, then `_a` arrived and ran second.
+  test("a migration that ran after one sorting later is named, with what it followed", () => {
+    const out = appliedOutOfOrder([
+      at("20260102000000_b", 1),
+      at("20260101000000_a", 2),
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0]).toContain("20260101000000_a");
+    expect(out[0]).toContain("20260102000000_b");
+  });
+
+  // One deploy writes rows that can share an instant, and a fresh build would have run them in name
+  // order anyway. Reporting a tie would refuse databases that are correct.
+  test("rows that finished in the same instant are not out of order", () => {
+    expect(
+      appliedOutOfOrder([at("20260102000000_b", 5), at("20260101000000_a", 5)]),
+    ).toEqual([]);
+  });
+
+  test("a row that never finished is not part of the order at all", () => {
+    expect(
+      appliedOutOfOrder([
+        at("20260102000000_b", 1),
+        halfWay("20260101000000_a"),
+      ]),
+    ).toEqual([]);
+  });
+
+  test("the gate refuses it and the setup reprovisions", () => {
+    const rows = [at("20260102000000_b", 1), at("20260101000000_a", 2)];
+    const local = sameSql(["20260101000000_a", "20260102000000_b"]);
+    expect(schemaOutOfStep("x_test", rows, local)).toContain(
+      "no fresh database would produce",
+    );
+    expect(reprovisionReasons(rows, local)).toHaveLength(1);
+  });
+
+  // Against the real thing: a database this repo's own setup just built, which must be silent or
+  // the check is a second way to refuse every run. Measured at 56 migrations, 0 disagreements.
+  test.skipIf(process.env[DB_GATE_OPT_OUT] === "1")(
+    "a database this tree's own setup built is in order",
+    async () => {
+      const { Client } = await import("pg");
+      const c = new Client({
+        connectionString: process.env.MIGRATION_DATABASE_URL as string,
+      });
+      await c.connect();
+      try {
+        const { rows } = await c.query<MigrationRow>(
+          `SELECT migration_name, checksum, finished_at, rolled_back_at
+             FROM _prisma_migrations`,
+        );
+        expect(rows.length).toBeGreaterThan(0);
+        expect(appliedOutOfOrder(rows)).toEqual([]);
+      } finally {
+        await c.end();
+      }
+    },
+    60_000,
   );
 });
 

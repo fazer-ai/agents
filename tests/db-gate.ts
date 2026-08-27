@@ -257,6 +257,36 @@ export function changedMigrations(
     .sort();
 }
 
+// The order a database was BUILT in, which the four sets above stop being able to see the moment
+// everything is applied. `outOfOrderPending` catches the merge before the deploy; once both
+// migrations have run, every set is empty and a schema assembled in an order no fresh database uses
+// reads as healthy. Prisma applies pending migrations in filename order and nothing else, so a
+// finished-at sequence that disagrees with the name sequence means two deploys with a merge between
+// them. Ties are not disagreement: rows that finished in the same instant are ordered by name here,
+// exactly as a fresh build would have run them. A freshly provisioned database of this repo was
+// measured at 56 migrations and 0 disagreements, which is what makes this a signal rather than a
+// second way to refuse every run.
+export function appliedOutOfOrder(rows: MigrationRow[]): string[] {
+  const finished = rows
+    .filter((r) => r.finished_at !== null && r.rolled_back_at === null)
+    .sort((a, b) => {
+      const at = (a.finished_at as Date).getTime();
+      const bt = (b.finished_at as Date).getTime();
+      return at === bt
+        ? a.migration_name.localeCompare(b.migration_name)
+        : at - bt;
+    });
+  const out: string[] = [];
+  for (let i = 1; i < finished.length; i++) {
+    const prev = finished[i - 1] as MigrationRow;
+    const cur = finished[i] as MigrationRow;
+    if (cur.migration_name < prev.migration_name) {
+      out.push(`${cur.migration_name} (ran after ${prev.migration_name})`);
+    }
+  }
+  return out;
+}
+
 export function schemaOutOfStep(
   dbName: string,
   rows: MigrationRow[],
@@ -268,11 +298,13 @@ export function schemaOutOfStep(
   const foreign = foreignMigrations(applied, names);
   const pending = pendingMigrations(applied, names);
   const changed = changedMigrations(rows, local);
+  const misordered = appliedOutOfOrder(rows);
   if (
     foreign.length === 0 &&
     pending.length === 0 &&
     failed.length === 0 &&
-    changed.length === 0
+    changed.length === 0 &&
+    misordered.length === 0
   ) {
     return null;
   }
@@ -301,6 +333,12 @@ export function schemaOutOfStep(
     lines.push(
       `  applied from different SQL than the file now holds:`,
       ...changed.map((m) => `    ${m}`),
+    );
+  }
+  if (misordered.length > 0) {
+    lines.push(
+      `  applied in an order no fresh database would produce:`,
+      ...misordered.map((m) => `    ${m}`),
     );
   }
   // One command for both directions, and it has to REPROVISION rather than deploy: a foreign
@@ -338,6 +376,10 @@ export function reprovisionReasons(
   }
   for (const m of outOfOrderPending(applied, names)) {
     reasons.push(`${m} (would be applied after a migration that sorts later)`);
+  }
+  for (const m of appliedOutOfOrder(rows)) {
+    // Already built that way, and deploying has nothing left to do about it.
+    reasons.push(`${m} — an order no fresh database would produce`);
   }
   return reasons;
 }

@@ -137,7 +137,10 @@ import {
   type McpSelection,
 } from "./tools/mcp";
 import { buildRagTools } from "./tools/rag";
-import { dropDuplicateToolNames } from "./tools/unique-names";
+import {
+  dropDuplicateToolNames,
+  droppedToolNamesEvent,
+} from "./tools/unique-names";
 import { UsageCapture, type UsagePersist, type UsageSource } from "./usage";
 
 // Shared agent-invocation plumbing used by BOTH entry points: runAgentTurn (incoming customer
@@ -1289,9 +1292,16 @@ export async function buildToolset(
   if (dropped.length > 0) {
     // The operator is the only one who can fix this, and the symptom they would otherwise see is a
     // tool that quietly does nothing — or, on a provider that rejects a duplicated function name,
-    // an agent that stops replying at all.
+    // an agent that stops replying at all. So it goes where they look at the turn (#389), not only
+    // to the process log, which on a managed deploy they may have no way to read at all.
+    if (flow) emitFlowEvent(flow, droppedToolNamesEvent(dropped));
+    // NOTE: what to rename is NOT said here any more. It was "rename the later one", which is an
+    // action that exists for an MCP connection (the slug comes from its display name) and does not
+    // exist for the commonest case: two instances of one toolpack expose identical names, because
+    // the names come from the pack. Naming the tool that lost is the part that is true for every
+    // source.
     logger.warn(
-      "agent %s: %d tool(s) dropped for a duplicate name (%s) — rename the later one",
+      "agent %s: %d tool(s) dropped for a duplicate name (%s)",
       String(cfg.agentId),
       dropped.length,
       [...new Set(dropped)].join(", "),

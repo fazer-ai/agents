@@ -13,7 +13,6 @@ import {
   withFlowStage,
 } from "@/modules/flowlog/service";
 import {
-  announceSpendCeiling,
   assertPlaygroundSpendCeiling,
   spendCeilingVerdict,
 } from "@/modules/spend-ceiling/service";
@@ -231,13 +230,21 @@ export async function extractInboundFile(
   // THE SPEND CEILING, asked here and not by the caller. Vision runs on the incoming attachment
   // BEFORE the webhook's gates decide anything, so the turn ceiling upstream has not run yet and
   // an image sent into a spent month would be billed with nothing to stop it. Asked ahead of the
-  // download and the credential read, because those cost too. A `warning` only writes its line.
+  // download and the credential read, because those cost too.
+  //
+  // IT ASKS BUT DOES NOT ANNOUNCE, which is the one thing this gate does differently from the other
+  // three. `spend_ceiling` is written per refused MESSAGE, and this runs on the same message the
+  // webhook gate refuses moments later: announcing here would put two `over` rows and two alert
+  // bumps on the Logs page for one customer message, and the count of refusals is the number an
+  // operator reads off that page. What this step did is not lost — the `vision` line below says
+  // `skipped` with `spend_ceiling` as its reason, which is the stage the reader is filtering by when
+  // they are asking why an attachment was never read. The playground's own file path is untouched:
+  // it goes through `assertPlaygroundSpendCeiling`, where no webhook gate follows it.
   const ceiling = await spendCeilingVerdict({
     tenantId: params.tenantId,
     source: "inbox",
     base,
   });
-  announceSpendCeiling(params.flow, ceiling, "inbox", params.tenantId);
   if (ceiling.state === "over") {
     logger.info(
       "vision: spend ceiling reached (tenant=%s used=%s ceiling=%s) — the attachment was not read",

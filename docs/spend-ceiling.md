@@ -34,7 +34,25 @@ testing), and the two fail differently. Customer traffic is driven by how many p
 variable the operator does not control; the playground is one person testing a prompt in a loop,
 which is the cheapest way to discover there was no ceiling at all. A single number would let the
 second silence the agent for the first, so each source answers to its own. `0` on either half means
-**no ceiling on that half**, never "refuse everything".
+**no ceiling on that half**, never "refuse everything" — and it is answered from `cfg` before the
+ledger is touched, so a tenant that bounds only its playground does not pay a monthly aggregate on
+every customer message to learn a fact the settings already carry.
+
+## What the ceiling does not promise
+
+It is a gate, not a reservation. Each caller sums the month **as committed** and decides; the row
+for its own call is appended after the provider answers. So turns that start while usage sits just
+under the ceiling all read the same sum and all proceed, and the month can end above the number by
+whatever those in-flight turns spend. The overshoot is bounded by what is in flight at that instant,
+not by the traffic that follows: the first turn to commit past the line closes it for everyone after
+it.
+
+The alternative is a reservation — a counter written before the call and reconciled after — and it
+is refused for the reason the ledger is the only source here. A reservation is a second number that
+has to stay correct across a crashed process, a provider timeout, and a call whose real cost is
+known only at the end; a ceiling built on it would fail in the direction where a tenant is refused
+because of tokens nobody ever spent. A turn is seconds and the window is a month, so the error this
+design accepts is small, one-sided, and self-correcting; the error the other design accepts is not.
 
 ## The window
 
@@ -114,7 +132,12 @@ theirs to lose. `conversationStillOurs` is that question in one place, shared wi
 authorization gate's own re-check.
 
 **Vision asks for itself** because it runs on the incoming attachment *before* the webhook's gates
-decide anything — the same asymmetry `#316` measured for attribution. **Guardrails deliberately do
+decide anything — the same asymmetry `#316` measured for attribution. It asks but does **not**
+announce, and it is the only gate here that splits the two: it runs on the very message the webhook
+gate refuses moments later, so a line from each would put two `over` rows and two alert bumps on the
+Logs page for one customer message. Its own `vision` line already reports `skipped` with
+`spend_ceiling` as the reason, which is the stage an operator is filtering by when the question is
+why an attachment was never read. **Guardrails deliberately do
 not**: on the output direction the reply is already written and paid for, so refusing there posts it
 unscreened or drops a reply the customer is waiting for, and a ceiling that switched moderation off
 would let a budget decide a safety question. Memory compaction is out for a sharper reason: skipping

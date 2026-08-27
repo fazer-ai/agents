@@ -161,6 +161,55 @@ describe.skipIf(!dbUp)("the spend ceiling against the ledger", () => {
       expect(v.ceilingTokens).toBeNull();
     });
 
+    // THE HALF WITH NO CEILING IS NOT AGGREGATED. `0` is the operator saying this source is
+    // unbounded, and the common configuration is exactly one bounded half — so a sum taken here
+    // would be a monthly aggregate paid on every message of the unlimited half to learn a fact the
+    // settings already carry. Counted at the seam rather than timed, because a timing assertion
+    // would pass on a machine that is merely fast.
+    test("the source with no ceiling of its own never reads the ledger", async () => {
+      let reads = 0;
+      const counted = appDb.$extends({
+        query: {
+          async $allOperations({ operation, args, query }) {
+            if (operation === "$queryRaw") {
+              const sql = ((args as { strings?: string[] }).strings ?? []).join(
+                " ",
+              );
+              if (sql.includes("FROM llm_usage")) reads += 1;
+            }
+            return query(args);
+          },
+        },
+      }) as unknown as PrismaClient;
+      const cfg = {
+        ...(await readTenantSpendCeiling(tenantId, appDb)),
+        enabled: true,
+        monthlyInboxTokens: 0,
+        monthlyPlaygroundTokens: 500,
+      };
+      const inbox = await spendCeilingVerdict({
+        tenantId,
+        source: "inbox",
+        base: counted,
+        now: AUG,
+        cfg,
+      });
+      expect(inbox.state).toBe("allowed");
+      expect(inbox.ceilingTokens).toBeNull();
+      expect(reads).toBe(0);
+      // The positive control, on the same client: the half that HAS a ceiling still reads, so the
+      // zero above measures the branch instead of a seam that never fires.
+      const play = await spendCeilingVerdict({
+        tenantId,
+        source: "playground",
+        base: counted,
+        now: AUG,
+        cfg,
+      });
+      expect(play.state).toBe("over");
+      expect(reads).toBe(1);
+    });
+
     test("over the ceiling the verdict carries the real numbers", async () => {
       const v = await spendCeilingVerdict({
         tenantId,

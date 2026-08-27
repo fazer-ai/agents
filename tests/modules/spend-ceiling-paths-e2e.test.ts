@@ -13,6 +13,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { AppError } from "@/lib/errors";
 import type { TenantContext } from "@/lib/tenancy";
+import { settleFlowEvents } from "@/modules/flowlog/scheduled";
 import {
   runPlaygroundFollowup,
   runPlaygroundTurn,
@@ -271,6 +272,57 @@ describe.skipIf(!dbUp)("the spend ceiling on the playground and vision", () => {
       },
     });
     expect(result).toBeNull();
+  });
+
+  // ONE REFUSED MESSAGE, ONE `spend_ceiling` LINE. Vision runs on the same customer message the
+  // webhook gate refuses moments later, so a gate that announced here as well would put two `over`
+  // rows and two alert bumps on the Logs page for one refusal — and the count of refusals is what an
+  // operator reads off that page. What this step did is not lost: the `vision` line says `skipped`
+  // with `spend_ceiling` as the reason, which is the stage the reader filters by when the question
+  // is why an attachment was never read.
+  test("vision refused by the ceiling writes its own line and not the gate's", async () => {
+    await setCeiling({ enabled: true, monthlyInboxTokens: 1000 });
+    await spend("inbox", 1200);
+    const turnId = `vision-ceiling-${process.pid}`;
+    const result = await extractInboundFile({
+      tenantId,
+      instanceId,
+      conversationId: 77,
+      messageId: 78,
+      attachmentId: 79,
+      dataUrl: "https://203.0.113.31:9/a.png",
+      cfg: {
+        enabled: true,
+        provider: "openai",
+        model: "gpt-4o-mini",
+        credentialRef: visionRef,
+        baseURL: null,
+        extractionPrompt: "descreva",
+      },
+      base: appDb,
+      flow: { tenantId, turnId, source: "inbox", base: appDb },
+      deps: {
+        makeClient: (() => {
+          throw new Error(
+            "the attachment must not be downloaded over the ceiling",
+          );
+        }) as never,
+      },
+    });
+    expect(result).toBeNull();
+    // NOTE: the assertion is that a line EXISTS and another does NOT, so the settle is required
+    // rather than a poll: polling for the absence would only spend the timeout before answering.
+    await settleFlowEvents();
+    const rows = await suDb.executionLog.findMany({
+      where: { turnId },
+      select: { stage: true, status: true, detail: true },
+    });
+    expect(rows.map((r) => r.stage).sort()).toEqual(["vision"]);
+    expect(rows[0]?.status).toBe("skipped");
+    expect((rows[0]?.detail as { reason?: string })?.reason).toBe(
+      "spend_ceiling",
+    );
+    await clearFlowLog(suDb, { tenantId });
   });
 
   test("vision under the ceiling is not stopped by the gate", async () => {

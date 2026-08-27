@@ -10,7 +10,12 @@ import {
   type FlowContext,
   type FlowEvent,
 } from "@/modules/flowlog/service";
-import { decideSpend, monthStart, type SpendVerdict } from "./decide";
+import {
+  ceilingFor,
+  decideSpend,
+  monthStart,
+  type SpendVerdict,
+} from "./decide";
 import {
   readSpendCeilingConfig,
   SPEND_CEILING_DEFAULTS,
@@ -94,6 +99,16 @@ export async function spendCeilingVerdict(
   try {
     cfg = params.cfg ?? (await readTenantSpendCeiling(params.tenantId, base));
     if (!cfg.enabled) {
+      return { state: "allowed", usedTokens: 0, ceilingTokens: null, cfg };
+    }
+    // NO CEILING ON THIS HALF ⇒ NO READ. `0` is the operator saying this source is unbounded, and
+    // the sum below could only ever be compared against a ceiling that is not there. Asked before
+    // the aggregate rather than after, because the common configuration is exactly this one: a
+    // tenant that bounds only its playground would otherwise pay the monthly aggregate on every
+    // customer message to learn a fact `cfg` already contains. `usedTokens` is 0 here and unread:
+    // `decideSpend` reports `allowed` for a null ceiling whatever the count, and the console's own
+    // numbers come from `spendCeilingUsage`, which always reads both halves.
+    if (ceilingFor(cfg, params.source) === null) {
       return { state: "allowed", usedTokens: 0, ceilingTokens: null, cfg };
     }
     const since = monthStart(params.now ?? new Date());

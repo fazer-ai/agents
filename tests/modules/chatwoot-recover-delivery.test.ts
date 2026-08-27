@@ -1618,6 +1618,60 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     expect(await deliveryLines(conv.id)).toEqual([]);
   });
 
+  test("a handoff landing during the message reads is not undone by the reconcile", async () => {
+    // The live snapshot is read FIRST and applied to the mirror; between those two moments sit the
+    // two message reads. A handoff or a resolve committed inside that stretch writes the mirror and
+    // is then overwritten by the older snapshot, because the reconcile's fallback ordering compares
+    // `last_activity_at` — which a status or assignee change never advances. The rebuilt delivery
+    // then passes the gate on a mirror it just walked back, and answers over the human.
+    //
+    // The other two callers of `reconcileMirrorFromLive` (the proactive nudge, the console's own
+    // buttons) apply the snapshot immediately after the GET. This one held it across two network
+    // round trips, which is the whole of the difference.
+    //
+    // `onAnchoredRead` is the hook that runs INSIDE that stretch, which is what makes this the
+    // window and not a guess.
+    const convId = 8993;
+    const messageId = 9493;
+    // `lastEventAt` BEHIND the live snapshot, which is the ordinary shape here: the stranded message
+    // is the newest thing on the conversation and the mirror never saw it. With the mirror ahead the
+    // reconcile refuses on activity alone and the window is invisible.
+    const conv = await seedConversation(convId, {
+      lastEventAt: new Date((SENT_AT - 600) * 1000),
+    });
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const stub = stubChatwoot({
+      page: pageWith([{ id: messageId, content: "oi" }]),
+      onAnchoredRead: async () => {
+        await suDb.conversation.update({
+          where: { id: conv.id },
+          data: { assigneeType: "User", assigneeId: 4242 },
+        });
+      },
+    });
+
+    await recoverStrandedDelivery({
+      tenantId,
+      deliveryRowId: rowId,
+      base: appDb,
+      deps: depsWith(stub),
+    });
+
+    // The human still holds it, and nothing was posted over them.
+    expect(
+      (
+        await suDb.conversation.findUniqueOrThrow({
+          where: { id: conv.id },
+          select: { assigneeType: true },
+        })
+      ).assigneeType,
+    ).toBe("User");
+    expect(stub.sent).toEqual([]);
+  });
+
   test("a human who TAKES the conversation in that same window is not answered over either", async () => {
     // The status half of this pair was closed by reading the outcome instead of the proposal. The
     // assignee half is not the same rule and could not borrow it: a message payload may never write

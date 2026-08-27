@@ -406,6 +406,8 @@ async function runRecovery(params: {
   let raw: unknown;
   let recent: ReturnType<typeof parseChatwootMessages> = [];
   let live: ReturnType<typeof parseLiveConversation> = null;
+  let reconciled: Awaited<ReturnType<typeof reconcileMirrorFromLive>> | null =
+    null;
   try {
     const client = await loadChatwootClient(params.tenantId, instanceId, {
       base,
@@ -416,6 +418,27 @@ async function runRecovery(params: {
         : {}),
     });
     live = parseLiveConversation(await client.getConversation(conversationId));
+    // APPLIED IMMEDIATELY, before the two message reads, and that ordering is the rule rather than a
+    // preference: a snapshot is evidence about the instant it was READ, and every moment it is held
+    // is a moment something newer can land under it. The reconcile orders by the conversation's own
+    // version where both sides have one, and falls back to `last_activity_at` where they do not —
+    // and that fallback cannot see a handoff or a resolve, because neither advances that field. Held
+    // across two network round trips, a takeover committed inside them was written to the mirror and
+    // then walked back by this older bot-owned snapshot, and the rebuilt delivery answered over the
+    // human. MEASURED at the anchored read, which is inside that stretch.
+    //
+    // The other two callers already do it this way (../../graph/nudge.ts probes and reconciles in
+    // consecutive statements; the console's buttons write and read back). This was the only one
+    // holding the snapshot, and it held it the longest.
+    reconciled = live
+      ? await reconcileMirrorFromLive({
+          tenantId: params.tenantId,
+          instanceId,
+          conversationId,
+          live,
+          base,
+        })
+      : null;
     raw = await client.getMessages(conversationId, { before: messageId + 1 });
     // The NEWEST page, unanchored, and it answers a different question from the one above: whether
     // the customer has written again since. Two reads because one page cannot hold both ends — the
@@ -447,17 +470,14 @@ async function runRecovery(params: {
     );
     return "unreachable";
   }
-  const reconciled = await reconcileMirrorFromLive({
-    tenantId: params.tenantId,
-    instanceId,
-    conversationId,
-    live,
-    base,
-  });
   // The row AFTER the reconcile, which is the truth in both directions: the live snapshot where it
   // won, and whatever outranked it where it lost. Null only if the mirror row vanished between the
   // two reads, and the row read above is then the best thing left.
-  const state = reconciled.state ?? conv;
+  //
+  // Read from the reconcile above rather than re-read here, so what the body states is the row that
+  // call decided — a second read would answer about a different moment, and the two message reads
+  // sit between them.
+  const state = reconciled?.state ?? conv;
 
   // A CUSTOMER WHO WROTE AGAIN CANNOT BE ANSWERED ABOUT THE OLDER MESSAGE, and the delivery path is
   // what decides that rather than this: `shouldPost` re-fetches immediately before posting, sees a

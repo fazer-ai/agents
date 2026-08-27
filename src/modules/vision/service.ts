@@ -466,14 +466,6 @@ export async function extractPlaygroundFile(
       "errors.visionNotConfigured",
     );
   }
-  // The playground's own ceiling, asked before the credential and the provider round trip. It
-  // throws (see `assertPlaygroundSpendCeiling`), so an operator uploading a file into a spent month
-  // is told why instead of watching the extraction produce nothing.
-  await assertPlaygroundSpendCeiling({
-    tenantId: params.ctx.tenantId as bigint,
-    base,
-    flow: params.flow,
-  });
   const entry = await runScopedOn(base, params.ctx, (db) =>
     tryResolveVaultEntry<string>(db, cfg.credentialRef as string),
   );
@@ -485,6 +477,14 @@ export async function extractPlaygroundFile(
     );
   }
 
+  // CAN WE READ THIS AT ALL, asked before the ceiling. A ceiling refusal is a statement that spend
+  // was the thing standing in the way, and for a file whose type this provider cannot read there
+  // was never any spend to refuse — the extraction returns `unsupported` in a month with budget to
+  // spare, so a 429 in a spent one reports a refusal that did not happen and sends the operator
+  // looking at their budget over a file that would have been rejected either way. The check needs
+  // `entry`, because whether documents are accepted depends on the resolved base URL, which is why
+  // the credential resolution moves up with it: an unreadable credential is a configuration error
+  // like the `!cfg.enabled` one already above the ceiling, not something the budget decided.
   const kind = visionKindForMime(params.mimeType);
   if (
     !kind ||
@@ -493,6 +493,15 @@ export async function extractPlaygroundFile(
   ) {
     return { kind: "unsupported", text: "" };
   }
+
+  // The playground's own ceiling, asked once the file is known to be extractable and before the
+  // provider round trip. It throws (see `assertPlaygroundSpendCeiling`), so an operator uploading a
+  // file into a spent month is told why instead of watching the extraction produce nothing.
+  await assertPlaygroundSpendCeiling({
+    tenantId: params.ctx.tenantId as bigint,
+    base,
+    flow: params.flow,
+  });
 
   try {
     const extracted = await extractWithRetry({

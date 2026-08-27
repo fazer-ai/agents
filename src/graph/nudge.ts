@@ -610,6 +610,12 @@ export async function runAgentNudge(
     source: "inbox",
     base,
   });
+  // ASKED AGAIN, because the verdict above is two database reads deep and a `/reset` landing inside
+  // them retires this nudge. Everything below is a report about work that will not happen: the flow
+  // line is `error` severity for `over`, so it pages the alert channels, and the announcement CLAIMS
+  // the occasion window as it decides — a line written about a retired job would also swallow the
+  // window the next attempt's real refusal needs. Nothing was refused, so nothing is reported.
+  if (!(await stillWanted())) return "stale";
   // ONE LINE PER OCCASION, not per attempt. A refused nudge is repairable, so the caller reschedules
   // it every fifteen minutes for two hours (`nudge-retry.ts`) — and the ceiling it walks into is one
   // unchanging fact, not eight refusals. Windowed to the ladder it has to outlast, and keyed by the

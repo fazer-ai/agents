@@ -13,6 +13,7 @@ import {
 import {
   ceilingFor,
   decideSpend,
+  monthEnd,
   monthStart,
   type SpendVerdict,
 } from "./decide";
@@ -43,31 +44,42 @@ function sysCtx(tenantId: bigint): TenantContext {
 // parallel seq scan, because an index that selects the whole table is worth nothing to the planner.
 // That is a fixture, not a fleet, and it is the wrong bound to quote; it is recorded here so the
 // next person to measure does not think the index stopped working.
-export async function sumUsageSince(
+// THE MONTH IS THE ARGUMENT, not one edge of it. `at` is any instant inside the month being asked
+// about and BOTH bounds are derived here, which is the only reason no caller can build a half-open
+// window by accident. It used to take a `since` and no upper bound, and that was defensible while
+// the instant was always "now" — a month with no future has nothing above it to exclude. It stopped
+// being defensible when the verdict started carrying `evaluatedAt`: an instant captured at
+// 23:59:59.9 and a query that runs at 00:00:00.1 would count the NEW month's rows against the OLD
+// month's ceiling, and the tenant whose budget just reset would be refused on the strength of it.
+// Rare by the clock and certain over a fleet, since every tenant crosses this boundary every month.
+export async function sumUsageInMonth(
   db: ScopedDb,
   tenantId: bigint,
   source: UsageSource,
-  since: Date,
+  at: Date,
 ): Promise<number> {
+  const since = monthStart(at);
+  const until = monthEnd(at);
   const rows = await db.$queryRaw<{ total: bigint | null }[]>`
       SELECT SUM(prompt_tokens + completion_tokens)::bigint AS total
         FROM llm_usage
        WHERE tenant_id = ${tenantId}
          AND source = ${source}
-         AND created_at >= ${since}`;
+         AND created_at >= ${since}
+         AND created_at < ${until}`;
   const total = rows[0]?.total ?? null;
   return total === null ? 0 : Number(total);
 }
 
 // The same read for a caller holding an id it took from a row (the webhook, the nudge, vision).
-export async function tokensUsedSince(
+export async function tokensUsedInMonth(
   tenantId: bigint,
   source: UsageSource,
-  since: Date,
+  at: Date,
   base: PrismaClient = basePrisma,
 ): Promise<number> {
   return runScopedOn(base, sysCtx(tenantId), (db) =>
-    sumUsageSince(db, tenantId, source, since),
+    sumUsageInMonth(db, tenantId, source, at),
   );
 }
 
@@ -133,11 +145,10 @@ export async function spendCeilingVerdict(
         evaluatedAt,
       };
     }
-    const since = monthStart(evaluatedAt);
-    const usedTokens = await tokensUsedSince(
+    const usedTokens = await tokensUsedInMonth(
       params.tenantId,
       params.source,
-      since,
+      evaluatedAt,
       base,
     );
     return {
@@ -405,12 +416,15 @@ export async function spendCeilingUsage(params: {
   }
   const tenantId = params.ctx.tenantId;
   const cfg = params.cfg ?? (await readTenantSpendCeiling(tenantId, base));
-  const since = monthStart(params.now ?? new Date());
+  // ONE INSTANT FOR BOTH HALVES AND FOR THE HEADER, so the two sources and the `periodStart` the
+  // console prints above them can never name different months when the request straddles midnight.
+  const at = params.now ?? new Date();
+  const since = monthStart(at);
   const sources: UsageSource[] = ["inbox", "playground"];
   const entries = await Promise.all(
     sources.map(async (source): Promise<SpendCeilingUsageEntry> => {
       const usedTokens = await runScopedOn(base, params.ctx, (db) =>
-        sumUsageSince(db, tenantId, source, since),
+        sumUsageInMonth(db, tenantId, source, at),
       );
       const verdict = decideSpend({ cfg, source, usedTokens });
       return {

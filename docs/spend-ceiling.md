@@ -66,10 +66,17 @@ a tenant whose single turn can cross the whole band had no lead time to give.
 
 ## The window
 
-The **calendar month**, in UTC (`monthStart`). It is the cycle the provider's invoice follows and
-the number an operator compares this against. A rolling window measures consumption more honestly
-and never zeroes at once, which is the property that would have to be explained to whoever signs the
-invoice.
+The **calendar month**, in UTC, closed at both ends: `[monthStart, monthEnd)`, where `monthEnd` is
+the first instant of the next month and is exclusive. It is the cycle the provider's invoice follows
+and the number an operator compares this against. A rolling window measures consumption more
+honestly and never zeroes at once, which is the property that would have to be explained to whoever
+signs the invoice.
+
+Both ends are derived inside `sumUsageInMonth`, from a single instant naming the month, so no caller
+can build half a window. That instant is the verdict's own `evaluatedAt`, and the upper bound is
+what keeps it meaningful: a verdict captured at 23:59:59.9 whose query runs at 00:00:00.1 would
+otherwise count the new month's rows against the month it was asked about, and refuse a tenant whose
+budget had just reset.
 
 ## What the customer and the operator get
 
@@ -119,8 +126,14 @@ red test.
 | --- | --- |
 | `agent` | the Chatwoot webhook (inbox), the **debounce flush**, the **re-engage** button, and `runPlaygroundTurn` (playground) |
 | `nudge` | `runAgentNudge` and `runPlaygroundFollowup` |
-| `vision` | `extractInboundFile` / `extractPlaygroundFile`, asked before the download |
+| `vision` | `extractInboundFile` / `extractPlaygroundFile`, asked before the download and **after** the file's type is known to be readable |
 | `guardrail`, `tts_normalize`, `memory_compact` | covered by the unit above them |
+
+A refusal says that **spend** was what stood in the way, so it is asked only where spend was
+actually next. For a playground upload whose type this provider cannot read, the extraction returns
+`unsupported` in a month with budget to spare, so answering `429` in a spent one reports a refusal
+that never happened and sends the operator to look at a budget over a file that would have been
+rejected either way. The support question is settled first, and only then the money.
 
 **The turn is asked about more than once**, and the second ask is not redundant. The webhook's gate
 covers the message; the debounce flush runs minutes later, and a tenant can cross its ceiling inside
@@ -174,6 +187,14 @@ withdrawn with the burst rather than delivered about it: nothing is said, nothin
 the watermark stays where it was, so a later flush asks the ceiling again with a fresh notice window.
 Asked once per write, like the turn path's own `stillWanted`, because the three sends are network
 round trips a command can land inside.
+
+**The flow line is one of those writes.** It is what the Logs page counts refused customers by, and
+an `over` line is `error` severity, so it pages the alert channels too; on top of that the
+announcement *claims* the notice window as it decides, so a line written about a withdrawn burst
+would also swallow the window a later, real refusal needs. The same holds for the nudge, whose
+`stillWanted` runs before the ceiling verdict and is therefore stale by two database reads when the
+line is written: it is asked again immediately before announcing. Nothing was refused, so nothing is
+reported.
 
 The flush's primitives carry two things that are easy to leave out of a second copy, and both were
 left out of the first draft of this one. They go out with the **persona's bot token**: `messages` and

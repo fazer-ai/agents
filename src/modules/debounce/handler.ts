@@ -689,7 +689,37 @@ export async function flushDebounceJob(
         source: "inbox",
         base,
       });
-  if (flushCeiling) {
+  // THE COMMAND'S FENCE, asked before the LINE and not only before the acts below. `/reset` retires
+  // the burst, and a flush already CLAIMED is past every cancel — that is the whole reason
+  // `stillWanted` exists on the turn path, asked once per WRITE rather than once per run. The flow
+  // line is a write like any other: it is what the Logs page counts refused customers by, and an
+  // `over` line is `error` severity, so it pages the alert channels too. A burst the operator
+  // withdrew refused nobody, so there is nothing to report about it — and the claim the announcement
+  // spends is the same one the real refusal would need later, which is the second cost of writing it
+  // here (`spendCeilingAnnouncement` consumes the window as it decides, deliberately).
+  //
+  // Retired ⇒ this refusal is withdrawn with the burst rather than delivered about it. The watermark
+  // stays where it was, which is the contract the reset scenarios already fix: the burst was not
+  // answered, it was taken back, and a later flush asks the ceiling again with a fresh notice window.
+  // Lenient (`jobRetired`, not the strict probe): an unreadable retirement row leaves this acting,
+  // which is where every caller outside the thread's critical section sits, and the cost of that
+  // guess here is a sentence sent once too often.
+  const stillWanted = async (act: string): Promise<boolean> => {
+    if (!(await jobRetired(job, base))) return true;
+    logger.info(
+      "debounce flush: spend-ceiling %s withdrawn with the burst (conv=%s) — the job was retired",
+      act,
+      String(conversationId),
+    );
+    return false;
+  };
+  // Asked only when there is something to say: `allowed` writes nothing, so the common flush pays no
+  // read for a fence over a line that was never going to exist.
+  if (
+    flushCeiling &&
+    flushCeiling.state !== "allowed" &&
+    (await stillWanted("line"))
+  ) {
     announceSpendCeiling(
       {
         tenantId,
@@ -725,32 +755,10 @@ export async function flushDebounceJob(
         makeClient: deps?.makeClient,
         botToken: ctx.loaded.agentBotToken ?? undefined,
       });
-    // THE COMMAND'S FENCE, on this branch too, and it is a different question from the one below.
-    // `/reset` retires the burst, and a flush already CLAIMED is past every cancel — that is the
-    // whole reason `stillWanted` exists on the turn path, asked once per WRITE rather than once per
-    // run. This branch writes as much as that path does: a sentence the customer reads, a status
-    // change that ends the bot's attribution, a note, and a watermark that declares the burst
-    // handled. Ownership does not stand in for it, because `/reset` hands the conversation BACK to
-    // the bot: the gate below says yes precisely when the command has just said no.
-    //
-    // Retired ⇒ this refusal is withdrawn with the burst rather than delivered about it. The
-    // watermark stays where it was, which is the contract the reset scenarios already fix: the
-    // burst was not answered, it was taken back, and a later flush asks the ceiling again with a
-    // fresh notice window. Lenient (`jobRetired`, not the strict probe): an unreadable retirement
-    // row leaves this acting, which is where every caller outside the thread's critical section
-    // sits, and the cost of that guess here is a sentence sent once too often.
-    const stillWanted = async (act: string): Promise<boolean> => {
-      if (!(await jobRetired(job, base))) return true;
-      logger.info(
-        "debounce flush: spend-ceiling %s withdrawn with the burst (conv=%s) — the job was retired",
-        act,
-        String(conversationId),
-      );
-      return false;
-    };
-    // Asked again immediately before EACH act, which is the fence the webhook's own primitives carry
-    // and for the same reason. The gate at the top of this flush judged the instant before two
-    // database reads, and the send below is a network call the next act sits behind. A human
+    // OWNERSHIP, a different question from the command's fence above and asked alongside it
+    // immediately before EACH act — the fence the webhook's own primitives carry, and for the same
+    // reason. The gate at the top of this flush judged the instant before two database reads, and
+    // the send below is a network call the next act sits behind. A human
     // claiming the conversation inside either window would otherwise be talked over, or have it
     // pulled back out of their hands by a gate that had already decided to go quiet. Dropping the
     // burst is right either way; only what we say and the status change are theirs to lose.

@@ -19,7 +19,10 @@ import {
   runPlaygroundFollowup,
   runPlaygroundTurn,
 } from "@/modules/playground/service";
-import { extractInboundFile } from "@/modules/vision/service";
+import {
+  extractInboundFile,
+  extractPlaygroundFile,
+} from "@/modules/vision/service";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { clearFlowLog } from "../utils/flowlog";
 
@@ -276,6 +279,45 @@ describe.skipIf(!dbUp)("the spend ceiling on the playground and vision", () => {
       },
     });
     expect(result).toBeNull();
+  });
+
+  // A REFUSAL IS A STATEMENT THAT SPEND WAS WHAT STOOD IN THE WAY, and for a file this provider
+  // cannot read there was never any spend to refuse: the same upload in a month with budget to spare
+  // returns `unsupported` without touching the provider. Answering 429 sends the operator to look at
+  // a budget over a file that would have been rejected either way, and hides the real reason behind
+  // one that only appears at the end of the month. The support question is settled first, and only
+  // then the money.
+  test("an unsupported file over the ceiling is unsupported, not refused", async () => {
+    await setCeiling({ enabled: true, monthlyPlaygroundTokens: 1000 });
+    await spend("playground", 1200);
+    const res = await extractPlaygroundFile({
+      ctx,
+      agentId,
+      file: new ArrayBuffer(8),
+      mimeType: "application/zip",
+      base: appDb,
+    });
+    expect(res).toEqual({ kind: "unsupported", text: "" });
+    // The positive control, over the SAME blown ceiling: a file this provider can read is refused,
+    // so the answer above measures the file type and not a gate that stopped running.
+    expect(
+      await refusal(() =>
+        extractPlaygroundFile({
+          ctx,
+          agentId,
+          file: new ArrayBuffer(8),
+          mimeType: "image/png",
+          base: appDb,
+          deps: {
+            fetchImpl: (() => {
+              throw new Error(
+                "the provider must not be called over the ceiling",
+              );
+            }) as never,
+          },
+        }),
+      ),
+    ).toEqual({ statusCode: 429, key: "errors.spendCeilingReached" });
   });
 
   // ONE REFUSED MESSAGE, ONE `spend_ceiling` LINE. Vision runs on the same customer message the

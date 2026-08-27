@@ -3475,6 +3475,18 @@ describe.skipIf(!dbUp)("debounce", () => {
       expect(sent).toEqual([]);
       expect(toggles).toEqual([]);
       expect(notes).toEqual([]);
+      // ...AND NO LINE, which is the half the acts above do not cover. The refusal is a write like
+      // the other three: `over` is `error` severity, so the line pages the alert channels, and the
+      // announcement CLAIMS the notice window as it decides — a line about a withdrawn burst would
+      // also swallow the window a real refusal needs later. The shape of the row this asserts the
+      // absence of is proved by the refusals in the sibling tests above.
+      await settleFlowEvents();
+      const rows = await suDb.executionLog.findMany({
+        // This flush's own thread, not the tenant: the fixture is shared with those refusals.
+        where: { tenantId, threadId: threadOf(913), stage: "spend_ceiling" },
+        select: { level: true },
+      });
+      expect(rows).toEqual([]);
       // The one that outlives the command: the burst is still the customer's.
       expect(await watermarkOf(913)).toBeNull();
       await clearFlowLog(suDb, { tenantId });

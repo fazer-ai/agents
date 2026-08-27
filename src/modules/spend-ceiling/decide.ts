@@ -63,3 +63,11 @@ export function decideSpend(input: SpendDecisionInput): SpendVerdict {
 export function monthStart(now: Date): Date {
   return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
 }
+
+// The other end of the same window, EXCLUSIVE: the first instant of the next month, so the pair is
+// `[monthStart, monthEnd)` and no row belongs to two months. It exists because the window has two
+// ends and the query only ever carried one — see `sumUsageInMonth`, which is the only place the
+// pair is built. `Date.UTC` normalises month 12 into January of the next year on its own.
+export function monthEnd(now: Date): Date {
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
+}

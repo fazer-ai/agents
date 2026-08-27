@@ -378,6 +378,48 @@ describe.skipIf(!dbUp)("the spend ceiling (webhook e2e)", () => {
     expect(await ceilingRows(9410)).toHaveLength(2);
   });
 
+  // THE COMMAND, LANDING BETWEEN THE GATE AND THE LINE. `stillWanted` is asked before any model
+  // spend, but the ceiling verdict underneath it is two database reads deep, and a `/reset` retiring
+  // the job inside that window leaves the nudge announcing a refusal about work that will not
+  // happen: `over` is `error` severity, so the line pages the alert channels, and the announcement
+  // claims the occasion window as it decides — swallowing the one a later, real refusal needs.
+  //
+  // Driven through the injected ask, which is exactly the seam the scheduler uses: yes to the first
+  // question (there was work to do), no to the one after the verdict (the command landed in
+  // between). Counting the asks is what makes this measure the SECOND one rather than the first.
+  test("a nudge retired while the ceiling was being read announces nothing", async () => {
+    await setCeiling({ enabled: true, monthlyInboxTokens: 1000 });
+    await spend("inbox", 1200);
+    await seedConversation(9415);
+    const s = stubChatwoot();
+    let asks = 0;
+    const outcome = await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:9415`,
+      nudge: { source: "followup", kind: "inactivity", step: 1 },
+      base: appDb,
+      stillWanted: async () => {
+        asks += 1;
+        return asks === 1;
+      },
+      deps: {
+        makeClient: s.makeClient as never,
+        makeModel: () => {
+          throw new Error("the model must not be invoked over the ceiling");
+        },
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    });
+
+    // Withdrawn, not refused: the job is gone, so this is not an `over-ceiling` the caller should
+    // reschedule against a wall.
+    expect(outcome).toBe("stale");
+    expect(asks).toBe(2);
+    expect(await ceilingRows(9415)).toEqual([]);
+    expect(s.publicOn(9415)).toEqual([]);
+  });
+
   // ONE REFUSED MESSAGE, ONE LINE, and the count of refusals is the number an operator reads off the
   // Logs page. Chatwoot fans an incoming message to the conversation's assigned agent bot AND to the
   // inbox's, so the two deliveries arrive under two ids at the same moment and neither knows about

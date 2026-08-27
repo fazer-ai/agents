@@ -4,7 +4,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import {
   readTenantSpendCeiling,
   spendCeilingVerdict,
-  tokensUsedSince,
+  tokensUsedInMonth,
 } from "@/modules/spend-ceiling/service";
 
 // What the ledger answers, read the way the gate reads it (issue #146). The rule itself is proved
@@ -36,7 +36,6 @@ if (!process.env.TEST_APP_DATABASE_URL) {
 }
 
 const AUG = new Date("2026-08-15T12:00:00Z");
-const AUG_START = new Date("2026-08-01T00:00:00Z");
 
 async function seedUsage(
   rows: Array<{
@@ -103,6 +102,21 @@ describe.skipIf(!dbUp)("the spend ceiling against the ledger", () => {
         completion: 1,
         at: "2026-07-31T23:59:59Z",
       },
+      // NEXT month, which this month must not inherit either. The verdict carries the instant it was
+      // evaluated at, so "the month asked about" and "the month the query runs in" are two different
+      // things and a read bounded only below would pull this row into August's answer.
+      {
+        source: "inbox",
+        prompt: 7_000_000,
+        completion: 1,
+        at: "2026-09-01T00:00:00Z",
+      },
+      {
+        source: "playground",
+        prompt: 5_000_000,
+        completion: 1,
+        at: "2026-09-02T00:00:00Z",
+      },
     ]);
   });
 
@@ -117,22 +131,58 @@ describe.skipIf(!dbUp)("the spend ceiling against the ledger", () => {
   describe("reading the month's tokens", () => {
     test("counts prompt + completion for the source asked about", async () => {
       // 1200 + 600 + 450, and NOT the 380 served from cache on top of its own row.
-      expect(await tokensUsedSince(tenantId, "inbox", AUG_START, appDb)).toBe(
-        2250,
-      );
+      expect(await tokensUsedInMonth(tenantId, "inbox", AUG, appDb)).toBe(2250);
     });
 
     test("the playground is counted apart", async () => {
-      expect(
-        await tokensUsedSince(tenantId, "playground", AUG_START, appDb),
-      ).toBe(990);
+      expect(await tokensUsedInMonth(tenantId, "playground", AUG, appDb)).toBe(
+        990,
+      );
     });
 
     // The calendar month is the window, so a bad July cannot silence August. Without this the ceiling
     // would be a lifetime total that no operator could ever get back under.
     test("last month does not count against this one", async () => {
-      const used = await tokensUsedSince(tenantId, "inbox", AUG_START, appDb);
+      const used = await tokensUsedInMonth(tenantId, "inbox", AUG, appDb);
       expect(used).toBeLessThan(9_000_000);
+    });
+
+    // The other end of the same window, and the one the query did not have. A month is asked about
+    // by an instant INSIDE it, which for the gate is `evaluatedAt` — captured before midnight and
+    // read after it on every rollover a busy tenant lives through.
+    test("next month does not count against this one either", async () => {
+      expect(await tokensUsedInMonth(tenantId, "inbox", AUG, appDb)).toBe(2250);
+      // The same rows, asked about from September, answer for September.
+      expect(
+        await tokensUsedInMonth(
+          tenantId,
+          "inbox",
+          new Date("2026-09-15T12:00:00Z"),
+          appDb,
+        ),
+      ).toBe(7_000_001);
+    });
+
+    // The boundary itself: a row stamped at the first instant of September belongs to September and
+    // to nothing else, which is what makes `[monthStart, monthEnd)` a partition rather than two
+    // overlapping filters.
+    test("the last instant of the month is the month's, the first of the next is not", async () => {
+      expect(
+        await tokensUsedInMonth(
+          tenantId,
+          "inbox",
+          new Date("2026-08-31T23:59:59.999Z"),
+          appDb,
+        ),
+      ).toBe(2250);
+      expect(
+        await tokensUsedInMonth(
+          tenantId,
+          "inbox",
+          new Date("2026-09-01T00:00:00.000Z"),
+          appDb,
+        ),
+      ).toBe(7_000_001);
     });
 
     test("a tenant with no rows at all reads zero, not null", async () => {
@@ -140,9 +190,7 @@ describe.skipIf(!dbUp)("the spend ceiling against the ledger", () => {
         data: { name: "SC2", slug: `sc2-${process.pid}` },
       });
       try {
-        expect(await tokensUsedSince(other.id, "inbox", AUG_START, appDb)).toBe(
-          0,
-        );
+        expect(await tokensUsedInMonth(other.id, "inbox", AUG, appDb)).toBe(0);
       } finally {
         await suDb.tenant.deleteMany({ where: { id: other.id } });
       }
@@ -244,11 +292,11 @@ describe.skipIf(!dbUp)("the spend ceiling against the ledger", () => {
         now: new Date("2026-07-15T00:00:00.000Z"),
         cfg,
       });
-      // July's 9,000,001 plus August's 2,250: the window is `since`, open at the top, because the
-      // month it is ever asked about in production is the current one and that has no future. What
-      // matters here is only that it is not 2,250 — a verdict reading its own clock would sum
-      // August alone, and the suite runs in August.
-      expect(july.usedTokens).toBe(9_002_251);
+      // July's 9,000,001 and nothing else: the window is the month, closed at BOTH ends, so August's
+      // 2,250 and September's 7,000,001 are as foreign to it as each other. What makes the assertion
+      // mean something is that it is not 2,250 — a verdict reading its own clock would sum August
+      // alone, and the suite runs in August.
+      expect(july.usedTokens).toBe(9_000_001);
       // ...and the verdict says which instant it answered for, because the announcement keys its
       // window off that and not off its own clock.
       expect(july.evaluatedAt.toISOString()).toBe("2026-07-15T00:00:00.000Z");

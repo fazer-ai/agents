@@ -3,6 +3,7 @@ import { clearContactAuthState } from "@/modules/contact-auth/state";
 import {
   ceilingFor,
   decideSpend,
+  monthEnd,
   monthStart,
 } from "@/modules/spend-ceiling/decide";
 import {
@@ -252,6 +253,26 @@ describe("the window", () => {
     );
     expect(monthStart(new Date("2026-09-01T00:00:00Z")).toISOString()).toBe(
       "2026-09-01T00:00:00.000Z",
+    );
+  });
+
+  // The upper end, which the query did not have until the verdict started carrying the instant it
+  // was evaluated at. Exclusive, so `[monthStart, monthEnd)` partitions the ledger instead of
+  // overlapping: whatever `monthEnd` returns for a month is what `monthStart` returns for the next.
+  test("closes at the first instant of the next month, exclusive", () => {
+    expect(monthEnd(new Date("2026-08-26T22:41:00Z")).toISOString()).toBe(
+      "2026-09-01T00:00:00.000Z",
+    );
+    expect(monthEnd(new Date("2026-08-01T00:00:00Z")).toISOString()).toBe(
+      monthStart(new Date("2026-09-01T00:00:00Z")).toISOString(),
+    );
+  });
+
+  // December rolls the YEAR, which is the one case a month arithmetic gets wrong by hand. `Date.UTC`
+  // normalises month 12 on its own, and this is what says so.
+  test("December closes on January of the next year", () => {
+    expect(monthEnd(new Date("2026-12-31T23:59:59.999Z")).toISOString()).toBe(
+      "2027-01-01T00:00:00.000Z",
     );
   });
 });

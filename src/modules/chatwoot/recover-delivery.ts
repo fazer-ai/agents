@@ -175,6 +175,12 @@ export interface RecoverStrandedDeliveryParams {
   now?: Date;
 }
 
+// The turn outcomes that mean this customer is no longer owed a reply. Everything else keeps the
+// row on the worklist. A SET rather than a union of the runtime's type on purpose: this file is
+// asking a narrower question than "what happened", and a new outcome there must land on the safe
+// side here without anyone remembering to come back.
+const TURN_ANSWERED = new Set(["posted", "taken-over"]);
+
 export async function recoverStrandedDelivery(
   params: RecoverStrandedDeliveryParams,
 ): Promise<RecoveryOutcome> {
@@ -275,6 +281,25 @@ interface LoadedRow {
 //
 // RETRIED, because the failure this guards against is a transient database blip and a second
 // statement a moment later is the whole fix for it. Bounded, and the last word is the log line.
+//
+// WHAT IT DOES NOT FENCE, and a review round asked for a claim generation to close it: a handler
+// that was merely STALLED — not dead — when the sweep judged its row abandoned can still reach
+// `processChatwootDelivery`'s final settlement, which updates by id with no CAS, and write
+// `PROCESSED` over a row this function has just restored to `DEAD`. If that handler's own turn also
+// failed to answer, the message leaves the worklist unanswered.
+//
+// It is left as it is for two reasons. The first is that this PR does not create it: with or
+// without a recovery, a stalled handler waking up and settling its own row takes the message off
+// the `WHERE status = 'DEAD'` list exactly the same way — the recovery adds an actor, not an
+// outcome. The second is that the missing CAS is a decision with its own written argument, on the
+// other side of this one (see the settlement in ./webhook.ts): a turn that outlives the sweep's
+// staleness threshold and then completes DID deliver, late, and winning there is what leaves the
+// row saying the true thing. A generation counter would have to distinguish "completed late" from
+// "woke up and failed", which is a question the delivery path does not currently answer about
+// itself. That is its own piece of work, on the live path rather than here.
+//
+// What the round got wrong is the tail: a later recovery does not then report `superseded` and
+// delete the message. It reads a row that is no longer `DEAD` and refuses before claiming anything.
 export async function putRowBack(params: {
   base: PrismaClient;
   tenantId: bigint;
@@ -993,7 +1018,11 @@ async function runRecovery(params: {
   // live deliveries for one conversation already can. The head of this file states the standing cost
   // that leaves: a recovery re-runs a turn that may call side-effecting tools.
   let turnThrew = false;
-  let turnWithheld = false;
+  // The outcome the DIRECT turn reported, or null when no turn ran at all. Null is not a third kind
+  // of failure: it is the gate having decided before any turn — a human holding the conversation, a
+  // status that is not `pending`, a control command consumed — and the gate's decision IS the answer
+  // to whether this message is still owed a reply.
+  let turnOutcome: string | null = null;
   // HELD ACROSS THE HANDOFF, not merely probed before it. The fence above answers about the moment
   // it ran; this makes the answer stay true until the turn takes its own claim. Balanced in the
   // `finally`, because an unbalanced mark is not a harmless leak — every reader of this key would
@@ -1009,13 +1038,10 @@ async function runRecovery(params: {
       claimFrom: "DEAD",
       onDirectTurn: (r) => {
         if (r.kind === "error") turnThrew = true;
-        // WITHHELD, not failed. `superseded` is `shouldPost` finding a message the customer sent
-        // after this one and standing down, which is the RIGHT answer for a live delivery: the newer
-        // message's own delivery is running and carries the reply. A recovery cannot lean on that —
-        // the newer delivery can have finished before this turn ingested the stranded text, and then
-        // nothing is coming at all. This is the same race the freshness check before the claim
-        // narrows, arriving in the sliver it leaves.
-        else if (r.outcome === "superseded") turnWithheld = true;
+        // Recorded, not judged. `TURN_ANSWERED` below is what decides, and it is a POSITIVE list
+        // for a reason this hook cannot enforce on its own: an outcome nobody has considered yet
+        // must not close a loss by defaulting into the good half.
+        else turnOutcome = r.outcome;
       },
       base,
       deps: params.deps,
@@ -1055,7 +1081,34 @@ async function runRecovery(params: {
   // anything else counting. `unreachable`, so the job backs off and eventually dead-letters: a model
   // or provider that keeps throwing is a condition an operator has to see, exactly like an account
   // that cannot be reached. No closing line, because nothing closed.
-  if (turnThrew || turnWithheld) {
+  // The turn ran and NOBODY was answered by it. A POSITIVE list, because the question is "is this
+  // customer still owed a reply", and the honest default for an outcome this file has not thought
+  // about is yes.
+  //
+  //   `posted`     — something reached the customer. The loss is closed.
+  //   `taken-over` — a human holds the conversation and will answer it, whichever route carried the
+  //                  message here. That is the `consumed_late` half of the settlement vocabulary,
+  //                  and it is a legitimate close.
+  //
+  // Everything else leaves the customer where the strand left them, and the three that actually
+  // reach here are each their own reason:
+  //
+  //   `superseded` — `shouldPost` found a message the customer sent after this one and stood down.
+  //                  For a LIVE delivery that is right: the newer message's own delivery carries the
+  //                  reply. A recovery cannot lean on that — the newer delivery can have finished
+  //                  before this turn ingested the stranded text, and then nothing is coming at all.
+  //                  The same race the freshness check before the claim narrows, arriving in the
+  //                  sliver it leaves.
+  //   `empty`      — the turn reached the end and delivered neither text nor an attachment. For a
+  //                  live delivery the event is handled and the row is settled; here the row exists
+  //                  BECAUSE the customer was left waiting, and an empty second attempt leaves them
+  //                  waiting with nothing else on the way.
+  //   `no-agent` / `agent-unavailable` — the route cannot answer at all. Both write their own
+  //                  operator-facing line, and both need an operator; what they must not do is take
+  //                  the message off the worklist that operator reads.
+  const turnUnanswered =
+    turnOutcome !== null && !TURN_ANSWERED.has(turnOutcome);
+  if (turnThrew || turnUnanswered) {
     // From PROCESSED, and that is the state nothing revisits: the sweep reads PENDING and PROCESSING
     // only. A write that cannot land here leaves the customer out of the worklist with nobody having
     // answered, which is the exact loss this whole subsystem exists to make impossible — so it is
@@ -1076,7 +1129,7 @@ async function runRecovery(params: {
     }
     logger.warn(
       "chatwoot recovery: the turn %s on %s (conversation %d), so the loss is NOT closed; row put back to DEAD: %s",
-      turnThrew ? "threw" : "withheld its reply to a newer message",
+      turnThrew ? "threw" : `came back "${turnOutcome}"`,
       row.deliveryId,
       conversationId,
       put === "restored"
@@ -1087,10 +1140,11 @@ async function runRecovery(params: {
     );
     // Two roads, because the two are waiting on different things. A THROW is a model or provider
     // that could not answer, which is a condition an operator may have to fix, so it backs off
-    // toward the dead-letter line like an unreachable account. A WITHHELD reply is nothing broken:
-    // the message simply lost its race, and the next pass would refuse it at the freshness check
-    // anyway — so the job completes and the row stays DEAD on the operator's page, which is the only
-    // honest record left of a customer message nothing replied to.
+    // toward the dead-letter line like an unreachable account. Every SETTLED non-answer is nothing
+    // broken and nothing a retry improves — the message lost its race, or the turn had nothing to
+    // say, or the route cannot answer — so the job completes and the row stays DEAD on the
+    // operator's page, which is the only honest record left of a customer message nothing replied
+    // to.
     return turnThrew ? "unreachable" : "superseded";
   }
 

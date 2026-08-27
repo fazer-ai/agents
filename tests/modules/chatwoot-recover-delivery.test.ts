@@ -599,13 +599,19 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     expect(turns.built).toBe(0);
   });
 
-  test("an inbox bound to NOBODY still runs the path, which is what writes the line", async () => {
+  test("an inbox bound to NOBODY still runs the path, and stays on the worklist", async () => {
     // The neighbouring state, and it must not be swept into the refusal above: an inbox with no
     // agent at all is #318's `no_agent`, and the operator's line for it is written by the delivery
     // path. Refusing here would take that line away from the one customer message it is about.
+    //
+    // It runs the path AND KEEPS THE ROW. `no-agent` is a turn outcome that answered nobody, so it
+    // is not a close (see `TURN_ANSWERED`): the customer is still waiting and stays waiting until an
+    // operator binds an agent. The two records are about different things and both are wanted — the
+    // `no_agent` line names the inbox that cannot answer, and the `DEAD` row names the one customer
+    // message that went unanswered because of it.
     const convId = 8952;
     const messageId = 9452;
-    await seedConversation(convId, {
+    const conv = await seedConversation(convId, {
       inboxId: null,
       lastEventAt: new Date((SENT_AT - 600) * 1000),
     });
@@ -624,9 +630,19 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
         base: appDb,
         deps: depsWith(stub),
       }),
-    ).toBe("recovered");
+    ).toBe("superseded");
     expect(stub.sent).toEqual([]);
-    expect((await ledger(rowId)).status).toBe("PROCESSED");
+    expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 1 });
+    // The path really did run: #318's line is here, which is the whole reason this state is not
+    // refused earlier. And no `recovered` line beside it, because nothing was.
+    expect(await deliveryLines(conv.id)).toEqual([]);
+    const noAgent = await suDb.executionLog.findMany({
+      where: { tenantId, stage: "route", conversationId: conv.id },
+      select: { detail: true },
+    });
+    expect(noAgent.map((r) => r.detail)).toEqual([
+      { outcome: "no_agent", chatwootInboxId: UNBOUND_INBOX },
+    ]);
   });
 
   test("a newest page that does not reach the stranded message refuses", async () => {
@@ -1469,6 +1485,137 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     // later under a position from an hour before.
     expect(after.phone).toBe("+5511900000000");
     expect(after.phoneAt?.getTime()).toBe(SENT_AT * 1000);
+  });
+
+  test("a human who takes over DURING the turn is a legitimate close", async () => {
+    // The other half of the positive list, and the one case in it that is not `posted`. The gate let
+    // this through — nobody held the conversation when it ran — and the human arrived while the model
+    // was working, which is what the runtime's own ownership re-check exists to catch. It withholds
+    // the reply and comes back `taken-over`.
+    //
+    // That is a CLOSE, not a loss: a human holding the conversation will answer this message,
+    // whichever route carried it here, which is the `consumed_late` half of the settlement
+    // vocabulary. Leaving the row DEAD would page an operator about a message somebody is already
+    // typing an answer to.
+    //
+    // The takeover is written from `makeModel`, which the turn calls after every gate has run and
+    // before the re-check reads the row — the one seam inside the turn a test can reach.
+    const convId = 8992;
+    const messageId = 9492;
+    const conv = await seedConversation(convId);
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const stub = stubChatwoot({
+      page: pageWith([{ id: messageId, content: "oi" }]),
+    });
+    // AWAITED, from the model's own `invoke`. Two other seams were tried and neither works here:
+    // `makeModel` is synchronous, so a write fired there races the re-check it is meant to precede
+    // and lands after it about half the time (the trap a previous round of this PR fell into), and
+    // the turn's context reads (`listLabels` and its siblings) are CACHED per instance — the seam
+    // fires when this file runs alone and never fires in a full-suite run, which is a test that
+    // passes while measuring nothing.
+    //
+    // Proxied through `bindTools` because the graph binds before it invokes, and a patch applied to
+    // the bare model would be dropped by the object binding returns.
+    let taken = false;
+    const takeOver = async () => {
+      if (taken) return;
+      taken = true;
+      await suDb.conversation.update({
+        where: { id: conv.id },
+        data: { assigneeType: "User", assigneeId: 4242 },
+      });
+    };
+    const patch = (target: Record<string, unknown>): Record<string, unknown> =>
+      new Proxy(target, {
+        get(t, k, r) {
+          const v = Reflect.get(t, k, r);
+          if (k === "bindTools" && typeof v === "function")
+            return (...a: unknown[]) =>
+              patch(
+                (v as (...x: unknown[]) => Record<string, unknown>).apply(t, a),
+              );
+          if (k === "invoke" && typeof v === "function")
+            return async (...a: unknown[]) => {
+              await takeOver();
+              return (v as (...x: unknown[]) => unknown).apply(t, a);
+            };
+          return typeof v === "function" ? v.bind(t) : v;
+        },
+      });
+    const deps: RuntimeDeps = {
+      ...depsWith(stub),
+      makeModel: () =>
+        patch(
+          new FakeListChatModel({
+            responses: [REPLY],
+          }) as unknown as Record<string, unknown>,
+        ) as never,
+    };
+
+    expect(
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps,
+      }),
+    ).toBe("recovered");
+
+    // The takeover really landed inside the turn, or this measures nothing.
+    expect(taken).toBe(true);
+    // Nothing posted over the human, and the row left the worklist all the same.
+    expect(stub.sent).toEqual([]);
+    expect((await ledger(rowId)).status).toBe("PROCESSED");
+  });
+
+  test("a turn that said NOTHING has not answered anybody either", async () => {
+    // `empty` is the runtime's outcome for a turn that ran every gate, reached the end, and
+    // delivered neither text nor an attachment — `sent || handedOff ? "posted" : "empty"`. For a
+    // LIVE delivery that is a complete outcome: the agent chose not to speak, and the row is settled
+    // because the event was handled.
+    //
+    // A RECOVERY cannot read it that way. This row exists because the customer was left unanswered,
+    // and an empty second attempt leaves them unanswered with nothing else coming — unlike a
+    // coalesced burst, where the flush carries the reply minutes later. Closing the loss here marks
+    // the row PROCESSED, writes `recovered`, and takes the message off the `WHERE status = 'DEAD'`
+    // worklist, which was the operator's only remaining record of it.
+    //
+    // Same family as the turn that threw and the reply that was withheld, and the reason the three
+    // are answered by ONE positive list: an outcome nobody has thought about yet must not close a
+    // loss by default.
+    const convId = 8991;
+    const messageId = 9491;
+    const conv = await seedConversation(convId);
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const stub = stubChatwoot({
+      page: pageWith([{ id: messageId, content: "oi" }]),
+    });
+    const deps: RuntimeDeps = {
+      ...depsWith(stub),
+      // Nothing to say, and nothing queued to send: the shape that reaches `empty`.
+      makeModel: () => new FakeListChatModel({ responses: [""] }),
+    };
+
+    expect(
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps,
+      }),
+    ).toBe("superseded");
+
+    expect(stub.sent).toEqual([]);
+    // Back on the worklist, with the attempt counted so the ceiling still bounds this.
+    expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 1 });
+    // And no line saying the loss ended.
+    expect(await deliveryLines(conv.id)).toEqual([]);
   });
 
   test("a human who TAKES the conversation in that same window is not answered over either", async () => {

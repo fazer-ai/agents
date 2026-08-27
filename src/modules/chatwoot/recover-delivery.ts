@@ -628,6 +628,11 @@ async function runRecovery(params: {
         contactInboxId,
         redirectOriginDisplayId: mirrorNow?.redirectOriginDisplayId ?? null,
         redirectOriginAt: mirrorNow?.chatwootRedirectOriginAt ?? null,
+        // `state` is the row AFTER the reconcile, not the live snapshot — see where it is bound. A
+        // review round read it as the snapshot and asked for the state to be re-read beside the
+        // pairing below; that was written and MEASURED to change nothing, because both readings are
+        // the same row and no input can tell them apart. The pairing and the contact inbox DO need
+        // the later read, and their own tests say so; these four do not.
         status: state.status,
         assigneeType: state.assigneeType,
         assigneeId: state.assigneeId,
@@ -732,6 +737,19 @@ async function runRecovery(params: {
   // reply. Refusing it here would make the recovery answer a question the delivery path does not ask
   // and leave that customer with nothing — the one divergence from "run the delivery path again"
   // that costs a reply rather than saving an effect.
+  //
+  // TWO READS OF THE MODE, and they are not made atomic, which is a deliberate choice between two
+  // races rather than an oversight. This one reads it with the BINDING, in one transaction, because
+  // round 14's defect was the opposite mistake: a mode read against a different agent than the one
+  // that answers refuses the wrong message. The delivery path then reads it again for itself, so an
+  // operator who flips production -> test in the few queries between them has a `/reset` pass here
+  // and execute there.
+  //
+  // Left open rather than closed by passing the decision down, because closing it means widening
+  // `processChatwootDelivery`'s contract for every caller to cover a window a handful of queries
+  // wide, entered only when the stranded message is exactly a command, the original process already
+  // executed it, and an operator changes the mode inside it. Written up in the PR rather than
+  // implied away here.
   if (agentMode === "test" && controlCommand(normalized) !== null) {
     logger.info(
       "chatwoot recovery: %s carries a control command; not replayed (conversation %d)",
@@ -781,6 +799,54 @@ async function runRecovery(params: {
     conversationId,
     contactInboxId,
   );
+  // WHICH BOT answers, derived rather than stored, and the derivation is the more correct of the
+  // two. The ledger does not record the route a delivery arrived on, and adding a column would
+  // answer the wrong question: Chatwoot fans one message to up to two bot routes (`agent_bots_for`:
+  // the conversation's assignee bot and the inbox's, each with its own delivery id — MEASURED), so
+  // "the route it came from" is not "who should answer it now". The inbox's agent's bot is, and if
+  // the conversation has since moved to a different bot the ownership gate closes on that fact,
+  // which is the right outcome rather than a missed one.
+  //
+  // Asked of `agentBotChatwootId`, which is the repo's existing answer to it: it reads the unique
+  // (tenant, instance, agent) row and deliberately does NOT decrypt the token, which a caller that
+  // merely wants to know WHICH bot cannot survive doing. A second reader here would be the same
+  // question in one more place, which is the defect this repo keeps paying for.
+  //
+  // Asked ABOVE THE FENCE, which costs a deferred pass one query and is the point: nothing may await
+  // between the fence answering "free" and the mark that holds it, or a nudge starting inside that
+  // await is exactly the thing neither the check nor the hold sees. This query used to sit in that
+  // gap. The refusal below moves up with it, so a route with no persona answers `unrecoverable`
+  // instead of `deferred` on a conversation that is also busy — the better of the two, since
+  // retrying never finds a persona that an operator has not bound.
+  const agentBotId =
+    agentId === null
+      ? null
+      : await agentBotChatwootId(params.tenantId, instanceId, agentId, base);
+  // A ROUTE THAT NAMES AN AGENT WITH NO BOT IDENTITY IS NOT A RECOVERY, and this is the one place
+  // where passing a null onward is worse than refusing. `heldByAnotherParty` compares ids, so with
+  // `ourAgentBotId` null it cannot: the gate goes LOOSE and a conversation another AgentBot holds
+  // reads as ours, which is precisely the state the gate exists to refuse. A live delivery never
+  // reaches that — its `agentBotId` is the route token's bot, and the route exists because the bot
+  // does — so this null is the recovery's own, and it must not be handed on.
+  //
+  // Nothing could come of it anyway: the reply is posted with the persona's token, and a client
+  // built without one refuses the call by name rather than sending (issue #79). So the whole pass
+  // would spend a model call to post nothing and then report a recovery.
+  //
+  // Not narrowed to "the assignee is another bot", because the identity is what is missing rather
+  // than the comparison: an unassigned conversation on this inbox cannot be answered either.
+  // `unrecoverable` rather than a deferral: the repair is an operator binding the inbox (which
+  // provisions the persona), not something the next attempt finds different — and the row stays in
+  // the worklist, which is where they will read it. The agent bound to NOTHING is a different state
+  // and deliberately still runs: the delivery path is what writes the operator's `no_agent` line.
+  if (agentId !== null && agentBotId === null) {
+    logger.warn(
+      "chatwoot recovery: %s routes to inbox %d, whose agent has no Chatwoot bot; not answered",
+      row.deliveryId,
+      routeInboxId,
+    );
+    return "unrecoverable";
+  }
   // The key a follow-up nudge reads before it fires, asked here and then HELD to the handoff.
   const handoffKey = chatwootThreadId(
     params.tenantId,
@@ -815,50 +881,6 @@ async function runRecovery(params: {
   // the state it left it in, so a late tx2 that got through is never overwritten. `unreachable`
   // rather than a rethrow, so the scheduler's own backoff runs and the retry finds a DEAD row it can
   // claim.
-  // WHICH BOT answers, derived rather than stored, and the derivation is the more correct of the
-  // two. The ledger does not record the route a delivery arrived on, and adding a column would
-  // answer the wrong question: Chatwoot fans one message to up to two bot routes (`agent_bots_for`:
-  // the conversation's assignee bot and the inbox's, each with its own delivery id — MEASURED), so
-  // "the route it came from" is not "who should answer it now". The inbox's agent's bot is, and if
-  // the conversation has since moved to a different bot the ownership gate closes on that fact,
-  // which is the right outcome rather than a missed one.
-  //
-  // Asked of `agentBotChatwootId`, which is the repo's existing answer to it: it reads the unique
-  // (tenant, instance, agent) row and deliberately does NOT decrypt the token, which a caller that
-  // merely wants to know WHICH bot cannot survive doing. A second reader here would be the same
-  // question in one more place, which is the defect this repo keeps paying for.
-  //
-  // Asked HERE, below every refusal above, so a pass that answers nobody spends no query on the
-  // identity of the bot that was not going to speak.
-  const agentBotId =
-    agentId === null
-      ? null
-      : await agentBotChatwootId(params.tenantId, instanceId, agentId, base);
-  // A ROUTE THAT NAMES AN AGENT WITH NO BOT IDENTITY IS NOT A RECOVERY, and this is the one place
-  // where passing a null onward is worse than refusing. `heldByAnotherParty` compares ids, so with
-  // `ourAgentBotId` null it cannot: the gate goes LOOSE and a conversation another AgentBot holds
-  // reads as ours, which is precisely the state the gate exists to refuse. A live delivery never
-  // reaches that — its `agentBotId` is the route token's bot, and the route exists because the bot
-  // does — so this null is the recovery's own, and it must not be handed on.
-  //
-  // Nothing could come of it anyway: the reply is posted with the persona's token, and a client
-  // built without one refuses the call by name rather than sending (issue #79). So the whole pass
-  // would spend a model call to post nothing and then report a recovery.
-  //
-  // Not narrowed to "the assignee is another bot", because the identity is what is missing rather
-  // than the comparison: an unassigned conversation on this inbox cannot be answered either.
-  // `unrecoverable` rather than a deferral: the repair is an operator binding the inbox (which
-  // provisions the persona), not something the next attempt finds different — and the row stays in
-  // the worklist, which is where they will read it. The agent bound to NOTHING is a different state
-  // and deliberately still runs: the delivery path is what writes the operator's `no_agent` line.
-  if (agentId !== null && agentBotId === null) {
-    logger.warn(
-      "chatwoot recovery: %s routes to inbox %d, whose agent has no Chatwoot bot; not answered",
-      row.deliveryId,
-      routeInboxId,
-    );
-    return "unrecoverable";
-  }
   let outcome: Awaited<ReturnType<typeof processChatwootDelivery>>;
   // A TURN THAT THREW IS NOT AN ANSWER, and the delivery path cannot say so in its return value:
   // `"processed"` is about the ROW, and for a live delivery it is the honest word — the failure is

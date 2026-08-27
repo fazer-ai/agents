@@ -1274,6 +1274,58 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     ).toEqual(before.lastInboundAt);
   });
 
+  test("a conversation RESOLVED mid-rescue is seen, though the live snapshot never was", async () => {
+    // The live snapshot is read FIRST, before the two message reads and the reconcile, so an
+    // operator acting inside that window is invisible to it. What the body states is therefore not
+    // the snapshot but `reconciled.state` — the row after the reconcile, which is the live snapshot
+    // where it won the ordering and whatever outranked it where it lost. This pins that choice,
+    // because the delivery path gates on what the BODY says: `shouldBotHandle` reads the status
+    // straight off it with no fallback at all.
+    //
+    // STATUS is the field that isolates the rule, and picking it was measured rather than guessed:
+    // the ASSIGNEE has a fallback — a body that says nothing about it sends `shouldBotHandle` to the
+    // mirror's own reading — so a takeover closes the gate whichever source the body used, and a
+    // test built on one would pass without reading anything.
+    //
+    // The resolve is stamped with a version AHEAD of the snapshot, exactly as the webhook carrying
+    // it would be — otherwise the reconcile rejects it as stale and the test measures the reconcile
+    // rather than the body.
+    const convId = 8968;
+    const messageId = 9469;
+    const conv = await seedConversation(convId);
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const stub = stubChatwoot({
+      page: pageWith([{ id: messageId, content: "oi" }]),
+      onAnchoredRead: async () => {
+        await suDb.conversation.update({
+          where: { id: conv.id },
+          data: {
+            status: "resolved",
+            chatwootStatusAt: SENT_AT + 3600,
+          },
+        });
+      },
+    });
+    const turns = { built: 0 };
+
+    // The path ran, which is what "recovered" says; it does not say anybody was spoken to.
+    expect(
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: depsWith(stub, turns),
+      }),
+    ).toBe("recovered");
+    expect(stub.sent).toEqual([]);
+    // No turn was even built: the operator closed the conversation, and a reply landing after that
+    // reopens it in Chatwoot on top of a customer message they had already dealt with.
+    expect(turns.built).toBe(0);
+  });
+
   test("a mirror that never learned the inbox rebuilds it from the live message", async () => {
     // The route is the one thing the rebuilt body cannot get wrong quietly. `Conversation.inboxId`
     // is nullable and the mirror writes it null for any event that named no inbox (`upsertInbox`
@@ -2025,6 +2077,33 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     expect(block).toContain('from: "PROCESSING"');
     // `unreachable`, so the scheduler backs off and the retry finds a row it can claim.
     expect(block).toContain('return "unreachable"');
+  });
+
+  test("nothing awaits between the fence answering free and the mark that holds it", async () => {
+    // The fence answers about the moment it runs, and the mark is what makes that answer keep
+    // meaning something. Any await BETWEEN them is a window neither covers: a follow-up nudge
+    // starting inside it reads no fence, and the recovery never asks again. MEASURED as a real gap
+    // — `agentBotChatwootId` used to be resolved in exactly that spot, one scoped query wide.
+    //
+    // Structural, because the thing being asserted IS the absence of a suspension point, and a
+    // behavioural test would have to inject the very await it is meant to forbid.
+    const src = await Bun.file(
+      new URL(
+        "../../src/modules/chatwoot/recover-delivery.ts",
+        import.meta.url,
+      ),
+    ).text();
+    const fenceEnd = src.indexOf('    return "deferred";\n  }');
+    expect(fenceEnd).toBeGreaterThan(-1);
+    const mark = src.indexOf("markTurnInFlight(handoffKey);", fenceEnd);
+    expect(mark).toBeGreaterThan(fenceEnd);
+    const between = src.slice(fenceEnd, mark);
+    // Comments in that stretch discuss awaits; the code must not contain one.
+    const code = between
+      .split("\n")
+      .filter((l) => !l.trimStart().startsWith("//"))
+      .join("\n");
+    expect(code).not.toContain("await ");
   });
 
   describe("putting the row back", () => {

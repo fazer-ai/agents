@@ -1098,6 +1098,7 @@
     "reasoningEffort": "Reasoning effort",
     "reasoningEffortDefault": "Provider default",
     "reasoningEffortHint": "How much the model thinks before answering. Reasoning models only (o-series, gpt-5); more effort means slower, costlier answers.",
+    "refusalNoControl": "This value has no field in the console, so it can only be changed through the API.",
     "reload": "Reload",
     "roundingDate": "date",
     "roundingExact": "exact · changes every minute",

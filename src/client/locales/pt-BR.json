@@ -1101,6 +1101,7 @@
     "reasoningEffort": "Esforço de raciocínio",
     "reasoningEffortDefault": "Padrão do provedor",
     "reasoningEffortHint": "Quanto o modelo pensa antes de responder. Só em modelos de raciocínio (série o, gpt-5); mais esforço significa resposta mais lenta e mais cara.",
+    "refusalNoControl": "Este valor não tem campo no console, então só dá para alterá-lo pela API.",
     "reload": "Recarregar",
     "roundingDate": "data",
     "roundingExact": "exata · muda a cada minuto",

@@ -605,8 +605,19 @@ function AgentEditor() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [savingAgent, setSavingAgent] = useState(false);
-  // The sentence from a failed save that NOTHING on screen is carrying. See the banner below.
-  const [standingRefusal, setStandingRefusal] = useState<string | null>(null);
+  // The sentence from a failed save that no mark is carrying, WITH the section whose write
+  // produced it. The section is not decoration: a later save of a different section answers
+  // nothing about this one, and clearing on any success takes the only explanation off screen
+  // while the failed section is still unsaved.
+  const [standingRefusal, setStandingRefusal] = useState<{
+    message: string;
+    section: string;
+    // The name the server refused, when it named one. Kept so the banner can say WHY it offers no
+    // way to the value: `toolGuidance` takes a note for all thirteen native tools and the console
+    // draws three, so a refusal about one of the other ten is about something no screen here edits.
+    // The server's sentence names the field and the limit and cannot know that.
+    field: string | null;
+  } | null>(null);
   const [savingGrants, setSavingGrants] = useState(false);
   const [savingChannelRedirect, setSavingChannelRedirect] = useState(false);
   const [savingGuardrails, setSavingGuardrails] = useState(false);
@@ -943,10 +954,14 @@ function AgentEditor() {
   function answerRefusal(
     e: unknown,
     fallback: string,
+    section: string,
     sent: Record<string, unknown>,
   ): void {
+    const left = refusal.capture(e, fallback, sent, currentRef.current);
     setStandingRefusal(
-      refusal.capture(e, fallback, sent, currentRef.current) ?? null,
+      left
+        ? { message: left, section, field: readRefusal(e)?.field ?? null }
+        : null,
     );
   }
 
@@ -956,49 +971,53 @@ function AgentEditor() {
   // handoff, kanban and tool-guidance notes, so clearing by tab takes a standing refusal off a note
   // that request never mentioned -- the operator comes back to a form that looks clean and is still
   // refused. The snapshot the write went out with is exactly the list of what it can answer for.
-  function clearRefusalFor(sent: Record<string, unknown>): void {
+  function clearRefusalFor(
+    section: string,
+    sent: Record<string, unknown>,
+  ): void {
     const held = refusal.field;
     if (held && Object.hasOwn(sent, held)) refusal.clear();
-    setStandingRefusal(null);
+    setStandingRefusal((prev) => (prev?.section === section ? null : prev));
   }
 
-  // WHAT THE BANNER SAYS, and it is exactly the refusal the operator has no other way to read.
+  // WHAT THE BANNER SAYS: every standing refusal, whichever of them is standing.
   //
-  // Two ways that happens, and they are different events:
+  // Unconditional on purpose, and the earlier versions of this are why. Both tried to show it only
+  // when the marked control was NOT readable, and both had to answer "is it readable" from outside
+  // the component that draws it: first by tab, which missed a section switched off after the refusal
+  // landed; then by tab plus each section's switch, which missed a guardrails field hidden by its
+  // own action and a native-tool note inside a collapsed card. What can hide a control belongs to the
+  // tab components, it is a list this file cannot close, and every version of it that got one entry
+  // short produced the same outcome: a failed save with nothing on screen saying so.
   //
-  //   - a mark is held on a control this render is NOT drawing. Another tab, or a section the
-  //     operator switched off AFTER the refusal landed -- turning Vision off does not answer the
-  //     refusal about its credential, it only takes the box away. Derived, so the banner appears and
-  //     disappears with the control rather than with a save.
-  //   - `capture` handed the sentence back having placed nothing at all: a 403, a conflict, a value
-  //     the operator changed while the request was out. Stored, because nothing else on screen holds
-  //     it, and dropped as soon as a mark exists (the effect below), so it can never outlive the
-  //     answer and resurface when that mark expires.
+  // So the question is not asked. A held mark is announced here whether or not its control is on
+  // screen, and `drawn` stops carrying any weight it could be wrong about -- it decides which
+  // channel `placeRefusal` uses, and this page reads neither channel for the sentence.
   //
-  // A mark this render IS drawing says it itself and the banner stays quiet. That is the exclusivity
-  // the whole mechanism rests on, and it is now a property of what `capture` did rather than of a
-  // tab comparison this page made on its own.
+  // The cost is a duplicate while the operator is looking at the marked control: the sentence at the
+  // input, and the same sentence above the tabs. That is the shape a form-level error summary has
+  // everywhere it is used, it does not interrupt and it does not scroll away, and it is the trade
+  // this takes over being silent on a case nobody enumerated yet.
   const heldField = refusal.field;
   const heldMessage = heldField
     ? refusal.at(heldField, currentRef.current[heldField])
     : null;
-  const heldDrawn =
-    heldField !== null && refusalFields.drawn.includes(heldField);
-  const bannerMessage = heldMessage
-    ? heldDrawn
-      ? null
-      : heldMessage
-    : standingRefusal;
+  const bannerMessage = heldMessage ?? standingRefusal?.message ?? null;
+  // A jump only when there is somewhere to send them: a mark on the open tab is already as close as
+  // the operator can get, and a sentence with no mark has no control to point at.
+  const heldTarget = heldField
+    ? editorTargetFor(heldField, { guardrailsEnabled: guardrails.enabled })
+    : null;
   const bannerTarget =
-    heldField && !heldDrawn
-      ? editorTargetFor(heldField, { guardrailsEnabled: guardrails.enabled })
-      : null;
-
-  // biome-ignore lint/correctness/useExhaustiveDependencies: keyed on the held name, which is the
-  // only thing that decides whether the stored sentence still has a job.
-  useEffect(() => {
-    if (heldField) setStandingRefusal(null);
-  }, [heldField]);
+    heldMessage && heldTarget && heldTarget.tab !== tab ? heldTarget : null;
+  // Said only when the server NAMED a value and this editor draws no control for it. Not for a
+  // refusal about no input at all (a 403, a conflict), where there is no value to go and change.
+  const bannerNoControl =
+    !heldMessage &&
+    standingRefusal?.field != null &&
+    editorTargetFor(standingRefusal.field, {
+      guardrailsEnabled: guardrails.enabled,
+    }) === null;
 
   // The clone dialog is its own form: one input, and the route refuses a name already taken by name.
   // Separate from the editor's holder, because the two are on screen together.
@@ -2409,12 +2428,13 @@ function AgentEditor() {
       // carries neither `name` nor `systemPrompt` — clearing there takes the standing refusal off
       // the General tab without anything having answered it, so the operator comes back to a form
       // that looks fine and is still refused.
-      clearRefusalFor(sent);
+      clearRefusalFor(section, sent);
       showToast(t("editor.saved", "Agent saved."), "success");
     } catch (e) {
       answerRefusal(
         e,
         t("editor.saveError", "Could not save the agent."),
+        section,
         sent,
       );
     } finally {
@@ -2442,10 +2462,15 @@ function AgentEditor() {
       markSynced(data.agentUpdatedAt ? String(data.agentUpdatedAt) : null);
       bumpSync("tools", "knowledge");
       // Nothing: this request carries the grant set and none of the Tools tab's notes.
-      clearRefusalFor({});
+      clearRefusalFor("tools", {});
       showToast(t("editor.grantsSaved", "Tools updated."), "success");
     } catch (e) {
-      answerRefusal(e, t("editor.grantsError", "Could not update tools."), {});
+      answerRefusal(
+        e,
+        t("editor.grantsError", "Could not update tools."),
+        "tools",
+        {},
+      );
     } finally {
       savingRef.current -= 1;
       setSavingGrants(false);
@@ -2561,12 +2586,13 @@ function AgentEditor() {
       }));
       markSynced(String(agentRes.data.agent.updatedAt));
       bumpSync("tools", "knowledge");
-      clearRefusalFor(sent);
+      clearRefusalFor("tools", sent);
       showToast(t("editor.grantsSaved", "Tools updated."), "success");
     } catch (e) {
       answerRefusal(
         e,
         t("editor.grantsError", "Could not update tools."),
+        "tools",
         sent,
       );
     } finally {
@@ -2637,12 +2663,13 @@ function AgentEditor() {
       setSettings((s) => ({ ...s, guardrails }));
       markSynced(String(data.agent.updatedAt));
       bumpSync("guardrails");
-      clearRefusalFor(sent);
+      clearRefusalFor("guardrails", sent);
       showToast(t("editor.saved", "Agent saved."), "success");
     } catch (e) {
       answerRefusal(
         e,
         t("editor.saveError", "Could not save the agent."),
+        "guardrails",
         sent,
       );
     } finally {
@@ -3102,6 +3129,14 @@ function AgentEditor() {
               >
                 <span className="min-w-0 text-sm text-text-primary">
                   {bannerMessage}
+                  {bannerNoControl && (
+                    <span className="block text-text-secondary text-xs">
+                      {t(
+                        "editor.refusalNoControl",
+                        "This value has no field in the console, so it can only be changed through the API.",
+                      )}
+                    </span>
+                  )}
                 </span>
                 {bannerTarget && (
                   <button

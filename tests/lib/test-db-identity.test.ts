@@ -175,6 +175,34 @@ describe("the test database's name belongs to ONE checkout", () => {
     );
   });
 
+  // TWO BASES IN ONE CHECKOUT ARE TWO DATABASES, and the truncation must not be able to merge them.
+  // Giving the checkout half priority meant a long checkout name consumed the whole budget, the base
+  // half vanished, and every base derived to one name — measured with a 52-character checkout:
+  // `secretaria_v4_test`, `fzgate417_test` and `fzsetup417_test` all became
+  // `wwww…_79bdb0_test`. The live tests in this file create scratch databases from their own bases,
+  // so the collision would have them DROP and terminate the database backing the suite running them.
+  test("different bases never merge, however long the checkout name is", () => {
+    const bases = ["secretaria_v4_test", "fzgate417_test", "fzsetup417_test"];
+    for (const root of ["/dev/agents/main", `/dev/${"w".repeat(52)}`]) {
+      const names = bases.map((b) => testDbNameFor(b, root));
+      expect(new Set(names).size).toBe(bases.length);
+      for (const n of names) {
+        expect(Buffer.byteLength(n, "utf8")).toBeLessThanOrEqual(63);
+      }
+    }
+  });
+
+  // And the same two bases in two checkouts are four databases, which is the property both halves
+  // of the name exist for.
+  test("base and checkout are both part of the identity", () => {
+    const names = new Set(
+      ["a_test", "b_test"].flatMap((b) =>
+        ["/x/one", "/x/two"].map((r) => testDbNameFor(b, r)),
+      ),
+    );
+    expect(names.size).toBe(4);
+  });
+
   // A name a human can read is the point of keeping the basename at all: `psql -l` has to say which
   // worktree owns which database, or the isolation just moves the confusion.
   test("the checkout is still readable in the name", () => {

@@ -43,34 +43,49 @@ function identifierSafe(value: string): string {
     .replace(/^_+|_+$/g, "");
 }
 
+function shortHash(value: string): string {
+  return createHash("sha256").update(value).digest("hex").slice(0, HASH_CHARS);
+}
+
 export function testDbNameFor(base: string, checkoutRoot: string): string {
   const root = checkoutRoot.replace(/\/+$/, "");
-  const hash = createHash("sha256")
-    .update(root)
-    .digest("hex")
-    .slice(0, HASH_CHARS);
+  const hash = shortHash(root);
   // IDEMPOTENT, and that is not tidiness. Anything that reads the derived URL out of a running
   // suite and starts a second one from it would otherwise derive AGAIN, landing on a name that
   // names no database — measured the first time this shipped, when the gate's own subprocess test
   // went looking for `..._flaky_tests_febbf7_flaky_tests_febbf7_test`. The hash is over the
   // absolute checkout root, so a name already ending in THIS root's hash was produced here and is
   // already the answer.
-  if (base.endsWith(`_${hash}${SUFFIX}`)) return base;
+  // The whole tail, not just this root's hash: `_<6 hex base><6 hex root>_test` is the shape only
+  // this function produces, so a hand-written name that happens to end in the right six characters
+  // is not mistaken for one of ours — and being mistaken would mean NOT deriving, which is two
+  // checkouts sharing a database.
+  if (new RegExp(`_[0-9a-f]{${HASH_CHARS}}${hash}${SUFFIX}$`).test(base)) {
+    return base;
+  }
   // The base may or may not already carry the suffix; the derived name always does, because
   // tests/setup.ts refuses to run the destructive suite against a target that does not end in
   // `_test` and scripts/test-db-setup.ts refuses to provision one.
   //
-  // The hash and the suffix are the two parts that may never be shortened: the suffix is what both
-  // guards read, and a truncated hash is two checkouts sharing a database — which is the failure
-  // this whole file exists to prevent, arriving through the fix for it. So the room is taken from
-  // the two readable halves, the checkout first and the stem after it, because a caller who set a
-  // long base still knows which database is theirs from the hash.
-  const tail = `_${hash}${SUFFIX}`;
+  // BOTH halves are hashed, and the readable text is readability alone. The first version hashed
+  // only the checkout and let the two readable halves fight over the remaining room, which merged
+  // every base of a long-named checkout into ONE database: measured with a 52-character checkout,
+  // `secretaria_v4_test`, `fzgate417_test` and `fzsetup417_test` all derived to
+  // `wwww…_79bdb0_test`. Truncation may cost a name its readability; it may never cost it its
+  // identity.
+  //
+  // The checkout's hash stays SEPARATE and last, because it is the one part recomputable from the
+  // root alone, which is what lets the idempotence check above tell a name derived HERE from one
+  // derived somewhere else without knowing the base it came from.
+  const stemText = identifierSafe(base.replace(/_test$/, ""));
+  const tail = `_${shortHash(stemText)}${hash}${SUFFIX}`;
   const room = MAX_IDENTIFIER_BYTES - tail.length;
-  const slug = identifierSafe(basename(root)).slice(0, Math.max(0, room - 1));
-  const stem = identifierSafe(base.replace(/_test$/, "")).slice(
+  // The base first: it is what tells two databases of the SAME checkout apart, so it is the half
+  // whose truncation costs the most to a reader.
+  const stem = stemText.slice(0, Math.max(0, room - 1));
+  const slug = identifierSafe(basename(root)).slice(
     0,
-    Math.max(0, room - slug.length - (slug.length > 0 ? 1 : 0)),
+    Math.max(0, room - stem.length - (stem.length > 0 ? 1 : 0)),
   );
   return `${stem}_${slug}${tail}`.replace(/__+/g, "_").replace(/^_+/, "");
 }

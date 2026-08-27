@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { BaseChatModel } from "@langchain/core/language_models/chat_models";
-import { AIMessage } from "@langchain/core/messages";
+import { AIMessage, type BaseMessage } from "@langchain/core/messages";
 import type { ChatResult } from "@langchain/core/outputs";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
 import { MemorySaver } from "@langchain/langgraph";
@@ -192,6 +192,30 @@ describe("reminderNudge", () => {
         /booking system's own tool if you have one/i,
       );
     }
+  });
+
+  // (#352, round 5) The refs ARE the fenced data the model reads back, so a fill-in here is an
+  // identifier the model is told the appointment has. There is no Google calendar behind a declared
+  // booking, and "primary" names a real one, so the ref is absent rather than invented.
+  test("no calendar behind it → no calendar_id ref at all", () => {
+    const n = reminderNudge({
+      ...args,
+      calendarId: null,
+      canOperate: false,
+      isLast: true,
+      askConfirmation: true,
+    });
+    expect(n.refs).toEqual({ event_id: "ev_1", calendar_id: null });
+    // What the model actually sees: the key does not appear in the rendered fenced data.
+    expect(renderNudge(n, true)).not.toContain("calendar_id");
+    expect(renderNudge(n, true)).toContain("event_id=ev_1");
+    // The control: with a calendar, the ref is there and rendered.
+    expect(
+      renderNudge(
+        reminderNudge({ ...args, isLast: true, askConfirmation: true }),
+        true,
+      ),
+    ).toContain("calendar_id=primary");
   });
 });
 
@@ -786,6 +810,55 @@ describe.skipIf(!dbUp)("a reminder retired while claimed", () => {
 
     expect(result).toEqual({ outcome: "done" });
     expect(s.sent.length).toBeGreaterThan(0);
+  });
+
+  // (#352, round 5) The payload is the only thing standing between a declared booking and the model:
+  // `calendarId: null` has to survive the handler's own read, or the fill-in reappears here and the
+  // fenced data tells the agent this appointment lives on Google's `primary` calendar. Asserted on
+  // what the MODEL received, not on the nudge object, because the whole chain is what the fix is.
+  test("a payload with no calendar sends the model no calendar_id", async () => {
+    const job = await armed("reminder:feegow/evt-nocal:60", {
+      isLast: true,
+      eventId: "evt-nocal",
+      calendarId: null,
+      startISO: new Date(Date.now() + 3_600_000).toISOString(),
+    });
+    const s = stubClient();
+    let seen = "";
+    class CapturingModel extends BaseChatModel {
+      constructor() {
+        super({});
+      }
+      _llmType() {
+        return "capturing-fake";
+      }
+      async _generate(messages: BaseMessage[]): Promise<ChatResult> {
+        seen += messages
+          .map((m) =>
+            typeof m.content === "string"
+              ? m.content
+              : JSON.stringify(m.content),
+          )
+          .join("\n");
+        return {
+          generations: [
+            { text: "Lembrete!", message: new AIMessage("Lembrete!") },
+          ],
+        };
+      }
+    }
+
+    await appointmentReminderHandler(job, appDb, {
+      makeModel: () => new CapturingModel(),
+      makeClient: s.makeClient,
+      checkpointer: new MemorySaver(),
+      persistUsage: async () => {},
+    });
+
+    // The control first: the reminder DID reach the model, so the absence below is an absence in a
+    // prompt that exists.
+    expect(seen).toContain("event_id=evt-nocal");
+    expect(seen).not.toContain("calendar_id");
   });
 
   test("a cancel landing during the retry survives the reschedule", async () => {

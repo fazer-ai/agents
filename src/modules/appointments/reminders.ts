@@ -101,7 +101,10 @@ export interface ScheduleAppointmentRemindersArgs {
   // lookup asks for, so it stays exactly as the owning system stated it.
   provider?: string;
   eventId: string;
-  calendarId: string;
+  // Null when no Google calendar is behind the booking. It travels into the payload as null and
+  // reaches the nudge as an absent ref: "primary" is a real Google identifier, and writing it for a
+  // booking that lives in the operator's own system hands the model an id nobody issued (issue #352).
+  calendarId: string | null;
   credentialRef: string | null;
   startISO: string;
   offsetsHours: number[];
@@ -219,37 +222,52 @@ export async function appointmentBooked(
 ): Promise<AppointmentBookedResult> {
   let remindersArmed = 0;
   let armError: unknown;
+  // The start is judged ONCE, before either half, because both answer to it. An unreadable start is
+  // not a re-statement of the appointment: recordAppointment refuses to move the record on it (it
+  // returns "unreadable-start" and writes nothing), so retiring here would strand the PREVIOUS
+  // booking, still standing at its old start, with every reminder it had gone and nothing armed in
+  // their place. Nothing is read, so nothing changes, on either side.
+  const startReadable = Number.isFinite(parseStartMs(args.startISO));
   try {
     // RETIRE FIRST, and unconditionally. Arming only writes the offsets whose time is still ahead,
     // so re-stating a booking at an EARLIER time silently keeps the offsets it outran — see
     // retireReminderJobs. Unconditional because `reminders: null` is also a re-statement: an
     // integration whose reminders were switched off between two bookings of the same appointment
     // must not leave the first booking's reminders firing.
-    await retireReminderJobs(
-      args.tenantId,
-      args.provider ?? GOOGLE_CALENDAR_PROVIDER,
-      args.eventId,
-      args.base,
-    );
-    if (args.reminders) {
-      remindersArmed = await enqueueAppointmentReminders(
-        {
-          tenantId: args.tenantId,
-          threadId: args.threadId,
-          provider: args.provider,
-          eventId: args.eventId,
-          calendarId: args.calendarId ?? "primary",
-          credentialRef: args.credentialRef ?? null,
-          startISO: args.startISO,
-          offsetsHours: args.reminders.offsetsHours,
-          askConfirmationOnLast: args.reminders.askConfirmationOnLast,
-          summary: args.summary,
-          calendarLabel: args.calendarLabel,
-          base: args.base,
-          now: args.now,
-        },
-        enqueue,
+    if (startReadable) {
+      await retireReminderJobs(
+        args.tenantId,
+        args.provider ?? GOOGLE_CALENDAR_PROVIDER,
+        args.eventId,
+        args.base,
       );
+      if (args.reminders) {
+        remindersArmed = await enqueueAppointmentReminders(
+          {
+            tenantId: args.tenantId,
+            threadId: args.threadId,
+            provider: args.provider,
+            eventId: args.eventId,
+            // "primary" is Google's own default calendar, so it is the right fill-in there and only
+            // there. A booking from the operator's system has no calendar at all — see the field.
+            calendarId:
+              args.calendarId ??
+              ((args.provider ?? GOOGLE_CALENDAR_PROVIDER) ===
+              GOOGLE_CALENDAR_PROVIDER
+                ? "primary"
+                : null),
+            credentialRef: args.credentialRef ?? null,
+            startISO: args.startISO,
+            offsetsHours: args.reminders.offsetsHours,
+            askConfirmationOnLast: args.reminders.askConfirmationOnLast,
+            summary: args.summary,
+            calendarLabel: args.calendarLabel,
+            base: args.base,
+            now: args.now,
+          },
+          enqueue,
+        );
+      }
     }
   } catch (e) {
     armError = e;
@@ -420,7 +438,11 @@ export interface ReminderNudgeArgs {
   summary: string;
   startISO: string;
   eventId: string;
-  calendarId: string;
+  // Null for a booking with no Google calendar behind it: the ref is then omitted from the fenced
+  // data entirely, rather than carrying "primary", which names a real Google calendar the operator's
+  // system never wrote to. The context block already answers the same question by emitting no
+  // calendar_id for those appointments; this is the same rule on the reminder path (issue #352).
+  calendarId: string | null;
   // Whether the calendar tools can actually act on THIS appointment. False for a booking that lives
   // in the operator's own system and reached the platform through a tool's declaration (issue #352):
   // there is no Google event behind it, so naming calendar_update_event at the model is pointing it
@@ -584,8 +606,10 @@ export async function appointmentReminderHandler(
   if (!threadId || !eventId) return { outcome: "done" };
   const parsed = parseThreadId(threadId);
   if (!parsed || parsed.tenantId !== job.tenantId) return { outcome: "done" };
-  const calendarId =
-    typeof p.calendarId === "string" ? p.calendarId : "primary";
+  // Null survives all the way to the nudge's refs (see ReminderNudgeArgs.calendarId). The Google
+  // lookup below is the one place that needs a concrete calendar, and it is only reached with a
+  // credential, which is exactly when the payload carries a real one.
+  const calendarId = typeof p.calendarId === "string" ? p.calendarId : null;
   const credentialRef =
     typeof p.credentialRef === "string" ? p.credentialRef : null;
   const startISO = typeof p.startISO === "string" ? p.startISO : "";
@@ -623,7 +647,10 @@ export async function appointmentReminderHandler(
   let summary =
     typeof p.summary === "string" && p.summary ? p.summary : "your appointment";
   let live: EventStatus | undefined;
-  if (credentialRef) {
+  // Both, not just the credential: a Google lookup asks for an event ON a calendar, so a payload
+  // that names none has nothing to ask. Today only a declared booking is in that shape and it never
+  // carries a credential either, which is why this reads as the type narrowing it also is.
+  if (credentialRef && calendarId) {
     live = await fetchEventStatus(
       tenantId,
       credentialRef,

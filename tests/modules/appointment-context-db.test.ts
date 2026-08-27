@@ -653,6 +653,115 @@ describe.skipIf(!dbUp)("per-turn appointment context (issue #22)", () => {
     expect(await hasLiveAppointment(tenantId, threadOf(115), appDb)).toBe(true);
   });
 
+  // The OTHER edge of the same unconditional retire (#352, round 5). A start the platform cannot
+  // read is not a re-statement: `recordAppointment` refuses to move the record on it and writes
+  // nothing, so the previous booking goes on standing at its old start. Retiring on that path would
+  // take its reminders with it and arm nothing back, leaving a live appointment the customer is
+  // never reminded of — and the only signal is the unreadable-start warning, which says nothing
+  // about reminders.
+  test("(#352) an unreadable re-statement leaves the standing booking's reminders alone", async () => {
+    await seedConversation(117);
+    const book = (startISO: string) =>
+      appointmentBooked({
+        tenantId,
+        threadId: threadOf(117),
+        provider: "feegow",
+        eventId: "unreadable",
+        calendarId: null,
+        credentialRef: null,
+        startISO,
+        summary: null,
+        calendarLabel: null,
+        reminders: { offsetsHours: [24], askConfirmationOnLast: false },
+        base: appDb,
+      });
+    const pending = () =>
+      runScopedOn(appDb, sysCtx(), (db) =>
+        db.schedulerJob.count({
+          where: {
+            tenantId,
+            kind: "APPOINTMENT_REMINDER",
+            dedupeKey: { startsWith: "reminder:feegow/unreadable:" },
+            status: "PENDING",
+          },
+        }),
+      );
+
+    expect((await book(inHours(48))).remindersArmed).toBe(1);
+    expect(await pending()).toBe(1);
+
+    // The operator's system answered with something no date parser accepts.
+    const again = await book("next tuesday-ish");
+    expect(again.record).toBe("unreadable-start");
+    expect(again.remindersArmed).toBe(0);
+
+    // Both halves are untouched: the appointment still stands at the readable start, and its
+    // reminder is still armed for it.
+    expect(await pending()).toBe(1);
+    expect(await hasLiveAppointment(tenantId, threadOf(117), appDb)).toBe(true);
+  });
+
+  // (#352, round 5) "primary" is a real Google calendar. A booking that lives in the operator's own
+  // system has no calendar at all, and the payload is what the nudge's fenced data is built from, so
+  // a fill-in here reaches the model as `calendar_id=primary` for an appointment Google never saw.
+  // The context block already answers this question by emitting no calendar_id for those bookings.
+  test("(#352) a declared booking arms reminders with no calendar id", async () => {
+    await seedConversation(118);
+    await appointmentBooked({
+      tenantId,
+      threadId: threadOf(118),
+      provider: "feegow",
+      eventId: "nocal",
+      calendarId: null,
+      credentialRef: null,
+      startISO: inHours(48),
+      summary: null,
+      calendarLabel: null,
+      reminders: { offsetsHours: [24], askConfirmationOnLast: false },
+      base: appDb,
+    });
+    const row = await runScopedOn(appDb, sysCtx(), (db) =>
+      db.schedulerJob.findFirst({
+        where: {
+          tenantId,
+          kind: "APPOINTMENT_REMINDER",
+          dedupeKey: "reminder:feegow/nocal:24",
+        },
+        select: { payload: true },
+      }),
+    );
+    expect((row?.payload as { calendarId?: unknown } | null)?.calendarId).toBe(
+      null,
+    );
+
+    // The control: a Google booking with no explicit calendar still gets Google's own default.
+    await appointmentBooked({
+      tenantId,
+      threadId: threadOf(118),
+      eventId: "gcal",
+      calendarId: null,
+      credentialRef: "vault:1",
+      startISO: inHours(48),
+      summary: null,
+      calendarLabel: null,
+      reminders: { offsetsHours: [24], askConfirmationOnLast: false },
+      base: appDb,
+    });
+    const gRow = await runScopedOn(appDb, sysCtx(), (db) =>
+      db.schedulerJob.findFirst({
+        where: {
+          tenantId,
+          kind: "APPOINTMENT_REMINDER",
+          dedupeKey: "reminder:gcal:24",
+        },
+        select: { payload: true },
+      }),
+    );
+    expect((gRow?.payload as { calendarId?: unknown } | null)?.calendarId).toBe(
+      "primary",
+    );
+  });
+
   // The reminder key is read back by PREFIX, so an id that contains the delimiter puts a second
   // appointment inside the first one's prefix. A declared id is whatever the operator's system
   // answers with, and `clinic:123` is an ordinary shape.

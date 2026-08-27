@@ -475,6 +475,32 @@ export interface AgentSettingsGetArgs {
   agent_id: string;
 }
 
+// THE READ RETURNS WHAT THE WRITE ACCEPTS, down to the field.
+//
+// `readGuardrailsConfig` gives both directions the same shape, which is right for the runtime (it
+// filters by direction at use, in activeChecks) and wrong for a CONTRACT: three of those fields do
+// nothing under `input`, and the write now refuses them. Returning them here would hand a caller a
+// document that the very next `agent_settings_set` rejects — trading a silent no-op for a 400 on
+// someone who changed nothing, which is worse.
+//
+// Projected at this boundary rather than in the reader, so the console and the runtime keep the
+// uniform shape they are built on. The pair is asserted in
+// tests/modules/agent-settings-mcp-parity.test.ts.
+function dropOutputOnlyInputFields(
+  settings: ReturnType<typeof readBehaviorSettings>,
+): ReturnType<typeof readBehaviorSettings> {
+  const { promptAdherence, answerRelevance, ...checks } =
+    settings.guardrails.input.checks;
+  const { generationPrompt, ...input } = settings.guardrails.input;
+  return {
+    ...settings,
+    guardrails: {
+      ...settings.guardrails,
+      input: { ...input, checks } as typeof settings.guardrails.input,
+    },
+  };
+}
+
 // agent_settings_get: the normalized per-agent BEHAVIOR config (debounce/stt/tts/split/
 // serviceWindow + grounding). Read-only, tenant-fenced (a foreign agent_id → "agent not found").
 // credentialRef values are vault entry NAMES, never the secrets themselves.
@@ -492,7 +518,9 @@ export async function agentSettingsGet(
 
   try {
     const agent = await getAgent(ctx, agentId, base);
-    const settings = readBehaviorSettings(agent.settings);
+    const settings = dropOutputOnlyInputFields(
+      readBehaviorSettings(agent.settings),
+    );
     // The MCP contract speaks NAMES: project the stored `vault:<id>` refs back to entry names, over
     // the same (block, field) list the write path resolves them from.
     for (const { path } of SETTINGS_CREDENTIAL_PATHS) {

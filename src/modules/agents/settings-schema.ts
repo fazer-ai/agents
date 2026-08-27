@@ -471,7 +471,36 @@ const sharedChecks = {
     .describe("matches the names in guardrails.competitors"),
 };
 
-const inputChecks = z.looseObject(sharedChecks);
+// The two reply checks are REFUSED under `input`, not merely left unpublished. Splitting the
+// published shape was round 4; round 5 showed it was half a fix, because a loose object still
+// ACCEPTS them — and the shape `agent_settings_get` returns carries all five, so a caller doing the
+// most ordinary thing (read, change one field, write back) would have sent them and had them stored
+// as a silent no-op. The refusal names the field.
+//
+// Refused HERE and dropped from the read projection (modules/mcp/write.ts) together, because only
+// one of the two would trade a silent no-op for a broken round trip: a `get` that returns a field
+// the `set` refuses is a 400 for a caller who changed nothing.
+//
+// Still LOOSE otherwise, for the reason the header gives: an undeclared key reaches the readers as
+// before, so a field someone adds to the reader is merged rather than silently dropped. What is
+// refused is the specific, known, direction-wrong set.
+const OUTPUT_ONLY_CHECK_FIELDS = [
+  "promptAdherence",
+  "answerRelevance",
+] as const;
+
+const inputChecks = z.looseObject(sharedChecks).check((ctx) => {
+  for (const field of OUTPUT_ONLY_CHECK_FIELDS) {
+    if ((ctx.value as Record<string, unknown>)?.[field] !== undefined) {
+      ctx.issues.push({
+        code: "custom",
+        input: ctx.value,
+        path: [field],
+        message: `${field} only applies to the output direction (activeChecks drops it for input)`,
+      });
+    }
+  }
+});
 
 const outputChecks = z.looseObject({
   ...sharedChecks,
@@ -497,10 +526,24 @@ const directionCommon = {
   templateMessage: z.string().optional(),
 };
 
-const guardrailInput = z.looseObject({
-  ...directionCommon,
-  checks: inputChecks.optional(),
-});
+const guardrailInput = z
+  .looseObject({
+    ...directionCommon,
+    checks: inputChecks.optional(),
+  })
+  .check((ctx) => {
+    if (
+      (ctx.value as Record<string, unknown>)?.generationPrompt !== undefined
+    ) {
+      ctx.issues.push({
+        code: "custom",
+        input: ctx.value,
+        path: ["generationPrompt"],
+        message:
+          "generationPrompt only applies to the output direction (input analysis never generates a replacement reply)",
+      });
+    }
+  });
 
 const guardrailOutput = z.looseObject({
   ...directionCommon,

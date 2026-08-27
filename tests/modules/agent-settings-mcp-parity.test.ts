@@ -444,6 +444,51 @@ describe("the guardrail directions publish only what their direction uses", () =
     expect(Object.keys(output?.properties ?? {})).toContain("generationPrompt");
   });
 
+  // ROUND 5. Publishing different shapes was half a fix: a loose object still ACCEPTS the field, so
+  // the silent no-op survived the split. And the read is what makes that concrete — the shape
+  // `agent_settings_get` returns carried all five checks, so a caller doing the most ordinary thing
+  // (read, change one field, write it back) would have sent them.
+  test("the input direction REFUSES the output-only fields, naming them", () => {
+    const patch = z.object(BEHAVIOR_PATCH_SHAPE);
+    for (const field of ["promptAdherence", "answerRelevance"]) {
+      const r = patch.safeParse({
+        guardrails: { input: { checks: { [field]: true } } },
+      });
+      expect(r.success).toBe(false);
+      if (!r.success) {
+        expect(JSON.stringify(r.error.issues)).toContain(field);
+      }
+    }
+    expect(
+      patch.safeParse({ guardrails: { input: { generationPrompt: "x" } } })
+        .success,
+    ).toBe(false);
+  });
+
+  test("the same fields are accepted under output", () => {
+    const patch = z.object(BEHAVIOR_PATCH_SHAPE);
+    expect(
+      patch.safeParse({
+        guardrails: {
+          output: {
+            checks: { promptAdherence: true, answerRelevance: true },
+            generationPrompt: "x",
+          },
+        },
+      }).success,
+    ).toBe(true);
+  });
+
+  test("input still accepts a field nobody has declared yet", () => {
+    // The block stays LOOSE on purpose: what is refused is the known, direction-wrong set, not
+    // everything unfamiliar. A field added to the reader by someone who never opens this file must
+    // still merge rather than be dropped.
+    const patch = z.object(BEHAVIOR_PATCH_SHAPE);
+    expect(
+      patch.safeParse({ guardrails: { input: { somethingNew: 1 } } }).success,
+    ).toBe(true);
+  });
+
   test("the shared checks are on both", async () => {
     const published = await publishedProperties();
     for (const dir of ["input", "output"]) {

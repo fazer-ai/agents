@@ -287,6 +287,65 @@ describe.skipIf(!dbUp)("the four blocks reach the agent through MCP", () => {
     expect(r.ok).toBe(false);
   });
 
+  // ROUND 5, and the reason the read and the write had to move together: a caller reads the config,
+  // changes one thing, writes it back. If the read returns a field the write refuses, that caller
+  // gets a 400 having changed nothing — a broken round trip is worse than the silent no-op it
+  // replaced. This is the whole loop, against a real database.
+  test("what agent_settings_get returns can be written straight back", async () => {
+    const got = await agentSettingsGet(
+      principal(),
+      { agent_id: String(agentId) },
+      { base: appDb },
+    );
+    expect(got.ok).toBe(true);
+    if (!got.ok) return;
+    const settings = (got.data as { settings: Record<string, unknown> })
+      .settings;
+
+    const back = await agentSettingsSet(
+      principal(),
+      {
+        agent_id: String(agentId),
+        dry_run: false,
+        guardrails: settings.guardrails,
+      } as never,
+      { base: appDb },
+    );
+    expect(back.ok).toBe(true);
+  });
+
+  test("and the read does not carry the output-only fields under input", async () => {
+    const got = await agentSettingsGet(
+      principal(),
+      { agent_id: String(agentId) },
+      { base: appDb },
+    );
+    expect(got.ok).toBe(true);
+    if (!got.ok) return;
+    const g = (
+      got.data as {
+        settings: {
+          guardrails: {
+            input: { checks: Record<string, unknown> } & Record<
+              string,
+              unknown
+            >;
+            output: { checks: Record<string, unknown> } & Record<
+              string,
+              unknown
+            >;
+          };
+        };
+      }
+    ).settings.guardrails;
+    expect(Object.keys(g.input.checks)).not.toContain("promptAdherence");
+    expect(Object.keys(g.input.checks)).not.toContain("answerRelevance");
+    expect(Object.keys(g.input)).not.toContain("generationPrompt");
+    // Output keeps all of them: the asymmetry is the point, not a trim.
+    expect(Object.keys(g.output.checks)).toContain("promptAdherence");
+    expect(Object.keys(g.output)).toContain("generationPrompt");
+  });
+
   test("null clears one rule and leaves the others", async () => {
     const r = await agentSettingsSet(
       principal(),

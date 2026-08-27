@@ -45,6 +45,11 @@ const INVARIANTS: Array<{
     sql: /INHERITS/,
   },
   {
+    what: "refuses a runtime role that cannot SET ROLE into it",
+    ts: /cannot SET ROLE to/,
+    sql: /cannot SET ROLE to/,
+  },
+  {
     what: "asks for the SET capability, not mere membership, on 16+",
     ts: /pg_has_role\(\$1, \$2, 'SET'\)/,
     sql: /THEN 'SET' ELSE 'MEMBER' END/,

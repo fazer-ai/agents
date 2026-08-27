@@ -30,6 +30,7 @@ import { FLEET_ROLE_FN } from "@/lib/tenancy/fleet-role";
 export abstract class RuntimeIsolationError extends Error {}
 
 export const FLEET_INHERITED_REASON = "inherits the fleet role";
+export const FLEET_UNREACHABLE_REASON = "cannot SET ROLE to the fleet role";
 
 // The fleet role's name carries the database it belongs to, so a database RESTORED under a new name
 // resolves a name its own dumped policies do not mention. Nothing errors: `SET ROLE` succeeds (the
@@ -94,6 +95,7 @@ interface RoleRow {
 interface FleetRow {
   fleet_role: string | null;
   inherits_fleet: boolean;
+  can_set_role: boolean;
   misnamed_fleet_policies: string | null;
 }
 
@@ -145,6 +147,13 @@ export async function assertRuntimeRoleIsNotSuperuser(
   //
   // `to_regrole` guards the name for the same shape of reason: a `::regrole` cast RAISES on a name
   // no role carries, and the resolved role legitimately does not exist yet before bootstrap.
+  // Named once: three copies of this literal is how the type grew a field and one of them did not.
+  const NO_FLEET: FleetRow = {
+    fleet_role: null,
+    inherits_fleet: false,
+    can_set_role: false,
+    misnamed_fleet_policies: null,
+  };
   const hasFn = await client_hasFleetFunction(db);
   const fleet: FleetRow = hasFn
     ? ((
@@ -153,6 +162,13 @@ export async function assertRuntimeRoleIsNotSuperuser(
         f.fleet_role,
         CASE WHEN to_regrole(f.fleet_role) IS NULL THEN false
              ELSE pg_has_role(current_user, f.fleet_role, 'USAGE') END AS inherits_fleet,
+        -- The capability, not the membership: since 16 a grant carries its own SET option and
+        -- MEMBER ignores it, so SET FALSE reads as healthy while every SET ROLE is denied.
+        -- SET is 16-only as a privilege type, hence the version branch.
+        CASE WHEN to_regrole(f.fleet_role) IS NULL THEN false
+             ELSE pg_has_role(current_user, f.fleet_role,
+                    CASE WHEN current_setting('server_version_num')::int >= 160000
+                         THEN 'SET' ELSE 'MEMBER' END) END AS can_set_role,
         (
           SELECT string_agg(DISTINCT p.polname || ' on ' || c.relname, ', ')
             FROM pg_policy p
@@ -165,16 +181,8 @@ export async function assertRuntimeRoleIsNotSuperuser(
         ) AS misnamed_fleet_policies
       FROM (SELECT ${FLEET_ROLE_FN} AS fleet_role) f
     `)
-      )[0] ?? {
-        fleet_role: null,
-        inherits_fleet: false,
-        misnamed_fleet_policies: null,
-      })
-    : {
-        fleet_role: null,
-        inherits_fleet: false,
-        misnamed_fleet_policies: null,
-      };
+      )[0] ?? NO_FLEET)
+    : NO_FLEET;
 
   // Asked before the privilege questions below, and not covered by ALLOW_SUPERUSER_RUNTIME: that
   // flag means "I accept that RLS may be a no-op here", and this is not about RLS being skipped —
@@ -195,6 +203,13 @@ export async function assertRuntimeRoleIsNotSuperuser(
   // to permit, which is why it must not be reported when the role is already privileged.
   if (fleet.inherits_fleet && !row.rolsuper && !row.rolbypassrls) {
     reasons.push(FLEET_INHERITED_REASON);
+  }
+  // The opposite failure, and it belongs here rather than in a warning: `asSuperAdminOn` is how an
+  // API key is verified (the tenant is unknown until the key row is read), how a Chatwoot route is
+  // resolved, how the scheduler claims work, and how the first admin is created. Without the
+  // capability the process starts and then fails every authenticated request.
+  if (fleet.fleet_role && !fleet.can_set_role) {
+    reasons.push(FLEET_UNREACHABLE_REASON);
   }
   if (reasons.length === 0) return; // safe
 

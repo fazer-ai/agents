@@ -61,9 +61,13 @@ Two consequences worth knowing before touching this:
   Two different questions: `SET ROLE` needs the membership's SET option, while INHERITING it applies
   `fleet_super_admin` to the runtime role passively — and then an ordinary scoped request reads
   every tenant's rows with no error and no plan difference. The grant is made
-  `WITH INHERIT FALSE, SET TRUE` and the effective state is asserted in two places —
-  `db-bootstrap` refuses to provision an inheriting one, and [`db-guard`](../src/lib/db-guard.ts)
-  refuses to serve. On PostgreSQL 16+ the grant's own options are the control: `ALTER ROLE …
+  `WITH INHERIT FALSE, SET TRUE` and the effective state is asserted in two places — `db-bootstrap`
+  refuses to provision, and [`db-guard`](../src/lib/db-guard.ts) refuses to serve. **Both** states
+  refuse: inheriting is a silent isolation loss, and being unable to `SET ROLE` is not "only fleet
+  administration" — `asSuperAdminOn` is how an API key is verified (the tenant is unknown until the
+  key row is read), how a Chatwoot route is resolved, how the scheduler claims work and how the
+  first admin is created, so an installation without it starts and then fails every authenticated
+  request. On PostgreSQL 16+ the grant's own options are the control: `ALTER ROLE …
   NOINHERIT` does **not** override an existing membership, and `pg_has_role(…, 'MEMBER')` answers
   true for a grant made `SET FALSE` that denies every `SET ROLE`.
 - **A database restored under a different name resolves a name its own policies do not carry.**

@@ -96,6 +96,17 @@ describe.skipIf(!dbUp)("assertRuntimeRoleIsNotSuperuser", () => {
       await db.$executeRawUnsafe(
         `GRANT CONNECT ON DATABASE "${dbName(suUrl as string)}" TO ${SAFE_ROLE}`,
       );
+      // A runtime role that cannot SET ROLE into the fleet role is REFUSED now, so a fixture
+      // standing for "a healthy runtime role" has to be one — the state this grant creates is
+      // exactly what `db-bootstrap` provisions.
+      const fleet = (
+        (await db.$queryRawUnsafe(`SELECT ${FLEET_ROLE_FN} AS role`)) as Array<{
+          role: string;
+        }>
+      )[0]?.role as string;
+      await db.$executeRawUnsafe(
+        `GRANT "${fleet}" TO ${SAFE_ROLE} WITH INHERIT FALSE, SET TRUE`,
+      );
     });
     const tmpUrl = (suUrl as string).replace(
       /\/\/[^@]+@/,

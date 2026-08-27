@@ -2,12 +2,12 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Client } from "pg";
 import { FLEET_ROLE_EXPR } from "@/lib/tenancy/fleet-role";
 import {
+  assertFleetMembership,
   assertFleetRoleIsUnprivileged,
   assertRuntimeRoleIsUnprivileged,
   fleetMembershipRepair,
   parseAppRole,
   planRoleProvisioning,
-  reviewFleetMembership,
 } from "../../scripts/db-bootstrap";
 
 // The bug this file exists for only exists on a database whose ADMINISTRATIVE role is not a real
@@ -372,26 +372,26 @@ describe("planRoleProvisioning", () => {
     });
   });
 
-  describe("reviewFleetMembership", () => {
+  describe("assertFleetMembership", () => {
     const repair = fleetMembershipRepair("app_role", "fleet_role", 170000);
 
-    test("member, not inheriting, is the only state with nothing to say", () => {
-      expect(
-        reviewFleetMembership(
+    test("able to SET ROLE and not inheriting is the only state that passes", () => {
+      expect(() =>
+        assertFleetMembership(
           "app_role",
           "fleet_role",
           { can_set_role: true, usage: false },
           repair,
         ),
-      ).toBeNull();
+      ).not.toThrow();
     });
 
-    // The two failures are opposite in severity, and the shape of the answer is what says so: one
-    // throws, the other returns a line to log. Asserting only the message text of both would let a
-    // change that made them the same severity pass.
+    // Both refuse. The first version of this made the missing capability a WARNING, on the claim
+    // that only fleet administration breaks — counting the call sites says otherwise, and the
+    // message now names them, so a change back to warning has to argue with the text.
     test("inheriting THROWS, and the repair keeps SET ROLE possible", () => {
       const boom = () =>
-        reviewFleetMembership(
+        assertFleetMembership(
           "app_role",
           "fleet_role",
           { can_set_role: true, usage: true },
@@ -409,17 +409,22 @@ describe("planRoleProvisioning", () => {
     // NOTE: the state below is what a grant with `SET FALSE` produces, and it is NOT "not a member".
     // `pg_has_role(…, 'MEMBER')` answers true there while `SET ROLE` is denied (measured on 17.10),
     // so asking the membership instead of the capability is how a broken install reads as healthy.
-    test("no SET capability only WARNS, and says what stops working", () => {
-      const warning = reviewFleetMembership(
-        "app_role",
-        "fleet_role",
-        { can_set_role: false, usage: false },
-        repair,
-      );
-      expect(warning).toContain("cannot SET ROLE");
-      expect(warning).toContain("permission denied to set role");
-      expect(warning).toContain("tenant-scoped traffic is unaffected");
-      expect(warning).toContain(repair);
+    test("no SET capability is refused too, and names what stops working", () => {
+      const boom = () =>
+        assertFleetMembership(
+          "app_role",
+          "fleet_role",
+          { can_set_role: false, usage: false },
+          repair,
+        );
+      expect(boom).toThrow(/cannot SET ROLE/);
+      // The call sites that make this fatal rather than cosmetic. The first version of this check
+      // WARNED, on the claim that only fleet administration breaks; counting them says otherwise —
+      // an API key cannot be verified before its tenant is known, so that lookup is one of these.
+      expect(boom).toThrow(/API key/);
+      expect(boom).toThrow(/Chatwoot route/);
+      expect(boom).toThrow(/scheduler/);
+      expect(boom).toThrow(/first admin/);
     });
 
     // NOTE: inheriting without membership cannot happen on a healthy catalog, and the order of the
@@ -427,7 +432,7 @@ describe("planRoleProvisioning", () => {
     // loses data, so it is asked first — and it is the one that refuses.
     test("inheritance is reported ahead of a missing SET capability", () => {
       expect(() =>
-        reviewFleetMembership(
+        assertFleetMembership(
           "app_role",
           "fleet_role",
           { can_set_role: false, usage: true },
@@ -734,7 +739,7 @@ describe.skipIf(!dbUp)(
     // behind, and a CREATEROLE administrator holds no ADMIN over a role it did not create. The
     // membership grant is then refused, exactly like the three above, and for the same reason it is
     // survived: nothing tenant-scoped depends on it.
-    test("a fleet role this administrator cannot grant is reported, not crashed on", async () => {
+    test("a fleet role this administrator cannot grant stops the boot, with the repair", async () => {
       const db = su as Client;
       const fleet = await probeFleetRole();
       const FLEET_ROLE = `"${fleet}"`;
@@ -748,14 +753,15 @@ describe.skipIf(!dbUp)(
       await db.query(`REVOKE ${FLEET_ROLE} FROM ${APP_ROLE}`);
 
       const refused = await runBootstrap();
-      expect(
-        `${refused.exitCode} ${refused.stdout}${refused.stderr}`,
-      ).toStartWith("0 ");
+      expect(refused.exitCode).toBe(1);
       const out = `${refused.stdout}${refused.stderr}`;
       expect(out).toContain(`could not grant ${FLEET_ROLE}`);
       // The warning has to carry BOTH halves of the instruction: the statement, and who can run it.
       // The operator this message reaches is precisely the one the statement refuses.
       expect(out).toContain("cannot SET ROLE");
+      // It REFUSES rather than warning: `asSuperAdminOn` is how an API key is verified, so an
+      // installation without it starts and then fails every authenticated request.
+      expect(out).toContain("API key");
       expect(out).toContain("WITH INHERIT FALSE, SET TRUE;");
       expect(out).toContain("WITH ADMIN OPTION;");
 
@@ -792,7 +798,7 @@ describe.skipIf(!dbUp)(
     // MEMBER, so a check written against membership reports a healthy install while every
     // `asSuperAdmin` call is denied. Bootstrap's re-grant normally repairs it — which is why the
     // ADMIN OPTION has to be gone for the detection to be reachable at all.
-    test("a membership that cannot SET ROLE is reported, not read as healthy", async () => {
+    test("a membership that cannot SET ROLE stops the boot, not read as healthy", async () => {
       const db = su as Client;
       const fleet = await probeFleetRole();
       const FLEET_ROLE = `"${fleet}"`;
@@ -825,7 +831,7 @@ describe.skipIf(!dbUp)(
       expect(denied).toContain("permission denied to set role");
 
       const reported = await runBootstrap();
-      expect(reported.exitCode).toBe(0);
+      expect(reported.exitCode).toBe(1);
       expect(`${reported.stdout}${reported.stderr}`).toContain(
         "cannot SET ROLE",
       );

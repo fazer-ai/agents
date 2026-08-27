@@ -187,10 +187,15 @@ export function fleetMembershipRepair(
 //                  no plan difference, nothing in a log: measured on this schema as 400 rows across
 //                  2 tenants where the fence expects 200 across 1. Silent isolation loss, so this
 //                  REFUSES — serving is the harm.
-//   SET false   -> `asSuperAdmin` cannot switch role, so every cross-tenant call fails at the
-//                  point of use with `permission denied to set role`. Loud, contained, and no
-//                  tenant-scoped traffic is affected — so this WARNS. Refusing here would take down
-//                  the working nine-tenths of an install to report the broken tenth.
+//   SET false   -> `asSuperAdmin` cannot switch role. This REFUSES too, and the first version of
+//                  this check warned instead, on the claim that only fleet administration breaks
+//                  and tenant traffic is untouched. Counting the call sites says otherwise:
+//                  `asSuperAdminOn` is how an API key is verified (the tenant is not known until
+//                  the key row is read, so the lookup cannot be tenant-scoped), how a Chatwoot
+//                  route is resolved, how the scheduler claims work, and how the very first admin
+//                  is created. Without it the installation starts and then fails every
+//                  authenticated request. Crash-looping with the repair on screen beats serving
+//                  500s that name nothing.
 //
 // Asked of `pg_has_role` rather than of `pg_auth_members.inherit_option` for the reason the other
 // checks in this file already give: the column is 16-only, the function is the portable spelling,
@@ -207,13 +212,12 @@ export function fleetMembershipRepair(
 // So the grant is what has to carry `INHERIT FALSE`, and re-issuing it repairs an inherited
 // membership in place (no REVOKE needed, also measured).
 //
-// Returns a warning to log, or null when the membership is what it should be.
-export function reviewFleetMembership(
+export function assertFleetMembership(
   appRole: string,
   fleetRole: string,
   state: { can_set_role: boolean; usage: boolean },
   repair: string,
-): string | null {
+): void {
   if (state.usage) {
     throw new Error(
       `runtime role "${appRole}" INHERITS "${fleetRole}", which makes the cross-tenant policy ` +
@@ -222,13 +226,13 @@ export function reviewFleetMembership(
     );
   }
   if (!state.can_set_role) {
-    return (
-      `runtime role "${appRole}" cannot SET ROLE to "${fleetRole}", so every cross-tenant call ` +
-      "will fail with `permission denied to set role` (tenant-scoped traffic is unaffected). " +
-      `Repair with: ${repair}`
+    throw new Error(
+      `runtime role "${appRole}" cannot SET ROLE to "${fleetRole}". Every cross-tenant call fails ` +
+        "with `permission denied to set role`, and that is not only fleet administration: it is " +
+        "how an API key is verified, how a Chatwoot route is resolved, how the scheduler claims " +
+        `work, and how the first admin is created. Repair with: ${repair}`,
     );
   }
-  return null;
 }
 
 // The DDL that carries the password. It reads role and password from session GUCs rather than from
@@ -519,13 +523,12 @@ async function provisionFleetRole(
       [role, fleetRole],
     )
   ).rows[0];
-  const warning = reviewFleetMembership(
+  assertFleetMembership(
     role,
     fleetRole,
     membership ?? { can_set_role: false, usage: false },
     repair,
   );
-  if (warning) console.warn(`db-bootstrap: ${warning}`);
   return fleetRole;
 }
 

@@ -471,8 +471,10 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     // than refusing: `heldByAnotherParty` compares ids, so with no identity it cannot, the gate goes
     // LOOSE, and a conversation another AgentBot holds reads as ours. A live delivery never reaches
     // that state — its `agentBotId` is the route token's bot, and the route exists because the bot
-    // does. MEASURED before the fence existed: the turn ran and the reply was posted over the other
-    // bot's conversation.
+    // does. MEASURED before the fence existed: the turn ran and this stub accepted the post over the
+    // other bot's conversation. Against a real client it would not have sent — the persona's token
+    // is what posts, and a client built without one refuses by name (issue #79) — so the true cost
+    // of passing the null on is a model call spent to post nothing and a recovery reported anyway.
     const convId = 8950;
     const messageId = 9450;
     await seedConversation(convId, {

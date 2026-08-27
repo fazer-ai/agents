@@ -2587,6 +2587,40 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     expect(src.slice(durable, mark)).toContain("isTurnInFlight(handoffKey)");
   });
 
+  test("the turn's failure is reported by the turn, never by the block around it", async () => {
+    // `onDirectTurn` is how this module learns whether anybody was answered, and `{ kind: "error" }`
+    // is the one reading that costs a SECOND TURN: the row goes back to DEAD, the scheduler runs the
+    // whole delivery path again, the customer is answered twice and every side-effecting tool the
+    // first turn called runs a second time.
+    //
+    // The delivery path's direct-turn block also wraps the bookkeeping that follows the turn —
+    // settling the ledger, the unrouted line, clearing a surfaced error. Reported from the enclosing
+    // catch, "the turn failed" and "the turn ANSWERED and a write after it failed" arrive here as
+    // the same event. Today none of those three can throw, each swallowing its own failure; the
+    // contract must not rest on that staying true at three unrelated call sites.
+    //
+    // Structural, because what is being asserted is that a PATH does not exist. A behavioural test
+    // would have to add the throw it forbids.
+    const src = await Bun.file(
+      new URL("../../src/modules/chatwoot/webhook.ts", import.meta.url),
+    ).text();
+    const call = src.indexOf("const outcome = await runAgentTurn({");
+    expect(call).toBeGreaterThan(-1);
+    // The error report is inside the turn's own rejection handler, which starts at the `.then(`
+    // that settles it and ends before the bookkeeping does.
+    const settle = src.indexOf(").then(", call);
+    expect(settle).toBeGreaterThan(-1);
+    const handler = src.slice(settle, src.indexOf("\n          );", settle));
+    expect(handler).toContain('onDirectTurn?.({ kind: "error", error: err })');
+    expect(handler).toContain('onDirectTurn?.({ kind: "outcome"');
+    // And NOWHERE else in the file, which is what rules out the enclosing catch: the bookkeeping
+    // between the settlement and the catch may throw without this module hearing about it.
+    const reports = src.split('onDirectTurn?.({ kind: "error"').length - 1;
+    expect(reports).toBe(1);
+    const outcomes = src.split('onDirectTurn?.({ kind: "outcome"').length - 1;
+    expect(outcomes).toBe(1);
+  });
+
   describe("putting the row back", () => {
     // The compensating write both failure roads take, tested where it can be: against the real
     // table. Three answers, and the caller acts differently on each — the source assertion above is

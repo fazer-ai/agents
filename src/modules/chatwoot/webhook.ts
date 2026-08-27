@@ -3674,6 +3674,18 @@ export async function processChatwootDelivery(
       // inboxes with no Agent configured.
       if (!armed) {
         try {
+          // REPORTED FROM THE TURN'S OWN SETTLEMENT, never from the enclosing catch, and the two
+          // are not interchangeable. This `try` also wraps the bookkeeping that follows — settling
+          // the ledger, the unrouted line, clearing a surfaced error — and a caller reading
+          // `{ kind: "error" }` cannot tell "the turn failed" from "the turn ANSWERED and a write
+          // after it failed". The recovery (#295) acts on that difference: an error there puts the
+          // row back to DEAD and the scheduler runs the whole turn again, so the customer is
+          // answered twice and every side-effecting tool the turn called runs a second time.
+          //
+          // Today none of those three can throw — each swallows its own failure, and the flow-log
+          // write is fire-and-forget. That is the point: the contract must not rest on a property of
+          // three unrelated call sites that any of them could drop. Bound to the turn here, it
+          // cannot.
           const outcome = await runAgentTurn({
             tenantId: params.tenantId,
             instanceId: params.instanceId,
@@ -3682,8 +3694,16 @@ export async function processChatwootDelivery(
             base,
             deps: params.deps,
             authContext: gate.authContext,
-          });
-          params.onDirectTurn?.({ kind: "outcome", outcome });
+          }).then(
+            (o) => {
+              params.onDirectTurn?.({ kind: "outcome", outcome: o });
+              return o;
+            },
+            (err: unknown) => {
+              params.onDirectTurn?.({ kind: "error", error: err });
+              throw err;
+            },
+          );
           logger.info(
             "chatwoot agent turn: conv=%s event=%s outcome=%s mirror=%s",
             convLabel,
@@ -3757,7 +3777,6 @@ export async function processChatwootDelivery(
             });
           }
         } catch (err) {
-          params.onDirectTurn?.({ kind: "error", error: err });
           logger.error(
             "chatwoot agent turn failed (conv=%s): %s",
             convLabel,

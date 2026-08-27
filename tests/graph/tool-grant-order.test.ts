@@ -217,6 +217,56 @@ describe.skipIf(!dbUp)("the order a turn reads an agent's grants in", () => {
     expect(sel.mcpSelections.map((s) => s.connId)).toEqual([connA, connB]);
   });
 
+  test("and the order does not follow the database's collation", async () => {
+    // NOTE: The comparison is done in code, by UTF-16 code unit, and not as `ORDER BY name` — SQL
+    // would compare under the database's collation, and a bundle exported from one deployment is
+    // imported into another. Measured on exactly these two names: `en_US.utf8` (this test database)
+    // orders "…connection a" before "…connection B", and `C` orders them the other way round. Under
+    // `ORDER BY name` this case therefore fails here and passes on a `C` install, which is the shape
+    // of a rule that holds until the two ends of a transfer disagree.
+    const lower = await suDb.mcpServerConnection.create({
+      data: {
+        tenantId,
+        name: "Acme CRM production connection a",
+        transport: "streamableHttp",
+        url: "https://l.example.com/mcp",
+      },
+    });
+    const upper = await suDb.mcpServerConnection.create({
+      data: {
+        tenantId,
+        name: "Acme CRM production connection B",
+        transport: "streamableHttp",
+        url: "https://u.example.com/mcp",
+      },
+    });
+    await replaceAgentToolSelections(
+      ctx(),
+      agentId,
+      [lower.id, upper.id].map((id) => ({
+        source: "MCP" as const,
+        mcpServerConnectionId: String(id),
+        enabledTools: ["search"],
+      })),
+      appDb,
+    );
+    const sel = await runScopedOn(appDb, ctx(), (db) =>
+      loadToolSelections(db, agentId),
+    );
+    // NOTE: "B" (0x42) before "a" (0x61): code unit, not locale.
+    expect(sel.mcpSelections.map((x) => x.connId)).toEqual([
+      upper.id,
+      lower.id,
+    ]);
+    // NOTE: and the two really do contest one name, so the order decides who gets the plain one.
+    const byServer = await exposedNameByServer();
+    expect(byServer["Acme CRM production connection B"]).toBe(
+      "mcp__acme_crm_production_connecti__search",
+    );
+    await suDb.mcpServerConnection.delete({ where: { id: lower.id } });
+    await suDb.mcpServerConnection.delete({ where: { id: upper.id } });
+  });
+
   test("and where no name is contested, the order is invisible either way", async () => {
     // THE SAFETY CLAIM OF THIS CHANGE, measured rather than argued: reordering the read renames
     // nothing for an agent whose connections do not contest a name. Every tool is

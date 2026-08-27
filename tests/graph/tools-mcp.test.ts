@@ -240,13 +240,13 @@ describe("mcpServerSlug", () => {
   });
 
   test("falls back to a digest of the name when it has no usable chars", () => {
-    // The shape, not the literal digest: asserting the eight characters would make this a test of
+    // NOTE: The shape, not the literal digest: asserting the eight characters would make this a test of
     // sha256 and would have to be rewritten by anyone touching the fallback for a real reason.
     expect(mcpServerSlug("***")).toMatch(/^mcp_[0-9a-f]{8}$/);
   });
 
   test("and that fallback is the same for the same name, and different for a different one", () => {
-    // The property the transfer depends on (#412): the slug is a function of the name alone, so the
+    // NOTE: The property the transfer depends on (#412): the slug is a function of the name alone, so the
     // row id it used to carry cannot follow the connection into another tenant. Two names that both
     // sanitize to nothing must still land on two slugs, which is why the digest is taken over the raw
     // name and not over the (empty) sanitized one.

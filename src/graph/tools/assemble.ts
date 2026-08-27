@@ -1,5 +1,5 @@
 import type { StructuredToolInterface } from "@langchain/core/tools";
-import type { Prisma } from "@/../generated/prisma/client";
+import type { AgentToolSource, Prisma } from "@/../generated/prisma/client";
 import type { ScopedDb } from "@/lib/tenancy";
 import type { DocumentField } from "@/modules/documents/blocks";
 import { parseTemplateContent } from "@/modules/documents/validate";
@@ -114,6 +114,13 @@ export interface AgentToolSelections {
 // `@@unique([tenantId, catalogType, name])` on the instance). It is the same anchor a re-save needs,
 // so it replaces the id rather than joining it.
 //
+// BUT NOT `ORDER BY name` — the comparison is done here, in code, by UTF-16 code unit. SQL would
+// compare under the database's collation, and a bundle exported from one deployment is imported into
+// another: measured on the same two names, `en_US.utf8` orders "…connection a" before
+// "…connection B" and `C` orders them the other way round, so the pair inverts on arrival and each
+// name reaches the other server again — the very failure this is fixing, one layer down. A code-unit
+// comparison is the same on every runtime and every database.
+//
 // The instance is ordered by name ALONE, without its catalogType, because the only pair that can
 // contest a name is two instances of ONE catalog type — every toolpack prefixes its tools with its
 // own catalog (`calendar_`, `asaas_`, `drive_`), so no two catalog types expose a common name — and
@@ -125,11 +132,41 @@ export interface AgentToolSelections {
 // invisible either way (asserted in tests/graph/tool-grant-order.test.ts).
 const GRANT_ORDER: Prisma.AgentToolSelectionOrderByWithRelationInput[] = [
   { source: "asc" },
-  { mcpServerConnection: { name: "asc" } },
-  { integrationInstance: { name: "asc" } },
+  { mcpServerConnectionId: "asc" },
+  { integrationInstanceId: "asc" },
   { toolDefinitionId: "asc" },
   { documentTemplateId: "asc" },
 ];
+
+// The grant rows in assembly order: source first, then the source's NAME for the two sources that can
+// contest one, compared by code unit.
+//
+// A TOTAL order, and it has to be: a comparator that answers 0 for the rows without a name while
+// ordering the named ones among themselves is not transitive, and `Array.prototype.sort` is free to
+// return anything for one of those. The `?? ""` is what buys that — a grant whose relation row is
+// missing gets a position instead of tying with every row it meets.
+//
+// The source key on top of it buys the GROUPING, not the totality: it keeps the blocks the read
+// already delivered (`source: "asc"`) instead of interleaving MCP and integration rows by name.
+// Measured, removing it kills no test, because each source is dispatched into its own array below
+// and nothing reads `rows` as blocks. It stays as the cheaper half of a surprise for whoever does.
+function byContestedName(
+  a: {
+    source: AgentToolSource;
+    mcpServerConnection: { name: string } | null;
+    integrationInstance: { name: string } | null;
+  },
+  b: {
+    source: AgentToolSource;
+    mcpServerConnection: { name: string } | null;
+    integrationInstance: { name: string } | null;
+  },
+): number {
+  if (a.source !== b.source) return a.source < b.source ? -1 : 1;
+  const an = a.mcpServerConnection?.name ?? a.integrationInstance?.name ?? "";
+  const bn = b.mcpServerConnection?.name ?? b.integrationInstance?.name ?? "";
+  return an < bn ? -1 : an > bn ? 1 : 0;
+}
 
 // Loads every tool grant for an agent in one scoped read (DB only — no network; MCP connect/
 // discover and the toolpack build happen later, outside the tx). Resolves each MCP connection's
@@ -178,6 +215,7 @@ export async function loadToolSelections(
       integrationInstance: {
         select: {
           id: true,
+          name: true,
           catalogType: true,
           config: true,
           credentialRef: true,
@@ -209,7 +247,7 @@ export async function loadToolSelections(
     documentSelections: [],
   };
 
-  for (const row of rows) {
+  for (const row of [...rows].sort(byContestedName)) {
     switch (row.source) {
       case "NATIVE":
         // Explicit row ⇒ exactly this set (empty ⇒ none, fail-closed). The absence of a row keeps

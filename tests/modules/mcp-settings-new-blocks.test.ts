@@ -346,6 +346,51 @@ describe.skipIf(!dbUp)("the four blocks reach the agent through MCP", () => {
     expect(Object.keys(g.output)).toContain("generationPrompt");
   });
 
+  // ROUND 7. Round 6 forbade TEXT on handoff_to_human/kanban_move_card, reading prepare.ts as if the
+  // grouped note always won. It wins only when it is NON-EMPTY — so the flat value is live while the
+  // grouped one is blank, and forbidding it broke the get→set round trip for any agent that had one.
+  test("a legacy guidance on a shadowed name survives a read-modify-write", async () => {
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: {
+        settings: {
+          ...((
+            await suDb.agent.findUniqueOrThrow({
+              where: { id: agentId },
+              select: { settings: true },
+            })
+          ).settings as Record<string, unknown>),
+          toolGuidance: { handoff_to_human: "legacy note" },
+        },
+      },
+    });
+
+    const got = await agentSettingsGet(
+      principal(),
+      { agent_id: String(agentId) },
+      { base: appDb },
+    );
+    expect(got.ok).toBe(true);
+    if (!got.ok) return;
+    const settings = (got.data as { settings: Record<string, unknown> })
+      .settings;
+    expect(
+      (settings.toolGuidance as Record<string, unknown>).handoff_to_human,
+    ).toBe("legacy note");
+
+    // Echoed straight back, the way a client making an unrelated edit would.
+    const back = await agentSettingsSet(
+      principal(),
+      {
+        agent_id: String(agentId),
+        dry_run: false,
+        toolGuidance: settings.toolGuidance,
+      } as never,
+      { base: appDb },
+    );
+    expect(back.ok).toBe(true);
+  });
+
   test("null clears one rule and leaves the others", async () => {
     const r = await agentSettingsSet(
       principal(),

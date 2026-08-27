@@ -311,38 +311,36 @@ describe("toolGuidance and toolPreconditions publish the native catalog", () => 
     }
   });
 
-  // ROUND 6. Every native name is a PROPERTY of toolGuidance, but two of them are forbidden values:
-  // prepare.ts lets handoff.instructions and kanban.instructions win over this map, so a value here
-  // for those two is stored and never used. A precondition on the same tools is NOT affected — that
-  // is a different mechanism, and handoff_to_human is the case issue #101 exists for.
-  test("toolGuidance forbids the two slots another block owns", async () => {
-    const published = await publishedProperties();
+  // ROUND 6 forbade text on handoff_to_human and kanban_move_card, on the reading that the grouped
+  // config overwrites them. ROUND 7 showed that reading was wrong: prepare.ts overwrites only when
+  // the grouped note is NON-EMPTY, so the flat value IS used while the grouped one is blank. The
+  // field is functional, not dead — the difference is precedence, and precedence belongs in the
+  // description (docs/mcp.md), not in a prohibition. Forbidding it also broke the get→set round
+  // trip, since readToolGuidance returns a stored value for those two names like any other.
+  test("the two shadowed names still take text, because they are still used", () => {
     const patch = z.object(BEHAVIOR_PATCH_SHAPE);
     for (const name of ["handoff_to_human", "kanban_move_card"]) {
-      const field = published.toolGuidance?.[name] as Record<string, unknown>;
-      expect(String(field?.description)).toContain("owned by");
-      // TEXT is refused (it would be stored and never used)...
       expect(
-        patch.safeParse({ toolGuidance: { [name]: "some note" } }).success,
-      ).toBe(false);
-      // ...but the tombstone still works, because a legacy value can be there to clear.
-      expect(patch.safeParse({ toolGuidance: { [name]: null } }).success).toBe(
-        true,
-      );
+        patch.safeParse({ toolGuidance: { [name]: "a note" } }).success,
+      ).toBe(true);
     }
-    // and the others still take text
-    expect(JSON.stringify(published.toolGuidance?.private_note)).not.toContain(
-      '"not"',
-    );
   });
 
-  test("a precondition on those same tools is untouched", async () => {
-    const published = await publishedProperties();
-    for (const name of ["handoff_to_human", "kanban_move_card"]) {
-      expect(JSON.stringify(published.toolPreconditions?.[name])).not.toContain(
-        '"not"',
-      );
-    }
+  test("and the precedence is published where a caller reads it", async () => {
+    const tools = await publishedProperties();
+    const desc = String(
+      (tools.toolGuidance as never as { description?: string })?.description ??
+        "",
+    );
+    void desc;
+    const patch = z.object(BEHAVIOR_PATCH_SHAPE);
+    const block = (
+      patch.shape.toolGuidance as unknown as {
+        unwrap: () => { description?: string };
+      }
+    ).unwrap();
+    expect(String(block.description)).toContain("PRECEDENCE");
+    expect(String(block.description)).toContain("handoff.instructions");
   });
 
   test("a name added to the catalog needs no edit here", () => {

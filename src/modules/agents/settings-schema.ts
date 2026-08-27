@@ -617,39 +617,9 @@ const nativeToolKeys = <T extends z.ZodTypeAny>(value: T) => {
   );
 };
 
-// NOTE: TWO SLOTS ARE OWNED BY ANOTHER BLOCK, and writing them here is accepted-and-dead configuration.
-// `prepare.ts` lets `handoff.instructions` and `kanban.instructions` WIN over the flat map for their
-// two tools, and the console only ever writes them there — so a value in this map for either name is
-// stored, audited, read back, and never reaches the tool description. Published as forbidden, with
-// the owning field named, rather than silently accepted (docs/mcp.md: a configuration the write
-// accepts and the runtime never acts on is the one outcome a caller cannot discover by trying).
-// NOTE: `null` and nothing else: writing TEXT here is dead configuration, but REMOVING a value already
-// stored has to stay possible — the same rule round 4 established for a non-native precondition. A
-// bag written before this shipped, or by an import, can hold one, and a field you can enforce and
-// cannot clear is the failure that finding named.
-const GUIDANCE_OWNED_ELSEWHERE = {
-  handoff_to_human: z
-    .null()
-    .optional()
-    .describe(
-      "owned by handoff.instructions, which wins over this map; null clears a legacy value",
-    ),
-  kanban_move_card: z
-    .null()
-    .optional()
-    .describe(
-      "owned by kanban.instructions, which wins over this map; null clears a legacy value",
-    ),
-};
-
-const toolGuidance = z
-  .looseObject({
-    ...(nativeToolKeys(z.string().nullable()) as unknown as z.ZodObject).shape,
-    ...GUIDANCE_OWNED_ELSEWHERE,
-  })
-  .describe(
-    `per-native-tool guidance appended to that tool's description; null clears one. A key outside the catalog is dropped by the reader, so only the names published here take effect. Each note is refused above ${TOOL_INSTRUCTIONS_MAX} characters, not trimmed.`,
-  );
+const toolGuidance = nativeToolKeys(z.string().nullable()).describe(
+  `per-native-tool guidance appended to that tool's description; null clears one. A key outside the catalog is dropped by the reader, so only the names published here take effect. Each note is refused above ${TOOL_INSTRUCTIONS_MAX} characters, not trimmed. PRECEDENCE: handoff_to_human and kanban_move_card also have a note in their own block (handoff.instructions, kanban.instructions); a non-empty value THERE wins over this map for that tool, so the value here applies only while the grouped one is empty.`,
+);
 
 // NOTE: The field descriptions live on the BLOCK, once, rather than on each field — the value is
 // serialized once per key, so a per-field `.describe()` is published thirteen times. That alone was

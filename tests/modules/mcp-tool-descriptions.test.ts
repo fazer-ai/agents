@@ -165,8 +165,9 @@ const SETTINGS_DESC_CEILING = 2_000;
 // Calendar instance's config), so it was removed rather than paid for, taking it to 20,443. Then
 // review found the text caps missing from the new blocks' descriptions — a caller cannot build a
 // valid call from tools/list without failing first — and publishing them cost 552 characters, to
-// 20,995. Every figure here is one measured under the tree that ships; adding deltas would have
-// left a ceiling calibrated against two trees that never did.
+// 20,995. A later round added the guidance PRECEDENCE sentence (handoff/kanban notes live in their
+// own block and win there), taking it to 21,108. Every figure here is one measured under the tree
+// that ships; adding deltas would have left a ceiling calibrated against trees that never did.
 //
 // Paid down before it was raised, and only where it cost the caller nothing: the per-field
 // `.describe()` on the two name-keyed blocks moved to the BLOCK, since a field description inside a
@@ -179,7 +180,7 @@ const SETTINGS_DESC_CEILING = 2_000;
 // a refusal, which is the exact hazard tests/api/v1/write-body-required.test.ts exists to keep out
 // of this codebase. The thirteen copies are what buys a refusal that can only name what the SERVER
 // declared.
-const SETTINGS_SCHEMA_CEILING = 21_100;
+const SETTINGS_SCHEMA_CEILING = 21_200;
 
 describe("MCP tool descriptions", () => {
   test("agent_settings_set stays under its ceiling", async () => {

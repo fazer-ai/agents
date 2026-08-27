@@ -127,19 +127,6 @@ export async function agentCreate(
     }
     const created = await createAgent(ctx, input, base);
     const target = `agent:${created.id}`;
-    const afterProj = {
-      id: created.id,
-      name: created.name,
-      enabled: created.enabled,
-    };
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "agent.create",
-      target,
-      before: null,
-      after: truncForAudit(afterProj),
-    });
     return ok({ dryRun: false, applied: true, target, agent: created });
   } catch (e) {
     return failOf(e);
@@ -210,14 +197,6 @@ export async function agentUpdate(
     const appliedProj: Record<string, unknown> = {};
     for (const k of keys)
       appliedProj[k] = (updated as unknown as Record<string, unknown>)[k];
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "agent.update",
-      target,
-      before: truncForAudit(beforeProj),
-      after: truncForAudit(appliedProj),
-    });
     return ok({
       dryRun: false,
       applied: true,
@@ -252,18 +231,6 @@ export async function agentClone(
       });
     }
     const clone = await cloneAgent(ctx, id, args.name, base);
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "agent.clone",
-      target: `agent:${clone.id}`,
-      before: null,
-      after: truncForAudit({
-        id: clone.id,
-        name: clone.name,
-        clonedFrom: source.id,
-      }),
-    });
     return ok({ dryRun: false, applied: true, agent: clone });
   } catch (e) {
     return failOf(e);
@@ -321,19 +288,6 @@ export async function agentImport(
   // structured warnings (reused components / missing credentials) for the operator to resolve.
   try {
     const { agent, warnings } = await importAgent(ctx, args.export, base);
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "agent.import",
-      target: `agent:${agent.id}`,
-      before: null,
-      after: truncForAudit({
-        id: agent.id,
-        name: agent.name,
-        enabled: agent.enabled,
-        mode: agent.mode,
-      }),
-    });
     return ok({ dryRun: false, applied: true, agent, warnings });
   } catch (e) {
     return failOf(e);
@@ -363,14 +317,6 @@ export async function agentDelete(
       });
     }
     await deleteAgent(ctx, id, base);
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "agent.delete",
-      target,
-      before: truncForAudit(beforeProj),
-      after: null,
-    });
     return ok({ dryRun: false, applied: true, target });
   } catch (e) {
     return failOf(e);
@@ -425,14 +371,6 @@ export async function agentToolsSet(
       });
     }
     const view = await replaceAgentToolSelections(ctx, id, grants, base);
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "agent.tools_set",
-      target,
-      before: truncForAudit({ grants: current.grants }),
-      after: truncForAudit({ grants: view.grants }),
-    });
     return ok({ dryRun: false, applied: true, target, grants: view.grants });
   } catch (e) {
     return failOf(e);

@@ -33,6 +33,7 @@ import {
   SETTINGS_CREDENTIAL_PATHS,
 } from "@/modules/agents/credential-paths";
 import { clampOversizedTextInPlace } from "@/modules/agents/text-caps";
+import { auditMutation } from "@/modules/audit/service";
 import {
   MAX_SCHEDULE_EXCEPTIONS,
   MAX_SCHEDULE_WINDOWS,
@@ -1128,9 +1129,20 @@ export async function importAgent(
       await db.agentToolSelection.createMany({ data: grantRows });
     }
 
+    const agent = toDto(created);
+    await auditMutation(db, ctx, {
+      action: "agent.import",
+      target: `agent:${agent.id}`,
+      after: {
+        id: agent.id,
+        name: agent.name,
+        enabled: agent.enabled,
+        mode: agent.mode,
+      },
+    });
     // De-dupe: the same credential/component referenced in several places should warn once, and the
     // toast count ("{{n}} warnings") must match the rendered list.
-    return { agent: toDto(created), warnings: dedupeWarnings(warnings) };
+    return { agent, warnings: dedupeWarnings(warnings) };
   });
 }
 

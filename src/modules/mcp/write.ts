@@ -41,7 +41,6 @@ import {
   updateAgent,
 } from "@/modules/agents/service";
 import { BEHAVIOR_PATCH_SHAPE } from "@/modules/agents/settings-schema";
-import { truncForAudit } from "@/modules/audit/projection";
 import { type AuditEntry, recordAudit } from "@/modules/audit/service";
 import type { LoadChatwootClientDeps } from "@/modules/chatwoot/instance";
 import { readDebugModes } from "@/modules/flowlog/debug-mode";
@@ -380,20 +379,7 @@ export async function promptSet(
       return ok({ dryRun: true, target, diff });
     }
 
-    const updated = await updateAgent(
-      ctx,
-      agentId,
-      { systemPrompt: args.system_prompt },
-      base,
-    );
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "agent.prompt_set",
-      target,
-      before: truncForAudit(beforeProj),
-      after: truncForAudit({ systemPrompt: updated.systemPrompt }),
-    });
+    await updateAgent(ctx, agentId, { systemPrompt: args.system_prompt }, base);
     return ok({ dryRun: false, applied: true, target, diff });
   } catch (e) {
     if (e instanceof AppError) return err(e.message);
@@ -697,14 +683,6 @@ export async function agentSettingsSet(
     for (const key of Object.keys(patch) as (keyof BehaviorSettingsPatch)[]) {
       afterAppliedProj[key] = afterApplied[key];
     }
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "agent.settings_set",
-      target,
-      before: truncForAudit(beforeProj),
-      after: truncForAudit(afterAppliedProj),
-    });
     return ok({
       dryRun: false,
       applied: true,

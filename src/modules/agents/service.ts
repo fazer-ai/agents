@@ -14,12 +14,14 @@ import {
 } from "@/lib/errors";
 import { parseInput } from "@/lib/parse-input";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
+import { agentUpdateAudit } from "@/modules/agents/audit-projection";
 import { collectCredentialRefWrites } from "@/modules/agents/credential-paths";
 import { collectOversizedTextChanges } from "@/modules/agents/text-caps";
 import {
   invalidToolPreconditions,
   parseToolPrecondition,
 } from "@/modules/agents/tool-preconditions";
+import { auditMutation } from "@/modules/audit/service";
 import { isOutOfHoursNow, parseSchedule } from "@/modules/business-hours/hours";
 import { renameAgentBots } from "@/modules/chatwoot/provisioning";
 import { invalidateRouteTokenCache } from "@/modules/chatwoot/route-token-cache";
@@ -686,6 +688,13 @@ export async function updateAgent(
     // read-compute-write against concurrent saves: without it, a save that read the old ON state
     // could land last after another save turned follow-up OFF, restoring ON with the STALE watermark
     // and re-exposing the pre-arm backlog to the sweep. RLS still applies to the raw read.
+    // The full row, for the trail. The raw lock below reads the four columns the follow-up fence
+    // needs; the record answers for every column an operator can write, and which of the three
+    // actions this call IS comes from comparing them (see audit-projection.ts).
+    const beforeRow = await db.agent.findUnique({
+      where: { id },
+      select: AGENT_SELECT,
+    });
     const beforeRows = await db.$queryRaw<
       Array<{
         enabled: boolean;
@@ -778,7 +787,22 @@ export async function updateAgent(
       where: { id },
       select: AGENT_SELECT,
     });
-    return toDto(row);
+    const applied = toDto(row);
+    if (beforeRow) {
+      const audit = agentUpdateAudit(
+        toDto(beforeRow) as unknown as Record<string, unknown>,
+        applied as unknown as Record<string, unknown>,
+      );
+      if (audit) {
+        await auditMutation(db, ctx, {
+          action: audit.action,
+          target: `agent:${id}`,
+          before: audit.before,
+          after: audit.after,
+        });
+      }
+    }
+    return applied;
   });
   // Arm the sweep if settings were updated and follow-up is now enabled (idempotent).
   if (rest.settings !== undefined && ctx.tenantId !== null) {
@@ -921,7 +945,17 @@ export async function createAgent(
       },
       select: AGENT_SELECT,
     });
-    return toDto(row);
+    const created = toDto(row);
+    await auditMutation(db, ctx, {
+      action: "agent.create",
+      target: `agent:${created.id}`,
+      after: {
+        id: created.id,
+        name: created.name,
+        enabled: created.enabled,
+      },
+    });
+    return created;
   });
   // Arm the sweep if follow-up is enabled on the new agent (idempotent).
   const followUpCfg = readFollowUpConfig(dto.settings);
@@ -935,6 +969,12 @@ export async function deleteAgent(
   base: PrismaClient = basePrisma,
 ): Promise<void> {
   await runScopedOn(base, ctx, async (db) => {
+    // Read inside the transaction that deletes: the row is what the record is OF, and after the
+    // statement there is nothing left to name it with.
+    const doomed = await db.agent.findUnique({
+      where: { id },
+      select: { id: true, name: true },
+    });
     // Inbox.agentId and Experiment.agentId are plain references (no FK cascade) — null them so a
     // deleted agent leaves no dangling binding. AgentToolSelection cascades via its FK.
     await db.inbox.updateMany({
@@ -949,6 +989,12 @@ export async function deleteAgent(
     if (res.count === 0) {
       throw new NotFoundError("agent not found", "errors.agentNotFound");
     }
+    await auditMutation(db, ctx, {
+      action: "agent.delete",
+      target: `agent:${id}`,
+      before: { id: String(id), name: doomed?.name },
+      after: null,
+    });
   });
   // NOTE: ChatwootAgentBot cascades off the agent (schema.prisma: `onDelete: Cascade`), so deleting a
   // persona retires its route token without this module ever naming one. The receiver caches
@@ -1023,7 +1069,17 @@ export async function cloneAgent(
         })),
       });
     }
-    return toDto(created);
+    const clone = toDto(created);
+    await auditMutation(db, ctx, {
+      action: "agent.clone",
+      target: `agent:${clone.id}`,
+      after: {
+        id: clone.id,
+        name: clone.name,
+        clonedFrom: String(id),
+      },
+    });
+    return clone;
   });
 }
 
@@ -1636,6 +1692,9 @@ export async function replaceAgentToolSelections(
       }
     }
 
+    // The set as it stands, read before the delete-and-recreate replaces it. Same shape the view
+    // returns, so the row's two halves are comparable.
+    const grantsBefore = (await buildToolSelectionView(db, agentId)).grants;
     await db.agentToolSelection.deleteMany({ where: { agentId } });
     if (grants.length > 0) {
       await db.agentToolSelection.createMany({
@@ -1659,7 +1718,14 @@ export async function replaceAgentToolSelections(
       where: { id: agentId },
       data: { updatedAt: new Date() },
     });
-    return buildToolSelectionView(db, agentId);
+    const next = await buildToolSelectionView(db, agentId);
+    await auditMutation(db, ctx, {
+      action: "agent.tools_set",
+      target: `agent:${agentId}`,
+      before: { grants: grantsBefore },
+      after: { grants: next.grants },
+    });
+    return next;
   });
   // Heads-up for any open editor (other tab / another operator) — best-effort, metadata-only.
   if (ctx.tenantId !== null && view.agentUpdatedAt) {

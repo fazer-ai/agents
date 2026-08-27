@@ -248,6 +248,15 @@ export async function readContactAuthGrant(
   fingerprints: { identityHash: string; policyHash: string },
   opts: { signal?: AbortSignal; nowMs?: number } = {},
 ): Promise<{ context: AuthContext | null } | null> {
+  // NOT in the mutation queue, deliberately. A refusal that is IN FLIGHT is already covered — it is
+  // remembered before its delete is attempted, and the check below sees that. What a queue would add
+  // is ordering against a refusal that lands after this read started, and that is a different rule
+  // from the one this module makes: a check in flight is not invalidated by a verdict that lands
+  // during it (docs/contact-auth.md says as much about verdicts themselves), because "the read came
+  // first" and "the refusal came first" are both true readings of the same overlap. Serializing does
+  // not settle it, it only moves which side of the boundary the read falls on — measured, by
+  // reverting the queue here and watching every test still pass.
+  //
   // A write this process could not confirm outranks anything on disk. The retry belongs to the
   // caller (`retryUnconfirmedWrite`), which runs under both modes; what belongs here is refusing to
   // serve a row while one stands.

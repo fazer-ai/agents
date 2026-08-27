@@ -408,6 +408,12 @@ mutation of one contact's row runs alone, in a queue keyed by that contact, so r
 rule and acting on it is one step. Split in two, an allow that passed the check a moment before the
 refusal arrived goes on to write anyway, and the row comes back for the rest of the TTL.
 
+The READ is not in that queue, and that is the boundary of the guarantee rather than a gap in it. A
+refusal in flight is already covered, because it is remembered before its delete. What a queue would
+add is ordering against a refusal that lands after the read started, and "the read came first" and
+"the refusal came first" are both true readings of one overlap — the same instant-in-time semantics
+this file states for verdicts themselves. The bound is the TTL, as everywhere else here.
+
 **A refusal this process could not write down is not forgotten.** The DELETE is the one write here
 that ENDS an authorization, so unlike the read and the write it is not best-effort: a failure is
 remembered per contact — and so is a grant WRITE whose outcome this process could not confirm, since

@@ -696,6 +696,38 @@ describe.skipIf(!dbUp)("contact authorization: reusing a verdict", () => {
     expect(await grants()).toHaveLength(0);
   });
 
+  test("a read that overlaps a refusal's delete does not serve the pre-delete row", async () => {
+    const ep = endpoint(allowed, denied, allowed);
+    await ask({ cfg: cfg(), ...ep });
+
+    let deleteStarted: (() => void) | undefined;
+    const deleting = new Promise<void>((r) => {
+      deleteStarted = r;
+    });
+    const denial = ask({
+      cfg: cfg({ mode: "perMessage" }),
+      fetchImpl: ep.fetchImpl,
+      base: baseWithGrantHook(appDb, (m, delegate) =>
+        m === "deleteMany"
+          ? async (...args: unknown[]) => {
+              deleteStarted?.();
+              await Bun.sleep(200);
+              return delegate.deleteMany(...args);
+            }
+          : undefined,
+      ),
+    });
+    await deleting;
+    // The read starts while the delete is in flight. Un-serialized it gets a snapshot taken before
+    // the row was removed, and a fresh refusal is answered with the verdict it just replaced.
+    const reader = await ask({ cfg: cfg(), ...ep });
+    await denial;
+
+    expect(reader.reused).toBeFalsy();
+    expect(reader.outcome).toBe("allowed");
+    expect(ep.calls).toHaveLength(3);
+  });
+
   test("an older refusal finishing late does not overwrite a newer one", async () => {
     const key = { tenantId, agentId, contactId };
     const t1 = Date.now() - 3000;

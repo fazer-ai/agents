@@ -54,6 +54,30 @@ const CAPS: {
     },
   },
   {
+    // The title an operator's own booking system answers with, on its way into the appointment record
+    // and from there into EVERY later turn's prompt block (#352). Customer-adjacent: plenty of
+    // booking systems put the patient's own name in the appointment title.
+    name: "appointment: extractAppointment summary",
+    cap: 200,
+    run: async (s) => {
+      const { extractAppointment, readAppointmentDeclaration } = await import(
+        "@/modules/tool-definitions/appointment"
+      );
+      const decl = readAppointmentDeclaration({
+        action: "book",
+        idPath: "id",
+        startPath: "start",
+        summaryPath: "title",
+      });
+      const r = extractAppointment(decl as never, {
+        id: "ap_1",
+        start: "2026-09-02T14:00:00-03:00",
+        title: s,
+      });
+      return r.ok ? (r.value.summary ?? "") : "";
+    },
+  },
+  {
     // Every string of every execution_logs.detail. THE one that fails rather than degrades: the
     // column is jsonb, the write is refused outright, and emitFlowEvent swallows it, so the stage
     // line the operator goes looking for simply is not there.

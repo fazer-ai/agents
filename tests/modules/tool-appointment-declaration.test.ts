@@ -234,6 +234,37 @@ describe("sampleLeaves", () => {
     ]);
   });
 
+  test("reaching the cap ENDS the traversal, it does not just stop pushing", () => {
+    // The cap is only a bound if it stops the walk. Measured on the LOOP, not on the leaves: with
+    // each recursive call merely returning, the container is still enumerated end to end, which for
+    // a pasted 50k-row response is the browser freezing while the operator waits. The Proxy counts
+    // the index reads the traversal actually performs.
+    const counted = (target: object) => {
+      let reads = 0;
+      const proxy = new Proxy(target, {
+        get(t, prop, recv) {
+          if (typeof prop === "string" && prop !== "length") reads += 1;
+          return Reflect.get(t, prop, recv);
+        },
+      });
+      return { proxy, reads: () => reads };
+    };
+
+    const arr = counted(
+      Array.from({ length: 5_000 }, (_, i) => ({ id: `r${i}` })),
+    );
+    expect(sampleLeaves({ rows: arr.proxy }, 5).length).toBe(5);
+    expect(arr.reads()).toBeLessThan(20);
+
+    const obj = counted(
+      Object.fromEntries(
+        Array.from({ length: 5_000 }, (_, i) => [`k${i}`, `v${i}`]),
+      ),
+    );
+    expect(sampleLeaves({ bag: obj.proxy }, 5).length).toBe(5);
+    expect(obj.reads()).toBeLessThan(20);
+  });
+
   test("bounded on count and on depth", () => {
     const wide = {
       rows: Array.from({ length: 500 }, (_, i) => ({ id: `r${i}` })),
@@ -252,6 +283,53 @@ describe("sampleLeaves", () => {
   test("a scalar at the root has no path to offer", () => {
     expect(sampleLeaves("just a string")).toEqual([]);
     expect(sampleLeaves(null)).toEqual([]);
+  });
+});
+
+// (#352, round 9) What a declared response hands over is bounded, and the three fields answer
+// differently because the question is whether the consumer needs the exact bytes.
+describe("extractAppointment bounds what it persists", () => {
+  const decl = readAppointmentDeclaration({
+    action: "book",
+    idPath: "data.id",
+    startPath: "data.start",
+    summaryPath: "data.title",
+  }) as AppointmentDeclaration;
+  const start = "2026-09-02T14:00:00-03:00";
+
+  test("an oversized id is REFUSED, and the path is named", () => {
+    // Not clipped: a clipped id is a different booking, and the cancel tool would never find this
+    // one. It also could not key the unique index it goes into — a btree entry tops out near 2704
+    // bytes, so the write would throw and the appointment would silently never be recorded.
+    const r = extractAppointment(decl, {
+      data: { id: "x".repeat(201), start, title: "Consulta" },
+    });
+    expect(r).toEqual({ ok: false, missing: ["data.id"] });
+    // The boundary is inclusive, and the control: one char shorter goes through untouched.
+    const ok = extractAppointment(decl, {
+      data: { id: "x".repeat(200), start, title: "Consulta" },
+    });
+    expect(ok.ok && ok.value.externalId).toBe("x".repeat(200));
+  });
+
+  test("an oversized start is refused too: nothing that long is an instant", () => {
+    const r = extractAppointment(decl, {
+      data: { id: "ap_1", start: "2".repeat(101), title: "Consulta" },
+    });
+    expect(r).toEqual({ ok: false, missing: ["data.start"] });
+  });
+
+  test("an oversized summary is CLIPPED, and the booking still registers", () => {
+    // The opposite answer, for the opposite reason: the summary only makes the prompt block read
+    // better, so losing the tail costs nothing — while refusing would trade the follow-up pause for
+    // a nicer sentence. Unclipped it is the worse of the two, since nothing downstream errors and it
+    // is re-rendered into every later turn.
+    const r = extractAppointment(decl, {
+      data: { id: "ap_1", start, title: "T".repeat(500) },
+    });
+    expect(r.ok).toBe(true);
+    expect(r.ok && r.value.summary).toBe("T".repeat(200));
+    expect(r.ok && r.value.externalId).toBe("ap_1");
   });
 });
 

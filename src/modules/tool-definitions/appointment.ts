@@ -16,6 +16,7 @@
 // asks for them. Nothing is lost by the default: since #376 an appointment that arms no reminder is
 // an ordinary, fully-functioning record.
 
+import { clipText } from "@/lib/text";
 import {
   DECLARED_PROVIDER,
   readProviderSlug,
@@ -160,17 +161,27 @@ export function sampleLeaves(root: unknown, max = 200): SampleLeaf[] {
   const out: SampleLeaf[] = [];
   const walk = (node: unknown, path: string, depth: number): void => {
     if (out.length >= max || depth > 10) return;
+    // Both loops BREAK rather than letting each walk return: the cap has to stop the traversal, not
+    // just the pushing. A pasted response with a 50k-row array would otherwise still be enumerated
+    // end to end, in the browser, while the operator waits — and Object.entries would allocate the
+    // whole entry array first. The cap is only a bound if reaching it ends the work.
     if (Array.isArray(node)) {
-      node.forEach((v, i) => {
-        walk(v, path === "" ? String(i) : `${path}.${i}`, depth + 1);
-      });
+      for (let i = 0; i < node.length; i++) {
+        if (out.length >= max) break;
+        walk(node[i], path === "" ? String(i) : `${path}.${i}`, depth + 1);
+      }
       return;
     }
     if (node !== null && typeof node === "object") {
-      for (const [k, v] of Object.entries(node)) {
+      for (const k of Object.keys(node)) {
+        if (out.length >= max) break;
         // The whole subtree goes with the key: nothing under an unaddressable key is addressable.
         if (!PATH_SEGMENT.test(k)) continue;
-        walk(v, path === "" ? k : `${path}.${k}`, depth + 1);
+        walk(
+          (node as Record<string, unknown>)[k],
+          path === "" ? k : `${path}.${k}`,
+          depth + 1,
+        );
       }
       return;
     }
@@ -180,6 +191,39 @@ export function sampleLeaves(root: unknown, max = 200): SampleLeaf[] {
   };
   walk(root, "", 0);
   return out;
+}
+
+// What a declared response is allowed to hand over, per field, and the two answers are different on
+// purpose (the question is whether the consumer needs the exact bytes):
+//
+// - the ID is IDENTITY, so it is refused rather than clipped: a clipped id is a different booking,
+//   and the cancel tool would never find this one again. It also has to survive the unique index it
+//   keys, and a btree entry tops out around 2704 bytes, so an oversized id does not merely bloat the
+//   row — the write throws, and the appointment is silently never recorded. Refusing here instead
+//   names the path through the channel that already names unresolved ones. No real booking id is
+//   anywhere near this long; the cap only has to be past every plausible one.
+// - the SUMMARY is DESCRIPTION, so it is clipped (with clipText, never a bare slice: a cut landing
+//   between the halves of an emoji leaves an orphan surrogate, which Postgres refuses inside a jsonb
+//   write and which renders as a replacement character wherever it survives): it exists to make the
+//   prompt block read better,
+//   losing the tail costs nothing, and refusing the whole registration over a long title would trade
+//   the follow-up pause for a nicer sentence. Unclipped it is worse than the id, because nothing
+//   downstream errors: it is re-rendered into EVERY subsequent turn's prompt.
+// - the START is parsed as an instant downstream, so anything this long cannot be one.
+const MAX_EXTERNAL_ID_CHARS = 200;
+const MAX_START_CHARS = 100;
+const MAX_SUMMARY_CHARS = 200;
+
+// readPath, plus the length the field can carry. Undefined for over-long, so the caller reports the
+// path exactly as it reports one that resolved to nothing: in both cases the operator's fix is to
+// point somewhere else.
+function readBounded(
+  body: unknown,
+  path: string,
+  max: number,
+): string | undefined {
+  const v = readPath(body, path);
+  return v !== undefined && v.length <= max ? v : undefined;
 }
 
 export interface ExtractedAppointment {
@@ -204,11 +248,11 @@ export function extractAppointment(
   body: unknown,
 ): ExtractResult {
   const missing: string[] = [];
-  const externalId = readPath(body, decl.idPath);
+  const externalId = readBounded(body, decl.idPath, MAX_EXTERNAL_ID_CHARS);
   if (externalId === undefined) missing.push(decl.idPath);
   let startISO: string | undefined;
   if (decl.action === "book" && decl.startPath) {
-    startISO = readPath(body, decl.startPath);
+    startISO = readBounded(body, decl.startPath, MAX_START_CHARS);
     if (startISO === undefined) missing.push(decl.startPath);
   }
   if (missing.length > 0) return { ok: false, missing };
@@ -225,7 +269,9 @@ export function extractAppointment(
       ...(decl.summaryPath
         ? (() => {
             const s = readPath(body, decl.summaryPath);
-            return s !== undefined ? { summary: s } : {};
+            return s !== undefined
+              ? { summary: clipText(s, MAX_SUMMARY_CHARS) }
+              : {};
           })()
         : {}),
       ...(decl.reminderOffsetsHours

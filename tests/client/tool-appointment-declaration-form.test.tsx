@@ -311,6 +311,47 @@ test("a pasted sample fills the paths by clicking, and is never submitted", asyn
   expect(JSON.stringify(posted[0])).not.toContain('starts_at":"2026');
 });
 
+// (#352, round 8) A switch with no programmatic name is announced as an unnamed switch: the text
+// beside it is only visually adjacent. Asserted through the accessible name, which is also what
+// makes the label clickable — a test that merely found the text on screen would pass unchanged
+// against the broken build.
+test("the confirmation switch carries its label", async () => {
+  await openForm();
+  fireEvent.change(actionSelect(), { target: { value: "book" } });
+  fireEvent.change(inputFor(/onde está o id|where the id is/i), {
+    target: { value: "data.id" },
+  });
+  fireEvent.change(inputFor(/horário de início|start time/i), {
+    target: { value: "data.start" },
+  });
+  // The switch only appears once an offset is configured.
+  fireEvent.change(inputFor(/quantas horas antes|this many hours before/i), {
+    target: { value: "24" },
+  });
+
+  const sw = await waitFor(() => {
+    const el = document.querySelector('[role="switch"]');
+    if (!el) throw new Error("no switch on screen");
+    return el as HTMLElement;
+  });
+  const labelled = document.querySelector(
+    `label[for="${sw.getAttribute("id")}"]`,
+  );
+  expect(sw.getAttribute("id")).toBeTruthy();
+  expect(labelled?.textContent ?? "").toMatch(
+    /(no último lembrete|on the last reminder)/i,
+  );
+
+  // And the name is wired, not decorative: clicking the label flips the switch.
+  const before = sw.getAttribute("aria-checked");
+  fireEvent.click(labelled as Element);
+  await waitFor(() =>
+    expect(
+      document.querySelector('[role="switch"]')?.getAttribute("aria-checked"),
+    ).not.toBe(before),
+  );
+});
+
 test("a provider that is not a slug holds the save too", async () => {
   await openForm();
   fireEvent.change(actionSelect(), { target: { value: "cancel" } });

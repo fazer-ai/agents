@@ -96,9 +96,10 @@ export function computeReminderJobs(
 export interface ScheduleAppointmentRemindersArgs {
   tenantId: bigint;
   threadId: string;
-  // The system that owns the booking; defaults to Google Calendar. Part of the dedupe key, never of
-  // the payload: the payload's eventId is what the reminder turn quotes back and what a Google
-  // lookup asks for, so it stays exactly as the owning system stated it.
+  // The system that owns the booking; defaults to Google Calendar. It keys the dedupe AND travels in
+  // the payload, but never inside eventId: the id is what the reminder turn quotes back and what a
+  // Google lookup asks for, so it stays exactly as the owning system stated it, and the provider
+  // rides beside it.
   provider?: string;
   eventId: string;
   // Null when no Google calendar is behind the booking. It travels into the payload as null and
@@ -142,6 +143,7 @@ export async function enqueueAppointmentReminders(
       runAt: j.runAt,
       payload: {
         threadId: args.threadId,
+        provider: args.provider ?? GOOGLE_CALENDAR_PROVIDER,
         eventId: args.eventId,
         calendarId: args.calendarId,
         credentialRef: args.credentialRef,
@@ -438,6 +440,12 @@ export interface ReminderNudgeArgs {
   summary: string;
   startISO: string;
   eventId: string;
+  // The system that owns the booking, named to the model for a foreign one. Two operator systems may
+  // both answer with `42` (that is why they key the record separately), and without this the reminder
+  // turn holds an id and no way to say which system it belongs to. Omitted for Google, whose
+  // appointments are identified by the calendar_id ref instead — the same split the per-turn
+  // appointment block makes, and the two have to keep agreeing (issue #352).
+  provider: string;
   // Null for a booking with no Google calendar behind it: the ref is then omitted from the fenced
   // data entirely, rather than carrying "primary", which names a real Google calendar the operator's
   // system never wrote to. The context block already answers the same question by emitting no
@@ -483,7 +491,17 @@ export function reminderNudge(a: ReminderNudgeArgs): AgentNudge {
     source: "appointment_reminder",
     kind: "reminder",
     summary: `Upcoming appointment "${a.summary}" starting at ${a.startISO}.`,
-    refs: { event_id: a.eventId, calendar_id: a.calendarId },
+    refs: {
+      event_id: a.eventId,
+      calendar_id: a.calendarId,
+      // `booking_system`, not `source`: the nudge renderer already emits the nudge's OWN kind as
+      // `source=appointment_reminder` on this very line, and two different meanings under one name is
+      // worse than the missing ref was. The per-turn appointment block calls it `source` because it
+      // sits inside that appointment's own element, where nothing else claims the name.
+      // Falsy refs are dropped by the renderer, so Google's own name never reaches the model here.
+      booking_system:
+        a.provider === GOOGLE_CALENDAR_PROVIDER ? null : a.provider,
+    },
     instructions: `${base}${a.canOperate ? tools : noTools}`,
   };
 }
@@ -612,6 +630,11 @@ export async function appointmentReminderHandler(
   const calendarId = typeof p.calendarId === "string" ? p.calendarId : null;
   const credentialRef =
     typeof p.credentialRef === "string" ? p.credentialRef : null;
+  // Absent on every row armed before this shipped, and Google is what every one of those was.
+  const provider =
+    typeof p.provider === "string" && p.provider
+      ? p.provider
+      : GOOGLE_CALENDAR_PROVIDER;
   const startISO = typeof p.startISO === "string" ? p.startISO : "";
   const isLast = p.isLast === true;
   const askConfirmation = p.askConfirmation === true;
@@ -690,6 +713,7 @@ export async function appointmentReminderHandler(
       askConfirmation,
       // See ReminderNudgeArgs.canOperate: the credential is what says a Google event is behind this.
       canOperate: credentialRef !== null,
+      provider,
       summary,
       // The same value the start check just used, for the reason its header gives.
       startISO: authoritativeReminderStart(live, startISO),

@@ -124,6 +124,7 @@ describe("reminderNudge", () => {
     startISO: "2026-06-25T10:00:00-03:00",
     eventId: "ev_1",
     calendarId: "primary",
+    provider: "google_calendar",
     canOperate: true,
   };
   test("last + confirmation → asks to confirm and to mark the event", () => {
@@ -150,6 +151,8 @@ describe("reminderNudge", () => {
       const n = reminderNudge({
         ...args,
         canOperate: false,
+        provider: "feegow",
+        calendarId: null,
         isLast: true,
         askConfirmation,
       });
@@ -159,7 +162,13 @@ describe("reminderNudge", () => {
       // The control: it is still a reminder, and it still says so.
       expect(n.instructions).toContain("Remind the customer");
       expect(n.summary).toContain("Consulta");
-      expect(n.refs).toEqual({ event_id: "ev_1", calendar_id: "primary" });
+      // The refs say WHICH booking, and for a foreign one that takes the owning system: two operator
+      // systems may both answer with the same id, so the id alone does not identify the appointment.
+      expect(n.refs).toEqual({
+        event_id: "ev_1",
+        calendar_id: null,
+        booking_system: "feegow",
+      });
     }
     // And the same call WITH the calendar does name them, on the same two shapes.
     expect(
@@ -182,6 +191,7 @@ describe("reminderNudge", () => {
       const n = reminderNudge({
         ...args,
         canOperate: false,
+        provider: "feegow",
         isLast: true,
         askConfirmation,
       });
@@ -201,11 +211,16 @@ describe("reminderNudge", () => {
     const n = reminderNudge({
       ...args,
       calendarId: null,
+      provider: "feegow",
       canOperate: false,
       isLast: true,
       askConfirmation: true,
     });
-    expect(n.refs).toEqual({ event_id: "ev_1", calendar_id: null });
+    expect(n.refs).toEqual({
+      event_id: "ev_1",
+      calendar_id: null,
+      booking_system: "feegow",
+    });
     // What the model actually sees: the key does not appear in the rendered fenced data.
     expect(renderNudge(n, true)).not.toContain("calendar_id");
     expect(renderNudge(n, true)).toContain("event_id=ev_1");
@@ -229,6 +244,7 @@ describe("reminderNudge event identity", () => {
     startISO: "2026-06-25T10:00:00-03:00",
     eventId: "ev_identity_1",
     calendarId: "cal@group.calendar.google.com",
+    provider: "google_calendar",
     canOperate: true,
   };
   test("carries event_id and calendar_id as refs", () => {
@@ -236,6 +252,7 @@ describe("reminderNudge event identity", () => {
     expect(n.refs).toEqual({
       event_id: "ev_identity_1",
       calendar_id: "cal@group.calendar.google.com",
+      booking_system: null,
     });
   });
   test("confirmation instruction points at the event_id ref (the id the tool call needs)", () => {
@@ -810,6 +827,100 @@ describe.skipIf(!dbUp)("a reminder retired while claimed", () => {
 
     expect(result).toEqual({ outcome: "done" });
     expect(s.sent.length).toBeGreaterThan(0);
+  });
+
+  // (#352, round 8) Two operator systems may both answer with `42` — that is why the record and the
+  // dedupe key carry the provider. The PAYLOAD had to carry it too: without it the reminder turn
+  // holds an id and no way to say which system issued it, and the sentence it was given points at
+  // "this booking system's own tool" without naming one. Asserted on what the MODEL received.
+  test("a declared payload names its booking system to the model", async () => {
+    const job = await armed("reminder:feegow/evt-src:60", {
+      isLast: true,
+      eventId: "evt-src",
+      provider: "feegow",
+      calendarId: null,
+      startISO: new Date(Date.now() + 3_600_000).toISOString(),
+    });
+    const s = stubClient();
+    let seen = "";
+    class Capturing extends BaseChatModel {
+      constructor() {
+        super({});
+      }
+      _llmType() {
+        return "capturing-src";
+      }
+      async _generate(messages: BaseMessage[]): Promise<ChatResult> {
+        seen += messages
+          .map((m) =>
+            typeof m.content === "string"
+              ? m.content
+              : JSON.stringify(m.content),
+          )
+          .join("\n");
+        return {
+          generations: [
+            { text: "Lembrete!", message: new AIMessage("Lembrete!") },
+          ],
+        };
+      }
+    }
+
+    await appointmentReminderHandler(job, appDb, {
+      makeModel: () => new Capturing(),
+      makeClient: s.makeClient,
+      checkpointer: new MemorySaver(),
+      persistUsage: async () => {},
+    });
+
+    expect(seen).toContain("event_id=evt-src");
+    expect(seen).toContain("booking_system=feegow");
+  });
+
+  // The control, and the reason the ref is conditional: a Google booking is identified by its
+  // calendar_id, and naming Google as the "booking system" would put the very tool family the
+  // no-calendar branch rules out back in front of the model.
+  test("a Google payload names no booking system", async () => {
+    const job = await armed("reminder:evt-nosrc:60", {
+      isLast: true,
+      eventId: "evt-nosrc",
+      startISO: new Date(Date.now() + 3_600_000).toISOString(),
+    });
+    const s = stubClient();
+    let seen = "";
+    class Capturing extends BaseChatModel {
+      constructor() {
+        super({});
+      }
+      _llmType() {
+        return "capturing-nosrc";
+      }
+      async _generate(messages: BaseMessage[]): Promise<ChatResult> {
+        seen += messages
+          .map((m) =>
+            typeof m.content === "string"
+              ? m.content
+              : JSON.stringify(m.content),
+          )
+          .join("\n");
+        return {
+          generations: [
+            { text: "Lembrete!", message: new AIMessage("Lembrete!") },
+          ],
+        };
+      }
+    }
+
+    await appointmentReminderHandler(job, appDb, {
+      makeModel: () => new Capturing(),
+      makeClient: s.makeClient,
+      checkpointer: new MemorySaver(),
+      persistUsage: async () => {},
+    });
+
+    // The control: the reminder did reach the model, so the absence is an absence in a real prompt.
+    expect(seen).toContain("event_id=evt-nosrc");
+    expect(seen).not.toContain("booking_system=");
   });
 
   // (#352, round 5) The payload is the only thing standing between a declared booking and the model:

@@ -733,6 +733,11 @@ describe.skipIf(!dbUp)("per-turn appointment context (issue #22)", () => {
     expect((row?.payload as { calendarId?: unknown } | null)?.calendarId).toBe(
       null,
     );
+    // (#352, round 8) And the payload says WHICH system, because two of them may issue the same id:
+    // the reminder turn holds `42` and, without this, no way to name the system that issued it.
+    expect((row?.payload as { provider?: unknown } | null)?.provider).toBe(
+      "feegow",
+    );
 
     // The control: a Google booking with no explicit calendar still gets Google's own default.
     await appointmentBooked({
@@ -759,6 +764,9 @@ describe.skipIf(!dbUp)("per-turn appointment context (issue #22)", () => {
     );
     expect((gRow?.payload as { calendarId?: unknown } | null)?.calendarId).toBe(
       "primary",
+    );
+    expect((gRow?.payload as { provider?: unknown } | null)?.provider).toBe(
+      "google_calendar",
     );
   });
 

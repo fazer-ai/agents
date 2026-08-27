@@ -803,6 +803,7 @@ export function ToolEditModal({
 }) {
   const { t } = useTranslation();
   const ackId = useId();
+  const apptAskConfirmId = useId();
   const { showToast } = useToast();
   const [form, setForm] = useState(emptyForm());
   // The CURRENT form, readable from inside a request that started before it: the operator can type
@@ -1636,13 +1637,18 @@ export function ToolEditModal({
                     </FormField>
                     {form.apptOffsets.trim() !== "" && (
                       <div className="flex items-center justify-between gap-3">
-                        <span className="text-sm text-text-primary">
+                        <label
+                          htmlFor={apptAskConfirmId}
+                          data-clickable="true"
+                          className="text-sm text-text-primary"
+                        >
                           {t(
                             "tools.appointmentAskConfirm",
                             "On the last reminder, ask if they will attend",
                           )}
-                        </span>
+                        </label>
                         <Switch
+                          id={apptAskConfirmId}
                           checked={form.apptAskConfirm}
                           onCheckedChange={(v) =>
                             setForm({ ...form, apptAskConfirm: v })

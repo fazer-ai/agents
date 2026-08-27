@@ -614,10 +614,11 @@ describe.skipIf(!dbUp)("the agent family records its own changes", () => {
     });
   });
 
-  test("a settings edit the readers clamp to the same value leaves no row", async () => {
-    // Raw-different, normalized-equal: `debounce.windowSeconds` of 1 and of 2 both read as 3
-    // (measured). The bag comparison is on the stored bytes, so without the block check this lands
-    // an `agent.settings_set` with `{}` on both sides.
+  test("a settings edit the readers clamp to the same value says so, and says nothing else", async () => {
+    // Raw-different, canonically equal: `debounce.windowSeconds` of 1 and of 2 both read as 3
+    // (measured). The column moved and nothing the runtime does moved with it, which is the same
+    // sentence the unread-block case gets, and it is the same answer here — not an empty diff and
+    // not silence.
     const agent = await seedAgent({
       settings: { debounce: { enabled: true, windowSeconds: 1 } },
     });
@@ -630,32 +631,109 @@ describe.skipIf(!dbUp)("the agent family records its own changes", () => {
       appDb,
     );
 
-    expect(await rows()).toEqual([]);
+    const got = await rows();
+    expect(got.map((r) => r.action)).toEqual(["agent.settings_set"]);
+    expect(got[0]?.after).toEqual({ unreadConfigChanged: true });
   });
 
-  test("a block no reader knows is recorded by NAME, not swallowed and not copied", async () => {
+  test("a write no reader sees is recorded, and neither its content NOR its key reaches the row", async () => {
     // An import can preserve a forward-compatible block, and an upgrade that adds its reader makes
-    // it live. It is absent from the resolved view, so comparing only that view would let a real
-    // configuration write leave no trace at all. Its CONTENTS stay out of the row: nothing in this
-    // codebase reads them, so nothing here can vouch for them to a tenant admin.
+    // it live: comparing only the resolved view would let a real configuration write leave no trace.
+    // The answer is a boolean, and the boolean is the point. An unknown KEY is caller-controlled and
+    // can itself be secret material — `assertNoSecrets` scans keys for exactly that reason — so a
+    // row that named the block would carry a string nothing here can vouch for.
     const agent = await seedAgent({
-      settings: { futureBlock: { knob: "one" } },
+      settings: { "sk-key-is-the-secret": { knob: "one" } },
     });
     await clearAudit();
 
     await updateAgent(
       ctx(),
       BigInt(agent.id),
-      { settings: { futureBlock: { knob: "two", secretish: "sk-nope" } } },
+      {
+        settings: {
+          "sk-key-is-the-secret": { knob: "two", also: "sk-value-secret" },
+        },
+      },
       appDb,
     );
 
     const got = await rows();
     expect(got.map((r) => r.action)).toEqual(["agent.settings_set"]);
-    const after = got[0]?.after as Record<string, unknown>;
-    expect(after.unreadBlocksChanged).toEqual(["futureBlock"]);
-    expect(JSON.stringify(after)).not.toContain("sk-nope");
-    expect(JSON.stringify(after)).not.toContain("two");
+    expect(got[0]?.after).toEqual({ unreadConfigChanged: true });
+    expect(JSON.stringify([got[0]?.before, got[0]?.after])).not.toContain(
+      "sk-",
+    );
+  });
+
+  test("a block named like a prototype member is not swallowed by the comparison", async () => {
+    // The names-based version filtered on `k in resolved`, which walks the prototype: measured,
+    // `"constructor" in resolved` is true, so a stored block by that name vanished from the trail.
+    // A whole-value comparison has no key iteration and therefore no such corner.
+    const agent = await seedAgent({ settings: { constructor: { a: 1 } } });
+    await clearAudit();
+
+    await updateAgent(
+      ctx(),
+      BigInt(agent.id),
+      { settings: { constructor: { a: 2 } } },
+      appDb,
+    );
+
+    expect((await rows())[0]?.after).toEqual({ unreadConfigChanged: true });
+  });
+
+  test("an unread field inside a RECOGNIZED block is not swallowed either", async () => {
+    // `debounce.futureOption` sits under a block the readers DO know, so a per-block name check
+    // could never have seen it: an older console save can drop it while every resolved debounce
+    // value stays put.
+    const agent = await seedAgent({
+      settings: {
+        debounce: { enabled: true, windowSeconds: 30, futureOption: "keep" },
+      },
+    });
+    await clearAudit();
+
+    await updateAgent(
+      ctx(),
+      BigInt(agent.id),
+      { settings: { debounce: { enabled: true, windowSeconds: 30 } } },
+      appDb,
+    );
+
+    expect((await rows())[0]?.after).toEqual({ unreadConfigChanged: true });
+  });
+
+  test("a stray model-config key that changes on its own is recorded, without being copied", async () => {
+    const agent = await seedAgent({
+      modelConfig: {
+        provider: "openai",
+        model: "gpt-5.4-mini",
+        apiKey: "sk-a",
+      },
+    });
+    await clearAudit();
+
+    await updateAgent(
+      ctx(),
+      BigInt(agent.id),
+      {
+        modelConfig: {
+          provider: "openai",
+          model: "gpt-5.4-mini",
+          apiKey: "sk-b",
+        },
+      },
+      appDb,
+    );
+
+    const got = await rows();
+    expect(got.map((r) => r.action)).toEqual(["agent.update"]);
+    const patched = got[0]?.after as Record<string, unknown> | undefined;
+    expect(patched?.modelConfig).toEqual({ unreadConfigChanged: true });
+    expect(JSON.stringify([got[0]?.before, got[0]?.after])).not.toContain(
+      "sk-",
+    );
   });
 
   test("resubmitting the same allowlist shuffled is the same grant", async () => {
@@ -687,6 +765,21 @@ describe.skipIf(!dbUp)("the agent family records its own changes", () => {
       appDb,
     );
 
+    expect(await rows()).toEqual([]);
+
+    // …and dropping a duplicate is not a change either: `normalizeGrants` permits one and a Set
+    // cannot hold it, so the runtime's capability set is the same.
+    await replaceAgentToolSelections(
+      ctx(),
+      BigInt(agent.id),
+      [
+        {
+          source: "NATIVE" as const,
+          enabledTools: ["private_note", "handoff_to_human", "private_note"],
+        },
+      ],
+      appDb,
+    );
     expect(await rows()).toEqual([]);
   });
 

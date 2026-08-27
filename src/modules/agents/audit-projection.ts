@@ -98,18 +98,12 @@ function canonical(field: AuditedAgentField, v: unknown): unknown {
   return fn ? fn(v) : v;
 }
 
-// The blocks whose RESOLVED value differs, and separately the names of the blocks that moved in
-// storage without any reader seeing them.
-function settingsDiff(
-  before: unknown,
-  after: unknown,
-): {
-  before: Record<string, unknown>;
-  after: Record<string, unknown>;
-  unreadBlocks: string[];
-} {
-  const b = canonical("settings", before) as Record<string, unknown>;
-  const a = canonical("settings", after) as Record<string, unknown>;
+// The settings row carries the blocks that moved, never the bag: it arrives whole from every door,
+// so which one the operator touched is a question only the comparison answers.
+function changedBlocks(
+  b: Record<string, unknown>,
+  a: Record<string, unknown>,
+): { before: Record<string, unknown>; after: Record<string, unknown> } {
   const outBefore: Record<string, unknown> = {};
   const outAfter: Record<string, unknown> = {};
   for (const key of new Set([...Object.keys(b), ...Object.keys(a)])) {
@@ -118,15 +112,11 @@ function settingsDiff(
       outAfter[key] = a[key];
     }
   }
-  const rawB = jsonish<Record<string, unknown> | null>(before) ?? {};
-  const rawA = jsonish<Record<string, unknown> | null>(after) ?? {};
-  const unreadBlocks = [
-    ...new Set([...Object.keys(rawB), ...Object.keys(rawA)]),
-  ]
-    .filter((k) => !(k in a) && !same(rawB[k], rawA[k]))
-    .sort();
-  return { before: outBefore, after: outAfter, unreadBlocks };
+  return { before: outBefore, after: outAfter };
 }
+
+// What a field's row says when the stored value moved and the canonical form did not.
+const UNREAD_ONLY = { unreadConfigChanged: true } as const;
 
 // Whether a replace-the-set write actually changed the set.
 //
@@ -135,8 +125,10 @@ function settingsDiff(
 // read then orders by. And inside a grant, `enabledTools` and `knowledgeBaseIds` are allowlists the
 // runtime reads by MEMBERSHIP — measured: `filterAllowed` builds a `Set`, `prepare.ts` asks
 // `.includes`/`.some`, the playground builds a `Set`, and no consumer reads the order — so the same
-// allowlist resubmitted shuffled is the same grant. Sorting by each entry's own serialization is a
-// total order by construction: no entry ties with another unless they are equal.
+// allowlist resubmitted shuffled is the same grant. Membership is also why they are DEDUPLICATED
+// here: `normalizeGrants` permits a repeated entry and a `Set` cannot hold one, so dropping a
+// duplicate leaves the runtime's capability set untouched. Sorting by each entry's own serialization
+// is a total order by construction: no entry ties with another unless they are equal.
 export function grantSetChanged(before: unknown[], after: unknown[]): boolean {
   const SET_VALUED = ["enabledTools", "knowledgeBaseIds"];
   const canon = (g: unknown) => {
@@ -144,7 +136,7 @@ export function grantSetChanged(before: unknown[], after: unknown[]): boolean {
     const out: Record<string, unknown> = { ...(g as Record<string, unknown>) };
     for (const k of SET_VALUED) {
       const v = out[k];
-      if (Array.isArray(v)) out[k] = [...v].map(String).sort();
+      if (Array.isArray(v)) out[k] = [...new Set(v.map(String))].sort();
     }
     return JSON.stringify(out);
   };
@@ -161,38 +153,34 @@ export function agentUpdateAudit(
   const changed: AuditedAgentField[] = [];
   const beforeProj: Record<string, unknown> = {};
   const afterProj: Record<string, unknown> = {};
-  let unreadBlocks: string[] = [];
 
   for (const field of AUDITED_AGENT_FIELDS) {
-    if (field === "settings") {
-      const diff = settingsDiff(before.settings, after.settings);
-      if (
-        Object.keys(diff.after).length === 0 &&
-        diff.unreadBlocks.length === 0
-      )
-        continue;
+    const canonB = canonical(field, before[field]);
+    const canonA = canonical(field, after[field]);
+    if (same(canonB, canonA)) {
+      // Canonically equal, and the two comparisons answer different questions: this one asks what
+      // the runtime will do, and the one below asks what the column holds.
+      if (same(jsonish(before[field]), jsonish(after[field]))) continue;
       changed.push(field);
-      beforeProj.settings = diff.before;
-      afterProj.settings = diff.after;
-      unreadBlocks = diff.unreadBlocks;
+      beforeProj[field] = UNREAD_ONLY;
+      afterProj[field] = UNREAD_ONLY;
       continue;
     }
-    const b = canonical(field, before[field]);
-    const a = canonical(field, after[field]);
-    if (same(b, a)) continue;
     changed.push(field);
-    beforeProj[field] = b;
-    afterProj[field] = a;
+    if (field === "settings") {
+      const diff = changedBlocks(
+        canonB as Record<string, unknown>,
+        canonA as Record<string, unknown>,
+      );
+      beforeProj.settings = diff.before;
+      afterProj.settings = diff.after;
+      continue;
+    }
+    beforeProj[field] = canonB;
+    afterProj[field] = canonA;
   }
 
   if (changed.length === 0) return null;
-
-  // Named, not copied: these blocks are stored configuration nothing in this codebase reads, so
-  // their contents are not ours to vouch for in a row a tenant admin can read.
-  if (unreadBlocks.length > 0) {
-    (afterProj.settings as Record<string, unknown>).unreadBlocksChanged =
-      unreadBlocks;
-  }
 
   const only = changed.length === 1 ? changed[0] : undefined;
   if (only === "systemPrompt") {

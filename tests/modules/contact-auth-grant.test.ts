@@ -137,6 +137,7 @@ function baseWithGrantHook(
     method: string,
     // biome-ignore lint/suspicious/noExplicitAny: the delegate surface is not expressible here
     delegate: any,
+    model?: string,
     // biome-ignore lint/suspicious/noExplicitAny: same
   ) => ((...args: any[]) => unknown) | undefined,
 ): PrismaClient {
@@ -167,10 +168,8 @@ function baseWithGrantHook(
                     (tx: any) =>
                       fn(
                         wrap(tx, (m) =>
-                          m === "contactAuthGrant"
-                            ? wrap(tx.contactAuthGrant, (call) =>
-                                hook(call, tx.contactAuthGrant),
-                              )
+                          m === "contactAuthGrant" || m === "vaultEntry"
+                            ? wrap(tx[m], (call) => hook(call, tx[m], m))
                             : undefined,
                         ),
                       ),
@@ -1009,6 +1008,36 @@ describe.skipIf(!dbUp)("contact authorization: reusing a verdict", () => {
       await ask({ cfg: cfg({ mode: "perMessage" }), contact, ...ep });
     }
     expect(unconfirmedWriteCount()).toBe(1);
+  });
+
+  test("a credential revision nobody could read is not a fingerprint", async () => {
+    const ep = endpoint(allowed, allowed);
+    const blindToTheVault = baseWithGrantHook(appDb, (m, _delegate, model) =>
+      model === "vaultEntry" && m === "findUnique"
+        ? () => {
+            throw new Error("vault read is down");
+          }
+        : undefined,
+    );
+    // A verdict obtained while the credential's revision could not be read is a verdict with no
+    // fingerprint that can be trusted to change when the credential does. Any constant standing in
+    // for "unreadable" REPEATS, so the grant would match the next check made under the same blip —
+    // and a rotation between the two would go unnoticed. Nothing is stored...
+    const first = await ask({
+      cfg: cfg({ credentialRef }),
+      fetchImpl: ep.fetchImpl,
+      base: blindToTheVault,
+    });
+    expect(first.outcome).toBe("allowed");
+    expect(await grants()).toHaveLength(0);
+    // ...and nothing is served, so the endpoint is asked again.
+    const second = await ask({
+      cfg: cfg({ credentialRef }),
+      fetchImpl: ep.fetchImpl,
+      base: blindToTheVault,
+    });
+    expect(second.reused).toBeFalsy();
+    expect(ep.calls).toHaveLength(2);
   });
 
   test("the endpoint changing re-asks", async () => {

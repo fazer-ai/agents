@@ -169,21 +169,27 @@ export async function authorizeContact(
         // landing in between would be written into the fingerprint of a verdict obtained before it.
         // Only under `once`, and only when there is a credential at all — `perMessage` neither reads
         // nor writes grants, so it would be paying for a fingerprint nobody builds.
+        const credentialStamp =
+          cfg.mode === "once"
+            ? await readCredentialStamp(
+                base,
+                tenantId,
+                cfg.credentialRef,
+                ctrl.signal,
+              )
+            : ({ ok: true, stamp: null } as const);
+        // A revision nobody could read is not a revision: without it there is no fingerprint that
+        // can be trusted to change when the credential does, so this check neither reads a stored
+        // verdict nor writes one. It costs an endpoint call, which is the fail-closed direction.
+        const grantsUsable = cfg.mode === "once" && credentialStamp.ok;
         const fingerprints = {
           identityHash: contactAuthIdentityHash({ phone, email, identifier }),
           policyHash: contactAuthPolicyHash(
             cfg,
-            cfg.mode === "once"
-              ? await readCredentialStamp(
-                  base,
-                  tenantId,
-                  cfg.credentialRef,
-                  ctrl.signal,
-                )
-              : null,
+            credentialStamp.ok ? credentialStamp.stamp : null,
           ),
         };
-        if (cfg.mode === "once") {
+        if (grantsUsable) {
           const stored = await readContactAuthGrant(
             base,
             grantKey,
@@ -271,7 +277,7 @@ export async function authorizeContact(
           // orders a concurrent allow against this refusal is when each was asked, and a retry that
           // finally lands minutes later must not read as a refusal from minutes later.
           await dropContactAuthGrant(base, grantKey, { refusedAt: askedAt });
-        } else if (cfg.mode === "once" && verdict.outcome === "allowed") {
+        } else if (grantsUsable && verdict.outcome === "allowed") {
           await writeContactAuthGrant(
             base,
             grantKey,

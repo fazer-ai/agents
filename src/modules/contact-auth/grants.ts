@@ -247,19 +247,28 @@ export function contactAuthPolicyHash(
 // the credential would. A missing entry deliberately produces a stamp of its own rather than null,
 // so a grant obtained with a credential that has since been deleted stops matching instead of
 // matching the shape of an agent that never had one.
+//
+// UNREADABLE IS NOT A STAMP, and that is why this returns a result rather than a string. Any
+// constant standing in for "the read failed" is a fingerprint that REPEATS: a grant stored during
+// one blip matches a check made during the next, and a rotation between the two goes unnoticed. So
+// unreadable means grants are not used at all on that check — neither read nor written.
+export type CredentialStamp =
+  | { ok: true; stamp: string | null }
+  | { ok: false };
+
 export async function readCredentialStamp(
   base: PrismaClient,
   tenantId: bigint,
   ref: string | null,
   signal?: AbortSignal,
-): Promise<string | null> {
-  if (!ref) return null;
-  if (!ref.startsWith("vault:")) return ref;
+): Promise<CredentialStamp> {
+  if (!ref) return { ok: true, stamp: null };
+  if (!ref.startsWith("vault:")) return { ok: true, stamp: ref };
   let id: bigint;
   try {
     id = BigInt(ref.slice("vault:".length));
   } catch {
-    return ref;
+    return { ok: true, stamp: ref };
   }
   try {
     const entry = await underSignalMaybe(
@@ -271,10 +280,17 @@ export async function readCredentialStamp(
       ),
       signal,
     );
-    return entry ? String(entry.updatedAt.getTime()) : "missing";
-  } catch {
-    // Unreadable is not "unchanged": a stamp nobody could take must not let a stored verdict match.
-    return "unknown";
+    return {
+      ok: true,
+      stamp: entry ? String(entry.updatedAt.getTime()) : "missing",
+    };
+  } catch (err) {
+    logger.warn(
+      "contact-auth: the credential's revision could not be read, so no stored verdict is used on this check (tenant=%s): %s",
+      String(tenantId),
+      err instanceof Error ? err.message : String(err),
+    );
+    return { ok: false };
   }
 }
 

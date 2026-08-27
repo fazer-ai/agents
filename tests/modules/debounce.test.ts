@@ -12,7 +12,10 @@ import {
   clearMediaAnnotations,
   stashMediaAnnotation,
 } from "@/modules/chatwoot/annotations";
-import type { ChatwootClient } from "@/modules/chatwoot/client";
+import {
+  type ChatwootClient,
+  ChatwootMissingTokenError,
+} from "@/modules/chatwoot/client";
 import { flushDebounceJob } from "@/modules/debounce/handler";
 import {
   armDebounce,
@@ -108,25 +111,36 @@ function makeResolveStub(opts: {
   toggles: Array<[number, string]>;
 }) {
   let i = 0;
-  const client = {
-    getMessages: async () => {
-      const page = opts.pages[Math.min(i, opts.pages.length - 1)] ?? {
-        payload: [],
-      };
-      i += 1;
-      opts.calls.getMessages += 1;
-      return page;
-    },
-    sendMessage: async (conversationId: number, content: string) => {
-      opts.sent.push([conversationId, content]);
-      return {};
-    },
-    toggleStatus: async (conversationId: number, status: string) => {
-      opts.toggles.push([conversationId, status]);
-      return {};
-    },
-  } as unknown as ChatwootClient;
-  return async () => client;
+  // Built from the CONFIG it is handed, so the token profile is part of what this stub personifies.
+  // `toggle_status` is a bot-token endpoint (docs/chatwoot.md), and the real client refuses an empty
+  // one before anything leaves the process (issue #79) instead of reporting Chatwoot's 401 for a
+  // credential nobody sent. A stub that ignored the config would let a caller that forgot the
+  // persona token record a handoff that never happened.
+  return async (cfg: { botToken?: string }) =>
+    ({
+      getMessages: async () => {
+        const page = opts.pages[Math.min(i, opts.pages.length - 1)] ?? {
+          payload: [],
+        };
+        i += 1;
+        opts.calls.getMessages += 1;
+        return page;
+      },
+      sendMessage: async (conversationId: number, content: string) => {
+        if (!cfg.botToken) {
+          throw new ChatwootMissingTokenError("conversations/messages");
+        }
+        opts.sent.push([conversationId, content]);
+        return {};
+      },
+      toggleStatus: async (conversationId: number, status: string) => {
+        if (!cfg.botToken) {
+          throw new ChatwootMissingTokenError("conversations/toggle_status");
+        }
+        opts.toggles.push([conversationId, status]);
+        return {};
+      },
+    }) as unknown as ChatwootClient;
 }
 
 function page(
@@ -1580,8 +1594,9 @@ describe.skipIf(!dbUp)("debounce", () => {
       toggles,
     });
     // The command lands ON the send: everything before it answered truthfully, and the resolve is
-    // the only write still ahead.
-    const client = await makeClient();
+    // the only write still ahead. Built with the persona token the real loader would hand it (the
+    // fixture's `BOT`), because this one instance is handed straight to the flush.
+    const client = await makeClient({ botToken: "BOT" });
     const holder = client as unknown as Record<
       string,
       (...a: never[]) => unknown
@@ -3224,6 +3239,72 @@ describe.skipIf(!dbUp)("debounce", () => {
       expect(toggles).toEqual([[910, "open"]]);
       // The burst counts as handled, so it is not re-flushed into the same wall forever.
       expect(await watermarkOf(910)).toBe(7);
+      await clearFlowLog(suDb, { tenantId });
+    });
+
+    // A HUMAN CLAIMING THE CONVERSATION WHILE THE GATE DECIDES. The gate at the top of the flush
+    // judged the instant before two database reads, and `open` is not a neutral write: it ends the
+    // bot's attribution and puts the conversation back in the routing queue, so applying it to a
+    // conversation an agent just took pulls it out of their hands.
+    //
+    // The window is opened where it really is — inside the ledger read — by an extended client that
+    // flips the assignee the first time the ceiling's own query runs. That is the same seam the
+    // fail-open test uses, and it is the only one that reproduces the ordering without a sleep.
+    test("a human who claims the conversation during the read keeps it", async () => {
+      await seedConversation(912);
+      let flipped = 0;
+      const raced = appDb.$extends({
+        query: {
+          async $allOperations({ operation, args, query }) {
+            if (operation === "$queryRaw" && flipped === 0) {
+              const sql = ((args as { strings?: string[] }).strings ?? []).join(
+                " ",
+              );
+              if (sql.includes("FROM llm_usage")) {
+                flipped += 1;
+                await suDb.conversation.updateMany({
+                  where: {
+                    tenantId,
+                    chatwootInstanceId: instanceId,
+                    chatwootConversationId: 912,
+                  },
+                  data: { assigneeType: "User", assigneeId: 4242 },
+                });
+              }
+            }
+            return query(args);
+          },
+        },
+      }) as unknown as typeof appDb;
+      const sent: Array<[number, string]> = [];
+      const toggles: Array<[number, string]> = [];
+      const out = await flushDebounceJob({
+        job: jobFor(912, { lastMessageId: 11 }),
+        base: raced,
+        deps: {
+          makeModel: () => {
+            throw new Error("the model must not be invoked over the ceiling");
+          },
+          makeClient: makeResolveStub({
+            pages: [page([{ id: 11, content: "oi" }])],
+            sent,
+            calls: { getMessages: 0 },
+            toggles,
+          }),
+          checkpointer: new MemorySaver(),
+        },
+      });
+
+      expect(out).toEqual({ outcome: "done" });
+      // The window this test is about actually opened; without this the assertion below would pass
+      // on a run where the ledger read never happened.
+      expect(flipped).toBe(1);
+      // The conversation is the human's now, so the gate leaves the status alone...
+      expect(toggles).toEqual([]);
+      expect(sent).toEqual([]);
+      // ...and the burst still counts as handled, exactly as it does when the gate was already
+      // closed on the way in: the ceiling decided about the TENANT, and that holds either way.
+      expect(await watermarkOf(912)).toBe(11);
       await clearFlowLog(suDb, { tenantId });
     });
 

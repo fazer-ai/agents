@@ -10,7 +10,10 @@ import {
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { overlayMediaAnnotations } from "@/modules/chatwoot/annotations";
 import { retireCoveredDeliveries } from "@/modules/chatwoot/delivery-sweep";
-import { describeClosedGate } from "@/modules/chatwoot/gate-close";
+import {
+  describeClosedGate,
+  type GateCloseDetail,
+} from "@/modules/chatwoot/gate-close";
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
 import {
   buildQuoteResolver,
@@ -400,6 +403,71 @@ async function settleGateExit(params: {
   }
 }
 
+// IS THE CONVERSATION STILL THIS ROUTE'S, asked against the mirror at the moment of asking.
+//
+// The gate at the top of a flush judges ONE instant, and what runs after it takes real time: the
+// authorization gate waits on somebody else's endpoint, the spend ceiling on two of our own reads,
+// and a human can claim the conversation while either does. So every gate that ACTS on the
+// conversation afterwards has to ask again.
+//
+// One function rather than a block per gate, which is the whole reason it exists: the copy is the
+// one that forgets `assigneeId`, and without it `shouldBotHandle` cannot tell OUR bot from another
+// one, so a conversation handed to a different bot mid-gate reads as still ours.
+async function conversationStillOurs(params: {
+  tenantId: bigint;
+  instanceId: bigint;
+  conversationId: number;
+  agentBotId: number | null;
+  base: PrismaClient;
+}): Promise<{
+  ours: boolean;
+  closed: GateCloseDetail;
+  heldByAnotherBot: boolean;
+}> {
+  const { tenantId, instanceId, conversationId, agentBotId, base } = params;
+  return runScopedOn(base, sysCtx(tenantId), async (db) => {
+    const conv = await db.conversation.findUnique({
+      where: {
+        tenantId_chatwootInstanceId_chatwootConversationId: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: conversationId,
+        },
+      },
+      // NOTE: assigneeId is part of the question, not decoration: without it shouldBotHandle
+      // cannot tell OUR bot from another one, and a conversation handed to a different bot during
+      // the gate would read as still ours.
+      select: { status: true, assigneeType: true, assigneeId: true },
+    });
+    return {
+      ours: shouldBotHandle(
+        {
+          assigneeType: conv?.assigneeType ?? null,
+          assigneeId: conv?.assigneeId ?? null,
+          status: conv?.status ?? null,
+        },
+        { ourAgentBotId: agentBotId },
+      ),
+      closed: describeClosedGate({
+        assigneeType: conv?.assigneeType ?? null,
+        status: conv?.status ?? null,
+      }),
+      // Same question as at the gate on the way in, and asked here for the same reason: this is
+      // the exit that runs when the conversation moved to another bot DURING the gate, which is
+      // precisely the window in which that bot's own delivery is in flight.
+      heldByAnotherBot:
+        conv?.assigneeType === "AgentBot" &&
+        heldByAnotherParty(
+          {
+            assigneeType: conv.assigneeType,
+            assigneeId: conv.assigneeId ?? null,
+          },
+          { ourAgentBotId: agentBotId },
+        ),
+    };
+  });
+}
+
 export async function flushDebounceJob(
   params: FlushDebounceParams,
 ): Promise<JobResult> {
@@ -626,21 +694,50 @@ export async function flushDebounceJob(
       String(flushCeiling.ceilingTokens),
     );
     if (flushCeiling.cfg.handoffEnabled) {
-      // Best-effort, like every other handoff: a Chatwoot that will not take the status change must
-      // not strand the flush, and the customer's next message re-tries it through the webhook gate.
-      const handoffClient = await loadChatwootClient(tenantId, instanceId, {
+      // Asked again immediately before ACTING, which is the fence the webhook's shared handoff
+      // helper carries for the same reason. The gate at the top of this flush judged the instant
+      // before two database reads, and a human claiming the conversation inside that window would
+      // otherwise have it pulled back out of their hands by a gate that had already decided to go
+      // quiet. Dropping the burst below is right either way; only the status change is theirs to
+      // lose.
+      const owned = await conversationStillOurs({
+        tenantId,
+        instanceId,
+        conversationId,
+        agentBotId,
         base,
-        makeClient: deps?.makeClient,
       });
-      await handoffClient
-        .toggleStatus(conversationId, "open")
-        .catch((err: unknown) => {
-          logger.warn(
-            "debounce flush: could not open the conversation for humans (conv=%s): %s",
-            String(conversationId),
-            err instanceof Error ? err.message : String(err),
-          );
+      if (!owned.ours) {
+        logger.info(
+          "debounce flush: spend-ceiling handoff skipped (conv=%s reason=%s) — the conversation is no longer the bot's",
+          String(conversationId),
+          owned.closed.outcome,
+        );
+      } else {
+        // The PERSONA's token, not an empty one. `toggleStatus` is a bot-token endpoint
+        // (docs/chatwoot.md), and a client built without it never reaches Chatwoot at all: the
+        // call raises ChatwootMissingTokenError, the catch below logs it, and the burst is marked
+        // handled while the conversation stays on a bot that will not answer (issue #79 is that
+        // shape). Null when the persona has no Chatwoot bot of its own, and then the same error is
+        // the honest report — there is no identity to hand off as.
+        const handoffClient = await loadChatwootClient(tenantId, instanceId, {
+          base,
+          makeClient: deps?.makeClient,
+          botToken: ctx.loaded.agentBotToken ?? undefined,
         });
+        // Best-effort, like every other handoff: a Chatwoot that will not take the status change
+        // must not strand the flush, and the customer's next message re-tries it through the
+        // webhook gate.
+        await handoffClient
+          .toggleStatus(conversationId, "open")
+          .catch((err: unknown) => {
+            logger.warn(
+              "debounce flush: could not open the conversation for humans (conv=%s): %s",
+              String(conversationId),
+              err instanceof Error ? err.message : String(err),
+            );
+          });
+      }
     }
     const last = readLastMessageId(job.payload);
     if (last !== null) {
@@ -752,46 +849,12 @@ export async function flushDebounceJob(
     // over their shoulder: the post gate withholds the reply, but the tools have run by then. Same
     // question as the gate above, asked again against the mirror; the burst still counts as handled,
     // exactly as it does when the gate was already closed on the way in.
-    const recheck = await runScopedOn(base, sysCtx(tenantId), async (db) => {
-      const conv = await db.conversation.findUnique({
-        where: {
-          tenantId_chatwootInstanceId_chatwootConversationId: {
-            tenantId,
-            chatwootInstanceId: instanceId,
-            chatwootConversationId: conversationId,
-          },
-        },
-        // NOTE: assigneeId is part of the question, not decoration: without it shouldBotHandle
-        // cannot tell OUR bot from another one, and a conversation handed to a different bot during
-        // the authorization call would read as still ours.
-        select: { status: true, assigneeType: true, assigneeId: true },
-      });
-      return {
-        ours: shouldBotHandle(
-          {
-            assigneeType: conv?.assigneeType ?? null,
-            assigneeId: conv?.assigneeId ?? null,
-            status: conv?.status ?? null,
-          },
-          { ourAgentBotId: agentBotId },
-        ),
-        closed: describeClosedGate({
-          assigneeType: conv?.assigneeType ?? null,
-          status: conv?.status ?? null,
-        }),
-        // Same question as at the gate on the way in, and asked here for the same reason: this is
-        // the exit that runs when the conversation moved to another bot DURING the authorization
-        // call, which is precisely the window in which that bot's own delivery is in flight.
-        heldByAnotherBot:
-          conv?.assigneeType === "AgentBot" &&
-          heldByAnotherParty(
-            {
-              assigneeType: conv.assigneeType,
-              assigneeId: conv.assigneeId ?? null,
-            },
-            { ourAgentBotId: agentBotId },
-          ),
-      };
+    const recheck = await conversationStillOurs({
+      tenantId,
+      instanceId,
+      conversationId,
+      agentBotId,
+      base,
     });
     if (!recheck.ours) {
       // NOTE: the same exit as the gate on the way in, so it says the same thing. The old line here

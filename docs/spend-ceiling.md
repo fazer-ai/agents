@@ -102,6 +102,17 @@ there drops the burst and hands the conversation to humans (the webhook never re
 nobody else would); the customer copy waits for the customer's next message, which reaches the
 webhook gate and says it properly, with its own cooldown.
 
+The handoff itself carries two things that are easy to leave out of a second copy, and both were
+left out of the first draft of this one. It goes out with the **persona's bot token**: `toggle_status`
+is a bot-token endpoint, and a client built without it raises before the call leaves the process, so
+a handoff written without the token is logged as best-effort failure while the conversation stays on
+a bot that will not answer. And ownership is **re-read immediately before the status change**, because
+the flush's own gate judged the instant before two database reads and `open` is not neutral: it ends
+the bot's attribution and re-queues the conversation, so applying it to one a human just claimed
+pulls it back out of their hands. Dropping the burst is right either way; only the status change is
+theirs to lose. `conversationStillOurs` is that question in one place, shared with the
+authorization gate's own re-check.
+
 **Vision asks for itself** because it runs on the incoming attachment *before* the webhook's gates
 decide anything — the same asymmetry `#316` measured for attribution. **Guardrails deliberately do
 not**: on the output direction the reply is already written and paid for, so refusing there posts it

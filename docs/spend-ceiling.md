@@ -310,11 +310,16 @@ own, and neither is traffic:
   `kind`, `step`, `refs`, `occasionId`), so an appointment reminder refused an hour after an inactivity
   follow-up keeps its own row. Derived from the descriptor rather than threaded in, because a
   parameter three callers must remember is the one the fourth forgets. `occasionId` is what a caller
-  whose descriptor says none of the rest uses to name the occasion outright: an **inbound** nudge
-  carries one fixed `kind`, no `step` and no `refs`, so two separate deliveries on one conversation
-  described themselves identically — the receptor names the occasion with the delivery row's id,
-  which is exactly one event, and a redelivery of that row is the same event on purpose. It is read
-  by the key and by nothing else, so unlike `refs` it never reaches the model. **Guardrails deliberately do
+  whose descriptor says none of the rest uses to name the occasion outright, and three needed it:
+  an **inbound** nudge carries one fixed `kind`, no `step` and no `refs`, so two separate deliveries
+  on one conversation described themselves identically — the receptor names the occasion with the
+  delivery row's id, which is exactly one event, and a redelivery of that row is the same event on
+  purpose. An **inactivity follow-up** says which RUNG it is (`step`) and not which CLIMB, so a
+  conversation that goes quiet, is followed up, replies and goes quiet again had two episodes whose
+  step 1 looked identical; the anchor is `lastInboundAt`, which is what an episode is here. A
+  **redirect chat follow-up** has one stage, no step and no refs, and names its episode with the
+  `originDisplayId` its own retirement already keys on. `occasionId` is read by the key and by
+  nothing else, so unlike `refs` it never reaches the model. **Guardrails deliberately do
 not**: on the output direction the reply is already written and paid for, so refusing there posts it
 unscreened or drops a reply the customer is waiting for, and a ceiling that switched moderation off
 would let a budget decide a safety question. Memory compaction is out for a sharper reason: skipping

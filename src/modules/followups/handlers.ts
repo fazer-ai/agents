@@ -2,7 +2,7 @@ import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { isTurnInFlight } from "@/graph/inflight";
-import { parseThreadId, runAgentNudge } from "@/graph/nudge";
+import { type AgentNudge, parseThreadId, runAgentNudge } from "@/graph/nudge";
 import { isRepairableNudgeRefusal, nextNudgeRetry } from "@/graph/nudge-retry";
 import type { RuntimeDeps } from "@/graph/runtime";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
@@ -229,6 +229,36 @@ async function sweepHandler(
   return {
     outcome: "reschedule",
     runAt: new Date(Date.now() + SWEEP_INTERVAL_MS),
+  };
+}
+
+// WHAT A FOLLOW-UP STEP SAYS IT IS. Pure, and separate from the handler for the reason the redirect
+// ladder's own `chatFollowupNudge` is: "what do we say" is trivially testable and "when do we say it"
+// is not, and the occasion the spend ceiling keys its refusal by is decided HERE.
+export function inactivityNudge(params: {
+  idleMin: number;
+  instructions: string | null | undefined;
+  // 1-based, the rung of the ladder that fired.
+  step: number;
+  // WHICH EPISODE OF SILENCE this step belongs to. `source`, `kind` and `step` describe the RUNG and
+  // not the climb: a conversation that goes quiet, is followed up at step 1, replies, and goes quiet
+  // again starts a SECOND episode whose step 1 describes itself identically. Inside the two-hour
+  // window the ceiling's occasion key spans, the second refusal would then lose its `error` row and
+  // its alert to the first — two customers unreached, one on the record.
+  //
+  // `lastInboundAt` is what an episode IS here: the silence that began after the customer's last
+  // message. Stable across the steps of one episode by construction (the customer speaking is what
+  // ends it) and the same column `isNewFollowUpEpisode` judges freshness by. Null means they have
+  // never written, which is one episode and not two.
+  lastInboundAt: Date | null;
+}): AgentNudge {
+  return {
+    source: "followup",
+    kind: "inactivity",
+    summary: `The customer has been inactive for about ${params.idleMin} minutes.`,
+    instructions: params.instructions || undefined,
+    step: params.step,
+    occasionId: `episode:${params.lastInboundAt?.toISOString() ?? "none"}`,
   };
 }
 
@@ -474,13 +504,12 @@ export async function followUpHandler(
   const nudgeOutcome = await runAgentNudge({
     tenantId,
     threadId,
-    nudge: {
-      source: "followup",
-      kind: "inactivity",
-      summary: `The customer has been inactive for about ${idleMin} minutes.`,
-      instructions: step.instructions || undefined,
+    nudge: inactivityNudge({
+      idleMin,
+      instructions: step.instructions,
       step: stepIndex + 1,
-    },
+      lastInboundAt,
+    }),
     // Deterministic, system-applied actions for this step (fire even if the agent stays silent);
     // resolve is honored only on the LAST step (settings already strips it from earlier ones).
     postActions: {

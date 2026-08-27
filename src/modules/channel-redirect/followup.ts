@@ -176,11 +176,21 @@ export function parseRedirectFollowUpPayload(
 // Pure: the nudge content for each stage, kept separate from I/O so "what do we say" is trivially
 // testable. A blank `instructions` yields no operator guidance — renderNudge (in graph/nudge.ts)
 // already handles the directive + trigger fields on its own.
-export function chatFollowupNudge(instructions: string): AgentNudge {
+export function chatFollowupNudge(
+  instructions: string,
+  // WHICH REDIRECT EPISODE this ladder is running for. Nothing else in this descriptor separates two
+  // of them: there is one stage that nudges, no step and no refs, so a second episode on the same
+  // widget conversation would describe itself exactly like the first and lose its spend-ceiling row
+  // and alert to the first's window. `originDisplayId` is already the field that tells the
+  // retirement which ladder it means (see RedirectFollowUpPayload), so it is the episode's name
+  // here too; absent or null is the ladder armed before that field existed, which is one episode.
+  originDisplayId?: number | null,
+): AgentNudge {
   return {
     source: "channel-redirect",
     kind: "chat-followup",
     instructions: instructions || undefined,
+    occasionId: `episode:${originDisplayId ?? "none"}`,
   };
 }
 
@@ -716,7 +726,10 @@ export async function redirectFollowUpHandler(
       const outcome = await runAgentNudge({
         tenantId,
         threadId: payload.widgetThreadId,
-        nudge: chatFollowupNudge(cfg.chatFollowupInstructions),
+        nudge: chatFollowupNudge(
+          cfg.chatFollowupInstructions,
+          payload.originDisplayId,
+        ),
         base,
         // NOTE: The composite fence. This stage's window is the widest
         // in the ladder — the config load is fail-closed on `enabled`, but the model turn runs after

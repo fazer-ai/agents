@@ -10,6 +10,8 @@ import {
   NUDGE_RETRY_LIMIT,
   nextNudgeRetry,
 } from "@/graph/nudge-retry";
+import { chatFollowupNudge } from "@/modules/channel-redirect/followup";
+import { inactivityNudge } from "@/modules/followups/handlers";
 
 // Every outcome `runAgentNudge` can answer, and whether a caller that owns an occasion may spend it.
 // The `false` rows are the design decision, not filler: the two that mean "there is nothing here to
@@ -183,6 +185,36 @@ describe("the occasion a nudge refusal belongs to", () => {
     const job = { source: "followup", kind: "inactivity", step: 1 };
     expect(nudgeOccasionKey(3n, 77, job)).not.toBe(
       nudgeOccasionKey(3n, 78, job),
+    );
+  });
+
+  // EVERY DESCRIPTOR THIS KEY IS ASKED ABOUT HAS TO ANSWER "WHICH OCCASION", and two of them said
+  // only "which rung". Asserted against the real builders rather than hand-written literals, because
+  // the key cannot fail on a field its caller never set — the same reason the inbound receptor's own
+  // wiring is asserted in its suite.
+  test("two follow-up episodes at the same step are two occasions", () => {
+    const step = (lastInboundAt: Date | null) =>
+      inactivityNudge({
+        idleMin: 30,
+        instructions: "diga oi",
+        step: 1,
+        lastInboundAt,
+      });
+    const first = new Date("2026-08-27T10:00:00.000Z");
+    const second = new Date("2026-08-27T11:00:00.000Z");
+    expect(key(step(first))).not.toBe(key(step(second)));
+    // ...and the rungs of ONE episode still keep their own windows apart from each other.
+    expect(key(step(first))).toBe(key(step(first)));
+    expect(key(step(first))).not.toBe(key({ ...step(first), step: 2 }));
+  });
+
+  test("two redirect episodes on one conversation are two occasions", () => {
+    expect(key(chatFollowupNudge("oi", 41))).not.toBe(
+      key(chatFollowupNudge("oi", 42)),
+    );
+    // The instructions are NOT part of the identity: the same episode reworded is one occasion.
+    expect(key(chatFollowupNudge("oi", 41))).toBe(
+      key(chatFollowupNudge("olá de novo", 41)),
     );
   });
 

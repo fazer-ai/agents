@@ -1386,6 +1386,94 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     ).toBe(inboxDbId);
   });
 
+  test("a human who TAKES the conversation in that same window is not answered over either", async () => {
+    // The status half of this pair was closed by reading the outcome instead of the proposal. The
+    // assignee half is not the same rule and could not borrow it: a message payload may never write
+    // the assignee AT ALL (../../src/modules/chatwoot/state-order.ts — `assigneeOrdered` requires
+    // `fromConversationEvent`), so the mirror correctly stays human-owned while the rebuilt payload
+    // goes on STATING the pre-handoff trio it read a moment earlier. The gate preferred the
+    // statement, so the recovery answered over the human.
+    //
+    // And the damage is not only the reply. The runtime's own ownership re-check runs AFTER the
+    // model call (../../src/graph/runtime.ts), so a turn let through here has already invoked the
+    // model and run every tool it chose — a booking, a write-back — before anything withholds the
+    // text. `turns.built` is what this asserts for exactly that reason.
+    //
+    // Same seam and the same reason as the resolve above: fired from inside the fence's own query,
+    // which lands after the last mirror read and before the gate. Status left `pending` so the
+    // refusal measured here can only be the assignee's.
+    const convId = 8971;
+    const messageId = 9472;
+    const conv = await seedConversation(convId, {
+      lastEventAt: new Date((SENT_AT - 600) * 1000),
+    });
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const stub = stubChatwoot({
+      page: pageWith([{ id: messageId, content: "oi" }]),
+    });
+    const turns = { built: 0 };
+    const FENCE_QUERY = 8;
+    let n = 0;
+    let fired = false;
+    const proxied = new Proxy(appDb, {
+      get(t, k, r) {
+        if (k !== "$extends") return Reflect.get(t, k, r);
+        return (...a: unknown[]) => {
+          n += 1;
+          const ext = (
+            Reflect.get(t, k, r) as (...x: unknown[]) => Record<string, unknown>
+          ).apply(t, a);
+          if (n !== FENCE_QUERY || fired) return ext;
+          fired = true;
+          const tx = ext.$transaction as (...x: unknown[]) => Promise<unknown>;
+          return new Proxy(ext, {
+            get(et, ek, er) {
+              if (ek !== "$transaction") return Reflect.get(et, ek, er);
+              return async (...x: unknown[]) => {
+                await suDb.conversation.update({
+                  where: { id: conv.id },
+                  data: {
+                    assigneeType: "User",
+                    assigneeId: 4242,
+                    assigneeName: "Ana",
+                    // Stamped ahead of the message, as the handoff webhook carrying it would be.
+                    chatwootAssigneeAt: SENT_AT + 3600,
+                  },
+                });
+                return tx.apply(et, x);
+              };
+            },
+          });
+        };
+      },
+    });
+
+    await recoverStrandedDelivery({
+      tenantId,
+      deliveryRowId: rowId,
+      base: proxied,
+      deps: depsWith(stub, turns),
+    });
+
+    expect(fired).toBe(true);
+    expect(stub.sent).toEqual([]);
+    // The gate closed BEFORE the model was built. Asserting only `sent` would pass on a turn that
+    // ran, called tools, and was silenced on the way out.
+    expect(turns.built).toBe(0);
+    // And the human still holds it.
+    expect(
+      (
+        await suDb.conversation.findUniqueOrThrow({
+          where: { id: conv.id },
+          select: { assigneeType: true, assigneeId: true },
+        })
+      ).assigneeType,
+    ).toBe("User");
+  });
+
   test("an operator who RESOLVES between the last read and the gate is not answered over", async () => {
     // Every payload the delivery path gates on is a snapshot of some earlier instant: Chatwoot
     // freezes its own at enqueue, and this module rebuilds one from reads it made a moment before.

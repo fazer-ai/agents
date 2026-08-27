@@ -372,6 +372,53 @@ export function heldByAnotherParty(
   );
 }
 
+// WHICH OF TWO ASSIGNEE READINGS THE GATE MUST BELIEVE, when a delivery arrives holding both.
+//
+// A delivery gates on a PAYLOAD, and every payload is a snapshot of an earlier instant: Chatwoot
+// serializes the conversation when the message fires and only then enqueues (state-order.ts, point
+// 1), and a delivery recovery rebuilds one from reads it made a moment before (#295). Beside it
+// sits the MIRROR row as it stands after this event was written — a different instant again.
+//
+// Neither reading is uniformly the newer one, so this does not pick by recency. It picks by which
+// way a wrong answer fails. A reading that says SOMEBODY ELSE HOLDS IT can only cost silence: the
+// event that releases the conversation is a conversation-level one, it applies when it lands, and
+// the next delivery passes. A reading that says NOBODY DOES costs an answer posted over a human who
+// had just taken over — and posted is the smaller half of it, because the runtime's ownership
+// re-check runs after the model call (../../graph/runtime.ts), so the turn has already run every
+// tool it chose by the time anything withholds the text.
+//
+// So: whichever witness says the conversation is held is the one believed, and the payload's
+// statement is preferred over the mirror only where neither says so.
+//
+// The asymmetry is not this function's invention — it is the mirror's rule read from the gate's
+// side. A message snapshot may never write the assignee at all (state-order.ts: `assigneeOrdered`
+// requires `fromConversationEvent`), so a mirror that reads human-owned under a payload that reads
+// bot-owned is the mirror doing its job, not lagging. MEASURED on the recovery, where the window is
+// widest: a human taking the conversation between the last mirror read and the gate got a full turn
+// run against them, tools included.
+//
+// `stated` is the degraded-payload question of issue #27 and stays separate from `assigneeType`:
+// a payload that said NOTHING is not a payload that said "unassigned", and `null` cannot tell the
+// two apart.
+export function effectiveAssignee(
+  payload: {
+    stated: boolean;
+    assigneeType: string | null;
+    assigneeId: number | null;
+  },
+  mirror: { assigneeType: string | null; assigneeId: number | null },
+  opts: { ourAgentBotId?: number | null } = {},
+): { assigneeType: string | null; assigneeId: number | null } {
+  const held = {
+    assigneeType: mirror.assigneeType,
+    assigneeId: mirror.assigneeId,
+  };
+  if (heldByAnotherParty(held, opts)) return held;
+  return payload.stated
+    ? { assigneeType: payload.assigneeType, assigneeId: payload.assigneeId }
+    : held;
+}
+
 export function shouldBotHandle(
   e: {
     assigneeType: string | null;

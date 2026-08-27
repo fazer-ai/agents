@@ -128,6 +128,7 @@ import { mirrorChatwootEvent } from "./mirror";
 import {
   type ControlCommand,
   controlCommand,
+  effectiveAssignee,
   firstAudioAttachment,
   firstLocationAttachment,
   firstVisualAttachment,
@@ -3161,12 +3162,27 @@ export async function processChatwootDelivery(
   // which of the two events closed it. Re-deriving it at the second question is how the two answers
   // drift apart, and the second is the one an operator reads afterwards.
   //
-  // NOTE: only the assignee is lifted, and the literal below stays a literal on purpose: the
+  // NOTE: only the assignee is lifted, and the literals below stay literals on purpose: the
   // per-call-site sweep for issue #210 reads the argument as written, so a call handed a named
   // object no longer shows it the `assigneeId` that makes the gate strict.
-  const effectiveAssigneeType = assigneeKnown
-    ? (n.assigneeType ?? null)
-    : mirror.assigneeType;
+  //
+  // WHICHEVER WITNESS SAYS THE CONVERSATION IS HELD, and the rule for that is `effectiveAssignee`
+  // in ../chatwoot/normalize.ts, where the reasoning and its decision table live. The gate used to
+  // prefer the payload wherever it spoke, and the payload always speaks: a rebuilt one states the
+  // trio it read a moment earlier (#295), and Chatwoot's own is frozen at enqueue. A message may
+  // never write the assignee (../chatwoot/state-order.ts), so a human taking the conversation left
+  // the mirror correctly human-owned and the gate answering anyway. MEASURED on the recovery.
+  const effective = effectiveAssignee(
+    {
+      stated: assigneeKnown,
+      assigneeType: n.assigneeType ?? null,
+      assigneeId: n.assigneeId ?? null,
+    },
+    { assigneeType: mirror.assigneeType, assigneeId: mirror.assigneeId },
+    { ourAgentBotId: params.agentBotId },
+  );
+  const effectiveAssigneeType = effective.assigneeType;
+  const effectiveAssigneeId = effective.assigneeId;
   // THE STATUS THE MIRROR SETTLED ON, not the one the payload proposed. `mirror` is the row AFTER
   // this event was written, so it already holds whichever of the two won: a new incoming message
   // that reopened a resolved conversation reads `pending` here exactly as Chatwoot does, and a
@@ -3189,7 +3205,7 @@ export async function processChatwootDelivery(
     {
       assigneeType: effectiveAssigneeType,
       status: effectiveStatus,
-      assigneeId: assigneeKnown ? (n.assigneeId ?? null) : mirror.assigneeId,
+      assigneeId: effectiveAssigneeId,
     },
     { ourAgentBotId: params.agentBotId },
   );
@@ -3208,7 +3224,7 @@ export async function processChatwootDelivery(
     heldByAnotherParty(
       {
         assigneeType: effectiveAssigneeType,
-        assigneeId: assigneeKnown ? (n.assigneeId ?? null) : mirror.assigneeId,
+        assigneeId: effectiveAssigneeId,
       },
       { ourAgentBotId: params.agentBotId },
     );

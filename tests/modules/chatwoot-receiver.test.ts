@@ -8,6 +8,7 @@ import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
 import { mirrorChatwootEvent } from "@/modules/chatwoot/mirror";
 import {
+  effectiveAssignee,
   heldByAnotherParty,
   normalizeChatwootEvent,
   shouldBotHandle,
@@ -189,6 +190,101 @@ describe("shouldBotHandle with ourAgentBotId", () => {
         { ourAgentBotId: 9 },
       ),
     ).toBe(false);
+  });
+});
+
+describe("effectiveAssignee picks the witness that says the conversation is HELD", () => {
+  const OURS = { ourAgentBotId: 9 };
+  const payload = (
+    stated: boolean,
+    assigneeType: string | null = null,
+    assigneeId: number | null = null,
+  ) => ({ stated, assigneeType, assigneeId });
+
+  // The decision table. `mirror` is the row after this event was written; `payload` is the frozen
+  // snapshot the delivery gates on. Read the last column as "what the gate is told".
+  const CASES: Array<{
+    name: string;
+    payload: ReturnType<typeof payload>;
+    mirror: { assigneeType: string | null; assigneeId: number | null };
+    want: { assigneeType: string | null; assigneeId: number | null };
+  }> = [
+    {
+      // The defect this exists for: a human took over after the payload was frozen, and a message
+      // may never write the assignee, so the mirror is RIGHT and the payload is merely louder.
+      name: "a human in the mirror outranks a payload that says our own bot",
+      payload: payload(true, "AgentBot", 9),
+      mirror: { assigneeType: "User", assigneeId: 4242 },
+      want: { assigneeType: "User", assigneeId: 4242 },
+    },
+    {
+      name: "another persona's bot in the mirror outranks it too",
+      payload: payload(true, "AgentBot", 9),
+      mirror: { assigneeType: "AgentBot", assigneeId: 7 },
+      want: { assigneeType: "AgentBot", assigneeId: 7 },
+    },
+    {
+      // The other direction, and it must NOT flip: the payload is the only witness of a takeover
+      // whose conversation event has not landed yet, and believing it costs silence, not an answer.
+      name: "a human in the PAYLOAD is believed over a bot-owned mirror",
+      payload: payload(true, "User", 4242),
+      mirror: { assigneeType: "AgentBot", assigneeId: 9 },
+      want: { assigneeType: "User", assigneeId: 4242 },
+    },
+    {
+      name: "with neither witness naming a holder, the payload's statement stands",
+      payload: payload(true, "AgentBot", 9),
+      mirror: { assigneeType: null, assigneeId: null },
+      want: { assigneeType: "AgentBot", assigneeId: 9 },
+    },
+    {
+      // An explicit unassign is a real statement and the mirror agrees nobody holds it.
+      name: "an explicit unassign is carried through",
+      payload: payload(true, null, null),
+      mirror: { assigneeType: null, assigneeId: null },
+      want: { assigneeType: null, assigneeId: null },
+    },
+    {
+      // Issue #27's degraded payload: it said NOTHING, which is not "unassigned".
+      name: "a payload that said nothing falls back to the mirror",
+      payload: payload(false),
+      mirror: { assigneeType: "User", assigneeId: 4242 },
+      want: { assigneeType: "User", assigneeId: 4242 },
+    },
+    {
+      name: "and to a mirror that names nobody, just the same",
+      payload: payload(false),
+      mirror: { assigneeType: null, assigneeId: null },
+      want: { assigneeType: null, assigneeId: null },
+    },
+    {
+      // An AgentBot the comparison cannot place is not evidence of a stranger — the same direction
+      // heldByAnotherParty takes — so the mirror does not outrank the payload here.
+      name: "an unplaceable bot in the mirror does not outrank the payload",
+      payload: payload(true, "AgentBot", 9),
+      mirror: { assigneeType: "AgentBot", assigneeId: null },
+      want: { assigneeType: "AgentBot", assigneeId: 9 },
+    },
+  ];
+
+  test.each(CASES.map((c) => [c.name, c] as const))("%s", (_name, c) => {
+    expect(effectiveAssignee(c.payload, c.mirror, OURS)).toEqual(c.want);
+  });
+
+  // The trio travels together or it does not travel: a type from one witness beside an id from the
+  // other is a reading neither of them made, and it is precisely what makes the strict gate degrade
+  // (issue #210, the sweep below).
+  test("the id always comes from the same witness as the type", () => {
+    for (const c of CASES) {
+      const got = effectiveAssignee(c.payload, c.mirror, OURS);
+      const fromMirror =
+        got.assigneeType === c.mirror.assigneeType &&
+        got.assigneeId === c.mirror.assigneeId;
+      const fromPayload =
+        got.assigneeType === c.payload.assigneeType &&
+        got.assigneeId === c.payload.assigneeId;
+      expect(fromMirror || fromPayload).toBe(true);
+    }
   });
 });
 

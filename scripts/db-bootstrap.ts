@@ -415,9 +415,16 @@ async function provisionFleetRole(
   // reads like SQL and is not. The same reason the REVOKE below is built by the server.
   const membersOf = async () =>
     (
-      await client.query<{ rolname: string; quoted: string; grantor: string }>(
+      await client.query<{
+        rolname: string;
+        quoted: string;
+        grantor: string;
+        serving: boolean;
+      }>(
         `SELECT DISTINCT r.rolname, quote_ident(r.rolname) AS quoted,
-                quote_ident(g.rolname) AS grantor
+                quote_ident(g.rolname) AS grantor,
+                EXISTS (SELECT 1 FROM pg_stat_activity a
+                         WHERE a.datname = current_database() AND a.usename = r.rolname) AS serving
            FROM pg_auth_members am
            JOIN pg_roles r ON r.oid = am.member
            JOIN pg_roles d ON d.oid = am.roleid
@@ -432,16 +439,39 @@ async function provisionFleetRole(
     ])
   ).rows[0]?.q as string;
 
-  const before = new Set((await membersOf()).map((r) => r.rolname));
+  // A stray with an OPEN SESSION in this database is not a leftover: it is the OUTGOING role of a
+  // credential rotation, and `docs/deploy.md` promises the container still serving on it stays alive
+  // through the transfer. Cutting its fleet access would take that promise away — every
+  // `asSuperAdmin` call in the old process would start failing mid-deploy. A previous
+  // installation's role, which is what this reconcile is for, has no session here.
+  //
+  // Reported rather than silently kept: it IS fleet access held by a role this installation did not
+  // provision, and the next boot after the old process exits clears it.
+  const all = await membersOf();
+  for (const { quoted } of all.filter((r) => r.serving)) {
+    console.warn(
+      `db-bootstrap: ${quoted} holds ${quotedFleet} and has an open session here, so it is left ` +
+        "alone — that is the shape of a rotation's outgoing role. The next boot after it exits " +
+        "clears it.",
+    );
+  }
+  const before = new Set(all.filter((r) => !r.serving).map((r) => r.rolname));
   for (const rolname of before) {
     try {
       // Quoted by the SERVER, not here: `rolname` comes out of the catalog and a legal role name may
       // contain a double quote, which would make this statement invalid SQL — and the catch below
       // would read that as a permission problem while the member kept its path to every tenant.
       // Two round trips because `DO` takes no parameters: `format` builds it, then it is run.
+      //
+      // CASCADE, and it is required rather than defensive: a PREVIOUS ADMINISTRATOR is a stray here
+      // (a rotated `MIGRATION_DATABASE_URL` leaves one), and the membership it granted onward to the
+      // runtime role depends on it — Postgres answers `dependent privileges exist` without it. What
+      // CASCADE drops with it is exactly that onward grant, which the two GRANTs below re-make a
+      // moment later. Measured: without it, a rotation of the administrative account refuses to
+      // boot on a leftover it could have cleared.
       const revoke = (
         await client.query<{ stmt: string }>(
-          "SELECT format('REVOKE %I FROM %I', $1::text, $2::text) AS stmt",
+          "SELECT format('REVOKE %I FROM %I CASCADE', $1::text, $2::text) AS stmt",
           [fleetRole, rolname],
         )
       ).rows[0]?.stmt as string;
@@ -457,7 +487,7 @@ async function provisionFleetRole(
   // so: measured, the statement returned success and the membership was still there. Since
   // PostgreSQL 16 a membership is one row PER GRANTOR, so the superuser's grant survives an
   // administrator's revoke of its own. What is left is reported with the statement that clears it.
-  const after = await membersOf();
+  const after = (await membersOf()).filter((r) => !r.serving);
   const remaining = new Set(after.map((r) => r.rolname));
   // Said out loud, because a security reconcile that happens quietly reads as one that did not
   // happen. Each of these could read every tenant in this database a moment ago.
@@ -469,14 +499,26 @@ async function provisionFleetRole(
       );
     }
   }
-  for (const { rolname, quoted, grantor } of after) {
-    console.warn(
-      `db-bootstrap: ${quoted} is still a member of ${quotedFleet} (granted by ${grantor}) ` +
-        "and can read every tenant in this database through the cross-tenant policy. This is what " +
-        "a database dropped and recreated under the same name leaves behind. Clear it as " +
-        `${grantor} or as a superuser: REVOKE ${quotedFleet} FROM ${quoted};`,
+  // REFUSES, matching the SQL twin, and the asymmetry this replaces was a real hole: a membership
+  // that survives the revoke can `SET ROLE` into this database's fleet role and read every tenant
+  // in it (measured — the previous installation's runtime role read all 30 rows of the new one).
+  // That is an active breach, not a degraded feature, so it is not something a boot warns past.
+  if (after.length > 0) {
+    // By NAME, not by row: since 16 a membership is one row per grantor, so a role granted twice
+    // would otherwise be listed twice and told to revoke itself twice.
+    const remaining = [...new Set(after.map((r) => r.quoted))];
+    const names = remaining.join(", ");
+    const statements = remaining
+      .map((q) => `REVOKE ${quotedFleet} FROM ${q} CASCADE;`)
+      .join(" ");
+    const grantors = [...new Set(after.map((r) => r.grantor))].join(", ");
+    throw new Error(
+      `${names} ${remaining.length === 1 ? "is" : "are"} still a member of ${quotedFleet} and can ` +
+        "read every tenant in this database through the cross-tenant policy. This is what a " +
+        "database dropped and recreated under the same name leaves behind, and a REVOKE by anyone " +
+        `who is not the GRANTOR removes nothing while reporting success. Clear it as ${grantors} ` +
+        `or as a superuser: ${statements}`,
     );
-    void rolname;
   }
 
   // Two grants, and BOTH are best-effort. Roles are CLUSTER-wide objects while databases are not,

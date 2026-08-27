@@ -31,6 +31,24 @@
 -- the runtime role's NAME is deployment configuration (`DATABASE_URL`), and a migration has no way
 -- to read a deployment's env, so a policy that had to name it could not be written here at all.
 
+-- ## This migration REQUIRES the old process stopped first, and must NOT be a pre-deploy step
+--
+-- The moment it commits, `app.is_super_admin` grants nothing. A process from the previous release
+-- sets only that GUC, so every `asSuperAdmin` read it makes returns ZERO ROWS from then until it
+-- exits — and that is not a corner of the product: it is how an API key is verified (the tenant is
+-- unknown until the key row is read), how a Chatwoot route is resolved, how the scheduler claims
+-- work, and how the first admin is created. The old process keeps answering, wrongly, on all of them.
+--
+-- `docs/deploy.md` names two shapes and this one belongs to the second. The compose deploys run
+-- `bootstrap → migrate → serve` in one container command, so the old container is already gone and
+-- there is no window. The line that says to run `migrate deploy` as a PRE-DEPLOY step on platforms
+-- with rolling deploys does not apply here: that is exactly the window. Stop the old process, run
+-- the migration, start the new one — the same instruction `20260826220000_appointment_record`
+-- carries, for the same reason.
+--
+-- Nothing is lost in the window and nothing is corrupted: the reads answer empty and the writes are
+-- refused by WITH CHECK. What is lost is availability, and it ends when the old process exits.
+
 -- 1. The role the cross-tenant path becomes, for the length of one transaction.
 --
 -- It holds no attribute of its own: NOSUPERUSER and NOBYPASSRLS, so it is still fenced by RLS like

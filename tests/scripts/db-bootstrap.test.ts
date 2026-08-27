@@ -65,19 +65,95 @@ function urlFor(user: string, password: string, database: string): string {
   return u.toString();
 }
 
+// The fleet role is CLUSTER-wide and this file boots a dozen installations against a handful of
+// probe databases, so it accumulates members across tests — several granted by the SUPERUSER, which
+// a CREATEROLE administrator cannot revoke even with CASCADE, and which bootstrap then correctly
+// refuses to boot past. Production does not accumulate that way: one installation, one runtime role,
+// rotations cleared by the same administrator that made them.
+//
+// So every boot starts from the state a real one starts from. It takes the DATABASE and the
+// ADMINISTRATOR of the boot it is about to run, because both vary here — a helper that assumed the
+// default probe database cleared the wrong role and a helper that assumed the default administrator
+// revoked the ADMIN OPTION out from under the boot. Tests that are ABOUT a leftover pass
+// `keepStrays` and create it themselves.
+async function clearFleetMembers(migrationUrl: string, appRole: string) {
+  const admin = new URL(migrationUrl).username;
+  const c = new Client({ connectionString: migrationUrl });
+  await c.connect();
+  try {
+    const fleet = (
+      await c.query<{ role: string }>(`SELECT ${FLEET_ROLE_EXPR} AS role`)
+    ).rows[0]?.role as string;
+    // Nothing to reconcile before the FIRST boot: the role is what that boot creates.
+    const exists = (
+      await c.query<{ e: boolean }>(
+        "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1) AS e",
+        [fleet],
+      )
+    ).rows[0]?.e;
+    if (!exists) return;
+    const strays = (
+      await c.query<{ rolname: string }>(
+        `SELECT DISTINCT r.rolname
+           FROM pg_auth_members am
+           JOIN pg_roles r ON r.oid = am.member
+           JOIN pg_roles d ON d.oid = am.roleid
+          WHERE d.rolname = $1 AND r.rolname <> $2 AND r.rolname <> $3
+            AND NOT EXISTS (SELECT 1 FROM pg_stat_activity a
+                             WHERE a.datname = current_database()
+                               AND a.usename = r.rolname)`,
+        [fleet, appRole, admin],
+      )
+    ).rows;
+    // A role with an OPEN SESSION here is skipped, exactly as bootstrap skips it: that is the
+    // OUTGOING role of a rotation, which docs/deploy.md promises stays alive through the transfer,
+    // and two tests below are about precisely that.
+    //
+    // As the SUPERUSER, because the point is to reach what the administrator cannot.
+    const db = su as Client;
+    for (const { rolname } of strays) {
+      await db.query(`REVOKE "${fleet}" FROM "${rolname}" CASCADE`);
+    }
+    // And the runtime role of the boot about to run HAS the membership, which is the other half of
+    // "the state a real install is in". Several tests here create their runtime role as the
+    // superuser, so the CREATEROLE administrator holds no ADMIN over it and cannot grant it
+    // anything — bootstrap then refuses, correctly, on a state those tests are not about.
+    // Only if it is already there: several tests boot a runtime role bootstrap itself creates, and
+    // this runs before that.
+    const appExists = (
+      await c.query<{ e: boolean }>(
+        "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1) AS e",
+        [appRole],
+      )
+    ).rows[0]?.e;
+    if (appExists) {
+      await db.query(
+        `GRANT "${fleet}" TO "${appRole}" WITH INHERIT FALSE, SET TRUE`,
+      );
+    }
+  } finally {
+    await c.end();
+  }
+}
+
 async function runBootstrap(
   appPassword = APP_PW,
   appRole = APP_ROLE,
   extraEnv: Record<string, string> = {},
+  keepStrays = false,
 ) {
+  const env = {
+    ...process.env,
+    MIGRATION_DATABASE_URL: urlFor(ADMIN_ROLE, ADMIN_PW, PROBE_DB),
+    DATABASE_URL: urlFor(appRole, appPassword, PROBE_DB),
+    ...extraEnv,
+  };
+  if (!keepStrays) {
+    await clearFleetMembers(env.MIGRATION_DATABASE_URL as string, appRole);
+  }
   const proc = Bun.spawn(["bun", "scripts/db-bootstrap.ts"], {
     cwd: REPO_ROOT,
-    env: {
-      ...process.env,
-      MIGRATION_DATABASE_URL: urlFor(ADMIN_ROLE, ADMIN_PW, PROBE_DB),
-      DATABASE_URL: urlFor(appRole, appPassword, PROBE_DB),
-      ...extraEnv,
-    },
+    env,
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -754,7 +830,7 @@ describe.skipIf(!dbUp)(
       );
       await db.query(`REVOKE ${FLEET_ROLE} FROM ${APP_ROLE}`);
 
-      const refused = await runBootstrap();
+      const refused = await runBootstrap(APP_PW, APP_ROLE, {}, true);
       expect(refused.exitCode).toBe(1);
       const out = `${refused.stdout}${refused.stderr}`;
       expect(out).toContain(`could not grant ${FLEET_ROLE}`);
@@ -778,7 +854,7 @@ describe.skipIf(!dbUp)(
 
       // The repair the message named, run by someone who can, and the next boot closes it.
       await db.query(`GRANT ${FLEET_ROLE} TO ${ADMIN_ROLE} WITH ADMIN OPTION`);
-      const repaired = await runBootstrap();
+      const repaired = await runBootstrap(APP_PW, APP_ROLE, {}, true);
       expect(repaired.exitCode).toBe(0);
       expect(`${repaired.stdout}${repaired.stderr}`).not.toContain(
         "cannot SET ROLE",
@@ -832,7 +908,7 @@ describe.skipIf(!dbUp)(
       );
       expect(denied).toContain("permission denied to set role");
 
-      const reported = await runBootstrap();
+      const reported = await runBootstrap(APP_PW, APP_ROLE, {}, true);
       expect(reported.exitCode).toBe(1);
       expect(`${reported.stdout}${reported.stderr}`).toContain(
         "cannot SET ROLE",
@@ -840,7 +916,7 @@ describe.skipIf(!dbUp)(
 
       // And the repair is the same one grant, run by someone who can.
       await db.query(`GRANT ${FLEET_ROLE} TO ${ADMIN_ROLE} WITH ADMIN OPTION`);
-      const repaired = await runBootstrap();
+      const repaired = await runBootstrap(APP_PW, APP_ROLE, {}, true);
       expect(`${repaired.stdout}${repaired.stderr}`).not.toContain(
         "cannot SET ROLE",
       );
@@ -852,6 +928,15 @@ describe.skipIf(!dbUp)(
         )
       ).rows[0];
       expect(after).toEqual({ can_set_role: true, usage: false });
+
+      // The grant this test made as the SUPERUSER is a SECOND row in pg_auth_members (one per
+      // grantor since 16), and the administrator cannot revoke someone else's. Left behind, the
+      // later tests here boot for a DIFFERENT runtime role and bootstrap correctly refuses on a
+      // membership it cannot clear — a state this test created, not one they are about.
+      await db.query(`REVOKE ${FLEET_ROLE} FROM ${APP_ROLE}`);
+      await db.query(
+        `GRANT ${FLEET_ROLE} TO ${APP_ROLE} WITH INHERIT FALSE, SET TRUE GRANTED BY ${ADMIN_ROLE}`,
+      );
     });
 
     // NOTE: roles are cluster-wide while databases are not, so a database dropped and recreated under
@@ -890,15 +975,16 @@ describe.skipIf(!dbUp)(
 
       // First arm: the grant was made by the SUPERUSER, which this administrator cannot revoke —
       // and Postgres says nothing about that. Bootstrap has to report what is still there rather
-      // than what it attempted, which is the difference this arm exists to hold.
-      const stuck = await runBootstrap();
-      expect(stuck.exitCode).toBe(0);
+      // than what it attempted, and REFUSE: that member can read every tenant in this database, so
+      // it is an active breach rather than a degraded feature.
+      const stuck = await runBootstrap(APP_PW, APP_ROLE, {}, true);
+      expect(stuck.exitCode).toBe(1);
       const stuckOut = `${stuck.stdout}${stuck.stderr}`;
       // Unquoted here, and that is `quote_ident` doing its job: it quotes only what needs it, so a
       // plain lowercase name comes out bare and the statement is still valid SQL. The arm that
       // proves the quoting matters is the one below, with a name that carries a double quote.
       expect(stuckOut).toContain(`${STRAY_ROLE} is still a member`);
-      expect(stuckOut).toContain(`REVOKE ${fleet} FROM ${STRAY_ROLE};`);
+      expect(stuckOut).toContain(`REVOKE ${fleet} FROM ${STRAY_ROLE} CASCADE;`);
       expect(await membersOfFleet()).toContain(STRAY_ROLE);
 
       // Second arm: a grant this administrator CAN revoke is revoked, silently and for good.
@@ -906,7 +992,7 @@ describe.skipIf(!dbUp)(
       await db.query(
         `GRANT "${fleet}" TO ${STRAY_ROLE} WITH INHERIT FALSE, SET TRUE GRANTED BY ${ADMIN_ROLE}`,
       );
-      const cleared = await runBootstrap();
+      const cleared = await runBootstrap(APP_PW, APP_ROLE, {}, true);
       expect(cleared.exitCode).toBe(0);
       const clearedOut = `${cleared.stdout}${cleared.stderr}`;
       expect(clearedOut).not.toContain("is still a member");
@@ -931,7 +1017,7 @@ describe.skipIf(!dbUp)(
       const fleet = await probeFleetRole();
       await db.query(`ALTER ROLE "${fleet}" BYPASSRLS`);
       try {
-        const refused = await runBootstrap();
+        const refused = await runBootstrap(APP_PW, APP_ROLE, {}, true);
         expect(refused.exitCode).toBe(1);
         const out = `${refused.stdout}${refused.stderr}`;
         expect(out).toContain("already exists and is privileged");
@@ -943,7 +1029,7 @@ describe.skipIf(!dbUp)(
         await db.query(`ALTER ROLE "${fleet}" NOBYPASSRLS`);
       }
       // And the next boot is clean again, so the refusal is a gate rather than a dead end.
-      expect((await runBootstrap()).exitCode).toBe(0);
+      expect((await runBootstrap(APP_PW, APP_ROLE, {}, true)).exitCode).toBe(0);
     });
 
     // NOTE: a role name may legally contain a double quote, and the reconcile interpolates names it
@@ -960,7 +1046,12 @@ describe.skipIf(!dbUp)(
         await db.query(
           `GRANT "${fleet}" TO "${quoted.replace(/"/g, '""')}" WITH INHERIT FALSE, SET TRUE GRANTED BY ${ADMIN_ROLE}`,
         );
-        const { exitCode, stdout, stderr } = await runBootstrap();
+        const { exitCode, stdout, stderr } = await runBootstrap(
+          APP_PW,
+          APP_ROLE,
+          {},
+          true,
+        );
         expect(exitCode).toBe(0);
         expect(`${stdout}${stderr}`).toContain(`revoked "${quoted}"`);
         const still = (

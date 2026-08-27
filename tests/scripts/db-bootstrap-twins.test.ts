@@ -91,8 +91,8 @@ const INVARIANTS: Array<{
   },
   {
     what: "quotes catalog role names through the server, not by hand",
-    ts: /format\('REVOKE %I FROM %I'/,
-    sql: /format\('REVOKE %I FROM %I'/,
+    ts: /format\('REVOKE %I FROM %I CASCADE'/,
+    sql: /format\('REVOKE %I FROM %I CASCADE'/,
   },
   {
     what: "reconciles memberships this database did not grant",
@@ -104,8 +104,23 @@ const INVARIANTS: Array<{
   },
   {
     what: "re-reads after revoking, because a non-grantor REVOKE is a silent no-op",
-    ts: /is still a member/,
+    ts: /still a member of/,
     sql: /are still members of/,
+  },
+  {
+    // A stray with an OPEN SESSION is the OUTGOING role of a rotation, which docs/deploy.md promises
+    // stays alive through the transfer. Cutting its fleet access mid-deploy takes that away.
+    what: "leaves alone a stray that still has a session in this database",
+    ts: /pg_stat_activity[\s\S]{0,200}?a\.usename = r\.rolname/,
+    sql: /pg_stat_activity[\s\S]{0,200}?a\.usename = r\.rolname/,
+  },
+  {
+    // Severity, not just presence, and the two files diverged on exactly this: one raised and the
+    // other warned past a membership that can read every tenant. A fence that only asks whether
+    // both mention the state would have passed that.
+    what: "REFUSES a membership it could not clear, rather than warning past it",
+    ts: /if \(after\.length > 0\) \{[\s\S]{0,600}?throw new Error\(/,
+    sql: /IF v_left IS NOT NULL THEN[\s\S]{0,200}?RAISE EXCEPTION/,
   },
 ];
 

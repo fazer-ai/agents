@@ -190,15 +190,24 @@ BEGIN
   -- this one is invoked by hand with someone watching (see the header), so a member it cannot clear
   -- stops the script instead of scrolling past. And it is re-read rather than trusted, because a
   -- REVOKE issued by someone who is not the GRANTOR removes nothing and reports success (measured).
+  -- A stray with an OPEN SESSION in this database is not a leftover: it is the OUTGOING role of a
+  -- credential rotation, and docs/deploy.md promises the container still serving on it stays alive
+  -- through the transfer. A previous installation's role, which is what this is for, has no session
+  -- here.
   FOR v_stray IN
     SELECT DISTINCT r.rolname
       FROM pg_auth_members am
       JOIN pg_roles r ON r.oid = am.member
       JOIN pg_roles d ON d.oid = am.roleid
      WHERE d.rolname = v_fleet AND r.rolname <> v_role AND r.rolname <> current_user
+       AND NOT EXISTS (SELECT 1 FROM pg_stat_activity a
+                        WHERE a.datname = current_database() AND a.usename = r.rolname)
   LOOP
     BEGIN
-      EXECUTE format('REVOKE %I FROM %I', v_fleet, v_stray);
+      -- CASCADE for the same reason as the TypeScript twin: a PREVIOUS ADMINISTRATOR is a stray
+      -- here, and the membership it granted onward to the runtime role depends on it. What CASCADE
+      -- drops with it is exactly that onward grant, re-made by the GRANTs a moment later.
+      EXECUTE format('REVOKE %I FROM %I CASCADE', v_fleet, v_stray);
       RAISE NOTICE 'revoked % from % -- a membership this database did not grant', v_stray, v_fleet;
     EXCEPTION WHEN OTHERS THEN
       RAISE NOTICE 'could not revoke % from %: %', v_stray, v_fleet, SQLERRM;
@@ -209,7 +218,9 @@ BEGIN
     FROM pg_auth_members am
     JOIN pg_roles r ON r.oid = am.member
     JOIN pg_roles d ON d.oid = am.roleid
-   WHERE d.rolname = v_fleet AND r.rolname <> v_role AND r.rolname <> current_user;
+   WHERE d.rolname = v_fleet AND r.rolname <> v_role AND r.rolname <> current_user
+     AND NOT EXISTS (SELECT 1 FROM pg_stat_activity a
+                      WHERE a.datname = current_database() AND a.usename = r.rolname);
   IF v_left IS NOT NULL THEN
     RAISE EXCEPTION
       '% are still members of % and can read every tenant in this database through the '

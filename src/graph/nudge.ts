@@ -119,16 +119,21 @@ export function nudgeOccasionKey(
   conversationId: number,
   nudge: AgentNudge,
 ): string {
-  const refs = Object.entries(nudge.refs ?? {})
-    .filter(([, v]) => v != null)
-    // Explicit and code-unit ordered, never `localeCompare`: this key has to be the same string on
-    // every machine that builds it.
-    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-    .map(([k, v]) => `${k}=${v}`)
-    .join(",");
-  return `nudge:${conversationId}:${nudge.source}:${nudge.kind ?? ""}:${
-    nudge.step ?? ""
-  }:${refs}`;
+  // JSON, not `k=v` joined by commas, because refs are OPAQUE strings from a calendar or a payment
+  // provider and that encoding is not injective: `{a: "x,b=y"}` and `{a: "x", b: "y"}` produce the
+  // same suffix, which would hand two independent occasions one window. Sorted first, explicitly and
+  // by code unit rather than with `localeCompare`, because this key has to be the same string on
+  // every machine that builds it.
+  const refs = JSON.stringify(
+    Object.entries(nudge.refs ?? {})
+      .filter(([, v]) => v != null)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+  );
+  return `nudge:${conversationId}:${JSON.stringify([
+    nudge.source,
+    nudge.kind ?? null,
+    nudge.step ?? null,
+  ])}:${refs}`;
 }
 
 export type RunAgentNudgeOutcome =

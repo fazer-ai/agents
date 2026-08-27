@@ -85,7 +85,10 @@ import {
   debounceDedupeKey,
   resolveDebounceConfig,
 } from "@/modules/debounce/service";
-import { advanceHandledWatermark } from "@/modules/debounce/watermark";
+import {
+  advanceHandledWatermark,
+  readHandledWatermark,
+} from "@/modules/debounce/watermark";
 import { emitCommandDropped } from "@/modules/flowlog/command";
 import { emitFlowEvent } from "@/modules/flowlog/service";
 import { emitUnroutedMessage } from "@/modules/flowlog/unrouted";
@@ -2554,6 +2557,37 @@ async function maybeConsumeCommandOrGate(params: {
       source: "inbox",
       base,
     });
+    // ALREADY ANSWERED ⇒ NOTHING TO REFUSE, and nothing to report either. The same fan-out this
+    // gate's occasion key is about sends one message down two routes, and the two read the ledger at
+    // different instants: the first can be under the ceiling, run its turn, and commit the usage
+    // that puts the tenant over before the second gets here. The second would then tell a customer
+    // the agent cannot answer, open the conversation for humans, and write an `error` line saying a
+    // turn was skipped for budget — about a message that was answered.
+    //
+    // The watermark is what says it was: `runAgentTurn` advances it on the message it posted for.
+    // Read only on the `over` branch, so the ordinary message pays nothing for it, and read BEFORE
+    // the announcement so a refusal that did not happen leaves no record of having happened.
+    //
+    // It does not close the whole race. A delivery landing inside the window between the other
+    // route's usage write and its watermark CAS sees neither, and that narrow interleaving is left
+    // to the CAS, which is what keeps the ANSWER single. What this closes is the wide half: a second
+    // delivery arriving after the first has finished, which needs no coincidence at all.
+    if (ceiling.state === "over") {
+      const handled = await readHandledWatermark({
+        tenantId,
+        conversationDbId: ctx.conv.id,
+        base,
+      });
+      const messageId = n.message?.id ?? null;
+      if (messageId !== null && handled !== null && handled >= messageId) {
+        logger.info(
+          "chatwoot: spend ceiling reached (conv=%s) — message %s was already answered, so nothing is said",
+          String(conversationId),
+          String(messageId),
+        );
+        return true;
+      }
+    }
     announceSpendCeiling(
       {
         tenantId,

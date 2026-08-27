@@ -150,6 +150,16 @@ describe("the occasion a nudge refusal belongs to", () => {
     expect(key(a)).toBe(key(b));
   });
 
+  // The parts are separated unambiguously, which `k=v` joined by commas is not: refs are opaque
+  // strings from somebody else's calendar, and one carrying the delimiters would otherwise collide
+  // with a different set of refs entirely.
+  test("a ref that contains the delimiters is not a different occasion's key", () => {
+    const source = "appointment_reminder";
+    expect(key({ source, refs: { a: "x,b=y" } })).not.toBe(
+      key({ source, refs: { a: "x", b: "y" } }),
+    );
+  });
+
   // And the conversation is still part of it: two tenants' worth of identical jobs must not share a
   // window.
   test("the conversation is part of the identity", () => {

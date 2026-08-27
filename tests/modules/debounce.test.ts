@@ -23,6 +23,7 @@ import {
   resolveDebounceConfig,
 } from "@/modules/debounce/service";
 import { advanceHandledWatermark } from "@/modules/debounce/watermark";
+import { settleFlowEvents } from "@/modules/flowlog/scheduled";
 import type { ClaimedJob } from "@/modules/scheduler/service";
 import {
   claimDueDebounceJobs,
@@ -3355,6 +3356,63 @@ describe.skipIf(!dbUp)("debounce", () => {
       // ...and the burst still counts as handled, exactly as it does when the gate was already
       // closed on the way in: the ceiling decided about the TENANT, and that holds either way.
       expect(await watermarkOf(912)).toBe(11);
+      await clearFlowLog(suDb, { tenantId });
+    });
+
+    // A BURST THAT WAS ALREADY ANSWERED IS NOT A BURST TO REFUSE. A claimed job can be retried after
+    // an earlier attempt advanced the watermark past this payload's own last id: that attempt
+    // answered the burst and died before the scheduler could mark the job done. Over the ceiling,
+    // the retry would tell the customer the agent cannot answer, hand the conversation off, and
+    // write a refusal, all about a burst the customer already has an answer to.
+    test("a burst an earlier attempt already answered is not refused again", async () => {
+      await seedConversation(914);
+      // What that earlier attempt left behind, and the only trace of it this retry can read.
+      await advanceHandledWatermark({
+        tenantId,
+        conversationDbId: (
+          await suDb.conversation.findFirstOrThrow({
+            where: { tenantId, chatwootConversationId: 914 },
+            select: { id: true },
+          })
+        ).id,
+        toMessageId: 15,
+        base: appDb,
+      });
+      const sent: Array<[number, string]> = [];
+      const toggles: Array<[number, string]> = [];
+      const notes: Array<[number, string]> = [];
+      const out = await flushDebounceJob({
+        job: jobFor(914, { lastMessageId: 15 }),
+        base: appDb,
+        deps: {
+          makeModel: () => {
+            throw new Error("the model must not be invoked over the ceiling");
+          },
+          makeClient: makeResolveStub({
+            // The re-fetch finds the same message, and the watermark is what makes it not pending.
+            pages: [page([{ id: 15, content: "oi" }])],
+            sent,
+            calls: { getMessages: 0 },
+            toggles,
+            notes,
+          }),
+          checkpointer: new MemorySaver(),
+        },
+      });
+
+      expect(out).toEqual({ outcome: "done" });
+      expect(sent).toEqual([]);
+      expect(toggles).toEqual([]);
+      expect(notes).toEqual([]);
+      // ...and no refusal line, because nothing was refused.
+      await settleFlowEvents();
+      const rows = await suDb.executionLog.findMany({
+        // Scoped to this flush's own thread, not to the tenant: the fixture is shared with the
+        // refusals above, and a tenant-wide read would be asserting about their rows too.
+        where: { tenantId, threadId: threadOf(914), stage: "spend_ceiling" },
+        select: { level: true },
+      });
+      expect(rows).toEqual([]);
       await clearFlowLog(suDb, { tenantId });
     });
 

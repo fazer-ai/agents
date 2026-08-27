@@ -672,27 +672,41 @@ export async function flushDebounceJob(
   // from then on and no later message of theirs reaches a gate at all; with the handoff off the
   // conversation stays `pending`, but the burst being dropped here would go unanswered in silence
   // unless the customer happened to write a second time.
-  const flushCeiling = await spendCeilingVerdict({
-    tenantId,
-    source: "inbox",
-    base,
-  });
-  announceSpendCeiling(
-    {
+  // NOTHING LEFT TO ANSWER ⇒ NOTHING TO REFUSE, asked before the ceiling rather than after it. A
+  // claimed job can be retried after an earlier attempt already advanced the watermark past this
+  // payload's own last id — the attempt answered the burst and died before the scheduler could mark
+  // the job done. Over the ceiling, the retry would then tell the customer the agent cannot answer,
+  // hand the conversation off and write a refusal, all about a burst that was answered. Read off
+  // the payload and the watermark this flush already holds, so it costs nothing; a payload with no
+  // last id cannot say, and falls through to ask exactly as before.
+  const armedLast = readLastMessageId(job.payload);
+  const alreadyAnswered =
+    armedLast !== null && ctx.watermark !== null && ctx.watermark >= armedLast;
+  const flushCeiling = alreadyAnswered
+    ? null
+    : await spendCeilingVerdict({
+        tenantId,
+        source: "inbox",
+        base,
+      });
+  if (flushCeiling) {
+    announceSpendCeiling(
+      {
+        tenantId,
+        turnId: crypto.randomUUID(),
+        source: "inbox",
+        conversationId: ctx.convDbId,
+        agentId: ctx.loaded.agentId,
+        inboxId: ctx.loaded.inboxDbId,
+        threadId,
+        base,
+      },
+      flushCeiling,
+      "inbox",
       tenantId,
-      turnId: crypto.randomUUID(),
-      source: "inbox",
-      conversationId: ctx.convDbId,
-      agentId: ctx.loaded.agentId,
-      inboxId: ctx.loaded.inboxDbId,
-      threadId,
-      base,
-    },
-    flushCeiling,
-    "inbox",
-    tenantId,
-  );
-  if (flushCeiling.state === "over") {
+    );
+  }
+  if (flushCeiling?.state === "over") {
     logger.info(
       "debounce flush: spend ceiling reached (conv=%s used=%s ceiling=%s), dropping the burst",
       String(conversationId),

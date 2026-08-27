@@ -425,6 +425,69 @@ describe.skipIf(!dbUp)("the spend ceiling (webhook e2e)", () => {
     expect(s.publicOn(9412).map((m) => m.content)).toEqual([OVER_COPY]);
   });
 
+  // A MESSAGE THAT WAS ALREADY ANSWERED IS NOT A MESSAGE TO REFUSE. The fan-out sends one message
+  // down two routes, and the two read the ledger at different instants: the first can be under the
+  // ceiling, answer, and commit the usage that puts the tenant over before the second gets here.
+  // Told as the second route sees it, with the watermark already advanced past the message — which
+  // is what `runAgentTurn` leaves behind when it posts.
+  test("a message the other route already answered is neither refused nor reported", async () => {
+    await setCeiling({
+      enabled: true,
+      monthlyInboxTokens: 100,
+      overCeilingMessage: OVER_COPY,
+    });
+    await spend("inbox", 500);
+    await seedConversation(9413);
+    const conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 9413 },
+      select: { id: true },
+    });
+    await suDb.conversation.update({
+      where: { id: conv.id },
+      data: { lastHandledMessageId: 8900 },
+    });
+    const s = stubChatwoot();
+    await deliverCustomerMessage({
+      convId: 9413,
+      makeClient: s.makeClient,
+      messageId: 8900,
+    });
+    // Nothing said to the customer, nothing reopened...
+    expect(s.publicOn(9413)).toEqual([]);
+    expect(s.statusToggles.filter(([c]) => c === 9413)).toEqual([]);
+    expect(s.notesOn(9413)).toEqual([]);
+    // ...and no `error` line claiming a turn was skipped for budget, because none was.
+    expect(await ceilingRows(9413)).toHaveLength(0);
+  });
+
+  // The control, and it is the half that makes the test above about the WATERMARK rather than about
+  // the conversation: the very next message is past it, and that one IS refused.
+  test("the message after the watermark is still refused", async () => {
+    await setCeiling({
+      enabled: true,
+      monthlyInboxTokens: 100,
+      overCeilingMessage: OVER_COPY,
+    });
+    await spend("inbox", 500);
+    await seedConversation(9414);
+    const conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 9414 },
+      select: { id: true },
+    });
+    await suDb.conversation.update({
+      where: { id: conv.id },
+      data: { lastHandledMessageId: 8900 },
+    });
+    const s = stubChatwoot();
+    await deliverCustomerMessage({
+      convId: 9414,
+      makeClient: s.makeClient,
+      messageId: 8901,
+    });
+    expect(s.publicOn(9414).map((m) => m.content)).toEqual([OVER_COPY]);
+    expect(await ceilingRows(9414)).toHaveLength(1);
+  });
+
   test("the refusal is on the record, at error level", async () => {
     await setCeiling({
       enabled: true,

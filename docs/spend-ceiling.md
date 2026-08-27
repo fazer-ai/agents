@@ -144,6 +144,21 @@ is what ends the bot's attribution and after it the ownership fence would rightl
 the bot tried to say. The note goes **last**, because it is the only one of the three that can report
 whether the handoff actually happened.
 
+**A message that was already answered is not a message to refuse.** The fan-out sends one message
+down two routes, and the two read the ledger at different instants: the first can be under the
+ceiling, answer, and commit the usage that puts the tenant over before the second gets here. The
+second would then tell the customer the agent cannot answer, open the conversation for humans, and
+write an `error` line saying a turn was skipped for budget — about a message that was answered. The
+webhook gate reads the handled watermark on the `over` branch only, before announcing anything, so a
+refusal that did not happen leaves no record of having happened. The debounce flush asks the same
+question off the payload and the watermark it already holds, which is what a retried job needs: an
+earlier attempt can have answered the burst and died before the scheduler marked the job done.
+
+Neither closes the whole race, and neither is meant to. A delivery landing inside the window between
+the other route's usage write and its watermark CAS sees neither, and that narrow interleaving is
+left to the CAS, which is what keeps the ANSWER single. What these close is the wide half — a second
+delivery, or a retry, arriving after the first has finished — which needs no coincidence at all.
+
 The whole sequence is **single-flighted per conversation**, not just claimed per notice. The claims
 make each write happen once and say nothing about order, and Chatwoot produces two deliveries of one
 message by design (the conversation's assigned bot and the inbox's): the second caller would find

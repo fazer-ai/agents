@@ -26,6 +26,7 @@ import { JOB_DEATH_LEVEL } from "@/modules/scheduler/lanes";
 import type { ClaimedJob } from "@/modules/scheduler/service";
 import { getJobHandler } from "@/modules/scheduler/worker";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { flowLogRows } from "../utils/flowlog";
 
 // Answering the customer whose delivery a process death stranded (issue #295).
 //
@@ -227,18 +228,17 @@ function pageWith(
   };
 }
 
-// Polled and scoped: emitFlowEvent is fire-and-forget, so an unpolled read races the write it is
-// asserting and an unscoped one answers with a neighbour's row.
-async function deliveryLines(convDbId: bigint, waitMs = 2000) {
-  const started = Date.now();
-  while (true) {
-    const rows = await suDb.executionLog.findMany({
-      where: { tenantId, stage: "delivery", conversationId: convDbId },
-      select: { level: true, source: true, agentId: true, detail: true },
-    });
-    if (rows.length > 0 || Date.now() - started > waitMs) return rows;
-    await Bun.sleep(25);
-  }
+// SETTLED and scoped. `emitFlowEvent` is fire-and-forget, so a raw read races the write it is
+// asserting — and the direction that matters is the absence: several cases here assert that NO line
+// was written, and a raw read passes those for the very reason that would make them wrong. The
+// helper waits for the in-flight writes (#419) instead of polling for an arrival, which is the only
+// form that answers both questions. Scoped by conversation, or an unscoped read answers with a
+// neighbour's row.
+async function deliveryLines(convDbId: bigint) {
+  return flowLogRows(suDb, {
+    where: { tenantId, stage: "delivery", conversationId: convDbId },
+    select: { level: true, source: true, agentId: true, detail: true },
+  });
 }
 
 async function seedConversation(
@@ -645,7 +645,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     // The path really did run: #318's line is here, which is the whole reason this state is not
     // refused earlier. And no `recovered` line beside it, because nothing was.
     expect(await deliveryLines(conv.id)).toEqual([]);
-    const noAgent = await suDb.executionLog.findMany({
+    const noAgent = await flowLogRows(suDb, {
       where: { tenantId, stage: "route", conversationId: conv.id },
       select: { detail: true },
     });
@@ -775,7 +775,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     expect(turns.built).toBe(0);
     expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 0 });
     // And no closing line: the loss is still open, which is the honest state.
-    const lines = await deliveryLines(conv.id, 400);
+    const lines = await deliveryLines(conv.id);
     expect(
       lines.filter(
         (l) => (l.detail as Record<string, unknown>).outcome === "recovered",
@@ -2251,7 +2251,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
         deps: depsWith(stubChatwoot({ throwOnRead: true })),
       }),
     ).toBe("unreachable");
-    expect(await deliveryLines(conv.id, 200)).toHaveLength(0);
+    expect(await deliveryLines(conv.id)).toHaveLength(0);
   });
 
   test("the page it reads is the one that ENDS at the stranded message", async () => {
@@ -2676,7 +2676,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     expect(stub.sent).toEqual([]);
     // Not claimed, so nothing was spent and no closing line says the loss ended.
     expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 0 });
-    expect(await deliveryLines(conv.id, 200)).toHaveLength(0);
+    expect(await deliveryLines(conv.id)).toHaveLength(0);
   });
 
   test("a delivery path that throws puts the row back where it found it", async () => {

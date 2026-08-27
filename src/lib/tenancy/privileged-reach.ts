@@ -28,6 +28,21 @@ export const CAN_REACH = `CASE WHEN current_setting('server_version_num')::int >
 // SET-only one has its `SET` option taken away with `GRANT … WITH SET FALSE`. Reporting only the
 // union would name a role and leave the operator guessing which statement clears it.
 //
+// `attributes` is the set that counts as elevated, and it is a PARAMETER because the two callers
+// ask different questions of the same catalog.
+//
+// `RLS_DEFEATING` is the boot guard's: `src/lib/db-guard.ts` refuses to SERVE when RLS is a no-op
+// on this connection, and CREATEDB does not make it one. `OUTLIVES_SET_ROLE` is the fleet role's at
+// provisioning, and the reason is written on `FLEET_ROLE_FORBIDDEN_ATTRIBUTES` beside it: the
+// runtime role ACQUIRES every one of them the moment it enters that role. Measured with the fleet
+// role a SET-only member of a CREATEROLE role — the runtime role entered it and MINTED A NEW
+// CLUSTER ROLE, while the check, asking only about SUPERUSER and BYPASSRLS, called the fleet role
+// unprivileged. LOGIN is on the direct list and not on this one, because a session is already open
+// by the time a SET ROLE happens: it is the one forbidden attribute that does not transfer.
+export const RLS_DEFEATING = "m.rolsuper OR m.rolbypassrls";
+export const OUTLIVES_SET_ROLE =
+  "m.rolsuper OR m.rolbypassrls OR m.rolcreatedb OR m.rolcreaterole OR m.rolreplication";
+
 // `exceptRoleExpr` names one role to leave out, and it exists for exactly one caller: the RUNTIME
 // role at provisioning, whose reach legitimately includes this database's fleet role — being able
 // to `SET ROLE` into it is the design. What matters there is whether the FLEET role is privileged,
@@ -43,13 +58,14 @@ export const CAN_REACH = `CASE WHEN current_setting('server_version_num')::int >
 export function privilegedReachSql(
   subjectOid: string,
   exceptRoleExpr?: string,
+  attributes: string = RLS_DEFEATING,
 ): string {
   const except = exceptRoleExpr ? `AND m.rolname <> ${exceptRoleExpr}` : "";
   return `(SELECT string_agg(DISTINCT quote_ident(m.rolname)
                              || CASE WHEN pg_has_role(${subjectOid}, m.oid, 'USAGE')
                                      THEN ' (inherited)' ELSE ' (via SET ROLE)' END, ', ')
              FROM pg_roles m
-            WHERE (m.rolsuper OR m.rolbypassrls)
+            WHERE (${attributes})
               AND m.oid <> ${subjectOid}
               ${except}
               AND (pg_has_role(${subjectOid}, m.oid, 'USAGE')

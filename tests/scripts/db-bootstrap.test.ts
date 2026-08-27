@@ -55,6 +55,8 @@ const HEIR_ROLE = `fazerai_bs_heir_${process.pid}`;
 // answered "safe" until round 16 measured it.
 const SETHEIR_ROLE = `fazerai_bs_setheir_${process.pid}`;
 const SETHEIR_PARENT = `fazerai_bs_setheir_parent_${process.pid}`;
+// Elevated WITHOUT defeating RLS, which is the whole point of the arm it serves.
+const MINTER_ROLE = `fazerai_bs_minter_${process.pid}`;
 const SETONLY_ROLE = `fazerai_bs_setonly_${process.pid}`;
 const PRIV_ROLE = `fazerai_bs_priv_${process.pid}`;
 // The shape a RESTORE leaves: a fleet role derived from SOME OTHER database name, named by the
@@ -1275,6 +1277,61 @@ describe.skipIf(!dbUp)(
     // NOTE: a role name may legally contain a double quote, and the reconcile interpolates names it
     // read out of the catalog. Quoted by hand, this member survives the revoke — the statement is
     // invalid SQL and the catch reads it as a permission problem.
+    // NOTE: the asymmetry the direct list already argued against and the reachability check did not
+    // implement. `FLEET_ROLE_FORBIDDEN_ATTRIBUTES` refuses CREATEDB, CREATEROLE and REPLICATION on
+    // the fleet role because "the runtime role ACQUIRES all of them the moment it enters this role"
+    // — and the reach beside it asked only about SUPERUSER and BYPASSRLS, so REACHING one of those
+    // roles passed while HOLDING the attribute did not.
+    //
+    // Measured end to end before this: with the fleet role a SET-only member of a CREATEROLE role,
+    // the runtime role entered it and CREATED A NEW CLUSTER ROLE. RLS is untouched in that state,
+    // which is exactly why the two-attribute question missed it.
+    test("a fleet role that can BECOME CREATEROLE stops the boot", async () => {
+      const db = su as Client;
+      const fleet = await probeFleetRole();
+      await db.query(`CREATE ROLE ${MINTER_ROLE} NOLOGIN CREATEROLE`);
+      try {
+        // The catalog's own answer, so the fixture is proved to be this state: not privileged by
+        // the RLS pair, and privileged by the set that survives a SET ROLE.
+        expect(
+          (
+            await db.query(
+              `SELECT (m.rolsuper OR m.rolbypassrls) AS rls_pair,
+                      (m.rolsuper OR m.rolbypassrls OR m.rolcreatedb
+                       OR m.rolcreaterole OR m.rolreplication) AS outlives
+                 FROM pg_roles m WHERE m.rolname = $1`,
+              [MINTER_ROLE],
+            )
+          ).rows[0],
+        ).toEqual({ rls_pair: false, outlives: true });
+        await db.query(
+          `GRANT ${MINTER_ROLE} TO "${fleet}" WITH INHERIT FALSE, SET TRUE`,
+        );
+
+        const { exitCode, stdout, stderr } = await runBootstrap(
+          APP_PW,
+          APP_ROLE,
+          {},
+          true,
+        );
+        const out = `${stdout}${stderr}`;
+        expect(exitCode).toBe(1);
+        expect(out).toContain("already exists and is privileged");
+        expect(out).toContain(`can become a privileged role (${MINTER_ROLE}`);
+        expect(out).toContain("(via SET ROLE)");
+      } finally {
+        await db
+          .query(
+            `REVOKE ${MINTER_ROLE} FROM "${await probeFleetRole()}" CASCADE`,
+          )
+          .catch(() => {});
+        await db.query(`DROP ROLE IF EXISTS ${MINTER_ROLE}`);
+      }
+      // And the boot is clean again once the membership is gone, so this is a gate and not a dead
+      // end — the same shape as the privileged-attribute arm above it.
+      expect((await runBootstrap(APP_PW, APP_ROLE, {}, true)).exitCode).toBe(0);
+    });
+
     test("a stray member whose name carries a quote is still revoked", async () => {
       const db = su as Client;
       const fleet = await probeFleetRole();

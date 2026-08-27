@@ -119,6 +119,17 @@ const INVARIANTS: Array<{
     // dropped and recreated under the same name, reconnects and presents the same open session as a
     // rotation — so the exemption is DECLARED by the operator, and the session only bounds it. A
     // file that kept inferring it from the session alone passes the invariant above and is wrong.
+    // Reachability is asked with the SAME attribute set the direct list refuses, minus LOGIN, which
+    // does not survive a SET ROLE. A file asking only about the two that defeat RLS calls a fleet
+    // role that can become CREATEROLE unprivileged — measured, and the runtime role then minted a
+    // cluster role through it.
+    what: "counts CREATEDB, CREATEROLE and REPLICATION as reachable privilege too",
+    // By the CONSTANT on this side, because the columns live in the shared module the two callers
+    // import — which is the arrangement, not a gap. The test below holds that module to them.
+    ts: /privilegedReachSql\("r\.oid", undefined, OUTLIVES_SET_ROLE\)/,
+    sql: /rolcreatedb[\s\S]{0,120}?rolcreaterole[\s\S]{0,120}?rolreplication\)[\s\S]{0,200}?pg_has_role/,
+  },
+  {
     what: "keeps a serving stray only where the operator DECLARED it",
     ts: /retained\.has\(r\.rolname\)/,
     sql: /r\.rolname = ANY \(v_retained\)/,
@@ -156,6 +167,10 @@ const INVARIANTS: Array<{
   },
 ];
 
+const reach = await Bun.file(
+  new URL("../../src/lib/tenancy/privileged-reach.ts", import.meta.url)
+    .pathname,
+).text();
 const ts = await Bun.file(
   new URL("../../scripts/db-bootstrap.ts", import.meta.url).pathname,
 ).text();
@@ -220,6 +235,45 @@ describe("no RAISE prints an identifier through %I", () => {
 // privileges, raised, and the RAISE rolled the revoke back with it — the restored database read 30
 // of 30 again immediately after the boot that had just announced closing it. At psql's top level
 // each statement is its own transaction, so the two must stay two blocks.
+// The columns the invariant above names by constant. Kept here rather than inlined into the pattern
+// pair, because only one of the twins has a module to import from and a fence that pretended
+// otherwise would be asking the `.ts` about text that is correctly not in it.
+describe("the reachable-privilege set matches the direct one", () => {
+  const definition = reach.slice(
+    reach.indexOf("export const OUTLIVES_SET_ROLE"),
+  );
+
+  test("it carries every attribute that survives a SET ROLE", () => {
+    for (const column of [
+      "rolsuper",
+      "rolbypassrls",
+      "rolcreatedb",
+      "rolcreaterole",
+      "rolreplication",
+    ]) {
+      expect([column, definition.includes(column)]).toEqual([column, true]);
+    }
+  });
+
+  // And NOT the one that does not: a session is already open by the time a SET ROLE happens, so
+  // LOGIN is refused directly on the fleet role and is meaningless on a role it can become.
+  test("and not LOGIN, which does not", () => {
+    expect(definition.split(";")[0]).not.toContain("rolcanlogin");
+  });
+
+  // The boot guard's set stays narrower on purpose: it refuses to SERVE when RLS is a no-op, and
+  // CREATEDB does not make it one. A single shared set would newly refuse installs that work.
+  test("the guard's set stays the RLS pair", () => {
+    const rls = reach.slice(
+      reach.indexOf("export const RLS_DEFEATING"),
+      reach.indexOf("export const OUTLIVES_SET_ROLE"),
+    );
+    expect(rls).toContain("rolsuper");
+    expect(rls).toContain("rolbypassrls");
+    expect(rls).not.toContain("rolcreatedb");
+  });
+});
+
 describe("the foreign-fleet repair survives the refusal", () => {
   // Top-level `DO $$ ... $$;` blocks. The script has no nested dollar-quoting, so splitting on the
   // terminator is exact; a future nested `$tag$` would break this loudly rather than quietly.

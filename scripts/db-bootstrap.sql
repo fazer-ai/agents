@@ -202,8 +202,16 @@ BEGIN
     UNION ALL SELECT 'can become a privileged role'
                 FROM pg_roles r
                WHERE r.rolname = v_fleet
+                 -- Every attribute that OUTLIVES a SET ROLE, matching the direct list above
+                 -- rather than only the two that defeat RLS. Measured with this role a SET-only
+                 -- member of a CREATEROLE role: the runtime role entered it and minted a new
+                 -- cluster role, while a check asking about SUPERUSER and BYPASSRLS alone called
+                 -- this role unprivileged. LOGIN is absent on purpose: a session is already open
+                 -- by the time a SET ROLE happens, so it is the one that does not transfer.
                  AND EXISTS (SELECT 1 FROM pg_roles m
-                              WHERE (m.rolsuper OR m.rolbypassrls) AND m.oid <> r.oid
+                              WHERE (m.rolsuper OR m.rolbypassrls OR m.rolcreatedb
+                                     OR m.rolcreaterole OR m.rolreplication)
+                                AND m.oid <> r.oid
                                 AND (pg_has_role(r.oid, m.oid, 'USAGE')
                                      OR pg_has_role(r.oid, m.oid,
                                           CASE WHEN current_setting('server_version_num')::int >= 160000

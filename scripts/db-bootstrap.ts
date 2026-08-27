@@ -5,7 +5,10 @@ import {
   FLEET_ROLE_RETAINED_MEMBER_ENV,
   retainedFleetMembers,
 } from "@/lib/tenancy/fleet-role";
-import { privilegedReachSql } from "@/lib/tenancy/privileged-reach";
+import {
+  OUTLIVES_SET_ROLE,
+  privilegedReachSql,
+} from "@/lib/tenancy/privileged-reach";
 
 // Deterministic, platform-independent DB provisioning. Run ONCE at deploy time (and safe to
 // re-run) as the FIRST step before `prisma migrate deploy`. It does what scripts/db-bootstrap.sql
@@ -466,7 +469,7 @@ async function provisionFleetRole(
     await client.query<Record<string, boolean> & { reaches: string | null }>(
       `SELECT r.rolsuper, r.rolbypassrls, r.rolcanlogin,
               r.rolcreatedb, r.rolcreaterole, r.rolreplication,
-              ${privilegedReachSql("r.oid")} AS reaches
+              ${privilegedReachSql("r.oid", undefined, OUTLIVES_SET_ROLE)} AS reaches
          FROM pg_roles r WHERE r.rolname = $1`,
       [fleetRole],
     )

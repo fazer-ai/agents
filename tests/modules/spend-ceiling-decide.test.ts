@@ -9,7 +9,10 @@ import { spendCeilingAnnouncement } from "@/modules/spend-ceiling/service";
 import {
   readSpendCeilingConfig,
   SPEND_CEILING_DEFAULTS,
+  SPEND_CEILING_NOTICE_COOLDOWN_MAX_SECONDS,
+  SPEND_CEILING_TOKENS_MAX,
   type SpendCeilingConfig,
+  spendCeilingSettingsSchema,
 } from "@/modules/spend-ceiling/settings";
 
 // The RULE, proved without a database. What the ledger says and what the operator is shown are
@@ -194,6 +197,33 @@ describe("reading the ceiling out of the settings bag", () => {
       readSpendCeilingConfig({ spendCeiling: { overCeilingMessage: value } })
         .overCeilingMessage,
     ).toBeNull();
+  });
+
+  // WHAT THE READER OWES THE WRITER. `updateSpendCeiling` merges this output with the operator's
+  // patch and validates the MERGE, so a value the schema refuses turns every save on the screen into
+  // a 422 about a field the operator never touched. Asserted as one round trip rather than field by
+  // field, so a field added to the block later is covered the day it is added.
+  test("nothing the reader returns is anything the writer would refuse", () => {
+    const absurd = {
+      spendCeiling: {
+        enabled: true,
+        monthlyInboxTokens: SPEND_CEILING_TOKENS_MAX * 10,
+        monthlyPlaygroundTokens: Number.MAX_SAFE_INTEGER,
+        overCeilingMessage: "x".repeat(10_000),
+        handoffEnabled: true,
+        noticeCooldownSeconds: 86_400,
+        warnAtPercent: 250,
+      },
+    };
+    const read = readSpendCeilingConfig(absurd);
+    expect(() => spendCeilingSettingsSchema.parse(read)).not.toThrow();
+    // ...and each clamp lands on the safe side of its own field: a ceiling that is lower, a notice
+    // that speaks more often.
+    expect(read.monthlyInboxTokens).toBe(SPEND_CEILING_TOKENS_MAX);
+    expect(read.monthlyPlaygroundTokens).toBe(SPEND_CEILING_TOKENS_MAX);
+    expect(read.noticeCooldownSeconds).toBe(
+      SPEND_CEILING_NOTICE_COOLDOWN_MAX_SECONDS,
+    );
   });
 
   test("handoff stays on unless it is switched off explicitly", () => {

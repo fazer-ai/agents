@@ -54,6 +54,16 @@ known only at the end; a ceiling built on it would fail in the direction where a
 because of tokens nobody ever spent. A turn is seconds and the window is a month, so the error this
 design accepts is small, one-sided, and self-correcting; the error the other design accepts is not.
 
+**The warning has the same shape, and therefore the same bound.** It is evaluated by the gate, on the
+ledger as it stood before the turn, so what it promises is that the first verdict landing at or past
+`warnAtPercent` warns. It does not promise that the ceiling is never reached without a warning
+first: a single turn that spends more than the band between the fraction and the ceiling (20% of the
+ceiling at the default 80) takes a tenant from `allowed` straight to `over`, and the operator's first
+line about that month is the `over` one. That is the same read-then-act property as the overshoot
+above, and closing it would mean re-reading the ledger after every call rather than before every
+turn. The band is what buys the lead time, so an operator who wants more of it lowers the fraction;
+a tenant whose single turn can cross the whole band had no lead time to give.
+
 ## The window
 
 The **calendar month**, in UTC (`monthStart`). It is the cycle the provider's invoice follows and

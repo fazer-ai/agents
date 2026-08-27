@@ -49,8 +49,15 @@ export interface SpendCeilingConfig {
   // evaluated on every message regardless. Without it, ten people writing in after the ceiling is
   // reached are answered with the same sentence ten times.
   noticeCooldownSeconds: number;
-  // Emit a warning through the alert channels once usage crosses this fraction of a ceiling, so the
-  // operator hears about it BEFORE the agent goes quiet rather than after. 0 = no warning.
+  // Emit a warning through the alert channels once a verdict lands at or past this fraction of a
+  // ceiling, so the operator hears about it before the agent goes quiet rather than after. 0 = no
+  // warning.
+  //
+  // "At or past", not "on the way past": the fraction is evaluated by the gate, on the ledger as it
+  // stood BEFORE the turn, so a single turn that spends more than the band between the fraction and
+  // the ceiling goes from allowed straight to over and the `over` line is the first one written.
+  // Same bound as the overshoot, from the same read-then-act shape (docs/spend-ceiling.md); the band
+  // is what buys the lead time, and lowering the fraction is what buys more of it.
   warnAtPercent: number;
 }
 
@@ -68,18 +75,32 @@ export const SPEND_CEILING_DEFAULTS: SpendCeilingConfig = {
   warnAtPercent: 80,
 };
 
+// The ceiling an operator may type, and the longest a notice may stay quiet. Declared here rather
+// than beside the schema below because BOTH sides read them now, for the reason `readCount` gives.
+export const SPEND_CEILING_TOKENS_MAX = 1_000_000_000_000;
+export const SPEND_CEILING_NOTICE_COOLDOWN_MAX_SECONDS = 3600;
+
 // A token ceiling is a count, so anything that is not a non-negative whole number is not one. CLAMPS
 // rather than throws, like every other block in this bag: a malformed write must never be able to
 // break the webhook, and the safe direction here is the DEFAULT, never "no ceiling".
-function readCount(v: unknown, fallback: number): number {
+//
+// AND IT CLAMPS TO THE MAXIMUM THE WRITER ENFORCES, so this reader can never return a block the
+// writer would refuse. That is not the two sides collapsing into one question — one still answers
+// "what is stored" and the other "may this be stored" — it is the round trip between them. A value
+// past the maximum can only arrive out of band (an import, a hand-edited column), and
+// `updateSpendCeiling` merges THIS output with the operator's patch before validating the merge, so
+// passing it through would 422 every save on the screen over a field the operator never touched,
+// with nothing rendered that they could fix. Each clamp runs toward the safe side of its own field:
+// a notice that speaks more often, a ceiling that is lower.
+//
+// The sibling blocks in `tenant-settings/service.ts` hold the same invariant by a different trade:
+// they run the strict schema itself, partial, and fall back to the DEFAULTS for the whole block when
+// any field fails. This one reads field by field on purpose, so one bad number does not discard an
+// operator's message and ceilings along with it, and per-field clamping is what that costs.
+function readCount(v: unknown, fallback: number, max: number): number {
   if (typeof v !== "number" || !Number.isFinite(v)) return fallback;
   if (v < 0) return fallback;
-  return Math.floor(v);
-}
-
-function readPercent(v: unknown, fallback: number): number {
-  const n = readCount(v, fallback);
-  return n > 100 ? 100 : n;
+  return Math.min(Math.floor(v), max);
 }
 
 export function readSpendCeilingConfig(settings: unknown): SpendCeilingConfig {
@@ -102,20 +123,24 @@ export function readSpendCeilingConfig(settings: unknown): SpendCeilingConfig {
     monthlyInboxTokens: readCount(
       s.monthlyInboxTokens,
       SPEND_CEILING_DEFAULTS.monthlyInboxTokens,
+      SPEND_CEILING_TOKENS_MAX,
     ),
     monthlyPlaygroundTokens: readCount(
       s.monthlyPlaygroundTokens,
       SPEND_CEILING_DEFAULTS.monthlyPlaygroundTokens,
+      SPEND_CEILING_TOKENS_MAX,
     ),
     overCeilingMessage: message === "" ? null : message,
     handoffEnabled: s.handoffEnabled !== false,
     noticeCooldownSeconds: readCount(
       s.noticeCooldownSeconds,
       SPEND_CEILING_DEFAULTS.noticeCooldownSeconds,
+      SPEND_CEILING_NOTICE_COOLDOWN_MAX_SECONDS,
     ),
-    warnAtPercent: readPercent(
+    warnAtPercent: readCount(
       s.warnAtPercent,
       SPEND_CEILING_DEFAULTS.warnAtPercent,
+      100,
     ),
   };
 }
@@ -124,9 +149,6 @@ export function readSpendCeilingConfig(settings: unknown): SpendCeilingConfig {
 // malformed bag must never break the webhook), and the two are not in tension: one answers "what is
 // stored", the other answers "may this be stored". An operator who types a ceiling with an extra
 // zero has to be told, not quietly given the number they did not mean.
-export const SPEND_CEILING_TOKENS_MAX = 1_000_000_000_000;
-export const SPEND_CEILING_NOTICE_COOLDOWN_MAX_SECONDS = 3600;
-
 export const spendCeilingSettingsSchema = z.object({
   enabled: z.boolean(),
   monthlyInboxTokens: z.number().int().min(0).max(SPEND_CEILING_TOKENS_MAX),

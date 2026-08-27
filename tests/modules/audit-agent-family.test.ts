@@ -164,7 +164,7 @@ describe("the audit snapshot is read under the write's lock", () => {
     expect(
       lockedBeforeSnapshot(
         bodyOf(src, "replaceAgentToolSelections"),
-        "buildToolSelectionView(db, agentId)).grants",
+        "readGrantSet(db, agentId)",
       ),
     ).toBe("locked");
   });
@@ -571,6 +571,66 @@ describe.skipIf(!dbUp)("the agent family records its own changes", () => {
     const got = await rows();
     expect(got.map((r) => r.action)).toEqual(["agent.update"]);
     expect(got[0]?.actorType).toBe("mcp");
+  });
+
+  test("a stray key in the model config never reaches the row", async () => {
+    // `validateModelConfigForWrite` asks the schema whether the value is valid and discards the
+    // stripped result, so a config that is valid apart from an extra key is STORED with it. The
+    // column is the operator's problem; the audit row is ours, because it is retained and readable
+    // by every tenant admin.
+    const agent = await seedAgent();
+    await clearAudit();
+
+    await updateAgent(
+      ctx(),
+      BigInt(agent.id),
+      {
+        modelConfig: {
+          provider: "openai",
+          model: "gpt-5.4-mini",
+          temperature: 0.2,
+          apiKey: "sk-must-not-be-recorded",
+        },
+      },
+      appDb,
+    );
+
+    const got = await rows();
+    expect(got.map((r) => r.action)).toEqual(["agent.update"]);
+    // The column DID take it — this is the leak the projection stops, not one it prevents upstream.
+    const stored = await runScopedOn(appDb, ctx(), (db) =>
+      db.agent.findUnique({
+        where: { id: BigInt(agent.id) },
+        select: { modelConfig: true },
+      }),
+    );
+    expect(JSON.stringify(stored?.modelConfig)).toContain("sk-must-not-be");
+    expect(JSON.stringify(got[0]?.after)).not.toContain("sk-must-not-be");
+    const after = got[0]?.after as Record<string, unknown> | undefined;
+    expect(after?.modelConfig).toEqual({
+      provider: "openai",
+      model: "gpt-5.4-mini",
+      temperature: 0.2,
+    });
+  });
+
+  test("a settings edit the readers clamp to the same value leaves no row", async () => {
+    // Raw-different, normalized-equal: `debounce.windowSeconds` of 1 and of 2 both read as 3
+    // (measured). The bag comparison is on the stored bytes, so without the block check this lands
+    // an `agent.settings_set` with `{}` on both sides.
+    const agent = await seedAgent({
+      settings: { debounce: { enabled: true, windowSeconds: 1 } },
+    });
+    await clearAudit();
+
+    await updateAgent(
+      ctx(),
+      BigInt(agent.id),
+      { settings: { debounce: { enabled: true, windowSeconds: 2 } } },
+      appDb,
+    );
+
+    expect(await rows()).toEqual([]);
   });
 
   test("a deadline the operator set reaches the row as the deadline, not as an empty object", async () => {

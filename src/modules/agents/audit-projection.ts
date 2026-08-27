@@ -1,3 +1,4 @@
+import { modelConfigSchema } from "@/graph/model-config";
 import { readBehaviorSettings } from "@/modules/agents/behavior-settings";
 
 // Which of the three agent actions a write to `updateAgent` is, and what its row carries.
@@ -59,6 +60,25 @@ export interface AgentUpdateAudit {
   action: AgentUpdateAction;
   before: Record<string, unknown>;
   after: Record<string, unknown>;
+}
+
+// The model config as the row may hold it: only the keys the schema names.
+//
+// `validateModelConfigForWrite` asks `modelConfigSchema.safeParse` whether the value is valid and
+// throws away the STRIPPED result, so a config that is valid apart from a stray key is stored with
+// that key intact — measured: a `PATCH` carrying `apiKey: "sk-…"` alongside a good provider/model
+// reaches the column, and copying the column into the row hands a retained, tenant-admin-readable
+// copy of it to the trail. The allowlist is derived from the schema rather than typed out, so a
+// field added there is carried here and one never named is not, and it is a PICK rather than a
+// parse because a legacy config that no longer validates still has to project something.
+const MODEL_CONFIG_KEYS = Object.keys(modelConfigSchema.shape);
+
+function pickModelConfig(v: unknown): unknown {
+  if (v === null || typeof v !== "object" || Array.isArray(v)) return v;
+  const src = v as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const k of MODEL_CONFIG_KEYS) if (k in src) out[k] = src[k];
+  return out;
 }
 
 function same(a: unknown, b: unknown): boolean {
@@ -128,14 +148,26 @@ export function agentUpdateAudit(
     if (same(before[field], after[field])) continue;
     if (field === "settings") {
       const blocks = changedBlocks(before.settings, after.settings);
+      // Normalized-equal, raw-different. The bag comparison above is on the stored bytes and this
+      // one is on what the platform resolves, and the readers CLAMP: `debounce.windowSeconds` of 1
+      // and of 2 both read as 3 (measured), so a PATCH between them moves the column and moves
+      // nothing the runtime will do. Without this the row lands with `{}` on both sides.
+      //
+      // A guard of this shape was written in round 1 and removed in the same round as dead, on the
+      // strength of measuring that jsonb canonicalizes key order. That measurement was right and the
+      // conclusion was not: key order was one way in, clamping is another, and only the first had
+      // been checked.
+      if (Object.keys(blocks.after).length === 0) continue;
       changed.push(field);
       beforeProj.settings = blocks.before;
       afterProj.settings = blocks.after;
       continue;
     }
     changed.push(field);
-    beforeProj[field] = before[field];
-    afterProj[field] = after[field];
+    const project =
+      field === "modelConfig" ? pickModelConfig : (x: unknown) => x;
+    beforeProj[field] = project(before[field]);
+    afterProj[field] = project(after[field]);
   }
 
   if (changed.length === 0) return null;

@@ -1430,6 +1430,30 @@ function toGrantDto(g: {
   };
 }
 
+// Just the granted set, for the audit snapshot. `buildToolSelectionView` answers a different
+// question — it also loads every tool definition, MCP connection, integration, knowledge base and
+// document template, plus a tenant-wide groupBy for unindexed documents — and the snapshot is taken
+// while holding the agent's row lock, where that catalog would be paid twice and held open.
+async function readGrantSet(
+  db: ScopedDb,
+  agentId: bigint,
+): Promise<ToolGrantDto[]> {
+  const grants = await db.agentToolSelection.findMany({
+    where: { agentId },
+    select: {
+      source: true,
+      toolDefinitionId: true,
+      mcpServerConnectionId: true,
+      integrationInstanceId: true,
+      documentTemplateId: true,
+      knowledgeBaseIds: true,
+      enabledTools: true,
+    },
+    orderBy: { id: "asc" },
+  });
+  return grants.map(toGrantDto);
+}
+
 async function buildToolSelectionView(
   db: ScopedDb,
   agentId: bigint,
@@ -1707,7 +1731,7 @@ export async function replaceAgentToolSelections(
 
     // The set as it stands, read before the delete-and-recreate replaces it. Same shape the view
     // returns, so the row's two halves are comparable.
-    const grantsBefore = (await buildToolSelectionView(db, agentId)).grants;
+    const grantsBefore = await readGrantSet(db, agentId);
     await db.agentToolSelection.deleteMany({ where: { agentId } });
     if (grants.length > 0) {
       await db.agentToolSelection.createMany({

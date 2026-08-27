@@ -1447,6 +1447,44 @@ describe.skipIf(!dbUp)("the agent family records its own changes", () => {
     expect(dump).not.toContain("rotated");
   });
 
+  test("embedded userinfo is caught under any scheme, and an ordinary link is not", async () => {
+    // Measured both ways: `user:pass@` does not fire on a prompt that merely links to
+    // `…/faq?secao=cancelamento`, and it does fire on an `ftp://` credential. A rule that also
+    // matched an embedded QUERY could not separate those two, and it drops the WHOLE field.
+    const agent = await seedAgent({
+      systemPrompt:
+        "Baixe em ftp://u:hunter2@files.example.com/x quando pedirem.",
+    });
+    await clearAudit();
+
+    await updateAgent(
+      ctx(),
+      BigInt(agent.id),
+      {
+        systemPrompt:
+          "Baixe em ftp://u:rotated@files.example.com/x quando pedirem.",
+      },
+      appDb,
+    );
+    const dump = JSON.stringify([
+      (await rows())[0]?.before,
+      (await rows())[0]?.after,
+    ]);
+    expect(dump).not.toContain("hunter2");
+    expect(dump).not.toContain("rotated");
+
+    // The other side: an ordinary link with a query survives, text and all.
+    const link =
+      "Veja a política em https://clinica.example.com/faq?secao=cancelamento.";
+    const other = await seedAgent({ systemPrompt: "antes" });
+    await clearAudit();
+    await updateAgent(ctx(), BigInt(other.id), { systemPrompt: link }, appDb);
+    const after = (await rows())[0]?.after as
+      | Record<string, unknown>
+      | undefined;
+    expect(after?.systemPrompt).toBe(link);
+  });
+
   test("a vault PREFIX is not a vault reference", async () => {
     // `vault:sk-live-…` starts with the prefix and is a secret, and the unchanged-ref path is the
     // one that never validates.

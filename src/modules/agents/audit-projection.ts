@@ -131,11 +131,19 @@ function carriesCredential(v: unknown): boolean {
   // accepted — and `validateModelConfigForWrite` discards the parsed result, so the string reaches
   // the column with the space still on it. An anchored test on the raw string then says no.
   if (typeof v !== "string") return false;
-  // EMBEDDED, not only entire. `new URL` is handed the whole string, so a prompt reading
-  // `Use https://user:secret@example.com/api` fails to parse and was kept verbatim — and a prompt is
-  // exactly where an operator pastes one inline. Only the userinfo form is looked for inside text:
-  // it is the shape prose does not produce, whereas a `?` after a URL in a sentence is ordinary.
-  if (/https?:\/\/[^\s/@]+:[^\s/@]*@/i.test(v)) return true;
+  // EMBEDDED, not only entire, and under ANY scheme. `new URL` is handed the whole string, so a
+  // prompt reading `Use https://user:secret@example.com/api` fails to parse and was kept verbatim —
+  // and a prompt is exactly where an operator pastes one inline.
+  //
+  // Only the userinfo form is looked for inside text, and the line is drawn by measurement rather
+  // than by caution. `user:pass@` is a shape prose does not produce: on a prompt linking to
+  // `https://clinica.example.com/faq?secao=cancelamento` it does not fire, and on
+  // `ftp://u:hunter2@files.example.com/x` it does. A rule that also fired on an embedded QUERY
+  // cannot tell those two apart — it matches the FAQ link and the credential link alike — and since
+  // the answer here is to drop the WHOLE field, adopting it would delete a prompt from the trail for
+  // linking to a documentation page. The query and fragment half therefore still asks about the
+  // whole string, where there is no prose to confuse it with.
+  if (/[a-z][a-z0-9+.-]*:\/\/[^\s/@]+:[^\s/@]*@/i.test(v)) return true;
   const url = v.trim();
   // The RAW spelling only answers for a string that will not parse. `new URL` normalizes
   // `https:llm.example/v1?api_key=…` and `https:/llm.example/v1?api_key=…` to protocol `https:`,

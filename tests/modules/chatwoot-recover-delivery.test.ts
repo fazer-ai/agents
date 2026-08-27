@@ -11,7 +11,12 @@ import {
   markTurnInFlight,
 } from "@/graph/inflight";
 import type { RuntimeDeps } from "@/graph/runtime";
-import { clearTurnOwning, markTurnOwning } from "@/graph/thread-claim";
+import {
+  clearTurnOwning,
+  markTurnOwning,
+  threadBusyForResetOn,
+} from "@/graph/thread-claim";
+import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { followUpDedupeKey } from "@/modules/channel-redirect/followup";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import {
@@ -84,6 +89,12 @@ let secondAgentDbId = 0n;
 let instanceId = 0n;
 let inboxDbId = 0n;
 let deliverySeq = 0;
+
+const sysCtx = (t: bigint): TenantContext => ({
+  tenantId: t,
+  userId: null,
+  role: "TENANT_ADMIN",
+});
 
 const threadOf = (convId: number) =>
   chatwootThreadId(tenantId, instanceId, convId);
@@ -1677,6 +1688,84 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       });
       await suDb.vaultEntry.delete({ where: { id: cred.id } });
     }
+  });
+
+  test("a /reset landing mid-recovery is told the thread is being written", async () => {
+    // `/reset` deletes the memory and the checkpoint, and it REFUSES while anyone is mid-write —
+    // "either would restore what this clears". It asks `threadBusyForResetOn`, which reads the GRAPH
+    // key and the durable claim; the recovery's own hold is on the CONVERSATION key, which that
+    // question never looks at.
+    //
+    // So between the mark and `runAgentTurn` taking its own claim, a reset saw an idle thread and
+    // cleared it, while the recovery went on to run the turn — restoring the memory the operator
+    // had just erased and running whatever tools the turn chose. The window is not narrow: the mirror
+    // write, the ownership gates, the contact-authorization call and the spend ceiling all sit in it,
+    // and the last two reach the network.
+    //
+    // Asked from the delivery path's own client build, which is inside the hold and before the turn
+    // — the same seam the conversation-key test above uses, for the same reason.
+    const convId = 8995;
+    const messageId = 9495;
+    await seedConversation(convId);
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const stub = stubChatwoot({
+      page: pageWith([{ id: messageId, content: "oi" }]),
+    });
+    const busy: boolean[] = [];
+    const inner = stub.makeClient;
+    const deps: RuntimeDeps = {
+      ...depsWith(stub),
+      makeClient: async (...a: Parameters<Stub["makeClient"]>) => {
+        busy.push(
+          await runScopedOn(appDb, sysCtx(tenantId), (db) =>
+            threadBusyForResetOn(db, {
+              tenantId,
+              instanceId,
+              contactInboxId: 71_000 + convId,
+              graphThreadId: contactInboxThreadId(
+                tenantId,
+                instanceId,
+                71_000 + convId,
+              ),
+            }),
+          ),
+        );
+        return inner(...a);
+      },
+    };
+
+    expect(
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps,
+      }),
+    ).toBe("recovered");
+
+    // Three client builds, as elsewhere in this file. [0] is the recovery's own, BEFORE the hold, so
+    // a reset there is legitimately free to run. [1] is the delivery path's, inside the hold and
+    // before the turn — the reading that flips, and measured `false` without the graph key held.
+    // [2] is inside the turn, where the turn's own claim answers either way.
+    expect(busy).toEqual([false, true, true]);
+    // Balanced, or every reset on this thread would refuse for the life of the process.
+    expect(
+      await runScopedOn(appDb, sysCtx(tenantId), (db) =>
+        threadBusyForResetOn(db, {
+          tenantId,
+          instanceId,
+          contactInboxId: 71_000 + convId,
+          graphThreadId: contactInboxThreadId(
+            tenantId,
+            instanceId,
+            71_000 + convId,
+          ),
+        }),
+      ),
+    ).toBe(false);
   });
 
   test("a turn that said NOTHING has not answered anybody either", async () => {

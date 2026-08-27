@@ -1060,7 +1060,25 @@ async function runRecovery(params: {
   // it ran; this makes the answer stay true until the turn takes its own claim. Balanced in the
   // `finally`, because an unbalanced mark is not a harmless leak — every reader of this key would
   // defer on this conversation until the process restarts (../../graph/inflight.ts).
+  // BOTH KEYS, and the second one is not a duplicate of the first. The conversation key is what
+  // `followUpHandler` and a second recovery read, and holding it is what keeps them off this
+  // conversation. `/reset` asks a different question — `threadBusyForResetOn`, which reads the GRAPH
+  // key and the durable claim — because it is about to delete the memory and the checkpoint, and it
+  // REFUSES while anyone is mid-write, on the grounds that the write would restore what it clears.
+  //
+  // Held only on the CONVERSATION key, this stretch was invisible to that question: a reset landing
+  // between the mark and `runAgentTurn` taking its own claim saw an idle thread, cleared it, and the
+  // recovery then ran the turn that restored the memory the operator had just erased, tools
+  // included. MEASURED at the delivery path's own client build, which is inside this hold.
+  //
+  // The window is not narrow. Between here and the turn's claim sit the mirror write, the ownership
+  // gates, the contact-authorization call and the spend ceiling, and the last two reach the network.
+  //
+  // `markTurnInFlight` COUNTS rather than sets (../../graph/inflight.ts), so the turn taking the same
+  // graph key a moment later is an increment and not a conflict, and each is balanced by its own
+  // clear.
   markTurnInFlight(handoffKey);
+  markTurnInFlight(graphKey);
   try {
     outcome = await processChatwootDelivery({
       tenantId: params.tenantId,
@@ -1102,7 +1120,11 @@ async function runRecovery(params: {
     );
     return "unreachable";
   } finally {
+    // Both, in the same place, for the reason the mark states: an unbalanced one makes every reader
+    // of that key defer on this conversation until the process restarts, and for the graph key that
+    // reader is the reset command, which would refuse for good.
     clearTurnInFlight(handoffKey);
+    clearTurnInFlight(graphKey);
   }
   // "skipped" means the claim matched nothing: another recovery took the row between the read above
   // and the CAS. The winner is running it, so this pass has nothing left to do and nothing to retry.

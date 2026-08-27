@@ -139,9 +139,12 @@ call. Three shapes, all the same rule:
   have been rejected either way.
 - **an agent that does not exist**, or has no runnable model. The same playground request answers
   404 or 400 under a ceiling with room, so the target is resolved before the money is asked about.
-- **the WARNING half, which is the part that costs something.** Reading the verdict *claims* its
-  six-hour window, so a verdict read over a call that never happens suppresses the next warning for
-  one that did.
+The rule is about the **refusal**. A `warning` is a statement about the MONTH and stays true whether
+or not this particular call runs, so a six-hour window it claims on a path that then exits without
+calling costs at most a staler percentage in the line the operator reads — the operator was told the
+month crossed its fraction, which is the whole content of the warning. That is why the gates
+announce both halves where they sit, and why "defer the warning until every no-call exit has passed"
+is recorded as rejected in `.codex-review-waived` rather than implemented.
 
 For the inbound attachment this means the ceiling sits **below** the download. The download is a
 Chatwoot fetch and not a billed one, and it is what tells that path the file's type in the first
@@ -154,6 +157,16 @@ happens, exactly as the contact-authorization gate does and for the same reason.
 there owes the conversation the **whole** contract, not just the handoff: the webhook never refused
 anything, so this is the first refusal the conversation gets, and the operator's sentence, the
 handoff and the private note all fall to it.
+
+**And it refuses a burst, never an empty one.** The flush asks two questions before it says a word,
+because a refusal is about something the customer is waiting for: was this burst already ANSWERED (an
+earlier attempt advanced the watermark past the payload's own last id and died before the scheduler
+could mark the job done), and is there anything in it to answer at all (the armed message was deleted,
+or renders to no answerable text). The second is asked with `selectAnswerableBurst` — the same
+selection and rendering the turn itself uses, lifted out so the two cannot drift. Without the ceiling
+such a burst reaches `coalesceAndRunTurn`, which returns `empty` and says nothing to anybody; with it
+and without these asks, the customer gets the operator's sentence, a human gets the conversation, and
+the burst is declared handled.
 
 It cannot be left to the customer's next message. With `handoffEnabled` (the default) the `open` is
 precisely what takes the conversation out of `pending`, so `shouldBotHandle` is false from then on

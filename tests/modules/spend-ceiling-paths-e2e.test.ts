@@ -338,9 +338,8 @@ describe.skipIf(!dbUp)("the spend ceiling on the playground and vision", () => {
 
   // AND THE FILE THAT WAS NEVER GOING TO BE READ IS NOT REFUSED. `application/zip` resolves to no
   // vision kind, so the same attachment in a month with budget to spare is skipped as an unsupported
-  // type — answering `spend_ceiling` in a spent one reports a refusal that did not happen, and the
-  // WARNING half is worse than cosmetic: reading the verdict claims a six-hour window, so a warning
-  // spent on this file suppresses the next one for a call that really was billed.
+  // type — answering `spend_ceiling` in a spent one names a cause that was not operative, and sends
+  // the operator to look at their budget over a file that was never readable.
   test("an unsupported attachment over the ceiling is skipped as unsupported, not as spend", async () => {
     await setCeiling({ enabled: true, monthlyInboxTokens: 1000 });
     await spend("inbox", 1200);

@@ -3492,6 +3492,57 @@ describe.skipIf(!dbUp)("debounce", () => {
       await clearFlowLog(suDb, { tenantId });
     });
 
+    // NOTHING TO ANSWER ⇒ NOTHING TO REFUSE, and the watermark cannot see this one. The burst was
+    // never answered — an earlier attempt did not run — but the message it armed on is gone from the
+    // thread, or renders to no answerable text. Without the ceiling that burst reaches
+    // `coalesceAndRunTurn`, which returns "empty" and says nothing to anybody; over it, the refusal
+    // would send the operator's sentence to a customer who is not waiting for one and put the
+    // conversation in a human's queue over a burst with nothing in it.
+    test("a burst with nothing answerable in it is not refused", async () => {
+      await seedConversation(915);
+      const sent: Array<[number, string]> = [];
+      const toggles: Array<[number, string]> = [];
+      const notes: Array<[number, string]> = [];
+      const out = await flushDebounceJob({
+        job: jobFor(915, { lastMessageId: 17 }),
+        base: appDb,
+        deps: {
+          makeModel: () => {
+            throw new Error("the model must not be invoked over the ceiling");
+          },
+          makeClient: makeResolveStub({
+            // The message the job armed on is gone from the thread — deleted between the arming and
+            // this flush. The other shape of "nothing answerable" (a message with no text and no
+            // attachment) reaches the same answer through the same selector, which drops it before
+            // it can be rendered.
+            pages: [page([])],
+            sent,
+            calls: { getMessages: 0 },
+            toggles,
+            notes,
+          }),
+          checkpointer: new MemorySaver(),
+        },
+      });
+
+      expect(out).toEqual({ outcome: "done" });
+      expect(sent).toEqual([]);
+      expect(toggles).toEqual([]);
+      expect(notes).toEqual([]);
+      // ...and no refusal line, because nothing was refused.
+      await settleFlowEvents();
+      const rows = await suDb.executionLog.findMany({
+        where: { tenantId, threadId: threadOf(915), stage: "spend_ceiling" },
+        select: { level: true },
+      });
+      expect(rows).toEqual([]);
+      // And the watermark is exactly where an empty burst leaves it outside the ceiling: untouched,
+      // because nothing was answered and nothing was withdrawn. The branch that DOES settle it is
+      // the one where a real message renders to nothing and never will.
+      expect(await watermarkOf(915)).toBeNull();
+      await clearFlowLog(suDb, { tenantId });
+    });
+
     test("with handoff off, the burst is still dropped and no status is touched", async () => {
       await suDb.tenant.update({
         where: { id: tenantId },

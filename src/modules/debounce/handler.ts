@@ -111,20 +111,40 @@ export interface CoalesceTurnContext {
   coalesceStage?: FlowStage;
 }
 
-export async function coalesceAndRunTurn(
-  ctx: CoalesceTurnContext,
+// IS THERE A BURST TO ANSWER, and what is it? Step 1 of the coalescing tail, lifted out because two
+// callers ask it and one of them is not running a turn: the spend-ceiling branch of the flush has to
+// know whether the burst it is about to refuse EXISTS before it says a word to the customer. Asking
+// it there with a second copy of this selection would be a second answer to one question, and the
+// two would drift the first time the cap or the rendering changed.
+//
+// Null means there is nothing to answer, and it has already settled whatever "nothing" meant: a
+// burst that renders to no answerable text never will, so the watermark advances past it or every
+// future flush re-fetches and re-stops on the same messages.
+interface AnswerableBurst {
+  client: Awaited<ReturnType<typeof loadChatwootClient>>;
+  pending: ChatwootMessageRow[];
+  // The messages the burst cap took OUT. Answered by nobody, on purpose.
+  dropped: ChatwootMessageRow[];
+  targetWatermark: number;
+  lastMessageId: number;
+  text: string;
+}
+
+export async function selectAnswerableBurst(
+  ctx: Pick<
+    CoalesceTurnContext,
+    | "tenantId"
+    | "instanceId"
+    | "conversationId"
+    | "convDbId"
+    | "selectPending"
+    | "settings"
+    | "label"
+  >,
   base: PrismaClient,
   deps?: RuntimeDeps,
-): Promise<RunAgentTurnOutcome | "empty"> {
-  const {
-    tenantId,
-    instanceId,
-    conversationId,
-    threadId,
-    agentBotId,
-    convDbId,
-    loaded,
-  } = ctx;
+): Promise<AnswerableBurst | null> {
+  const { tenantId, instanceId, conversationId, convDbId } = ctx;
 
   // 1. Re-fetch the thread (network) and select the burst to answer.
   const client = await loadChatwootClient(tenantId, instanceId, {
@@ -139,8 +159,7 @@ export async function coalesceAndRunTurn(
   // vision extraction) reaches the flush (issue #49). Meta values, when present, stay authoritative.
   overlayMediaAnnotations(tenantId, instanceId, messages);
   let pending = await ctx.selectPending(messages);
-  if (pending.length === 0) return "empty";
-  // The messages the burst cap takes OUT, below. Answered by nobody, on purpose.
+  if (pending.length === 0) return null;
   let dropped: typeof pending = [];
 
   const cfg = readDebounceConfig(ctx.settings);
@@ -184,9 +203,37 @@ export async function coalesceAndRunTurn(
       toMessageId: targetWatermark,
       base,
     });
-    return "empty";
+    return null;
   }
-  const text = rendered.join("\n");
+  return {
+    client,
+    pending,
+    dropped,
+    targetWatermark,
+    lastMessageId,
+    text: rendered.join("\n"),
+  };
+}
+
+export async function coalesceAndRunTurn(
+  ctx: CoalesceTurnContext,
+  base: PrismaClient,
+  deps?: RuntimeDeps,
+): Promise<RunAgentTurnOutcome | "empty"> {
+  const {
+    tenantId,
+    instanceId,
+    conversationId,
+    threadId,
+    agentBotId,
+    convDbId,
+    loaded,
+  } = ctx;
+
+  const burst = await selectAnswerableBurst(ctx, base, deps);
+  if (!burst) return "empty";
+  const { client, pending, dropped, targetWatermark, lastMessageId, text } =
+    burst;
 
   // 2. Post gate: re-fetch to detect mid-turn arrivals (supersede), then advance the watermark
   //    monotonically so a concurrent claim cannot also post. Re-fetch failure is non-fatal.
@@ -679,6 +726,27 @@ export async function flushDebounceJob(
   // hand the conversation off and write a refusal, all about a burst that was answered. Read off
   // the payload and the watermark this flush already holds, so it costs nothing; a payload with no
   // last id cannot say, and falls through to ask exactly as before.
+  // THE BURST SELECTOR, hoisted: the ceiling branch below asks the same question the turn does, and
+  // it has to be the same closure or the two would answer about different floors.
+  //
+  // Re-read, not the value captured before the authorization call: that call is a round-trip to
+  // somebody else's endpoint with a ceiling of ten seconds, and a message that arrived and was
+  // REFUSED inside that window has already had the watermark advanced past it by its own delivery.
+  // Against the stale value it would be selected here and handed to the model, and the post gate
+  // would only withhold the reply — after the tools had run. The floor is the one this flush read at
+  // claim time, so a watermark that somehow reads lower cannot widen the burst.
+  const selectPending = async (messages: ChatwootMessageRow[]) => {
+    const fresh = await readHandledWatermark({
+      tenantId,
+      conversationDbId: ctx.convDbId,
+      base,
+    });
+    const armed = ctx.watermark;
+    const floor =
+      fresh === null ? armed : armed === null ? fresh : Math.max(fresh, armed);
+    return pendingIncoming(messages, floor);
+  };
+
   const armedLast = readLastMessageId(job.payload);
   const alreadyAnswered =
     armedLast !== null && ctx.watermark !== null && ctx.watermark >= armedLast;
@@ -713,6 +781,42 @@ export async function flushDebounceJob(
     );
     return false;
   };
+  // NOTHING TO ANSWER ⇒ NOTHING TO REFUSE, the second half of that rule and the one the watermark
+  // cannot see. The `alreadyAnswered` check above catches a burst an earlier attempt ANSWERED; this
+  // catches one that has nothing in it — the armed message was deleted, or it is an attachment that
+  // renders to no answerable text. Without the ceiling that burst reaches `coalesceAndRunTurn`,
+  // which returns "empty" and says nothing to anybody; over it, the branch below would send the
+  // operator's sentence to a customer who is not waiting for one, put the conversation in a human's
+  // queue, and declare the burst handled.
+  //
+  // Asked with the SAME selector and the same rendering the turn uses (`selectAnswerableBurst`), and
+  // only on the refusing branch: `allowed` and `warning` both go on to ask it for real, and paying a
+  // Chatwoot page here would double every flush's fetch to answer a question that path answers
+  // anyway. The refusal is already three network writes deep, so one read is not what makes it
+  // expensive.
+  const ceilingBurst =
+    flushCeiling?.state === "over"
+      ? await selectAnswerableBurst(
+          {
+            tenantId,
+            instanceId,
+            conversationId,
+            convDbId: ctx.convDbId,
+            selectPending,
+            settings: ctx.settings,
+            label: "debounce flush",
+          },
+          base,
+          deps,
+        )
+      : null;
+  if (flushCeiling?.state === "over" && !ceilingBurst) {
+    logger.info(
+      "debounce flush: over the ceiling with nothing to answer (conv=%s) — the burst is empty, so there is no refusal to report",
+      String(conversationId),
+    );
+    return { outcome: "done" };
+  }
   // Asked only when there is something to say: `allowed` writes nothing, so the common flush pays no
   // read for a fence over a line that was never going to exist.
   if (
@@ -1015,7 +1119,6 @@ export async function flushDebounceJob(
   // the worker → retry with backoff (watermark not advanced, so the retry re-answers the same burst).
   // The error is also surfaced on the conversation (item 6) so the operator can re-engage; a
   // successful answer clears it.
-  const watermark = ctx.watermark;
   try {
     const outcome = await coalesceAndRunTurn(
       {
@@ -1043,27 +1146,8 @@ export async function flushDebounceJob(
             ? jobRetiredStrict(job, base)
             : jobRetired(job, base))),
         authContext,
-        // Re-read, not the value captured before the authorization call: that call is a round-trip
-        // to somebody else's endpoint with a ceiling of ten seconds, and a message that arrived and
-        // was REFUSED inside that window has already had the watermark advanced past it by its own
-        // delivery. Against the stale value it would be selected here and handed to the model, and
-        // the post gate would only withhold the reply — after the tools had run. The floor is the
-        // one this flush read at claim time, so a watermark that somehow reads lower cannot widen
-        // the burst.
-        selectPending: async (messages) => {
-          const fresh = await readHandledWatermark({
-            tenantId,
-            conversationDbId: ctx.convDbId,
-            base,
-          });
-          const floor =
-            fresh === null
-              ? watermark
-              : watermark === null
-                ? fresh
-                : Math.max(fresh, watermark);
-          return pendingIncoming(messages, floor);
-        },
+        // The same closure the ceiling branch above asked with; see its definition for the floor.
+        selectPending,
         label: "debounce flush",
         coalesceStage: "debounce",
       },

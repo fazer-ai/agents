@@ -290,11 +290,14 @@ export async function extractInboundFile(
   // ASKED ONCE THE CALL IS KNOWN TO BE POSSIBLE, immediately before it, and not at the top of this
   // function. A refusal says that spend was what stood in the way, and everything above — an unknown
   // provider, a missing credential, a type this endpoint cannot read — is a reason the provider was
-  // never going to be called at all. Both halves of the verdict are spent when it is read: the
-  // refusal writes a `vision` line saying the attachment was skipped for budget, and the WARNING
-  // claims a six-hour window, so a verdict read over an unsupported file suppresses the next
-  // warning for a call that really happened. The download above is a Chatwoot fetch, not a billed
+  // never going to be called at all, so a `vision` line saying the attachment was skipped for budget
+  // would name a cause that was not operative. The download above is a Chatwoot fetch, not a billed
   // one, and it is what tells this function the attachment's type in the first place.
+  //
+  // It is the REFUSAL half that this ordering is for. The warning is a statement about the MONTH,
+  // true whether or not this particular call runs, so a window it claims early costs at most a
+  // staler percentage in the line the operator reads — see the waiver in `.codex-review-waived`,
+  // which is where that adjudication lives.
   //
   // IT ANNOUNCES THE WARNING AND NOT THE REFUSAL, which is the one thing this gate does differently
   // from the other four, and the asymmetry is what the two halves leave behind.

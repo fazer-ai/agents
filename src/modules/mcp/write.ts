@@ -21,7 +21,6 @@ import {
   type ScopedDb,
   type TenantContext,
 } from "@/lib/tenancy";
-import { clipText, makeStorable } from "@/lib/text";
 import {
   type BehaviorSettingsPatch,
   mergeBehaviorSettings,
@@ -41,6 +40,7 @@ import {
   updateAgent,
 } from "@/modules/agents/service";
 import { BEHAVIOR_PATCH_SHAPE } from "@/modules/agents/settings-schema";
+import { truncForAudit } from "@/modules/audit/projection";
 import { type AuditEntry, recordAudit } from "@/modules/audit/service";
 import type { LoadChatwootClientDeps } from "@/modules/chatwoot/instance";
 import { readDebugModes } from "@/modules/flowlog/debug-mode";
@@ -114,54 +114,6 @@ export function diffFields(
   return out;
 }
 
-const AUDIT_STR_MAX = 4000;
-
-// Bound string sizes in the audit projection (a system prompt can be tens of KB).
-//
-// The same walker `redactSecretsDeep` is, aimed at the same kind of destination: `audit_logs.before`
-// and `.after` are `jsonb`, so an unpaired surrogate anywhere in the projection makes Postgres refuse
-// the whole write. Here the cost is worse than a lost log line — the change has already committed by
-// the time this row is written, so it lands, the tool reports a failure, and the record of who made
-// it is the only thing missing. Hence both repairs: `clipText` so the cut cannot manufacture an
-// orphan, and `makeStorable` for one that arrived with the value (or for a NUL, which the same
-// column refuses just as flatly): a projection carries some
-// arguments as the MCP client sent them (`args.name`, `args.title`, `args.content`), and that JSON
-// can spell one out.
-//
-// NOTE: KEYS are not repaired here, and that asymmetry with redactSecretsDeep is deliberate rather
-// than an omission. Every key in a projection is a field name we wrote or an argument name taken
-// from the tool's own schema; the one bag whose keys are open-ended (`agent.settings`) is read back
-// out of a jsonb column, which is the very thing that cannot hold an orphan. The keys the other
-// walker repairs come from a model's tool-call arguments and from third parties' response bodies.
-export function truncForAudit(v: unknown): unknown {
-  if (typeof v === "string") {
-    return makeStorable(
-      v.length > AUDIT_STR_MAX
-        ? `${clipText(v, AUDIT_STR_MAX)}…[truncated]`
-        : v,
-    );
-  }
-  if (Array.isArray(v)) return v.map(truncForAudit);
-  if (v && typeof v === "object") {
-    const o: Record<string, unknown> = {};
-    for (const [k, val] of Object.entries(v)) {
-      // NOTE: `defineProperty`, not assignment. `JSON.parse` yields `__proto__` as an ordinary own
-      // property, and assigning to that key invokes the legacy prototype setter instead; Prisma's
-      // serialization enumerates inherited properties, so its contents would be written as
-      // top-level fields of the audit row. Unlike the repair above, this one is not about what the
-      // column refuses: the write succeeds, carrying a field nobody wrote.
-      Object.defineProperty(o, k, {
-        value: truncForAudit(val),
-        writable: true,
-        enumerable: true,
-        configurable: true,
-      });
-    }
-    return o;
-  }
-  return v;
-}
-
 // NOTE: service-layer ZodErrors must surface as a tool result (err), never bubble raw into the
 // MCP SDK's generic exception envelope.
 function zodIssuesMessage(e: ZodError): string {
@@ -175,6 +127,10 @@ export function ctxOf(principal: VerifiedToken): TenantContext {
     tenantId: principal.tenantId,
     userId: principal.userId,
     role: principal.role,
+    // The door, carried on the context so the SERVICE can attribute the row it writes. Every tool
+    // here used to pass `actorType: "mcp"` to its own audit call one layer up; a service reached
+    // through this context would otherwise record the operator as a browser session.
+    actorType: "mcp",
   };
 }
 
@@ -366,7 +322,7 @@ export async function credentialCreate(
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.credential_create",
+      action: "credential.create",
       target: ref,
       // No secret exists yet — the audit projection carries only the reference metadata.
       before: {},
@@ -432,7 +388,7 @@ export async function promptSet(
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.prompt_set",
+      action: "agent.prompt_set",
       target,
       before: truncForAudit(beforeProj),
       after: truncForAudit({ systemPrompt: updated.systemPrompt }),
@@ -664,7 +620,7 @@ export async function agentSettingsSet(
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.agent_settings_set",
+      action: "agent.settings_set",
       target,
       before: truncForAudit(beforeProj),
       after: truncForAudit(afterAppliedProj),
@@ -729,7 +685,7 @@ export async function tenantUpdate(
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.tenant_update",
+      action: "tenant.update",
       target,
       before: truncForAudit(beforeProj),
       after: truncForAudit(afterProj),
@@ -861,7 +817,7 @@ export async function brandingSet(
       {
         actorId: principal.userId,
         actorType: "mcp",
-        action: "mcp.branding_set",
+        action: "branding.set",
         target,
         before: truncForAudit(beforeProj),
         after: truncForAudit(afterProj),
@@ -970,7 +926,7 @@ export async function brandingAssetSet(
       {
         actorId: principal.userId,
         actorType: "mcp",
-        action: "mcp.branding_asset_set",
+        action: "branding_asset.set",
         target,
         // Metadata only — never the image bytes.
         before: truncForAudit({ kind, variant, present: replacingExisting }),

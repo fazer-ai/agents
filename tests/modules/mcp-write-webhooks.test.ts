@@ -171,7 +171,7 @@ describe.skipIf(!dbUp)("MCP webhooks/alerts/integrations tools (DB)", () => {
     });
     expect(row?.secretRef).toBe(`vault:${secretId}`);
     const audits = await suDb.auditLog.count({
-      where: { tenantId: tenantA, action: "mcp.webhook_create" },
+      where: { tenantId: tenantA, action: "webhook.create" },
     });
     expect(audits).toBe(1);
   });

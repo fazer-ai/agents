@@ -3,6 +3,7 @@ import basePrisma from "@/api/lib/prisma";
 import { AppError } from "@/lib/errors";
 import { parseInput } from "@/lib/parse-input";
 import { revokeApiKey } from "@/modules/api-keys/service";
+import { truncForAudit } from "@/modules/audit/projection";
 import {
   createBusinessHours,
   deleteBusinessHours,
@@ -37,7 +38,6 @@ import {
   parseMcpId,
   recordMcpAudit,
   resolveSecretRef,
-  truncForAudit,
   type WriteDeps,
   type WriteResult,
 } from "./write";
@@ -123,7 +123,7 @@ export async function experimentCreate(
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.experiment_create",
+      action: "experiment.create",
       target,
       before: null,
       after: truncForAudit({ id: String(created.id), name: args.name }),
@@ -204,7 +204,7 @@ export async function experimentUpdate(
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.experiment_update",
+      action: "experiment.update",
       target,
       before: truncForAudit(beforeProj),
       after: truncForAudit({
@@ -245,7 +245,7 @@ export async function experimentDelete(
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.experiment_delete",
+      action: "experiment.delete",
       target,
       before: truncForAudit(beforeProj),
       after: null,
@@ -311,14 +311,6 @@ export async function businessHoursCreate(
       base,
     );
     const target = `business_hours:${created.id}`;
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "mcp.business_hours_create",
-      target,
-      before: null,
-      after: truncForAudit({ id: created.id, name: created.name }),
-    });
     return ok({ dryRun: false, applied: true, target, businessHours: created });
   } catch (e) {
     return failOf(e);
@@ -380,19 +372,6 @@ export async function businessHoursUpdate(
       });
     }
     const updated = await updateBusinessHours(ctx, id, patch, base);
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "mcp.business_hours_update",
-      target,
-      before: truncForAudit(beforeProj),
-      after: truncForAudit({
-        name: updated.name,
-        timezone: updated.timezone,
-        windows: updated.windows,
-        exceptions: updated.exceptions,
-      }),
-    });
     return ok({ dryRun: false, applied: true, target, businessHours: updated });
   } catch (e) {
     return failOf(e);
@@ -422,14 +401,6 @@ export async function businessHoursDelete(
       });
     }
     await deleteBusinessHours(ctx, id, base);
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "mcp.business_hours_delete",
-      target,
-      before: truncForAudit(beforeProj),
-      after: null,
-    });
     return ok({ dryRun: false, applied: true, target });
   } catch (e) {
     return failOf(e);
@@ -541,7 +512,7 @@ export async function tenantSettingsUpdate(
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.tenant_settings_update",
+      action: "tenant_settings.update",
       target,
       before: truncForAudit({
         embedding: {
@@ -672,7 +643,7 @@ export async function langfuseConnect(
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.langfuse_connect",
+      action: "langfuse.connect",
       target: "tenant_settings:langfuse",
       before: null,
       after: truncForAudit({
@@ -718,14 +689,6 @@ export async function apiKeyRevoke(
       });
     }
     await revokeApiKey(ctx, id, base);
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "mcp.api_key_revoke",
-      target,
-      before: null,
-      after: truncForAudit({ revoked: true }),
-    });
     return ok({ dryRun: false, applied: true, target });
   } catch (e) {
     return failOf(e);

@@ -3,13 +3,13 @@ import { createTenant } from "@/api/v1/tenants.admin.service";
 import { getTenant, listTenants } from "@/api/v1/tenants.service";
 import { AppError } from "@/lib/errors";
 import type { TenantContext } from "@/lib/tenancy";
+import { truncForAudit } from "@/modules/audit/projection";
 import { hasScope, type VerifiedToken } from "./oauth/tokens";
 import {
   ctxOf,
   err,
   ok,
   recordMcpAudit,
-  truncForAudit,
   type WriteDeps,
   type WriteResult,
 } from "./write";
@@ -98,7 +98,7 @@ export async function tenantCreate(
       {
         actorId: principal.userId,
         actorType: "mcp",
-        action: "mcp.tenant_create",
+        action: "tenant.create",
         target: `tenant:${created.id}`,
         before: null,
         after: truncForAudit({

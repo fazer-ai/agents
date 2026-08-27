@@ -5,6 +5,7 @@ import { parseDbId } from "@/lib/db-id";
 import { AppError, NotFoundError } from "@/lib/errors";
 import { parseInput } from "@/lib/parse-input";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { auditMutation } from "@/modules/audit/service";
 import {
   isRangeOrdered,
   isRealDate,
@@ -151,6 +152,17 @@ export const businessHoursUpdateSchema = businessHoursCreateSchema
   .strict();
 export type BusinessHoursUpdate = z.infer<typeof businessHoursUpdateSchema>;
 
+// What the audit row carries: the schedule as the operator sees it, minus the identifiers and
+// timestamps the row already holds in its own columns.
+function auditProjection(dto: BusinessHoursDto) {
+  return {
+    name: dto.name,
+    timezone: dto.timezone,
+    windows: dto.windows,
+    exceptions: dto.exceptions,
+  };
+}
+
 export async function listBusinessHours(
   ctx: TenantContext,
   base: PrismaClient = basePrisma,
@@ -221,7 +233,13 @@ export async function createBusinessHours(
       },
       select: SELECT,
     });
-    return toDto(row);
+    const dto = toDto(row);
+    await auditMutation(db, ctx, {
+      action: "business_hours.create",
+      target: `business_hours:${dto.id}`,
+      after: auditProjection(dto),
+    });
+    return dto;
   });
 }
 
@@ -238,7 +256,7 @@ export async function updateBusinessHours(
   return runScopedOn(base, ctx, async (db) => {
     const current = await db.businessHours.findUnique({
       where: { id },
-      select: { id: true },
+      select: SELECT,
     });
     if (!current) {
       throw new NotFoundError(
@@ -246,6 +264,7 @@ export async function updateBusinessHours(
         "errors.businessHoursNotFound",
       );
     }
+    const before = toDto(current);
     await db.businessHours.update({
       where: { id },
       data: {
@@ -263,7 +282,14 @@ export async function updateBusinessHours(
       where: { id },
       select: SELECT,
     });
-    return toDto(row);
+    const dto = toDto(row);
+    await auditMutation(db, ctx, {
+      action: "business_hours.update",
+      target: `business_hours:${dto.id}`,
+      before: auditProjection(before),
+      after: auditProjection(dto),
+    });
+    return dto;
   });
 }
 
@@ -278,12 +304,23 @@ export async function deleteBusinessHours(
       where: { businessHoursId: id },
       data: { businessHoursId: null },
     });
+    // Read before the delete: the row is what the audit records, and after `deleteMany` there is
+    // nothing left to name what was removed.
+    const current = await db.businessHours.findUnique({
+      where: { id },
+      select: SELECT,
+    });
     const res = await db.businessHours.deleteMany({ where: { id } });
-    if (res.count === 0) {
+    if (res.count === 0 || !current) {
       throw new NotFoundError(
         "business hours not found",
         "errors.businessHoursNotFound",
       );
     }
+    await auditMutation(db, ctx, {
+      action: "business_hours.delete",
+      target: `business_hours:${id}`,
+      before: auditProjection(toDto(current)),
+    });
   });
 }

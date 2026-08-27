@@ -267,7 +267,7 @@ describe.skipIf(!dbUp)("MCP channel tools (DB)", () => {
     expect(await suDb.inbox.count({ where: { id: inboxA } })).toBe(1);
     expect(
       await suDb.auditLog.count({
-        where: { tenantId: tenantA, action: "mcp.inbox_remove" },
+        where: { tenantId: tenantA, action: "inbox.remove" },
       }),
     ).toBe(0);
   });
@@ -294,7 +294,7 @@ describe.skipIf(!dbUp)("MCP channel tools (DB)", () => {
       await suDb.auditLog.count({
         where: {
           tenantId: tenantA,
-          action: "mcp.inbox_remove",
+          action: "inbox.remove",
           target: `inbox:${doomed.id}`,
         },
       }),
@@ -383,7 +383,7 @@ describe.skipIf(!dbUp)("MCP channel tools (DB)", () => {
     expect(after).not.toBeNull();
     expect(after?.disconnectedAt).not.toBeNull();
     const audits = await suDb.auditLog.count({
-      where: { tenantId: tenantA, action: "mcp.instance_disconnect" },
+      where: { tenantId: tenantA, action: "instance.disconnect" },
     });
     expect(audits).toBe(1);
   });

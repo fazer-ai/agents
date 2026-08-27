@@ -1,6 +1,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { Prisma, UserRole } from "@/../generated/prisma/client";
 
+export type ActorType = "user" | "api_key" | "mcp" | "system";
+
 export interface TenantContext {
   // NOTE: null only for SUPER_ADMIN operating fleet-wide. A tenant-scoped op with a
   // null tenantId fails closed (TenantTargetRequiredError).
@@ -8,8 +10,13 @@ export interface TenantContext {
   userId: bigint | null;
   role: UserRole;
   // How the request authenticated. Absent (treated as "user") for the cookie session; "api_key"
-  // when a Bearer API key resolved the principal. Used only for audit attribution.
-  actorType?: "user" | "api_key";
+  // when a Bearer API key resolved the principal; "mcp" behind an MCP access token; "system" for a
+  // mutation no request asked for. Used only for audit attribution.
+  //
+  // NOTE: this is what lets the ACTION name what changed instead of naming the door it came
+  // through. `mcp.agent_update` and a console PATCH are the same change, and they are the same
+  // action, told apart here.
+  actorType?: ActorType;
 }
 
 // NOTE: branded transaction client. Only the TenancyProvider (runScoped/asSuperAdmin)

@@ -247,7 +247,7 @@ describe.skipIf(!dbUp)("MCP agent-builder tools (DB)", () => {
     });
     expect(row).not.toBeNull();
     const audits = await suDb.auditLog.count({
-      where: { tenantId: tenantA, action: "mcp.agent_create" },
+      where: { tenantId: tenantA, action: "agent.create" },
     });
     expect(audits).toBe(1);
   });
@@ -388,7 +388,7 @@ describe.skipIf(!dbUp)("MCP agent-builder tools (DB)", () => {
       expect((r.data.grants as unknown[]).length).toBe(0);
     }
     const audits = await suDb.auditLog.count({
-      where: { tenantId: tenantA, action: "mcp.agent_tools_set" },
+      where: { tenantId: tenantA, action: "agent.tools_set" },
     });
     expect(audits).toBe(1);
   });

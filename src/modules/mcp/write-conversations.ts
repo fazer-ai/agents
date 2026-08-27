@@ -1,5 +1,6 @@
 import basePrisma from "@/api/lib/prisma";
 import { AppError } from "@/lib/errors";
+import { truncForAudit } from "@/modules/audit/projection";
 import { reengageConversation } from "@/modules/conversations/reengage";
 import {
   getConversationDetail,
@@ -15,7 +16,6 @@ import {
   ok,
   parseMcpId,
   recordMcpAudit,
-  truncForAudit,
   type WriteDeps,
   type WriteResult,
 } from "./write";
@@ -66,7 +66,7 @@ export async function conversationReply(
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.conversation_reply",
+      action: "conversation.reply",
       target,
       before: null,
       after: truncForAudit({ private: isPrivate, content: args.content }),
@@ -110,7 +110,7 @@ export async function conversationHandoff(
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.conversation_handoff",
+      action: "conversation.handoff",
       target,
       before: truncForAudit({
         status: current.status,
@@ -150,7 +150,7 @@ export async function conversationReturn(
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.conversation_return",
+      action: "conversation.return",
       target,
       before: truncForAudit({ status: current.status }),
       after: truncForAudit({ status: "pending", outcome }),
@@ -194,7 +194,7 @@ export async function conversationStatus(
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.conversation_status",
+      action: "conversation.status",
       target,
       before: truncForAudit({ status: current.status }),
       after: truncForAudit({ status: args.status }),
@@ -231,7 +231,7 @@ export async function conversationReengage(
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.conversation_reengage",
+      action: "conversation.reengage",
       target,
       before: null,
       after: truncForAudit({ outcome: result.outcome }),

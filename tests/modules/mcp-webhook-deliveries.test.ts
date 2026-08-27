@@ -276,7 +276,7 @@ describe.skipIf(!dbUp)("MCP delivery tools (DB)", () => {
     const audit = await suDb.auditLog.findFirst({
       where: {
         tenantId,
-        action: "mcp.webhook_delivery_requeue",
+        action: "webhook_delivery.requeue",
         target: `webhook_delivery:${id}`,
       },
     });

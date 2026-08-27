@@ -253,6 +253,18 @@ export interface SpendCeilingOccasion {
 // without knowing they had.
 export const SPEND_CEILING_MESSAGE_WINDOW_MS = 60_000;
 
+// THE SCHEDULER'S OWN LADDER, for the occasion a debounce flush refuses. A claimed job that throws
+// after the refusal has been written — advancing the watermark is the last thing it does, and that
+// is a database write — is re-pended with a backoff and runs again on the SAME burst, so without a
+// window one refused burst writes one `error` line and pages the alert channels once per attempt.
+//
+// Sized off the scheduler rather than guessed: `MAX_ATTEMPTS` is 5 and `backoffMs` is full-jitter on
+// a 2s base with the exponent clamped, so four retries are spaced at most 4s + 8s + 16s + 32s. Ten
+// minutes covers that ladder several times over, which is the right direction to be wrong in — the
+// key carries the burst's own conversation and last message id, so a window this long can never
+// suppress a line about a DIFFERENT burst, and the next burst carries a later id by construction.
+export const SPEND_CEILING_BURST_WINDOW_MS = 10 * 60 * 1000;
+
 export function spendCeilingOverKey(
   tenantId: bigint,
   source: UsageSource,

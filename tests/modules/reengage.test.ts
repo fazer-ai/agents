@@ -50,9 +50,22 @@ function ctx(): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
 }
 
-function makeStub(opts: { page: unknown; sent: Array<[number, string]> }) {
+// `pages` serves a DIFFERENT thread per `getMessages` call, which is how a delivery landing between
+// two reads of the same conversation is told. Without it the stub is a Chatwoot frozen in time, and
+// every re-read in the code under test is answered by the state it already saw.
+function makeStub(opts: {
+  page?: unknown;
+  pages?: unknown[];
+  sent: Array<[number, string]>;
+}) {
+  let i = 0;
   const client = {
-    getMessages: async () => opts.page,
+    getMessages: async () => {
+      if (!opts.pages) return opts.page;
+      const p = opts.pages[Math.min(i, opts.pages.length - 1)];
+      i += 1;
+      return p;
+    },
     sendMessage: async (conversationId: number, content: string) => {
       opts.sent.push([conversationId, content]);
       return {};
@@ -682,6 +695,50 @@ describe.skipIf(!dbUp)("reengage", () => {
     // A CLICK WITH NOTHING TO ANSWER WAS NEVER A TURN, so the ceiling has nothing to refuse. The
     // button reporting a spent budget here tells the operator to raise a number that would change
     // nothing, and writes an `error` line saying a turn was skipped when none was ever going to run.
+    // THE SAME QUESTION, ASKED AGAIN WHERE THE ANSWER IS USED. The pre-fetch above proves there was
+    // a tail; the verdict underneath it is two database reads deep, and the conversation is live the
+    // whole time. A delivery that answers the tail inside that window leaves this click nothing to
+    // run, so a refusal would tell the operator to raise a ceiling for work that no longer exists.
+    test("a tail answered while the ceiling was being read is empty, not refused", async () => {
+      const id = await seedConversation(923);
+      const sent: Array<[number, string]> = [];
+      const res = await reengageConversation(
+        ctx(),
+        id,
+        {
+          makeModel: () => {
+            throw new Error("the model must not be invoked");
+          },
+          makeClient: makeStub({
+            pages: [
+              // The pre-fetch sees an unanswered tail...
+              page([{ id: 1, content: "oi", type: 0 }]),
+              // ...and by the re-read another delivery has answered it.
+              page([
+                { id: 1, content: "oi", type: 0 },
+                { id: 2, content: "já respondi", type: 1 },
+              ]),
+            ],
+            sent,
+          }),
+          checkpointer: new MemorySaver(),
+        },
+        appDb,
+      );
+      expect(res.outcome).toBe("empty");
+      expect(sent).toEqual([]);
+      await settleFlowEvents();
+      const rows = await suDb.executionLog.findMany({
+        where: {
+          tenantId,
+          threadId: `${tenantId}:${instanceId}:923`,
+          stage: "spend_ceiling",
+        },
+        select: { level: true },
+      });
+      expect(rows).toEqual([]);
+    });
+
     test("with nothing unanswered the button says so, not that the budget stopped it", async () => {
       const id = await seedConversation(922);
       const sent: Array<[number, string]> = [];

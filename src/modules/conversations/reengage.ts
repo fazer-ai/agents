@@ -223,6 +223,19 @@ export async function reengageConversation(
     source: "inbox",
     base,
   });
+  // ...AND THE TAIL IS RE-READ BEFORE THE REFUSAL, because the verdict above is two database reads
+  // deep and this conversation is live the whole time. A delivery that answered the tail inside that
+  // window leaves nothing for this click to run, so the refusal would tell the operator to raise a
+  // ceiling for work that no longer exists — the same "nothing to answer ⇒ nothing to refuse" the
+  // pre-fetch above applies, asked again at the moment the answer is used. Only on the refusing
+  // path: `allowed` and `warning` both go on to coalesce for real, which re-reads anyway, and a
+  // warning is a statement about the MONTH rather than about this turn.
+  if (ceiling.state === "over") {
+    const freshTail = await selectPending(
+      parseChatwootMessages(await preview.getMessages(resolved.conversationId)),
+    );
+    if (freshTail.length === 0) return { outcome: "empty" };
+  }
   announceSpendCeiling(
     {
       tenantId,

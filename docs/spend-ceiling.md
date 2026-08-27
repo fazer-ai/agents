@@ -158,6 +158,12 @@ there owes the conversation the **whole** contract, not just the handoff: the we
 anything, so this is the first refusal the conversation gets, and the operator's sentence, the
 handoff and the private note all fall to it.
 
+The re-engage button asks the same question a second time on the refusing path: its pre-fetch proves
+there was a tail, but the verdict underneath is two database reads deep and the conversation is live
+throughout, so a delivery that answers the tail inside that window leaves the click nothing to run.
+Re-read there, it reports `empty` instead of telling the operator to raise a ceiling for work that no
+longer exists.
+
 **And it refuses a burst, never an empty one.** The flush asks two questions before it says a word,
 because a refusal is about something the customer is waiting for: was this burst already ANSWERED (an
 earlier attempt advanced the watermark past the payload's own last id and died before the scheduler
@@ -265,6 +271,12 @@ own, and neither is traffic:
   neither knows about the other. The webhook gate therefore keys its announcement by the Chatwoot
   message id. Two *different* messages stay two lines, because each is a customer left unanswered
   and the count of refusals is what an operator reads off the Logs page.
+- **The same burst, retried.** Advancing the watermark is the last thing a refusing debounce flush
+  does, and it is a database write: a flush that says its piece and then dies is re-pended by the
+  scheduler and runs again on the same burst. The flow line is keyed by the burst (the conversation
+  plus the payload's own last message id) over a window sized off the scheduler's own ladder
+  (`SPEND_CEILING_BURST_WINDOW_MS`), so one refused burst is one `error` line however many attempts
+  it takes. The customer copy is fenced separately, by the notice cooldown.
 - **The same occasion, asked eight times.** `over-ceiling` is a repairable nudge refusal, so the
   caller reschedules it every fifteen minutes for two hours (`nudge-retry.ts`) against a wall that is
   temporary by construction: one follow-up that could not go out paged the alert channels eight

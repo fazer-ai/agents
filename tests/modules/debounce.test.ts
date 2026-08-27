@@ -3492,6 +3492,60 @@ describe.skipIf(!dbUp)("debounce", () => {
       await clearFlowLog(suDb, { tenantId });
     });
 
+    // ONE LINE PER REFUSED BURST, not one per attempt at it. Advancing the watermark is the LAST
+    // thing the refusing branch does and it is a database write, so a flush that says its piece and
+    // then dies is re-pended by the scheduler and runs again on the same burst — a second `error`
+    // line and a second page to the alert channels about one refusal.
+    //
+    // The retry is modelled by putting the conversation back in the state a crashed settlement
+    // leaves it in: the copy went out, the watermark did not move. Running the same job again from
+    // there is exactly what the worker does.
+    test("a burst refused twice by a retried job is one line, not two", async () => {
+      await seedConversation(916);
+      const sent: Array<[number, string]> = [];
+      const toggles: Array<[number, string]> = [];
+      const notes: Array<[number, string]> = [];
+      const run = () =>
+        flushDebounceJob({
+          job: jobFor(916, { lastMessageId: 19 }),
+          base: appDb,
+          deps: {
+            makeModel: () => {
+              throw new Error("the model must not be invoked over the ceiling");
+            },
+            makeClient: makeResolveStub({
+              pages: [page([{ id: 19, content: "oi" }])],
+              sent,
+              calls: { getMessages: 0 },
+              toggles,
+              notes,
+            }),
+            checkpointer: new MemorySaver(),
+          },
+        });
+
+      expect(await run()).toEqual({ outcome: "done" });
+      // What the crash left behind: settled nothing.
+      await suDb.conversation.updateMany({
+        where: { tenantId, chatwootConversationId: 916 },
+        data: { lastHandledMessageId: null },
+      });
+      expect(await run()).toEqual({ outcome: "done" });
+
+      await settleFlowEvents();
+      const rows = await suDb.executionLog.findMany({
+        where: { tenantId, threadId: threadOf(916), stage: "spend_ceiling" },
+        select: { level: true },
+      });
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.level).toBe("error");
+      // The customer hears it once too, which is the notice cooldown rather than this key: two
+      // fences over one retry, and both are asserted because either one alone would pass while the
+      // other was broken.
+      expect(sent).toHaveLength(1);
+      await clearFlowLog(suDb, { tenantId });
+    });
+
     // NOTHING TO ANSWER ⇒ NOTHING TO REFUSE, and the watermark cannot see this one. The burst was
     // never answered — an earlier attempt did not run — but the message it armed on is gone from the
     // thread, or renders to no answerable text. Without the ceiling that burst reaches

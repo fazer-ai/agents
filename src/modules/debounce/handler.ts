@@ -54,6 +54,7 @@ import {
 import { announceSpendCeilingOnConversation } from "@/modules/spend-ceiling/notice";
 import {
   announceSpendCeiling,
+  SPEND_CEILING_BURST_WINDOW_MS,
   spendCeilingVerdict,
 } from "@/modules/spend-ceiling/service";
 import { readLastMessageId } from "./service";
@@ -838,6 +839,18 @@ export async function flushDebounceJob(
       flushCeiling,
       "inbox",
       tenantId,
+      // ONE LINE PER REFUSED BURST, not one per attempt at it. Advancing the watermark is the last
+      // thing this branch does and it is a database write, so a flush that refuses and then throws
+      // is re-pended by the scheduler and runs again on the same burst — writing a second `error`
+      // line and paging the alert channels a second time about one refusal. Named by the burst the
+      // way the customer-facing sequence below is: the conversation plus the payload's own last id,
+      // which a retry repeats and the next burst does not.
+      flushCeiling.state === "over"
+        ? {
+            key: `burst:${ctx.convDbId}:${armedLast ?? "unknown"}`,
+            windowMs: SPEND_CEILING_BURST_WINDOW_MS,
+          }
+        : undefined,
     );
   }
   if (flushCeiling?.state === "over") {

@@ -1,9 +1,10 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
-import { chatwootThreadId } from "@/graph/checkpointer";
+import { chatwootThreadId, resolveGraphThreadId } from "@/graph/checkpointer";
 import { isTurnInFlight } from "@/graph/inflight";
 import type { RuntimeDeps } from "@/graph/runtime";
+import { turnOwnsThread } from "@/graph/thread-claim";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { writeFlowEvent } from "@/modules/flowlog/service";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
@@ -127,7 +128,9 @@ const BUSY_RETRY_MS = 60_000;
 // Checked and added with NO AWAIT BETWEEN THE TWO, which is what makes it a claim rather than one
 // more read-then-act: JavaScript runs that pair to completion, so of two recoveries resuming from
 // the same row read, the first to resume owns the conversation and the second sees it taken.
-// Process-local, the same invariant the seven other in-flight callers already run under.
+// Process-local, which is all the Map behind `isTurnInFlight` is too (../../graph/inflight.ts):
+// both answer about THIS process. What crosses replicas is the claim the turn itself takes in
+// the thread's row, and the fence immediately before the handoff is where that one is asked.
 const recovering = new Set<string>();
 
 function sysCtx(tenantId: bigint): TenantContext {
@@ -578,15 +581,49 @@ async function runRecovery(params: {
   // and a reconcile — during which a live delivery can have started a turn, and a live delivery does
   // not consult the recovery claim.
   //
+  // BOTH KEYS, because a turn claims two and neither alone is the question — the same pair
+  // `/reset` asks in ./webhook.ts before it hands a conversation back. The per-conversation key is
+  // taken at the top of the turn and is the only one a turn caught before the ingest lock holds; the
+  // GRAPH key is the one a follow-up NUDGE claims (../../graph/nudge.ts) while posting into this
+  // very conversation, so a recovery asking only the conversation key would build a turn beside a
+  // nudge that is mid-reply and the customer would be answered twice.
+  //
+  // The graph half is asked of the ROW, because issue #203 shipped and put the answer there:
+  // `runAgentTurn` claims the thread in `agent_threads` on every turn, and `turnOwnsThread` reads
+  // it. The Map alone says "free" for a turn running on another replica. That reader is also where
+  // an unreadable answer is turned into "held", stated there rather than at each call site on the
+  // grounds that the next caller is the one that would arrive without the guard — this module is
+  // that caller. With a null contact inbox the graph thread IS the conversation thread and has no
+  // row, so that key keeps the in-process answer, which is what the conversation key has anyway.
+  //
   // It NARROWS the window and does not close it: the last one is `processChatwootDelivery`'s own
-  // path down to where `runAgentTurn` marks the thread. What is left is the same overlap two live
-  // deliveries for one conversation already have, which the post-response supersede and the
-  // monotonic watermark CAS are what bound. Closing it properly means an exclusion both entry paths
-  // take at the turn boundary, which is issue #203's durable fence and not this issue.
+  // path down to where `runAgentTurn` claims the thread. What is left is the same overlap two live
+  // deliveries for one conversation already have — the durable claim COUNTS turns rather than
+  // refusing a second one, deliberately, because two deliveries for one conversation really do
+  // overlap whenever debounce is off. What bounds it HERE is not that claim but the newest-message
+  // check above: a live delivery is running because the customer wrote again, and a customer who
+  // wrote again is already the case this recovery answers `unrecoverable` to.
+  const graphKey = resolveGraphThreadId(
+    params.tenantId,
+    instanceId,
+    conversationId,
+    conv.contactInboxId,
+  );
   if (
     isTurnInFlight(
       chatwootThreadId(params.tenantId, instanceId, conversationId),
-    )
+    ) ||
+    (conv.contactInboxId != null
+      ? await turnOwnsThread(
+          {
+            tenantId: params.tenantId,
+            instanceId,
+            contactInboxId: conv.contactInboxId,
+            graphThreadId: graphKey,
+          },
+          base,
+        )
+      : isTurnInFlight(graphKey))
   ) {
     return "deferred";
   }

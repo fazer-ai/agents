@@ -568,7 +568,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
       }),
     ).toBeNull();
 
-    await suDb.executionLog.deleteMany({ where: { tenantId } });
+    await clearFlowLog(suDb, { tenantId });
     await suDb.chatwootWebhookDelivery.delete({ where: { id: rowId } });
   });
 

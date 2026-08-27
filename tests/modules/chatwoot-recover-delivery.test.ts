@@ -4,9 +4,10 @@ import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
-import { chatwootThreadId } from "@/graph/checkpointer";
+import { chatwootThreadId, contactInboxThreadId } from "@/graph/checkpointer";
 import { clearTurnInFlight, markTurnInFlight } from "@/graph/inflight";
 import type { RuntimeDeps } from "@/graph/runtime";
+import { clearTurnOwning, markTurnOwning } from "@/graph/thread-claim";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import {
   deliveryRecoveryDedupeKey,
@@ -1192,6 +1193,58 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     // costing two REST round trips per pass.
     expect(stub.asked).toEqual([]);
     // Deferred keeps the budget: nothing was attempted, so nothing was spent.
+    expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 0 });
+  });
+
+  test("a turn holding the thread on ANOTHER replica defers: the claim is in the row", async () => {
+    // The conversation key is a Map lookup and always will be, because it has no row to be in
+    // (src/graph/inflight.ts). The GRAPH key has one since issue #203, and it is the key a follow-up
+    // NUDGE claims while posting into this very conversation — so asking only the conversation key
+    // would build a turn beside a reply already on its way and answer the customer twice.
+    //
+    // ANOTHER replica, built the only way one process can build it: take the claim with the real
+    // writer, then empty THIS process's Map. What is left holding the thread is the row alone, which
+    // is exactly what a second replica sees. The Map is put back before the release so the count the
+    // release decrements is the one the claim took.
+    const convId = 8955;
+    const messageId = 9455;
+    await seedConversation(convId);
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const stub = stubChatwoot({
+      page: pageWith([{ id: messageId, content: "oi" }]),
+    });
+    const contactInboxId = 71_000 + convId;
+    const owner = {
+      tenantId,
+      instanceId,
+      contactInboxId,
+      graphThreadId: contactInboxThreadId(tenantId, instanceId, contactInboxId),
+    };
+    const hold = await markTurnOwning(owner, appDb);
+    clearTurnInFlight(owner.graphThreadId);
+
+    let outcome: string;
+    try {
+      outcome = await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: depsWith(stub),
+      });
+    } finally {
+      markTurnInFlight(owner.graphThreadId);
+      await clearTurnOwning(owner, appDb, hold);
+    }
+
+    expect(outcome).toBe("deferred");
+    expect(stub.sent).toEqual([]);
+    // The REST reads DID happen, unlike the early check's case: this is the LATE fence, the one
+    // after the two reads and the reconcile, and the only one that can see a turn that started
+    // during them.
+    expect(stub.asked.length).toBeGreaterThan(0);
     expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 0 });
   });
 

@@ -123,13 +123,19 @@ function carriesCredential(v: unknown): boolean {
   // the column with the space still on it. An anchored test on the raw string then says no.
   if (typeof v !== "string") return false;
   const url = v.trim();
-  if (!/^https?:\/\//i.test(url)) return false;
+  const httpish = /^https?:\/\//i.test(url);
   try {
     const u = new URL(url);
-    return (
-      u.username !== "" || u.password !== "" || u.search !== "" || u.hash !== ""
-    );
+    // USERINFO is asked of any scheme, and the query and the fragment only of `http(s)`. The split
+    // is measured, not stylistic. `z.string().url()` accepts `ftp://user:pw@host`, so restricting
+    // the whole rule to `http(s)` let that one through; and userinfo costs nothing to widen because
+    // prose does not have it — `"Pergunta: você quer?"` parses with protocol `pergunta:` and an
+    // empty username, as do `mailto:` and `urn:`. A `?` in prose is common, which is why the other
+    // half stays bounded to what is unambiguously an endpoint.
+    if (u.username !== "" || u.password !== "") return true;
+    return httpish && (u.search !== "" || u.hash !== "");
   } catch {
+    if (!httpish) return false;
     // Shaped like an endpoint and not parseable as one: it cannot be shown to carry no credential.
     return true;
   }

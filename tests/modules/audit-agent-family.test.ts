@@ -1191,6 +1191,55 @@ describe.skipIf(!dbUp)("the agent family records its own changes", () => {
     expect(deletedRow?.id).toBe(clone.id);
   });
 
+  test("userinfo is asked of any scheme, and prose is left alone", async () => {
+    // `z.string().url()` accepts `ftp://user:pw@host`, so bounding the WHOLE rule to `http(s)` let
+    // that one through. Widening the userinfo half costs nothing: prose parses with an empty
+    // username (`"Pergunta: você quer?"` has protocol `pergunta:`), which is why the query and
+    // fragment half stays bounded to what is unambiguously an endpoint.
+    const agent = await seedAgent({
+      settings: {
+        stt: { enabled: true, baseURL: "ftp://u:hunter2@files.example.com/x" },
+      },
+    });
+    await clearAudit();
+
+    await updateAgent(
+      ctx(),
+      BigInt(agent.id),
+      {
+        settings: {
+          stt: {
+            enabled: true,
+            baseURL: "ftp://u:rotated@files.example.com/x",
+          },
+        },
+      },
+      appDb,
+    );
+
+    const got = await rows();
+    expect(got.length).toBe(1);
+    const dump = JSON.stringify([got[0]?.before, got[0]?.after]);
+    expect(dump).not.toContain("hunter2");
+    expect(dump).not.toContain("rotated");
+  });
+
+  test("a prompt that merely reads like a URL is recorded in full", async () => {
+    // The other side of that widening: an operator's prose parses as a URL and must survive intact,
+    // or the trail starts losing the field it exists to record.
+    const prose =
+      "Pergunta: você quer? Responda mailto:contato@clinica.example";
+    const agent = await seedAgent({ systemPrompt: "antes" });
+    await clearAudit();
+
+    await updateAgent(ctx(), BigInt(agent.id), { systemPrompt: prose }, appDb);
+
+    const after = (await rows())[0]?.after as
+      | Record<string, unknown>
+      | undefined;
+    expect(after?.systemPrompt).toBe(prose);
+  });
+
   test("a base URL with no credential in it is recorded as itself", async () => {
     const agent = await seedAgent({
       modelConfig: {

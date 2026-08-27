@@ -68,6 +68,15 @@ mock.module("@/modules/agents/service", () => ({
 
 const server = (await import("@/app")).default;
 
+// TOP-LEVEL, outside the describe below, and measured rather than assumed: an `afterAll` inside a
+// `describe.skipIf(...)` that skips does NOT run, while this one does. `mock.module` already
+// installed the wrapper globally for the whole worker by the time `dbUp` was decided, so leaving the
+// restore inside would leak it into every later file in the same process — handing their writes an
+// `app` that is `undefined` and routing them into the incomplete singleton mock.
+afterAll(() => {
+  mock.module("@/modules/agents/service", () => real);
+});
+
 const ADMIN_ID = 9393n;
 let tenantId = 0n;
 let agentId = "";
@@ -122,7 +131,6 @@ describe.skipIf(!dbUp)("the agents transport names who wrote", () => {
   });
 
   afterAll(async () => {
-    mock.module("@/modules/agents/service", () => real);
     // `dbUp`, not `su`: the probe assigns the client and only then checks the connection, so a
     // configured-but-unreachable database leaves `su` truthy while the suite skips.
     if (dbUp && su && tenantId) {

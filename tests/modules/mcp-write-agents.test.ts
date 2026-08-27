@@ -375,8 +375,25 @@ describe.skipIf(!dbUp)("MCP agent-builder tools (DB)", () => {
     expect(row).toBeNull();
   });
 
-  test("agent_tools_set replace (empty set) applies + audits", async () => {
+  // The count is not the rule and never was: what this asserts is that an apply which CHANGES the
+  // set is audited. Since the trail moved into the service (#393) the sibling half of that rule is
+  // observable too — clearing a set that is already empty changes nothing and records nothing — so
+  // the set is seeded first and both halves are asserted from the same starting point.
+  test("agent_tools_set replace (empty set) applies + audits what it changed", async () => {
     const p = principal({ tenantId: tenantA });
+    await agentToolsSet(
+      p,
+      {
+        agent_id: String(agentA),
+        grants: [{ source: "NATIVE", enabledTools: ["handoff_to_human"] }],
+        dry_run: false,
+      },
+      { base: appDb },
+    );
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM audit_logs WHERE tenant_id = ${tenantA}`,
+    );
+
     const r = await agentToolsSet(
       p,
       { agent_id: String(agentA), grants: [], dry_run: false },
@@ -387,10 +404,23 @@ describe.skipIf(!dbUp)("MCP agent-builder tools (DB)", () => {
       expect(r.data.applied).toBe(true);
       expect((r.data.grants as unknown[]).length).toBe(0);
     }
-    const audits = await suDb.auditLog.count({
-      where: { tenantId: tenantA, action: "agent.tools_set" },
-    });
-    expect(audits).toBe(1);
+    expect(
+      await suDb.auditLog.count({
+        where: { tenantId: tenantA, action: "agent.tools_set" },
+      }),
+    ).toBe(1);
+
+    // Clearing an already-empty set applies and records nothing.
+    await agentToolsSet(
+      p,
+      { agent_id: String(agentA), grants: [], dry_run: false },
+      { base: appDb },
+    );
+    expect(
+      await suDb.auditLog.count({
+        where: { tenantId: tenantA, action: "agent.tools_set" },
+      }),
+    ).toBe(1);
   });
 
   // A grant's id is caller-supplied, and `BigInt` accepts more than a column does. `0x11` is 17n, so

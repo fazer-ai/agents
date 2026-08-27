@@ -14,7 +14,10 @@ import {
 } from "@/lib/errors";
 import { parseInput } from "@/lib/parse-input";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
-import { agentUpdateAudit } from "@/modules/agents/audit-projection";
+import {
+  agentUpdateAudit,
+  grantSetChanged,
+} from "@/modules/agents/audit-projection";
 import { collectCredentialRefWrites } from "@/modules/agents/credential-paths";
 import { collectOversizedTextChanges } from "@/modules/agents/text-caps";
 import {
@@ -973,12 +976,13 @@ export async function deleteAgent(
   base: PrismaClient = basePrisma,
 ): Promise<void> {
   await runScopedOn(base, ctx, async (db) => {
-    // Read inside the transaction that deletes: the row is what the record is OF, and after the
-    // statement there is nothing left to name it with.
-    const doomed = await db.agent.findUnique({
-      where: { id },
-      select: { id: true, name: true },
-    });
+    // Read inside the transaction that deletes AND under its lock: the row is what the record is
+    // OF, and after the statement there is nothing left to name it with. Unlocked, a rename that
+    // commits between this read and the delete leaves an `agent.update` saying A→B followed by an
+    // `agent.delete` claiming A was what went.
+    const doomedRows = await db.$queryRaw<Array<{ name: string }>>`
+      SELECT name FROM agents WHERE id = ${id} FOR UPDATE`;
+    const doomed = doomedRows[0];
     // Inbox.agentId and Experiment.agentId are plain references (no FK cascade) — null them so a
     // deleted agent leaves no dangling binding. AgentToolSelection cascades via its FK.
     await db.inbox.updateMany({
@@ -1728,12 +1732,16 @@ export async function replaceAgentToolSelections(
       data: { updatedAt: new Date() },
     });
     const next = await buildToolSelectionView(db, agentId);
-    await auditMutation(db, ctx, {
-      action: "agent.tools_set",
-      target: `agent:${agentId}`,
-      before: { grants: grantsBefore },
-      after: { grants: next.grants },
-    });
+    // Same rule the update path follows: the trail records changes, and the editor resubmits the
+    // whole set on every save of the Tools tab.
+    if (grantSetChanged(grantsBefore, next.grants)) {
+      await auditMutation(db, ctx, {
+        action: "agent.tools_set",
+        target: `agent:${agentId}`,
+        before: { grants: grantsBefore },
+        after: { grants: next.grants },
+      });
+    }
     return next;
   });
   // Heads-up for any open editor (other tab / another operator) — best-effort, metadata-only.

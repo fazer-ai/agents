@@ -101,6 +101,19 @@ function changedBlocks(
 // `{"a":2,"mmm":3,"zz":1}` produzem a mesma saída). Uma guarda para o bloco vazio foi escrita aqui
 // e a bateria de mutação mostrou que nenhum teste a alcança, porque nada pode alcançá-la.
 
+// Whether a replace-the-set write actually changed the set.
+//
+// The grants are compared as a SET and not as a list, because their order is not the operator's:
+// `replaceAgentToolSelections` is a `deleteMany` + `createMany`, so every save reassigns the ids the
+// read then orders by. Two submissions of the same set in a different order would otherwise record a
+// row whose two halves hold the same grants. Sorting by each entry's own serialization is a total
+// order by construction — no entry ties with another unless they are equal.
+export function grantSetChanged(before: unknown[], after: unknown[]): boolean {
+  const key = (xs: unknown[]) =>
+    JSON.stringify(xs.map((g) => JSON.stringify(g)).sort());
+  return key(before) !== key(after);
+}
+
 // Returns null when nothing changed: the trail records changes, and the console PATCHes a whole tab
 // on every save, so writing a row per apply would fill the trail with saves that did nothing.
 export function agentUpdateAudit(

@@ -152,6 +152,13 @@ describe("the audit snapshot is read under the write's lock", () => {
     ).toBe("locked");
   });
 
+  test("deleteAgent locks the row before reading the name it records", async () => {
+    const src = await Bun.file("src/modules/agents/service.ts").text();
+    expect(
+      lockedBeforeSnapshot(bodyOf(src, "deleteAgent"), "doomedRows[0]"),
+    ).toBe("locked");
+  });
+
   test("replaceAgentToolSelections locks the agent before reading the grants it records", async () => {
     const src = await Bun.file("src/modules/agents/service.ts").text();
     expect(
@@ -253,6 +260,54 @@ describe.skipIf(!dbUp)("the agent family records its own changes", () => {
     expect(got[0]?.after).toEqual(
       JSON.parse(JSON.stringify({ grants: view.grants })),
     );
+  });
+
+  test("resubmitting the same grant set leaves no row, in any order", async () => {
+    // The Tools tab resubmits the whole set on every save, and the order is not the operator's:
+    // this path is a deleteMany + createMany, so each save reassigns the ids the read orders by.
+    const agent = await seedAgent();
+    // One grant per source, so the two entries come from two sources — which is the only way the
+    // list can be reordered at all.
+    const set = [
+      { source: "NATIVE" as const, enabledTools: ["handoff_to_human"] },
+      { source: "RAG" as const, enabledTools: ["search_knowledge"] },
+    ];
+    await replaceAgentToolSelections(ctx(), BigInt(agent.id), set, appDb);
+    await clearAudit();
+
+    await replaceAgentToolSelections(ctx(), BigInt(agent.id), set, appDb);
+    expect(await rows()).toEqual([]);
+
+    await replaceAgentToolSelections(
+      ctx(),
+      BigInt(agent.id),
+      [...set].reverse(),
+      appDb,
+    );
+    expect(await rows()).toEqual([]);
+
+    // …and a set that genuinely differs still records.
+    await replaceAgentToolSelections(
+      ctx(),
+      BigInt(agent.id),
+      [{ source: "NATIVE" as const, enabledTools: ["handoff_to_human"] }],
+      appDb,
+    );
+    expect((await rows()).map((r) => r.action)).toEqual(["agent.tools_set"]);
+  });
+
+  test("the delete row names the agent under the lock that deletes it", async () => {
+    const agent = await seedAgent({ name: `doomed-${process.pid}` });
+    await clearAudit();
+
+    await deleteAgent(ctx(), BigInt(agent.id), appDb);
+
+    const got = await rows();
+    expect(got.map((r) => r.action)).toEqual(["agent.delete"]);
+    expect(got[0]?.before).toEqual({
+      id: agent.id,
+      name: `doomed-${process.pid}`,
+    });
   });
 
   test("importing an agent through the service leaves the import row", async () => {

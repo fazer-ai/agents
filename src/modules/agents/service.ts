@@ -357,9 +357,33 @@ export function assertSettingsToolPreconditions(
   }
   const before = storedPreconditionValues(stored);
   const now = storedPreconditionValues(settings);
-  const introduced = next.find((name) => now.get(name) !== before.get(name));
+  const introduced = next.find(
+    (name) =>
+      now.get(name) !== before.get(name) &&
+      !removesAStoredRule(name, now, before),
+  );
   if (introduced === undefined) return;
   throw new InvalidToolPreconditionError(introduced);
+}
+
+// A TOMBSTONE FOR A RULE THAT IS ACTUALLY THERE, which the catalog restriction must not block.
+//
+// The restriction is about what may be CREATED: outside the native catalog the exposed tool name is
+// not stable identity, so a rule written on one can follow the name onto another tool or stop
+// matching (issue #389). It is NOT about what may be removed — and a non-native rule can genuinely
+// exist, because an agent import copies the settings bag verbatim and the RUNTIME enforces whatever
+// name matches (only the write boundary filters by catalog). Refusing its tombstone left a caller
+// able to READ an active guard and unable to delete it.
+//
+// Both halves matter. A tombstone for a name with nothing stored under it is still refused: there is
+// nothing to delete, so accepting it would report success for a no-op — and that is exactly the
+// shape a caller sends while believing they had created something.
+function removesAStoredRule(
+  name: string,
+  now: Map<string, string>,
+  before: Map<string, string>,
+): boolean {
+  return now.get(name) === "null" && before.get(name) !== undefined;
 }
 
 // The raw entries, serialized, so "did this one change?" is one comparison. `undefined` for a name

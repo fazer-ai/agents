@@ -456,34 +456,55 @@ const modelFallback = z.looseObject({
 // (tests/modules/agent-settings-mcp-parity.test.ts) probes the readers rather than reading a list,
 // so what follows only has to keep its promise: type and choice, never size.
 
-const guardrailChecks = z.looseObject({
+// NOTE: THE TWO DIRECTIONS PUBLISH DIFFERENT FIELDS, because two of the checks only mean something about
+// a REPLY. `activeChecks` drops `promptAdherence` and `answerRelevance` whenever the direction is
+// `input`, and the generated-reply guidance is only read for `output` (prompts.ts). Publishing them
+// under `input` advertised three settings that store, read back through agent_settings_get, and do
+// nothing — configuration that reports success, which is the same failure `appointmentReminders` was
+// removed from this change for. The console has always gated them behind `dir === "output"`.
+const sharedChecks = {
   toxicity: z.boolean().optional(),
   unsafeContent: z.boolean().optional(),
   competitorMentions: z
     .boolean()
     .optional()
     .describe("matches the names in guardrails.competitors"),
-  promptAdherence: z.boolean().optional().describe("output direction only"),
+};
+
+const inputChecks = z.looseObject(sharedChecks);
+
+const outputChecks = z.looseObject({
+  ...sharedChecks,
+  promptAdherence: z.boolean().optional(),
   answerRelevance: z
     .boolean()
     .optional()
     .describe(
-      "output only, and OFF by default on purpose: it is the one check that can replace a CORRECT reply",
+      "OFF by default on purpose: it is the one check that can replace a CORRECT reply",
     ),
 });
 
-const guardrailDirection = z.looseObject({
+const directionCommon = {
   enabled: z.boolean().optional(),
-  checks: guardrailChecks.optional(),
   action: oneOf(GUARDRAIL_ACTIONS)
     .optional()
     .describe(
       "on a violation: template = send templateMessage verbatim; generated = guardrails writes a safe reply; silent = send nothing",
     ),
-  // NOTE: No length here, and that is the rule rather than an oversight: the reader CLIPS both of these
-  // (TEMPLATE_MESSAGE_MAX / GENERATION_PROMPT_MAX), and a bound copied here would turn a clip into a
-  // refusal — the same write would then succeed in the console and fail through MCP.
+  // NOTE: No length here, and that is the rule rather than an oversight: the reader CLIPS this
+  // (TEMPLATE_MESSAGE_MAX), and a bound copied here would turn a clip into a refusal — the same
+  // write would then succeed in the console and fail through MCP.
   templateMessage: z.string().optional(),
+};
+
+const guardrailInput = z.looseObject({
+  ...directionCommon,
+  checks: inputChecks.optional(),
+});
+
+const guardrailOutput = z.looseObject({
+  ...directionCommon,
+  checks: outputChecks.optional(),
   generationPrompt: z
     .string()
     .optional()
@@ -515,8 +536,8 @@ const guardrails = z.looseObject({
     .string()
     .optional()
     .describe("free text appended to every analysis prompt"),
-  input: guardrailDirection.optional().describe("screens the CUSTOMER message"),
-  output: guardrailDirection
+  input: guardrailInput.optional().describe("screens the CUSTOMER message"),
+  output: guardrailOutput
     .optional()
     .describe("screens the AGENT reply before it is sent"),
 });

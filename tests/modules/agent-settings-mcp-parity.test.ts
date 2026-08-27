@@ -4,6 +4,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { z } from "zod";
 import { NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
 import { readBehaviorSettings } from "@/modules/agents/behavior-settings";
+import { assertSettingsToolPreconditions } from "@/modules/agents/service";
 import { BEHAVIOR_PATCH_SHAPE } from "@/modules/agents/settings-schema";
 import { invalidToolPreconditions } from "@/modules/agents/tool-preconditions";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
@@ -349,14 +350,54 @@ describe("a tool precondition can be removed", () => {
     ).toEqual([]);
   });
 
-  test("but a tombstone on a name that could never be guarded is still refused", () => {
-    // Removal is not a way around the catalog restriction: a rule that could not have been written
-    // cannot be deleted either, and accepting it would report success for a no-op.
-    expect(
-      invalidToolPreconditions({
-        toolPreconditions: { mcp__crm__create_deal: null },
-      }),
-    ).toEqual(["mcp__crm__create_deal"]);
+  // ROUND 4 corrected this. Round 2 asserted the opposite — that a tombstone for a non-native name is
+  // refused like a rule for one — and the premise was wrong: a non-native precondition CAN exist,
+  // because an agent import copies the settings bag verbatim, and the runtime ENFORCES it (the
+  // reader does not filter by name, only the write boundary does). So MCP could read an active guard
+  // and had no way to remove it. The catalog restriction is about what may be CREATED.
+  test("a tombstone removes a non-native rule that is actually stored", () => {
+    expect(() =>
+      assertSettingsToolPreconditions(
+        { toolPreconditions: { mcp__crm__create_deal: null } },
+        {
+          toolPreconditions: {
+            mcp__crm__create_deal: {
+              kind: "attribute",
+              scope: "conversation",
+              key: "cpf",
+            },
+          },
+        },
+      ),
+    ).not.toThrow();
+  });
+
+  test("but a tombstone for a non-native name that is NOT stored is still refused", () => {
+    // Nothing to delete: accepting it would report success for a no-op, and it is also the shape a
+    // caller would send while believing they had created something.
+    expect(() =>
+      assertSettingsToolPreconditions(
+        { toolPreconditions: { mcp__crm__create_deal: null } },
+        { toolPreconditions: {} },
+      ),
+    ).toThrow();
+  });
+
+  test("and a non-native RULE is still refused, tombstone or not", () => {
+    expect(() =>
+      assertSettingsToolPreconditions(
+        {
+          toolPreconditions: {
+            mcp__crm__create_deal: {
+              kind: "attribute",
+              scope: "conversation",
+              key: "cpf",
+            },
+          },
+        },
+        { toolPreconditions: {} },
+      ),
+    ).toThrow();
   });
 
   test("an entry that is neither a condition nor a tombstone is still invalid", () => {
@@ -365,5 +406,57 @@ describe("a tool precondition can be removed", () => {
         toolPreconditions: { handoff_to_human: "nope" },
       }),
     ).toEqual(["handoff_to_human"]);
+  });
+});
+
+// ROUND 4. The console gates both of these behind `{dir === "output" && …}` and `generationPrompt` is
+// only read when `direction === "output"`, so publishing them under `input` advertised three
+// settings that store, read back and do nothing — the same failure `appointmentReminders` was
+// removed for, one level down.
+describe("the guardrail directions publish only what their direction uses", () => {
+  test("input does not advertise the output-only fields", async () => {
+    const published = await publishedProperties();
+    const input = published.guardrails?.input as
+      | { properties?: Record<string, unknown> }
+      | undefined;
+    const props = Object.keys(
+      (input?.properties?.checks as { properties?: Record<string, unknown> })
+        ?.properties ?? {},
+    );
+    expect(props).not.toContain("promptAdherence");
+    expect(props).not.toContain("answerRelevance");
+    expect(Object.keys(input?.properties ?? {})).not.toContain(
+      "generationPrompt",
+    );
+  });
+
+  test("output still advertises all of them", async () => {
+    const published = await publishedProperties();
+    const output = published.guardrails?.output as
+      | { properties?: Record<string, unknown> }
+      | undefined;
+    const props = Object.keys(
+      (output?.properties?.checks as { properties?: Record<string, unknown> })
+        ?.properties ?? {},
+    );
+    expect(props).toContain("promptAdherence");
+    expect(props).toContain("answerRelevance");
+    expect(Object.keys(output?.properties ?? {})).toContain("generationPrompt");
+  });
+
+  test("the shared checks are on both", async () => {
+    const published = await publishedProperties();
+    for (const dir of ["input", "output"]) {
+      const d = published.guardrails?.[dir] as
+        | { properties?: Record<string, unknown> }
+        | undefined;
+      const props = Object.keys(
+        (d?.properties?.checks as { properties?: Record<string, unknown> })
+          ?.properties ?? {},
+      );
+      expect(props).toContain("toxicity");
+      expect(props).toContain("unsafeContent");
+      expect(props).toContain("competitorMentions");
+    }
   });
 });

@@ -61,9 +61,20 @@ CREATE OR REPLACE FUNCTION public.fazerai_fleet_role()
             || '_' || substr(md5(current_database()::text), 1, 8))::name
   $fn$;
 
--- `scripts/db-bootstrap` is what owns roles and grants, and it creates this one too. It is repeated
--- here so that `prisma migrate deploy` run on its own does not fail on a missing role — the
--- policies below reference it by name, and a missing role is a hard error, not a warning.
+-- `scripts/db-bootstrap` is what owns roles, GRANTs and default privileges, and `.claude/rules/prisma.md`
+-- says so: none of that belongs in a migration. What is here is the minimum that rule cannot cover —
+-- `CREATE POLICY ... TO <role>` is a hard error on a role that does not exist, and the `migrate dev`
+-- SHADOW database is a fresh database bootstrap never touches. It is the same shape as the one
+-- exception that rule already names (the baseline's `CREATE EXTENSION IF NOT EXISTS vector`, kept so
+-- the shadow database can create `vector(...)` columns).
+--
+-- So: the role, and nothing else. No grants and no default privileges — without bootstrap the fleet
+-- path fails loudly on the first statement, which the documented boot order (bootstrap → migrate →
+-- serve) never reaches.
+--
+-- It has a cost, and it is measurable rather than hypothetical: every `migrate dev` run derives the
+-- role from ITS shadow database and dropping that database does not drop the role. The cleanup is in
+-- `.claude/rules/prisma.md`.
 DO $$
 DECLARE
   v_fleet name := public.fazerai_fleet_role();
@@ -72,15 +83,6 @@ BEGIN
     EXECUTE format(
       'CREATE ROLE %I NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE', v_fleet);
   END IF;
-  -- Same set the runtime role gets, and for the same reason: ALTER DEFAULT PRIVILEGES is scoped to
-  -- the role that runs it, so tables a later migration creates inherit these.
-  EXECUTE format('GRANT USAGE ON SCHEMA public TO %I', v_fleet);
-  EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO %I', v_fleet);
-  EXECUTE format('GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO %I', v_fleet);
-  EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA public'
-                 ' GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO %I', v_fleet);
-  EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA public'
-                 ' GRANT USAGE, SELECT ON SEQUENCES TO %I', v_fleet);
 END $$;
 
 -- 2. Rewrite every tenant policy, and give each table its fleet policy.
@@ -141,8 +143,11 @@ DO $$ BEGIN EXECUTE format(
   'CREATE POLICY fleet_super_admin ON "audit_logs" TO %I USING (true) WITH CHECK (true)',
   public.fazerai_fleet_role()); END $$;
 
--- 3. The migration's own positive control: one of each policy per table under RLS, or nothing here
--- ran the way it reads. A loop over an empty catalog completes successfully and silently.
+-- 3. The migration's own positive control: every table under RLS carries BOTH policies, asked per
+-- table rather than by counting. A loop over a catalog that does not look the way it assumed
+-- completes successfully and silently, and totals do not catch that — a renamed policy on one RLS
+-- table plus a `tenant_isolation` left on a NON-RLS table make the three counts agree while the real
+-- table stays unsplit. The set is what has to match, not its size.
 --
 -- Raising here is safe to do, and what happens next was measured rather than assumed, because a
 -- neighbouring migration (`20260825140100_delivery_conversation_ref`) states the opposite in its
@@ -160,24 +165,30 @@ DO $$ BEGIN EXECUTE format(
 -- tables and not others, which nothing downstream would report.
 DO $$
 DECLARE
-  n_rls    int;
-  n_tenant int;
-  n_fleet  int;
+  v_missing text;
+  v_rls     int;
 BEGIN
-  SELECT count(*) INTO n_rls
+  SELECT count(*) INTO v_rls
     FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
    WHERE n.nspname = 'public' AND c.relkind = 'r' AND c.relrowsecurity;
-  SELECT count(*) INTO n_tenant
-    FROM pg_policy p JOIN pg_class c ON c.oid = p.polrelid
+
+  SELECT string_agg(c.relname || ' (' || miss || ')', ', ' ORDER BY c.relname)
+    INTO v_missing
+    FROM pg_class c
     JOIN pg_namespace n ON n.oid = c.relnamespace
-   WHERE n.nspname = 'public' AND p.polname = 'tenant_isolation';
-  SELECT count(*) INTO n_fleet
-    FROM pg_policy p JOIN pg_class c ON c.oid = p.polrelid
-    JOIN pg_namespace n ON n.oid = c.relnamespace
-   WHERE n.nspname = 'public' AND p.polname = 'fleet_super_admin';
-  IF n_rls = 0 OR n_tenant <> n_rls OR n_fleet <> n_rls THEN
+    CROSS JOIN LATERAL (
+      SELECT string_agg(p.want, ' and ') AS miss
+        FROM (VALUES ('tenant_isolation'), ('fleet_super_admin')) AS p(want)
+       WHERE NOT EXISTS (
+         SELECT 1 FROM pg_policy pol
+          WHERE pol.polrelid = c.oid AND pol.polname = p.want)
+    ) m
+   WHERE n.nspname = 'public' AND c.relkind = 'r' AND c.relrowsecurity
+     AND m.miss IS NOT NULL;
+
+  IF v_rls = 0 OR v_missing IS NOT NULL THEN
     RAISE EXCEPTION
-      'RLS policy split did not land: % tables under RLS, % tenant_isolation, % fleet_super_admin',
-      n_rls, n_tenant, n_fleet;
+      'RLS policy split did not land: % tables under RLS, still missing: %',
+      v_rls, coalesce(v_missing, '(none — but no table is under RLS at all)');
   END IF;
 END $$;

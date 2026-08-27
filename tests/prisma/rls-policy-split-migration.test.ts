@@ -91,6 +91,17 @@ describe.skipIf(!dbUp)("the RLS policy split migration", () => {
   afterAll(async () => {
     if (su) {
       await su.query(`DROP DATABASE IF EXISTS ${PROBE_DB} WITH (FORCE)`);
+      // The role the migration created here, whose NAME carries the probe database. Dropping a
+      // database does not drop a role — measured on this cluster as 40 leftovers from earlier runs
+      // of this suite, which is the same accumulation `migrate dev` causes with its shadow database.
+      for (const { rolname } of (
+        await su.query<{ rolname: string }>(
+          "SELECT rolname FROM pg_roles WHERE rolname LIKE $1",
+          [`fazerai_fleet_%${process.pid}%`],
+        )
+      ).rows) {
+        await su.query(`DROP ROLE IF EXISTS "${rolname}"`);
+      }
       await su.end();
     }
   });
@@ -160,6 +171,25 @@ describe.skipIf(!dbUp)("the RLS policy split migration", () => {
     expect(thingsPolicy?.qual).toContain("(tenant_id =");
   });
 
+  // The shape that COUNTING misses, which is why the assertion is per table. Here the totals balance
+  // exactly — one RLS table whose policy has another name, and one NON-RLS table carrying a
+  // `tenant_isolation` that the loop skips and the count would happily include — so a check written
+  // as `n_tenant = n_rls` commits with a real table left unsplit.
+  test("refuses a drift whose totals happen to balance", async () => {
+    const failure = await applyMigration(`
+      ${OLD_POLICY("things", "tenant_id")}
+      CREATE TABLE strays (id bigserial PRIMARY KEY, tenant_id bigint NOT NULL);
+      ALTER TABLE strays ENABLE ROW LEVEL SECURITY;
+      CREATE POLICY some_other_name ON strays USING (true);
+      CREATE TABLE bystander (id bigserial PRIMARY KEY, tenant_id bigint NOT NULL);
+      CREATE POLICY tenant_isolation ON bystander USING (true);
+    `);
+    expect(failure).toContain("RLS policy split did not land");
+    expect(failure).toContain("strays");
+    // And it does NOT blame the table that is merely carrying a same-named policy without RLS.
+    expect(failure).not.toContain("bystander");
+  });
+
   // The positive control, and the reason this file exists: a table under RLS whose policy the loop
   // does not recognise is skipped, the loop reports success, and the schema is left half split. The
   // count assertion at the end of the migration is the only thing standing between that and a green
@@ -172,7 +202,9 @@ describe.skipIf(!dbUp)("the RLS policy split migration", () => {
       CREATE POLICY some_other_name ON strays USING (true);
     `);
     expect(failure).toContain("RLS policy split did not land");
-    expect(failure).toContain("4 tables under RLS");
-    expect(failure).toContain("3 tenant_isolation");
+    // Named per table, not counted: totals can agree while a real table stays unsplit (a renamed
+    // policy on one RLS table plus a `tenant_isolation` left on a NON-RLS table balances them out).
+    expect(failure).toContain("strays");
+    expect(failure).toContain("tenant_isolation and fleet_super_admin");
   });
 });

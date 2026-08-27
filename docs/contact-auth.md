@@ -375,7 +375,7 @@ served if and only if, at the moment it is read:
 | `grantTtlSeconds` has not elapsed | Time. The operator's declared staleness budget. |
 | It matches the mirrored **identity** (phone, email, operator `identifier`) | A MATCH rule. The endpoint answered about whoever those named, and the mirror rewrites them, clears included. |
 | It matches the **policy** (`url`, `credentialRef`, `includeMessageText`, `grantTtlSeconds`) | A MATCH rule. Those decide who answered and what was asked. |
-| The **credential** it was obtained with has not been rotated or deleted since | A MATCH rule, and the one that costs a second read (`vault_entries.updated_at`, metadata only — never a managed-OAuth refresh). `credentialRef` is a stable id, so it survives both, and the deletion case is the sharp one: a fresh check fails closed on an unreadable credential, while a stored verdict would skip that check and keep serving a gate the operator disarmed by removing its key. |
+| The **credential** it was obtained with has not been rotated or deleted since | Part of the policy fingerprint, and the one thing in it that costs a second read (`vault_entries.updated_at`, metadata only — never a managed-OAuth refresh, which resolving would be). `credentialRef` is a stable id, so it survives both, and the deletion case is the sharp one: a fresh check fails closed on an unreadable credential, while a stored verdict would skip that check and keep serving a gate the operator disarmed by removing its key. The revision is taken at the START of the check and used both to look a grant up and to store one, so a rotation landing while the endpoint is answering cannot be written into the fingerprint of a verdict obtained before it. |
 | This process holds no unconfirmed write about that contact | Fail-closed, see below. |
 
 And a grant is REMOVED only by a refusal, or by the verdict that replaces it. The distinction between
@@ -403,8 +403,10 @@ concurrently and can settle in either order. A verdict still answers the message
 but the STORAGE is ordered: an allow from a check that started before a refusal is older than that
 refusal however late it arrives, so it is not stored, and any row it would have replaced is dropped.
 
-Two things make that hold rather than usually hold. A refusal is remembered BEFORE its delete is
-attempted, so it is visible for the length of the database round trip rather than after it; and every
+Two things make that hold rather than usually hold. A refusal is remembered SYNCHRONOUSLY, before the
+queue is even entered, so it is visible for the length of the database round trip and for any wait in
+front of it — a refusal that has to queue behind another mutation is otherwise a refusal nobody can
+see for as long as that turn takes; and every
 mutation of one contact's row runs alone, in a queue keyed by that contact, so reading the ordering
 rule and acting on it is one step. Split in two, an allow that passed the check a moment before the
 refusal arrived goes on to write anyway, and the row comes back for the rest of the TTL.

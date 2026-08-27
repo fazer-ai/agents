@@ -799,6 +799,59 @@ describe.skipIf(!dbUp)("contact authorization: reusing a verdict", () => {
     expect(await grants()).toHaveLength(1);
   });
 
+  test("a refusal waiting for the queue is still visible to a reader", async () => {
+    const ep = endpoint(allowed, allowed, allowed);
+    // A committed row under the policy the reader will use.
+    await ask({ cfg: cfg(), ...ep });
+
+    // Something else holds this contact's queue: a write under a DIFFERENT policy, whose upsert has
+    // not committed yet. The row above is still the visible state, and the queue is busy. (Holding
+    // it with a write under the SAME policy would be no test at all: the upsert is inside the
+    // transaction, so nothing it writes is visible until the queue is released anyway.)
+    let holdingQueue: (() => void) | undefined;
+    const held = new Promise<void>((r) => {
+      holdingQueue = r;
+    });
+    const slowWriter = ask({
+      cfg: cfg({ grantTtlSeconds: 1800 }),
+      fetchImpl: ep.fetchImpl,
+      base: baseWithGrantHook(appDb, (m, delegate) =>
+        m === "upsert"
+          ? async (...args: unknown[]) => {
+              holdingQueue?.();
+              await Bun.sleep(300);
+              return delegate.upsert(...args);
+            }
+          : undefined,
+      ),
+    });
+    await held;
+
+    // The refusal arrives while that queue is held. Its DELETE has to wait its turn — but the FACT
+    // of the refusal must not, or for as long as the turn takes there is nothing for a reader to
+    // see, and the reader serves the very row this refusal is about to remove.
+    let refused: (() => void) | undefined;
+    const denialAnswered = new Promise<void>((r) => {
+      refused = r;
+    });
+    const denial = ask({
+      cfg: cfg({ mode: "perMessage" }),
+      fetchImpl: (async () => {
+        refused?.();
+        return denied();
+      }) as unknown as typeof fetch,
+    });
+    await denialAnswered;
+    await Bun.sleep(50);
+
+    // The reader's own retry of that refusal queues behind the writer, so it waits — for the writer,
+    // not for the network — and comes back having asked the endpoint. Un-marked, it would find a row
+    // that still looks valid and serve it without waiting for anything.
+    const reader = await ask({ cfg: cfg({ timeoutMs: 2000 }), ...ep });
+    expect(reader.reused).toBeFalsy();
+    await Promise.all([slowWriter, denial]);
+  });
+
   test("an older refusal finishing late does not overwrite a newer one", async () => {
     const key = { tenantId, agentId, contactId };
     const t1 = Date.now() - 3000;

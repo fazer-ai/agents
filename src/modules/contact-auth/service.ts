@@ -22,6 +22,7 @@ import {
   contactAuthPolicyHash,
   dropContactAuthGrant,
   readContactAuthGrant,
+  readCredentialStamp,
   retryUnconfirmedWrite,
   writeContactAuthGrant,
 } from "./grants";
@@ -147,10 +148,6 @@ export async function authorizeContact(
       // yes to. Read before the credential too, so a reuse costs neither the vault round-trip nor
       // the managed-OAuth refresh that a real ask would.
       const grantKey = { tenantId, agentId, contactId: contactDbId };
-      const fingerprints = {
-        identityHash: contactAuthIdentityHash({ phone, email, identifier }),
-        policyHash: contactAuthPolicyHash(cfg),
-      };
       // The deadline starts HERE, before the first step that can wait. The credential is resolved
       // under it because a managed-OAuth entry refreshes its token to produce it — a network call
       // with a ten-second ceiling of its own — and the stored-verdict read is under it because a
@@ -166,12 +163,32 @@ export async function authorizeContact(
         // modes: the refusal that failed to land usually happened under `perMessage`, which reads no
         // grants, so a retry that lived on the read path would never run for the mode that needs it.
         await retryUnconfirmedWrite(base, grantKey, ctrl.signal);
+        // The credential's own revision is part of the policy a grant is written under, so it is
+        // read at the START of the check and the same value is used to look a grant up and to store
+        // one. Read once here rather than twice: taken again after the endpoint answered, a rotation
+        // landing in between would be written into the fingerprint of a verdict obtained before it.
+        // Only under `once`, and only when there is a credential at all — `perMessage` neither reads
+        // nor writes grants, so it would be paying for a fingerprint nobody builds.
+        const fingerprints = {
+          identityHash: contactAuthIdentityHash({ phone, email, identifier }),
+          policyHash: contactAuthPolicyHash(
+            cfg,
+            cfg.mode === "once"
+              ? await readCredentialStamp(
+                  base,
+                  tenantId,
+                  cfg.credentialRef,
+                  ctrl.signal,
+                )
+              : null,
+          ),
+        };
         if (cfg.mode === "once") {
           const stored = await readContactAuthGrant(
             base,
             grantKey,
             fingerprints,
-            { signal: ctrl.signal, credentialRef: cfg.credentialRef },
+            { signal: ctrl.signal },
           );
           if (stored) return reusedVerdict(stored.context);
         }

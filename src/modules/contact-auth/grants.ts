@@ -47,9 +47,11 @@ import type { ContactAuthConfig } from "./settings";
 //   1. it has not expired                          — time, and the operator chose the budget;
 //   2. it matches the identity in force             — a MATCH rule, not a revocation;
 //   3. it matches the policy in force               — likewise;
-//   4. the credential it was obtained with has not changed or been deleted since — likewise, and the
-//      one rule that costs a second read, because `credentialRef` is a stable id that survives both;
-//   5. this process holds no unconfirmed write about that contact — fail-closed.
+//      The policy fingerprint carries the CREDENTIAL'S own revision, because `credentialRef` is a
+//      stable id that survives a rotation and a deletion alike, and a gate whose key was removed
+//      must not go on serving from a verdict obtained with it. That is the one rule that costs a
+//      second read;
+//   4. this process holds no unconfirmed write about that contact — fail-closed.
 //
 // And it is removed only by a refusal, or by the verdict that replaces it. Nothing else "drops" a
 // grant: 2 and 3 are questions, so a fingerprint that stops matching stops SERVING, and a value put
@@ -158,40 +160,6 @@ function refusedSince(key: GrantKey, since: number): boolean {
   return at !== undefined && at >= since;
 }
 
-// WHEN THE CREDENTIAL THE GRANT WAS OBTAINED WITH IS NO LONGER THE ONE IN FORCE. `credentialRef` is a
-// stable id, so rotating the secret behind it, or deleting the entry outright, leaves the policy
-// fingerprint matching a verdict that was obtained with a key the operator has since replaced or
-// revoked. The deletion case is the sharp one: a fresh check would fail closed on
-// `credential_unavailable`, and a stored verdict skips that check entirely, so a gate the operator
-// disarmed by removing its key would keep serving contacts for the rest of the TTL.
-//
-// Read as metadata, never resolved: this must not refresh a managed-OAuth token (a network call)
-// merely to decide whether a stored verdict still counts.
-async function credentialChangedSince(
-  base: PrismaClient,
-  tenantId: bigint,
-  ref: string,
-  writtenAt: Date,
-  signal?: AbortSignal,
-): Promise<boolean> {
-  if (!ref.startsWith("vault:")) return false;
-  let id: bigint;
-  try {
-    id = BigInt(ref.slice("vault:".length));
-  } catch {
-    return false;
-  }
-  const entry = await underSignalMaybe(
-    runScopedOn(base, sysCtx(tenantId), (db) =>
-      db.vaultEntry.findUnique({ where: { id }, select: { updatedAt: true } }),
-    ),
-    signal,
-  );
-  // Gone counts as changed: there is no key to ask with any more.
-  if (!entry) return true;
-  return entry.updatedAt.getTime() > writtenAt.getTime();
-}
-
 export function hasUnconfirmedWrite(key: GrantKey): boolean {
   return known.get(contactKey(key))?.unconfirmed === true;
 }
@@ -255,13 +223,59 @@ export function contactAuthIdentityHash(identity: GrantIdentity): string {
 // `mode` is not one of them either, and that one is a decision rather than an omission: it decides
 // who READS a grant, not who answered it, so grants survive a switch to `perMessage` (which is what
 // makes the unconditional drop-on-refusal at the call site necessary).
-export function contactAuthPolicyHash(cfg: ContactAuthConfig): string {
+//
+// `credentialStamp` is the vault entry's own revision, read at the start of the check (see
+// `readCredentialStamp`). It is IN the fingerprint rather than compared against the grant's write
+// time, and the difference is a race: a rotation landing between the resolve and the upsert leaves
+// the row written AFTER the rotation, so a comparison of instants reads it as current, while a
+// fingerprint built from the stamp this check actually used simply stops matching the next one.
+export function contactAuthPolicyHash(
+  cfg: ContactAuthConfig,
+  credentialStamp?: string | null,
+): string {
   return sha256([
     cfg.url,
     cfg.credentialRef,
     cfg.includeMessageText,
     cfg.grantTtlSeconds,
+    credentialStamp ?? null,
   ]);
+}
+
+// The vault entry's revision, or the marker for one that is not there. Metadata only: deciding
+// whether a stored verdict still counts must never refresh a managed-OAuth token, which resolving
+// the credential would. A missing entry deliberately produces a stamp of its own rather than null,
+// so a grant obtained with a credential that has since been deleted stops matching instead of
+// matching the shape of an agent that never had one.
+export async function readCredentialStamp(
+  base: PrismaClient,
+  tenantId: bigint,
+  ref: string | null,
+  signal?: AbortSignal,
+): Promise<string | null> {
+  if (!ref) return null;
+  if (!ref.startsWith("vault:")) return ref;
+  let id: bigint;
+  try {
+    id = BigInt(ref.slice("vault:".length));
+  } catch {
+    return ref;
+  }
+  try {
+    const entry = await underSignalMaybe(
+      runScopedOn(base, sysCtx(tenantId), (db) =>
+        db.vaultEntry.findUnique({
+          where: { id },
+          select: { updatedAt: true },
+        }),
+      ),
+      signal,
+    );
+    return entry ? String(entry.updatedAt.getTime()) : "missing";
+  } catch {
+    // Unreadable is not "unchanged": a stamp nobody could take must not let a stored verdict match.
+    return "unknown";
+  }
 }
 
 export interface GrantKey {
@@ -332,7 +346,6 @@ export async function readContactAuthGrant(
             policyHash: true,
             context: true,
             expiresAt: true,
-            updatedAt: true,
           },
         }),
       ),
@@ -348,18 +361,7 @@ export async function readContactAuthGrant(
       row.identityHash === fingerprints.identityHash &&
       row.policyHash === fingerprints.policyHash;
     if (!holds) return null;
-    if (
-      opts.credentialRef &&
-      (await credentialChangedSince(
-        base,
-        key.tenantId,
-        opts.credentialRef,
-        row.updatedAt,
-        opts.signal,
-      ))
-    ) {
-      return null;
-    }
+
     // Read back through the SAME reader the endpoint's answer went through, so a cap tightened later
     // applies to what is already stored instead of only to what arrives next.
     return { context: readAuthContext(row.context) };
@@ -478,12 +480,13 @@ export async function dropContactAuthGrant(
   // then deleted by that straggler, which costs an endpoint call it should not have had to make.
   // The signal therefore bounds what the CALLER waits for, and nothing else: the slot stays taken
   // until the statement settles.
+  // Remembered SYNCHRONOUSLY, before the queue is even entered. The mark is what an unqueued reader
+  // (the stored-verdict read) consults, and a refusal that waits its turn behind another mutation is
+  // a refusal nobody can see for as long as that turn takes — which is exactly the window a
+  // concurrent check needs to serve the row this refusal is about to remove. The DELETE stays
+  // serialized; only the fact of the refusal jumps the queue, and it is an assignment.
+  remember(key, { refusedAt: opts.refusedAt, unconfirmed: true });
   const settled = queuedForContact(key, async () => {
-    // Remembered BEFORE the delete is attempted, and marked unconfirmed for as long as it is in
-    // flight: the queue orders this contact's own writes, and this is what an unqueued reader (the
-    // stored-verdict read) sees while the statement runs. Recorded after, a refusal is invisible for
-    // the length of a database round trip, which is exactly the window an allow needs.
-    remember(key, { refusedAt: opts.refusedAt, unconfirmed: true });
     try {
       await deleteRow(base, key);
       remember(key, { unconfirmed: false });

@@ -977,7 +977,20 @@ function AgentEditor() {
     sent: Record<string, unknown>,
   ): void {
     const held = refusal.field;
-    if (held && Object.hasOwn(sent, held)) refusal.clear();
+    // The VALUE, not just the path. Since sent is read from the patch, it reports every path the bag
+    // carries -- and a Behavior save spreads the last-synced `settings`, so it carries
+    // `guardrails.customPolicy` holding the value that was STORED, not the edit the server refused.
+    // Presence alone would let that save answer for a refusal it never re-sent, and the Guardrails
+    // tab would go quiet with the invalid edit still unsaved.
+    //
+    // `at` is the comparison, reused rather than restated: it answers "is the held mark about THIS
+    // value", which is exactly the question, and it uses the same structural equality the mark does.
+    // The case this must keep clearing is the one the mark cannot see on its own -- the operator
+    // resubmits the same value after the server changes its mind (a duplicate name freed, a cap
+    // raised), and only a success can tell that apart from the refusal still standing.
+    if (held && Object.hasOwn(sent, held) && refusal.at(held, sent[held])) {
+      refusal.clear();
+    }
     setStandingRefusal((prev) => (prev?.section === section ? null : prev));
   }
 

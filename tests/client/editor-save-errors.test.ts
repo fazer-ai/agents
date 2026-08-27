@@ -43,6 +43,10 @@ describe("agent editor save errors", () => {
     const body = SRC.slice(start, SRC.indexOf("\n  }", start));
     expect(body).toContain("refusal.clear()");
     expect(body).toContain("Object.hasOwn(sent, held)");
+    // And the VALUE, not only the path. `sent` is read from the patch, so a Behavior save carries
+    // `guardrails.customPolicy` from the last-synced bag — the stored value, not the edit the server
+    // refused. Presence alone would let that save answer a refusal it never re-sent.
+    expect(body).toContain("refusal.at(held, sent[held])");
     // Never by tab or by target: both read the FIELD rather than the request.
     expect(body).not.toContain("editorTargetFor");
     // The banner half is scoped too, and by SECTION rather than by fields: a sentence with no mark

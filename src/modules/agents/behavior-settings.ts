@@ -108,7 +108,16 @@ export const BEHAVIOR_SETTINGS_KEYS = [
 export type BehaviorSettingsKey = (typeof BEHAVIOR_SETTINGS_KEYS)[number];
 
 // Normalize the whole behavior block from a raw settings bag (defaults + clamps applied).
-export function readBehaviorSettings(settings: unknown): BehaviorSettings {
+// `now` is threaded rather than left to each reader's own default for the reason
+// `readObservabilityConfig` states at its own signature: a caller that already holds an instant has
+// to use the SAME one for every read of it. Two calls of this function on one stored bag are not
+// otherwise guaranteed to agree — measured, 80ms apart across a `fullDetailUntil` expiry they differ
+// in two fields, because that reader nulls the deadline once the window closes as well as flipping
+// the derived flag.
+export function readBehaviorSettings(
+  settings: unknown,
+  now: Date = new Date(),
+): BehaviorSettings {
   return {
     debounce: readDebounceConfig(settings),
     stt: readSttConfig(settings),
@@ -126,7 +135,7 @@ export function readBehaviorSettings(settings: unknown): BehaviorSettings {
     channelRedirect: readChannelRedirectConfig(settings),
     guardrails: readGuardrailsConfig(settings),
     attributeContext: readAttributeContextConfig(settings),
-    observability: readObservabilityConfig(settings),
+    observability: readObservabilityConfig(settings, now),
     memory: readMemoryConfig(settings),
     modelFallback: readModelFallbackConfig(settings),
     kanban: readKanbanConfig(settings),

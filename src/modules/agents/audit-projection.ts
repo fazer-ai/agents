@@ -96,8 +96,10 @@ function same(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
-const CANONICAL: Partial<Record<AuditedAgentField, (v: unknown) => unknown>> = {
-  settings: (v) => jsonish(readBehaviorSettings(v)),
+const CANONICAL: Partial<
+  Record<AuditedAgentField, (v: unknown, now: Date) => unknown>
+> = {
+  settings: (v, now) => jsonish(readBehaviorSettings(v, now)),
   modelConfig: (v) => {
     if (v === null || typeof v !== "object" || Array.isArray(v)) return v;
     const src = v as Record<string, unknown>;
@@ -198,9 +200,9 @@ function residue(
   return out;
 }
 
-function canonical(field: AuditedAgentField, v: unknown): unknown {
+function canonical(field: AuditedAgentField, v: unknown, now: Date): unknown {
   const fn = CANONICAL[field];
-  return dropUnvouchableUrls(fn ? fn(v) : v);
+  return dropUnvouchableUrls(fn ? fn(v, now) : v);
 }
 
 // The settings row carries the blocks that moved, never the bag: it arrives whole from every door,
@@ -252,6 +254,10 @@ export function agentUpdateAudit(
   before: Record<string, unknown>,
   after: Record<string, unknown>,
 ): AgentUpdateAudit | null {
+  // ONE instant for both sides. A reader that consults the clock resolves the same stored bag two
+  // ways across a deadline expiry, so a no-op save could emit `agent.settings_set` and an unrelated
+  // update could carry a settings change nobody made.
+  const now = new Date();
   const changed: AuditedAgentField[] = [];
   const beforeProj: Record<string, unknown> = {};
   const afterProj: Record<string, unknown> = {};
@@ -259,8 +265,8 @@ export function agentUpdateAudit(
   for (const field of AUDITED_AGENT_FIELDS) {
     const rawB = jsonish(before[field]);
     const rawA = jsonish(after[field]);
-    const canonB = canonical(field, before[field]);
-    const canonA = canonical(field, after[field]);
+    const canonB = canonical(field, before[field], now);
+    const canonA = canonical(field, after[field], now);
     // Two questions, asked SEPARATELY and both recorded. The first is what the runtime will do
     // differently; the second is whether anything moved that no reader sees. One write can do both
     // at once — a `debounce.windowSeconds` edit alongside an unknown nested setting — and an answer

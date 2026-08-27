@@ -2,6 +2,8 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { agentUpdateAudit } from "@/modules/agents/audit-projection";
+import { readBehaviorSettings } from "@/modules/agents/behavior-settings";
 import {
   cloneAgent,
   createAgent,
@@ -126,8 +128,12 @@ export function lockedBeforeSnapshot(
 }
 
 function bodyOf(src: string, fn: string): string {
-  const start = src.indexOf(`export async function ${fn}(`);
-  if (start < 0) throw new Error(`${fn} not found`);
+  // Both spellings: the functions this file reads are a mix of `export function` and
+  // `export async function`, and anchoring on one of them threw rather than failing an assertion.
+  const start = [`export async function ${fn}(`, `export function ${fn}(`]
+    .map((a) => src.indexOf(a))
+    .find((i) => i >= 0);
+  if (start === undefined) throw new Error(`${fn} not found`);
   const next = src.indexOf("\nexport ", start + 1);
   return src.slice(start, next < 0 ? undefined : next);
 }
@@ -167,6 +173,64 @@ describe("the audit snapshot is read under the write's lock", () => {
         "readGrantSet(db, agentId)",
       ),
     ).toBe("locked");
+  });
+});
+
+describe("the two snapshots are canonicalized at ONE instant", () => {
+  // The phantom row this prevents is a race — the window is the gap between two synchronous calls —
+  // so what is asserted here is the MECHANISM it rests on, deterministically: that the reader really
+  // does resolve one stored bag two ways across a deadline, and that giving it a single instant is
+  // what makes the two sides agree.
+  const bag = {
+    observability: {
+      logToolValues: true,
+      fullDetailUntil: new Date(1_700_000_000_000).toISOString(),
+    },
+  };
+  const open = new Date(1_699_999_999_000);
+  const closed = new Date(1_700_000_001_000);
+
+  test("one stored bag resolves two ways across the expiry", () => {
+    const a = JSON.stringify(readBehaviorSettings(bag, open).observability);
+    const b = JSON.stringify(readBehaviorSettings(bag, closed).observability);
+    expect(a).not.toBe(b);
+    // Two fields move, not one: the reader nulls the deadline as well as flipping the derived flag.
+    expect(readBehaviorSettings(bag, open).observability.fullDetail).toBe(true);
+    expect(
+      readBehaviorSettings(bag, closed).observability.fullDetailUntil,
+    ).toBeNull();
+  });
+
+  test("the same instant makes the two sides agree", () => {
+    for (const at of [open, closed]) {
+      expect(JSON.stringify(readBehaviorSettings(bag, at))).toBe(
+        JSON.stringify(readBehaviorSettings(bag, at)),
+      );
+    }
+  });
+
+  test("the clock is read ONCE for the whole comparison", async () => {
+    // Structural, and for the same reason the lock ordering below is: the consequence is a race
+    // whose window is the gap between two synchronous calls, so a behavioural test would pass on the
+    // broken code every time. Measured — replacing the shared instant with a fresh one per side
+    // fails no test, which is exactly why this one reads the source instead.
+    const src = Bun.file("src/modules/agents/audit-projection.ts");
+    const body = bodyOf(await src.text(), "agentUpdateAudit");
+    const clockReads = (b: string) =>
+      b
+        .split("\n")
+        .filter((l) => !l.trim().startsWith("//"))
+        .join("\n")
+        .split("new Date()").length - 1;
+    expect(clockReads(body)).toBe(1);
+    // Positive control: the shape this rules out, and a comment that must not count as one.
+    expect(clockReads("const a = new Date(); const b = new Date();")).toBe(2);
+    expect(clockReads("// new Date() in prose\nconst a = new Date();")).toBe(1);
+  });
+
+  test("an unchanged bag yields no audit, whichever side of the expiry it is read on", () => {
+    const row = { settings: bag } as Record<string, unknown>;
+    expect(agentUpdateAudit(row, row)).toBeNull();
   });
 });
 

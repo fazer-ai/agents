@@ -356,6 +356,30 @@ async function provisionFleetRole(
     },
   );
 
+  // EXECUTE on the resolver, to the RUNTIME role: `asSuperAdmin` calls it on every cross-tenant
+  // statement. Functions carry EXECUTE for PUBLIC by default, so this is a no-op on an ordinary
+  // install and the whole difference on one that revoked that — measured, the call then dies with
+  // `permission denied for function fazerai_fleet_role`. Best-effort and conditional: on a FIRST
+  // boot this runs before `migrate deploy` has created the function, and the default covers that
+  // boot until the next one makes it explicit.
+  const fnPresent = (
+    await client.query<{ present: boolean }>(
+      "SELECT to_regprocedure('public.fazerai_fleet_role()') IS NOT NULL AS present",
+    )
+  ).rows[0]?.present;
+  if (fnPresent) {
+    try {
+      await client.query(
+        `GRANT EXECUTE ON FUNCTION public.fazerai_fleet_role() TO ${ident}`,
+      );
+    } catch (err) {
+      console.warn(
+        `db-bootstrap: could not grant EXECUTE on public.fazerai_fleet_role() to "${role}" ` +
+          `(${message(err)}); every cross-tenant call would fail on it`,
+      );
+    }
+  }
+
   for (const grant of [
     `GRANT USAGE ON SCHEMA public TO ${fleet}`,
     `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ${fleet}`,

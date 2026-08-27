@@ -151,6 +151,15 @@ BEGIN
       v_fleet, v_priv, quote_ident(v_fleet), quote_ident(v_fleet);
   END IF;
 
+  -- EXECUTE on the resolver, to the RUNTIME role: asSuperAdmin calls it on every cross-tenant
+  -- statement. Functions carry EXECUTE for PUBLIC by default, so this is a no-op on an ordinary
+  -- install and the whole difference on one that revoked that (measured: the call dies with
+  -- `permission denied for function fazerai_fleet_role`). Conditional, because on a FIRST run this
+  -- script executes before the migration that creates the function.
+  IF to_regprocedure('public.fazerai_fleet_role()') IS NOT NULL THEN
+    EXECUTE format('GRANT EXECUTE ON FUNCTION public.fazerai_fleet_role() TO %I', v_role);
+  END IF;
+
   EXECUTE format('GRANT USAGE ON SCHEMA public TO %I', v_fleet);
   EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO %I', v_fleet);
   EXECUTE format('GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO %I', v_fleet);

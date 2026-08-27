@@ -45,6 +45,13 @@ const INVARIANTS: Array<{
     sql: /INHERITS/,
   },
   {
+    // Functions carry EXECUTE for PUBLIC by default, so this is a no-op on an ordinary install and
+    // the whole difference on one that revoked it — asSuperAdmin calls the resolver every time.
+    what: "grants EXECUTE on the resolver to the runtime role",
+    ts: /GRANT EXECUTE ON FUNCTION public\.fazerai_fleet_role\(\) TO \$\{ident\}/,
+    sql: /GRANT EXECUTE ON FUNCTION public\.fazerai_fleet_role\(\) TO %I/,
+  },
+  {
     what: "refuses a runtime role that cannot SET ROLE into it",
     ts: /cannot SET ROLE to/,
     sql: /cannot SET ROLE to/,

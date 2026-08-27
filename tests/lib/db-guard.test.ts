@@ -126,6 +126,10 @@ describe.skipIf(!dbUp)("assertRuntimeRoleIsNotSuperuser", () => {
       await db.$executeRawUnsafe(
         `REVOKE ALL ON DATABASE "${dbName(suUrl as string)}" FROM ${SAFE_ROLE}`,
       );
+      // Every privilege it accumulated in THIS database — the fleet-role membership and the EXECUTE
+      // grant the tests above hand it — or the DROP below answers `2BP01`, "cannot be dropped
+      // because some objects depend on it".
+      await db.$executeRawUnsafe(`DROP OWNED BY ${SAFE_ROLE} CASCADE`);
       await db.$executeRawUnsafe(`DROP ROLE IF EXISTS ${SAFE_ROLE}`);
     });
     await suDb.$disconnect();
@@ -154,6 +158,38 @@ describe.skipIf(!dbUp)("assertRuntimeRoleIsNotSuperuser", () => {
   // changes, so the check above sees nothing: the role stays NOSUPERUSER and NOBYPASSRLS through
   // both arms below, and only `pg_has_role(..., 'USAGE')` moves.
   describe("membership in the fleet role", () => {
+    // NOTE: the same refusal reached the other way. Without EXECUTE on the resolver every
+    // cross-tenant statement dies on the function call — and before this, the guard itself threw a
+    // raw driver error that the boot path read as "DB unavailable?" and warned past, so the process
+    // served with its front door shut. Asked of the catalog, so the guard never makes the call it
+    // is checking.
+    test("no EXECUTE on the resolver is refused, not read as an outage", async () => {
+      await suDb.$executeRawUnsafe(
+        `REVOKE EXECUTE ON FUNCTION ${FLEET_ROLE_FN} FROM PUBLIC`,
+      );
+      try {
+        const err = await assertRuntimeRoleIsNotSuperuser(tmp as PrismaClient, {
+          allow: true,
+        }).then(
+          () => null,
+          (e: unknown) => e as Error,
+        );
+        expect(err).toBeInstanceOf(FleetRoleUnreachableError);
+        expect(err?.message).toContain("GRANT EXECUTE ON FUNCTION");
+        // The repair, run, and the guard passes again.
+        await suDb.$executeRawUnsafe(
+          `GRANT EXECUTE ON FUNCTION ${FLEET_ROLE_FN} TO ${SAFE_ROLE}`,
+        );
+        await expect(
+          assertRuntimeRoleIsNotSuperuser(tmp as PrismaClient, { allow: true }),
+        ).resolves.toBeUndefined();
+      } finally {
+        await suDb.$executeRawUnsafe(
+          `GRANT EXECUTE ON FUNCTION ${FLEET_ROLE_FN} TO PUBLIC`,
+        );
+      }
+    });
+
     // NOTE: refused BEFORE the ALLOW_SUPERUSER_RUNTIME branch, and `allow: true` is passed to prove
     // it. That flag says "I accept that RLS may be a no-op on this connection" — a statement about
     // isolation. Not being able to enter the fleet role is a different thing: the process would

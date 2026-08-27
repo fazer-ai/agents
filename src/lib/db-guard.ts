@@ -117,11 +117,25 @@ interface FleetRow {
 
 // The existence question, on its own connection round trip and with no reference to the function
 // itself — which is the whole point: naming it in the same statement is what fails to parse.
-async function client_hasFleetFunction(db: PrismaClient): Promise<boolean> {
-  const rows = await db.$queryRawUnsafe<Array<{ present: boolean }>>(
-    `SELECT to_regprocedure('${FLEET_ROLE_FN}') IS NOT NULL AS present`,
+//
+// And EXECUTE, asked of the catalog rather than by calling it. Functions carry EXECUTE for PUBLIC by
+// default, but an installation that revoked that leaves the runtime role unable to call this one:
+// measured, `asSuperAdmin` then dies with `permission denied for function fazerai_fleet_role` and
+// this guard threw a raw driver error that the boot path read as an outage and warned past.
+async function fleetFunctionAccess(
+  db: PrismaClient,
+): Promise<{ present: boolean; executable: boolean }> {
+  const rows = await db.$queryRawUnsafe<
+    Array<{ present: boolean; executable: boolean }>
+  >(
+    `SELECT to_regprocedure('${FLEET_ROLE_FN}') IS NOT NULL AS present,
+            COALESCE(has_function_privilege(current_user, '${FLEET_ROLE_FN}', 'EXECUTE'), false)
+              AS executable
+       WHERE to_regprocedure('${FLEET_ROLE_FN}') IS NOT NULL
+     UNION ALL
+     SELECT false, false WHERE to_regprocedure('${FLEET_ROLE_FN}') IS NULL`,
   );
-  return rows[0]?.present === true;
+  return rows[0] ?? { present: false, executable: false };
 }
 
 export async function assertRuntimeRoleIsNotSuperuser(
@@ -170,8 +184,15 @@ export async function assertRuntimeRoleIsNotSuperuser(
     can_set_role: false,
     misnamed_fleet_policies: null,
   };
-  const hasFn = await client_hasFleetFunction(db);
-  const fleet: FleetRow = hasFn
+  const fn = await fleetFunctionAccess(db);
+  if (fn.present && !fn.executable) {
+    throw new FleetRoleUnreachableError(
+      "current_user",
+      FLEET_ROLE_FN,
+      `GRANT EXECUTE ON FUNCTION ${FLEET_ROLE_FN} TO CURRENT_USER;`,
+    );
+  }
+  const fleet: FleetRow = fn.present
     ? ((
         await db.$queryRawUnsafe<FleetRow[]>(`
       SELECT

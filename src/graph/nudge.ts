@@ -125,6 +125,11 @@ export interface AgentNudge {
 // inside one window: they differ only in their instructions, and the second alert would say what the
 // first already said.
 export function nudgeOccasionKey(
+  // THE ACCOUNT THE CONVERSATION ID BELONGS TO. Chatwoot conversation ids are account-local, so a
+  // tenant connected to two Chatwoot instances has two different conversations numbered the same;
+  // without this, an identical follow-up step on each would share one two-hour window and the second
+  // refusal would lose its row and its alert. Every caller already parsed it out of the thread id.
+  instanceId: bigint,
   conversationId: number,
   nudge: AgentNudge,
 ): string {
@@ -138,7 +143,7 @@ export function nudgeOccasionKey(
       .filter(([, v]) => v != null)
       .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
   );
-  return `nudge:${conversationId}:${JSON.stringify([
+  return `nudge:${instanceId}:${conversationId}:${JSON.stringify([
     nudge.source,
     nudge.kind ?? null,
     nudge.step ?? null,
@@ -633,7 +638,7 @@ export async function runAgentNudge(
   // unchanging fact, not eight refusals. Windowed to the ladder it has to outlast, and keyed by the
   // occasion itself rather than by the conversation, which two independent jobs share.
   announceSpendCeiling(flow, ceiling, "inbox", tenantId, {
-    key: nudgeOccasionKey(conversationId, params.nudge),
+    key: nudgeOccasionKey(instanceId, conversationId, params.nudge),
     windowMs: NUDGE_RETRY_BACKOFF_MS * NUDGE_RETRY_LIMIT,
   });
   if (ceiling.state === "over") {

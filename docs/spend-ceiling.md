@@ -133,6 +133,11 @@ A refusal says that **spend** was what stood in the way, so it is asked only whe
 actually next: after everything that would have stopped the call anyway, and immediately before the
 call. Three shapes, all the same rule:
 
+- **an agent that cannot run.** `agent.enabled` is the operator's switch, not the whole question:
+  `loadAgentConfig` also answers null when the agent row is gone or its model `credentialRef` no
+  longer resolves, and the turn then returns `agent-unavailable` before a model is built. The webhook
+  gate asks it on the refusing branch, with `skipExperiment` so a probe cannot enrol a turn that is
+  not going to run.
 - **a file this provider cannot read.** The extraction returns `unsupported` in a month with budget
   to spare, so answering `429` (playground) or a `spend_ceiling` skip (inbox) in a spent one reports
   a refusal that never happened and sends the operator to look at a budget over a file that would
@@ -285,7 +290,9 @@ own, and neither is traffic:
 - **The same message, asked twice.** Chatwoot fans an incoming message to the conversation's
   assigned agent bot *and* to the inbox's, so two deliveries run concurrently under two ids and
   neither knows about the other. The webhook gate therefore keys its announcement by the Chatwoot
-  message id. Two *different* messages stay two lines, because each is a customer left unanswered
+  message id **and the instance**: message ids are account-local, so a tenant running two Chatwoot
+  deployments has two different customers' messages numbered the same, and a key without the account
+  would hand the second one the first's window. Two *different* messages stay two lines, because each is a customer left unanswered
   and the count of refusals is what an operator reads off the Logs page.
 - **The same burst, retried.** Advancing the watermark is the last thing a refusing debounce flush
   does, and it is a database write: a flush that says its piece and then dies is re-pended by the
@@ -298,8 +305,9 @@ own, and neither is traffic:
   temporary by construction: one follow-up that could not go out paged the alert channels eight
   times, and fifty pending jobs paged them four hundred. `runAgentNudge` sizes the window to that
   ladder and keys it by the **occasion** rather than by the conversation, which independent jobs
-  share: `nudgeOccasionKey` reads the nudge descriptor the caller already writes (`source`, `kind`,
-  `step`, `refs`, `occasionId`), so an appointment reminder refused an hour after an inactivity
+  share: `nudgeOccasionKey` takes the **instance** — conversation ids are account-local for the same
+  reason message ids are — and reads the nudge descriptor the caller already writes (`source`,
+  `kind`, `step`, `refs`, `occasionId`), so an appointment reminder refused an hour after an inactivity
   follow-up keeps its own row. Derived from the descriptor rather than threaded in, because a
   parameter three callers must remember is the one the fourth forgets. `occasionId` is what a caller
   whose descriptor says none of the rest uses to name the occasion outright: an **inbound** nudge

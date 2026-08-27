@@ -16,6 +16,7 @@ import {
 import { isTurnInFlight } from "@/graph/inflight";
 import type { IngestRole } from "@/graph/ingest";
 import { armIngest } from "@/graph/ingest-job";
+import { loadAgentConfig } from "@/graph/prepare";
 import { type RuntimeDeps, runAgentTurn } from "@/graph/runtime";
 import { threadBusyForResetOn, turnOwnsThread } from "@/graph/thread-claim";
 import { AppError, UnauthorizedError } from "@/lib/errors";
@@ -2587,6 +2588,39 @@ async function maybeConsumeCommandOrGate(params: {
         );
         return true;
       }
+      // AND THE AGENT HAS TO BE RUNNABLE FOR THE BUDGET TO BE WHAT STOPPED IT. `ctx.agentEnabled`
+      // is the operator's switch and not the whole question: `loadAgentConfig` also returns null
+      // when the agent row is gone, and when the model `credentialRef` no longer resolves (deleted
+      // from the vault, or a NAME stored where a `vault:<id>` belongs). In both cases `runAgentTurn`
+      // returns `agent-unavailable` before a model is built, so the same message under a ceiling
+      // with room is already unanswered — refusing here would tell the customer and the operator
+      // that a budget silenced an agent that could not have spoken anyway, and send them to raise a
+      // number that changes nothing.
+      //
+      // Read only on the refusing branch, so the ordinary message pays nothing for it, and asked of
+      // the SAME function the turn asks rather than a second copy of its rules.
+      // `skipExperiment` because resolving an A/B variant INSERTS the thread's assignment: a probe
+      // must not enrol a turn that is not going to run.
+      const runnable = await runScopedOn(base, sysCtx(tenantId), (db) =>
+        loadAgentConfig(
+          db,
+          {
+            tenantId,
+            instanceId,
+            conversationId,
+            agentId: ctx.agentId as bigint,
+            threadId: chatwootThreadId(tenantId, instanceId, conversationId),
+          },
+          { skipExperiment: true },
+        ),
+      ).catch(() => null);
+      if (!runnable) {
+        logger.info(
+          "chatwoot: spend ceiling reached (conv=%s) — but the agent is not runnable, so the silence is not the budget's",
+          String(conversationId),
+        );
+        return false;
+      }
     }
     announceSpendCeiling(
       {
@@ -2609,10 +2643,14 @@ async function maybeConsumeCommandOrGate(params: {
       // below is already single-flighted per conversation; this is the same fan-out reaching the
       // line thirty lines above it. Keyed by the message the delivery carries, so nothing about a
       // DIFFERENT message can be swallowed with it.
+      // The INSTANCE is part of the message's identity: Chatwoot message ids are account-local, so
+      // a tenant connected to two Chatwoot instances has two different messages numbered the same,
+      // and a key without it would hand the second one the first's window — one refused customer
+      // losing their row and their alert, which is the exact invariant this key exists to keep.
       n.message?.id == null
         ? undefined
         : {
-            key: `message:${n.message.id}`,
+            key: `message:${instanceId}:${n.message.id}`,
             windowMs: SPEND_CEILING_MESSAGE_WINDOW_MS,
           },
     );

@@ -106,7 +106,7 @@ describe("nextNudgeRetry", () => {
 // the same conversation carries independent jobs, and collapsing them loses the second one's row and
 // its alert entirely.
 describe("the occasion a nudge refusal belongs to", () => {
-  const key = (nudge: AgentNudge) => nudgeOccasionKey(77, nudge);
+  const key = (nudge: AgentNudge) => nudgeOccasionKey(3n, 77, nudge);
 
   test("the same job asked twice is one occasion", () => {
     const job = { source: "followup", kind: "inactivity", step: 2 };
@@ -181,6 +181,19 @@ describe("the occasion a nudge refusal belongs to", () => {
   // window.
   test("the conversation is part of the identity", () => {
     const job = { source: "followup", kind: "inactivity", step: 1 };
-    expect(nudgeOccasionKey(77, job)).not.toBe(nudgeOccasionKey(78, job));
+    expect(nudgeOccasionKey(3n, 77, job)).not.toBe(
+      nudgeOccasionKey(3n, 78, job),
+    );
+  });
+
+  // ...AND SO IS THE ACCOUNT THE NUMBER CAME FROM. Chatwoot conversation ids are account-local, so a
+  // tenant connected to two Chatwoot instances has two different conversations numbered 77, and the
+  // identical follow-up step on each is two occasions. Without this they shared one two-hour window
+  // and the second refusal lost its row and its alert.
+  test("the Chatwoot instance is part of the identity", () => {
+    const job = { source: "followup", kind: "inactivity", step: 1 };
+    expect(nudgeOccasionKey(3n, 77, job)).not.toBe(
+      nudgeOccasionKey(4n, 77, job),
+    );
   });
 });

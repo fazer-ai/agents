@@ -57,6 +57,8 @@ const OVER_COPY = "Estamos com o atendimento automático pausado agora.";
 let tenantId = 0n;
 let instanceId = 0n;
 let inboxDbId = 0n;
+let instance2Id = 0n;
+let inbox2DbId = 0n;
 let agentId = 0n;
 
 interface Sent {
@@ -122,15 +124,15 @@ async function spend(source: string, prompt: number, completion = 0) {
   });
 }
 
-async function seedConversation(convId: number) {
+async function seedConversation(convId: number, onSecond = false) {
   await suDb.conversation.create({
     data: {
       tenantId,
-      chatwootInstanceId: instanceId,
-      inboxId: inboxDbId,
+      chatwootInstanceId: onSecond ? instance2Id : instanceId,
+      inboxId: onSecond ? inbox2DbId : inboxDbId,
       chatwootConversationId: convId,
       status: "pending",
-      threadId: `${tenantId}:${instanceId}:${convId}`,
+      threadId: `${tenantId}:${onSecond ? instance2Id : instanceId}:${convId}`,
       lastEventAt: new Date(Date.now() - 2 * 60_000),
       lastInboundAt: new Date(Date.now() - 3 * 60_000),
     },
@@ -148,6 +150,9 @@ async function deliverCustomerMessage(params: {
   // agent bot and to the inbox's. The delivery row stays unique either way, because its id is the
   // sequence and not the message.
   messageId?: number;
+  // Deliver on the tenant's SECOND Chatwoot account instead of the first. Only the multi-instance
+  // tests pass it; every other caller keeps the single-account shape it always had.
+  onSecond?: boolean;
 }): Promise<void> {
   seq += 1;
   const n = normalizeChatwootEvent({
@@ -175,10 +180,11 @@ async function deliverCustomerMessage(params: {
     },
   });
   if (!n) throw new Error("unreachable: the fixture is a valid event");
+  const inst = params.onSecond ? instance2Id : instanceId;
   const delivery = await suDb.chatwootWebhookDelivery.create({
     data: {
       tenantId,
-      chatwootInstanceId: instanceId,
+      chatwootInstanceId: inst,
       deliveryId: `sc-${process.pid}-${params.convId}-${seq}`,
       event: "message_created",
       status: "PENDING",
@@ -187,9 +193,9 @@ async function deliverCustomerMessage(params: {
   });
   await processChatwootDelivery({
     tenantId,
-    instanceId,
+    instanceId: inst,
     deliveryRowId: delivery.id,
-    agentBotId: 31,
+    agentBotId: params.onSecond ? 41 : 31,
     normalized: n,
     base: appDb,
     deps: {
@@ -208,9 +214,9 @@ async function deliverCustomerMessage(params: {
 // The gate's line. `emitFlowEvent` returns before its row exists, so the write is SETTLED rather
 // than polled for (#375): a poll would answer the "is it there" cases and spend its whole timeout
 // on the one case that asserts a line is ABSENT, which is the assertion below that matters most.
-async function ceilingRows(convId: number) {
+async function ceilingRows(convId: number, onSecond = false) {
   await settleFlowEvents();
-  const threadId = `${tenantId}:${instanceId}:${convId}`;
+  const threadId = `${tenantId}:${onSecond ? instance2Id : instanceId}:${convId}`;
   return suDb.executionLog.findMany({
     where: { tenantId, threadId, stage: "spend_ceiling" },
     select: { level: true, status: true, detail: true },
@@ -273,6 +279,42 @@ describe.skipIf(!dbUp)("the spend ceiling (webhook e2e)", () => {
       select: { id: true },
     });
     inboxDbId = ib.id;
+
+    // A SECOND CHATWOOT ACCOUNT for the same tenant, which is an ordinary shape (one operator, two
+    // Chatwoot deployments) and the one that makes account-local ids collide: conversation and
+    // message numbers restart per account, so the SAME numbers exist on both sides.
+    const inst2 = await seedChatwootInstance(suDb, {
+      tenantId,
+      accountId: 61,
+      baseUrl: "https://203.0.113.31:19",
+      adminToken: encryptJson("ADMIN"),
+    });
+    instance2Id = inst2.id;
+    await suDb.chatwootAgentBot.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instance2Id,
+        agentId,
+        chatwootAgentBotId: 41,
+        accessToken: encryptJson(BOT_TOKEN),
+        webhookSecret: encryptJson("SECRET"),
+        webhookRouteTokenHash: `scg-${process.pid}-41`,
+        name: "bot2",
+      },
+    });
+    const ib2 = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instance2Id,
+        // The same inbox NUMBER on purpose: it is account-local too, and the unique key is
+        // (tenant, instance, inbox), so this is what a real second account looks like.
+        chatwootInboxId: INBOX,
+        name: "Com teto 2",
+        agentId,
+      },
+      select: { id: true },
+    });
+    inbox2DbId = ib2.id;
   });
 
   beforeEach(async () => {
@@ -418,6 +460,87 @@ describe.skipIf(!dbUp)("the spend ceiling (webhook e2e)", () => {
     expect(asks).toBe(2);
     expect(await ceilingRows(9415)).toEqual([]);
     expect(s.publicOn(9415)).toEqual([]);
+  });
+
+  // A BUDGET CAN ONLY BE WHAT SILENCED AN AGENT THAT COULD OTHERWISE HAVE SPOKEN. `agent.enabled`
+  // is the operator's switch and not the whole question: `loadAgentConfig` also answers null when
+  // the model `credentialRef` no longer resolves, and the turn then returns `agent-unavailable`
+  // before a model is built. The same message under a ceiling with room is already unanswered, so a
+  // refusal here would tell the customer and the operator that a budget did it, and send them to
+  // raise a number that changes nothing.
+  test("an agent that cannot run is not silenced by the budget", async () => {
+    await setCeiling({
+      enabled: true,
+      monthlyInboxTokens: 100,
+      overCeilingMessage: OVER_COPY,
+    });
+    await spend("inbox", 500);
+    await seedConversation(9417);
+    const saved = await suDb.agent.findUniqueOrThrow({
+      where: { id: agentId },
+      select: { modelConfig: true },
+    });
+    const s = stubChatwoot();
+    try {
+      // A credential that does not resolve: the ref is well-formed and points at nothing, which is
+      // what a deleted vault entry leaves behind.
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: {
+          modelConfig: {
+            ...(saved.modelConfig as object),
+            credentialRef: "vault:999999999",
+          },
+        },
+      });
+      await deliverCustomerMessage({ convId: 9417, makeClient: s.makeClient });
+      expect(s.publicOn(9417)).toEqual([]);
+      expect(s.statusToggles.filter(([c]) => c === 9417)).toEqual([]);
+      expect(s.notesOn(9417)).toEqual([]);
+      expect(await ceilingRows(9417)).toEqual([]);
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { modelConfig: saved.modelConfig as object },
+      });
+    }
+    // The control, on the SAME blown ceiling with the credential restored: this one IS refused, so
+    // the silence above measures the agent and not a gate that stopped running.
+    await seedConversation(9418);
+    const ok = stubChatwoot();
+    await deliverCustomerMessage({ convId: 9418, makeClient: ok.makeClient });
+    expect(ok.publicOn(9418).map((m) => m.content)).toEqual([OVER_COPY]);
+    expect(await ceilingRows(9418)).toHaveLength(1);
+  });
+
+  // TWO ACCOUNTS, TWO MESSAGES THAT HAPPEN TO SHARE A NUMBER. Chatwoot ids are account-local, so a
+  // tenant running two Chatwoot deployments has message 8801 on each, and they are two different
+  // customers. A refusal key without the instance handed the second one the first's window: one
+  // customer refused, with no row on the Logs page and no alert, which is the exact invariant the
+  // key exists to keep.
+  test("two accounts' messages that share a number are two refusals", async () => {
+    await setCeiling({
+      enabled: true,
+      monthlyInboxTokens: 100,
+      overCeilingMessage: OVER_COPY,
+    });
+    await spend("inbox", 500);
+    await seedConversation(9416);
+    await seedConversation(9416, true);
+    const s = stubChatwoot();
+    await deliverCustomerMessage({
+      convId: 9416,
+      makeClient: s.makeClient,
+      messageId: 8801,
+    });
+    await deliverCustomerMessage({
+      convId: 9416,
+      makeClient: s.makeClient,
+      messageId: 8801,
+      onSecond: true,
+    });
+    expect(await ceilingRows(9416)).toHaveLength(1);
+    expect(await ceilingRows(9416, true)).toHaveLength(1);
   });
 
   // ONE REFUSED MESSAGE, ONE LINE, and the count of refusals is the number an operator reads off the

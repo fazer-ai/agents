@@ -3,6 +3,7 @@ import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import { withKeyedQueue } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { readVaultRefId } from "@/modules/vault/service";
 import { type AuthContext, readAuthContext, underSignal } from "./check";
 import {
   CONTACT_AUTH_TIMEOUT_MAX_MS,
@@ -330,13 +331,12 @@ export async function readCredentialStamp(
   signal?: AbortSignal,
 ): Promise<CredentialStamp> {
   if (!ref) return { ok: true, stamp: null };
-  if (!ref.startsWith("vault:")) return { ok: true, stamp: ref };
-  let id: bigint;
-  try {
-    id = BigInt(ref.slice("vault:".length));
-  } catch {
-    return { ok: true, stamp: ref };
-  }
+  // NOTE: the reader's parse, shared with every other resolver (readVaultRefId). It keeps the
+  // lenient spellings a stored ref may already carry and refuses the one this `try` could not see:
+  // an id past 2^63-1 CONVERTS, so the catch never ran and the value reached the `findUnique`
+  // below as a bind error. A ref that names no entry stands as its own stamp, as before.
+  const id = readVaultRefId(ref);
+  if (id === null) return { ok: true, stamp: ref };
   try {
     const entry = await underSignalMaybe(
       runScopedOn(base, sysCtx(tenantId), (db) =>

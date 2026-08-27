@@ -374,7 +374,13 @@ A grant stops holding on its own in four ways, and none of them needs a new endp
 | `grantTtlSeconds` elapses | The operator's declared staleness budget ran out. |
 | The mirrored **identity** moves (phone, email or operator `identifier`) | The endpoint answered about whoever those named, and the mirror rewrites them, clears included. |
 | The **policy** changes (`url`, `credentialRef`, `includeMessageText`, `grantTtlSeconds`) | Those decide who answered and what was asked. Changing one is the operator's lever for dropping every stored verdict at once. |
-| A fresh check **refuses** | See above. |
+| A fresh check **refuses** | See above. This one holds under EVERY mode: only `once` grants, and grants outlive a switch back to `perMessage`, so a refusal arriving while the reuse is off still has to reach them. |
+
+Switching the mode back to `perMessage` takes effect on the next message: nothing reads a grant under
+the default. The rows themselves are KEPT, because the mode decides who reads a grant and not who
+answered it, so an operator flipping the switch does not throw away what the endpoint already said —
+and that is exactly why a refusal has to drop grants under every mode. Only `once` grants; every mode
+un-grants.
 
 There is deliberately no authenticated "revoke this contact" route: it would be a new public surface
 with an auth story of its own, for something the editor can already express by touching the policy.

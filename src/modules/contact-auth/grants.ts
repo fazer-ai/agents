@@ -175,8 +175,9 @@ export async function writeContactAuthGrant(
   }
 }
 
-// Used on a fresh refusal, so a re-ask can only ever take a grant AWAY. It runs for a contact that
-// may well have none, which is why it deletes by key instead of reading first.
+// Used on a fresh refusal, so a re-ask can only ever take a grant AWAY — under EVERY mode, not only
+// under `once` (see the call site). It runs for a contact that may well have none, which is why it
+// deletes by key instead of reading first.
 export async function dropContactAuthGrant(
   base: PrismaClient,
   key: GrantKey,

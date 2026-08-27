@@ -31,7 +31,9 @@ import { seedChatwootInstance } from "../utils/chatwoot";
 //   TTL       the grant expires, and the policy's current TTL is part of what it was granted under.
 //   IDENTITY  the mirror's phone/email/identifier is what the endpoint answered ABOUT.
 //   POLICY    url, credential and the unlock opt-in decide who answered and what was asked.
-//   DENIAL    a fresh refusal drops whatever was stored, so a re-ask can only ever un-grant.
+//   DENIAL    a fresh refusal drops whatever was stored, so a re-ask can only ever un-grant. Under
+//             EVERY mode, which is not symmetry for its own sake: grants outlive a switch to
+//             `perMessage`, so a refusal arriving while the switch is off has to reach them.
 //
 // Nothing here polls or sleeps for a verdict: the endpoint double counts its own calls, so "the
 // endpoint was not asked" is a number rather than a timing.
@@ -375,8 +377,26 @@ describe.skipIf(!dbUp)("contact authorization: reusing a verdict", () => {
     const second = await ask({ cfg: cfg({ mode: "perMessage" }), ...ep });
     expect(second.reused).toBeFalsy();
     expect(ep.calls).toHaveLength(2);
-    // And that ask writes nothing, so turning the reuse back on later starts from a fresh question.
+    // The row is still there, and that is on purpose: the mode decides who READS a grant, so an
+    // operator flipping back and forth does not lose what the endpoint already answered. What must
+    // not survive that trip is a verdict the endpoint has since reversed — the case below.
     expect(await grants()).toHaveLength(1);
+  });
+
+  test("a refusal under perMessage drops what once stored", async () => {
+    const ep = endpoint(allowed, denied, allowed);
+    await ask({ cfg: cfg(), ...ep });
+    expect(await grants()).toHaveLength(1);
+    // Only `once` GRANTS; every mode UN-GRANTS. Without that asymmetry this round trip serves a
+    // refused contact: the grant survives the switch (above), the refusal below cannot touch it,
+    // and switching back inside the TTL reuses an allow older than the refusal.
+    const denial = await ask({ cfg: cfg({ mode: "perMessage" }), ...ep });
+    expect(denial.outcome).toBe("denied");
+    expect(await grants()).toHaveLength(0);
+    const back = await ask({ cfg: cfg(), ...ep });
+    expect(back.outcome).toBe("allowed");
+    expect(back.reused).toBeFalsy();
+    expect(ep.calls).toHaveLength(3);
   });
 
   test("a fresh refusal drops a grant the read could not see", async () => {

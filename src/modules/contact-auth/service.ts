@@ -225,20 +225,25 @@ export async function authorizeContact(
             signal: ctrl.signal,
           },
         );
-        if (cfg.mode === "once") {
-          // An allow is stored; a REFUSAL drops whatever was stored, so asking again can only ever
-          // take a grant away. An error stores and drops nothing: it is transient by contract (the
-          // next message retries), and a blip of the endpoint must not cost a contact the verdict
-          // they were legitimately given.
-          if (verdict.outcome === "allowed") {
-            await writeContactAuthGrant(base, grantKey, {
-              ...fingerprints,
-              context: verdict.context,
-              ttlSeconds: cfg.grantTtlSeconds,
-            });
-          } else if (verdict.outcome === "denied") {
-            await dropContactAuthGrant(base, grantKey);
-          }
+        // ONLY `once` GRANTS; EVERY MODE UN-GRANTS. The asymmetry is the rule, not an oversight:
+        // the mode decides who READS a grant, and it is deliberately not part of the policy
+        // fingerprint, so grants written under `once` survive a switch to `perMessage`. Dropping
+        // only under `once` left a round trip open — grant, switch to `perMessage`, the endpoint
+        // starts refusing, switch back inside the TTL, and the contact is served from an allow
+        // older than the refusal. The cost on the other side is one indexed DELETE of nothing per
+        // refusal under the default mode, which is what the rule is worth.
+        //
+        // An error stores and drops nothing: it is transient by contract (the next message
+        // retries), and a blip of the endpoint must not cost a contact the verdict they were
+        // legitimately given.
+        if (verdict.outcome === "denied") {
+          await dropContactAuthGrant(base, grantKey);
+        } else if (cfg.mode === "once" && verdict.outcome === "allowed") {
+          await writeContactAuthGrant(base, grantKey, {
+            ...fingerprints,
+            context: verdict.context,
+            ttlSeconds: cfg.grantTtlSeconds,
+          });
         }
         return verdict;
       } finally {

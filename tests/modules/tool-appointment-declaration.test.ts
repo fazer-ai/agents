@@ -5,6 +5,7 @@ import {
   isUsablePath,
   readAppointmentDeclaration,
   readPath,
+  sampleLeaves,
 } from "@/modules/tool-definitions/appointment";
 import { toolDefinitionCreateSchema } from "@/modules/tool-definitions/service";
 
@@ -175,6 +176,83 @@ describe("readPath", () => {
       expect(readPath(BODY, path)).toBe(expected as string);
     });
   }
+});
+
+// (#352) Picking beats typing, and the reason is what the form's gates CANNOT catch: a well-formed
+// path aimed at the wrong key passes every check and reads nothing, silently. The offer is only
+// trustworthy if it can never include a leaf the reader would then refuse, so these assert exactly
+// that agreement, in both directions.
+describe("sampleLeaves", () => {
+  test("walks objects and arrays, in document order, with array positions as segments", () => {
+    expect(
+      sampleLeaves({
+        data: { id: "ap_1", nested: { deep: "x" } },
+        items: [{ id: "first" }, { id: "second" }],
+      }),
+    ).toEqual([
+      { path: "data.id", value: "ap_1" },
+      { path: "data.nested.deep", value: "x" },
+      { path: "items.0.id", value: "first" },
+      { path: "items.1.id", value: "second" },
+    ]);
+  });
+
+  test("offers only what readPath would return, and every offer round-trips", () => {
+    const body = {
+      ok: true,
+      count: 42,
+      title: "",
+      note: null,
+      obj: { a: 1 },
+      list: [1],
+      // Through JSON.parse, never as a source literal: biome refuses the literal for the very reason
+      // this case exists, which is that the value is already rounded before anything reads it.
+      ...(JSON.parse('{"huge": 9007199254740993}') as Record<string, unknown>),
+      id: "ap_1",
+    };
+    // Booleans, nulls, empty strings, and the already-rounded integer are all absent, because a path
+    // ending on one of them reads as no value at all.
+    expect(sampleLeaves(body).map((l) => l.path)).toEqual([
+      "count",
+      "obj.a",
+      "list.0",
+      "id",
+    ]);
+    // The agreement itself: every offer, fed back to the reader, returns the value that was shown.
+    for (const leaf of sampleLeaves(body)) {
+      expect(readPath(body, leaf.path)).toBe(leaf.value);
+    }
+  });
+
+  test("a key the path grammar cannot address is not offered", () => {
+    // `a.b` and `has space` cannot be written as a segment, so a path through them would name
+    // something else entirely (or nothing). The sibling that CAN be addressed still is.
+    const body = { "a.b": "x", "has space": "y", fine: "z", "d-1_$": "w" };
+    expect(sampleLeaves(body)).toEqual([
+      { path: "fine", value: "z" },
+      { path: "d-1_$", value: "w" },
+    ]);
+  });
+
+  test("bounded on count and on depth", () => {
+    const wide = {
+      rows: Array.from({ length: 500 }, (_, i) => ({ id: `r${i}` })),
+    };
+    expect(sampleLeaves(wide).length).toBe(200);
+    expect(sampleLeaves(wide, 3).map((l) => l.path)).toEqual([
+      "rows.0.id",
+      "rows.1.id",
+      "rows.2.id",
+    ]);
+    let deep: unknown = "bottom";
+    for (let i = 0; i < 20; i++) deep = { k: deep };
+    expect(sampleLeaves(deep)).toEqual([]);
+  });
+
+  test("a scalar at the root has no path to offer", () => {
+    expect(sampleLeaves("just a string")).toEqual([]);
+    expect(sampleLeaves(null)).toEqual([]);
+  });
 });
 
 describe("extractAppointment", () => {

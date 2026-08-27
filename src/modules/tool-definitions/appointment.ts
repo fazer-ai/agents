@@ -110,6 +110,13 @@ export function readPath(body: unknown, path: string): string | undefined {
         : undefined
       : (cur as Record<string, unknown>)[seg];
   }
+  return readScalar(cur);
+}
+
+// What a path is allowed to END on, factored out of readPath because the sample picker below has to
+// offer exactly the leaves readPath would accept. Two readers of the same question drift; one does
+// not, and a picker that offers a leaf the reader then refuses is worse than no picker.
+function readScalar(cur: unknown): string | undefined {
   if (typeof cur === "string") return cur || undefined;
   if (typeof cur === "number" && Number.isFinite(cur)) {
     // A number past 2^53 was ALREADY rounded, by JSON.parse, before this function was called: a
@@ -121,6 +128,58 @@ export function readPath(body: unknown, path: string): string | undefined {
     return Math.abs(cur) > Number.MAX_SAFE_INTEGER ? undefined : String(cur);
   }
   return undefined;
+}
+
+export interface SampleLeaf {
+  path: string;
+  value: string;
+}
+
+// Every place in a sample response that a declaration could point AT, in document order, so the
+// operator picks a path instead of typing one. Typing is where the expensive mistake lives: the
+// gates in the form catch a MALFORMED path, and nothing catches a well-formed path aimed at the
+// wrong key — `data.id` where the field is `data.appointment.id` passes every check and simply
+// finds nothing, at which point the platform records no appointment and the operator has no idea
+// why.
+//
+// Both filters mirror a reader rather than a taste, which is the property that makes the offer
+// trustworthy:
+//
+//   - the VALUE has to be one readScalar returns, so an object, an array, null, a boolean, an empty
+//     string and an already-rounded integer are all absent, exactly as they would be at read time;
+//   - every KEY between here and the root has to fit the segment grammar on its own, checked before
+//     the segments are joined. Joining destroys the evidence: a key named literally `a.b` yields the
+//     path `a.b`, which isUsablePath accepts (it splits on the dot and both halves are fine) while
+//     readPath walks it as body.a.b — a different place entirely. Checking the assembled path is
+//     therefore not the same check, and it is the one that would have shipped the exact silent
+//     mis-aim this picker exists to remove.
+//
+// Bounded on both axes: a sample is pasted by hand, and a response with thousands of rows would
+// otherwise render thousands of buttons.
+export function sampleLeaves(root: unknown, max = 200): SampleLeaf[] {
+  const out: SampleLeaf[] = [];
+  const walk = (node: unknown, path: string, depth: number): void => {
+    if (out.length >= max || depth > 10) return;
+    if (Array.isArray(node)) {
+      node.forEach((v, i) => {
+        walk(v, path === "" ? String(i) : `${path}.${i}`, depth + 1);
+      });
+      return;
+    }
+    if (node !== null && typeof node === "object") {
+      for (const [k, v] of Object.entries(node)) {
+        // The whole subtree goes with the key: nothing under an unaddressable key is addressable.
+        if (!PATH_SEGMENT.test(k)) continue;
+        walk(v, path === "" ? k : `${path}.${k}`, depth + 1);
+      }
+      return;
+    }
+    const value = readScalar(node);
+    // isUsablePath still answers for the LENGTH cap, which is a property of the whole path.
+    if (value !== undefined && isUsablePath(path)) out.push({ path, value });
+  };
+  walk(root, "", 0);
+  return out;
 }
 
 export interface ExtractedAppointment {

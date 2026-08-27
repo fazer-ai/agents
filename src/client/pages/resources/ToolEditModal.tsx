@@ -1,6 +1,6 @@
 import * as DropdownMenuPrimitive from "@radix-ui/react-dropdown-menu";
 import { AlertTriangle, Braces, Plus, Trash2 } from "lucide-react";
-import { type ReactNode, useId, useRef, useState } from "react";
+import { type ReactNode, useId, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Button,
@@ -25,7 +25,11 @@ import { cn } from "@/client/lib/utils";
 import { isValidUrlTemplate } from "@/client/lib/validation";
 import { normalizeToolName } from "@/graph/tools/toolName";
 import { readProviderSlug } from "@/modules/appointments/provider";
-import { isUsablePath } from "@/modules/tool-definitions/appointment";
+import {
+  isUsablePath,
+  type SampleLeaf,
+  sampleLeaves,
+} from "@/modules/tool-definitions/appointment";
 import {
   CONTEXT_VAR_NAMES,
   normalizeToolShapes,
@@ -426,6 +430,61 @@ function appointmentForm(raw: unknown) {
 
 // The flat fields back into the declaration the API takes, or null for "this tool has nothing to do
 // with appointments" — which is what an empty action means and what every tool means today.
+// Pick a path instead of typing one. The form's gates catch a MALFORMED path; nothing catches a
+// well-formed path aimed at the wrong key, and that one is silent all the way to production — the
+// tool answers, the platform reads nothing, and no appointment is ever recorded. Offering the
+// operator's OWN response to click removes the typing, and with it that whole class.
+//
+// Rendered as a sibling of its FormField, never inside it: FormField wraps its children in a
+// <label>, which forwards a click on the field title to the first focusable descendant, so a button
+// in there would fire when the operator clicked the title.
+function PathPicker({
+  leaves,
+  open,
+  onToggle,
+  onPick,
+  openLabel,
+  closeLabel,
+}: {
+  leaves: SampleLeaf[];
+  open: boolean;
+  onToggle: () => void;
+  onPick: (path: string) => void;
+  openLabel: string;
+  closeLabel: string;
+}) {
+  if (leaves.length === 0) return null;
+  return (
+    <div className="-mt-2 flex flex-col gap-1">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="self-start text-text-secondary text-xs underline underline-offset-2 hover:text-text-primary"
+      >
+        {open ? closeLabel : openLabel}
+      </button>
+      {open && (
+        <ul className="max-h-48 overflow-y-auto rounded-md border border-border">
+          {leaves.map((leaf) => (
+            <li key={leaf.path}>
+              <button
+                type="button"
+                onClick={() => onPick(leaf.path)}
+                className="flex w-full items-baseline gap-2 px-2 py-1 text-left text-xs hover:bg-bg-hover"
+              >
+                <code className="shrink-0 text-text-primary">{leaf.path}</code>
+                <span className="truncate text-text-secondary">
+                  {leaf.value}
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 // The offsets field, read the ONE way, by the form's gate and by what it submits alike. Null means
 // the text names something that would not survive the trip: a token that is not a number, one
 // outside the server's own [1, 8760], or more than the five the server keeps. The empty field is an
@@ -751,6 +810,12 @@ export function ToolEditModal({
   // rather than under a box that no longer holds it.
   const formRef = useRef(form);
   formRef.current = form;
+  // The pasted sample and which field's picker is open. Local, never submitted, never part of the
+  // dirty comparison — see sampleParse.
+  const [apptSample, setApptSample] = useState("");
+  const [apptPicker, setApptPicker] = useState<
+    "id" | "start" | "summary" | null
+  >(null);
   const [saving, setSaving] = useState(false);
   const [loadingForm, setLoadingForm] = useState(false);
   const [loadError, setLoadError] = useState(false);
@@ -790,6 +855,10 @@ export function ToolEditModal({
     setFormError(null);
     setLoadError(false);
     setSelectedCredential(null);
+    // The sample belongs to the tool being edited, so it does not survive into the next one: a
+    // response pasted for tool A offering its paths while editing tool B is worse than no offer.
+    setApptSample("");
+    setApptPicker(null);
     const payloadId = modal.payload?.id;
     if (!payloadId) {
       const initial = emptyForm();
@@ -876,6 +945,18 @@ export function ToolEditModal({
   // reader answers here, per field, before there is anything to save. Same shape as ackInvalid
   // above: a value the runtime will not honour is not a value to save.
   const apptOn = form.apptAction !== "";
+  // Deliberately NOT part of `form`: the sample is a filling aid, never a stored field, so pasting
+  // one must not mark the modal dirty and must not raise the discard dialog on close.
+  const sampleParse = useMemo(() => {
+    const raw = apptSample.trim();
+    if (raw === "")
+      return { state: "empty" as const, leaves: [] as SampleLeaf[] };
+    try {
+      return { state: "ok" as const, leaves: sampleLeaves(JSON.parse(raw)) };
+    } catch {
+      return { state: "invalid" as const, leaves: [] as SampleLeaf[] };
+    }
+  }, [apptSample]);
   const apptIdPathInvalid = apptOn && !isUsablePath(form.apptIdPath.trim());
   const apptStartPathInvalid =
     form.apptAction === "book" && !isUsablePath(form.apptStartPath.trim());
@@ -1350,6 +1431,40 @@ export function ToolEditModal({
             {form.apptAction !== "" && (
               <>
                 <FormField
+                  label={t(
+                    "tools.appointmentSample",
+                    "Sample response (optional)",
+                  )}
+                  description={t(
+                    "tools.appointmentSampleHint",
+                    "Paste one response from this API and pick the fields below instead of typing their paths. It is not saved and never leaves this screen.",
+                  )}
+                >
+                  <Textarea
+                    value={apptSample}
+                    onChange={(e) => setApptSample(e.target.value)}
+                    rows={3}
+                    placeholder='{"data": {"id": "ap_1", "start": "2026-09-02T14:00:00-03:00"}}'
+                  />
+                </FormField>
+                {sampleParse.state === "invalid" && (
+                  <p className="-mt-2 text-error text-xs">
+                    {t(
+                      "tools.appointmentSampleInvalid",
+                      "That is not valid JSON, so there is nothing to pick from. The paths below still work if you type them.",
+                    )}
+                  </p>
+                )}
+                {sampleParse.state === "ok" &&
+                  sampleParse.leaves.length === 0 && (
+                    <p className="-mt-2 text-text-secondary text-xs">
+                      {t(
+                        "tools.appointmentSampleEmpty",
+                        "Nothing in this response can be pointed at: a path can only end on a piece of text or a number, and every key along the way has to be made of letters, digits, - or _.",
+                      )}
+                    </p>
+                  )}
+                <FormField
                   label={t("tools.appointmentIdPath", "Where the id is")}
                 >
                   <Input
@@ -1369,6 +1484,19 @@ export function ToolEditModal({
                     }
                   />
                 </FormField>
+                <PathPicker
+                  leaves={sampleParse.leaves}
+                  open={apptPicker === "id"}
+                  onToggle={() =>
+                    setApptPicker(apptPicker === "id" ? null : "id")
+                  }
+                  onPick={(path) => {
+                    setForm({ ...form, apptIdPath: path });
+                    setApptPicker(null);
+                  }}
+                  openLabel={t("tools.appointmentPick", "Pick from the sample")}
+                  closeLabel={t("tools.appointmentPickClose", "Close")}
+                />
                 <FormField
                   label={t("tools.appointmentProvider", "Booking system")}
                   description={t(
@@ -1418,6 +1546,22 @@ export function ToolEditModal({
                         }
                       />
                     </FormField>
+                    <PathPicker
+                      leaves={sampleParse.leaves}
+                      open={apptPicker === "start"}
+                      onToggle={() =>
+                        setApptPicker(apptPicker === "start" ? null : "start")
+                      }
+                      onPick={(path) => {
+                        setForm({ ...form, apptStartPath: path });
+                        setApptPicker(null);
+                      }}
+                      openLabel={t(
+                        "tools.appointmentPick",
+                        "Pick from the sample",
+                      )}
+                      closeLabel={t("tools.appointmentPickClose", "Close")}
+                    />
                     <FormField
                       label={t(
                         "tools.appointmentSummaryPath",
@@ -1445,6 +1589,24 @@ export function ToolEditModal({
                         }
                       />
                     </FormField>
+                    <PathPicker
+                      leaves={sampleParse.leaves}
+                      open={apptPicker === "summary"}
+                      onToggle={() =>
+                        setApptPicker(
+                          apptPicker === "summary" ? null : "summary",
+                        )
+                      }
+                      onPick={(path) => {
+                        setForm({ ...form, apptSummaryPath: path });
+                        setApptPicker(null);
+                      }}
+                      openLabel={t(
+                        "tools.appointmentPick",
+                        "Pick from the sample",
+                      )}
+                      closeLabel={t("tools.appointmentPickClose", "Close")}
+                    />
                     <FormField
                       label={t(
                         "tools.appointmentOffsets",

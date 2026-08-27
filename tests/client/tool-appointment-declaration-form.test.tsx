@@ -90,6 +90,15 @@ function inputFor(pattern: RegExp): HTMLInputElement {
   return input;
 }
 
+function textareaFor(pattern: RegExp): HTMLTextAreaElement {
+  const label = Array.from(document.querySelectorAll("label")).find((l) =>
+    pattern.test(captionOf(l)),
+  );
+  const el = label?.querySelector("textarea") as HTMLTextAreaElement | null;
+  if (!el) throw new Error(`no textarea captioned ${pattern}`);
+  return el;
+}
+
 function saveDisabled(): boolean {
   const btn = Array.from(document.querySelectorAll("button")).find((b) =>
     /^(salvar|save)$/i.test((b.textContent ?? "").trim()),
@@ -235,6 +244,71 @@ test("offsets the runtime would not honour hold the save", async () => {
     // Off unless the operator turned it on: the switch only appears once the field is nonempty.
     askConfirmationOnLast: false,
   });
+});
+
+// (#352) The picker is the answer to what the gates above CANNOT catch: `data.id` typed where the
+// field is `data.appointment.id` is well-formed, passes every check, and reads nothing all the way
+// to production. Asserted on the VALUE the field ends up holding and on what is submitted, never on
+// the list appearing: a picker that renders and fills nothing looks identical.
+test("a pasted sample fills the paths by clicking, and is never submitted", async () => {
+  await openForm();
+  fireEvent.change(actionSelect(), { target: { value: "book" } });
+  await waitFor(() => expect(saveDisabled()).toBe(true));
+
+  const sample = textareaFor(/resposta de exemplo|sample response/i);
+  fireEvent.change(sample, {
+    target: {
+      value: JSON.stringify({
+        data: {
+          appointment: { id: "ap_9", starts_at: "2026-09-02T14:00:00-03:00" },
+        },
+      }),
+    },
+  });
+
+  // One picker per field, so a click can only mean one target.
+  const pickers = () =>
+    Array.from(document.querySelectorAll("button")).filter((b) =>
+      /(escolher da resposta|pick from the sample)/i.test(
+        (b.textContent ?? "").trim(),
+      ),
+    );
+  await waitFor(() => expect(pickers().length).toBe(3));
+
+  const pick = async (which: number, path: string) => {
+    fireEvent.click(pickers()[which] as HTMLButtonElement);
+    const leaf = await waitFor(() => {
+      const b = Array.from(document.querySelectorAll("li button")).find((x) =>
+        (x.textContent ?? "").startsWith(path),
+      );
+      if (!b) throw new Error(`no leaf ${path}`);
+      return b as HTMLButtonElement;
+    });
+    fireEvent.click(leaf);
+  };
+
+  await pick(0, "data.appointment.id");
+  expect(inputFor(/onde está o id|where the id is/i).value).toBe(
+    "data.appointment.id",
+  );
+  // Still held: the start has not been chosen yet, so the picker is not what released the save.
+  expect(saveDisabled()).toBe(true);
+
+  await pick(1, "data.appointment.starts_at");
+  expect(inputFor(/horário de início|start time/i).value).toBe(
+    "data.appointment.starts_at",
+  );
+  await waitFor(() => expect(saveDisabled()).toBe(false));
+
+  clickSave();
+  await waitFor(() => expect(posted.length).toBe(1));
+  expect(posted[0]?.appointment).toEqual({
+    action: "book",
+    idPath: "data.appointment.id",
+    startPath: "data.appointment.starts_at",
+  });
+  // The sample itself is an aid, not a field: nothing about it reaches the server.
+  expect(JSON.stringify(posted[0])).not.toContain('starts_at":"2026');
 });
 
 test("a provider that is not a slug holds the save too", async () => {

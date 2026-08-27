@@ -92,6 +92,8 @@ interface Stub {
   // that wraps it needs `Parameters<...>` to resolve.
   makeClient: NonNullable<RuntimeDeps["makeClient"]>;
   sent: Array<[number, string]>;
+  // Private notes, which is where a guardrail announces a decision the customer never sees.
+  notes: Array<[number, string]>;
   asked: Array<[number, number | undefined]>;
 }
 
@@ -125,6 +127,7 @@ function stubChatwoot(opts: {
   };
 }): Stub {
   const sent: Array<[number, string]> = [];
+  const notes: Array<[number, string]> = [];
   const asked: Array<[number, number | undefined]> = [];
   let unanchored = 0;
   const c = opts.conv ?? {};
@@ -165,6 +168,12 @@ function stubChatwoot(opts: {
       return {};
     },
     toggleTyping: async () => ({}),
+    // The guardrail announces its own decision as a private note. Absent, a tripped guardrail throws
+    // and the turn reads as a provider failure rather than as the policy decision it is.
+    sendPrivateNote: async (conversationId: number, content: string) => {
+      notes.push([conversationId, content]);
+      return {};
+    },
     // Best-effort context reads a turn makes. Present so the stub is a Chatwoot that ANSWERS them
     // rather than one that is missing them: their absence is swallowed by the turn's own catch, and
     // a failure there would look like a passing test.
@@ -172,7 +181,7 @@ function stubChatwoot(opts: {
     listCustomAttributeDefinitions: async () => [],
     kanbanTaskForConversation: async () => null,
   } as unknown as ChatwootClient;
-  return { makeClient: async () => client, sent, asked };
+  return { makeClient: async () => client, sent, notes, asked };
 }
 
 // `turns` counts how many times a model was built, which is how many turns actually ran. The gate
@@ -1569,6 +1578,105 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     // Nothing posted over the human, and the row left the worklist all the same.
     expect(stub.sent).toEqual([]);
     expect((await ledger(rowId)).status).toBe("PROCESSED");
+  });
+
+  test("a guardrail that deliberately silences the message DOES close the loss", async () => {
+    // `blocked` is the runtime's outcome for a guardrail that tripped with `action: "silent"` — no
+    // template, no generated reply, nothing sent. It sits on the other side of the line from `empty`
+    // and the difference is WHO decided: `empty` is the model having nothing to say, which a second
+    // attempt could legitimately answer differently, while `blocked` is the operator's own policy
+    // saying this message must not be answered. Re-running the recovery reproduces the same refusal,
+    // and leaving the row on the worklist asks an operator to investigate a decision their own
+    // configuration made.
+    //
+    // The runtime says as much where it returns it: "a word that says the burst was consumed, so the
+    // watermark advances".
+    //
+    // Driven through the real guardrail, not by injecting the outcome: the guardrail model is built
+    // from the same `deps.makeModel`, and `deepseek` asks for its verdict in PROSE, so a fake model
+    // answering `{"violated": true}` is a real trip.
+    const convId = 8994;
+    const messageId = 9494;
+    await seedConversation(convId);
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const stub = stubChatwoot({
+      page: pageWith([{ id: messageId, content: "oi" }]),
+    });
+    const before = await suDb.agent.findUniqueOrThrow({
+      where: { id: agentDbId },
+      select: { settings: true },
+    });
+    // A resolvable credential, because a guardrail whose key does not resolve FAILS OPEN by design
+    // (gate.ts writes `credential_not_found` and lets the turn through). Without this the test would
+    // measure the fail-open path and pass for the wrong reason.
+    const cred = await suDb.vaultEntry.create({
+      data: {
+        tenantId,
+        name: `guard-${process.pid}`,
+        secret: encryptJson("guard-key"),
+        kind: "generic",
+      },
+      select: { id: true },
+    });
+    await suDb.agent.update({
+      where: { id: agentDbId },
+      data: {
+        settings: {
+          ...(before.settings as Record<string, unknown>),
+          guardrails: {
+            enabled: true,
+            provider: "deepseek",
+            model: "guard-1",
+            credentialRef: `vault:${cred.id}`,
+            input: {
+              enabled: true,
+              action: "silent",
+              checks: { toxicity: true },
+            },
+          },
+        },
+      },
+    });
+    const turns = { built: 0 };
+    try {
+      const deps: RuntimeDeps = {
+        ...depsWith(stub, turns),
+        makeModel: () => {
+          turns.built += 1;
+          return new FakeListChatModel({
+            responses: ['{"violated": true, "categories": ["toxicity"]}'],
+          });
+        },
+      };
+
+      expect(
+        await recoverStrandedDelivery({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          deps,
+        }),
+      ).toBe("recovered");
+
+      // The guardrail model ran, it announced its decision to the operator, and the customer got
+      // nothing.
+      expect(turns.built).toBeGreaterThan(0);
+      expect(stub.notes.map((n) => n[1])).toEqual([
+        expect.stringContaining("Guardrail (input)"),
+      ]);
+      expect(stub.sent).toEqual([]);
+      // The loss is CLOSED: the row leaves the worklist, because a policy answered for it.
+      expect((await ledger(rowId)).status).toBe("PROCESSED");
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentDbId },
+        data: { settings: before.settings as never },
+      });
+      await suDb.vaultEntry.delete({ where: { id: cred.id } });
+    }
   });
 
   test("a turn that said NOTHING has not answered anybody either", async () => {

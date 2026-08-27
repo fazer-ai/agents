@@ -175,11 +175,24 @@ export interface RecoverStrandedDeliveryParams {
   now?: Date;
 }
 
-// The turn outcomes that mean this customer is no longer owed a reply. Everything else keeps the
-// row on the worklist. A SET rather than a union of the runtime's type on purpose: this file is
-// asking a narrower question than "what happened", and a new outcome there must land on the safe
-// side here without anyone remembering to come back.
-const TURN_ANSWERED = new Set(["posted", "taken-over"]);
+// The turn outcomes that SETTLE the message: after one of these, nobody is owed a reply and the row
+// may leave the worklist. Everything else keeps it. A SET rather than a union of the runtime's type
+// on purpose: this file is asking a narrower question than "what happened", and a new outcome there
+// must land on the safe side here without anyone remembering to come back.
+//
+// Settled is not the same as answered, which is why the name is not `TURN_ANSWERED`. Two of the
+// three sent the customer nothing, and each is settled for its own reason:
+//
+//   `posted`      — something reached the customer.
+//   `taken-over`  — a human holds the conversation and will answer it.
+//   `blocked`     — a guardrail tripped with `action: "silent"`: the operator's own policy decided
+//                   this message must not be answered, and the runtime calls that a consumed burst
+//                   in as many words. `empty` sits on the other side of that line and the difference
+//                   is WHO decided: there the model had nothing to say, which a second attempt could
+//                   legitimately answer differently, while here a re-run reproduces the same refusal
+//                   and the row on the worklist would ask an operator to investigate a decision
+//                   their own configuration made.
+const TURN_SETTLED = new Set(["posted", "taken-over", "blocked"]);
 
 export async function recoverStrandedDelivery(
   params: RecoverStrandedDeliveryParams,
@@ -1101,17 +1114,11 @@ async function runRecovery(params: {
   // anything else counting. `unreachable`, so the job backs off and eventually dead-letters: a model
   // or provider that keeps throwing is a condition an operator has to see, exactly like an account
   // that cannot be reached. No closing line, because nothing closed.
-  // The turn ran and NOBODY was answered by it. A POSITIVE list, because the question is "is this
+  // The turn ran and left this message UNSETTLED. A POSITIVE list, because the question is "is this
   // customer still owed a reply", and the honest default for an outcome this file has not thought
-  // about is yes.
+  // about is yes. What settles it is `TURN_SETTLED` above, with the reasoning for each of the three.
   //
-  //   `posted`     — something reached the customer. The loss is closed.
-  //   `taken-over` — a human holds the conversation and will answer it, whichever route carried the
-  //                  message here. That is the `consumed_late` half of the settlement vocabulary,
-  //                  and it is a legitimate close.
-  //
-  // Everything else leaves the customer where the strand left them, and the three that actually
-  // reach here are each their own reason:
+  // What does not, and each for its own reason:
   //
   //   `superseded` — `shouldPost` found a message the customer sent after this one and stood down.
   //                  For a LIVE delivery that is right: the newer message's own delivery carries the
@@ -1122,13 +1129,13 @@ async function runRecovery(params: {
   //   `empty`      — the turn reached the end and delivered neither text nor an attachment. For a
   //                  live delivery the event is handled and the row is settled; here the row exists
   //                  BECAUSE the customer was left waiting, and an empty second attempt leaves them
-  //                  waiting with nothing else on the way.
+  //                  waiting with nothing else on the way. Not the same as `blocked`, which is a
+  //                  policy deciding rather than a model running dry — see `TURN_SETTLED`.
   //   `no-agent` / `agent-unavailable` — the route cannot answer at all. Both write their own
   //                  operator-facing line, and both need an operator; what they must not do is take
   //                  the message off the worklist that operator reads.
-  const turnUnanswered =
-    turnOutcome !== null && !TURN_ANSWERED.has(turnOutcome);
-  if (turnThrew || turnUnanswered) {
+  const turnUnsettled = turnOutcome !== null && !TURN_SETTLED.has(turnOutcome);
+  if (turnThrew || turnUnsettled) {
     // From PROCESSED, and that is the state nothing revisits: the sweep reads PENDING and PROCESSING
     // only. A write that cannot land here leaves the customer out of the worklist with nobody having
     // answered, which is the exact loss this whole subsystem exists to make impossible — so it is

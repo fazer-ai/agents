@@ -37,3 +37,24 @@ export function requireDbId(
   }
   return id;
 }
+
+// The same parse for an id a request BODY carries, where "no id" has two spellings and they are not
+// the same instruction: an absent key leaves the column as it is, and an explicit `null` detaches it.
+// Collapsing the two is how a PATCH that meant to clear a reference silently kept it.
+//
+// An empty string is neither, and is refused. It reached `BigInt("")` on two of these paths, which
+// is `0n` — a request that named no row addressed row zero. The console never sends it (it writes
+// `value || null` before the request), so refusing costs nothing a caller cannot fix by sending the
+// `null` the schema already documents.
+//
+// `label` is the name the BODY uses for the field, not a noun phrase: the caller is looking at a
+// key they wrote, and "Not a valid businessHoursId" points straight at it. Path segments keep the
+// noun-phrase form, because a URL has no field to name.
+export function optionalDbId(
+  raw: string | null | undefined,
+  label = "id",
+): bigint | null | undefined {
+  if (raw === undefined) return undefined;
+  if (raw === null) return null;
+  return requireDbId(raw, label);
+}

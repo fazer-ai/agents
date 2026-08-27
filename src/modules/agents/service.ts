@@ -6,10 +6,9 @@ import config from "@/config";
 import { DEFAULT_MODEL_CONFIG, modelConfigSchema } from "@/graph/model-config";
 import { modelOptionalFor } from "@/graph/model-defaults";
 import { NATIVE_TOOL_NAMES, RAG_TOOL_NAMES } from "@/graph/tools/catalog";
-import { parseDbId } from "@/lib/db-id";
+import { parseDbId, requireDbId } from "@/lib/db-id";
 import {
   AppError,
-  type ErrorTranslationKey,
   NotFoundError,
   TenantTargetRequiredError,
 } from "@/lib/errors";
@@ -619,16 +618,6 @@ export const agentUpdateSchema = z
 
 export type AgentUpdate = z.infer<typeof agentUpdateSchema>;
 
-function refOrThrow(v: string, notFoundKey: ErrorTranslationKey): bigint {
-  try {
-    return BigInt(v);
-  } catch {
-    // A non-numeric id certainly does not exist; collapse into the same NotFound the DB check
-    // would raise, so the caller gets one consistent error.
-    throw new NotFoundError("not found", notFoundKey);
-  }
-}
-
 export async function updateAgent(
   ctx: TenantContext,
   id: bigint,
@@ -652,13 +641,17 @@ export async function updateAgent(
       "errors.noUpdatableFields",
     );
   }
+  // NOTE: refused, not collapsed into the NotFound the ownership check below raises. This used
+  // to answer 404 for a non-numeric id, which tells a caller who mistyped that the row is gone —
+  // and the same file already answered 400 for a malformed tool-grant id (`bigOrThrow`), so one
+  // mistake got two answers depending on which field carried it. Issue #407.
   const bhId =
     hasBh && businessHoursId !== null
-      ? refOrThrow(businessHoursId, "errors.businessHoursNotFound")
+      ? requireDbId(businessHoursId, "businessHoursId")
       : null;
   const fuhId =
     hasFuh && followUpHoursId !== null
-      ? refOrThrow(followUpHoursId, "errors.businessHoursNotFound")
+      ? requireDbId(followUpHoursId, "followUpHoursId")
       : null;
   const dto = await runScopedOn(base, ctx, async (db) => {
     if (bhId !== null) {
@@ -864,9 +857,13 @@ export async function createAgent(
   const data = parseInput(agentCreateSchema, input);
   validateModelConfigForWrite(data.modelConfig);
   const bhId =
-    data.businessHoursId != null ? BigInt(data.businessHoursId) : null;
+    data.businessHoursId != null
+      ? requireDbId(data.businessHoursId, "businessHoursId")
+      : null;
   const fuhId =
-    data.followUpHoursId != null ? BigInt(data.followUpHoursId) : null;
+    data.followUpHoursId != null
+      ? requireDbId(data.followUpHoursId, "followUpHoursId")
+      : null;
   const dto = await runScopedOn(base, ctx, async (db) => {
     if (bhId !== null) {
       const bh = await db.businessHours.findUnique({

@@ -4,6 +4,7 @@ import { getTenant, listTenants } from "@/api/v1/tenants.service";
 import { AppError } from "@/lib/errors";
 import type { TenantContext } from "@/lib/tenancy";
 import { truncForAudit } from "@/modules/audit/projection";
+import { parseMcpId } from "@/modules/mcp/write";
 import { hasScope, type VerifiedToken } from "./oauth/tokens";
 import {
   ctxOf,
@@ -56,12 +57,10 @@ export async function tenantGet(
   const base = deps.base ?? basePrisma;
   const ctx = adminGate(principal);
   if ("ok" in ctx) return ctx;
-  let id: bigint;
-  try {
-    id = BigInt(args.tenant_id);
-  } catch {
-    return err("invalid tenant_id");
-  }
+  // NOTE: the same parser every other MCP surface uses. A `try`/`catch` around `BigInt` catches
+  // the spelling half and misses the range half, which is the half that reaches the database.
+  const id = parseMcpId(args.tenant_id, "tenant_id");
+  if (typeof id !== "bigint") return id;
   try {
     return ok({ tenant: await getTenant(ctx, id, base) });
   } catch (e) {

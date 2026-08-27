@@ -124,4 +124,30 @@ describe.skipIf(!dbUp)("MCP fleet tools (DB)", () => {
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toContain("invalid tenant_id");
   });
+
+  // The other half of "invalid", and the half a `try`/`catch` around `BigInt` cannot see: these all
+  // CONVERT. Before the fix the first reached Postgres and came back as a bind error rather than as
+  // this tool's own refusal, and the rest addressed a row the caller never named (`0x11` is 17).
+  // Every other MCP surface already shared `parseMcpId`; this one had its own `try`. Issue #407.
+  test("tenant_get an id BigInt would convert but a column would not → error", async () => {
+    const wrong: string[] = [];
+    for (const raw of [
+      "99999999999999999999",
+      "0x11",
+      " 7 ",
+      "+7",
+      "1e3",
+      "",
+    ]) {
+      const r = await tenantGet(
+        superAdmin(),
+        { tenant_id: raw },
+        { base: appDb },
+      );
+      if (r.ok || !r.error.includes("invalid tenant_id")) {
+        wrong.push(`${JSON.stringify(raw)} -> ${JSON.stringify(r)}`);
+      }
+    }
+    expect(wrong).toEqual([]);
+  });
 });

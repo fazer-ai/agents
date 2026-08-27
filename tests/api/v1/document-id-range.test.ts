@@ -11,17 +11,11 @@ import { parseMcpId } from "@/modules/mcp/write";
 // (`BigInt(params.id)`) and the next route added will reach for it too. The per-route behaviour is
 // pinned below it, so the sweep cannot pass by measuring nothing.
 
-// The HTTP routes, which have a response contract to keep, and the writes that reach the same
-// columns without one. Split because only the first half can be asked about its declared statuses,
-// and kept in one place because both sweeps below have to grow together.
+// The HTTP routes, which have a response contract to keep. The writes that reach the same columns
+// without one are covered by the tree-wide sweep named below.
 const API_FILES = [
   "src/api/v1/documents.controller.ts",
   "src/api/v1/document-templates.controller.ts",
-];
-const NON_ROUTE_FILES = [
-  "src/modules/mcp/write.ts",
-  "src/modules/mcp/write-documents.ts",
-  "src/modules/agents/service.ts",
 ];
 
 describe("requireDbId", () => {
@@ -58,46 +52,11 @@ describe("parseMcpId", () => {
 // Every caller-supplied id in the document surfaces goes through the bounded parse. Written as a
 // read of the source because that is where the mistake is visible: a `BigInt(...)` wrapped around a
 // request field is the defect, whatever the route around it does.
-describe("no document surface converts a caller's id with bare BigInt", () => {
-  // Every FILE that turns a caller-supplied id into a bigint on the way to a document. The list grew
-  // by one entry per review round — the routes, then the MCP write parser, then the grant parser —
-  // because each round fixed the site it was shown and left the next one. It is the list, not the
-  // sites, that is the guard: an entry here is what makes the NEXT surface fail loudly instead of
-  // being found by a reviewer.
-  const FILES = [...API_FILES, ...NON_ROUTE_FILES];
-
-  test("params, body, query and args ids use the bounded parse", async () => {
-    const offenders: string[] = [];
-    for (const file of FILES) {
-      const src = await Bun.file(file).text();
-      for (const m of src.matchAll(
-        /BigInt\(\s*(?:params|body|query|args|patch|input|g)\.[A-Za-z0-9_.]+/g,
-      )) {
-        offenders.push(`${file}:${src.slice(0, m.index).split("\n").length}`);
-      }
-    }
-    expect(offenders).toEqual([]);
-  });
-
-  // …and the sweep is looking at something: every prefix it hunts is one it can find.
-  test("the sweep would catch the spellings it exists for", () => {
-    const samples = [
-      "const id = BigInt(params.id);",
-      "BigInt( args.tenant_id )",
-      "BigInt(patch.name)",
-      "const x = BigInt(g.documentTemplateId);",
-    ];
-    for (const sample of samples) {
-      expect(
-        [
-          ...sample.matchAll(
-            /BigInt\(\s*(?:params|body|query|args|patch|input|g)\.[A-Za-z0-9_.]+/g,
-          ),
-        ].length,
-      ).toBe(1);
-    }
-  });
-});
+// The per-file sweep that used to sit here is gone, subsumed rather than dropped:
+// tests/lib/caller-id-spelling.test.ts runs the same check over ALL of `src` with a superset of the
+// prefixes this one hunted, plus the bare-local shape it could not see. Its own comment said the
+// list was the guard, and a list that has to be appended to per feature is the shape that was
+// missing the next entry every time (issue #407).
 
 // The other half of the same defect, and it took a review round to see: a route can use the bounded
 // parse and still LIE about it. `requireDbId` answers 400, and a `response` declaration that omits

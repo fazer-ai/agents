@@ -41,11 +41,11 @@ export function isVaultIdRef(ref: string): boolean {
 
 export function vaultRefWhere(ref: string): { id: bigint } {
   if (ref.startsWith(VAULT_REF_PREFIX)) {
-    try {
-      return { id: BigInt(ref.slice(VAULT_REF_PREFIX.length)) };
-    } catch {
-      // malformed → fall through to a never-matching id
-    }
+    // NOTE: the bounded parse, not a `try` around `BigInt`. A `vault:<digits past 2^63-1>` ref
+    // converts, so the catch never ran and the value reached Postgres as a bind error — a 500 out
+    // of a helper whose whole contract is "a ref that is not well formed matches nothing".
+    const id = parseDbId(ref.slice(VAULT_REF_PREFIX.length));
+    if (id !== null) return { id };
   }
   return { id: -1n };
 }

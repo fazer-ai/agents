@@ -272,6 +272,11 @@ app.get("/__real/notfound", () => {
 app.get("/__real/notfound-status", () => {
   throw Object.assign(new ElysiaNotFoundError(), { status: 418 });
 });
+// A `SyntaxError` from a bare `BigInt`, which used to have an arm of its own here: an `onError`
+// branch that recognised it by its MESSAGE and answered a plain-text 400. It is gone (issue #407),
+// because a catch-all keyed on an error message is not a refusal — it is a net under every handler
+// that forgot to parse, and it turned a missing parse into an answer the caller could not read and
+// nobody would go looking for. Now it is what it is: an unhandled throw.
 app.get("/__logged/bigint", () => {
   throw new SyntaxError("Cannot convert 9007199254740993x to a BigInt");
 });
@@ -457,9 +462,13 @@ describe("the access log records the status actually answered", () => {
     expect(await loggedStatusFor("/__real/notfound-status")).toBe("404");
   });
 
-  test("the BigInt guard's raw 400 is logged as 400, not 500", async () => {
-    expect(await wireStatusFor("/__logged/bigint")).toBe(400);
-    expect(await loggedStatusFor("/__logged/bigint")).toBe("400");
+  // The arm that used to answer this is gone, and this is what keeps it gone: an unparsed id now
+  // reaches the generic arm and is answered — and recorded — as the unhandled error it is. Every
+  // caller-supplied id has a parse of its own (tests/lib/caller-id-spelling.test.ts sweeps for the
+  // spelling that skips one), so nothing on an HTTP path throws this any more.
+  test("a bare BigInt throw is answered 500 and logged 500", async () => {
+    expect(await wireStatusFor("/__logged/bigint")).toBe(500);
+    expect(await loggedStatusFor("/__logged/bigint")).toBe("500");
   });
 });
 

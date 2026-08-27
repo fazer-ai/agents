@@ -12,7 +12,7 @@ import { translate } from "@/api/lib/i18n";
 import { doc, errors } from "@/api/lib/openapi";
 import { parseQueryCount, parseQueryId } from "@/api/lib/query-filters";
 import config from "@/config";
-import { requireDbId } from "@/lib/db-id";
+import { optionalDbId, requireDbId } from "@/lib/db-id";
 import { UnauthorizedError } from "@/lib/errors";
 import {
   CannotDeleteSelfError,
@@ -288,9 +288,7 @@ export const adminController = new Elysia({
       }
       const targetTenantId =
         user.role === "SUPER_ADMIN"
-          ? body.tenantId
-            ? BigInt(body.tenantId)
-            : null
+          ? (optionalDbId(body.tenantId, "tenantId") ?? null)
           : user.tenantId;
       if (targetTenantId === null) {
         set.status = 400;

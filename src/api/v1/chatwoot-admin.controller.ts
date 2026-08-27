@@ -2,7 +2,7 @@ import { Elysia, t } from "elysia";
 import { getUserById, verifyPassword } from "@/api/features/auth/auth.service";
 import { doc, errors } from "@/api/lib/openapi";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
-import { requireDbId } from "@/lib/db-id";
+import { optionalDbId, requireDbId } from "@/lib/db-id";
 import {
   AppError,
   ForbiddenError,
@@ -520,10 +520,7 @@ export const chatwootAdminController = new Elysia({
     "/inboxes/:id",
     async ({ tenantContext, params, body }) => {
       const b = body as { agentId?: string | null };
-      const agentId =
-        b.agentId === undefined || b.agentId === null
-          ? null
-          : BigInt(b.agentId);
+      const agentId = optionalDbId(b.agentId, "agentId") ?? null;
       return {
         instance: instanceIdentity,
         inbox: await bindInbox(

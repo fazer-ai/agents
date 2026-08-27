@@ -2,7 +2,7 @@ import { Elysia, t } from "elysia";
 import { doc, errors } from "@/api/lib/openapi";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
 import config from "@/config";
-import { requireDbId } from "@/lib/db-id";
+import { optionalDbId, requireDbId } from "@/lib/db-id";
 import { ForbiddenError, TenantTargetRequiredError } from "@/lib/errors";
 import { instanceIdentity } from "@/lib/instance";
 import type { TenantContext } from "@/lib/tenancy";
@@ -137,7 +137,7 @@ export const experimentsController = new Elysia({
       const created = await createExperiment({
         ctx: ctxOrThrow(tenantContext),
         name: b.name,
-        agentId: b.agentId ? BigInt(b.agentId) : undefined,
+        agentId: optionalDbId(b.agentId, "agentId") ?? undefined,
         variants: b.variants,
         enabled: b.enabled,
       });
@@ -188,12 +188,7 @@ export const experimentsController = new Elysia({
         ctx: ctxOrThrow(tenantContext),
         id: requireDbId(params.id),
         name: b.name,
-        agentId:
-          b.agentId === undefined
-            ? undefined
-            : b.agentId
-              ? BigInt(b.agentId)
-              : null,
+        agentId: optionalDbId(b.agentId, "agentId"),
         variants: b.variants,
         enabled: b.enabled,
       });

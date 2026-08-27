@@ -536,7 +536,9 @@ export const knowledgeController = new Elysia({
       const hits = await searchKnowledge({
         ctx: ctxOrThrow(tenantContext),
         query: body.query,
-        knowledgeBaseIds: body.knowledgeBaseIds?.map((s) => BigInt(s)),
+        knowledgeBaseIds: body.knowledgeBaseIds?.map((s) =>
+          requireDbId(s, "knowledgeBaseIds"),
+        ),
         limit: body.limit,
       });
       return { instance: instanceIdentity, hits: hits.map(searchHitDto) };
@@ -574,7 +576,7 @@ export const knowledgeController = new Elysia({
     async ({ tenantContext, body }) => {
       const suggestion = await createSuggestion({
         ctx: ctxOrThrow(tenantContext),
-        knowledgeBaseId: BigInt(body.knowledgeBaseId),
+        knowledgeBaseId: requireDbId(body.knowledgeBaseId, "knowledgeBaseId"),
         proposedContent: body.content,
         proposedTitle: body.title,
         rationale: body.rationale,

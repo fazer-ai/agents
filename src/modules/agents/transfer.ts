@@ -18,6 +18,7 @@ import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
 import { normalizeExpectedStatuses } from "@/graph/tools/http-status";
+import { parseDbId } from "@/lib/db-id";
 import { AppError, NotFoundError } from "@/lib/errors";
 import {
   hasSafeStdioCommandChars,
@@ -672,11 +673,11 @@ export async function exportAgent(
         const raw = (r.config as Record<string, unknown> | null)
           ?.businessHoursId;
         if (typeof raw !== "string" || raw === "") return [];
-        try {
-          return [BigInt(raw)];
-        } catch {
-          return [];
-        }
+        // NOTE: this id came out of an integration CONFIG, which a caller wrote. A run of digits
+        // past 2^63-1 converts, so the `catch` this replaces never saw it and the value reached the
+        // `in` clause below — a 500 out of an export. Issue #407.
+        const id = parseDbId(raw);
+        return id === null ? [] : [id];
       });
       const bhIds = [
         ...new Set(

@@ -448,9 +448,15 @@ export function reminderNudge(a: ReminderNudgeArgs): AgentNudge {
   const tools = wantsConfirmation
     ? " If they confirm, call calendar_confirm_appointment with eventId set to the event_id value from the fenced data line (and calendarId set to the calendar_id value)."
     : " If they ask to reschedule or cancel, use calendar_update_event / calendar_cancel_event with eventId set to the event_id value from the fenced data line (and calendarId set to the calendar_id value).";
+  // Names no tool, and asserts the absence of none either. Which Calendar tool cannot reach this
+  // booking is knowable here; which tool CAN is not: the operator may have granted this booking
+  // system's own HTTP cancel or reschedule tool this very turn, and buildAppointmentContextSection,
+  // which reaches the same model in the same prompt, points it at exactly that. A flat "you have no
+  // tool" would be false whenever such a grant exists and would contradict the block above it, so
+  // the sentence defers to a tool it cannot enumerate and falls back to passing the request on.
   const noTools = wantsConfirmation
-    ? " Record what they answer in your reply; you have no tool to mark this appointment as confirmed."
-    : " If they ask to reschedule or cancel, say you will pass it on: you have no tool to change this appointment.";
+    ? " Record what they answer in your reply, and mark the appointment as confirmed with this booking system's own tool if you have one."
+    : " If they ask to reschedule or cancel, use this booking system's own tool if you have one, and otherwise say you will pass the request on.";
   return {
     source: "appointment_reminder",
     kind: "reminder",

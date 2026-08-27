@@ -171,6 +171,28 @@ describe("reminderNudge", () => {
         .instructions,
     ).toContain("calendar_update_event");
   });
+
+  // (#352, round 4) Not naming a Calendar tool is not the same as asserting the model holds no tool
+  // at all. The operator's own booking system may have an HTTP cancel/reschedule tool granted this
+  // very turn — buildAppointmentContextSection points the same model at exactly that, in the same
+  // prompt — so a flat "you have no tool" is both false and self-contradictory. The nudge may only
+  // rule out the Calendar family, which it can prove.
+  test("never claims the model has no tool, and defers to the booking system's own", () => {
+    for (const askConfirmation of [true, false]) {
+      const n = reminderNudge({
+        ...args,
+        canOperate: false,
+        isLast: true,
+        askConfirmation,
+      });
+      expect(n.instructions).not.toMatch(/you have no tool/i);
+      expect(n.instructions).not.toMatch(/no tool to/i);
+      // What it says instead: use the booking system's own tool when there is one.
+      expect(n.instructions).toMatch(
+        /booking system's own tool if you have one/i,
+      );
+    }
+  });
 });
 
 // NOTE: The reminder turn (and the customer's reply to it) must be able to act on the exact event:

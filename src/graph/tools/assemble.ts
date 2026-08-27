@@ -1,4 +1,5 @@
 import type { StructuredToolInterface } from "@langchain/core/tools";
+import type { Prisma } from "@/../generated/prisma/client";
 import type { ScopedDb } from "@/lib/tenancy";
 import type { DocumentField } from "@/modules/documents/blocks";
 import { parseTemplateContent } from "@/modules/documents/validate";
@@ -80,6 +81,36 @@ export interface AgentToolSelections {
   documentSelections: DocumentSelection[];
 }
 
+// THE PRECEDENCE WHEN TWO TOOLS CLAIM ONE NAME (#389), anchored on the SOURCE's identity.
+//
+// `namespacedToolName` gives the plain name to whoever asks first and `_2` to the next, and
+// `dropDuplicateToolNames` keeps the first of two toolpack instances that expose the same names. So
+// the order this read comes back in is not cosmetic; it decides which tool the model sees under
+// which name.
+//
+// Unordered, that answer was the physical row order — and `replaceAgentToolSelections` deletes every
+// row and recreates the set on each save, in the order the client sent, which for the editor is the
+// operator's CLICK HISTORY (`toggleMcp` appends on toggle-on). Toggling one of two colliding
+// connections off and back on therefore renamed the other one's tools, mid-conversation, for a
+// change that granted nothing new.
+//
+// Ordering by the grant's `id` looks equivalent and is not: the recreated rows are assigned ids in
+// the order the client sent, so it reproduces exactly the click history it was meant to erase.
+// Measured — grants inserted alphabetically read back as ids 6727…6734, and after a re-save that
+// sent them reversed they read back 6734…6727, with `ORDER BY id` agreeing with the unordered read
+// both times. The connection / instance / definition rows are the thing a grant POINTS AT, and a
+// grant re-save never touches them.
+//
+// SCOPE: within a tenant. An export/import into another tenant recreates those rows too, so the
+// exposed name can still move there — #389 keeps that half.
+const GRANT_ORDER: Prisma.AgentToolSelectionOrderByWithRelationInput[] = [
+  { source: "asc" },
+  { mcpServerConnectionId: "asc" },
+  { integrationInstanceId: "asc" },
+  { toolDefinitionId: "asc" },
+  { documentTemplateId: "asc" },
+];
+
 // Loads every tool grant for an agent in one scoped read (DB only — no network; MCP connect/
 // discover and the toolpack build happen later, outside the tx). Resolves each MCP connection's
 // vault credential here (still a scoped DB read). A grant whose source is disabled
@@ -90,6 +121,7 @@ export async function loadToolSelections(
 ): Promise<AgentToolSelections> {
   const rows = await db.agentToolSelection.findMany({
     where: { agentId },
+    orderBy: GRANT_ORDER,
     select: {
       source: true,
       enabledTools: true,

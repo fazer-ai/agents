@@ -11,6 +11,7 @@ import {
   NotFoundError,
 } from "@/lib/errors";
 import { SettingsTextTooLongError } from "@/modules/agents/service";
+import { refuseUnstorable } from "@/modules/rag/documents";
 import { expectWaiverLedger } from "@/tests/utils/ledger";
 import { setupPrismaMock } from "@/tests/utils/prisma-mock";
 
@@ -46,10 +47,22 @@ app.get("/__refusal/unnamed", () => {
 app.get("/__refusal/ambient-tenant", () => {
   throw new ActiveTenantNotFoundError(1234n);
 });
+// The shared refusal for a character Postgres will not store, reached by every document, approval
+// and knowledge-base write. Its field lived only in `translationParams`, so the body it answered was
+// `{ error }` alone and the console had nothing to key on — for `title` and `text`, which are the
+// two boxes those forms draw.
+app.get("/__refusal/unstorable", () => {
+  refuseUnstorable([
+    ["title", "fine"],
+    ["text", `has a ${NUL} in it`],
+  ]);
+});
 // The caller-named refusal, spelled exactly as `getTenant` spells it today.
 app.get("/__refusal/named-tenant", () => {
   throw new NotFoundError("Tenant not found", "errors.tenantNotFound");
 });
+const NUL = "\u0000";
+
 const refusal = async (
   path: string,
   lang: string,
@@ -95,6 +108,15 @@ describe("a refusal over the wire", () => {
     const { status, body } = await refusal("/__refusal/declared", "en");
     expect(status).toBe(400);
     expect(body.field).toBe("kanban.instructions");
+  });
+
+  test("the unstorable-character refusal names the field it is about", async () => {
+    // The one the client wiring for documents and approvals depends on: `DOC_FIELDS` declares
+    // `title` and `text`, and neither can be placed if the body carries no name.
+    const { status, body } = await refusal("/__refusal/unstorable", "en");
+    expect(status).toBe(400);
+    expect(body.field).toBe("text");
+    expect(body.error).toContain("U+0000");
   });
 
   test("a refusal that names no field answers the same body it answers today", async () => {

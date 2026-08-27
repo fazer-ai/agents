@@ -9,10 +9,14 @@ import {
   Logo,
 } from "@/client/components";
 import { useAuth } from "@/client/contexts/AuthContext";
+import { useFieldRefusal } from "@/client/hooks/useFieldRefusal";
 import { useGoogleSignIn } from "@/client/hooks/useGoogleSignIn";
 import { api } from "@/client/lib/api";
-import type { ApiErrorPayload } from "@/client/lib/types";
 import { cn } from "@/client/lib/utils";
+
+// The two keys the signup body carries. An address that already has an account answers 400 "Email
+// already in use" and names `email` — the whole reason this page can place anything.
+const SIGNUP_FIELDS = ["email", "password"] as const;
 
 // biome-ignore lint/plugin/require-page-container: auth page renders its own centered layout outside <Layout>, so <PageContainer> does not apply
 export function SignupPage() {
@@ -32,6 +36,11 @@ export function SignupPage() {
   // form submit cannot both pass their guards before React commits the pending
   // state update.
   const authInFlightRef = useRef(false);
+  const refusal = useFieldRefusal(SIGNUP_FIELDS);
+  // What the inputs hold right now, readable from inside a request that started before it. Above the
+  // early returns below, because a hook after a conditional return is not called on every render.
+  const sentRef = useRef({ email, password });
+  sentRef.current = { email, password };
 
   if (user) return <Navigate to="/" replace />;
   // NOTE: Public signup is opt-in (SIGNUP_ENABLED). When closed, the page is
@@ -61,19 +70,22 @@ export function SignupPage() {
     setLoading(true);
 
     try {
-      const { data, error: apiError } = await api.api.auth.signup.post({
-        email,
-        password,
-      });
+      const sent = { email, password };
+      const { data, error: apiError } = await api.api.auth.signup.post(sent);
 
       if (apiError) {
         setError(
-          (apiError.value as ApiErrorPayload)?.error ||
+          refusal.capture(
+            apiError,
             t("auth.signupFailed", "Signup failed"),
+            sent,
+            sentRef.current,
+          ) ?? "",
         );
         return;
       }
 
+      refusal.clear();
       if (data?.user) {
         login(data.user);
         navigate("/");
@@ -151,6 +163,8 @@ export function SignupPage() {
               required
               disabled={authPending}
               placeholder={t("auth.emailPlaceholder", "you@example.com")}
+              error={!!refusal.at("email", email)}
+              errorMessage={refusal.at("email", email) ?? undefined}
             />
           </div>
 
@@ -171,6 +185,8 @@ export function SignupPage() {
               minLength={8}
               disabled={authPending}
               placeholder="••••••••"
+              error={!!refusal.at("password", password)}
+              errorMessage={refusal.at("password", password) ?? undefined}
               helperText={t(
                 "auth.passwordMinLength",
                 "Must be at least 8 characters",

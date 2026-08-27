@@ -78,6 +78,17 @@ export function OAuthConsentPage() {
   }, [req, navigate]);
 
   const decide = async (decision: Decision) => {
+    // The server's own sentence is NOT shown here, and this is the one screen on the sweep where that
+    // is the right answer. Measured: this endpoint's only two refusals are a bare
+    // `UnauthorizedError()` and a bare `NotFoundError()` — "Unauthorized" and "Not found" — and the
+    // second is the ordinary case (the pending authorization expired, was consumed in another tab, or
+    // the CSRF token no longer matches). Showing "Not found" would cost the only recovery action the
+    // person has and give nothing back. The better fix is on the server, where that 404 could carry a
+    // key saying what expired; until it does, the client's words are the more specific ones.
+    const generic = t(
+      "oauth.consent.genericError",
+      "Something went wrong. Reconnect from the application to try again.",
+    );
     if (!details || inFlightRef.current) return;
     inFlightRef.current = true;
     setSubmitting(decision);
@@ -87,23 +98,13 @@ export function OAuthConsentPage() {
         .consent({ req })
         .post({ decision, csrfToken: details.csrfToken });
       if (apiError || !data?.redirect) {
-        setError(
-          t(
-            "oauth.consent.genericError",
-            "Something went wrong. Reconnect from the application to try again.",
-          ),
-        );
+        setError(generic);
         return;
       }
       // Hand control back to the MCP client (full navigation to its redirect URI).
       window.location.assign(data.redirect);
     } catch {
-      setError(
-        t(
-          "oauth.consent.genericError",
-          "Something went wrong. Reconnect from the application to try again.",
-        ),
-      );
+      setError(generic);
     } finally {
       inFlightRef.current = false;
       setSubmitting(null);

@@ -196,6 +196,9 @@ const baseAuthController = new Elysia({
         set.status = 400;
         return {
           error: translate("errors.emailInUse", "Email already in use"),
+          // The one input the operator fixes, named the way every other refusal names one (#231).
+          // Built by hand here rather than raised as an AppError, so `refusalBody` never sees it.
+          field: "email",
         };
       }
 
@@ -420,6 +423,9 @@ const baseAuthController = new Elysia({
               "errors.currentPasswordIncorrect",
               "Current password is incorrect",
             ),
+            // The form has two password boxes and this refusal is about exactly one of them. Built by
+            // hand here rather than raised as an AppError, so `refusalBody` never sees it.
+            field: "currentPassword",
           };
         }
         throw error;
@@ -510,6 +516,7 @@ const baseAuthController = new Elysia({
           set.status = 409;
           return {
             error: translate("errors.emailInUse", "Email already in use"),
+            field: "email",
           };
         }
         throw error;

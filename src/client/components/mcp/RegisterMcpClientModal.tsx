@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Button,
@@ -10,11 +10,20 @@ import {
   Textarea,
   useOnModalOpen,
 } from "@/client/components";
+import { useFieldRefusal } from "@/client/hooks/useFieldRefusal";
 import { api } from "@/client/lib/api";
 
 // Supported MCP scopes (must match MCP_SCOPES server-side). mcp:admin is honored only for a
 // SUPER_ADMIN user at grant time, but a client MAY be allowed to request it.
 const MCP_SCOPES = ["mcp:read", "mcp:write", "mcp:admin"] as const;
+
+// The keys of the body this modal writes, which are the names the route refuses by (`refused
+// body.name`, `refused body.redirectUris.0`). The URI list is one Textarea, and an element-level
+// refusal lands on it: see placeRefusal.
+//
+// `firstParty` is not here on purpose: a Switch has nowhere to render a sentence, and a name
+// declared without a control behind it would be marked as placed and then shown to nobody.
+const MCP_CLIENT_FIELDS = ["name", "redirectUris", "scopes"] as const;
 
 export interface McpClientPayload {
   // Present when editing an existing client.
@@ -41,10 +50,13 @@ export function RegisterMcpClientModal({
   const [firstParty, setFirstParty] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const refusal = useFieldRefusal(modal.isOpen ? MCP_CLIENT_FIELDS : []);
 
   const editingId = modal.payload?.clientId;
 
   useOnModalOpen(modal, () => {
+    // The component outlives the dialog, so a mark from the last session is still held here.
+    refusal.clear();
     setName(modal.payload?.name ?? "");
     setRedirectUris((modal.payload?.redirectUris ?? []).join("\n"));
     setScopes(modal.payload?.scopes ?? ["mcp:read"]);
@@ -61,32 +73,45 @@ export function RegisterMcpClientModal({
     .split(/[\s,]+/)
     .map((u) => u.trim())
     .filter(Boolean);
+  // What the inputs hold right now, in the server's vocabulary. Read from a ref inside the request
+  // so a refusal about a value the operator has already replaced goes to the banner instead.
+  const current = {
+    name: name.trim(),
+    redirectUris: parsedUris,
+    scopes,
+    firstParty,
+  };
+  const currentRef = useRef(current);
+  currentRef.current = current;
   const valid =
     name.trim() !== "" && parsedUris.length > 0 && scopes.length > 0;
 
   const submit = async () => {
     setError("");
     setLoading(true);
+    const body = { ...current };
+    const held = (e: unknown) =>
+      refusal.capture(
+        e,
+        t("mcp.admin.clientSaveFailed", "Could not save the client"),
+        body,
+        currentRef.current,
+      ) ?? "";
     try {
-      const body = {
-        name: name.trim(),
-        redirectUris: parsedUris,
-        scopes,
-        firstParty,
-      };
       const { error: apiError } = editingId
         ? await api.api.v1.mcp.admin
             .clients({ clientId: editingId })
             .patch(body)
         : await api.api.v1.mcp.admin.clients.post(body);
       if (apiError) {
-        setError(t("mcp.admin.clientSaveFailed", "Could not save the client"));
+        setError(held(apiError));
         return;
       }
+      refusal.clear();
       onSaved();
       modal.close();
-    } catch {
-      setError(t("mcp.admin.clientSaveFailed", "Could not save the client"));
+    } catch (e) {
+      setError(held(e));
     } finally {
       setLoading(false);
     }
@@ -108,7 +133,11 @@ export function RegisterMcpClientModal({
             {error}
           </div>
         )}
-        <FormField label={t("mcp.admin.clientName", "Name")} required>
+        <FormField
+          label={t("mcp.admin.clientName", "Name")}
+          required
+          error={refusal.at("name", current.name)}
+        >
           <Input
             value={name}
             onChange={(e) => setName(e.target.value)}
@@ -123,6 +152,7 @@ export function RegisterMcpClientModal({
             "mcp.admin.redirectUrisHint",
             "One per line. Exact https URLs (http allowed only for loopback); no wildcards or fragments.",
           )}
+          error={refusal.at("redirectUris", current.redirectUris)}
         >
           <Textarea
             value={redirectUris}
@@ -133,7 +163,12 @@ export function RegisterMcpClientModal({
             placeholder={"https://app.example.com/oauth/callback"}
           />
         </FormField>
-        <FormField label={t("mcp.admin.scopes", "Scopes")} required group>
+        <FormField
+          label={t("mcp.admin.scopes", "Scopes")}
+          required
+          group
+          error={refusal.at("scopes", current.scopes)}
+        >
           <div className="flex flex-col gap-1.5">
             {MCP_SCOPES.map((scope) => (
               <label

@@ -2337,7 +2337,6 @@
       "signedInHint": "Você precisa estar autenticado no servidor MCP no navegador para aprovar o acesso."
     },
     "name": "Nome",
-    "nameInUse": "Já existe um segredo com esse nome.",
     "namePlaceholder": "minha-api-key",
     "noRefs": "Não referenciado em nenhum lugar.",
     "noSearchResults": "Nenhum segredo corresponde à busca.",

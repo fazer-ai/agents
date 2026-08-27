@@ -8,8 +8,8 @@ import { useUnsavedChanges } from "@/client/components/Modal";
 import { Select } from "@/client/components/Select";
 import { TimezonePicker } from "@/client/components/TimezonePicker";
 import { useToast } from "@/client/components/Toast";
+import { useFieldRefusal } from "@/client/hooks/useFieldRefusal";
 import { api } from "@/client/lib/api";
-import { apiErrorMessage } from "@/client/lib/apiError";
 
 type HoursData = Awaited<
   ReturnType<(typeof api.api.v1)["business-hours"]["get"]>
@@ -84,6 +84,10 @@ export interface BusinessHoursFormProps {
 // BusinessHoursPanel (via modal) and SchedulePicker (inline create/edit).
 // When rendered inside a <Modal>, calls useUnsavedChanges so the modal's
 // discard-confirmation guard fires automatically on dirty state.
+// The keys of the body this form writes. The window and exception lists are refused per element
+// (`refused body.windows.0`), which lands on the list they belong to: see placeRefusal.
+const HOURS_FIELDS = ["name", "timezone", "windows", "exceptions"] as const;
+
 export function BusinessHoursForm({
   mode,
   initial,
@@ -101,6 +105,7 @@ export function BusinessHoursForm({
   const [windows, setWindows] = useState<Window[]>(
     initial?.windows ?? DEFAULT_WINDOWS,
   );
+  const refusal = useFieldRefusal(HOURS_FIELDS);
   const [exceptions, setExceptions] = useState<Exception[]>(
     initial?.exceptions ?? [],
   );
@@ -183,6 +188,20 @@ export function BusinessHoursForm({
   const hasInvalidWindow = windows.some(windowInvalid);
   const hasInvalidException = exceptions.some(exceptionInvalid);
 
+  // What the inputs hold right now, in the server's vocabulary, and what the write sends.
+  const currentRef = useRef({
+    name: name.trim(),
+    timezone: timezone.trim() || "UTC",
+    windows,
+    exceptions,
+  });
+  currentRef.current = {
+    name: name.trim(),
+    timezone: timezone.trim() || "UTC",
+    windows,
+    exceptions,
+  };
+
   async function save() {
     if (!name.trim()) return;
     if (hasInvalidException) {
@@ -212,27 +231,35 @@ export function BusinessHoursForm({
       windows,
       exceptions,
     };
+    const held = (e: unknown) =>
+      refusal.capture(
+        e,
+        t("hours.saveError", "Could not save."),
+        body,
+        currentRef.current,
+      );
     try {
       if (mode === "update" && initial?.id) {
         const { data, error: err } = await api.api.v1["business-hours"]({
           id: initial.id,
         }).patch(body);
         if (err || !data) throw err;
+        refusal.clear();
         showToast(t("hours.saved", "Business hours saved."), "success");
         onSaved(data.businessHours.id, data.businessHours.name);
       } else {
         const { data, error: err } =
           await api.api.v1["business-hours"].post(body);
         if (err || !data) throw err;
+        refusal.clear();
         showToast(t("hours.saved", "Business hours saved."), "success");
         onSaved(data.businessHours.id, data.businessHours.name);
       }
     } catch (e) {
-      showToast(
-        apiErrorMessage(e) ||
-          t("hours.saveError", "Could not save (check the timezone)."),
-        "error",
-      );
+      // The fixed sentence this replaces said "check the timezone" for every refusal this write can
+      // answer, a duplicate name included: the confident wrong pointer #224 is about.
+      const toast = held(e);
+      if (toast) showToast(toast, "error");
     } finally {
       setSaving(false);
     }
@@ -241,10 +268,18 @@ export function BusinessHoursForm({
   return (
     <div className="flex flex-col gap-4">
       <div className="grid gap-4 sm:grid-cols-2">
-        <FormField label={t("hours.name", "Name")} required>
+        <FormField
+          label={t("hours.name", "Name")}
+          required
+          error={refusal.at("name", name.trim())}
+        >
           <Input value={name} onChange={(e) => setName(e.target.value)} />
         </FormField>
-        <FormField label={t("hours.timezone", "Timezone")} group>
+        <FormField
+          label={t("hours.timezone", "Timezone")}
+          group
+          error={refusal.at("timezone", timezone.trim() || "UTC")}
+        >
           <TimezonePicker
             value={timezone}
             onChange={setTimezone}
@@ -257,6 +292,11 @@ export function BusinessHoursForm({
         <div className="flex items-center justify-between">
           <span className="font-medium text-sm text-text-secondary">
             {t("hours.windows", "Windows")}
+            {refusal.at("windows", windows) && (
+              <span className="ml-2 font-normal text-error text-xs">
+                {refusal.at("windows", windows)}
+              </span>
+            )}
           </span>
           <Button
             variant="secondary"
@@ -344,6 +384,11 @@ export function BusinessHoursForm({
         <div className="flex items-center justify-between">
           <span className="font-medium text-sm text-text-secondary">
             {t("hours.exceptions", "Holidays and closures")}
+            {refusal.at("exceptions", exceptions) && (
+              <span className="ml-2 font-normal text-error text-xs">
+                {refusal.at("exceptions", exceptions)}
+              </span>
+            )}
           </span>
           <Button
             variant="secondary"

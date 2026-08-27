@@ -1,5 +1,5 @@
 import { Check, Copy } from "lucide-react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Button,
@@ -9,7 +9,11 @@ import {
   type ModalController,
   useOnModalOpen,
 } from "@/client/components";
+import { useFieldRefusal } from "@/client/hooks/useFieldRefusal";
 import { api } from "@/client/lib/api";
+
+// The one name this modal sends, spelled the way the route refuses it (`refused body.displayName`).
+const API_KEY_FIELDS = ["displayName"] as const;
 
 // Modal to create a per-tenant API key. On success it reveals the plaintext token ONCE
 // (copy-to-clipboard + a "shown only once" warning); the token is never retrievable again — only its
@@ -27,8 +31,16 @@ export function CreateApiKeyModal({
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const refusal = useFieldRefusal(modal.isOpen ? API_KEY_FIELDS : []);
+  // The CURRENT value, readable from inside a request that started before it: the operator can type
+  // while the create is out, and a refusal about a name they have already replaced belongs in the
+  // banner rather than under a box that no longer holds it.
+  const nameRef = useRef(displayName);
+  nameRef.current = displayName;
 
   useOnModalOpen(modal, () => {
+    // The component outlives the dialog, so a mark from the last session is still held here.
+    refusal.clear();
     setDisplayName("");
     setToken(null);
     setCopied(false);
@@ -41,18 +53,25 @@ export function CreateApiKeyModal({
   const submit = async () => {
     setError("");
     setLoading(true);
+    const sent = { displayName: displayName.trim() };
+    const held = (e: unknown) =>
+      refusal.capture(
+        e,
+        t("apiKeys.createFailed", "Could not create the API key"),
+        sent,
+        { displayName: nameRef.current.trim() },
+      );
     try {
-      const { data, error: apiError } = await api.api.v1["api-keys"].post({
-        displayName: displayName.trim(),
-      });
+      const { data, error: apiError } = await api.api.v1["api-keys"].post(sent);
       if (apiError || !data) {
-        setError(t("apiKeys.createFailed", "Could not create the API key"));
+        setError(held(apiError) ?? "");
         return;
       }
+      refusal.clear();
       setToken(data.token);
       onCreated();
-    } catch {
-      setError(t("apiKeys.createFailed", "Could not create the API key"));
+    } catch (e) {
+      setError(held(e) ?? "");
     } finally {
       setLoading(false);
     }
@@ -120,6 +139,7 @@ export function CreateApiKeyModal({
               "apiKeys.nameHint",
               "A label to recognize this key later (e.g. the client or service that uses it).",
             )}
+            error={refusal.at("displayName", displayName.trim())}
           >
             <Input
               value={displayName}

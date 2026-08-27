@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/client/components/Button";
 import { CredentialPicker } from "@/client/components/CredentialPicker";
@@ -11,8 +11,8 @@ import {
   useOnModalOpen,
 } from "@/client/components/Modal";
 import { Switch } from "@/client/components/Switch";
+import { useFieldRefusal } from "@/client/hooks/useFieldRefusal";
 import { api } from "@/client/lib/api";
-import type { ApiErrorPayload } from "@/client/lib/types";
 import { cn } from "@/client/lib/utils";
 import { isValidHttpUrl } from "@/client/lib/validation";
 import { webhookEventLabel } from "@/client/lib/webhookEvents";
@@ -34,6 +34,10 @@ export interface WebhookModalPayload {
   subscription?: WebhookSubscription;
 }
 
+// The keys of the body this modal writes: the route refuses by them (`refused body.url`) and
+// `requireVaultRef` names `secretRef`.
+const WEBHOOK_FIELDS = ["url", "events", "secretRef"] as const;
+
 export function WebhookSubscriptionModal({
   modal,
   events,
@@ -44,6 +48,7 @@ export function WebhookSubscriptionModal({
   onSaved: () => void;
 }) {
   const { t } = useTranslation();
+  const refusal = useFieldRefusal(modal.isOpen ? WEBHOOK_FIELDS : []);
   const enabledId = useId();
   const editing = modal.payload?.subscription;
   const [url, setUrl] = useState("");
@@ -54,6 +59,8 @@ export function WebhookSubscriptionModal({
   const [loading, setLoading] = useState(false);
 
   useOnModalOpen(modal, () => {
+    // The component outlives the dialog, so a mark from the last session is still held here.
+    refusal.clear();
     const sub = modal.payload?.subscription;
     setUrl(sub?.url ?? "");
     setSelected(new Set(sub?.events ?? []));
@@ -61,6 +68,17 @@ export function WebhookSubscriptionModal({
     setEnabled(sub?.enabled ?? true);
     setError("");
   });
+
+  // What the inputs hold right now, in the server's vocabulary, and what the write sends. One
+  // expression, because a refusal is matched against the value that was SENT.
+  const current = {
+    url,
+    events: [...selected],
+    secretRef: secretRef.trim() || null,
+    enabled,
+  };
+  const currentRef = useRef(current);
+  currentRef.current = current;
 
   const toggleEvent = (ev: string) => {
     setSelected((prev) => {
@@ -74,34 +92,31 @@ export function WebhookSubscriptionModal({
   const handleSubmit = async () => {
     setError("");
     setLoading(true);
+    const body = { ...current };
+    const held = (e: unknown) =>
+      refusal.capture(
+        e,
+        t("webhooks.saveFailed", "Could not save the subscription"),
+        body,
+        currentRef.current,
+      ) ?? "";
     try {
-      const eventsArr = [...selected];
-      const ref = secretRef.trim() || null;
       const apiError = editing
         ? (
             await api.api.v1.webhooks
               .subscriptions({ id: editing.id })
-              .patch({ url, events: eventsArr, secretRef: ref, enabled })
+              .patch(body)
           ).error
-        : (
-            await api.api.v1.webhooks.subscriptions.post({
-              url,
-              events: eventsArr,
-              secretRef: ref,
-              enabled,
-            })
-          ).error;
+        : (await api.api.v1.webhooks.subscriptions.post(body)).error;
       if (apiError) {
-        setError(
-          (apiError.value as ApiErrorPayload)?.error ||
-            t("webhooks.saveFailed", "Could not save the subscription"),
-        );
+        setError(held(apiError));
         return;
       }
+      refusal.clear();
       onSaved();
       modal.close();
-    } catch {
-      setError(t("webhooks.saveFailed", "Could not save the subscription"));
+    } catch (e) {
+      setError(held(e));
     } finally {
       setLoading(false);
     }
@@ -166,15 +181,26 @@ export function WebhookSubscriptionModal({
               "Must be a public HTTPS URL. Private and metadata addresses are blocked.",
             )}
           />
-          {urlInvalid && url.trim() && (
+          {urlInvalid && url.trim() ? (
             <p className="mt-1 text-error text-xs">
               {t("common.invalidUrl", "Must be a valid http(s) URL.")}
             </p>
+          ) : (
+            refusal.at("url", current.url) && (
+              <p className="mt-1 text-error text-xs">
+                {refusal.at("url", current.url)}
+              </p>
+            )
           )}
         </div>
 
         <fieldset>
           <legend className={labelCls}>{t("webhooks.events", "Events")}</legend>
+          {refusal.at("events", current.events) && (
+            <p className="mb-1 text-error text-xs">
+              {refusal.at("events", current.events)}
+            </p>
+          )}
           <div className="flex flex-col gap-1">
             {events.map((ev) => {
               const checked = selected.has(ev);
@@ -216,6 +242,7 @@ export function WebhookSubscriptionModal({
             "webhooks.secretRefHint",
             "Signs each delivery (HMAC) so your endpoint can verify it. Leave blank for unsigned.",
           )}
+          error={refusal.at("secretRef", current.secretRef)}
         >
           <CredentialPicker
             value={secretRef}

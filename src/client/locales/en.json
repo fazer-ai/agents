@@ -2329,7 +2329,6 @@
       "signedInHint": "You must be signed in to the MCP server in your browser to approve access."
     },
     "name": "Name",
-    "nameInUse": "A secret with this name already exists.",
     "namePlaceholder": "my-api-key",
     "noRefs": "Not referenced anywhere.",
     "noSearchResults": "No secrets match your search.",

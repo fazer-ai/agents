@@ -1,6 +1,6 @@
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import { z } from "zod";
-import { DEFAULT_TIMEZONE } from "@/graph/time";
+import { DEFAULT_TIMEZONE, partsInTimezone } from "@/graph/time";
 import { failableTool, toolFailure } from "@/graph/tools/failure";
 import {
   isExpectedResult,
@@ -357,7 +357,27 @@ async function registerDeclaredAppointment(
     // does the round trip and REPORTS whether the wall clock exists, which is exactly the question
     // and the reason its own header says the two callers want opposite things with the answer.
     const { ms, exists } = zonedWallClock(local, tz);
+    // `exists` answers the SPRING-FORWARD half: an hour the zone skipped is not a time at all.
     if (!exists || !Number.isFinite(ms)) return null;
+    // And this answers the FALL-BACK half, which `exists` cannot see because both readings are real.
+    // `01:30` on a fall-back night happens TWICE, an hour apart, and zonedWallClock returns whichever
+    // it lands on — so an operator meaning the second occurrence would get an appointment and a
+    // reminder an hour early, silently. Two instants rendering the same wall clock is the whole test.
+    //
+    // The cost is one hour a year, in the zones that shift, for an API that answers without an
+    // offset: those bookings are reported as an unresolved start instead of being guessed at. The
+    // booking still stands in the operator's own system, and the report names the path they can point
+    // somewhere unambiguous.
+    const wallOf = (at: number): string => {
+      const q = partsInTimezone(new Date(at), tz);
+      return `${q.YYYY}-${q.MM}-${q.DD}T${q.HH}:${q.mm}:${q.ss}`;
+    };
+    const here = wallOf(ms);
+    // Every shift size a real zone has used, both directions. A half hour is Lord Howe; two hours is
+    // historical, and costs one comparison to keep covered.
+    for (const minutes of [-120, -60, -30, 30, 60, 120]) {
+      if (wallOf(ms + minutes * 60_000) === here) return null;
+    }
     const asUtc = Date.parse(`${local}Z`);
     if (!Number.isFinite(asUtc)) return null;
     const offsetMin = Math.round((asUtc - ms) / 60_000);

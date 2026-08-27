@@ -342,6 +342,37 @@ describe("an offset-less start is read in the agent's own zone", () => {
     expect(booked[0]?.startISO).toBe("2026-09-02T14:00:00-05:00");
   });
 
+  // The other half of the same question, and the one `exists` cannot answer: on a fall-back night the
+  // wall clock happens TWICE, an hour apart, and both readings are real. Guessing picks one and moves
+  // the appointment an hour, silently.
+  test("a wall clock the zone repeats is reported, not guessed", async () => {
+    // 2026-11-01 is the fall-back in New York: 01:30 exists at -04:00 and again at -05:00.
+    const { tool, booked, errors } = harness(
+      { appointment: BOOK },
+      200,
+      bodyAt("2026-11-01T01:30:00"),
+      "America/New_York",
+    );
+    await tool.invoke({});
+    expect(booked).toEqual([]);
+    expect(errors[0]?.message).toContain("data.start");
+  });
+
+  // The control on the other side of the same night: an hour later there is only one 02:30, and it
+  // resolves normally. Without this the test above would pass against a build that refused the whole
+  // zone, or the whole day.
+  test("an unambiguous hour on the same night still resolves", async () => {
+    const { tool, booked, errors } = harness(
+      { appointment: BOOK },
+      200,
+      bodyAt("2026-11-01T02:30:00"),
+      "America/New_York",
+    );
+    await tool.invoke({});
+    expect(errors).toEqual([]);
+    expect(booked[0]?.startISO).toBe("2026-11-01T02:30:00-05:00");
+  });
+
   test("a wall clock the zone skipped is reported, not guessed", async () => {
     // 2026-09-06 is the DST spring-forward in Santiago: 00:30 does not exist that day.
     const { tool, booked, errors } = harness(

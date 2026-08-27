@@ -113,17 +113,21 @@ describe("readAppointmentDeclaration", () => {
       { ...BOOK, provider: "  Feegow-01  " },
       { ...READ, provider: "feegow-01" },
     ],
+    // Both of the next two used to fall back to the shared default, and that WAS the defect (round
+    // 14): a typo on the booking tool moved it into `declared` while its paired cancel tool, spelled
+    // correctly, kept `feegow`, so the cancellation never found the record. Refusing is what the form
+    // has done since round 3, and the reader is what the REST and MCP paths go through.
     [
-      "a provider that is not a slug falls back to the shared default",
+      "a provider that is not a slug is refused, not defaulted",
       { ...BOOK, provider: "Sistema da Clínica!" },
-      { ...READ },
+      null,
     ],
     // Claiming Google's own name would put an operator's id into Google's id space, where the
     // prompt block tells the model to cancel it with calendar_cancel_event.
     [
       "a declaration may not claim to be Google Calendar",
       { ...BOOK, provider: "google_calendar" },
-      { ...READ },
+      null,
     ],
   ];
 
@@ -332,6 +336,39 @@ describe("sampleLeaves", () => {
 
 // (#352, round 9) What a declared response hands over is bounded, and the three fields answer
 // differently because the question is whether the consumer needs the exact bytes.
+// (#352, round 14) OMITTED and SUPPLIED-BUT-INVALID are different answers. Collapsing them meant a
+// typo on the booking tool moved it into the shared namespace while its paired cancel tool, spelled
+// correctly, kept its own — and the cancellation then never found the record. The form has refused
+// this since round 3; the reader is what the REST and MCP paths go through.
+describe("readAppointmentDeclaration and an explicit provider", () => {
+  const withProvider = (provider: unknown) =>
+    readAppointmentDeclaration({
+      action: "cancel",
+      idPath: "data.id",
+      ...(provider === undefined ? {} : { provider }),
+    });
+
+  test("omitted takes the shared default", () => {
+    expect(withProvider(undefined)?.provider).toBe("declared");
+    // Null is how a caller CLEARS it, which is the same answer as never naming one.
+    expect(withProvider(null)?.provider).toBe("declared");
+  });
+
+  test("a valid slug is kept", () => {
+    expect(withProvider("feegow")?.provider).toBe("feegow");
+  });
+
+  test("a malformed one is REFUSED, not quietly defaulted", () => {
+    expect(withProvider("Feegow Clínica!")).toBeNull();
+    expect(withProvider(42)).toBeNull();
+    expect(withProvider("")).toBeNull();
+  });
+
+  test("and so is Google's own name, which is the reserved one", () => {
+    expect(withProvider("google_calendar")).toBeNull();
+  });
+});
+
 describe("extractAppointment bounds what it persists", () => {
   const decl = readAppointmentDeclaration({
     action: "book",

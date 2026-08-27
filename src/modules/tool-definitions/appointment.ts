@@ -73,6 +73,16 @@ export function readAppointmentDeclaration(
   const action = bag.action;
   if (action !== "book" && action !== "cancel") return null;
   if (!isUsablePath(bag.idPath)) return null;
+  // OMITTED and SUPPLIED-BUT-INVALID are different answers, and collapsing them is what let a typo
+  // through. `readProviderSlug` says null for both a malformed slug and for the reserved
+  // `google_calendar`, so `?? DECLARED_PROVIDER` silently moved an explicitly named booking system
+  // into the shared namespace: the book tool saved as `declared` while its paired cancel tool, spelled
+  // correctly, saved as `feegow`, and the cancellation then never found the record. The form has
+  // refused this since the third round; this is the same refusal on the REST/MCP path, which is where
+  // a declaration can also be written.
+  if (bag.provider !== undefined && bag.provider !== null) {
+    if (readProviderSlug(bag.provider) === null) return null;
+  }
   const provider = readProviderSlug(bag.provider) ?? DECLARED_PROVIDER;
   if (action === "cancel") return { action, provider, idPath: bag.idPath };
   if (!isUsablePath(bag.startPath)) return null;

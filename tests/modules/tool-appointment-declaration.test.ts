@@ -319,6 +319,48 @@ describe("extractAppointment bounds what it persists", () => {
     expect(r).toEqual({ ok: false, missing: ["data.start"] });
   });
 
+  // (#352, round 11) The SAME split answers the other thing a value can be wrong about. `external_id`
+  // is text and the scheduler payload is jsonb; both refuse a NUL and both refuse half a character,
+  // so an unstoreable value does not degrade anything — the write throws and the booking is never
+  // recorded at all.
+  test("an id the database cannot store is refused, not repaired", () => {
+    // Repairing would be the worse answer HERE specifically: dropping the NUL mints an id that no
+    // longer matches what the operator's cancel tool will answer with, so the booking could never be
+    // retired. A refusal names the path and the operator points somewhere else.
+    const r = extractAppointment(decl, {
+      data: { id: "ap\u00001", start, title: "Consulta" },
+    });
+    expect(r).toEqual({ ok: false, missing: ["data.id"] });
+    // Half a character is refused the same way, and it is the half that survives JSON.parse.
+    const lone = extractAppointment(decl, {
+      data: { id: JSON.parse('"ap\\ud800"'), start, title: "Consulta" },
+    });
+    expect(lone).toEqual({ ok: false, missing: ["data.id"] });
+  });
+
+  test("an unstoreable start is refused too", () => {
+    const r = extractAppointment(decl, {
+      data: { id: "ap_1", start: `${start}\u0000`, title: "Consulta" },
+    });
+    expect(r).toEqual({ ok: false, missing: ["data.start"] });
+  });
+
+  test("an unstoreable summary is REPAIRED, and the booking still registers", () => {
+    // The opposite answer, for the same reason as the length: refusing the whole registration over a
+    // broken title would trade the follow-up pause for a nicer sentence, and the summary only ever
+    // reaches the model.
+    const r = extractAppointment(decl, {
+      data: {
+        id: "ap_1",
+        start,
+        title: JSON.parse('"Cons\\u0000ulta \\ud800"'),
+      },
+    });
+    expect(r.ok).toBe(true);
+    expect(r.ok && r.value.summary).toBe("Consulta \ufffd");
+    expect(r.ok && r.value.externalId).toBe("ap_1");
+  });
+
   test("an oversized summary is CLIPPED, and the booking still registers", () => {
     // The opposite answer, for the opposite reason: the summary only makes the prompt block read
     // better, so losing the tail costs nothing — while refusing would trade the follow-up pause for

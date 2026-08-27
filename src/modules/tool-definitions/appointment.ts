@@ -16,7 +16,7 @@
 // asks for them. Nothing is lost by the default: since #376 an appointment that arms no reminder is
 // an ordinary, fully-functioning record.
 
-import { clipText } from "@/lib/text";
+import { clipText, makeStorable, unstorableCodePoints } from "@/lib/text";
 import {
   DECLARED_PROVIDER,
   readProviderSlug,
@@ -210,6 +210,15 @@ export function sampleLeaves(root: unknown, max = 200): SampleLeaf[] {
 //   the follow-up pause for a nicer sentence. Unclipped it is worse than the id, because nothing
 //   downstream errors: it is re-rendered into EVERY subsequent turn's prompt.
 // - the START is parsed as an instant downstream, so anything this long cannot be one.
+//
+// The SAME split answers the second thing a value can be wrong about, which is characters Postgres
+// refuses outright — a NUL, or half of a character. `external_id` is `text` and the scheduler payload
+// is `jsonb`, and both refuse them, so an unstoreable value does not degrade anything: the write
+// throws and the appointment is never recorded. The id and the start are refused, and the summary is
+// repaired, for the reasons above and for one more that only applies here: REPAIRING AN ID CHANGES
+// IT. Dropping a NUL out of it mints a value that no longer matches what the operator's cancel tool
+// will answer with, so the booking could never be retired — a silent mis-aim of exactly the kind the
+// picker exists to remove, arriving from the other direction.
 const MAX_EXTERNAL_ID_CHARS = 200;
 const MAX_START_CHARS = 100;
 const MAX_SUMMARY_CHARS = 200;
@@ -223,7 +232,8 @@ function readBounded(
   max: number,
 ): string | undefined {
   const v = readPath(body, path);
-  return v !== undefined && v.length <= max ? v : undefined;
+  if (v === undefined || v.length > max) return undefined;
+  return unstorableCodePoints(v) === null ? v : undefined;
 }
 
 export interface ExtractedAppointment {
@@ -270,7 +280,11 @@ export function extractAppointment(
         ? (() => {
             const s = readPath(body, decl.summaryPath);
             return s !== undefined
-              ? { summary: clipText(s, MAX_SUMMARY_CHARS) }
+              ? // makeStorable BEFORE clipText, and the order is not cosmetic: the repair can only
+                // shorten (a NUL is dropped, an orphan half becomes one U+FFFD), so repairing first
+                // and cutting second leaves nothing behind, while cutting first would hand clipText a
+                // value it has to keep the defects of.
+                { summary: clipText(makeStorable(s), MAX_SUMMARY_CHARS) }
               : {};
           })()
         : {}),

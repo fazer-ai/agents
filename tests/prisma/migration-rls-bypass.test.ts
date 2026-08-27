@@ -4,6 +4,15 @@ import { Client } from "pg";
 // Every DATA migration over a tenant-scoped table must set the RLS bypass, asked ONCE here instead
 // of once per migration.
 //
+// WHICH bypass depends on when the migration runs, and that is not a style choice — the two
+// spellings are each inert in the other's era, silently. Before 20260827000000 the policy carried
+// `is_super_admin = 'on' OR tenant_id = <guc>` and the GUC was the escape; that migration split the
+// OR out into a role-restricted policy (issue #382), after which the GUC grants nothing at all and
+// the escape is `SET ROLE fazerai_fleet`. Measured on 17.10, running the same UPDATE as a
+// non-superuser owner against the post-split policy: the GUC form reaches ZERO rows and reports
+// success, the SET ROLE form reaches them. Before the split the role does not exist yet, so the new
+// spelling is a hard error there.
+//
 // The rule itself is old and documented (docs/deploy.md): those tables carry FORCE ROW LEVEL
 // SECURITY, which binds the table OWNER as well, and `MIGRATION_DATABASE_URL` is only ever promised
 // to be "superuser OR owner". On managed Postgres the admin role is typically the owner WITHOUT
@@ -60,12 +69,18 @@ export function needsBypass(sql: string, forcedTables: Set<string>): boolean {
   return tablesWrittenBy(sql).some((t) => forcedTables.has(t));
 }
 
-export function hasBypass(sql: string): boolean {
-  // Plain SET, never SET LOCAL: outside a transaction SET LOCAL is a no-op with a warning, which is
-  // the same silent failure wearing the right words.
-  return /^\s*SET\s+app\.is_super_admin\s*=/m.test(
-    sql.replace(/^\s*--.*$/gm, ""),
-  );
+// The migration that split the policy. Its own directory name is the boundary, and the comparison
+// is lexicographic because the names are fixed-width timestamps.
+export const POLICY_SPLIT_MIGRATION =
+  "20260827000000_rls_split_tenant_and_fleet_policies";
+
+// Plain SET, never SET LOCAL: outside a transaction SET LOCAL is a no-op with a warning, which is
+// the same silent failure wearing the right words.
+export function hasBypass(sql: string, migrationName: string): boolean {
+  const stripped = sql.replace(/^\s*--.*$/gm, "");
+  return migrationName < POLICY_SPLIT_MIGRATION
+    ? /^\s*SET\s+app\.is_super_admin\s*=/m.test(stripped)
+    : /^\s*SET\s+ROLE\s+fazerai_fleet\s*;/m.test(stripped);
 }
 
 describe.skipIf(!dbUp)("every data migration sets the RLS bypass", () => {
@@ -78,30 +93,76 @@ describe.skipIf(!dbUp)("every data migration sets the RLS bypass", () => {
       const name = entry.split("/")[0] ?? entry;
       if (GRANDFATHERED.has(name)) continue;
       const sql = await Bun.file(`${dir}/${entry}`).text();
-      if (needsBypass(sql, forced) && !hasBypass(sql)) offenders.push(name);
+      if (needsBypass(sql, forced) && !hasBypass(sql, name))
+        offenders.push(name);
     }
     expect(offenders).toEqual([]);
   });
 
   // The positive control. A scan that finds nothing passes whether it works or not, so the predicate
-  // is asked directly about a file it MUST reject and one it must not.
-  test("the predicate rejects a bare backfill and accepts a guarded one", () => {
+  // is asked directly about a file it MUST reject and one it must not — in BOTH eras, because the
+  // whole point of the boundary is that each spelling is wrong on the other side of it.
+  test("the predicate rejects a bare backfill and accepts the guard of its own era", () => {
     const table = [...forced][0];
     if (table === undefined) throw new Error("no FORCE-RLS table to test with");
     const bare = `UPDATE "${table}" SET x = 1;`;
-    const guarded = `SET app.is_super_admin = 'on';\n${bare}\nRESET app.is_super_admin;`;
+    const before = "20260101000000_old";
+    const after = "20270101000000_new";
+    const guc = `SET app.is_super_admin = 'on';\n${bare}\nRESET app.is_super_admin;`;
+    const role = `SET ROLE fazerai_fleet;\n${bare}\nRESET ROLE;`;
+
     expect(needsBypass(bare, forced)).toBe(true);
-    expect(hasBypass(bare)).toBe(false);
-    expect(hasBypass(guarded)).toBe(true);
+    expect(hasBypass(bare, before)).toBe(false);
+    expect(hasBypass(bare, after)).toBe(false);
+
+    // Each guard counts in its own era and NOT in the other's. Accepting both everywhere is the
+    // shape that would let a migration written today carry a line that reaches zero rows.
+    expect(hasBypass(guc, before)).toBe(true);
+    expect(hasBypass(guc, after)).toBe(false);
+    expect(hasBypass(role, after)).toBe(true);
+    expect(hasBypass(role, before)).toBe(false);
+
+    // The split migration itself is the first of the new era, not the last of the old.
+    expect(hasBypass(role, POLICY_SPLIT_MIGRATION)).toBe(true);
+    expect(hasBypass(guc, POLICY_SPLIT_MIGRATION)).toBe(false);
+
     // SET LOCAL is not the same thing, and reads as if it were.
-    expect(hasBypass(`SET LOCAL app.is_super_admin = 'on';\n${bare}`)).toBe(
+    expect(
+      hasBypass(`SET LOCAL app.is_super_admin = 'on';\n${bare}`, before),
+    ).toBe(false);
+    expect(hasBypass(`SET LOCAL ROLE fazerai_fleet;\n${bare}`, after)).toBe(
       false,
     );
+
     // DDL alone never needs it.
     expect(
       needsBypass(`ALTER TABLE "${table}" ADD COLUMN "x" INTEGER;`, forced),
     ).toBe(false);
     // And a commented-out backfill is not a backfill.
     expect(needsBypass(`-- UPDATE "${table}" SET x = 1;`, forced)).toBe(false);
+  });
+
+  // The era boundary is only a rule if the files obey it, and the two directions fail differently:
+  // a GUC line written today is inert and silent, a SET ROLE line written before the split is a
+  // hard error on a role that does not exist yet.
+  test("no migration carries the guard of the other era", async () => {
+    const dir = "prisma/migrations";
+    const stale: string[] = [];
+    const early: string[] = [];
+    for await (const entry of new Bun.Glob("*/migration.sql").scan({
+      cwd: dir,
+    })) {
+      const name = entry.split("/")[0] ?? entry;
+      const sql = (await Bun.file(`${dir}/${entry}`).text()).replace(
+        /^\s*--.*$/gm,
+        "",
+      );
+      const guc = /^\s*SET\s+app\.is_super_admin\s*=/m.test(sql);
+      const role = /^\s*SET\s+ROLE\s+fazerai_fleet\s*;/m.test(sql);
+      if (guc && name >= POLICY_SPLIT_MIGRATION) stale.push(name);
+      if (role && name < POLICY_SPLIT_MIGRATION) early.push(name);
+    }
+    expect(stale).toEqual([]);
+    expect(early).toEqual([]);
   });
 });

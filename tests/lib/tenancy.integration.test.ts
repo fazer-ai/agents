@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
+import { asSuperAdminOn } from "@/lib/tenancy/multi-tenant";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // Integration test for the multi-tenant isolation guarantees against a REAL Postgres
@@ -131,14 +132,17 @@ describe.skipIf(!dbUp)("tenancy isolation (RLS)", () => {
     ).rejects.toThrow();
   });
 
+  // Through the real helper, not a copy of what it does. It used to hand-roll
+  // `set_config('app.is_super_admin', ...)`, which was the same statement the helper issued — until
+  // it was not: issue #382 replaced the GUC with a role, and the copy went on passing for a while
+  // against a policy that no longer read it.
   test("asSuperAdmin sees every tenant's rows", async () => {
-    const rows = await appDb.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT set_config('app.is_super_admin', 'on', true)`;
-      return tx.conversation.findMany({
+    const rows = await asSuperAdminOn(appDb, (db) =>
+      db.conversation.findMany({
         where: { tenantId: { in: [t1, t2] } },
         select: { tenantId: true },
-      });
-    });
+      }),
+    );
     expect(rows.length).toBe(2);
   });
 });

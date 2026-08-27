@@ -1,9 +1,12 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Client } from "pg";
+import { FLEET_ROLE } from "@/lib/tenancy/fleet-role";
 import {
   assertRuntimeRoleIsUnprivileged,
+  fleetMembershipRepair,
   parseAppRole,
   planRoleProvisioning,
+  reviewFleetMembership,
 } from "../../scripts/db-bootstrap";
 
 // The bug this file exists for only exists on a database whose ADMINISTRATIVE role is not a real
@@ -296,6 +299,92 @@ describe("planRoleProvisioning", () => {
     });
   });
 
+  // NOTE: the sibling post-condition, and it refuses in BOTH directions because the two failures
+  // are opposite and only one is loud. Without the membership the cross-tenant path cannot switch
+  // role and every fleet read answers zero rows; WITH it inherited, the fleet policy applies to the
+  // runtime role passively and every tenant becomes readable on an ordinary request. Neither shows
+  // up in a role ATTRIBUTE, which is why `assertRuntimeRoleIsUnprivileged` above cannot see it.
+  describe("reviewFleetMembership", () => {
+    const repair = fleetMembershipRepair("app_role", 170000);
+
+    test("member, not inheriting, is the only state with nothing to say", () => {
+      expect(
+        reviewFleetMembership(
+          "app_role",
+          { member: true, usage: false },
+          repair,
+        ),
+      ).toBeNull();
+    });
+
+    // The two failures are opposite in severity, and the shape of the answer is what says so: one
+    // throws, the other returns a line to log. Asserting only the message text of both would let a
+    // change that made them the same severity pass.
+    test("inheriting THROWS, and the repair keeps SET ROLE possible", () => {
+      const boom = () =>
+        reviewFleetMembership(
+          "app_role",
+          { member: true, usage: true },
+          repair,
+        );
+      expect(boom).toThrow(/INHERITS/);
+      // A GRANT, never a REVOKE: revoking would fix the inheritance and break the cross-tenant path
+      // in the same statement.
+      expect(boom).toThrow(
+        /GRANT fazerai_fleet TO "app_role" WITH INHERIT FALSE, SET TRUE;/,
+      );
+      expect(boom).not.toThrow(/REVOKE/);
+    });
+
+    test("a missing membership only WARNS, and says what stops working", () => {
+      const warning = reviewFleetMembership(
+        "app_role",
+        { member: false, usage: false },
+        repair,
+      );
+      expect(warning).toContain("permission denied to set role");
+      expect(warning).toContain("tenant-scoped traffic is unaffected");
+      expect(warning).toContain(repair);
+    });
+
+    // NOTE: inheriting without membership cannot happen on a healthy catalog, and the order of the
+    // two checks is what decides which answer an impossible state gets. Inheritance is the one that
+    // loses data, so it is asked first — and it is the one that refuses.
+    test("inheritance is reported ahead of missing membership", () => {
+      expect(() =>
+        reviewFleetMembership(
+          "app_role",
+          { member: false, usage: true },
+          repair,
+        ),
+      ).toThrow(/INHERITS/);
+    });
+
+    // The repair is a statement an operator pastes, so it has to be one their server can parse.
+    // `WITH INHERIT` is 16+ syntax; 15 refuses it outright, and the control there is the attribute.
+    test("the repair is spelled for the server that will run it", () => {
+      expect(fleetMembershipRepair("app_role", 170000)).toStartWith(
+        'GRANT fazerai_fleet TO "app_role" WITH INHERIT FALSE, SET TRUE;',
+      );
+      expect(fleetMembershipRepair("app_role", 160000)).toContain(
+        "WITH INHERIT FALSE",
+      );
+      const old = fleetMembershipRepair("app_role", 150000);
+      expect(old).not.toContain("WITH INHERIT FALSE, SET TRUE;");
+      expect(old).toStartWith('ALTER ROLE "app_role" NOINHERIT;');
+      expect(old).toContain('GRANT fazerai_fleet TO "app_role";');
+    });
+
+    // NOTE: and it says WHO can run it, which is the half an operator hits second. The statement is
+    // one a CREATEROLE administrator is refused on a fleet role another installation created — so a
+    // repair that stopped at the statement would send them into the same `permission denied`.
+    test("the repair names the role that can actually run it", () => {
+      const repair = fleetMembershipRepair("app_role", 170000);
+      expect(repair).toContain("run it as a superuser");
+      expect(repair).toContain("WITH ADMIN OPTION;");
+    });
+  });
+
   // NOTE: this reads the script's own source, which is not how anything else here is tested, and
   // the reason is that the failure it guards cannot be reached from this suite: the only servers
   // available run PostgreSQL 17, and the statement in question is one an older server refuses to
@@ -307,10 +396,19 @@ describe("planRoleProvisioning", () => {
     const source = await Bun.file(
       new URL("../../scripts/db-bootstrap.ts", import.meta.url).pathname,
     ).text();
-    const gateStart = source.indexOf("if (s.server_version_num >= 160000) {");
-    expect(gateStart).toBeGreaterThan(-1);
-    const gateEnd = source.indexOf("\n    }", gateStart);
-    expect(gateEnd).toBeGreaterThan(gateStart);
+    // Every gate, not "the" gate. The file had one when this was written; the count was the proxy,
+    // never the rule, and a second gate arriving is not the thing to make red. What the rule says is
+    // that a 16-only spelling sits inside SOME `>= 160000` branch, so the ranges are collected.
+    const gates: Array<[number, number]> = [];
+    const gateRe = /if\s*\([^)]*>=\s*160000\)\s*\{/g;
+    for (const m of source.matchAll(gateRe)) {
+      const start = m.index as number;
+      // The branch ends at the first `}` back at the opening line's indentation.
+      const indent = source.slice(source.lastIndexOf("\n", start) + 1, start);
+      const close = source.indexOf(`\n${indent}}`, start);
+      gates.push([start, close === -1 ? source.length : close]);
+    }
+    expect(gates.length).toBeGreaterThan(0);
 
     // Spellings PostgreSQL 15 cannot parse or resolve, as they appear in a statement.
     const sixteenOnly = [
@@ -329,7 +427,7 @@ describe("planRoleProvisioning", () => {
       })
       .filter(({ at }) => {
         const offset = source.split("\n").slice(0, at).join("\n").length;
-        return offset < gateStart || offset > gateEnd;
+        return !gates.some(([lo, hi]) => offset >= lo && offset <= hi);
       })
       .map(({ line }) => line.trim());
 
@@ -484,6 +582,58 @@ describe.skipIf(!dbUp)(
         "permission denied to alter role",
       );
       expect(exitCode).toBe(0);
+    });
+
+    // NOTE: roles are CLUSTER-wide while a database is not, so on a shared server the fleet role may
+    // belong to another installation's administrator — and a CREATEROLE role holds no ADMIN on a
+    // role it did not create. The membership grant is then refused, exactly like the three above,
+    // and for the same reason it is survived: nothing tenant-scoped depends on it.
+    test("a fleet role this administrator cannot grant is reported, not crashed on", async () => {
+      const db = su as Client;
+      await db.query(
+        `REVOKE ADMIN OPTION FOR ${FLEET_ROLE} FROM ${ADMIN_ROLE}`,
+      );
+      await db.query(`REVOKE ${FLEET_ROLE} FROM ${APP_ROLE}`);
+
+      const refused = await runBootstrap();
+      expect(
+        `${refused.exitCode} ${refused.stdout}${refused.stderr}`,
+      ).toStartWith("0 ");
+      const out = `${refused.stdout}${refused.stderr}`;
+      expect(out).toContain(`could not grant "${FLEET_ROLE}"`);
+      // The warning has to carry BOTH halves of the instruction: the statement, and who can run it.
+      // The operator this message reaches is precisely the one the statement refuses.
+      expect(out).toContain("is not a member");
+      expect(out).toContain("WITH INHERIT FALSE, SET TRUE;");
+      expect(out).toContain("WITH ADMIN OPTION;");
+
+      // And it is a real gap, not a cosmetic one: the cross-tenant path cannot switch role.
+      const denied = await onProbe(urlFor(APP_ROLE, APP_PW, PROBE_DB), (c) =>
+        c.query(`SET ROLE ${FLEET_ROLE}`).then(
+          () => null,
+          (e: Error) => e.message,
+        ),
+      );
+      expect(denied).toContain("permission denied to set role");
+
+      // The repair the message named, run by someone who can, and the next boot closes it.
+      await db.query(`GRANT ${FLEET_ROLE} TO ${ADMIN_ROLE} WITH ADMIN OPTION`);
+      const repaired = await runBootstrap();
+      expect(repaired.exitCode).toBe(0);
+      expect(`${repaired.stdout}${repaired.stderr}`).not.toContain(
+        "is not a member",
+      );
+
+      // Member, and NOT inheriting: the grant landed with the option that keeps the fleet policy
+      // off the runtime role.
+      const membership = (
+        await db.query(
+          `SELECT pg_has_role($1, $2, 'MEMBER') AS member,
+                  pg_has_role($1, $2, 'USAGE')  AS usage`,
+          [APP_ROLE, FLEET_ROLE],
+        )
+      ).rows[0];
+      expect(membership).toEqual({ member: true, usage: false });
     });
 
     test("the provisioned role can connect with the password from DATABASE_URL", async () => {

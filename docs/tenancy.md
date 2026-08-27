@@ -4,7 +4,7 @@ fazer.ai agents is multi-tenant. Isolation is **hybrid and defense-in-depth**: a
 
 ## The non-negotiables
 
-1. **Runtime connects as a NON-SUPERUSER, NON-BYPASSRLS role.** Superusers and table owners bypass RLS, so a superuser runtime connection makes the entire isolation model a no-op. `DATABASE_URL` must point at `fazerai_app` (provisioned by [`scripts/db-bootstrap.sql`](../scripts/db-bootstrap.sql)); `MIGRATION_DATABASE_URL` is the superuser/owner used only for DDL/migrations. The two MUST differ in production.
+1. **Runtime connects as a NON-SUPERUSER, NON-BYPASSRLS role.** Superusers and table owners bypass RLS, so a superuser runtime connection makes the entire isolation model a no-op. `DATABASE_URL` must point at `fazerai_app` (provisioned by [`scripts/db-bootstrap.sql`](../scripts/db-bootstrap.sql)); `MIGRATION_DATABASE_URL` is the superuser/owner used only for DDL/migrations. The two MUST differ in production. This holds for the cross-tenant path too: it is a role (`fazerai_fleet`) with no attribute of its own, reached by `SET ROLE`, never a `BYPASSRLS` account — see the policy section below.
 2. **Tenant scope is transaction-local.** `runScoped` opens a `$transaction` and issues `set_config('app.tenant_id', <id>, true)` as the first statement. The `true` makes it reset on commit/rollback, so it cannot leak to the next request on a pooled connection. A missing GUC yields NULL in the policy → **fail-closed (zero rows)**.
 3. **No network/LLM `await` inside a scoped transaction.** It pins a pooled connection; long I/O exhausts the pool. Do network I/O outside; keep the tx to DB work.
 4. **Never read the tenant from AsyncLocalStorage at query time.** The `$extends` is *closure-bound* to a fixed `tenantId` (reading ALS inside the extension callback is unreliable on `create`). ALS is plumbing for carrying context to nodes/workers, not the source of truth for a query's tenant.
@@ -15,24 +15,53 @@ fazer.ai agents is multi-tenant. Isolation is **hybrid and defense-in-depth**: a
 Everything lives under [`@/lib/tenancy`](../src/lib/tenancy):
 
 - `runScoped(ctx, fn)` — runs `fn(db)` in a tenant-scoped transaction. `db` is a branded `ScopedDb`; only the provider can produce one, so passing the base `prisma` into a service that expects a `ScopedDb` does not type-check. `create`/`createMany`/`upsert` auto-inject `tenant_id` (and override any caller-supplied value). Throws `TenantTargetRequiredError` if `ctx.tenantId` is null.
-- `asSuperAdmin(fn)` — audited fleet/cross-tenant path. Sets `app.is_super_admin='on'` so RLS allows every row (incl. `tenant_id NULL` audit rows and creating new tenants). Only call when the principal is `SUPER_ADMIN`.
+- `asSuperAdmin(fn)` — audited fleet/cross-tenant path. Becomes `fazerai_fleet` for the length of the transaction (`set_config('role', …, true)`, which resets on commit and on rollback), and that role is what every table's `fleet_super_admin` policy is written `TO` — so RLS allows every row (incl. `tenant_id NULL` audit rows and creating new tenants). Only call when the principal is `SUPER_ADMIN`.
 - `resolveRequestTenantContext(user, headerTenantId)` — pure resolution of the request `TenantContext`. `X-Tenant-Id` is honored **only** for `SUPER_ADMIN` (who has no home tenant and selects a target per request); for anyone else it is forgeable and ignored — a mismatch is flagged as an anomaly to log, never accepted.
 - `roleAtLeast` / `isAdminRole` — role hierarchy `SUPER_ADMIN > TENANT_ADMIN > AGENT` (the rank itself lives in the pure [`@/lib/roles`](../src/lib/roles.ts), shared with the React client and CLI scripts). Gate by rank, never by `!== "AGENT"`.
 
 The Elysia boundary is [`tenancyPlugin`](../src/api/middlewares/tenancy.ts): it derives `tenantContext` from the authenticated user + `X-Tenant-Id`. Handlers/services then pass it to `runScoped`/`asSuperAdmin`.
 
-## RLS policy shape (see the init migration)
+## RLS policy shape (see `20260827000000_rls_split_tenant_and_fleet_policies`)
 
-Tenant-scoped tables (`tenant_id NOT NULL`) get `ENABLE` + `FORCE ROW LEVEL SECURITY` and:
+Tenant-scoped tables (`tenant_id NOT NULL`) get `ENABLE` + `FORCE ROW LEVEL SECURITY` and **two** policies:
 
 ```sql
-USING (
-  current_setting('app.is_super_admin', true) = 'on'
-  OR tenant_id = nullif(current_setting('app.tenant_id', true), '')::bigint
-)
+CREATE POLICY tenant_isolation ON <table>
+  USING      (tenant_id = nullif(current_setting('app.tenant_id', true), '')::bigint)
+  WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::bigint);
+
+CREATE POLICY fleet_super_admin ON <table> TO fazerai_fleet USING (true) WITH CHECK (true);
 ```
 
-with the same `WITH CHECK`. `tenants` is keyed by `id`; `audit_logs` allows `tenant_id NULL` rows only for super admins (never leaked to a tenant). The `users` and `mcp_oauth_*` tables are **global identity tables, NOT under tenant RLS** — they are read before a tenant context exists, so isolation there is by explicit `tenant_id` filtering + the `authorize()` gate (see [`admin.service.ts`](../src/api/features/admin/admin.service.ts)).
+The split is not cosmetic. Until #382 both branches lived in one policy, ORed together
+(`current_setting('app.is_super_admin', true) = 'on' OR tenant_id = …`), and a branch that names no
+column cannot become an index condition — so neither could the branch beside it, and every
+`@@index([tenantId])` and `(tenantId, …)` composite was unreachable through the policy. Measured on
+1,000,000 rows, returning a page of 51 to a tenant holding 0.01% of the table: **108 ms and 509,949
+rows discarded**, against 0.033 ms and none. Two *permissive* policies do not help — Postgres ORs
+those and the qual comes out identical, buffer for buffer. `TO <role>` does, because a policy whose
+role does not match the caller is not part of the qual at all.
+
+Two consequences worth knowing before touching this:
+
+- **The tenant policy carries no `TO` clause**, deliberately. The runtime role's *name* is deployment
+  configuration (`DATABASE_URL`) and a migration cannot read a deployment's env, so a policy that had
+  to name it could not be written in a migration at all. Only the fleet policy names a role, and that
+  name is a fixed constant ([`@/lib/tenancy/fleet-role`](../src/lib/tenancy/fleet-role.ts)).
+- **The runtime role must hold `fazerai_fleet` WITHOUT inheriting it.** `SET ROLE` needs the
+  membership; inheriting it applies `fleet_super_admin` to the runtime role passively, and then an
+  ordinary scoped request reads every tenant's rows with no error and no plan difference. The grant
+  is made `WITH INHERIT FALSE` and the effective state is asserted in two places — `db-bootstrap`
+  refuses to provision otherwise, and [`db-guard`](../src/lib/db-guard.ts) refuses to serve. On
+  PostgreSQL 16+ the grant's own option is the control and `ALTER ROLE … NOINHERIT` does **not**
+  override it on a membership that already exists.
+
+`tenants` is keyed by `id`; `audit_logs` allows `tenant_id NULL` rows only through the fleet policy
+(never leaked to a tenant — `tenant_id = <value>` is never TRUE for a NULL row, and a missing GUC
+yields NULL, which is not TRUE either). The `users` and `mcp_oauth_*` tables are **global identity
+tables, NOT under tenant RLS** — they are read before a tenant context exists, so isolation there is
+by explicit `tenant_id` filtering + the `authorize()` gate (see
+[`admin.service.ts`](../src/api/features/admin/admin.service.ts)).
 
 ## Roles & first-run
 
@@ -44,4 +73,4 @@ Lives in a separate `langgraph` Postgres schema (outside Prisma). `thread_id` is
 
 ## Verifying isolation
 
-[`tests/lib/tenancy.integration.test.ts`](../tests/lib/tenancy.integration.test.ts) proves fail-closed, scoped reads, RLS overriding an explicit cross-tenant `WHERE`, blocked cross-tenant writes, and `asSuperAdmin` visibility against a real Postgres. It reads `TEST_APP_DATABASE_URL` (the app role) and skips when no DB is reachable, though the suite no longer starts at all in that state unless the run declares `ALLOW_NO_DB=1` (see [`tests/db-gate.ts`](../tests/db-gate.ts)).
+[`tests/lib/tenancy.integration.test.ts`](../tests/lib/tenancy.integration.test.ts) proves fail-closed, scoped reads, RLS overriding an explicit cross-tenant `WHERE`, blocked cross-tenant writes, and `asSuperAdmin` visibility against a real Postgres. [`tests/lib/rls-policy-shape.test.ts`](../tests/lib/rls-policy-shape.test.ts) proves the other half — that the tenant predicate lands as an `Index Cond` rather than a `Filter`, that `app.is_super_admin` now grants nothing, and that every table under RLS carries the policy pair and the membership is not inherited. It reads `TEST_APP_DATABASE_URL` (the app role) and skips when no DB is reachable, though the suite no longer starts at all in that state unless the run declares `ALLOW_NO_DB=1` (see [`tests/db-gate.ts`](../tests/db-gate.ts)).

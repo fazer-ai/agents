@@ -3,8 +3,10 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import {
   assertRuntimeRoleIsNotSuperuser,
+  FLEET_INHERITED_REASON,
   SuperuserRuntimeError,
 } from "@/lib/db-guard";
+import { FLEET_ROLE } from "@/lib/tenancy/fleet-role";
 
 // MIGRATION_DATABASE_URL connects as the Postgres superuser (the migration/owner role).
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -90,6 +92,49 @@ describe.skipIf(!dbUp)("assertRuntimeRoleIsNotSuperuser", () => {
     await expect(
       assertRuntimeRoleIsNotSuperuser(tmp as PrismaClient),
     ).resolves.toBeUndefined();
+  });
+
+  // The membership that makes the cross-tenant path possible is the same one that can delete the
+  // isolation, and the difference between the two is one word in the GRANT. Neither attribute
+  // changes, so the check above sees nothing: the role stays NOSUPERUSER and NOBYPASSRLS through
+  // both arms below, and only `pg_has_role(..., 'USAGE')` moves.
+  describe(`membership in ${FLEET_ROLE}`, () => {
+    test("SET ROLE is fine; INHERITING it is refused, and the message says which GRANT repairs it", async () => {
+      await withRoleCatalogLock(async (db) => {
+        await db.$executeRawUnsafe(
+          `GRANT ${FLEET_ROLE} TO ${SAFE_ROLE} WITH INHERIT FALSE, SET TRUE`,
+        );
+      });
+      await expect(
+        assertRuntimeRoleIsNotSuperuser(tmp as PrismaClient),
+      ).resolves.toBeUndefined();
+
+      await withRoleCatalogLock(async (db) => {
+        await db.$executeRawUnsafe(
+          `GRANT ${FLEET_ROLE} TO ${SAFE_ROLE} WITH INHERIT TRUE`,
+        );
+      });
+      const err = await assertRuntimeRoleIsNotSuperuser(
+        tmp as PrismaClient,
+      ).then(
+        () => null,
+        (e: unknown) => e as Error,
+      );
+      expect(err).toBeInstanceOf(SuperuserRuntimeError);
+      expect(err?.message).toContain(FLEET_INHERITED_REASON);
+      expect(err?.message).toContain("WITH INHERIT FALSE, SET TRUE");
+
+      // The role never became privileged in the pg_roles sense — which is the whole point of asking
+      // this separately.
+      const attrs = (await (tmp as PrismaClient).$queryRawUnsafe(
+        `SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user`,
+      )) as Array<{ rolsuper: boolean; rolbypassrls: boolean }>;
+      expect(attrs[0]).toEqual({ rolsuper: false, rolbypassrls: false });
+
+      await withRoleCatalogLock(async (db) => {
+        await db.$executeRawUnsafe(`REVOKE ${FLEET_ROLE} FROM ${SAFE_ROLE}`);
+      });
+    });
   });
 });
 

@@ -5,6 +5,7 @@ import {
   TenantTargetRequiredError,
 } from "@/lib/errors";
 import type { ScopedDb, TenantContext } from "./context";
+import { FLEET_ROLE } from "./fleet-role";
 
 // NOTE: the closure-extended `$extends` client is not the bare PrismaClient type, but it
 // still exposes `$transaction`. Accept anything transaction-capable for the *On helpers so
@@ -180,15 +181,31 @@ export async function runScoped<T>(
   return runScopedOn(basePrisma, ctx, fn);
 }
 
-// NOTE: audited cross-tenant / fleet path. Sets app.is_super_admin so RLS allows all
-// rows (incl. tenant_id NULL audit rows and creating new tenants where WITH CHECK could
+// NOTE: audited cross-tenant / fleet path. Becomes FLEET_ROLE for the length of this transaction,
+// which is what the `fleet_super_admin` policy on every table under RLS is written `TO` — so RLS
+// allows all rows (incl. tenant_id NULL audit rows and creating new tenants where WITH CHECK could
 // not otherwise pass). Caller must have role SUPER_ADMIN; enforce at the call site.
+//
+// This used to be `set_config('app.is_super_admin', 'on', true)`, read by an OR inside the same
+// policy that carries the tenant predicate. That OR is what made every tenant index unreachable
+// (issue #382, and the numbers are in the migration that split it) — a policy branch naming no
+// column cannot become an index condition, and neither can the branch beside it.
+//
+// `set_config('role', ...)` rather than `SET LOCAL ROLE`: it is the same transaction-local
+// mechanism (measured: `current_user` is back to the session user after both commit and rollback)
+// and it takes the role as a bind PARAMETER, exactly like the `set_config('app.tenant_id', ...)`
+// line above, so nothing is spliced into SQL we assemble.
+//
+// It is not a privilege escalation the old GUC did not already allow: reaching this needs a
+// statement on the runtime connection, which is what setting the GUC needed too. What DID change is
+// that the GUC now grants nothing at all, so the old spelling fails closed rather than silently
+// still working — `tests/lib/rls-policy-shape.test.ts` asserts that.
 export async function asSuperAdminOn<T>(
   base: TransactionCapable,
   fn: (db: ScopedDb) => Promise<T>,
 ): Promise<T> {
   return base.$transaction(async (tx) => {
-    await tx.$executeRaw`SELECT set_config('app.is_super_admin', 'on', true)`;
+    await tx.$executeRaw`SELECT set_config('role', ${FLEET_ROLE}, true)`;
     return fn(tx as unknown as ScopedDb);
   }, SCOPED_TX_OPTIONS);
 }

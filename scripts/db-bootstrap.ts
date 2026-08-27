@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { Client } from "pg";
+import { FLEET_ROLE } from "@/lib/tenancy/fleet-role";
 
 // Deterministic, platform-independent DB provisioning. Run ONCE at deploy time (and safe to
 // re-run) as the FIRST step before `prisma migrate deploy`. It does what scripts/db-bootstrap.sql
@@ -112,6 +113,85 @@ export function assertRuntimeRoleIsUnprivileged(
   );
 }
 
+// The statement that repairs the membership, which is not the same statement on every server.
+//
+// It lives in its own function because the 16-only spelling has to sit behind a version gate, and a
+// message built inline would put it outside one — printing an operator a statement their server
+// cannot parse. On 16+ the GRANT's own option is the control; on 15 and older the option does not
+// exist and the member's `rolinherit` is the whole control.
+export function fleetMembershipRepair(
+  appRole: string,
+  serverVersionNum: number,
+): string {
+  let statement = `ALTER ROLE "${appRole}" NOINHERIT; GRANT ${FLEET_ROLE} TO "${appRole}";`;
+  if (serverVersionNum >= 160000) {
+    statement = `GRANT ${FLEET_ROLE} TO "${appRole}" WITH INHERIT FALSE, SET TRUE;`;
+  }
+  // WHO runs it is half the instruction, and it is the half an operator hits second. Roles are
+  // CLUSTER-wide while a database is not, so on a shared server the fleet role may have been
+  // created by another installation's administrator — and a CREATEROLE role holds no ADMIN on a
+  // role it did not create, so this same statement answers `permission denied to grant role` for
+  // exactly the person the message was written for (measured).
+  return (
+    `${statement} (run it as a superuser, or as the role that created ${FLEET_ROLE}; ` +
+    `a CREATEROLE administrator holds no ADMIN on a role it did not create, and can be given one ` +
+    `with: GRANT ${FLEET_ROLE} TO <administrator> WITH ADMIN OPTION;)`
+  );
+}
+
+// The fleet role is reached by SET ROLE, and the membership that allows that is the same catalog
+// entry that can make its policy apply PASSIVELY. Both halves are asked, and neither is inferable
+// from the DDL that was issued — but they are NOT the same severity, and treating them alike is
+// wrong in both directions:
+//
+//   USAGE true  -> the `fleet_super_admin` policy (`USING (true)`) applies to the RUNTIME role as
+//                  well, and it reads every tenant's rows on an ordinary scoped request. No error,
+//                  no plan difference, nothing in a log: measured on this schema as 400 rows across
+//                  2 tenants where the fence expects 200 across 1. Silent isolation loss, so this
+//                  REFUSES — serving is the harm.
+//   MEMBER false -> `asSuperAdmin` cannot switch role, so every cross-tenant call fails at the
+//                  point of use with `permission denied to set role`. Loud, contained, and no
+//                  tenant-scoped traffic is affected — so this WARNS. Refusing here would take down
+//                  the working nine-tenths of an install to report the broken tenth.
+//
+// Asked of `pg_has_role` rather than of `pg_auth_members.inherit_option` for the reason the other
+// checks in this file already give: the column is 16-only, the function is the portable spelling,
+// and pre-16 it reads the member's `rolinherit` — which on those servers IS the whole control.
+//
+// And it has to be asked of the EFFECT, because on 16+ the two disagree. `ALTER ROLE <app>
+// NOINHERIT` does not touch a membership that already exists: the grant keeps the `inherit_option`
+// recorded when it was made. Measured, on 17.10, all three combinations:
+//
+//   rolinherit=false + inherit_option=true  -> USAGE true   (isolation gone)
+//   rolinherit=false + inherit_option=false -> USAGE false
+//   rolinherit=true  + inherit_option=false -> USAGE false
+//
+// So the grant is what has to carry `INHERIT FALSE`, and re-issuing it repairs an inherited
+// membership in place (no REVOKE needed, also measured).
+//
+// Returns a warning to log, or null when the membership is what it should be.
+export function reviewFleetMembership(
+  appRole: string,
+  state: { member: boolean; usage: boolean },
+  repair: string,
+): string | null {
+  if (state.usage) {
+    throw new Error(
+      `runtime role "${appRole}" INHERITS "${FLEET_ROLE}", which makes the cross-tenant policy ` +
+        "apply to it passively — every tenant's rows would be readable on an ordinary scoped " +
+        `request, with no error to see. Repair with: ${repair}`,
+    );
+  }
+  if (!state.member) {
+    return (
+      `runtime role "${appRole}" is not a member of "${FLEET_ROLE}", so every cross-tenant call ` +
+      "will fail with `permission denied to set role` (tenant-scoped traffic is unaffected). " +
+      `Repair with: ${repair}`
+    );
+  }
+  return null;
+}
+
 // The DDL that carries the password. It reads role and password from session GUCs rather than from
 // a string we build, so the password is never spliced into SQL we assemble or log. The templates
 // are our own constants with no quotes to escape; only %I/%L are filled, by Postgres itself.
@@ -167,6 +247,98 @@ const ELEVATED_ATTRIBUTES = [
 
 function message(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+// Provisions the role the cross-tenant path becomes (see `@/lib/tenancy/fleet-role` for why it is
+// a role at all, and the migration `20260827000000_rls_split_tenant_and_fleet_policies` for the
+// numbers). Idempotent, and every statement here is one an administrative CREATEROLE role may run.
+//
+// The role holds nothing: NOSUPERUSER, NOBYPASSRLS, NOLOGIN. What lets it across tenants is the
+// `fleet_super_admin` policy the migration writes, not an attribute — so this is not a second
+// privileged account to guard, and a table that gets RLS without that policy fails closed.
+async function provisionFleetRole(
+  client: Client,
+  role: string,
+  ident: string,
+  serverVersionNum: number,
+) {
+  const fleet = `"${FLEET_ROLE}"`;
+  await client.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${FLEET_ROLE}') THEN
+        CREATE ROLE ${fleet} NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
+      END IF;
+    END $$;
+  `);
+  for (const grant of [
+    `GRANT USAGE ON SCHEMA public TO ${fleet}`,
+    `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ${fleet}`,
+    `GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO ${fleet}`,
+    `ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ${fleet}`,
+    `ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO ${fleet}`,
+  ]) {
+    await client.query(grant);
+  }
+
+  // Two grants, and BOTH are best-effort, because the fleet role is a CLUSTER-wide object while a
+  // database is not: on a shared server whose fleet role was created by a DIFFERENT administrator,
+  // a CREATEROLE role holds no ADMIN on it and Postgres answers `permission denied to grant role`
+  // (measured). That is a real install, not a broken one — everything tenant-scoped works — so it is
+  // reported and survived, and the review below turns it into a message naming the exact repair.
+  const repair = fleetMembershipRepair(role, serverVersionNum);
+  try {
+    if (serverVersionNum >= 160000) {
+      await client.query(
+        `GRANT ${fleet} TO ${ident} WITH INHERIT FALSE, SET TRUE`,
+      );
+    } else {
+      await client.query(`ALTER ROLE ${ident} NOINHERIT`);
+      await client.query(`GRANT ${fleet} TO ${ident}`);
+    }
+  } catch (err) {
+    console.warn(
+      `db-bootstrap: could not grant "${FLEET_ROLE}" to runtime role "${role}" (${message(err)})`,
+    );
+  }
+
+  // The administrative role needs it too, and for the same reason the runtime role does: a DATA
+  // migration over a FORCE-RLS table is bound by the tenant policy like anything else, so it opens
+  // with `SET ROLE fazerai_fleet` (see docs/deploy.md and tests/prisma/migration-rls-bypass.test.ts).
+  // On a self-hosted install this role is usually a real superuser and can SET ROLE regardless; on
+  // managed Postgres it is the owner WITHOUT rolsuper, and there this grant is the whole difference
+  // between a backfill that runs and one that matches zero rows and reports success.
+  //
+  // INHERIT FALSE here as well, and it is not symmetry for its own sake: an INHERITING migration
+  // role would pass the fleet policy PASSIVELY, so a migration that forgot the bypass would work on
+  // our machines and silently no-op on an install whose role is not a superuser — which is the exact
+  // asymmetry the convention exists to remove.
+  if (serverVersionNum >= 160000) {
+    try {
+      await client.query(
+        `GRANT ${fleet} TO CURRENT_USER WITH INHERIT FALSE, SET TRUE`,
+      );
+    } catch (err) {
+      console.warn(
+        `db-bootstrap: could not grant "${FLEET_ROLE}" to the administrative role ` +
+          `(${message(err)}); a future DATA migration would fail on SET ROLE`,
+      );
+    }
+  }
+
+  const membership = (
+    await client.query<{ member: boolean; usage: boolean }>(
+      `SELECT pg_has_role($1, $2, 'MEMBER') AS member,
+              pg_has_role($1, $2, 'USAGE')  AS usage`,
+      [role, FLEET_ROLE],
+    )
+  ).rows[0];
+  const warning = reviewFleetMembership(
+    role,
+    membership ?? { member: false, usage: false },
+    repair,
+  );
+  if (warning) console.warn(`db-bootstrap: ${warning}`);
 }
 
 // Makes the LangGraph checkpointer schema usable by the runtime role, which is three different
@@ -607,10 +779,13 @@ async function main() {
       }
     }
 
+    await provisionFleetRole(client, role, ident, s.server_version_num);
+
     await provisionCheckpointerSchema(client, role, ident);
 
     console.log(
-      `db-bootstrap: provisioned runtime role "${role}" (idempotent; ${plan}, ` +
+      `db-bootstrap: provisioned runtime role "${role}" + fleet role "${FLEET_ROLE}" ` +
+        `(idempotent; ${plan}, ` +
         `admin=${s.admin_superuser ? "superuser" : "non-superuser"}, server=${s.server_version_num})`,
     );
   } finally {

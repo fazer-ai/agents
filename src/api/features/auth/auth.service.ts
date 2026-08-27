@@ -123,8 +123,8 @@ export function slugifyCompany(name: string): string {
 
 // NOTE: First-run bootstrap. Creates the SUPER_ADMIN (tenant_id NULL — fleet-level) and the initial
 // Tenant (named after the operator's company, Chatwoot-style onboarding — no more hardcoded
-// "Default"), inside one transaction under asSuperAdmin (the Tenant INSERT needs app.is_super_admin
-// so RLS WITH CHECK passes). The advisory lock + count re-check make it idempotent across replicas.
+// "Default"), inside one transaction under asSuperAdmin (the Tenant INSERT needs the fleet role so
+// RLS WITH CHECK passes). The advisory lock + count re-check make it idempotent across replicas.
 // Returns the SUPER_ADMIN user AND the new tenant id (so the client can auto-select it). Throws
 // SetupAlreadyCompleteError if a user exists.
 export async function createInitialAdmin(params: {

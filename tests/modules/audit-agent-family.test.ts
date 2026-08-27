@@ -1485,6 +1485,69 @@ describe.skipIf(!dbUp)("the agent family records its own changes", () => {
     expect(after?.systemPrompt).toBe(link);
   });
 
+  test("userinfo with no password is still userinfo, and an @ in a path is not", async () => {
+    const agent = await seedAgent({
+      systemPrompt:
+        "Use https://sk-live-hunter2@api.example.com/v1 se precisar.",
+    });
+    await clearAudit();
+
+    await updateAgent(
+      ctx(),
+      BigInt(agent.id),
+      {
+        systemPrompt:
+          "Use https://sk-live-rotated@api.example.com/v1 se precisar.",
+      },
+      appDb,
+    );
+    const dump = JSON.stringify([
+      (await rows())[0]?.before,
+      (await rows())[0]?.after,
+    ]);
+    expect(dump).not.toContain("hunter2");
+    expect(dump).not.toContain("rotated");
+
+    // Excluding `/` before the `@` is what keeps a path out of the rule.
+    const path = "Veja https://github.com/orgs/@time/repos para o time.";
+    const other = await seedAgent({ systemPrompt: "antes" });
+    await clearAudit();
+    await updateAgent(ctx(), BigInt(other.id), { systemPrompt: path }, appDb);
+    const after = (await rows())[0]?.after as
+      | Record<string, unknown>
+      | undefined;
+    expect(after?.systemPrompt).toBe(path);
+  });
+
+  test("a numeric ref outside the id range is not a reference either", async () => {
+    // `vault:99999999999999999999` is all digits and unresolvable, so a spelling check called it
+    // safe. The repo's own bounded parser is what decides.
+    const agent = await seedAgent({ settings: { stt: { enabled: true } } });
+    await su?.$executeRawUnsafe(
+      `UPDATE agents SET settings = '{"stt":{"enabled":true,"credentialRef":"vault:99999999999999999999"}}'::jsonb WHERE id = ${agent.id}`,
+    );
+    await clearAudit();
+
+    await updateAgent(
+      ctx(),
+      BigInt(agent.id),
+      {
+        settings: {
+          stt: {
+            enabled: true,
+            credentialRef: "vault:99999999999999999999",
+            model: "whisper-1",
+          },
+        },
+      },
+      appDb,
+    );
+
+    expect(
+      JSON.stringify([(await rows())[0]?.before, (await rows())[0]?.after]),
+    ).not.toContain("99999999999999999999");
+  });
+
   test("a vault PREFIX is not a vault reference", async () => {
     // `vault:sk-live-…` starts with the prefix and is a secret, and the unchanged-ref path is the
     // one that never validates.

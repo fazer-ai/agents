@@ -164,6 +164,15 @@ throughout, so a delivery that answers the tail inside that window leaves the cl
 Re-read there, it reports `empty` instead of telling the operator to raise a ceiling for work that no
 longer exists.
 
+**An inbound nudge refused by the ceiling is not re-sent, and that is the inbound module's contract,
+not the ceiling's.** `processInboundDelivery` records the ConversionEvent as its durable barrier and
+treats Phase B — the customer-facing nudge — as one best-effort attempt: a Chatwoot outage, a model
+failure and a spent budget all end with the notification not going out and the row `PROCESSED`. The
+ceiling is the most visible of the three, because it also writes the `error` flow line that pages the
+alert channels. Making that recoverable needs a scheduler kind for inbound deliveries (nothing re-runs
+one today, and the conversion barrier would send a redelivery down the `done` path), which would fix
+the throw case as well; it is not something the ceiling can do from its side.
+
 **A `/reset` withdraws a burst; it does not withdraw a message already refused.** The flush asks
 `jobRetired` before every act because `/reset` durably retires the DEBOUNCE row: the burst was taken
 back, not answered. The webhook gate has no such marker and needs none — the customer's message was

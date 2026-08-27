@@ -614,6 +614,20 @@ export async function processInboundDelivery(
   if (plan.kind === "done") return "processed";
 
   // Phase B: agent_nudge network turn outside the tx (best-effort), then mark PROCESSED.
+  //
+  // BEST-EFFORT MEANS THE OUTCOME IS NOT CONSULTED, and that is the contract rather than an
+  // oversight: the durable barrier is the ConversionEvent recorded in Phase A, and everything past
+  // it is one attempt at telling the customer. A Chatwoot outage, a model failure and a spend
+  // ceiling all end the same way — the notification does not go out, the row is PROCESSED, and the
+  // catch above says so in the log. The ceiling additionally writes an `error` flow line, which
+  // pages the alert channels, so a refusal here is the most visible of the three.
+  //
+  // Making a refused nudge RECOVERABLE is a real gap and a separate change: this module has no
+  // driver that re-runs a delivery (`processInboundDelivery` is called only by the inbound route,
+  // detached, and we ack 200 before Phase B, so no provider redelivers), and the conversion barrier
+  // means a redelivery that did arrive would take the `done` path instead of re-running the nudge.
+  // It needs a scheduler kind of its own — which would fix the throw case too, and that is the
+  // larger half of the same hole.
   const runNudge = params.deps?.runNudge ?? runAgentNudge;
   try {
     await runNudge({

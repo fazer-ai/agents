@@ -118,10 +118,33 @@ DECLARE
                    || '_' || substr(md5(current_database()::text), 1, 8))::name;
   v_stray text;
   v_left  text;
+  v_priv  text;
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = v_fleet) THEN
     EXECUTE format(
       'CREATE ROLE %I NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE', v_fleet);
+  END IF;
+
+  -- What the role IS, asked of whatever it turned out to be. This script only CREATES one when it is
+  -- absent, so on the branch that FINDS an existing role -- a database dropped and recreated leaves
+  -- one behind -- nothing else asks whether it is the harmless NOLOGIN role this design describes.
+  -- The runtime role SETs ROLE into it, so a privileged one makes RLS a no-op for every request.
+  SELECT string_agg(w, ', ') INTO v_priv FROM (
+    SELECT 'SUPERUSER' AS w FROM pg_roles WHERE rolname = v_fleet AND rolsuper
+    UNION ALL SELECT 'BYPASSRLS' FROM pg_roles WHERE rolname = v_fleet AND rolbypassrls
+    UNION ALL SELECT 'LOGIN' FROM pg_roles WHERE rolname = v_fleet AND rolcanlogin
+    UNION ALL SELECT 'inherits a privileged role'
+                FROM pg_roles r
+               WHERE r.rolname = v_fleet
+                 AND EXISTS (SELECT 1 FROM pg_roles m
+                              WHERE (m.rolsuper OR m.rolbypassrls) AND m.oid <> r.oid
+                                AND pg_has_role(r.oid, m.oid, 'USAGE'))
+  ) x;
+  IF v_priv IS NOT NULL THEN
+    RAISE EXCEPTION
+      'the cross-tenant role % already exists and is privileged (%). The runtime role SETs ROLE '
+      'into it, so granting that would make RLS a no-op for every request. Drop it and let this '
+      'script create it: DROP OWNED BY %I; DROP ROLE %I;', v_fleet, v_priv, v_fleet, v_fleet;
   END IF;
 
   EXECUTE format('GRANT USAGE ON SCHEMA public TO %I', v_fleet);

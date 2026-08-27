@@ -68,9 +68,13 @@ Two consequences worth knowing before touching this:
   true for a grant made `SET FALSE` that denies every `SET ROLE`.
 - **A database restored under a different name resolves a name its own policies do not carry.**
   Nothing errors — `SET ROLE` succeeds and every fleet read then matches no policy and answers zero
-  rows — so `db-guard` refuses to serve and names the repair, which is one statement: a policy
-  references its role by OID, so `ALTER ROLE <the role the policies name> RENAME TO <the resolved
-  name>` leaves every policy pointing at the same role.
+  rows — so `db-guard` refuses to serve and prints the repair, which rewrites the POLICIES to name
+  the resolved role. Renaming the role instead is the obvious alternative and does not work: the
+  documented boot order is bootstrap → migrate → serve, so by the time the guard fires bootstrap has
+  already created the resolved role and `ALTER ROLE … RENAME TO` fails on a name that is taken — and
+  roles are cluster-wide, so on a server that also runs the database the dump came from, that rename
+  would break the live one. The policy rewrite touches nothing outside this database and is safe to
+  re-run.
 
 `tenants` is keyed by `id`; `audit_logs` allows `tenant_id NULL` rows only through the fleet policy
 (never leaked to a tenant — `tenant_id = <value>` is never TRUE for a NULL row, and a missing GUC

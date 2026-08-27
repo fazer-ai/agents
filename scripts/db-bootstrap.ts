@@ -113,6 +113,43 @@ export function assertRuntimeRoleIsUnprivileged(
   );
 }
 
+// The fleet role is a SET ROLE target for the runtime role, so what it may BE is the same question
+// `assertRuntimeRoleIsUnprivileged` asks of the runtime role itself — and it has to be asked of a
+// role that already EXISTS, because this script only creates one when it is absent. A stale or
+// hand-made role carrying the derived name can be SUPERUSER, BYPASSRLS or LOGIN, and granting the
+// runtime role a path into it hands away exactly what this design refuses to hand away.
+//
+// It REFUSES rather than warning, unlike the missing-membership case beside it, because the loss
+// here can already be silent: if the runtime role is a member from an earlier boot (the reconcile
+// keeps that membership by design), every request can reach a privileged role right now, with RLS a
+// no-op and nothing in a log. LOGIN counts for the same reason it is refused on the runtime role —
+// a role nothing should connect as should not be connectable.
+export function assertFleetRoleIsUnprivileged(
+  fleetRole: string,
+  state: {
+    rolsuper: boolean;
+    rolbypassrls: boolean;
+    rolcanlogin: boolean;
+    reaches: string | null;
+  },
+) {
+  const reasons: string[] = [];
+  if (state.rolsuper) reasons.push("SUPERUSER");
+  if (state.rolbypassrls) reasons.push("BYPASSRLS");
+  if (state.rolcanlogin) reasons.push("LOGIN");
+  if (state.reaches !== null) {
+    reasons.push(`inherits a privileged role (${state.reaches})`);
+  }
+  if (reasons.length === 0) return;
+  throw new Error(
+    `the cross-tenant role "${fleetRole}" already exists and is privileged ` +
+      `(${reasons.join(", ")}). The runtime role SETs ROLE into it, so granting that would make ` +
+      "RLS a no-op for every request. This is a role this installation did not create — a database " +
+      "dropped and recreated leaves one behind. Drop it (as its owner or a superuser) and let this " +
+      `script create it: DROP OWNED BY "${fleetRole}"; DROP ROLE "${fleetRole}";`,
+  );
+}
+
 // The statement that repairs the membership, which is not the same statement on every server.
 //
 // It lives in its own function because the 16-only spelling has to sit behind a version gate, and a
@@ -285,6 +322,36 @@ async function provisionFleetRole(
       END IF;
     END $$;
   `);
+
+  // Asked AFTER the create-if-absent above, of whatever the role actually turned out to be: on the
+  // branch that created it the answer is free, and on the branch that FOUND one it is the whole
+  // point. Same shape, and the same reason, as the runtime role's own post-condition.
+  const fleetState = (
+    await client.query<{
+      rolsuper: boolean;
+      rolbypassrls: boolean;
+      rolcanlogin: boolean;
+      reaches: string | null;
+    }>(
+      `SELECT r.rolsuper, r.rolbypassrls, r.rolcanlogin,
+              (SELECT string_agg(DISTINCT quote_ident(m.rolname), ', ')
+                 FROM pg_roles m
+                WHERE (m.rolsuper OR m.rolbypassrls) AND m.oid <> r.oid
+                  AND pg_has_role(r.oid, m.oid, 'USAGE')) AS reaches
+         FROM pg_roles r WHERE r.rolname = $1`,
+      [fleetRole],
+    )
+  ).rows[0];
+  assertFleetRoleIsUnprivileged(
+    fleetRole,
+    fleetState ?? {
+      rolsuper: false,
+      rolbypassrls: false,
+      rolcanlogin: false,
+      reaches: null,
+    },
+  );
+
   for (const grant of [
     `GRANT USAGE ON SCHEMA public TO ${fleet}`,
     `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ${fleet}`,
@@ -306,10 +373,14 @@ async function provisionFleetRole(
   // named — quietly leaving it is the shape the measurement above describes. Best-effort like the
   // grants below, and for the same reason: a member this administrator holds no ADMIN over cannot
   // be revoked here, and that is worth reporting rather than crash-looping on.
+  // `quote_ident` on the way out, so the statement the message prints is one an operator can paste:
+  // a role name may legally contain a double quote, and wrapping it here by hand produces text that
+  // reads like SQL and is not. The same reason the REVOKE below is built by the server.
   const membersOf = async () =>
     (
-      await client.query<{ rolname: string; grantor: string }>(
-        `SELECT DISTINCT r.rolname, g.rolname AS grantor
+      await client.query<{ rolname: string; quoted: string; grantor: string }>(
+        `SELECT DISTINCT r.rolname, quote_ident(r.rolname) AS quoted,
+                quote_ident(g.rolname) AS grantor
            FROM pg_auth_members am
            JOIN pg_roles r ON r.oid = am.member
            JOIN pg_roles d ON d.oid = am.roleid
@@ -318,11 +389,26 @@ async function provisionFleetRole(
         [fleetRole, role],
       )
     ).rows;
+  const quotedFleet = (
+    await client.query<{ q: string }>("SELECT quote_ident($1::text) AS q", [
+      fleetRole,
+    ])
+  ).rows[0]?.q as string;
 
   const before = new Set((await membersOf()).map((r) => r.rolname));
   for (const rolname of before) {
     try {
-      await client.query(`REVOKE ${fleet} FROM "${rolname}"`);
+      // Quoted by the SERVER, not here: `rolname` comes out of the catalog and a legal role name may
+      // contain a double quote, which would make this statement invalid SQL — and the catch below
+      // would read that as a permission problem while the member kept its path to every tenant.
+      // Two round trips because `DO` takes no parameters: `format` builds it, then it is run.
+      const revoke = (
+        await client.query<{ stmt: string }>(
+          "SELECT format('REVOKE %I FROM %I', $1::text, $2::text) AS stmt",
+          [fleetRole, rolname],
+        )
+      ).rows[0]?.stmt as string;
+      await client.query(revoke);
     } catch (err) {
       console.warn(
         `db-bootstrap: could not revoke "${rolname}" from "${fleetRole}" (${message(err)})`,
@@ -346,13 +432,14 @@ async function provisionFleetRole(
       );
     }
   }
-  for (const { rolname, grantor } of after) {
+  for (const { rolname, quoted, grantor } of after) {
     console.warn(
-      `db-bootstrap: "${rolname}" is still a member of "${fleetRole}" (granted by "${grantor}") ` +
+      `db-bootstrap: ${quoted} is still a member of ${quotedFleet} (granted by ${grantor}) ` +
         "and can read every tenant in this database through the cross-tenant policy. This is what " +
         "a database dropped and recreated under the same name leaves behind. Clear it as " +
-        `"${grantor}" or as a superuser: REVOKE "${fleetRole}" FROM "${rolname}";`,
+        `${grantor} or as a superuser: REVOKE ${quotedFleet} FROM ${quoted};`,
     );
+    void rolname;
   }
 
   // Two grants, and BOTH are best-effort. Roles are CLUSTER-wide objects while databases are not,

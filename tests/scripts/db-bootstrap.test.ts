@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Client } from "pg";
 import { FLEET_ROLE_EXPR } from "@/lib/tenancy/fleet-role";
 import {
+  assertFleetRoleIsUnprivileged,
   assertRuntimeRoleIsUnprivileged,
   fleetMembershipRepair,
   parseAppRole,
@@ -321,6 +322,56 @@ describe("planRoleProvisioning", () => {
   // role and every fleet read answers zero rows; WITH it inherited, the fleet policy applies to the
   // runtime role passively and every tenant becomes readable on an ordinary request. Neither shows
   // up in a role ATTRIBUTE, which is why `assertRuntimeRoleIsUnprivileged` above cannot see it.
+  // NOTE: the third post-condition, and the one that is about what the fleet role IS rather than who
+  // reaches it. This script only CREATES the role when it is absent, so on the branch that finds an
+  // existing one — a database dropped and recreated leaves it behind — nothing had asked whether it
+  // is the harmless NOLOGIN role this design describes.
+  describe("assertFleetRoleIsUnprivileged", () => {
+    const ok = {
+      rolsuper: false,
+      rolbypassrls: false,
+      rolcanlogin: false,
+      reaches: null,
+    };
+
+    test("the role this design creates passes", () => {
+      expect(() =>
+        assertFleetRoleIsUnprivileged("fleet_role", ok),
+      ).not.toThrow();
+    });
+
+    // Each attribute on its own, because a check written as one boolean would pass three of these.
+    test("every way of being privileged is refused, and named", () => {
+      for (const [field, word] of [
+        ["rolsuper", "SUPERUSER"],
+        ["rolbypassrls", "BYPASSRLS"],
+        ["rolcanlogin", "LOGIN"],
+      ] as const) {
+        const boom = () =>
+          assertFleetRoleIsUnprivileged("fleet_role", { ...ok, [field]: true });
+        expect(boom).toThrow(/already exists and is privileged/);
+        expect(boom).toThrow(new RegExp(word));
+      }
+      const inherited = () =>
+        assertFleetRoleIsUnprivileged("fleet_role", {
+          ...ok,
+          reaches: "rds_superuser",
+        });
+      expect(inherited).toThrow(/inherits a privileged role \(rds_superuser\)/);
+    });
+
+    // The repair is a DROP, not a demotion: this installation does not own that role, and demoting
+    // someone else's role reaches every database on the cluster that uses it.
+    test("the repair drops the role rather than demoting it", () => {
+      const boom = () =>
+        assertFleetRoleIsUnprivileged("fleet_role", { ...ok, rolsuper: true });
+      expect(boom).toThrow(
+        /DROP OWNED BY "fleet_role"; DROP ROLE "fleet_role";/,
+      );
+      expect(boom).not.toThrow(/NOSUPERUSER/);
+    });
+  });
+
   describe("reviewFleetMembership", () => {
     const repair = fleetMembershipRepair("app_role", "fleet_role", 170000);
 
@@ -835,8 +886,11 @@ describe.skipIf(!dbUp)(
       const stuck = await runBootstrap();
       expect(stuck.exitCode).toBe(0);
       const stuckOut = `${stuck.stdout}${stuck.stderr}`;
-      expect(stuckOut).toContain(`"${STRAY_ROLE}" is still a member`);
-      expect(stuckOut).toContain(`REVOKE "${fleet}" FROM "${STRAY_ROLE}";`);
+      // Unquoted here, and that is `quote_ident` doing its job: it quotes only what needs it, so a
+      // plain lowercase name comes out bare and the statement is still valid SQL. The arm that
+      // proves the quoting matters is the one below, with a name that carries a double quote.
+      expect(stuckOut).toContain(`${STRAY_ROLE} is still a member`);
+      expect(stuckOut).toContain(`REVOKE ${fleet} FROM ${STRAY_ROLE};`);
       expect(await membersOfFleet()).toContain(STRAY_ROLE);
 
       // Second arm: a grant this administrator CAN revoke is revoked, silently and for good.
@@ -859,6 +913,58 @@ describe.skipIf(!dbUp)(
       expect(members).toContain(ADMIN_ROLE);
 
       await db.query(`DROP ROLE IF EXISTS ${STRAY_ROLE}`);
+    });
+
+    // NOTE: the live half of `assertFleetRoleIsUnprivileged`, and the branch it exists for — the one
+    // where the role is FOUND rather than created. A database dropped and recreated leaves the old
+    // role standing, and nothing else in this script would have looked at what it is.
+    test("a pre-existing fleet role that is privileged stops the boot", async () => {
+      const db = su as Client;
+      const fleet = await probeFleetRole();
+      await db.query(`ALTER ROLE "${fleet}" BYPASSRLS`);
+      try {
+        const refused = await runBootstrap();
+        expect(refused.exitCode).toBe(1);
+        const out = `${refused.stdout}${refused.stderr}`;
+        expect(out).toContain("already exists and is privileged");
+        expect(out).toContain("BYPASSRLS");
+        // The repair drops it: this installation does not own that role, and demoting someone
+        // else's role reaches every database on the cluster that uses it.
+        expect(out).toContain(`DROP ROLE "${fleet}";`);
+      } finally {
+        await db.query(`ALTER ROLE "${fleet}" NOBYPASSRLS`);
+      }
+      // And the next boot is clean again, so the refusal is a gate rather than a dead end.
+      expect((await runBootstrap()).exitCode).toBe(0);
+    });
+
+    // NOTE: a role name may legally contain a double quote, and the reconcile interpolates names it
+    // read out of the catalog. Quoted by hand, this member survives the revoke — the statement is
+    // invalid SQL and the catch reads it as a permission problem.
+    test("a stray member whose name carries a quote is still revoked", async () => {
+      const db = su as Client;
+      const fleet = await probeFleetRole();
+      const quoted = `fazerai_bs_qu"ote_${process.pid}`;
+      await db.query(`CREATE ROLE "${quoted.replace(/"/g, '""')}" NOLOGIN`);
+      try {
+        // GRANTED BY the administrator, so the revoke is one it can actually make — the arm where
+        // it cannot is the test above, and mixing the two would prove neither.
+        await db.query(
+          `GRANT "${fleet}" TO "${quoted.replace(/"/g, '""')}" WITH INHERIT FALSE, SET TRUE GRANTED BY ${ADMIN_ROLE}`,
+        );
+        const { exitCode, stdout, stderr } = await runBootstrap();
+        expect(exitCode).toBe(0);
+        expect(`${stdout}${stderr}`).toContain(`revoked "${quoted}"`);
+        const still = (
+          await db.query("SELECT pg_has_role($1, $2, 'SET') AS s", [
+            quoted,
+            fleet,
+          ])
+        ).rows[0];
+        expect(still).toEqual({ s: false });
+      } finally {
+        await db.query(`DROP ROLE IF EXISTS "${quoted.replace(/"/g, '""')}"`);
+      }
     });
 
     test("the provisioned role can connect with the password from DATABASE_URL", async () => {

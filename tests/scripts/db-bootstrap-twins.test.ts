@@ -50,6 +50,16 @@ const INVARIANTS: Array<{
     sql: /THEN 'SET' ELSE 'MEMBER' END/,
   },
   {
+    what: "refuses a pre-existing fleet role that is privileged",
+    ts: /already exists and is privileged/,
+    sql: /already exists and is privileged/,
+  },
+  {
+    what: "quotes catalog role names through the server, not by hand",
+    ts: /format\('REVOKE %I FROM %I'/,
+    sql: /format\('REVOKE %I FROM %I'/,
+  },
+  {
     what: "reconciles memberships this database did not grant",
     // Anchored on the QUERY rather than on the prose around it: the reconcile is "every member of
     // the fleet role that is neither this database's runtime role nor the administrator", and that

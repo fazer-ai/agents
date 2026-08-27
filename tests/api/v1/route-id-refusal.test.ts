@@ -202,6 +202,47 @@ describe("the refusal a malformed path id produces", () => {
     expect(await res.json()).toEqual({ error: "Não é um id válido" });
   });
 
+  // The tenant selector is an id in a HEADER, and it used to be folded into "no target" when it was
+  // not one. These three routes read a null target differently: measured before this, `abc` answered
+  // 400 here, 403 on the vault route, and 200 with `{ status: "disabled" }` on the metrics route,
+  // which is a successful-looking body for a request that named no tenant. Refused at the boundary,
+  // all three answer the same thing.
+  test("a malformed tenant selector is refused, not treated as no selector", async () => {
+    const paths = [
+      "/api/v1/agents",
+      "/api/v1/metrics/costs",
+      "/api/v1/vault/1/oauth/google/status",
+    ];
+    const answers: string[] = [];
+    for (const path of paths) {
+      const res = await app.handle(
+        new BunRequest(`http://localhost${path}`, {
+          headers: {
+            cookie: `fazerai_auth_token=${token}`,
+            "X-Tenant-Id": "0x7",
+          },
+        }),
+      );
+      answers.push(`${res.status} ${JSON.stringify(await res.json())}`);
+    }
+    expect(answers).toEqual([
+      '400 {"error":"Not a valid X-Tenant-Id"}',
+      '400 {"error":"Not a valid X-Tenant-Id"}',
+      '400 {"error":"Not a valid X-Tenant-Id"}',
+    ]);
+  });
+
+  // The control: omitting the selector is not malformed, and each route still answers it its own
+  // way. This is what stops the refusal above from being read as "the header became required".
+  test("omitting the selector is still not a refusal", async () => {
+    const res = await app.handle(
+      new BunRequest("http://localhost/api/v1/metrics/costs", {
+        headers: { cookie: `fazerai_auth_token=${token}` },
+      }),
+    );
+    expect(res.status).toBe(200);
+  });
+
   // The other half of "a path segment is not an id", on the one route that COMPARED one. The guard
   // that stops an admin from locking themselves out read `user.id.toString() === params.id`, and
   // `parseDbId` accepts leading zeros, so `001` addressed the caller's own row while failing that

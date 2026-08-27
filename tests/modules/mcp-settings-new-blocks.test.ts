@@ -391,6 +391,86 @@ describe.skipIf(!dbUp)("the four blocks reach the agent through MCP", () => {
     expect(back.ok).toBe(true);
   });
 
+  // ROUND 8. The read was projected in round 5 and the DIFF was not — the same question in a third
+  // place. A dry run exists to be reused, so a preview whose `after` carries fields the write refuses
+  // hands the caller a document the apply rejects.
+  test("the dry run's own preview can be written straight back", async () => {
+    const preview = await agentSettingsSet(
+      principal(),
+      {
+        agent_id: String(agentId),
+        // A value that certainly differs from what is stored, so the diff carries the block: the
+        // preview only reports keys that CHANGED.
+        guardrails: { output: { templateMessage: `r8-${process.pid}` } },
+      } as never,
+      { base: appDb },
+    );
+    expect(preview.ok).toBe(true);
+    if (!preview.ok) return;
+    const diff = (
+      preview.data as {
+        diff?: { guardrails?: { after?: Record<string, unknown> } };
+      }
+    ).diff;
+    const after = diff?.guardrails?.after;
+    expect(after).toBeDefined();
+    // The preview must carry the WRITABLE shape. Asserted with the probe PROVEN to have arrived
+    // first: `input?.checks ?? {}` is satisfied by `input` being undefined, and the first version of
+    // this check passed against a mutation that removed the projection entirely, for exactly that
+    // reason.
+    const input = (after as { input?: { checks?: Record<string, unknown> } })
+      ?.input;
+    expect(input).toBeDefined();
+    const checks = Object.keys(input?.checks ?? {});
+    expect(checks).toContain("toxicity");
+    expect(checks).not.toContain("promptAdherence");
+    expect(checks).not.toContain("answerRelevance");
+    expect(Object.keys(input ?? {})).not.toContain("generationPrompt");
+
+    const applied = await agentSettingsSet(
+      principal(),
+      { agent_id: String(agentId), dry_run: false, guardrails: after } as never,
+      { base: appDb },
+    );
+    expect(applied.ok).toBe(true);
+  });
+
+  // The apply has its own two projections — the diff's `before` and the applied `after` — and the
+  // battery found both uncovered after the preview one was fixed. All three emit the settings shape
+  // to a caller, so all three have to emit the WRITABLE one; a client reverting from `before` or
+  // re-sending `after` hits the same refusal the read was fixed for.
+  test("the apply's before and after are writable too", async () => {
+    const applied = await agentSettingsSet(
+      principal(),
+      {
+        agent_id: String(agentId),
+        dry_run: false,
+        guardrails: { output: { templateMessage: `r8b-${process.pid}` } },
+      } as never,
+      { base: appDb },
+    );
+    expect(applied.ok).toBe(true);
+    if (!applied.ok) return;
+    const diff = (
+      applied.data as {
+        diff?: {
+          guardrails?: {
+            before?: { input?: { checks?: Record<string, unknown> } };
+            after?: { input?: { checks?: Record<string, unknown> } };
+          };
+        };
+      }
+    ).diff;
+    for (const side of ["before", "after"] as const) {
+      const input = diff?.guardrails?.[side]?.input;
+      expect(input).toBeDefined();
+      const checks = Object.keys(input?.checks ?? {});
+      expect(checks).toContain("toxicity");
+      expect(checks).not.toContain("promptAdherence");
+      expect(Object.keys(input ?? {})).not.toContain("generationPrompt");
+    }
+  });
+
   test("null clears one rule and leaves the others", async () => {
     const r = await agentSettingsSet(
       principal(),

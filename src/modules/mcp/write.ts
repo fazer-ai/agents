@@ -650,7 +650,9 @@ export async function agentSettingsSet(
       }
     }
     const current = await getAgent(ctx, agentId, base);
-    const before = readBehaviorSettings(current.settings);
+    const before = dropOutputOnlyInputFields(
+      readBehaviorSettings(current.settings),
+    );
     // On the PATCH, before the merge: mergeBehaviorSettings re-reads each touched block through its
     // typed reader, so by the time the merged bag exists an over-cap note has already been clamped
     // and there is nothing left to refuse. Before the dry run too, not only before the apply — a
@@ -670,7 +672,13 @@ export async function agentSettingsSet(
       (current.settings ?? {}) as Record<string, unknown>,
       patch,
     );
-    const afterPreview = readBehaviorSettings(nextBag);
+    // NOTE: PROJECTED, like the read — the same question asked in a third place. A client is expected to
+    // reuse the preview's `after` (that is what a dry run is for), so a diff carrying the fields the
+    // write refuses hands back a document that the apply rejects. Fixing `agent_settings_get` alone
+    // left this one, which is the shape of miss this PR is about.
+    const afterPreview = dropOutputOnlyInputFields(
+      readBehaviorSettings(nextBag),
+    );
     const target = `agent:${agentId}`;
     // Diff only the touched blocks (normalized before → normalized after).
     const beforeProj: Record<string, unknown> = {};
@@ -692,7 +700,9 @@ export async function agentSettingsSet(
       { settings: nextBag },
       base,
     );
-    const afterApplied = readBehaviorSettings(updated.settings);
+    const afterApplied = dropOutputOnlyInputFields(
+      readBehaviorSettings(updated.settings),
+    );
     const afterAppliedProj: Record<string, unknown> = {};
     for (const key of Object.keys(patch) as (keyof BehaviorSettingsPatch)[]) {
       afterAppliedProj[key] = afterApplied[key];

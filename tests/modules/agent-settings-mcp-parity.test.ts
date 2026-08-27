@@ -526,6 +526,35 @@ describe("the guardrail directions publish only what their direction uses", () =
     ).toBe(true);
   });
 
+  // ROUND 8. `generated` is accepted on input, as the console offers it — refusing would make the
+  // same write succeed there and fail here. What it DOES is the part a caller cannot discover by
+  // trying, since the write succeeds: analyzeGuardrail runs every input verdict through
+  // withoutReplacement, so it falls back to the template.
+  test("the input action documents its unconditional template fallback", () => {
+    const patch = z.object(BEHAVIOR_PATCH_SHAPE);
+    expect(
+      patch.safeParse({ guardrails: { input: { action: "generated" } } })
+        .success,
+    ).toBe(true);
+    const block = (
+      patch.shape.guardrails as unknown as {
+        unwrap: () => {
+          shape: Record<
+            string,
+            {
+              unwrap: () => { shape: Record<string, { description?: string }> };
+            }
+          >;
+        };
+      }
+    ).unwrap().shape;
+    const inputAction = block.input?.unwrap().shape.action;
+    expect(String(inputAction?.description)).toContain("falls back");
+    // The output direction says no such thing, because there it really does generate.
+    const outputAction = block.output?.unwrap().shape.action;
+    expect(String(outputAction?.description)).not.toContain("falls back");
+  });
+
   test("the shared checks are on both", async () => {
     const published = await publishedProperties();
     for (const dir of ["input", "output"]) {

@@ -521,16 +521,11 @@ const outputChecks = z.looseObject({
     ),
 });
 
+const ACTION_DESC =
+  "on a violation: template = send templateMessage verbatim; generated = guardrails writes a safe reply; silent = send nothing";
+
 const directionCommon = {
   enabled: z.boolean().optional(),
-  action: oneOf(GUARDRAIL_ACTIONS)
-    .optional()
-    .describe(
-      "on a violation: template = send templateMessage verbatim; generated = guardrails writes a safe reply; silent = send nothing",
-    ),
-  // NOTE: No length here, and that is the rule rather than an oversight: the reader CLIPS this
-  // (TEMPLATE_MESSAGE_MAX), and a bound copied here would turn a clip into a refusal — the same
-  // write would then succeed in the console and fail through MCP.
   templateMessage: z
     .string()
     .optional()
@@ -539,6 +534,17 @@ const directionCommon = {
 
 const guardrailInput = z.looseObject({
   ...directionCommon,
+  // NOTE: All three actions are accepted here, as the console offers them — refusing `generated` would
+  // make the same write succeed in the console and fail through MCP. What it DOES is different, and
+  // that belongs in the description: the input direction never delivers a replacement
+  // (`analyzeGuardrail` runs every input verdict through `withoutReplacement`, because there is no
+  // assistant reply to repair), so `generated` falls back to the template message. A caller cannot
+  // find that out by trying, since the write succeeds.
+  action: oneOf(GUARDRAIL_ACTIONS)
+    .optional()
+    .describe(
+      `${ACTION_DESC}. NOTE for this direction: there is no reply to rewrite, so 'generated' always falls back to templateMessage`,
+    ),
   checks: inputChecks.optional(),
   // NOTE: Input analysis never generates a replacement reply (prompts.ts reads this only for `output`).
   generationPrompt: z.never().optional(),
@@ -546,6 +552,7 @@ const guardrailInput = z.looseObject({
 
 const guardrailOutput = z.looseObject({
   ...directionCommon,
+  action: oneOf(GUARDRAIL_ACTIONS).optional().describe(ACTION_DESC),
   checks: outputChecks.optional(),
   generationPrompt: z
     .string()

@@ -127,7 +127,8 @@ red test.
 | `agent` | the Chatwoot webhook (inbox), the **debounce flush**, the **re-engage** button, and `runPlaygroundTurn` (playground), which resolves its target first |
 | `nudge` | `runAgentNudge` and `runPlaygroundFollowup` |
 | `vision` | `extractInboundFile` / `extractPlaygroundFile`, asked **after** the file is known to be readable and immediately before the provider call |
-| `guardrail`, `tts_normalize`, `memory_compact` | covered by the unit above them |
+| `guardrail`, `tts_normalize` | covered by the unit above them |
+| `memory_compact` | **ungated, by decision** — see below |
 
 A refusal says that **spend** was what stood in the way, so it is asked only where spend was
 actually next: after everything that would have stopped the call anyway, and immediately before the
@@ -165,6 +166,25 @@ standing; treating it as "not runnable" would let the turn spend past a budget t
 For the inbound attachment this means the ceiling sits **below** the download. The download is a
 Chatwoot fetch and not a billed one, and it is what tells that path the file's type in the first
 place.
+
+`memory_compact` has a word of its own because no gate answers for it. It runs from its own
+`MEMORY_COMPACT` scheduler job, minutes after the attendance it summarizes and on attendances a human
+handled, so there is no enclosing verdict to be covered by. It is out of the ceiling by decision, for
+the reason that separates it from every other billed call: refusing it does not save the tokens, it
+moves them — the raw history stays in the thread and the next turn carries it, so a ceiling that
+skipped compaction would raise spend rather than bound it. The cost that buys is real and is not
+hidden: a tenant past its ceiling keeps paying for compaction. Bounded (one job per attendance, one
+summary each) and small beside a turn, but it is the one path on which "the ceiling bounds the month"
+is not literally true.
+
+**The gate stays in front of the contact-authorization call, not behind it.** Both orderings can
+report a refusal the other would have made first — over-ceiling when authorization would have denied,
+or denied when the ceiling would have refused — and both verdicts are true and operative, since the
+turn does not run either way. What breaks the tie is that the ceiling is one indexed local read and
+authorization is a ten-second round trip to somebody else's endpoint: asking a stranger's service
+about a turn that is not going to run spends their capacity on a question whose answer changes
+nothing. A verdict going stale across that call is the same read-then-act overshoot this gate accepts
+everywhere else.
 
 **The turn is asked about more than once**, and the second ask is not redundant. The webhook's gate
 covers the message; the debounce flush runs minutes later, and a tenant can cross its ceiling inside

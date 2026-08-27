@@ -17,7 +17,10 @@ describe("spend ceiling coverage", () => {
 
   it("gives every node one of the two answers", () => {
     for (const [node, site] of Object.entries(SPEND_GATE_FOR_NODE)) {
-      expect(["gated", "covered-by-the-unit"], node).toContain(site);
+      expect(
+        ["gated", "covered-by-the-unit", "ungated-by-decision"],
+        node,
+      ).toContain(site);
     }
   });
 
@@ -29,5 +32,9 @@ describe("spend ceiling coverage", () => {
     expect(SPEND_GATE_FOR_NODE.agent).toBe("gated");
     expect(SPEND_GATE_FOR_NODE.nudge).toBe("gated");
     expect(SPEND_GATE_FOR_NODE.vision).toBe("gated");
+    // And the one node that no gate answers for says so in its own word. "covered-by-the-unit" here
+    // would claim a verdict that does not exist: compaction runs from its own scheduler job, not
+    // inside a turn. Pinned so moving it back is a deliberate edit with a red test in between.
+    expect(SPEND_GATE_FOR_NODE.memory_compact).toBe("ungated-by-decision");
   });
 });

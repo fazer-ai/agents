@@ -170,10 +170,28 @@ describe.skipIf(!dbUp)("the tenant family records from its services", () => {
     expect(all[0]?.after).toMatchObject({
       enabled: true,
       monthlyInboxTokens: 250_000,
-      overCeilingMessage: "set",
     });
     // The sentence itself is not in the row, on either side.
     expect(projectionText(all)).not.toContain("Voltamos amanhã");
+    // ...and what IS there answers "did it move": null before, a digest after.
+    const first = all[0]?.after as { overCeilingMessage?: string | null };
+    expect(first.overCeilingMessage).toBeTruthy();
+
+    // ONE SENTENCE REPLACED BY ANOTHER IS A CHANGE, and a bare "set" on both sides could not say so.
+    // This is the edit an operator actually makes — the message exists and its wording is being
+    // corrected — so it is the one the trail must not read as a no-op.
+    await clearAudit();
+    await updateSpendCeiling(
+      ctx(),
+      { overCeilingMessage: "Estamos fora do ar; alguém retorna em breve." },
+      appDb,
+    );
+    const second = await rows({ tenantId });
+    const before = second[0]?.before as { overCeilingMessage?: string | null };
+    const after = second[0]?.after as { overCeilingMessage?: string | null };
+    expect(before.overCeilingMessage).toBe(first.overCeilingMessage);
+    expect(after.overCeilingMessage).not.toBe(before.overCeilingMessage);
+    expect(projectionText(second)).not.toContain("Estamos fora do ar");
   });
 
   test("the logo's two acts are recorded under their own names", async () => {

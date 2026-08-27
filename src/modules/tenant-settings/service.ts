@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
@@ -554,10 +555,12 @@ export async function updateSpendCeiling(
       // saying from what to what. None of them is a secret or PII — a token count, a percentage, two
       // switches and a cooldown.
       //
-      // The customer-facing sentence is the exception, and it is reported as SET or CLEARED rather
-      // than quoted: it is free text an operator writes, so quoting it would paste a paragraph into
-      // every row for a field the console reads back in full anyway, and the trail's question about
-      // it is whether it moved.
+      // The customer-facing sentence is the exception, and it is FINGERPRINTED rather than quoted:
+      // it is free text an operator writes, so quoting it would paste a paragraph into every row for
+      // a field the console reads back in full anyway. A bare "set" cannot answer the question the
+      // trail is actually asked — one sentence replaced by another read as unchanged on both sides —
+      // so what goes in is a short digest, which differs exactly when the text differs and carries
+      // none of it back. `null` stays `null`, because "cleared" is a state and not a value.
       project: sides((raw) => {
         const b = readSpendCeilingConfig(raw);
         return {
@@ -567,7 +570,13 @@ export async function updateSpendCeiling(
           warnAtPercent: b.warnAtPercent,
           handoffEnabled: b.handoffEnabled,
           noticeCooldownSeconds: b.noticeCooldownSeconds,
-          overCeilingMessage: b.overCeilingMessage === null ? null : "set",
+          overCeilingMessage:
+            b.overCeilingMessage === null
+              ? null
+              : createHash("sha256")
+                  .update(b.overCeilingMessage)
+                  .digest("hex")
+                  .slice(0, 12),
         };
       }),
     },

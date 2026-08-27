@@ -449,6 +449,9 @@ const BARE_SLICES: Record<
   "src/modules/memory/cut.ts": [2, "index + array"],
   "src/modules/playground/service.ts": [1, "array"],
   "src/modules/split/service.ts": [1, "array"],
+  // The audit fingerprint of the over-ceiling sentence: a hex digest, so the cut cannot land inside
+  // a surrogate pair.
+  "src/modules/tenant-settings/service.ts": [1, "ascii"],
   "src/modules/tool-definitions/body-shape.ts": [1, "array"],
   "src/modules/updates/semver.ts": [1, "array"],
   // Read only to be substring-matched against the provider's auth-failure shapes, then dropped:

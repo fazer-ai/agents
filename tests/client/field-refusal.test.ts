@@ -392,3 +392,43 @@ describe("placeRefusal with an owned list wider than the drawn one", () => {
     ).toEqual({ toast: "too long" });
   });
 });
+
+// THE SENTENCE HAS ONE HOME.
+//
+// `capture` used to drop what it could not place: it returned the sentence and set `held` to null, so
+// a caller with somewhere to render it had to keep a copy. Three rounds of review on #414 found three
+// ways that copy drifts from the hold it duplicates — it outlives the mark, it carries the wrong
+// owner, and a second refusal about the same field leaves the first copy standing because the field
+// identity never changed. Holding it here is what closes the class rather than the instances.
+describe("useFieldRefusal holds what it cannot place", () => {
+  const FALLBACK = "Could not save.";
+  const form = (over: Partial<FormAtAnswer> = {}): FormAtAnswer => ({
+    mounted: true,
+    sent: {},
+    current: { name: "a" },
+    ...over,
+  });
+
+  test("a refusal about no input of this form's is still a placement, with no field", () => {
+    const placed = placeRefusal(
+      { message: "forbidden" },
+      ["name"],
+      FALLBACK,
+      form(),
+    );
+    // placeRefusal itself is unchanged — the toast-only shape is what the hook now keeps.
+    expect(placed).toEqual({ toast: "forbidden" });
+  });
+
+  test("a placement at an input still carries its value", () => {
+    // The half that must NOT change: a mark expires by value, and only a placement has one.
+    expect(
+      placeRefusal(
+        { message: "taken", field: "name" },
+        ["name"],
+        FALLBACK,
+        form(),
+      ),
+    ).toEqual({ at: "name", message: "taken", value: "a" });
+  });
+});

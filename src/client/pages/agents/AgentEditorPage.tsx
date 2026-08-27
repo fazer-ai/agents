@@ -606,18 +606,20 @@ function AgentEditor() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [savingAgent, setSavingAgent] = useState(false);
-  // The sentence from a failed save that no mark is carrying, WITH the section whose write
-  // produced it. The section is not decoration: a later save of a different section answers
-  // nothing about this one, and clearing on any success takes the only explanation off screen
-  // while the failed section is still unsaved.
-  const [standingRefusal, setStandingRefusal] = useState<{
-    message: string;
+  // WHAT the last failed save was, never its sentence. The sentence has one home and it is the
+  // holder (see `message` there): a copy here is a second source of truth for one fact, and three
+  // review rounds found three ways the two drift.
+  //
+  // `section` is the form whose write produced it, so a later success elsewhere cannot take it down.
+  // `named` is the value the server refused, when it named one, so the banner can say WHY it offers
+  // no way to it: `toolGuidance` takes a note for all thirteen native tools and the console draws
+  // three, and the server's sentence names the field without knowing that.
+  //
+  // Written by every `capture` and read only while the holder has a sentence, so neither can go stale
+  // against it.
+  const [refusedSave, setRefusedSave] = useState<{
     section: string;
-    // The name the server refused, when it named one. Kept so the banner can say WHY it offers no
-    // way to the value: `toolGuidance` takes a note for all thirteen native tools and the console
-    // draws three, so a refusal about one of the other ten is about something no screen here edits.
-    // The server's sentence names the field and the limit and cannot know that.
-    field: string | null;
+    named: string | null;
   } | null>(null);
   const [savingGrants, setSavingGrants] = useState(false);
   const [savingChannelRedirect, setSavingChannelRedirect] = useState(false);
@@ -959,10 +961,8 @@ function AgentEditor() {
     sent: Record<string, unknown>,
   ): void {
     const left = refusal.capture(e, fallback, sent, currentRef.current);
-    setStandingRefusal(
-      left
-        ? { message: left, section, field: readRefusal(e)?.field ?? null }
-        : null,
+    setRefusedSave(
+      left ? { section, named: readRefusal(e)?.field ?? null } : null,
     );
   }
 
@@ -991,7 +991,10 @@ function AgentEditor() {
     if (held && Object.hasOwn(sent, held) && refusal.at(held, sent[held])) {
       refusal.clear();
     }
-    setStandingRefusal((prev) => (prev?.section === section ? null : prev));
+    // A sentence the holder could place nowhere is about a SAVE rather than about a value, so the
+    // section is what answers it: there is no field to compare a snapshot against.
+    if (!refusal.field && refusedSave?.section === section) refusal.clear();
+    setRefusedSave((prev) => (prev?.section === section ? null : prev));
   }
 
   // WHAT THE BANNER SAYS: every standing refusal, whichever of them is standing.
@@ -1016,17 +1019,10 @@ function AgentEditor() {
   const heldMessage = heldField
     ? refusal.at(heldField, currentRef.current[heldField])
     : null;
-  const bannerMessage = heldMessage ?? standingRefusal?.message ?? null;
-  // THE STORED SENTENCE IS A FALLBACK, never a second copy of a mark.
-  //
-  // `capture` hands back the sentence for an off-screen placement AND holds the mark, so both are
-  // set for one refusal. The mark expires by value; the stored copy would not, and it would then
-  // surface again the moment the operator edits the refused field — attributing the server's
-  // sentence to the value the server never saw, which is the exact thing `placeRefusal` refuses to
-  // do at the input. Dropped as soon as a mark exists, so only the un-placeable case survives here.
-  useEffect(() => {
-    if (heldField) setStandingRefusal(null);
-  }, [heldField]);
+  // The mark expires by VALUE, so a placed sentence has to be asked for through `at`; one the holder
+  // could place nowhere has no value to expire against and is read straight off the holder. Either
+  // way there is one copy, and it is the holder's.
+  const bannerMessage = heldField ? heldMessage : refusal.message;
   // A jump only when there is somewhere to send them: a mark on the open tab is already as close as
   // the operator can get, and a sentence with no mark has no control to point at.
   const heldTarget = heldField
@@ -1037,9 +1033,9 @@ function AgentEditor() {
   // Said only when the server NAMED a value and this editor draws no control for it. Not for a
   // refusal about no input at all (a 403, a conflict), where there is no value to go and change.
   const bannerNoControl =
-    !heldMessage &&
-    standingRefusal?.field != null &&
-    editorTargetFor(standingRefusal.field, {
+    !heldField &&
+    refusedSave?.named != null &&
+    editorTargetFor(refusedSave.named, {
       guardrailsEnabled: guardrails.enabled,
     }) === null;
 

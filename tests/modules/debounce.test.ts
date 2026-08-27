@@ -109,6 +109,11 @@ function makeResolveStub(opts: {
   sent: Array<[number, string]>;
   calls: { getMessages: number };
   toggles: Array<[number, string]>;
+  notes?: Array<[number, string]>;
+  // Every write in the order it left, for the callers that assert a SEQUENCE. Three arrays cannot
+  // say which came first, and the order is the part of the spend-ceiling contract that a fence
+  // makes load-bearing.
+  order?: string[];
 }) {
   let i = 0;
   // Built from the CONFIG it is handed, so the token profile is part of what this stub personifies.
@@ -131,6 +136,15 @@ function makeResolveStub(opts: {
           throw new ChatwootMissingTokenError("conversations/messages");
         }
         opts.sent.push([conversationId, content]);
+        opts.order?.push("message");
+        return {};
+      },
+      sendPrivateNote: async (conversationId: number, content: string) => {
+        if (!cfg.botToken) {
+          throw new ChatwootMissingTokenError("conversations/messages");
+        }
+        opts.notes?.push([conversationId, content]);
+        opts.order?.push("note");
         return {};
       },
       toggleStatus: async (conversationId: number, status: string) => {
@@ -138,6 +152,7 @@ function makeResolveStub(opts: {
           throw new ChatwootMissingTokenError("conversations/toggle_status");
         }
         opts.toggles.push([conversationId, status]);
+        opts.order?.push("toggle");
         return {};
       },
     }) as unknown as ChatwootClient;
@@ -3173,6 +3188,10 @@ describe.skipIf(!dbUp)("debounce", () => {
   // have an already-armed flush spend past it, and many armed conversations would do it together.
   describe("with the spend ceiling reached between arming and the flush", () => {
     let previousTenantSettings: unknown = null;
+    // The OPERATOR'S sentence, deliberately not the shipped default: an expectation written against
+    // the defaults object would also pass on a flush that ignored the configuration entirely and
+    // hard-coded the same string.
+    const CEILING_COPY = "Orçamento do mês esgotado, já chamei alguém.";
 
     beforeAll(async () => {
       const before = await suDb.tenant.findUniqueOrThrow({
@@ -3185,7 +3204,11 @@ describe.skipIf(!dbUp)("debounce", () => {
         data: {
           settings: {
             ...(before.settings as object),
-            spendCeiling: { enabled: true, monthlyInboxTokens: 1000 },
+            spendCeiling: {
+              enabled: true,
+              monthlyInboxTokens: 1000,
+              overCeilingMessage: CEILING_COPY,
+            },
           },
         },
       });
@@ -3208,10 +3231,12 @@ describe.skipIf(!dbUp)("debounce", () => {
       });
     });
 
-    test("the flush spends nothing, hands off, and counts the burst as handled", async () => {
+    test("the flush spends nothing, says why, hands off, and counts the burst as handled", async () => {
       await seedConversation(910);
       const sent: Array<[number, string]> = [];
       const toggles: Array<[number, string]> = [];
+      const notes: Array<[number, string]> = [];
+      const order: string[] = [];
       const out = await flushDebounceJob({
         job: jobFor(910, { lastMessageId: 7 }),
         base: appDb,
@@ -3225,18 +3250,33 @@ describe.skipIf(!dbUp)("debounce", () => {
             sent,
             calls: { getMessages: 0 },
             toggles,
+            notes,
+            order,
           }),
           checkpointer: new MemorySaver(),
         },
       });
 
       expect(out).toEqual({ outcome: "done" });
-      // Nothing is said to the customer HERE: their next message reaches the webhook gate, which is
-      // over the ceiling and says it properly, with its own cooldown.
-      expect(sent).toEqual([]);
-      // ...but the conversation goes to the human queue, because unlike a refused contact nobody
-      // upstream refused anything, so it would otherwise sit with a bot that will never answer.
+      // THE WHOLE CONTRACT, not a piece of it. This refusal is the first one the conversation gets,
+      // so the customer hears the operator's sentence here or never: the handoff below takes the
+      // conversation out of `pending`, and from then on no message of theirs reaches a gate again.
+      expect(sent).toEqual([[910, CEILING_COPY]]);
+      // ...the conversation goes to the human queue, because unlike a refused contact nobody
+      // upstream refused anything, so it would otherwise sit with a bot that will never answer...
       expect(toggles).toEqual([[910, "open"]]);
+      // ...and the operator gets the reason, which has to say the handoff HAPPENED. The note is
+      // asserted on the clause the handoff decides rather than on the whole rendered string: the
+      // digits go through `toLocaleString`, and pinning them here would pin the runner's ICU too.
+      expect(notes.length).toBe(1);
+      expect(notes[0]?.[0]).toBe(910);
+      expect(notes[0]?.[1]).toContain("limite de tokens do mês foi atingido");
+      expect(notes[0]?.[1]).toContain("aberta para atendimento humano");
+      // The ORDER, which is load-bearing in both directions: the copy leaves before the open,
+      // because after it the conversation is no longer the bot's and the fence would rightly
+      // withhold it; the note comes last, because it is the only one that can report whether the
+      // handoff happened.
+      expect(order).toEqual(["message", "toggle", "note"]);
       // The burst counts as handled, so it is not re-flushed into the same wall forever.
       expect(await watermarkOf(910)).toBe(7);
       await clearFlowLog(suDb, { tenantId });
@@ -3278,6 +3318,7 @@ describe.skipIf(!dbUp)("debounce", () => {
       }) as unknown as typeof appDb;
       const sent: Array<[number, string]> = [];
       const toggles: Array<[number, string]> = [];
+      const notes: Array<[number, string]> = [];
       const out = await flushDebounceJob({
         job: jobFor(912, { lastMessageId: 11 }),
         base: raced,
@@ -3290,6 +3331,7 @@ describe.skipIf(!dbUp)("debounce", () => {
             sent,
             calls: { getMessages: 0 },
             toggles,
+            notes,
           }),
           checkpointer: new MemorySaver(),
         },
@@ -3299,9 +3341,17 @@ describe.skipIf(!dbUp)("debounce", () => {
       // The window this test is about actually opened; without this the assertion below would pass
       // on a run where the ledger read never happened.
       expect(flipped).toBe(1);
-      // The conversation is the human's now, so the gate leaves the status alone...
+      // The conversation is the human's now, so the gate leaves the status alone and says nothing
+      // over their shoulder...
       expect(toggles).toEqual([]);
       expect(sent).toEqual([]);
+      // ...but the operator still gets the note, which is the one of the three that a takeover does
+      // not withhold: it is invisible to the customer, and a conversation a human just inherited is
+      // exactly where the reason for the silence still needs saying. It reports NO handoff, because
+      // none happened.
+      expect(notes.length).toBe(1);
+      expect(notes[0]?.[1]).toContain("limite de tokens do mês foi atingido");
+      expect(notes[0]?.[1]).not.toContain("aberta para atendimento humano");
       // ...and the burst still counts as handled, exactly as it does when the gate was already
       // closed on the way in: the ceiling decided about the TENANT, and that holds either way.
       expect(await watermarkOf(912)).toBe(11);
@@ -3317,6 +3367,7 @@ describe.skipIf(!dbUp)("debounce", () => {
             spendCeiling: {
               enabled: true,
               monthlyInboxTokens: 1000,
+              overCeilingMessage: CEILING_COPY,
               handoffEnabled: false,
             },
           },
@@ -3325,6 +3376,7 @@ describe.skipIf(!dbUp)("debounce", () => {
       await seedConversation(911);
       const sent: Array<[number, string]> = [];
       const toggles: Array<[number, string]> = [];
+      const notes: Array<[number, string]> = [];
       const out = await flushDebounceJob({
         job: jobFor(911, { lastMessageId: 9 }),
         base: appDb,
@@ -3337,14 +3389,20 @@ describe.skipIf(!dbUp)("debounce", () => {
             sent,
             calls: { getMessages: 0 },
             toggles,
+            notes,
           }),
           checkpointer: new MemorySaver(),
         },
       });
 
       expect(out).toEqual({ outcome: "done" });
-      expect(sent).toEqual([]);
+      // The copy and the note do NOT depend on the handoff: with the open switched off the customer
+      // is the only one who can tell the agent went quiet, and this burst is the last chance to say
+      // it — the conversation stays `pending`, but nothing re-delivers the burst already dropped.
+      expect(sent).toEqual([[911, CEILING_COPY]]);
       expect(toggles).toEqual([]);
+      expect(notes.length).toBe(1);
+      expect(notes[0]?.[1]).not.toContain("aberta para atendimento humano");
       expect(await watermarkOf(911)).toBe(9);
       await clearFlowLog(suDb, { tenantId });
     });

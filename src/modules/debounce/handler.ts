@@ -51,6 +51,7 @@ import {
   registerDeadLetterHandler,
   registerJobHandler,
 } from "@/modules/scheduler/worker";
+import { announceSpendCeilingOnConversation } from "@/modules/spend-ceiling/notice";
 import {
   announceSpendCeiling,
   spendCeilingVerdict,
@@ -659,13 +660,18 @@ export async function flushDebounceJob(
   // conversations, or from this one's earlier burst. The webhook's ask covered the arming; this one
   // covers the turn, which is the thing that actually spends.
   //
-  // The burst is dropped the way a refused contact drops it, and for the same reason: the watermark
-  // advances off the payload's own last id, nothing is posted, and the flow line is what tells the
-  // operator. The one place it goes further is the HANDOFF. A contact refused here was already told
-  // and handed off by the webhook delivery that was refused; a ceiling crossed inside the window
-  // never refused anything, so the conversation is still the bot's and would sit there with nobody
-  // coming. The customer copy is deliberately NOT posted: their next message reaches the webhook
-  // gate, which is over the ceiling now and says it properly, with its own cooldown.
+  // The burst is dropped the way a refused contact drops it: the watermark advances off the payload's
+  // own last id, nothing is answered, and the flow line is what tells the operator. Where it goes
+  // further is that this refusal is the FIRST one. A contact refused here was already told and
+  // handed off by the webhook delivery that was refused; a ceiling crossed inside the debounce
+  // window never refused anything, so this flush owes the whole contract — the operator's sentence
+  // to the customer, the handoff, and the note — under the same cooldown key the webhook gate uses.
+  //
+  // None of it can be left to the customer's next message. With `handoffEnabled` (the default) the
+  // open is precisely what takes the conversation out of `pending`, so `shouldBotHandle` is false
+  // from then on and no later message of theirs reaches a gate at all; with the handoff off the
+  // conversation stays `pending`, but the burst being dropped here would go unanswered in silence
+  // unless the customer happened to write a second time.
   const flushCeiling = await spendCeilingVerdict({
     tenantId,
     source: "inbox",
@@ -693,13 +699,25 @@ export async function flushDebounceJob(
       String(flushCeiling.usedTokens),
       String(flushCeiling.ceilingTokens),
     );
-    if (flushCeiling.cfg.handoffEnabled) {
-      // Asked again immediately before ACTING, which is the fence the webhook's shared handoff
-      // helper carries for the same reason. The gate at the top of this flush judged the instant
-      // before two database reads, and a human claiming the conversation inside that window would
-      // otherwise have it pulled back out of their hands by a gate that had already decided to go
-      // quiet. Dropping the burst below is right either way; only the status change is theirs to
-      // lose.
+    // The PERSONA's token, not an empty one. `sendMessage`, `sendPrivateNote` and `toggleStatus` are
+    // all bot-token endpoints (docs/chatwoot.md), and a client built without it never reaches
+    // Chatwoot at all: the call raises ChatwootMissingTokenError, the catch logs it, and the burst is
+    // marked handled while the conversation stays on a bot that will not answer (issue #79 is that
+    // shape). Null when the persona has no Chatwoot bot of its own, and then the same error is the
+    // honest report — there is no identity to speak or hand off as.
+    const ceilingClient = () =>
+      loadChatwootClient(tenantId, instanceId, {
+        base,
+        makeClient: deps?.makeClient,
+        botToken: ctx.loaded.agentBotToken ?? undefined,
+      });
+    // Asked again immediately before EACH act, which is the fence the webhook's own primitives carry
+    // and for the same reason. The gate at the top of this flush judged the instant before two
+    // database reads, and the send below is a network call the next act sits behind. A human
+    // claiming the conversation inside either window would otherwise be talked over, or have it
+    // pulled back out of their hands by a gate that had already decided to go quiet. Dropping the
+    // burst is right either way; only what we say and the status change are theirs to lose.
+    const stillOurs = async (act: string): Promise<boolean> => {
       const owned = await conversationStillOurs({
         tenantId,
         instanceId,
@@ -709,36 +727,68 @@ export async function flushDebounceJob(
       });
       if (!owned.ours) {
         logger.info(
-          "debounce flush: spend-ceiling handoff skipped (conv=%s reason=%s) — the conversation is no longer the bot's",
+          "debounce flush: spend-ceiling %s skipped (conv=%s reason=%s) — the conversation is no longer the bot's",
+          act,
           String(conversationId),
           owned.closed.outcome,
         );
-      } else {
-        // The PERSONA's token, not an empty one. `toggleStatus` is a bot-token endpoint
-        // (docs/chatwoot.md), and a client built without it never reaches Chatwoot at all: the
-        // call raises ChatwootMissingTokenError, the catch below logs it, and the burst is marked
-        // handled while the conversation stays on a bot that will not answer (issue #79 is that
-        // shape). Null when the persona has no Chatwoot bot of its own, and then the same error is
-        // the honest report — there is no identity to hand off as.
-        const handoffClient = await loadChatwootClient(tenantId, instanceId, {
-          base,
-          makeClient: deps?.makeClient,
-          botToken: ctx.loaded.agentBotToken ?? undefined,
-        });
-        // Best-effort, like every other handoff: a Chatwoot that will not take the status change
-        // must not strand the flush, and the customer's next message re-tries it through the
-        // webhook gate.
-        await handoffClient
-          .toggleStatus(conversationId, "open")
-          .catch((err: unknown) => {
-            logger.warn(
-              "debounce flush: could not open the conversation for humans (conv=%s): %s",
-              String(conversationId),
-              err instanceof Error ? err.message : String(err),
-            );
-          });
       }
-    }
+      return owned.ours;
+    };
+    await announceSpendCeilingOnConversation({
+      tenantId,
+      conversationRowId: ctx.convDbId,
+      cfg: flushCeiling.cfg,
+      verdict: flushCeiling,
+      postPublicMessage: async (text) => {
+        // Inside the try, deliberately: a fence that cannot answer has to report "not sent" like any
+        // other failure, so the notice window it just claimed is given back.
+        try {
+          if (!(await stillOurs("message"))) return false;
+          await (await ceilingClient()).sendMessage(conversationId, text);
+          return true;
+        } catch (err) {
+          logger.warn(
+            "debounce flush: spend-ceiling message not sent (conv=%s): %s",
+            String(conversationId),
+            err instanceof Error ? err.message : String(err),
+          );
+          return false;
+        }
+      },
+      // No ownership fence, matching the webhook's own note: a private note is for the operator, it
+      // is invisible to the customer, and a conversation a human just took is exactly the one where
+      // the reason for the silence still needs saying.
+      postPrivateNote: async (text) => {
+        try {
+          await (await ceilingClient()).sendPrivateNote(conversationId, text);
+          return true;
+        } catch (err) {
+          logger.warn(
+            "debounce flush: spend-ceiling note failed (conv=%s): %s",
+            String(conversationId),
+            err instanceof Error ? err.message : String(err),
+          );
+          return false;
+        }
+      },
+      handoff: async () => {
+        try {
+          if (!(await stillOurs("handoff"))) return false;
+          await (await ceilingClient()).toggleStatus(conversationId, "open");
+          return true;
+        } catch (err) {
+          // Best-effort, like every other handoff: a Chatwoot that will not take the status change
+          // must not strand the flush.
+          logger.warn(
+            "debounce flush: could not open the conversation for humans (conv=%s): %s",
+            String(conversationId),
+            err instanceof Error ? err.message : String(err),
+          );
+          return false;
+        }
+      },
+    });
     const last = readLastMessageId(job.payload);
     if (last !== null) {
       await advanceHandledWatermark({

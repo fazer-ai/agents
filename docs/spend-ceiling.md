@@ -115,21 +115,38 @@ red test.
 **The turn is asked about more than once**, and the second ask is not redundant. The webhook's gate
 covers the message; the debounce flush runs minutes later, and a tenant can cross its ceiling inside
 that window from its own other conversations. So the flush asks again where the turn actually
-happens, exactly as the contact-authorization gate does and for the same reason. A flush refused
-there drops the burst and hands the conversation to humans (the webhook never refused anything, so
-nobody else would); the customer copy waits for the customer's next message, which reaches the
-webhook gate and says it properly, with its own cooldown.
+happens, exactly as the contact-authorization gate does and for the same reason. And a flush refused
+there owes the conversation the **whole** contract, not just the handoff: the webhook never refused
+anything, so this is the first refusal the conversation gets, and the operator's sentence, the
+handoff and the private note all fall to it.
 
-The handoff itself carries two things that are easy to leave out of a second copy, and both were
-left out of the first draft of this one. It goes out with the **persona's bot token**: `toggle_status`
-is a bot-token endpoint, and a client built without it raises before the call leaves the process, so
-a handoff written without the token is logged as best-effort failure while the conversation stays on
-a bot that will not answer. And ownership is **re-read immediately before the status change**, because
-the flush's own gate judged the instant before two database reads and `open` is not neutral: it ends
-the bot's attribution and re-queues the conversation, so applying it to one a human just claimed
-pulls it back out of their hands. Dropping the burst is right either way; only the status change is
-theirs to lose. `conversationStillOurs` is that question in one place, shared with the
-authorization gate's own re-check.
+It cannot be left to the customer's next message. With `handoffEnabled` (the default) the `open` is
+precisely what takes the conversation out of `pending`, so `shouldBotHandle` is false from then on
+and no later message of theirs reaches a gate at all; with the handoff switched off the conversation
+stays `pending`, but the burst being dropped right now is still silent unless the customer happens to
+write a second time. `announceSpendCeilingOnConversation` is that sequence in one place, called by
+the webhook gate and by the flush with each caller's own fenced primitives, under the same
+per-conversation cooldown key: the two are one notice about one conversation, and a burst refused
+seconds after a delivery was refused must not say it twice.
+
+The order inside it is load-bearing in both directions. The copy goes **first**, because the handoff
+is what ends the bot's attribution and after it the ownership fence would rightly withhold anything
+the bot tried to say. The note goes **last**, because it is the only one of the three that can report
+whether the handoff actually happened.
+
+The flush's primitives carry two things that are easy to leave out of a second copy, and both were
+left out of the first draft of this one. They go out with the **persona's bot token**: `messages` and
+`toggle_status` are bot-token endpoints, and a client built without it raises before the call leaves
+the process, so a handoff written without the token is logged as a best-effort failure while the
+conversation stays on a bot that will not answer. And ownership is **re-read immediately before each
+act**, because the flush's own gate judged the instant before two database reads and neither act is
+neutral: the copy would talk over a human, and `open` ends the bot's attribution and re-queues the
+conversation, so applying it to one a human just claimed pulls it back out of their hands. The note
+is the exception, deliberately: it is invisible to the customer, and a conversation a human just
+inherited is exactly where the reason for the silence still needs saying. Dropping the burst is right
+either way; only what is said and the status change are theirs to lose.
+`conversationStillOurs` is that question in one place, shared with the authorization gate's own
+re-check.
 
 **Vision asks for itself** because it runs on the incoming attachment *before* the webhook's gates
 decide anything — the same asymmetry `#316` measured for attribution. It asks but does **not**

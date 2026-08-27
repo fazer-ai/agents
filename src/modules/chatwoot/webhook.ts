@@ -97,6 +97,7 @@ import {
   retireJobsByDedupeKey,
   revokeJobsByKeyPrefixOn,
 } from "@/modules/scheduler/service";
+import { announceSpendCeilingOnConversation } from "@/modules/spend-ceiling/notice";
 import {
   announceSpendCeiling,
   spendCeilingVerdict,
@@ -1069,23 +1070,6 @@ const CONTACT_AUTH_ERROR_LABELS: Record<string, string> = {
   body_too_large: "resposta grande demais",
   unexpected_status: "status inesperado",
 };
-
-// Operator-facing note for a conversation the spend ceiling silenced (pt-BR, the same register as
-// its neighbours below). The numbers are the point: an operator who reads only this note has to be
-// able to tell "the month's budget ran out" from "the agent broke", and the two look identical from
-// inside a Chatwoot conversation. The figure is tokens, which is what the ceiling is denominated in
-// and what the console shows, so the note and the screen never disagree.
-export function spendCeilingNoteText(
-  verdict: { usedTokens: number; ceilingTokens: number | null },
-  handedOff: boolean,
-): string {
-  const handoffLine = handedOff
-    ? " A conversa foi aberta para atendimento humano."
-    : "";
-  const used = verdict.usedTokens.toLocaleString("pt-BR");
-  const ceiling = (verdict.ceilingTokens ?? 0).toLocaleString("pt-BR");
-  return `O agente não respondeu: o limite de tokens do mês foi atingido (${used} de ${ceiling}). O limite fica em Configurações e é reiniciado no primeiro dia do mês.${handoffLine}`;
-}
 
 // Operator-facing note for a conversation the contact-authorization gate refused (pt-BR, the same
 // register as the one-shot test-mode / out-of-hours notices). Reasons are short codes by the time
@@ -2558,15 +2542,11 @@ async function maybeConsumeCommandOrGate(params: {
   //
   //    Over the ceiling ⇒ the operator's configured sentence to the customer, then a handoff so a
   //    human can pick the conversation up, then a private note saying why the agent went quiet.
-  //    Same order and same reasons as the gate below: the copy goes first because after the open the
-  //    conversation is no longer the bot's and the fence would rightly withhold it, and the note goes
-  //    last so it can say whether the handoff actually happened.
-  //
-  //    The COPY AND THE NOTE sit behind a cooldown, the verdict never does: ten people writing in
-  //    after the month is spent are each evaluated, and told once per window. The claim mechanism is
-  //    contact-auth's, under a key of this gate's own — it is a per-conversation notice cooldown and
-  //    nothing about it is specific to that gate, and renaming it would churn fifty lines of another
-  //    feature's code for a word. ──
+  //    That sequence, its order and its cooldown live in the spend-ceiling module rather than here,
+  //    because the debounce flush owes the customer exactly the same three things when the ceiling
+  //    is crossed inside the debounce window. What stays local is what only this caller can supply:
+  //    the fenced primitives above, which know that a conversation a human took is one the bot no
+  //    longer speaks in. ──
   if (ctx.agentId !== null && ctx.agentEnabled && isNewIncomingMessage(n)) {
     const ceiling = await spendCeilingVerdict({
       tenantId,
@@ -2589,36 +2569,15 @@ async function maybeConsumeCommandOrGate(params: {
       tenantId,
     );
     if (ceiling.state === "over") {
-      const cooldownMs = ceiling.cfg.noticeCooldownSeconds * 1000;
-      const claim = (notice: "copy" | "note") =>
-        claimContactAuthNotice(
-          `spend_ceiling:${tenantId}:${ctx.conv.id}:${notice}`,
-          cooldownMs,
-        );
-      const copy = ceiling.cfg.overCeilingMessage;
-      const copyClaim = copy ? claim("copy") : false;
-      if (copy && copyClaim) {
-        // The window is claimed before the send, so two deliveries racing cannot both speak. A send
-        // that does not land gives it back: kept, it would silence the next refusal for the whole
-        // window over a message the customer never received.
-        if (!(await postPublicMessage(copy))) {
-          releaseContactAuthNotice(copyClaim);
-        }
-      }
-      let handedOff = false;
-      if (ceiling.cfg.handoffEnabled) {
-        // Outside the cooldown deliberately: the open is what ends the bot's attribution, and a
-        // first attempt that failed has to be retried on the next message, notice or no notice.
-        handedOff = await openConversationForHumans("spend-ceiling", null);
-      }
-      const noteClaim = claim("note");
-      if (noteClaim) {
-        if (
-          !(await postPrivateNote(spendCeilingNoteText(ceiling, handedOff)))
-        ) {
-          releaseContactAuthNotice(noteClaim);
-        }
-      }
+      await announceSpendCeilingOnConversation({
+        tenantId,
+        conversationRowId: ctx.conv.id,
+        cfg: ceiling.cfg,
+        verdict: ceiling,
+        postPublicMessage,
+        postPrivateNote,
+        handoff: () => openConversationForHumans("spend-ceiling", null),
+      });
       logger.info(
         "chatwoot: spend ceiling reached (conv=%s used=%s ceiling=%s) — the turn did not run",
         String(conversationId),

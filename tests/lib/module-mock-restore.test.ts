@@ -29,26 +29,27 @@ const barePackageMock = () =>
   /mock\.module\(\s*"([^"@/][^"]*|@[^/"]+\/[^"]+)"/g;
 const anyMockTarget = () => /mock\.module\(\s*"([^"]+)"/g;
 
-// Files that mock a third-party package and are ALLOWED not to restore it, each with the reason.
-// A waiver covers one file; a new one belongs in `afterAll`, not here.
+// The file-and-package pairs that are ALLOWED to go unrestored, each with the reason. Keyed by the
+// PAIR, not by the file: a waiver for one package must not cover a second one the same file adds
+// later, which is exactly how a waived file becomes a place to hide a new leak.
 const NO_RESTORE_WAIVED: Record<string, string> = {
-  "client/components/TenantDeepLink.test.tsx":
+  "client/components/TenantDeepLink.test.tsx → react-i18next":
     "`react-i18next`, and it predates this rule. It has not bitten for a reason that is real but not a guarantee: every test that renders a translated component stubs `useTranslation` itself, so a leaked stub meets another stub rather than a component expecting the real hook. The day one of them stops, the failure lands in a file that mocks nothing. Fix by restoring, not by adding a tenth line here.",
-  "client/components/UserMenu.test.tsx":
+  "client/components/UserMenu.test.tsx → react-i18next":
     "`react-i18next`, and it predates this rule. It has not bitten for a reason that is real but not a guarantee: every test that renders a translated component stubs `useTranslation` itself, so a leaked stub meets another stub rather than a component expecting the real hook. The day one of them stops, the failure lands in a file that mocks nothing. Fix by restoring, not by adding a tenth line here.",
-  "client/pages/DashboardFirstResponse.test.tsx":
+  "client/pages/DashboardFirstResponse.test.tsx → react-i18next":
     "`react-i18next`, and it predates this rule. It has not bitten for a reason that is real but not a guarantee: every test that renders a translated component stubs `useTranslation` itself, so a leaked stub meets another stub rather than a component expecting the real hook. The day one of them stops, the failure lands in a file that mocks nothing. Fix by restoring, not by adding a tenth line here.",
-  "client/pages/KnowledgeApprovals.test.tsx":
+  "client/pages/KnowledgeApprovals.test.tsx → react-i18next":
     "`react-i18next`, and it predates this rule. It has not bitten for a reason that is real but not a guarantee: every test that renders a translated component stubs `useTranslation` itself, so a leaked stub meets another stub rather than a component expecting the real hook. The day one of them stops, the failure lands in a file that mocks nothing. Fix by restoring, not by adding a tenth line here.",
-  "client/pages/KnowledgeDocsBlock.test.tsx":
+  "client/pages/KnowledgeDocsBlock.test.tsx → react-i18next":
     "`react-i18next`, and it predates this rule. It has not bitten for a reason that is real but not a guarantee: every test that renders a translated component stubs `useTranslation` itself, so a leaked stub meets another stub rather than a component expecting the real hook. The day one of them stops, the failure lands in a file that mocks nothing. Fix by restoring, not by adding a tenth line here.",
-  "client/pages/LogsGroupTitle.test.tsx":
+  "client/pages/LogsGroupTitle.test.tsx → react-i18next":
     "`react-i18next`, and it predates this rule. It has not bitten for a reason that is real but not a guarantee: every test that renders a translated component stubs `useTranslation` itself, so a leaked stub meets another stub rather than a component expecting the real hook. The day one of them stops, the failure lands in a file that mocks nothing. Fix by restoring, not by adding a tenth line here.",
-  "client/pages/LogsScopeChip.test.tsx":
+  "client/pages/LogsScopeChip.test.tsx → react-i18next":
     "`react-i18next`, and it predates this rule. It has not bitten for a reason that is real but not a guarantee: every test that renders a translated component stubs `useTranslation` itself, so a leaked stub meets another stub rather than a component expecting the real hook. The day one of them stops, the failure lands in a file that mocks nothing. Fix by restoring, not by adding a tenth line here.",
-  "client/pages/SetupPage.test.tsx":
+  "client/pages/SetupPage.test.tsx → react-i18next":
     "`react-i18next`, and it predates this rule. It has not bitten for a reason that is real but not a guarantee: every test that renders a translated component stubs `useTranslation` itself, so a leaked stub meets another stub rather than a component expecting the real hook. The day one of them stops, the failure lands in a file that mocks nothing. Fix by restoring, not by adding a tenth line here.",
-  "client/pages/VaultFillDeepLink.test.tsx":
+  "client/pages/VaultFillDeepLink.test.tsx → react-i18next":
     "`react-i18next`, and it predates this rule. It has not bitten for a reason that is real but not a guarantee: every test that renders a translated component stubs `useTranslation` itself, so a leaked stub meets another stub rather than a component expecting the real hook. The day one of them stops, the failure lands in a file that mocks nothing. Fix by restoring, not by adding a tenth line here.",
 };
 
@@ -75,21 +76,56 @@ function testFiles(): string[] {
 // The targets a file hands back inside a teardown hook. Names, not a boolean: a file that stubs two
 // packages and restores one would satisfy any yes/no answer while leaving the other replaced for the
 // whole process, and an unrelated `@/`-path restore in the same hook would satisfy it too.
+// The body of the hook that starts at `from`, with braces counted only where they are SYNTAX.
+// A `"}"` inside a string or a comment used to close the hook early, which silently turned a real
+// restore into a missing one; an unbalanced `"{"` did the reverse. This file's own fixtures are
+// full of both, so the reader has to know the difference.
+function hookBody(source: string, from: number): string {
+  let depth = 1;
+  let i = from;
+  while (i < source.length && depth > 0) {
+    const c = source[i];
+    const next = source[i + 1];
+    if (c === "/" && next === "/") {
+      while (i < source.length && source[i] !== "\n") i++;
+      continue;
+    }
+    if (c === "/" && next === "*") {
+      i += 2;
+      while (i < source.length && !(source[i] === "*" && source[i + 1] === "/"))
+        i++;
+      i += 2;
+      continue;
+    }
+    if (c === '"' || c === "'" || c === "`") {
+      const quote = c;
+      i++;
+      while (i < source.length && source[i] !== quote) {
+        // A backslash escapes the next character, quote included, so it cannot end the literal.
+        if (source[i] === "\\") i++;
+        i++;
+      }
+      i++;
+      continue;
+    }
+    if (c === "{") depth++;
+    else if (c === "}") depth--;
+    i++;
+  }
+  return source.slice(from, i);
+}
+
+// The targets a file hands back inside a teardown hook. Names, not a boolean: a file that stubs two
+// packages and restores one would satisfy any yes/no answer while leaving the other replaced for the
+// whole process, and an unrelated `@/`-path restore in the same hook would satisfy it too.
 function restoredInTeardown(source: string): Set<string> {
   const out = new Set<string>();
   const hooks = source.matchAll(
     /after(?:All|Each)\(\s*(?:async\s*)?\(\)\s*=>\s*\{/g,
   );
   for (const hook of hooks) {
-    const from = hook.index + hook[0].length;
-    let depth = 1;
-    let i = from;
-    while (i < source.length && depth > 0) {
-      if (source[i] === "{") depth++;
-      else if (source[i] === "}") depth--;
-      i++;
-    }
-    for (const m of source.slice(from, i).matchAll(anyMockTarget())) {
+    const body = hookBody(source, hook.index + hook[0].length);
+    for (const m of body.matchAll(anyMockTarget())) {
       if (m[1]) out.add(m[1]);
     }
   }
@@ -124,20 +160,30 @@ export function unrestoredIn(files: readonly ScannedFile[]): Unrestored[] {
   return out;
 }
 
+// One key per file-and-package pair, which is the unit a waiver actually covers.
+function pairs(found: readonly Unrestored[]): string[] {
+  return found.flatMap((o) => o.missing.map((pkg) => `${o.rel} → ${pkg}`));
+}
+
+export function unwaived(
+  found: readonly Unrestored[],
+  waived: Readonly<Record<string, string>>,
+): string[] {
+  return pairs(found).filter((key) => !(key in waived));
+}
+
 export function staleWaivers(
   files: readonly ScannedFile[],
   waived: Readonly<Record<string, string>>,
 ): string[] {
-  const live = new Set(unrestoredIn(files).map((o) => o.rel));
-  return Object.keys(waived).filter((rel) => !live.has(rel));
+  const live = new Set(pairs(unrestoredIn(files)));
+  return Object.keys(waived).filter((key) => !live.has(key));
 }
 
 describe("a third-party module mock is put back", () => {
   test("every file that mocks a package restores it when it is done", async () => {
     const files = await scanTree();
-    const offenders = unrestoredIn(files)
-      .filter((o) => !(o.rel in NO_RESTORE_WAIVED))
-      .map((o) => `${o.rel} → ${o.missing.join(", ")}`);
+    const offenders = unwaived(unrestoredIn(files), NO_RESTORE_WAIVED);
 
     expect(
       offenders,
@@ -237,22 +283,45 @@ describe("a third-party module mock is put back", () => {
             'mock.module("jose", () => stub);\nafterAll(() => {\n  mock.module("jose", () => real);\n});\n',
         },
       ];
-      expect(staleWaivers(fixed, { "a.test.ts": "why" })).toEqual([
-        "a.test.ts",
+      expect(staleWaivers(fixed, { "a.test.ts → jose": "why" })).toEqual([
+        "a.test.ts → jose",
       ]);
     });
 
     test("a waiver whose file was deleted is stale", () => {
-      expect(staleWaivers([], { "gone.test.ts": "why" })).toEqual([
-        "gone.test.ts",
+      expect(staleWaivers([], { "gone.test.ts → jose": "why" })).toEqual([
+        "gone.test.ts → jose",
       ]);
     });
 
-    test("a waiver that still describes an unrestored file is not stale", () => {
+    test("a waiver that still describes an unrestored pair is not stale", () => {
       const still = [
         { rel: "a.test.ts", source: 'mock.module("jose", () => stub);' },
       ];
-      expect(staleWaivers(still, { "a.test.ts": "why" })).toEqual([]);
+      expect(staleWaivers(still, { "a.test.ts → jose": "why" })).toEqual([]);
+    });
+
+    // Round-2 finding: a waived file used to be a place to hide the NEXT leak, because the waiver
+    // covered the file rather than the package it was written for.
+    test("a waiver for one package does not cover another in the same file", () => {
+      const found = [{ rel: "a.test.ts", missing: ["jose", "react-i18next"] }];
+      expect(unwaived(found, { "a.test.ts → jose": "why" })).toEqual([
+        "a.test.ts → react-i18next",
+      ]);
+    });
+
+    // A key that names only the file waives nothing. Without this the pair-keying is decorative:
+    // an old file-level entry would keep covering everything that file ever adds.
+    test("a waiver key that names only the file covers nothing", () => {
+      const found = [{ rel: "a.test.ts", missing: ["jose"] }];
+      expect(unwaived(found, { "a.test.ts": "why" })).toEqual([
+        "a.test.ts → jose",
+      ]);
+    });
+
+    test("a pair that is waived is not reported", () => {
+      const found = [{ rel: "a.test.ts", missing: ["jose"] }];
+      expect(unwaived(found, { "a.test.ts → jose": "why" })).toEqual([]);
     });
   });
 
@@ -292,6 +361,47 @@ describe("a third-party module mock is put back", () => {
       expect([
         ...restoredInTeardown(
           `afterAll(() => {\n  mock.module("jose", () => real);\n});\n`,
+        ),
+      ]).toEqual(["jose"]);
+    });
+
+    // Round-2 finding: braces were counted wherever they appeared, so a literal ended the hook.
+    test("a brace inside a string does not end the hook", () => {
+      expect([
+        ...restoredInTeardown(
+          'afterAll(() => {\n  const marker = "}";\n  mock.module("jose", () => real);\n});\n',
+        ),
+      ]).toEqual(["jose"]);
+    });
+
+    test("an unbalanced brace inside a string does not swallow the rest of the file", () => {
+      expect([
+        ...restoredInTeardown(
+          'afterAll(() => {\n  const marker = "{";\n});\nmock.module("jose", () => real);\n',
+        ),
+      ]).toEqual([]);
+    });
+
+    test("a brace inside a line comment does not end the hook", () => {
+      expect([
+        ...restoredInTeardown(
+          'afterAll(() => {\n  // closing } here\n  mock.module("jose", () => real);\n});\n',
+        ),
+      ]).toEqual(["jose"]);
+    });
+
+    test("a brace inside a block comment does not end the hook", () => {
+      expect([
+        ...restoredInTeardown(
+          'afterAll(() => {\n  /* } */\n  mock.module("jose", () => real);\n});\n',
+        ),
+      ]).toEqual(["jose"]);
+    });
+
+    test("an escaped quote does not end the string early", () => {
+      expect([
+        ...restoredInTeardown(
+          'afterAll(() => {\n  const s = "a \\" }";\n  mock.module("jose", () => real);\n});\n',
         ),
       ]).toEqual(["jose"]);
     });

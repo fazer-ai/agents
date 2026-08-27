@@ -22,6 +22,13 @@ import { FLEET_ROLE_FN } from "@/lib/tenancy/fleet-role";
 // same question asked at boot, of the connection actually being served, because a grant made by hand
 // afterwards is invisible to provisioning.
 
+// Every refusal this guard can make shares a base, and `src/index.ts` rethrows on the BASE rather
+// than on each class. That is not tidiness: `FleetPolicyMismatchError` was added here and the boot
+// path went on catching only `SuperuserRuntimeError`, so the process logged "DB unavailable?" and
+// kept serving with every cross-tenant read answering zero rows. With the base, a refusal added
+// later is fatal by construction instead of by someone remembering the call site.
+export abstract class RuntimeIsolationError extends Error {}
+
 export const FLEET_INHERITED_REASON = "inherits the fleet role";
 
 // The fleet role's name carries the database it belongs to, so a database RESTORED under a new name
@@ -37,7 +44,7 @@ export const FLEET_INHERITED_REASON = "inherits the fleet role";
 // resolved role and `ALTER ROLE … RENAME TO` fails on the name it would take. Rewriting the policies
 // touches nothing outside this database, is idempotent, and is the same statement the split
 // migration runs.
-export class FleetPolicyMismatchError extends Error {
+export class FleetPolicyMismatchError extends RuntimeIsolationError {
   constructor(resolved: string, offenders: string) {
     super(
       `the fleet policies in this database do not name "${resolved}", which is the role this ` +
@@ -61,7 +68,7 @@ export class FleetPolicyMismatchError extends Error {
   }
 }
 
-export class SuperuserRuntimeError extends Error {
+export class SuperuserRuntimeError extends RuntimeIsolationError {
   constructor(role: string, reasons: string[], repair?: string) {
     super(
       `Runtime DB role "${role}" is privileged (${reasons.join(", ")}); RLS would be a no-op. ` +

@@ -2,10 +2,12 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Client } from "pg";
 import { PrismaClient } from "@/../generated/prisma/client";
+import * as dbGuard from "@/lib/db-guard";
 import {
   assertRuntimeRoleIsNotSuperuser,
   FLEET_INHERITED_REASON,
   FleetPolicyMismatchError,
+  RuntimeIsolationError,
   SuperuserRuntimeError,
 } from "@/lib/db-guard";
 import { FLEET_ROLE_FN } from "@/lib/tenancy/fleet-role";
@@ -43,6 +45,44 @@ async function withRoleCatalogLock(
     await statements(tx as unknown as PrismaClient);
   });
 }
+
+// Needs no database, and that is the point: it is about the SHAPE of the refusals rather than about
+// any one of them. `src/index.ts` rethrows on the base class, so a refusal that does not extend it
+// is caught there as "DB unavailable?" and the process keeps serving — which is exactly what
+// happened when `FleetPolicyMismatchError` was added and the boot path still named only
+// `SuperuserRuntimeError`.
+describe("every refusal this guard makes is fatal at boot", () => {
+  test("all of them extend the class src/index.ts rethrows on", () => {
+    const errorClasses = Object.entries(dbGuard).filter(
+      ([, v]) =>
+        typeof v === "function" &&
+        v !== RuntimeIsolationError &&
+        Object.prototype.isPrototypeOf.call(Error, v),
+    );
+    // Positive control: a scan that matched nothing would pass whatever the answer is.
+    expect(errorClasses.map(([k]) => k).sort()).toEqual([
+      "FleetPolicyMismatchError",
+      "SuperuserRuntimeError",
+    ]);
+    for (const [, cls] of errorClasses) {
+      expect(
+        Object.prototype.isPrototypeOf.call(RuntimeIsolationError, cls),
+      ).toBe(true);
+    }
+  });
+
+  test("and src/index.ts catches the base, not one of them by name", async () => {
+    const source = await Bun.file(
+      new URL("../../src/index.ts", import.meta.url).pathname,
+    ).text();
+    const code = source
+      .split("\n")
+      .filter((l) => !l.trim().startsWith("//"))
+      .join("\n");
+    expect(code).toContain("error instanceof RuntimeIsolationError");
+    expect(code).not.toContain("error instanceof SuperuserRuntimeError");
+  });
+});
 
 describe.skipIf(!dbUp)("assertRuntimeRoleIsNotSuperuser", () => {
   beforeAll(async () => {

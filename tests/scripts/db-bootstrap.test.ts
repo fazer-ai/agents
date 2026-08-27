@@ -30,6 +30,8 @@ if (suUrl) {
 
 const ADMIN_ROLE = `fazerai_bs_admin_${process.pid}`;
 const APP_ROLE = `fazerai_bs_app_${process.pid}`;
+// A role the PREVIOUS installation of a recreated database left as a member of the fleet role.
+const STRAY_ROLE = `fazerai_bs_stray_${process.pid}`;
 const FOREIGN_ROLE = `fazerai_bs_foreign_${process.pid}`;
 const UNREACHABLE_ROLE = `fazerai_bs_unreachable_${process.pid}`;
 const ROT_A_ROLE = `fazerai_bs_rot_a_${process.pid}`;
@@ -417,6 +419,54 @@ describe("planRoleProvisioning", () => {
   // that runs everywhere — after it had already shipped into the branch, and nothing red would
   // have said so. So the rule is asserted where it can be: every 16-only spelling in this file
   // lives inside the version gate, and the portable spelling is used everywhere else.
+  // NOTE: the twin of the test below, and it exists because a mutation survived: deleting the pre-16
+  // branch of the administrative grant broke nothing in this suite, and could not — every server
+  // available here is 17. The consequence is not small, though. On PostgreSQL 15 with a
+  // non-superuser owner, skipping it leaves every future DATA migration failing with
+  // `permission denied to set role`, which is the contract docs/deploy.md states for that role.
+  //
+  // So the rule is asserted where it can be: the fleet role is granted to CURRENT_USER on BOTH
+  // sides of the version gate, in the version-appropriate spelling.
+  test("the administrative grant exists on both sides of the version gate", async () => {
+    const source = await Bun.file(
+      new URL("../../scripts/db-bootstrap.ts", import.meta.url).pathname,
+    ).text();
+    // The needle is written with an escaped dollar rather than as a plain string, so the linter does
+    // not read a literal `${` as a template someone forgot to interpolate.
+    const needle = `\${fleet} TO CURRENT_USER`;
+    const grants = source
+      .split("\n")
+      .map((l) => l.trim())
+      // Scoped to the FLEET role: the runtime role is granted to CURRENT_USER further down for an
+      // unrelated reason (the langgraph schema's AUTHORIZATION), and counting it would make this
+      // assert a number instead of a rule.
+      .filter((l) => !l.startsWith("//") && l.includes(needle));
+    // One per branch, and no more: a third would mean a path nobody accounted for.
+    expect(grants.length).toBe(2);
+    expect(
+      grants.filter((l) => l.includes("WITH INHERIT FALSE, SET TRUE")),
+    ).toHaveLength(1);
+    // The pre-16 one takes no options at all — 15 refuses to parse them.
+    const legacy = grants.find((l) => !l.includes("WITH "));
+    expect(legacy).toBeDefined();
+    expect(legacy).not.toContain("INHERIT");
+    expect(legacy).not.toContain("SET TRUE");
+
+    // And each sits on its own side of the gate: the optioned one inside a `>= 160000` branch, the
+    // bare one in the `else` that closes it.
+    const optionedAt = source.indexOf(`${needle} WITH INHERIT FALSE, SET TRUE`);
+    const gate = source.lastIndexOf(
+      "if (serverVersionNum >= 160000) {",
+      optionedAt,
+    );
+    const elseAt = source.indexOf("} else {", optionedAt);
+    const bareAt = source.indexOf(`${needle}\``, elseAt);
+    expect(gate).toBeGreaterThan(-1);
+    expect(optionedAt).toBeGreaterThan(gate);
+    expect(elseAt).toBeGreaterThan(optionedAt);
+    expect(bareAt).toBeGreaterThan(elseAt);
+  });
+
   test("16-only syntax stays behind the version gate", async () => {
     const source = await Bun.file(
       new URL("../../scripts/db-bootstrap.ts", import.meta.url).pathname,
@@ -514,6 +564,7 @@ describe.skipIf(!dbUp)(
       await db.query(`DROP DATABASE IF EXISTS ${NOINH_DB}`);
       await db.query(`DROP DATABASE IF EXISTS ${PROBE_DB}`);
       await db.query(`DROP ROLE IF EXISTS ${APP_ROLE}`);
+      await db.query(`DROP ROLE IF EXISTS ${STRAY_ROLE}`);
       await db.query(`DROP ROLE IF EXISTS ${FOREIGN_ROLE}`);
       await db.query(`DROP ROLE IF EXISTS ${UNREACHABLE_ROLE}`);
       await db.query(`DROP ROLE IF EXISTS ${ROT_A_ROLE}`);
@@ -565,6 +616,7 @@ describe.skipIf(!dbUp)(
         await db.query(`DROP ROLE IF EXISTS "${rolname}"`);
       }
       await db.query(`DROP ROLE IF EXISTS ${APP_ROLE}`);
+      await db.query(`DROP ROLE IF EXISTS ${STRAY_ROLE}`);
       await db.query(`DROP ROLE IF EXISTS ${FOREIGN_ROLE}`);
       await db.query(`DROP ROLE IF EXISTS ${UNREACHABLE_ROLE}`);
       await db.query(`DROP ROLE IF EXISTS ${ROT_A_ROLE}`);
@@ -741,6 +793,72 @@ describe.skipIf(!dbUp)(
         )
       ).rows[0];
       expect(after).toEqual({ can_set_role: true, usage: false });
+    });
+
+    // NOTE: roles are cluster-wide while databases are not, so a database dropped and recreated under
+    // the same name derives the SAME fleet role — and every membership the previous installation
+    // granted survives it. Measured before this reconcile existed: the old installation's runtime
+    // role read all 30 rows of the new installation's data through the new policies, with nothing
+    // but a SET ROLE. Adding to the membership set is therefore not enough; it has to be reconciled.
+    test("a membership this database did not grant is revoked and named", async () => {
+      const db = su as Client;
+      const fleet = await probeFleetRole();
+      await db.query(
+        `CREATE ROLE ${STRAY_ROLE} LOGIN PASSWORD 'straypw' NOSUPERUSER NOBYPASSRLS`,
+      );
+      await db.query(
+        `GRANT "${fleet}" TO ${STRAY_ROLE} WITH INHERIT FALSE, SET TRUE`,
+      );
+      expect(
+        (
+          await db.query("SELECT pg_has_role($1, $2, 'SET') AS s", [
+            STRAY_ROLE,
+            fleet,
+          ])
+        ).rows[0],
+      ).toEqual({ s: true });
+
+      const membersOfFleet = async () =>
+        (
+          await db.query<{ rolname: string }>(
+            `SELECT DISTINCT r.rolname FROM pg_auth_members am
+               JOIN pg_roles r ON r.oid = am.member
+               JOIN pg_roles d ON d.oid = am.roleid
+              WHERE d.rolname = $1 ORDER BY 1`,
+            [fleet],
+          )
+        ).rows.map((r) => r.rolname);
+
+      // First arm: the grant was made by the SUPERUSER, which this administrator cannot revoke —
+      // and Postgres says nothing about that. Bootstrap has to report what is still there rather
+      // than what it attempted, which is the difference this arm exists to hold.
+      const stuck = await runBootstrap();
+      expect(stuck.exitCode).toBe(0);
+      const stuckOut = `${stuck.stdout}${stuck.stderr}`;
+      expect(stuckOut).toContain(`"${STRAY_ROLE}" is still a member`);
+      expect(stuckOut).toContain(`REVOKE "${fleet}" FROM "${STRAY_ROLE}";`);
+      expect(await membersOfFleet()).toContain(STRAY_ROLE);
+
+      // Second arm: a grant this administrator CAN revoke is revoked, silently and for good.
+      await db.query(`REVOKE "${fleet}" FROM ${STRAY_ROLE}`);
+      await db.query(
+        `GRANT "${fleet}" TO ${STRAY_ROLE} WITH INHERIT FALSE, SET TRUE GRANTED BY ${ADMIN_ROLE}`,
+      );
+      const cleared = await runBootstrap();
+      expect(cleared.exitCode).toBe(0);
+      const clearedOut = `${cleared.stdout}${cleared.stderr}`;
+      expect(clearedOut).not.toContain("is still a member");
+      // And it SAYS so: a security reconcile that happens quietly reads as one that did not happen.
+      expect(clearedOut).toContain(`revoked "${STRAY_ROLE}"`);
+
+      // Gone, and the two that belong are still there — a reconcile that revoked everything would
+      // satisfy the line above and break the install.
+      const members = await membersOfFleet();
+      expect(members).not.toContain(STRAY_ROLE);
+      expect(members).toContain(APP_ROLE);
+      expect(members).toContain(ADMIN_ROLE);
+
+      await db.query(`DROP ROLE IF EXISTS ${STRAY_ROLE}`);
     });
 
     test("the provisioned role can connect with the password from DATABASE_URL", async () => {

@@ -295,6 +295,66 @@ async function provisionFleetRole(
     await client.query(grant);
   }
 
+  // Membership on this role is RECONCILED, not merely added to, and a measurement is why. Roles are
+  // cluster-wide while databases are not, so a database dropped and recreated under the same name
+  // derives the same fleet role — and every membership the PREVIOUS installation granted survives
+  // it. Measured: after the recreate, the old installation's runtime role read all 30 rows of the
+  // new installation's data through the new policies, with nothing but a SET ROLE.
+  //
+  // The expected set is exactly two: this database's runtime role, and the administrator running
+  // this (which needs it for data migrations). Anything else is a leftover, and it is REVOKED and
+  // named — quietly leaving it is the shape the measurement above describes. Best-effort like the
+  // grants below, and for the same reason: a member this administrator holds no ADMIN over cannot
+  // be revoked here, and that is worth reporting rather than crash-looping on.
+  const membersOf = async () =>
+    (
+      await client.query<{ rolname: string; grantor: string }>(
+        `SELECT DISTINCT r.rolname, g.rolname AS grantor
+           FROM pg_auth_members am
+           JOIN pg_roles r ON r.oid = am.member
+           JOIN pg_roles d ON d.oid = am.roleid
+           JOIN pg_roles g ON g.oid = am.grantor
+          WHERE d.rolname = $1 AND r.rolname <> $2 AND r.rolname <> current_user`,
+        [fleetRole, role],
+      )
+    ).rows;
+
+  const before = new Set((await membersOf()).map((r) => r.rolname));
+  for (const rolname of before) {
+    try {
+      await client.query(`REVOKE ${fleet} FROM "${rolname}"`);
+    } catch (err) {
+      console.warn(
+        `db-bootstrap: could not revoke "${rolname}" from "${fleetRole}" (${message(err)})`,
+      );
+    }
+  }
+
+  // Re-read, because a REVOKE by someone who is not the GRANTOR removes nothing and does not say
+  // so: measured, the statement returned success and the membership was still there. Since
+  // PostgreSQL 16 a membership is one row PER GRANTOR, so the superuser's grant survives an
+  // administrator's revoke of its own. What is left is reported with the statement that clears it.
+  const after = await membersOf();
+  const remaining = new Set(after.map((r) => r.rolname));
+  // Said out loud, because a security reconcile that happens quietly reads as one that did not
+  // happen. Each of these could read every tenant in this database a moment ago.
+  for (const rolname of before) {
+    if (!remaining.has(rolname)) {
+      console.warn(
+        `db-bootstrap: revoked "${rolname}" from "${fleetRole}" — a membership this database did ` +
+          "not grant, which could read every tenant here through the cross-tenant policy",
+      );
+    }
+  }
+  for (const { rolname, grantor } of after) {
+    console.warn(
+      `db-bootstrap: "${rolname}" is still a member of "${fleetRole}" (granted by "${grantor}") ` +
+        "and can read every tenant in this database through the cross-tenant policy. This is what " +
+        "a database dropped and recreated under the same name leaves behind. Clear it as " +
+        `"${grantor}" or as a superuser: REVOKE "${fleetRole}" FROM "${rolname}";`,
+    );
+  }
+
   // Two grants, and BOTH are best-effort. Roles are CLUSTER-wide objects while databases are not,
   // so even a per-database NAME can land on a role this administrator did not create — a database
   // dropped and recreated under the same name is the ordinary way — and a CREATEROLE role holds no

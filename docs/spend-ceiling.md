@@ -164,6 +164,13 @@ throughout, so a delivery that answers the tail inside that window leaves the cl
 Re-read there, it reports `empty` instead of telling the operator to raise a ceiling for work that no
 longer exists.
 
+**A `/reset` withdraws a burst; it does not withdraw a message already refused.** The flush asks
+`jobRetired` before every act because `/reset` durably retires the DEBOUNCE row: the burst was taken
+back, not answered. The webhook gate has no such marker and needs none — the customer's message was
+delivered and refused, the tenant is still over its ceiling, and handing the conversation to humans
+with a note saying why is the state the very next message would produce anyway. The reset's hand-back
+undoes a handoff that predates the command; it cannot undo a budget that is spent.
+
 **And it refuses a burst, never an empty one.** The flush asks two questions before it says a word,
 because a refusal is about something the customer is waiting for: was this burst already ANSWERED (an
 earlier attempt advanced the watermark past the payload's own last id and died before the scheduler

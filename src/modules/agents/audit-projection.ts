@@ -13,27 +13,36 @@ import { readBehaviorSettings } from "@/modules/agents/behavior-settings";
 // `agent.prompt_set`, which is precisely the divergence `docs/mcp.md` says this seam removes ("the
 // same change leaves the same row whichever of the three transports made it").
 //
-// Both sides are read back from the same jsonb columns through the same select, so key order is
-// Postgres's own and a structural comparison is sound. Feeding this an in-memory patch instead
-// would compare a client's key order against jsonb's and manufacture changes nobody made.
+// ── the one question this module answers ──
 //
-// The settings bag is compared through `readBehaviorSettings` on BOTH sides, and that is not a
-// nicety. A stored bag is sparse — a fresh agent holds only what its creator wrote — while
-// `mergeBehaviorSettings` (which every settings write goes through) materializes all of it, so the
-// first write after creation genuinely changes twenty-five blocks in the column and only one of
-// them because an operator asked. Measured: an `agent_settings_set` moving `debounce.waitMs` from
-// 1500 to 2500 produced a 6 KB `after` naming every block, with the edit buried in it. Reading both
-// sides through the same reader puts them in the same shape first, so what is left is the edit.
+// Everything below is one question asked of each field: what counts as the SAME configuration? It
+// is asked once, in `CANONICAL`, and the comparison and the projection both read the answer. The
+// alternative is a special case per field, which is what this file was: four rounds of review each
+// added an `if` for a value that compared unequal while nothing about the agent had changed.
 //
-// One artifact survives that, and it is the reader's and not this function's. `readGuardrailsConfig`
-// promises "always a usable model name after the reader", and it keeps that promise only when the
-// block is PRESENT: an absent one returns `GUARDRAILS_DEFAULTS` with `model: ""` without ever
-// running the resolution, so a stored `{}` reads `""` while the same bag after the merge reads
-// `gpt-5.4-mini`. The first settings write on an agent that never touched guardrails therefore
-// names that block too. It is latent at runtime (an absent block is `enabled: false`, so nothing
-// reads the model) and it is true of the column, so it is recorded rather than filtered; the test
-// that pins it fails the day the reader is made idempotent, which is when someone should reconcile
-// the two.
+// A canonical form has to be justified by what the RUNTIME reads, never by taste. Each names its
+// measurement:
+//
+// - `settings` is the bag as `readBehaviorSettings` resolves it, because that view is what every
+//   consumer takes. Two things then fall out rather than being handled: a value the readers CLAMP to
+//   the same result is the same configuration (`debounce.windowSeconds` of 1 and of 2 both read as
+//   3), and a `Date` the readers produce is compared and stored as its ISO string, which is what the
+//   column can hold at all (`truncForAudit` walks objects by enumerable entries, of which a Date has
+//   none, so it would land as `{}`).
+// - `modelConfig` is the keys `modelConfigSchema` names. `validateModelConfigForWrite` asks the
+//   schema whether the value is valid and throws away the STRIPPED result, so a config valid apart
+//   from a stray key is stored with it — measured: a `PATCH` carrying `apiKey: "sk-…"` reaches the
+//   column, and the row is retained and readable by every tenant admin. `exportAgent` already scans
+//   for exactly this shape and refuses to emit. Derived from the schema rather than typed out, and a
+//   PICK rather than a parse, because a legacy config that no longer validates still projects.
+// - a grant's `enabledTools` and `knowledgeBaseIds` are SETS (see `grantSetChanged`).
+// - everything else is itself: they are scalars.
+//
+// What canonicalizing deliberately does NOT do is hide a write. A block the readers do not know is
+// absent from the resolved view, so it would compare equal while stored configuration moved — an
+// import can preserve a forward-compatible block, and an upgrade that adds its reader makes it live.
+// Those are tracked separately, by NAME: the row says which unread blocks moved without copying
+// content nothing in this codebase can vouch for into a tenant-admin-readable row.
 
 // Every column of the agent an operator can write. `id`, `createdAt` and `updatedAt` are not on it:
 // the row already carries the target and the timestamp in its own columns.
@@ -62,48 +71,45 @@ export interface AgentUpdateAudit {
   after: Record<string, unknown>;
 }
 
-// The model config as the row may hold it: only the keys the schema names.
-//
-// `validateModelConfigForWrite` asks `modelConfigSchema.safeParse` whether the value is valid and
-// throws away the STRIPPED result, so a config that is valid apart from a stray key is stored with
-// that key intact — measured: a `PATCH` carrying `apiKey: "sk-…"` alongside a good provider/model
-// reaches the column, and copying the column into the row hands a retained, tenant-admin-readable
-// copy of it to the trail. The allowlist is derived from the schema rather than typed out, so a
-// field added there is carried here and one never named is not, and it is a PICK rather than a
-// parse because a legacy config that no longer validates still has to project something.
 const MODEL_CONFIG_KEYS = Object.keys(modelConfigSchema.shape);
 
-function pickModelConfig(v: unknown): unknown {
-  if (v === null || typeof v !== "object" || Array.isArray(v)) return v;
-  const src = v as Record<string, unknown>;
-  const out: Record<string, unknown> = {};
-  for (const k of MODEL_CONFIG_KEYS) if (k in src) out[k] = src[k];
-  return out;
+// The JSON form of a value: what the column can hold, and what the comparison below already uses.
+function jsonish<T>(v: unknown): T {
+  return JSON.parse(JSON.stringify(v ?? null)) as T;
 }
 
 function same(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
-// The reader's output as the row can actually hold it. It is not all plain data — `observability`
-// carries `fullDetailUntil` as a `Date`, and `truncForAudit` walks objects by their enumerable
-// entries, of which a Date has none: it reaches the column as `{}`, so the row says the deadline
-// moved and cannot say to what (measured). The round-trip is the same conversion the comparison
-// above already performs, applied to what is STORED as well as to what is compared, and it answers
-// for the whole family rather than for the one block that has a Date today.
-function jsonish(v: unknown): Record<string, unknown> {
-  return JSON.parse(JSON.stringify(v ?? {})) as Record<string, unknown>;
+const CANONICAL: Partial<Record<AuditedAgentField, (v: unknown) => unknown>> = {
+  settings: (v) => jsonish(readBehaviorSettings(v)),
+  modelConfig: (v) => {
+    if (v === null || typeof v !== "object" || Array.isArray(v)) return v;
+    const src = v as Record<string, unknown>;
+    const out: Record<string, unknown> = {};
+    for (const k of MODEL_CONFIG_KEYS) if (k in src) out[k] = src[k];
+    return out;
+  },
+};
+
+function canonical(field: AuditedAgentField, v: unknown): unknown {
+  const fn = CANONICAL[field];
+  return fn ? fn(v) : v;
 }
 
-// The settings bag arrives whole from every door, so "which block did the operator touch" is a
-// question only the comparison answers. Projecting the bag itself would put an agent's entire
-// configuration into both halves of every row that moved one number.
-function changedBlocks(
+// The blocks whose RESOLVED value differs, and separately the names of the blocks that moved in
+// storage without any reader seeing them.
+function settingsDiff(
   before: unknown,
   after: unknown,
-): { before: Record<string, unknown>; after: Record<string, unknown> } {
-  const b = jsonish(readBehaviorSettings(before));
-  const a = jsonish(readBehaviorSettings(after));
+): {
+  before: Record<string, unknown>;
+  after: Record<string, unknown>;
+  unreadBlocks: string[];
+} {
+  const b = canonical("settings", before) as Record<string, unknown>;
+  const a = canonical("settings", after) as Record<string, unknown>;
   const outBefore: Record<string, unknown> = {};
   const outAfter: Record<string, unknown> = {};
   for (const key of new Set([...Object.keys(b), ...Object.keys(a)])) {
@@ -112,25 +118,37 @@ function changedBlocks(
       outAfter[key] = a[key];
     }
   }
-  return { before: outBefore, after: outAfter };
+  const rawB = jsonish<Record<string, unknown> | null>(before) ?? {};
+  const rawA = jsonish<Record<string, unknown> | null>(after) ?? {};
+  const unreadBlocks = [
+    ...new Set([...Object.keys(rawB), ...Object.keys(rawA)]),
+  ]
+    .filter((k) => !(k in a) && !same(rawB[k], rawA[k]))
+    .sort();
+  return { before: outBefore, after: outAfter, unreadBlocks };
 }
-
-// A comparação do bag inteiro só diverge da comparação bloco a bloco pela ORDEM das chaves, e não
-// há caminho por onde ela chegue: os dois lados saem de `jsonb`, que canonicaliza (medido: as
-// chaves voltam ordenadas por comprimento e depois por bytes, `{"zz":1,"a":2,"mmm":3}` e
-// `{"a":2,"mmm":3,"zz":1}` produzem a mesma saída). Uma guarda para o bloco vazio foi escrita aqui
-// e a bateria de mutação mostrou que nenhum teste a alcança, porque nada pode alcançá-la.
 
 // Whether a replace-the-set write actually changed the set.
 //
-// The grants are compared as a SET and not as a list, because their order is not the operator's:
+// Compared as a SET and not as a list, twice over. The grants' order is not the operator's:
 // `replaceAgentToolSelections` is a `deleteMany` + `createMany`, so every save reassigns the ids the
-// read then orders by. Two submissions of the same set in a different order would otherwise record a
-// row whose two halves hold the same grants. Sorting by each entry's own serialization is a total
-// order by construction — no entry ties with another unless they are equal.
+// read then orders by. And inside a grant, `enabledTools` and `knowledgeBaseIds` are allowlists the
+// runtime reads by MEMBERSHIP — measured: `filterAllowed` builds a `Set`, `prepare.ts` asks
+// `.includes`/`.some`, the playground builds a `Set`, and no consumer reads the order — so the same
+// allowlist resubmitted shuffled is the same grant. Sorting by each entry's own serialization is a
+// total order by construction: no entry ties with another unless they are equal.
 export function grantSetChanged(before: unknown[], after: unknown[]): boolean {
-  const key = (xs: unknown[]) =>
-    JSON.stringify(xs.map((g) => JSON.stringify(g)).sort());
+  const SET_VALUED = ["enabledTools", "knowledgeBaseIds"];
+  const canon = (g: unknown) => {
+    if (g === null || typeof g !== "object") return JSON.stringify(g);
+    const out: Record<string, unknown> = { ...(g as Record<string, unknown>) };
+    for (const k of SET_VALUED) {
+      const v = out[k];
+      if (Array.isArray(v)) out[k] = [...v].map(String).sort();
+    }
+    return JSON.stringify(out);
+  };
+  const key = (xs: unknown[]) => JSON.stringify(xs.map(canon).sort());
   return key(before) !== key(after);
 }
 
@@ -143,42 +161,42 @@ export function agentUpdateAudit(
   const changed: AuditedAgentField[] = [];
   const beforeProj: Record<string, unknown> = {};
   const afterProj: Record<string, unknown> = {};
+  let unreadBlocks: string[] = [];
 
   for (const field of AUDITED_AGENT_FIELDS) {
-    if (same(before[field], after[field])) continue;
     if (field === "settings") {
-      const blocks = changedBlocks(before.settings, after.settings);
-      // Normalized-equal, raw-different. The bag comparison above is on the stored bytes and this
-      // one is on what the platform resolves, and the readers CLAMP: `debounce.windowSeconds` of 1
-      // and of 2 both read as 3 (measured), so a PATCH between them moves the column and moves
-      // nothing the runtime will do. Without this the row lands with `{}` on both sides.
-      //
-      // A guard of this shape was written in round 1 and removed in the same round as dead, on the
-      // strength of measuring that jsonb canonicalizes key order. That measurement was right and the
-      // conclusion was not: key order was one way in, clamping is another, and only the first had
-      // been checked.
-      if (Object.keys(blocks.after).length === 0) continue;
+      const diff = settingsDiff(before.settings, after.settings);
+      if (
+        Object.keys(diff.after).length === 0 &&
+        diff.unreadBlocks.length === 0
+      )
+        continue;
       changed.push(field);
-      beforeProj.settings = blocks.before;
-      afterProj.settings = blocks.after;
+      beforeProj.settings = diff.before;
+      afterProj.settings = diff.after;
+      unreadBlocks = diff.unreadBlocks;
       continue;
     }
+    const b = canonical(field, before[field]);
+    const a = canonical(field, after[field]);
+    if (same(b, a)) continue;
     changed.push(field);
-    const project =
-      field === "modelConfig" ? pickModelConfig : (x: unknown) => x;
-    beforeProj[field] = project(before[field]);
-    afterProj[field] = project(after[field]);
+    beforeProj[field] = b;
+    afterProj[field] = a;
   }
 
   if (changed.length === 0) return null;
 
+  // Named, not copied: these blocks are stored configuration nothing in this codebase reads, so
+  // their contents are not ours to vouch for in a row a tenant admin can read.
+  if (unreadBlocks.length > 0) {
+    (afterProj.settings as Record<string, unknown>).unreadBlocksChanged =
+      unreadBlocks;
+  }
+
   const only = changed.length === 1 ? changed[0] : undefined;
   if (only === "systemPrompt") {
-    return {
-      action: "agent.prompt_set",
-      before: beforeProj,
-      after: afterProj,
-    };
+    return { action: "agent.prompt_set", before: beforeProj, after: afterProj };
   }
   if (only === "settings") {
     // Flattened to the blocks themselves, so the row reads the same as the one the MCP tool wrote:

@@ -633,6 +633,63 @@ describe.skipIf(!dbUp)("the agent family records its own changes", () => {
     expect(await rows()).toEqual([]);
   });
 
+  test("a block no reader knows is recorded by NAME, not swallowed and not copied", async () => {
+    // An import can preserve a forward-compatible block, and an upgrade that adds its reader makes
+    // it live. It is absent from the resolved view, so comparing only that view would let a real
+    // configuration write leave no trace at all. Its CONTENTS stay out of the row: nothing in this
+    // codebase reads them, so nothing here can vouch for them to a tenant admin.
+    const agent = await seedAgent({
+      settings: { futureBlock: { knob: "one" } },
+    });
+    await clearAudit();
+
+    await updateAgent(
+      ctx(),
+      BigInt(agent.id),
+      { settings: { futureBlock: { knob: "two", secretish: "sk-nope" } } },
+      appDb,
+    );
+
+    const got = await rows();
+    expect(got.map((r) => r.action)).toEqual(["agent.settings_set"]);
+    const after = got[0]?.after as Record<string, unknown>;
+    expect(after.unreadBlocksChanged).toEqual(["futureBlock"]);
+    expect(JSON.stringify(after)).not.toContain("sk-nope");
+    expect(JSON.stringify(after)).not.toContain("two");
+  });
+
+  test("resubmitting the same allowlist shuffled is the same grant", async () => {
+    // Every consumer reads `enabledTools` by membership: `filterAllowed` builds a Set, prepare.ts
+    // asks `.includes`/`.some`, the playground builds a Set. Order is nobody's input.
+    const agent = await seedAgent();
+    await replaceAgentToolSelections(
+      ctx(),
+      BigInt(agent.id),
+      [
+        {
+          source: "NATIVE" as const,
+          enabledTools: ["handoff_to_human", "private_note"],
+        },
+      ],
+      appDb,
+    );
+    await clearAudit();
+
+    await replaceAgentToolSelections(
+      ctx(),
+      BigInt(agent.id),
+      [
+        {
+          source: "NATIVE" as const,
+          enabledTools: ["private_note", "handoff_to_human"],
+        },
+      ],
+      appDb,
+    );
+
+    expect(await rows()).toEqual([]);
+  });
+
   test("a deadline the operator set reaches the row as the deadline, not as an empty object", async () => {
     // `readBehaviorSettings` hands back `observability.fullDetailUntil` as a `Date`, and the seam's
     // `truncForAudit` walks objects by their enumerable entries — a Date has none, so it lands as

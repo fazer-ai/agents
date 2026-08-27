@@ -201,6 +201,7 @@ const FLOWLOG_READERS: Record<string, number> = {
   "tests/modules/memory-compaction.test.ts": 3,
   "tests/modules/memory-dead-letter.test.ts": 1,
   "tests/modules/playground-guardrails.test.ts": 1,
+  "tests/modules/reengage.test.ts": 1,
   "tests/modules/model-fallback-turn.test.ts": 1,
   "tests/modules/spend-ceiling-gate-e2e.test.ts": 1,
   "tests/modules/spend-ceiling-paths-e2e.test.ts": 2,

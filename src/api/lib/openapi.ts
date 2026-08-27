@@ -44,7 +44,11 @@ const STATUS_DESCRIPTION: Record<number, string> = {
   413: "Payload too large.",
   415: "Unsupported media type.",
   422: "Unprocessable — the input is syntactically valid but semantically rejected.",
-  429: "Too many requests — rate limited.",
+  // Two producers, and the routes that DECLARE it are the second kind: the rate limiter answers 429
+  // from its own handler on any route, without appearing in a response map, while a spend ceiling
+  // that has been reached is a documented outcome of the playground endpoints. A description naming
+  // only the limiter would be false about every route that lists this status.
+  429: "Too many requests — rate limited, or a spend ceiling has been reached.",
   502: "Bad gateway — an upstream dependency failed.",
 };
 

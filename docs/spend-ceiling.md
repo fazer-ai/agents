@@ -252,7 +252,16 @@ The two directions are not a style choice.
   other outcomes share, which is a change to the retry contract rather than to this gate.
 - **The playground throws** `429 errors.spendCeilingReached` (`assertPlaygroundSpendCeiling`). The
   operator is looking at the screen, and a turn that silently produced nothing would read as a
-  broken provider.
+  broken provider. Every route that can reach it declares the 429, so it is in the generated
+  OpenAPI and Eden clients are told about it: a normal outcome of the feature that only the running
+  server knew about is not documented. The catalog's description names both producers, because the
+  rate limiter answers 429 from its own handler on any route while these five list it for this.
+- **The re-engage button establishes there is something to answer first.** Every gate here is about
+  a TURN, and a click on a conversation whose last message is ours was always going to be a no-op:
+  reporting a spent budget for it tells the operator to raise a number that would change nothing,
+  and spends an authorization call on somebody else's endpoint for a turn that will not run. The
+  tail is one expression used twice — once to decide there is a turn, once to build it — because a
+  pre-check and a turn that disagree is how a gate refuses work that was never going to happen.
 
 ## An unreadable ceiling ALLOWS the call
 

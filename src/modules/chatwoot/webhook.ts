@@ -2620,6 +2620,10 @@ async function maybeConsumeCommandOrGate(params: {
       await announceSpendCeilingOnConversation({
         tenantId,
         conversationRowId: ctx.conv.id,
+        // The message is the refusal, so two deliveries of it coalesce and two messages do not.
+        // Without an id (an event shape that carries none) the delivery names itself, which
+        // coalesces nothing and is the safe direction: saying it twice beats not saying it.
+        occasion: `message:${n.message?.id ?? crypto.randomUUID()}`,
         cfg: ceiling.cfg,
         verdict: ceiling,
         postPublicMessage,

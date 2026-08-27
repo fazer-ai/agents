@@ -1,3 +1,4 @@
+import { withKeyedQueue } from "@/lib/locks";
 import {
   claimContactAuthNotice,
   releaseContactAuthNotice,
@@ -36,6 +37,10 @@ export interface SpendCeilingAnnounceParams {
   conversationRowId: bigint;
   cfg: SpendCeilingConfig;
   verdict: { usedTokens: number; ceilingTokens: number | null };
+  // WHICH REFUSAL this is, so two deliveries of one message coalesce and two messages do not. The
+  // Chatwoot message id where there is one; the burst's last id for a debounce flush, which is the
+  // same thing one level up (the burst is what was refused, and its last id names it).
+  occasion: string;
   // The caller's own fenced primitives. Each returns whether the thing actually landed, because the
   // cooldown window is given back when it did not: kept, a send the customer never received would
   // silence the next refusal for the whole window.
@@ -53,23 +58,32 @@ export interface SpendCeilingAnnounceParams {
 // the month is spent are each evaluated, and told once per window. The claim mechanism is
 // contact-auth's, under a key of this feature's own — it is a per-conversation notice cooldown and
 // nothing about it is specific to that gate.
-// ONE SEQUENCE AT A TIME PER CONVERSATION. The claims below make each of the three writes happen
-// once; they do not order them against a SECOND delivery of the same moment, and Chatwoot produces
-// those by design (a message reaches the conversation's assigned bot and the inbox's, two deliveries
-// with two ids). Without this, the second caller finds the copy's window already held, skips
-// straight to the handoff, and opens the conversation while the first is still awaiting its send —
-// and the ownership fence then correctly withholds a sentence nobody else is going to say. The
-// second caller now awaits the first and inherits its answer, which is what "the conversation is
-// told once" has to mean when two routes are telling it.
+// TWO DIFFERENT QUESTIONS, AND THEY HAVE DIFFERENT SUBJECTS.
+//
+// The claims inside make each of the three writes happen once per window; they say nothing about
+// ORDER. Two callers running at the same moment therefore interleave: the second finds the copy's
+// window held, skips straight to the handoff, and opens the conversation while the first is still
+// awaiting its send — at which point the ownership fence correctly withholds a sentence nobody else
+// is going to say. So the sequences have to be SERIALISED, and that is per CONVERSATION, because the
+// conversation is what the ordering is about.
+//
+// Coalescing is the other question and its subject is the REFUSAL. Chatwoot dispatches one incoming
+// message to the conversation's assigned agent bot and to the inbox's, which is two deliveries of
+// one refusal: the second must inherit the first's answer rather than perform the sequence again.
+// Two DIFFERENT messages are two refusals, and collapsing them here would silence the second even
+// with `noticeCooldownSeconds` at 0, which is the operator saying every refusal is to be voiced.
 const inFlight = new Map<string, Promise<{ handedOff: boolean }>>();
 
 export async function announceSpendCeilingOnConversation(
   params: SpendCeilingAnnounceParams,
 ): Promise<{ handedOff: boolean }> {
-  const flightKey = `spend_ceiling:${params.tenantId}:${params.conversationRowId}`;
+  const flightKey = `spend_ceiling:${params.tenantId}:${params.conversationRowId}:${params.occasion}`;
   const existing = inFlight.get(flightKey);
   if (existing) return existing;
-  const flight = runSpendCeilingAnnouncement(params).finally(() => {
+  const flight = withKeyedQueue(
+    `spend_ceiling:${params.tenantId}:${params.conversationRowId}`,
+    () => runSpendCeilingAnnouncement(params),
+  ).finally(() => {
     inFlight.delete(flightKey);
   });
   inFlight.set(flightKey, flight);

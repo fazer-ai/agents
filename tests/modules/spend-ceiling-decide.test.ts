@@ -375,7 +375,7 @@ describe("two over-ceiling sequences on one conversation", () => {
     overCeilingMessage: "Orçamento do mês esgotado.",
   };
 
-  test("the second awaits the first instead of overtaking it", async () => {
+  test("a second delivery of one message inherits the first's answer", async () => {
     const order: string[] = [];
     const copyStarted = Promise.withResolvers<void>();
     const held = Promise.withResolvers<void>();
@@ -384,6 +384,8 @@ describe("two over-ceiling sequences on one conversation", () => {
       announceSpendCeilingOnConversation({
         tenantId: 7n,
         conversationRowId: 99n,
+        // ONE message, two deliveries: that is what Chatwoot's fan-out is.
+        occasion: "message:500",
         cfg: ceilingCfg,
         verdict: { usedTokens: 200, ceilingTokens: 100 },
         postPublicMessage: async () => {
@@ -412,7 +414,7 @@ describe("two over-ceiling sequences on one conversation", () => {
     held.resolve();
     const [a, b] = await Promise.all([first, second]);
 
-    // B never ran a sequence of its own; it inherited A's answer.
+    // B never ran a sequence of its own; it inherited A's answer, because it is the same refusal.
     expect(order).toEqual(["copy:A", "copy-done:A", "handoff:A", "note:A"]);
     expect(a).toEqual({ handedOff: true });
     expect(b).toEqual(a);
@@ -429,6 +431,7 @@ describe("two over-ceiling sequences on one conversation", () => {
       announceSpendCeilingOnConversation({
         tenantId: 7n,
         conversationRowId,
+        occasion: "message:600",
         cfg: ceilingCfg,
         verdict: { usedTokens: 200, ceilingTokens: 100 },
         postPublicMessage: async () => {
@@ -452,6 +455,57 @@ describe("two over-ceiling sequences on one conversation", () => {
     await first;
   });
 
+  // TWO MESSAGES ARE TWO REFUSALS, and the ordering is what the conversation buys, not silence. With
+  // the cooldown at 0 the operator is saying every refusal is to be voiced, so a second message
+  // arriving while the first is mid-send must get its own sequence — and it must not interleave with
+  // it, which is why the two run one after the other rather than at the same time.
+  test("a second message runs its own sequence, after the first", async () => {
+    const order: string[] = [];
+    const parked = Promise.withResolvers<void>();
+    const started = Promise.withResolvers<void>();
+    const noCooldown = { ...ceilingCfg, noticeCooldownSeconds: 0 };
+    const run = (occasion: string, park: boolean) =>
+      announceSpendCeilingOnConversation({
+        tenantId: 7n,
+        conversationRowId: 97n,
+        occasion,
+        cfg: noCooldown,
+        verdict: { usedTokens: 200, ceilingTokens: 100 },
+        postPublicMessage: async () => {
+          order.push(`copy:${occasion}`);
+          if (park) {
+            started.resolve();
+            await parked.promise;
+          }
+          return true;
+        },
+        postPrivateNote: async () => {
+          order.push(`note:${occasion}`);
+          return true;
+        },
+        handoff: async () => {
+          order.push(`handoff:${occasion}`);
+          return true;
+        },
+      });
+
+    const first = run("message:1", true);
+    await started.promise;
+    const second = run("message:2", false);
+    parked.resolve();
+    await Promise.all([first, second]);
+    // Both spoke, and the second did not overtake the first: no act of message 2 lands between the
+    // acts of message 1.
+    expect(order).toEqual([
+      "copy:message:1",
+      "handoff:message:1",
+      "note:message:1",
+      "copy:message:2",
+      "handoff:message:2",
+      "note:message:2",
+    ]);
+  });
+
   // ...and the flight is released when it settles, so the NEXT refusal is not swallowed by a
   // sequence that already finished. The claims are what make it quiet, not the flight.
   test("a later sequence runs on its own, and the claims are what silence it", async () => {
@@ -460,6 +514,7 @@ describe("two over-ceiling sequences on one conversation", () => {
       announceSpendCeilingOnConversation({
         tenantId: 7n,
         conversationRowId: 98n,
+        occasion: "message:700",
         cfg: ceilingCfg,
         verdict: { usedTokens: 200, ceilingTokens: 100 },
         postPublicMessage: async () => {

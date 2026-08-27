@@ -8901,6 +8901,28 @@
                 }
               }
             }
+          },
+          "429": {
+            "description": "Too many requests — rate limited, or a spend ceiling has been reached.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Too many requests — rate limited, or a spend ceiling has been reached.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
           }
         },
         "operationId": "postV1AgentsByIdPlayground"
@@ -9358,6 +9380,28 @@
               "application/json": {
                 "schema": {
                   "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests — rate limited, or a spend ceiling has been reached.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Too many requests — rate limited, or a spend ceiling has been reached.",
                   "type": "object",
                   "required": [
                     "error"
@@ -10145,6 +10189,28 @@
                 }
               }
             }
+          },
+          "429": {
+            "description": "Too many requests — rate limited, or a spend ceiling has been reached.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Too many requests — rate limited, or a spend ceiling has been reached.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
           }
         },
         "operationId": "postV1AgentsByIdPlaygroundAudio"
@@ -10492,6 +10558,28 @@
               "application/json": {
                 "schema": {
                   "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests — rate limited, or a spend ceiling has been reached.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Too many requests — rate limited, or a spend ceiling has been reached.",
                   "type": "object",
                   "required": [
                     "error"
@@ -10914,6 +11002,28 @@
               "application/json": {
                 "schema": {
                   "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests — rate limited, or a spend ceiling has been reached.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Too many requests — rate limited, or a spend ceiling has been reached.",
                   "type": "object",
                   "required": [
                     "error"

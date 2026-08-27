@@ -756,7 +756,7 @@ export const agentsController = new Elysia({
         "Run playground turn",
         "Runs one chat turn against the agent in the playground, with no Chatwoot side effects.",
       ),
-      response: errors(400, 401, 403, 404, 422),
+      response: errors(400, 401, 403, 404, 422, 429),
       requireRole: "TENANT_ADMIN",
       params: t.Object({
         id: t.String({
@@ -823,7 +823,7 @@ export const agentsController = new Elysia({
         "Run playground follow-up",
         "Simulates the proactive follow-up nudge on the current playground thread, with no Chatwoot post.",
       ),
-      response: errors(400, 401, 403, 404, 422),
+      response: errors(400, 401, 403, 404, 422, 429),
       requireRole: "TENANT_ADMIN",
       params: t.Object({
         id: t.String({
@@ -911,7 +911,7 @@ export const agentsController = new Elysia({
         "Run playground audio turn",
         "Runs a turn on an uploaded voice note (step 2 of 2), returning the transcription and the reply.",
       ),
-      response: errors(400, 401, 403, 404, 422),
+      response: errors(400, 401, 403, 404, 422, 429),
       requireRole: "TENANT_ADMIN",
       params: t.Object({
         id: t.String({
@@ -977,7 +977,7 @@ export const agentsController = new Elysia({
         "Extract playground file",
         "Extracts content from an uploaded image or document only (step 1 of 2), returning the kind and content.",
       ),
-      response: errors(400, 401, 403, 404, 422),
+      response: errors(400, 401, 403, 404, 422, 429),
       requireRole: "TENANT_ADMIN",
       params: t.Object({
         id: t.String({
@@ -1034,7 +1034,7 @@ export const agentsController = new Elysia({
         "Run playground file turn",
         "Runs a turn on an uploaded image or document (step 2 of 2), returning the extraction and the reply.",
       ),
-      response: errors(400, 401, 403, 404, 422),
+      response: errors(400, 401, 403, 404, 422, 429),
       requireRole: "TENANT_ADMIN",
       params: t.Object({
         id: t.String({

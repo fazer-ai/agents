@@ -775,6 +775,9 @@ export async function flushDebounceJob(
     await announceSpendCeilingOnConversation({
       tenantId,
       conversationRowId: ctx.convDbId,
+      // The BURST is the refusal here, and its last id names it: a retry of this same job refuses
+      // the same burst, and the next burst carries a later id.
+      occasion: `burst:${armedLast ?? "unknown"}`,
       cfg: flushCeiling.cfg,
       verdict: flushCeiling,
       postPublicMessage: async (text) => {

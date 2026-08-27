@@ -7,6 +7,7 @@ import { encryptJson } from "@/api/lib/crypto";
 import type { TenantContext } from "@/lib/tenancy";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { reengageConversation } from "@/modules/conversations/reengage";
+import { settleFlowEvents } from "@/modules/flowlog/scheduled";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { PromptCapturingModel } from "../utils/scripted-models";
 
@@ -676,6 +677,45 @@ describe.skipIf(!dbUp)("reengage", () => {
       );
       expect(res.outcome).toBe("over-ceiling");
       expect(sent).toEqual([]);
+    });
+
+    // A CLICK WITH NOTHING TO ANSWER WAS NEVER A TURN, so the ceiling has nothing to refuse. The
+    // button reporting a spent budget here tells the operator to raise a number that would change
+    // nothing, and writes an `error` line saying a turn was skipped when none was ever going to run.
+    test("with nothing unanswered the button says so, not that the budget stopped it", async () => {
+      const id = await seedConversation(922);
+      const sent: Array<[number, string]> = [];
+      const res = await reengageConversation(
+        ctx(),
+        id,
+        {
+          makeModel: () => {
+            throw new Error("the model must not be invoked");
+          },
+          makeClient: makeStub({
+            page: page([
+              { id: 1, content: "oi", type: 0 },
+              { id: 2, content: "já respondi", type: 1 },
+            ]),
+            sent,
+          }),
+          checkpointer: new MemorySaver(),
+        },
+        appDb,
+      );
+      expect(res.outcome).toBe("empty");
+      expect(sent).toEqual([]);
+      // ...and no refusal on the record, because nothing was refused.
+      await settleFlowEvents();
+      const rows = await suDb.executionLog.findMany({
+        where: {
+          tenantId,
+          threadId: `${tenantId}:${instanceId}:922`,
+          stage: "spend_ceiling",
+        },
+        select: { level: true },
+      });
+      expect(rows).toEqual([]);
     });
 
     test("under the ceiling the button still answers", async () => {

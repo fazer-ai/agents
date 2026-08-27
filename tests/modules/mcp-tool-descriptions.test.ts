@@ -154,10 +154,16 @@ const SETTINGS_DESC_CEILING = 2_000;
 // silent-failure shape as `includeMessageText` and the half-named `modelFallback` above. The
 // remaining 153 is the field name, the boolean, and that sentence. Headroom over 12,500 stays
 // tighter than a block, as before.
-// #402 raises this the most any single change has: 12,550 → 20,900, measured at 20,839. Five blocks
-// of the settings bag reached MCP for the first time (guardrails, kanban, appointmentReminders,
-// toolGuidance, toolPreconditions), and two of them are maps keyed by the native tool catalog, so
-// their value is published once per tool name — thirteen times each.
+// #402 raises this the most any single change has: 12,550 → 20,900, measured at 20,443. Four blocks
+// of the settings bag reached MCP for the first time (guardrails, kanban, toolGuidance,
+// toolPreconditions), and two of them are maps keyed by the native tool catalog, so their value is
+// published once per tool name — thirteen times each.
+//
+// The figure is a RE-MEASUREMENT after review, not the branch's first one. It read 20,839 while
+// `appointmentReminders` was published too; that block turned out not to be an agent-settings block
+// at all (its reader is only ever handed the Google Calendar instance's config), so it was removed
+// rather than paid for. Adding or subtracting the delta would have left a ceiling calibrated against
+// a tree that never shipped.
 //
 // Paid down before it was raised, and only where it cost the caller nothing: the per-field
 // `.describe()` on the two name-keyed blocks moved to the BLOCK, since a field description inside a
@@ -288,10 +294,11 @@ describe("MCP tool descriptions", () => {
   // schema after the trim documented at SETTINGS_SCHEMA_CEILING, so the ceiling goes to 42,100.
   //
   // #402 moves the SCHEMA figure and not the description one, and it is the largest single move so
-  // far: measured at 50,394, so the ceiling goes to 50,500. No tool was added — five blocks of the
+  // far: measured at 49,998, so the ceiling goes to 50,500. No tool was added — four blocks of the
   // settings bag became reachable through MCP at all, which is why the whole cost lands on schema.
-  // Re-measured on the combined tree rather than added to the previous figure, for the reason the
-  // paragraphs above give.
+  // Re-measured on the combined tree rather than added to the previous figure, and re-measured a
+  // SECOND time after review removed `appointmentReminders` from the change (50,394 → 49,998), for
+  // the same reason: a ceiling is only worth what someone actually measured under it.
   //
   // Worth stating plainly, because this test exists to make it a decision rather than a surprise:
   // the payload is now ~50 KB of schema plus ~27 KB of description across 107 tools, published in

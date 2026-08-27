@@ -34,7 +34,7 @@ if (appUrl && suUrl) {
 const suDb = su as PrismaClient;
 const appDb = app as PrismaClient;
 
-describe.skipIf(!dbUp)("the five blocks reach the agent through MCP", () => {
+describe.skipIf(!dbUp)("the four blocks reach the agent through MCP", () => {
   let tenantId = 0n;
   let agentId = 0n;
   const principal = (): VerifiedToken => ({
@@ -65,7 +65,7 @@ describe.skipIf(!dbUp)("the five blocks reach the agent through MCP", () => {
     await app?.$disconnect();
   });
 
-  test("all five apply in one call, and land in the stored bag", async () => {
+  test("all four apply in one call, and land in the stored bag", async () => {
     const r = await agentSettingsSet(
       principal(),
       {
@@ -76,7 +76,6 @@ describe.skipIf(!dbUp)("the five blocks reach the agent through MCP", () => {
           input: { enabled: true, action: "silent" },
         },
         kanban: { instructions: "move on a signed quote" },
-        appointmentReminders: { enabled: true, offsetsHours: [48, 2] },
         toolGuidance: { handoff_to_human: "only after the quote" },
         toolPreconditions: {
           handoff_to_human: {
@@ -99,7 +98,6 @@ describe.skipIf(!dbUp)("the five blocks reach the agent through MCP", () => {
 
     expect(stored.guardrails?.enabled).toBe(true);
     expect(stored.kanban?.instructions).toBe("move on a signed quote");
-    expect(stored.appointmentReminders?.offsetsHours).toEqual([48, 2]);
     expect(stored.toolGuidance?.handoff_to_human).toBe("only after the quote");
     expect(stored.toolPreconditions?.handoff_to_human).toEqual({
       kind: "attribute",
@@ -120,9 +118,6 @@ describe.skipIf(!dbUp)("the five blocks reach the agent through MCP", () => {
       .settings;
     expect(s.guardrails?.enabled).toBe(true);
     expect(s.kanban?.instructions).toBe("move on a signed quote");
-    // Read back through the READER, so this also pins the reader's own normalization: the offsets
-    // come back sorted far→near whatever order they went in as.
-    expect(s.appointmentReminders?.offsetsHours).toEqual([48, 2]);
     expect(s.toolGuidance?.handoff_to_human).toBe("only after the quote");
     expect(s.toolPreconditions?.handoff_to_human).toBeDefined();
   });
@@ -181,5 +176,79 @@ describe.skipIf(!dbUp)("the five blocks reach the agent through MCP", () => {
       })
     ).settings;
     expect(after).toEqual(before);
+  });
+
+  // ROUND 1 OF PR #404. A blank key passes the schema (`z.string()` accepts " ") and
+  // parseToolPrecondition then returns null, so before the fix the merge stored the reader's
+  // filtered output over a working rule: the API answered ok and the guard was gone. Refused now on
+  // the PATCH, before the merge, like the three sibling assertions beside it.
+  test("a precondition that cannot parse is refused, and the working rule survives", async () => {
+    const before = (
+      await suDb.agent.findUniqueOrThrow({
+        where: { id: agentId },
+        select: { settings: true },
+      })
+    ).settings as Record<string, Record<string, unknown>>;
+    expect(before.toolPreconditions?.handoff_to_human).toBeDefined();
+
+    const r = await agentSettingsSet(
+      principal(),
+      {
+        agent_id: String(agentId),
+        dry_run: false,
+        toolPreconditions: {
+          handoff_to_human: {
+            kind: "attribute",
+            scope: "conversation",
+            key: "   ",
+          },
+        },
+      } as never,
+      { base: appDb },
+    );
+    expect(r.ok).toBe(false);
+
+    const after = (
+      await suDb.agent.findUniqueOrThrow({
+        where: { id: agentId },
+        select: { settings: true },
+      })
+    ).settings as Record<string, Record<string, unknown>>;
+    expect(after.toolPreconditions?.handoff_to_human).toEqual(
+      before.toolPreconditions?.handoff_to_human as never,
+    );
+  });
+
+  test("null clears one rule and leaves the others", async () => {
+    const r = await agentSettingsSet(
+      principal(),
+      {
+        agent_id: String(agentId),
+        dry_run: false,
+        toolGuidance: { private_note: "keep me" },
+      } as never,
+      { base: appDb },
+    );
+    expect(r.ok).toBe(true);
+
+    const cleared = await agentSettingsSet(
+      principal(),
+      {
+        agent_id: String(agentId),
+        dry_run: false,
+        toolGuidance: { handoff_to_human: null },
+      } as never,
+      { base: appDb },
+    );
+    expect(cleared.ok).toBe(true);
+
+    const stored = (
+      await suDb.agent.findUniqueOrThrow({
+        where: { id: agentId },
+        select: { settings: true },
+      })
+    ).settings as Record<string, Record<string, unknown>>;
+    expect(stored.toolGuidance?.handoff_to_human).toBeUndefined();
+    expect(stored.toolGuidance?.private_note).toBe("keep me");
   });
 });

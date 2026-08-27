@@ -2,7 +2,6 @@ import { readModelFallbackConfig } from "@/graph/fallback-settings";
 import { readLimitsConfig } from "@/modules/agents/limits";
 import { readToolGuidance } from "@/modules/agents/tool-guidance";
 import { readToolPreconditions } from "@/modules/agents/tool-preconditions";
-import { readAppointmentReminderConfig } from "@/modules/appointments/settings";
 import { readAvailabilityConfig } from "@/modules/availability/away";
 import { readChannelRedirectConfig } from "@/modules/channel-redirect/service";
 import { readAttributeContextConfig } from "@/modules/chatwoot/attributes";
@@ -76,7 +75,6 @@ export interface BehaviorSettings {
   // reason was never written anywhere — which is why "decided" and "forgotten" had become the same
   // thing from outside.
   kanban: ReturnType<typeof readKanbanConfig>;
-  appointmentReminders: ReturnType<typeof readAppointmentReminderConfig>;
   toolGuidance: ReturnType<typeof readToolGuidance>;
   toolPreconditions: ReturnType<typeof readToolPreconditions>;
 }
@@ -104,7 +102,6 @@ export const BEHAVIOR_SETTINGS_KEYS = [
   "memory",
   "modelFallback",
   "kanban",
-  "appointmentReminders",
   "toolGuidance",
   "toolPreconditions",
 ] as const;
@@ -133,7 +130,6 @@ export function readBehaviorSettings(settings: unknown): BehaviorSettings {
     memory: readMemoryConfig(settings),
     modelFallback: readModelFallbackConfig(settings),
     kanban: readKanbanConfig(settings),
-    appointmentReminders: readAppointmentReminderConfig(settings),
     toolGuidance: readToolGuidance(settings),
     toolPreconditions: readToolPreconditions(settings),
   };
@@ -162,7 +158,6 @@ export interface BehaviorSettingsPatch {
   memory?: Record<string, unknown>;
   modelFallback?: Record<string, unknown>;
   kanban?: Record<string, unknown>;
-  appointmentReminders?: Record<string, unknown>;
   toolGuidance?: Record<string, unknown>;
   toolPreconditions?: Record<string, unknown>;
 }
@@ -238,6 +233,47 @@ export const MERGE_MAX_DEPTH_FOR_TESTS = MERGE_MAX_DEPTH;
 // its typed reader so the persisted value is always normalized + clamped (never the raw patch).
 // Untouched keys in the bag (and untouched blocks) are preserved verbatim — the REST/UI merge
 // contract. Returns the new settings bag to persist.
+// THE BLOCKS WHOSE READER IS A FILTER, NOT A DEFAULTER — and the distinction is the whole reason
+// they are handled apart (PR #404, round 1).
+//
+// Every other block reads into DEFAULTS: an unrecognized value becomes the default, so re-reading a
+// bag and storing what came out loses nothing, because there was nothing the reader could not
+// represent. These two DROP what they do not recognize — a key outside the native catalog, a
+// condition of a kind added later, an entry an agent import copied in verbatim. Run them through the
+// same normalized write-back and "normalize" means DELETE.
+//
+// Three ways that was measured to bite, all silent, all on a guard the operator believed was there:
+// an invalid entry in the patch erased the VALID one it replaced; an update to `debounce` deleted a
+// precondition it never mentioned; and there was no way to remove one at all, since an empty object
+// deep-merged into the old value and changed nothing.
+//
+// So: merged BY KEY with whole-value replacement, `null` to remove, keys the patch does not mention
+// left byte-identical — and never written back through the reader. The write boundary is what
+// refuses a bad entry (assertSettingsToolPreconditions, run on the PATCH before this merge, like its
+// three siblings in modules/mcp/write.ts), which is also why dropping one here would be the wrong
+// place to enforce anything.
+const TOOL_KEYED_BLOCKS: ReadonlySet<string> = new Set([
+  "toolGuidance",
+  "toolPreconditions",
+]);
+
+function mergeToolKeyedBlock(
+  before: Record<string, unknown>,
+  patch: Record<string, unknown>,
+): Record<string, unknown> {
+  // NULL-PROTOTYPE, for the reason the runtime map is: a tool name is operator text, and `__proto__`
+  // assigned onto an ordinary object mutates the prototype instead of storing an entry.
+  const out = Object.create(null) as Record<string, unknown>;
+  for (const [name, value] of Object.entries(before)) out[name] = value;
+  for (const [name, value] of Object.entries(patch)) {
+    // NOTE: `null` is the removal, and it has to be: an absent key means "leave it alone" here, so
+    // without a tombstone there is no way to delete a rule over this surface at all.
+    if (value === null) delete out[name];
+    else out[name] = value;
+  }
+  return out;
+}
+
 export function mergeBehaviorSettings(
   current: Record<string, unknown>,
   patch: BehaviorSettingsPatch,
@@ -257,7 +293,9 @@ export function mergeBehaviorSettings(
       current[key] && typeof current[key] === "object"
         ? (current[key] as Record<string, unknown>)
         : {};
-    next[key] = mergeBlock(before, sub);
+    next[key] = TOOL_KEYED_BLOCKS.has(key)
+      ? mergeToolKeyedBlock(before, sub)
+      : mergeBlock(before, sub);
   }
 
   // Re-read through the typed readers to clamp/validate, then write the normalized blocks back.
@@ -275,7 +313,11 @@ export function mergeBehaviorSettings(
     string,
     unknown
   >;
-  const WRITTEN_BACK_SEPARATELY = new Set(["observability", "grounding"]);
+  const WRITTEN_BACK_SEPARATELY = new Set([
+    "observability",
+    "grounding",
+    ...TOOL_KEYED_BLOCKS,
+  ]);
   for (const key of BEHAVIOR_SETTINGS_KEYS) {
     if (WRITTEN_BACK_SEPARATELY.has(key)) continue;
     next[key] = normalized[key];

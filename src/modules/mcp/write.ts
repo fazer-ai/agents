@@ -36,6 +36,7 @@ import {
   assertSettingsDebugWindow,
   assertSettingsModelFallback,
   assertSettingsTextSizes,
+  assertSettingsToolPreconditions,
   getAgent,
   listAgents,
   updateAgent,
@@ -630,6 +631,13 @@ export async function agentSettingsSet(
     assertSettingsTextSizes(patch, current.settings);
     assertSettingsDebugWindow(patch, current.settings);
     assertSettingsModelFallback(patch, current.settings, "merge");
+    // NOTE: On the PATCH and before the merge, for the same reason as the three above, and for one more
+    // that is specific to this block: its reader is a FILTER. A condition that does not parse is
+    // DROPPED rather than defaulted, so by the time the merged bag exists the bad entry is simply
+    // absent — there is nothing left to refuse, and the call would answer ok having replaced a
+    // working guard with nothing. Measured on this branch: `key: " "` passes the schema, and the
+    // rule the operator had was gone.
+    assertSettingsToolPreconditions(patch, current.settings);
     const nextBag = mergeBehaviorSettings(
       (current.settings ?? {}) as Record<string, unknown>,
       patch,

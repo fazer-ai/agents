@@ -531,23 +531,6 @@ const kanban = z.looseObject({
     ),
 });
 
-const appointmentReminders = z.looseObject({
-  enabled: z.boolean().optional(),
-  // NOTE: `number` and nothing else. The reader clamps each entry to 1..8760, rounds, de-dups, sorts
-  // descending and caps the count — all honored, so none of it belongs here — but it DISCARDS a
-  // non-number, which is the loss worth naming.
-  offsetsHours: z
-    .array(z.number())
-    .optional()
-    .describe(
-      "hours BEFORE the start, e.g. [24, 1]; clamped to 1-8760, de-duped, sorted far→near, capped",
-    ),
-  askConfirmationOnLast: z
-    .boolean()
-    .optional()
-    .describe("the closest reminder asks the customer to confirm attendance"),
-});
-
 // NOTE: Keyed BY THE CATALOG, and NOT by an open string-keyed record. Both of these are maps whose keys are
 // native tool names, and both readers DROP a key outside the catalog — so a record schema would
 // publish "any string" and let a typo be accepted by the API and ignored by the turn, which for a
@@ -607,7 +590,6 @@ export const BEHAVIOR_PATCH_SHAPE = {
   modelFallback: modelFallback.optional(),
   guardrails: guardrails.optional(),
   kanban: kanban.optional(),
-  appointmentReminders: appointmentReminders.optional(),
   toolGuidance: toolGuidance.optional(),
   toolPreconditions: toolPreconditions.optional(),
 } satisfies z.ZodRawShape;

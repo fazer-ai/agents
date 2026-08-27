@@ -62,10 +62,23 @@ const READER_GLOBS = [
   "modules/agents/tool-preconditions.ts",
 ];
 
-// A block a reader owns but `agent_settings_set` deliberately does not take, with the reason. Empty
-// today. An entry here is a DECISION, and the string is not decoration: it is what tells the next
-// reader of this file that the absence was chosen rather than forgotten.
-const NOT_PUBLISHED: Record<string, string> = {};
+// A block a reader owns but `agent_settings_set` deliberately does not take, with the reason. An
+// entry here is a DECISION, and the string is not decoration: it is what tells the next reader of
+// this file that the absence was chosen rather than forgotten.
+//
+// The probe finds CANDIDATES, and this is where one that is not a real agent-settings block gets
+// written off — with the measurement, not with an opinion. That distinction cost a round: the probe
+// records which key a reader touches, and it cannot know which BAG the runtime hands that reader.
+const NOT_PUBLISHED: Record<string, string> = {
+  appointmentReminders:
+    "NOT an agent-settings block. `readAppointmentReminderConfig` is only ever called with " +
+    "`sel.config` — the Google Calendar integration INSTANCE's config (toolpacks/google-calendar.ts, " +
+    "two call sites) — never with `agent.settings`. Publishing it here shipped a setting that stores " +
+    "and reads back and schedules nothing, which is worse than its absence: it is configuration that " +
+    "reports success. It is already configurable through `integration_update`. Caught in review on " +
+    "PR #404 after the probe reported it three times and hand-checking got it wrong in both " +
+    "directions; the reader is shared, so the probe cannot tell whose bag it reads.",
+};
 
 // Readers that cannot be probed with a bare bag (they need more than the settings object). Same
 // contract as above: named, with a reason, never skipped silently — a probe that quietly gives up on
@@ -259,29 +272,8 @@ describe("agent_settings_get returns what agent_settings_set takes", () => {
 // default nobody asked for. That is only true if something checks it.
 describe("the new blocks declare type and choice", () => {
   const patch = z.object(BEHAVIOR_PATCH_SHAPE);
-
-  test("a non-number offset is refused, not dropped", () => {
-    // readAppointmentReminderConfig skips a non-number silently, so without this the API would
-    // answer ok on `["24"]` and store the default pair — a reminder schedule the caller never wrote.
-    expect(
-      patch.safeParse({ appointmentReminders: { offsetsHours: ["24"] } })
-        .success,
-    ).toBe(false);
-    expect(
-      patch.safeParse({ appointmentReminders: { offsetsHours: [24, 1] } })
-        .success,
-    ).toBe(true);
-  });
-
-  test("an offset the reader CLAMPS still parses", () => {
-    // The other half of the rule, and the one that is easy to break by copying a bound in here:
-    // 100000 is clamped to 8760 by the reader, so refusing it would make the same write succeed in
-    // the console and fail through MCP.
-    expect(
-      patch.safeParse({ appointmentReminders: { offsetsHours: [100000] } })
-        .success,
-    ).toBe(true);
-  });
+  // The two `offsetsHours` cases that lived here went out with `appointmentReminders` — see the
+  // exemption above for why that block is not published at all.
 
   test("an unknown guardrail action is refused", () => {
     expect(

@@ -8,10 +8,12 @@ import {
 } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
+import { encryptJson } from "@/api/lib/crypto";
 import {
   clearContactAuthGrantState,
   contactAuthPolicyHash,
   dropContactAuthGrant,
+  setMaxTrackedContactsForTest,
   unconfirmedWriteCount,
   writeContactAuthGrant,
 } from "@/modules/contact-auth/grants";
@@ -82,6 +84,9 @@ let agentId = 0n;
 let otherAgentId = 0n;
 let contactId = 0n;
 let namelessContactId = 0n;
+let credentialRef = "";
+let credentialId = 0n;
+const spareContacts: bigint[] = [];
 
 function cfg(over: Partial<ContactAuthConfig> = {}): ContactAuthConfig {
   return {
@@ -255,11 +260,37 @@ describe.skipIf(!dbUp)("contact authorization: reusing a verdict", () => {
         },
       })
     ).id;
+    const cred = await suDb.vaultEntry.create({
+      data: {
+        tenantId,
+        name: "auth-key",
+        kind: "bearer_token",
+        secret: encryptJson("AUTH-SECRET"),
+      },
+      select: { id: true },
+    });
+    credentialId = cred.id;
+    credentialRef = `vault:${cred.id}`;
+    for (let i = 0; i < 3; i++) {
+      spareContacts.push(
+        (
+          await suDb.contact.create({
+            data: {
+              tenantId,
+              chatwootInstanceId: instanceId,
+              chatwootContactId: 6200 + i,
+              phone: `+55119000000${i}`,
+            },
+          })
+        ).id,
+      );
+    }
   });
 
   afterAll(async () => {
     if (!dbUp) return;
     await suDb.contactAuthGrant.deleteMany({ where: { tenantId } });
+    await suDb.vaultEntry.deleteMany({ where: { tenantId } });
     await suDb.contact.deleteMany({ where: { tenantId } });
     await suDb.agent.deleteMany({ where: { tenantId } });
     await suDb.tenant.delete({ where: { id: tenantId } });
@@ -854,6 +885,77 @@ describe.skipIf(!dbUp)("contact authorization: reusing a verdict", () => {
     expect(Date.now() - before).toBeLessThan(2500);
     expect(verdict.outcome).toBe("error");
     expect(verdict.reason).toBe("timeout");
+  });
+
+  test("a credential rotated or deleted since the grant is not reused", async () => {
+    const ep = endpoint(allowed, allowed, allowed);
+    const withCred = (over = {}) => cfg({ credentialRef, ...over });
+    await ask({ cfg: withCred(), ...ep });
+    // Control: the same credential, untouched, and the verdict is reused.
+    expect((await ask({ cfg: withCred(), ...ep })).reused).toBe(true);
+    expect(ep.calls).toHaveLength(1);
+
+    // `credentialRef` is a stable id, so rotating the secret behind it leaves the policy
+    // fingerprint matching a verdict obtained with a key the operator has replaced.
+    await suDb.vaultEntry.update({
+      where: { id: credentialId },
+      data: { secret: encryptJson("ROTATED") },
+    });
+    const afterRotation = await ask({ cfg: withCred(), ...ep });
+    expect(afterRotation.reused).toBeFalsy();
+    expect(ep.calls).toHaveLength(2);
+
+    // Deleting it is the sharp case: a fresh check fails closed on an unreadable credential, and a
+    // stored verdict skips that check entirely — so a gate the operator disarmed by removing its key
+    // would go on serving contacts for the rest of the TTL.
+    await suDb.contactAuthGrant.deleteMany({ where: { tenantId } });
+    await ask({ cfg: withCred(), ...ep });
+    await suDb.vaultEntry.delete({ where: { id: credentialId } });
+    const afterDeletion = await ask({ cfg: withCred(), ...ep });
+    expect(afterDeletion.reused).toBeFalsy();
+    expect(afterDeletion.outcome).toBe("error");
+    expect(afterDeletion.reason).toBe("credential_unavailable");
+    // Restored for the tests that follow this one in the file.
+    const again = await suDb.vaultEntry.create({
+      data: {
+        tenantId,
+        name: "auth-key-2",
+        kind: "bearer_token",
+        secret: encryptJson("AUTH-SECRET"),
+      },
+      select: { id: true },
+    });
+    credentialId = again.id;
+    credentialRef = `vault:${again.id}`;
+  });
+
+  test("eviction walks past a delete this process still owes", async () => {
+    // The spare contacts are REFUSED, because a refusal is what writes an entry at all: an allow
+    // under perMessage stores nothing and remembers nothing, so a version of this test built on
+    // allows never fills the map and never evicts anything.
+    const ep = endpoint(allowed, denied, denied, denied, denied);
+    await ask({ cfg: cfg(), ...ep });
+    await ask({
+      cfg: cfg({ mode: "perMessage" }),
+      fetchImpl: ep.fetchImpl,
+      base: baseWithGrantHook(appDb, (m) =>
+        m === "deleteMany"
+          ? () => {
+              throw new Error("delete is down");
+            }
+          : undefined,
+      ),
+    });
+    expect(unconfirmedWriteCount()).toBe(1);
+
+    // Ordinary traffic from other contacts, against a cap small enough to force eviction. A debt is
+    // not an ordinary entry: evicted, the next check of THAT contact skips the retry and serves the
+    // positive row the refusal never managed to remove.
+    setMaxTrackedContactsForTest(2);
+    for (const contact of spareContacts) {
+      await ask({ cfg: cfg({ mode: "perMessage" }), contact, ...ep });
+    }
+    expect(unconfirmedWriteCount()).toBe(1);
   });
 
   test("the endpoint changing re-asks", async () => {

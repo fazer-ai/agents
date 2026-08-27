@@ -375,6 +375,7 @@ served if and only if, at the moment it is read:
 | `grantTtlSeconds` has not elapsed | Time. The operator's declared staleness budget. |
 | It matches the mirrored **identity** (phone, email, operator `identifier`) | A MATCH rule. The endpoint answered about whoever those named, and the mirror rewrites them, clears included. |
 | It matches the **policy** (`url`, `credentialRef`, `includeMessageText`, `grantTtlSeconds`) | A MATCH rule. Those decide who answered and what was asked. |
+| The **credential** it was obtained with has not been rotated or deleted since | A MATCH rule, and the one that costs a second read (`vault_entries.updated_at`, metadata only — never a managed-OAuth refresh). `credentialRef` is a stable id, so it survives both, and the deletion case is the sharp one: a fresh check fails closed on an unreadable credential, while a stored verdict would skip that check and keep serving a gate the operator disarmed by removing its key. |
 | This process holds no unconfirmed write about that contact | Fail-closed, see below. |
 
 And a grant is REMOVED only by a refusal, or by the verdict that replaces it. The distinction between
@@ -435,7 +436,9 @@ That retry is inside the gate's budget, because unlike the bookkeeping that foll
 BEFORE the answer. The budget bounds what the CALLER waits for and nothing else: a delete abandoned
 on the deadline keeps its place in that contact's queue until the statement settles, so a straggler
 cannot delete the grant the next message stores. What this process remembers is ids and timestamps,
-bounded by entry count like the notice cooldown. Restarting before the retry lands is the residual,
+bounded by entry count like the notice cooldown — except for the debts themselves, which eviction
+walks past: dropping one silently is dropping the only thing that stops a refused contact being
+served from the row its refusal failed to remove. Restarting before the retry lands is the residual,
 bounded by the grant's own TTL.
 
 **There is no clear-everything lever, deliberately.** What ends reuse is the TTL elapsing, the

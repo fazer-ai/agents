@@ -171,9 +171,7 @@ export async function authorizeContact(
             base,
             grantKey,
             fingerprints,
-            {
-              signal: ctrl.signal,
-            },
+            { signal: ctrl.signal, credentialRef: cfg.credentialRef },
           );
           if (stored) return reusedVerdict(stored.context);
         }

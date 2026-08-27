@@ -47,7 +47,9 @@ import type { ContactAuthConfig } from "./settings";
 //   1. it has not expired                          — time, and the operator chose the budget;
 //   2. it matches the identity in force             — a MATCH rule, not a revocation;
 //   3. it matches the policy in force               — likewise;
-//   4. this process holds no unconfirmed write about that contact — fail-closed.
+//   4. the credential it was obtained with has not changed or been deleted since — likewise, and the
+//      one rule that costs a second read, because `credentialRef` is a stable id that survives both;
+//   5. this process holds no unconfirmed write about that contact — fail-closed.
 //
 // And it is removed only by a refusal, or by the verdict that replaces it. Nothing else "drops" a
 // grant: 2 and 3 are questions, so a fingerprint that stops matching stops SERVING, and a value put
@@ -92,7 +94,13 @@ function sysCtx(tenantId: bigint): TenantContext {
 // Bounded twice like the notice store: the entries are ids and timestamps, but a flood of failures
 // must not grow memory without end. Insertion-ordered eviction drops the oldest, whose contact has
 // been quiet longest.
-const MAX_TRACKED_CONTACTS = 10_000;
+let maxTrackedContacts = 10_000;
+
+// NOTE: Test-only, so the eviction rule can be exercised without ten thousand contacts. Production
+// never calls it.
+export function setMaxTrackedContactsForTest(n: number): void {
+  maxTrackedContacts = n;
+}
 const known = new Map<string, { refusedAt?: number; unconfirmed: boolean }>();
 
 function contactKey(key: GrantKey): string {
@@ -121,10 +129,24 @@ function remember(
   };
   known.delete(k);
   known.set(k, next);
-  while (known.size > MAX_TRACKED_CONTACTS) {
-    const oldest = known.keys().next().value;
-    if (oldest === undefined) break;
-    known.delete(oldest);
+  evictOldestConfirmed();
+}
+
+// The cap protects against a flood of ORDINARY entries, and an unconfirmed one is not ordinary: it
+// is a delete this process still owes, and dropping it silently is dropping the only thing that
+// stops a refused contact being served from the row the refusal failed to remove. So eviction walks
+// past those. What is left unbounded is the debt itself, which is bounded by the database being
+// down — and when it comes back, each contact's next check clears its own.
+function evictOldestConfirmed(): void {
+  while (known.size > maxTrackedContacts) {
+    let evicted = false;
+    for (const [k, entry] of known) {
+      if (entry.unconfirmed) continue;
+      known.delete(k);
+      evicted = true;
+      break;
+    }
+    if (!evicted) return;
   }
 }
 
@@ -134,6 +156,40 @@ function remember(
 function refusedSince(key: GrantKey, since: number): boolean {
   const at = known.get(contactKey(key))?.refusedAt;
   return at !== undefined && at >= since;
+}
+
+// WHEN THE CREDENTIAL THE GRANT WAS OBTAINED WITH IS NO LONGER THE ONE IN FORCE. `credentialRef` is a
+// stable id, so rotating the secret behind it, or deleting the entry outright, leaves the policy
+// fingerprint matching a verdict that was obtained with a key the operator has since replaced or
+// revoked. The deletion case is the sharp one: a fresh check would fail closed on
+// `credential_unavailable`, and a stored verdict skips that check entirely, so a gate the operator
+// disarmed by removing its key would keep serving contacts for the rest of the TTL.
+//
+// Read as metadata, never resolved: this must not refresh a managed-OAuth token (a network call)
+// merely to decide whether a stored verdict still counts.
+async function credentialChangedSince(
+  base: PrismaClient,
+  tenantId: bigint,
+  ref: string,
+  writtenAt: Date,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  if (!ref.startsWith("vault:")) return false;
+  let id: bigint;
+  try {
+    id = BigInt(ref.slice("vault:".length));
+  } catch {
+    return false;
+  }
+  const entry = await underSignalMaybe(
+    runScopedOn(base, sysCtx(tenantId), (db) =>
+      db.vaultEntry.findUnique({ where: { id }, select: { updatedAt: true } }),
+    ),
+    signal,
+  );
+  // Gone counts as changed: there is no key to ask with any more.
+  if (!entry) return true;
+  return entry.updatedAt.getTime() > writtenAt.getTime();
 }
 
 export function hasUnconfirmedWrite(key: GrantKey): boolean {
@@ -159,6 +215,7 @@ export async function retryUnconfirmedWrite(
 // eviction above.
 export function clearContactAuthGrantState(): void {
   known.clear();
+  maxTrackedContacts = 10_000;
 }
 
 export function unconfirmedWriteCount(): number {
@@ -246,7 +303,11 @@ export async function readContactAuthGrant(
   base: PrismaClient,
   key: GrantKey,
   fingerprints: { identityHash: string; policyHash: string },
-  opts: { signal?: AbortSignal; nowMs?: number } = {},
+  opts: {
+    signal?: AbortSignal;
+    nowMs?: number;
+    credentialRef?: string | null;
+  } = {},
 ): Promise<{ context: AuthContext | null } | null> {
   // NOT in the mutation queue, deliberately. A refusal that is IN FLIGHT is already covered — it is
   // remembered before its delete is attempted, and the check below sees that. What a queue would add
@@ -271,6 +332,7 @@ export async function readContactAuthGrant(
             policyHash: true,
             context: true,
             expiresAt: true,
+            updatedAt: true,
           },
         }),
       ),
@@ -286,6 +348,18 @@ export async function readContactAuthGrant(
       row.identityHash === fingerprints.identityHash &&
       row.policyHash === fingerprints.policyHash;
     if (!holds) return null;
+    if (
+      opts.credentialRef &&
+      (await credentialChangedSince(
+        base,
+        key.tenantId,
+        opts.credentialRef,
+        row.updatedAt,
+        opts.signal,
+      ))
+    ) {
+      return null;
+    }
     // Read back through the SAME reader the endpoint's answer went through, so a cap tightened later
     // applies to what is already stored instead of only to what arrives next.
     return { context: readAuthContext(row.context) };

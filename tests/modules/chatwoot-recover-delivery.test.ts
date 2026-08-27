@@ -2153,10 +2153,13 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
         import.meta.url,
       ),
     ).text();
-    const fenceEnd = src.indexOf('    return "deferred";\n  }');
+    const mark = src.indexOf("markTurnInFlight(handoffKey);");
+    expect(mark).toBeGreaterThan(-1);
+    // The LAST refusal before the mark, not the first: the fence asks in three steps and the middle
+    // one awaits, so anchoring on the first would measure the wrong stretch and pass while the gap
+    // this forbids sat in the second.
+    const fenceEnd = src.lastIndexOf('    return "deferred";\n  }', mark);
     expect(fenceEnd).toBeGreaterThan(-1);
-    const mark = src.indexOf("markTurnInFlight(handoffKey);", fenceEnd);
-    expect(mark).toBeGreaterThan(fenceEnd);
     const between = src.slice(fenceEnd, mark);
     // Comments in that stretch discuss awaits; the code must not contain one.
     const code = between
@@ -2164,6 +2167,16 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       .filter((l) => !l.trimStart().startsWith("//"))
       .join("\n");
     expect(code).not.toContain("await ");
+
+    // And the local keys are asked AFTER the durable read, not only before it. `turnOwnsThread`
+    // reads a row; a turn that starts while that read is in flight marks the Map and the row-read
+    // still describes the instant before it did. It answers for the GRAPH key itself (it asks the
+    // Map first), so the one that would be missed is the CONVERSATION key — the same key the mark
+    // below takes and the one `followUpHandler` reads.
+    const durable = src.indexOf("await turnOwnsThread(");
+    expect(durable).toBeGreaterThan(-1);
+    expect(durable).toBeLessThan(mark);
+    expect(src.slice(durable, mark)).toContain("isTurnInFlight(handoffKey)");
   });
 
   describe("putting the row back", () => {

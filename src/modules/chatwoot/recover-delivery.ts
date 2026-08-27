@@ -670,6 +670,16 @@ async function runRecovery(params: {
         contactInboxId,
         redirectOriginDisplayId: mirrorNow?.redirectOriginDisplayId ?? null,
         redirectOriginAt: mirrorNow?.chatwootRedirectOriginAt ?? null,
+        // A RESOLVE THAT LANDS AFTER THIS READ is not ordered away by anything here, and that is the
+        // delivery path's rule rather than this module's. A brand-new incoming message is the one
+        // event allowed to move a stored `resolved` back to `pending` (../chatwoot/state-order.ts),
+        // because in Chatwoot it really does reopen the conversation — which is the measurement round
+        // 8 rests on and the reason this module reads the account at all. A live delivery has the
+        // same exposure and a wider one: Chatwoot freezes the payload at enqueue, so a webhook
+        // enqueued before an operator's resolve and delivered after it carries `pending` too.
+        // MEASURED here at the nearest seam a test can reach — a resolve landing at the delivery
+        // path's own client build — and the conversation stayed `resolved` with nothing sent.
+        //
         // Neither of these is the live snapshot: `reconciled.state` is the row after the reconcile,
         // and `mirrorNow` is that same row read again, later. The later one is stated, because the
         // only difference between them is what landed while the route queries ran. `state` remains
@@ -905,20 +915,29 @@ async function runRecovery(params: {
     instanceId,
     conversationId,
   );
-  if (
-    isTurnInFlight(handoffKey) ||
-    (contactInboxId != null
-      ? await turnOwnsThread(
-          {
-            tenantId: params.tenantId,
-            instanceId,
-            contactInboxId,
-            graphThreadId: graphKey,
-          },
-          base,
-        )
-      : isTurnInFlight(graphKey))
-  ) {
+  // Asked in three steps, because the middle one AWAITS and the other two cannot.
+  //
+  // The Map first, so a conversation already busy costs no query. Then the row, which is the only
+  // reader that crosses replicas. Then the Map AGAIN — and that last ask is the one that decides:
+  // `turnOwnsThread` reads a row, and a turn starting while that read is in flight marks the Map
+  // and returns a row-read describing the instant before it did. Two Map lookups are what that
+  // costs, and they are also the last thing before the mark, so nothing suspends between the answer
+  // and the hold.
+  if (isTurnInFlight(handoffKey) || isTurnInFlight(graphKey)) {
+    return "deferred";
+  }
+  const durablyHeld =
+    contactInboxId != null &&
+    (await turnOwnsThread(
+      {
+        tenantId: params.tenantId,
+        instanceId,
+        contactInboxId,
+        graphThreadId: graphKey,
+      },
+      base,
+    ));
+  if (durablyHeld || isTurnInFlight(handoffKey) || isTurnInFlight(graphKey)) {
     return "deferred";
   }
 

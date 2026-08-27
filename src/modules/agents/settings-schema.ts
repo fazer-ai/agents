@@ -222,6 +222,23 @@ const grounding = z.looseObject({
     .describe("cosine ceiling for a knowledge hit; null = no filter"),
 });
 
+// BLANK IS WHAT THE READER THROWS AWAY, so the schema is where it gets declared. `readToolInstructions`
+// trims and returns null for an empty result, so a note of `""` or `"   "` is accepted by the write,
+// replaces whatever note was there, and then never reaches a tool description — the one outcome
+// docs/mcp.md says a caller cannot discover by trying, because what comes back is success.
+//
+// A PATTERN rather than a length: `minLength` would not catch `"   "`, and this is not the size rule
+// the contract forbids copying into zod ("type and choice, never size"). It refuses a KIND of value,
+// it is published faithfully (`\S` carries no flag to lose, unlike the /…/i case in docs/mcp.md), and
+// it diverges from no console path — all three fields are written by the editor as `.trim() || null`,
+// or with the key deleted (toolGuidance), so the console never produces the value this refuses.
+//
+// `followUps[].instructions` is deliberately NOT here: its stored default is `""` (see
+// modules/followups/settings.ts), the reader keeps it, and refusing it would break the round trip
+// this surface documents.
+const toolNote = () =>
+  z.string().regex(/\S/, "must not be blank; use null to clear it");
+
 const followUpStep = z.looseObject({
   delayValue: z.number().optional().describe("≥ 1, clamped"),
   delayUnit: oneOf(FOLLOW_UP_DELAY_UNITS).optional(),
@@ -267,11 +284,12 @@ const handoff = z.looseObject({
   targetInstanceId: chatwootId().describe(
     "the ChatwootInstance the pinned target came from",
   ),
-  instructions: z
-    .string()
+  instructions: toolNote()
     .nullable()
     .optional()
-    .describe("appended to the handoff_to_human tool description"),
+    .describe(
+      "appended to the handoff_to_human tool description; null clears it",
+    ),
 });
 
 const limits = z.looseObject({
@@ -596,12 +614,11 @@ const guardrails = z.looseObject({
 });
 
 const kanban = z.looseObject({
-  instructions: z
-    .string()
+  instructions: toolNote()
     .nullable()
     .optional()
     .describe(
-      `funnel guidance appended to the kanban_move_card tool description; the board itself follows the conversation's linked card. Refused above ${TOOL_INSTRUCTIONS_MAX} characters, not trimmed`,
+      `funnel guidance appended to the kanban_move_card tool description; null clears it. The board itself follows the conversation's linked card. Refused above ${TOOL_INSTRUCTIONS_MAX} characters, not trimmed`,
     ),
 });
 
@@ -649,7 +666,7 @@ const nativeToolKeys = <T extends z.ZodTypeAny>(value: T) => {
   );
 };
 
-const toolGuidance = nativeToolKeys(z.string().nullable()).describe(
+const toolGuidance = nativeToolKeys(toolNote().nullable()).describe(
   `per-native-tool guidance appended to that tool's description; null clears one. A key outside the catalog is dropped by the reader, so only the names published here take effect. Each note is refused above ${TOOL_INSTRUCTIONS_MAX} characters, not trimmed. PRECEDENCE: handoff_to_human and kanban_move_card also have a note in their own block (handoff.instructions, kanban.instructions); a non-empty value THERE wins over this map for that tool, so the value here applies only while the grouped one is empty.`,
 );
 

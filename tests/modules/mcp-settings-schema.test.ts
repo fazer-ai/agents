@@ -205,6 +205,65 @@ describe("agent_settings_set argument schema", () => {
     expect(asClientWouldCompileIt.test("portugues")).toBe(false);
   });
 
+  // BLANK IS DISCARDED BY THE READER, so it belongs to the kind the schema declares. Every field read
+  // through `readToolInstructions` is here, and the sweep was by that question rather than by block:
+  // a note that trims to nothing replaces the note that was there and then never reaches a tool
+  // description, so the call reports success and the guidance is gone.
+  //
+  // `followUps[].instructions` is deliberately absent — its stored default IS `""` and the reader
+  // keeps it, so refusing it would break the round trip. That asymmetry is the whole reason this is
+  // asserted per field instead of per type.
+  test("the published schema refuses a blank note wherever the reader drops one", async () => {
+    const published = await publishedSchema();
+    for (const [block, field] of [
+      ["handoff", "instructions"],
+      ["kanban", "instructions"],
+    ] as const) {
+      const pattern = keywordOf(published, block, field, "pattern");
+      expect(`${block}.${field}: ${String(pattern)}`).toBe(
+        `${block}.${field}: \\S`,
+      );
+      // Compiled the way a client would, with no flags: what the server refuses, a client refuses.
+      const asClientWouldCompileIt = new RegExp(pattern as string);
+      expect(asClientWouldCompileIt.test("")).toBe(false);
+      expect(asClientWouldCompileIt.test("   ")).toBe(false);
+      expect(asClientWouldCompileIt.test("peça o CPF")).toBe(true);
+    }
+    // The tool-keyed map publishes it per native key, which is where a caller reads it from.
+    const guidance = keywordOf(
+      published,
+      "toolGuidance",
+      "handoff_to_human",
+      "pattern",
+    );
+    expect(guidance).toBe("\\S");
+  });
+
+  // The other half, and the half that made round 9 of this PR a regression: `null` is the documented
+  // way to clear, so it must still parse everywhere blank is refused.
+  test("null still clears every field where blank is refused", () => {
+    for (const patch of [
+      { handoff: { instructions: null } },
+      { kanban: { instructions: null } },
+      { toolGuidance: { handoff_to_human: null } },
+    ]) {
+      expect(() => z.object(BEHAVIOR_PATCH_SHAPE).parse(patch)).not.toThrow();
+    }
+  });
+
+  // And the round trip itself: a blank note never comes BACK from the readers, so echoing a get can
+  // never hit the refusal this adds.
+  test("no reader ever emits the blank this refuses", () => {
+    const read = readBehaviorSettings({
+      handoff: { mode: "route", instructions: "   " },
+      kanban: { instructions: "" },
+      toolGuidance: { handoff_to_human: "  ", assign_label: "" },
+    });
+    expect(read.handoff.instructions).toBeNull();
+    expect(read.kanban.instructions).toBeNull();
+    expect(read.toolGuidance).toEqual({});
+  });
+
   // A value the readers HONOR has to parse. Each row is a real reader behavior, not a hypothetical:
   // the number is clamped, the text is capped only when the write changes it, the list is truncated,
   // the undeclared key is merged and then normalized away.
@@ -417,6 +476,15 @@ describe("agent_settings_set over MCP", () => {
     expect(r.text).toContain("tts.mode");
     expect(r.text).toContain("never");
     expect(r.text).toContain("preference");
+  });
+
+  test("a blank note is refused, naming the field", async () => {
+    const r = await callSettingsSet({
+      agent_id: "1",
+      toolGuidance: { assign_label: "   " },
+    });
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain("toolGuidance.assign_label");
   });
 
   test("a clamped value is NOT refused, it goes through to the readers", async () => {

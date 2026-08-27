@@ -168,8 +168,12 @@ const SETTINGS_DESC_CEILING = 2_000;
 // 20,995. A later round added the guidance PRECEDENCE sentence (handoff/kanban notes live in their
 // own block and win there), taking it to 21,108, and a later one the input direction's template
 // fallback for `generated` (accepted, as the console offers it, but it never generates), taking it
-// to 21,216. Every figure here is one measured under the tree that ships; adding deltas would have
-// left a ceiling calibrated against trees that never did.
+// to 21,216. A last round declared what the readers DISCARD rather than honor: every field read
+// through `readToolInstructions` (handoff.instructions, kanban.instructions, and toolGuidance's
+// value, so thirteen times over) now publishes `pattern: "\\S"`, refusing a note that trims to
+// nothing instead of accepting one the runtime never appends. That is 272 characters, to 21,488.
+// Every figure here is one measured under the tree that ships; adding deltas would have left a
+// ceiling calibrated against trees that never did.
 //
 // Paid down before it was raised, and only where it cost the caller nothing: the per-field
 // `.describe()` on the two name-keyed blocks moved to the BLOCK, since a field description inside a
@@ -182,7 +186,7 @@ const SETTINGS_DESC_CEILING = 2_000;
 // a refusal, which is the exact hazard tests/api/v1/write-body-required.test.ts exists to keep out
 // of this codebase. The thirteen copies are what buys a refusal that can only name what the SERVER
 // declared.
-const SETTINGS_SCHEMA_CEILING = 21_300;
+const SETTINGS_SCHEMA_CEILING = 21_600;
 
 describe("MCP tool descriptions", () => {
   test("agent_settings_set stays under its ceiling", async () => {
@@ -306,6 +310,13 @@ describe("MCP tool descriptions", () => {
   // SECOND time after review removed `appointmentReminders` from the change (50,394 → 49,998), for
   // the same reason: a ceiling is only worth what someone actually measured under it.
   //
+  // Two later rounds of the same PR moved it again, and the first of them moved the NUMBER without
+  // moving this paragraph — which is the failure this whole comment exists to prevent, so it is
+  // recorded rather than quietly overwritten: the ceiling read 50,900 with nothing here saying what
+  // had been measured under it. Re-measured on the tree that ships, the figure is 51,043, and the
+  // ceiling goes to 51,300. The last increment is the blank-note refusal documented at
+  // SETTINGS_SCHEMA_CEILING; the rest predates it and is now folded into a figure someone measured.
+  //
   // Worth stating plainly, because this test exists to make it a decision rather than a surprise:
   // the payload is now ~50 KB of schema plus ~27 KB of description across 107 tools, published in
   // full on every tools/list before a client knows whether any of it will be used. Nothing here is
@@ -322,7 +333,7 @@ describe("MCP tool descriptions", () => {
       schema += t.schema.length;
     }
     expect(desc).toBeLessThanOrEqual(27_250);
-    expect(schema).toBeLessThanOrEqual(50_900);
+    expect(schema).toBeLessThanOrEqual(51_300);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

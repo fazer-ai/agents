@@ -3167,10 +3167,28 @@ export async function processChatwootDelivery(
   const effectiveAssigneeType = assigneeKnown
     ? (n.assigneeType ?? null)
     : mirror.assigneeType;
+  // THE STATUS THE MIRROR SETTLED ON, not the one the payload proposed. `mirror` is the row AFTER
+  // this event was written, so it already holds whichever of the two won: a new incoming message
+  // that reopened a resolved conversation reads `pending` here exactly as Chatwoot does, and a
+  // status the ordering refused reads the one that outranked it.
+  //
+  // The payload is only a proposal, and every payload here is a snapshot of an earlier instant:
+  // Chatwoot freezes its own at enqueue, and a delivery recovery rebuilds one from reads made a
+  // moment before (#295). MEASURED there — an operator resolving the conversation between the
+  // rebuild and this line, the mirror correctly refusing the reopen, and the gate answering anyway
+  // because it read the proposal instead of the outcome.
+  //
+  // NOT `mirror.applied`: that says the event won the ordering OVERALL, and the status is decided on
+  // an axis of its own — a payload can be applied and still have its status refused, which is the
+  // case measured above.
+  //
+  // The same shape as the assignee beside it, which already prefers what the mirror holds whenever
+  // the payload is not the better witness.
+  const effectiveStatus = mirror.status ?? n.status;
   const act = shouldBotHandle(
     {
       assigneeType: effectiveAssigneeType,
-      status: n.status,
+      status: effectiveStatus,
       assigneeId: assigneeKnown ? (n.assigneeId ?? null) : mirror.assigneeId,
     },
     { ourAgentBotId: params.agentBotId },

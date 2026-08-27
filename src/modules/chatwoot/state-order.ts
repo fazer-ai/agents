@@ -286,7 +286,33 @@ export function decideConversationWrites(
   const statusOrdered = payload.fromConversationEvent && !olderThanStatus;
   const assigneeOrdered = payload.fromConversationEvent && !olderThanAssignee;
 
-  const writeStatus = statusOrdered || payload.reopensConversation;
+  // A REOPEN IS ORDERED TOO, on the only axis a message payload has. `statusOrdered` needs
+  // `fromConversationEvent`, so a message carries no status version at all and the reopen is the
+  // deliberate exception: a brand-new incoming message really does reopen a resolved conversation in
+  // Chatwoot, and that is the one status transition a message reports faithfully.
+  //
+  // Faithfully AT ITS OWN INSTANT. An unordered exception says a message may reopen whenever it
+  // arrives, and every payload here is a snapshot of an earlier moment: Chatwoot freezes its own at
+  // enqueue, and a delivery recovery rebuilds one from reads made a moment before (#295). So a
+  // message serialized BEFORE an operator resolved the conversation, delivered after, walked the
+  // status back to `pending` — and the gate then answered on top of the conversation they had just
+  // closed. MEASURED on the recovery, where the window is widest.
+  //
+  // `activityAt` against the stored status mark, because that is the comparison a message can make:
+  // `last_activity_at` is the message's own clock, and a resolve does not advance it, so a message
+  // that really is newer than the resolve compares greater.
+  //
+  // AT WHOLE SECONDS, and that is the whole difficulty. The two fields are not one clock:
+  // `last_activity_at` is whole seconds and the mark is `updated_at`, which carries a fraction and
+  // within one burst is always a little ahead of the message it accompanies. Compared raw, every
+  // same-second reopen loses to its own companion resolve — the burst issue #61 is about. Truncated,
+  // the same-second case keeps the answer it has always had and only a message from an EARLIER
+  // second is refused, which is the one this rule exists for.
+  const reopenOrdered =
+    payload.reopensConversation &&
+    (row.statusAt === null ||
+      Math.floor(eventAt.getTime() / 1000) >= Math.floor(row.statusAt));
+  const writeStatus = statusOrdered || reopenOrdered;
   const status = writeStatus ? payload.status : null;
 
   // NOTE: One rule for the EQUAL-version case, so the outcome cannot depend on delivery order. A

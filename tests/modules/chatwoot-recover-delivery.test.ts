@@ -1386,6 +1386,94 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     ).toBe(inboxDbId);
   });
 
+  test("an operator who RESOLVES between the last read and the gate is not answered over", async () => {
+    // Every payload the delivery path gates on is a snapshot of some earlier instant: Chatwoot
+    // freezes its own at enqueue, and this module rebuilds one from reads it made a moment before.
+    // The window that stays open is between the last of those reads and the gate — five scoped
+    // queries, measured — and an operator resolving the conversation inside it used to get a reply
+    // posted on top of the conversation they had just closed.
+    //
+    // The rule is the gate's, not this module's: the status now follows whoever WON the ordering.
+    // `mirror.applied` is false exactly when the mirror refused the payload's write, and a status the
+    // mirror refused is one the gate must not act on either — the same shape as the assignee's own
+    // fallback beside it, stated for the other half of the pair.
+    //
+    // The resolve is fired from inside the FENCE's own query, which is the one seam in that stretch:
+    // it lands after the last mirror read and before the mirror write the handoff performs. Stamped
+    // ahead of the message, as the webhook carrying it would be, so the mirror really does refuse.
+    const convId = 8970;
+    const messageId = 9471;
+    const conv = await seedConversation(convId, {
+      lastEventAt: new Date((SENT_AT - 600) * 1000),
+    });
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const stub = stubChatwoot({
+      page: pageWith([{ id: messageId, content: "oi" }]),
+    });
+    const turns = { built: 0 };
+    // The fence's durable read is the eighth scoped transaction of the pass. Counted rather than
+    // guessed: a probe printed the call stack of each one.
+    const FENCE_QUERY = 8;
+    let n = 0;
+    let fired = false;
+    // The resolve is AWAITED before the fence's transaction opens, not fired beside it: a write left
+    // racing the read it is meant to precede lands after it about half the time, and the test would
+    // then be measuring nothing while still passing.
+    const proxied = new Proxy(appDb, {
+      get(t, k, r) {
+        if (k !== "$extends") return Reflect.get(t, k, r);
+        return (...a: unknown[]) => {
+          n += 1;
+          const ext = (
+            Reflect.get(t, k, r) as (...x: unknown[]) => Record<string, unknown>
+          ).apply(t, a);
+          if (n !== FENCE_QUERY || fired) return ext;
+          fired = true;
+          const tx = ext.$transaction as (...x: unknown[]) => Promise<unknown>;
+          return new Proxy(ext, {
+            get(et, ek, er) {
+              if (ek !== "$transaction") return Reflect.get(et, ek, er);
+              return async (...x: unknown[]) => {
+                await suDb.conversation.update({
+                  where: { id: conv.id },
+                  data: {
+                    status: "resolved",
+                    chatwootStatusAt: SENT_AT + 3600,
+                  },
+                });
+                return tx.apply(et, x);
+              };
+            },
+          });
+        };
+      },
+    });
+
+    await recoverStrandedDelivery({
+      tenantId,
+      deliveryRowId: rowId,
+      base: proxied,
+      deps: depsWith(stub, turns),
+    });
+
+    // The resolve really did land inside the window, or this measures nothing.
+    expect(fired).toBe(true);
+    expect(stub.sent).toEqual([]);
+    expect(turns.built).toBe(0);
+    // And the operator's decision stands.
+    expect(
+      (
+        await suDb.conversation.findUniqueOrThrow({
+          where: { id: conv.id },
+          select: { status: true },
+        })
+      ).status,
+    ).toBe("resolved");
+  });
+
   test("a mirror that never learned the inbox rebuilds it from the live message", async () => {
     // The route is the one thing the rebuilt body cannot get wrong quietly. `Conversation.inboxId`
     // is nullable and the mirror writes it null for any event that named no inbox (`upsertInbox`

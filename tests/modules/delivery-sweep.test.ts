@@ -1460,6 +1460,11 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     // customer nobody answered.
     const convId = 8829;
     const messageId = 9781;
+    // The mirror is seeded `open` to MATCH the event below, because the gate reads the status the
+    // mirror settled on rather than the one the payload proposes (../../src/modules/chatwoot/
+    // webhook.ts). A row left `pending` under an event that says `open` is a state production does
+    // not produce — the mirror is written from those same events — and the disagreement, not the
+    // status, would be what made this fixture take the gate exit.
     const sibling = await suDb.chatwootWebhookDelivery.create({
       data: {
         tenantId,
@@ -1474,7 +1479,11 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
       },
       select: { id: true },
     });
-    await seedConversation(convId);
+    const convRow = await seedConversation(convId);
+    await suDb.conversation.update({
+      where: { id: convRow.id },
+      data: { status: "open" },
+    });
 
     await deliverThrough(convId, messageId, "incoming", {
       deliveryId: `ourbot-open-route-${process.pid}`,

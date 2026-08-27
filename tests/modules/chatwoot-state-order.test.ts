@@ -97,6 +97,43 @@ const CASES: Case[] = [
     row: storedRow({ assigneeType: "User" }),
     want: { status: "open", assignee: false },
   },
+  // A reopen is faithful AT ITS OWN INSTANT, and every payload here is a snapshot of an earlier one:
+  // Chatwoot freezes its own at enqueue, and a delivery recovery rebuilds one from reads made a
+  // moment before (#295). Unordered, the exception says a message may reopen whenever it arrives,
+  // and a message serialized before an operator's resolve walks the status back to `open` after it.
+  {
+    // The row is built so the ONLY thing that can refuse this is the new rule: the payload is ahead
+    // of the row's activity, so it is not stale, and its status mark sits a whole hour later —
+    // which is what a resolve does, since a resolve moves `updated_at` and never `last_activity_at`.
+    name: "a reopen from a second BEHIND the status mark does not walk it back",
+    payload: messageEvent({
+      reopensConversation: true,
+      activityAt: NOW,
+      status: "open",
+    }),
+    row: storedRow({
+      activityAt: LATER,
+      statusAt: NOW.getTime() / 1000 + 3600,
+    }),
+    want: { status: null },
+  },
+  {
+    // The other side, and the one that keeps issue #61's burst working: the mark carries a fraction
+    // (`updated_at`) and the message carries whole seconds (`last_activity_at`), so within one burst
+    // the mark is always a little ahead of the message it accompanies. Compared raw, every
+    // same-second reopen would lose to its own companion.
+    name: "a reopen in the SAME second as the status mark still wins",
+    payload: messageEvent({
+      reopensConversation: true,
+      activityAt: NOW,
+      status: "open",
+    }),
+    row: storedRow({
+      activityAt: LATER,
+      statusAt: NOW.getTime() / 1000 + 0.202,
+    }),
+    want: { status: "open" },
+  },
   {
     name: "the reopen claims the status mark and leaves the assignee mark behind",
     payload: messageEvent({

@@ -78,6 +78,20 @@ function jsonish<T>(v: unknown): T {
   return JSON.parse(JSON.stringify(v ?? null)) as T;
 }
 
+// `out[k] = v` is not an assignment when `k` is `"__proto__"`: it invokes the legacy prototype
+// setter and creates no own property, so a stored block by that name would compare equal on both
+// sides and its write would leave no row. Same repair, and same reason, as `truncForAudit`'s. Used
+// only where the key comes from the CALLER — the fixed lists (`MODEL_CONFIG_KEYS`, the audited
+// fields, array indices) cannot spell it.
+function setOwn(o: Record<string, unknown>, k: string, v: unknown): void {
+  Object.defineProperty(o, k, {
+    value: v,
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+}
+
 function same(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
@@ -101,9 +115,15 @@ const CANONICAL: Partial<Record<AuditedAgentField, (v: unknown) => unknown>> = {
 // it keeps operator prose out of the rule — measured, `"Pergunta: você quer?"` parses as a URL with
 // protocol `pergunta:`, and a rule keyed on parseability alone would start eating template messages.
 function carriesCredential(v: unknown): boolean {
-  if (typeof v !== "string" || !/^https?:\/\//i.test(v)) return false;
+  // TRIMMED first, and the trim is the guard rather than tidiness: `z.string().url()` validates
+  // through `new URL`, which ignores surrounding whitespace, so `" https://user:pw@host"` is
+  // accepted — and `validateModelConfigForWrite` discards the parsed result, so the string reaches
+  // the column with the space still on it. An anchored test on the raw string then says no.
+  if (typeof v !== "string") return false;
+  const url = v.trim();
+  if (!/^https?:\/\//i.test(url)) return false;
   try {
-    const u = new URL(v);
+    const u = new URL(url);
     return (
       u.username !== "" || u.password !== "" || u.search !== "" || u.hash !== ""
     );
@@ -128,6 +148,9 @@ function dropUnvouchableUrls(v: unknown): unknown {
   const out: Record<string, unknown> = {};
   for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
     if (carriesCredential(val)) continue;
+    // Plain assignment, and the asymmetry with `residue` below is measured rather than an
+    // oversight: this walks a CANONICAL value, whose keys are the readers' and the schema's, so
+    // none of them can be `__proto__`. A `setOwn` here survived a mutation battery for that reason.
     out[k] = dropUnvouchableUrls(val);
   }
   return out;
@@ -165,11 +188,12 @@ function residue(
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
     if (!Object.hasOwn(c, k)) {
-      out[k] = v;
+      setOwn(out, k, v);
       continue;
     }
     const nested = residue(v, c[k]);
-    if (nested !== undefined && Object.keys(nested).length > 0) out[k] = nested;
+    if (nested !== undefined && Object.keys(nested).length > 0)
+      setOwn(out, k, nested);
   }
   return out;
 }

@@ -916,6 +916,62 @@ describe.skipIf(!dbUp)("the agent family records its own changes", () => {
     expect(marked?.unreadConfigChanged).toBe(true);
   });
 
+  test("whitespace around the endpoint does not smuggle the credential past the rule", async () => {
+    // `z.string().url()` validates through `new URL`, which ignores surrounding whitespace, and
+    // `validateModelConfigForWrite` discards the parsed result — so the space reaches the column and
+    // an anchored test on the raw string would answer "not an endpoint".
+    const agent = await seedAgent({
+      modelConfig: {
+        provider: "openai-compatible",
+        model: "m",
+        baseURL: " https://u:hunter2@h.example.com/v1",
+      },
+    });
+    await clearAudit();
+
+    await updateAgent(
+      ctx(),
+      BigInt(agent.id),
+      {
+        modelConfig: {
+          provider: "openai-compatible",
+          model: "m",
+          baseURL: " https://u:rotated@h.example.com/v1",
+        },
+      },
+      appDb,
+    );
+
+    const got = await rows();
+    expect(got.length).toBe(1);
+    const dump = JSON.stringify([got[0]?.before, got[0]?.after]);
+    expect(dump).not.toContain("hunter2");
+    expect(dump).not.toContain("rotated");
+  });
+
+  test("a stored block named __proto__ is not swallowed by the residue map", async () => {
+    // `out[k] = v` is not an assignment for that key: it invokes the legacy prototype setter and
+    // creates no own property, so both residues would serialize empty and the write would vanish.
+    //
+    // Seeded through SQL because the app cannot produce this state — measured: Prisma drops an own
+    // `__proto__` during serialization, so `{"__proto__":{…},"ok":1}` reaches the column as
+    // `{"ok":1}`. A row carrying one arrives from a migration or a direct write, and the projection
+    // reads the column rather than the payload. `ok` is on both sides so the ONLY difference between
+    // the two residues is the key under test.
+    const agent = await seedAgent({ settings: { ok: 1 } });
+    await su?.$executeRawUnsafe(
+      `UPDATE agents SET settings = '{"__proto__":{"knob":"one"},"ok":1}'::jsonb WHERE id = ${agent.id}`,
+    );
+    await clearAudit();
+
+    await updateAgent(ctx(), BigInt(agent.id), { settings: { ok: 1 } }, appDb);
+
+    const got = await rows();
+    expect(got.map((r) => r.action)).toEqual(["agent.settings_set"]);
+    const marked = got[0]?.after as Record<string, unknown> | undefined;
+    expect(marked?.unreadConfigChanged).toBe(true);
+  });
+
   test("a base URL with no credential in it is recorded as itself", async () => {
     const agent = await seedAgent({
       modelConfig: {

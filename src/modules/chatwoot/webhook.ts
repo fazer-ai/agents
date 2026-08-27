@@ -3850,9 +3850,16 @@ export async function processChatwootDelivery(
       n.event,
     );
   } else {
+    // THE SAME TWO READINGS THE GATE DECIDED ON, and that is the whole rule of this file: a line
+    // that explains a decision has to name the values the decision was made from. `describeClosedGate`
+    // says as much where it lives — the status rides along instead of being re-read, because a second
+    // query would answer about a different moment — and a payload's own proposal is a different
+    // moment just as surely. Reported from `n.status`, a conversation the mirror had already resolved
+    // was recorded as `ownership_lost` at `pending`, sending an investigation after a missing
+    // assignee when the answer was the status all along.
     const closed = describeClosedGate({
       assigneeType: effectiveAssigneeType,
-      status: n.status,
+      status: effectiveStatus,
     });
     logger.info(
       "chatwoot: bot silent by gate (conv=%s event=%s newIncoming=%s reason=%s status=%s)",
@@ -3860,7 +3867,7 @@ export async function processChatwootDelivery(
       n.event,
       isNewIncoming,
       closed.outcome,
-      n.status ?? "unknown",
+      effectiveStatus ?? "unknown",
     );
     // NOTE: The operator's own trail, and it is deliberately narrower than this branch: ONE line
     // per customer message the bot did not answer, never one per webhook event. This gate is the

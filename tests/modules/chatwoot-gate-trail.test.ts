@@ -1,7 +1,8 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import logger from "@/api/lib/logger";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
 import { seedChatwootInstance } from "../utils/chatwoot";
@@ -129,7 +130,15 @@ describe.skipIf(!dbUp)("the webhook gate leaves a trail", () => {
 
   function conversation(
     convId: number,
-    held: { assigneeType?: string | null; status: string },
+    held: {
+      assigneeType?: string | null;
+      status: string;
+      // The two clocks a payload carries, overridable so a fixture can place this event BEHIND a
+      // state the mirror already holds. Left alone they read "now", which is what every other case
+      // here wants.
+      lastActivityAt?: number;
+      updatedAt?: number;
+    },
   ) {
     stamp += 1;
     return {
@@ -149,14 +158,19 @@ describe.skipIf(!dbUp)("the webhook gate leaves a trail", () => {
         sender: { id: 77, name: "Cliente" },
       },
       channel: "Channel::Api",
-      last_activity_at: Math.floor(Date.now() / 1000),
-      updated_at: stamp,
+      last_activity_at: held.lastActivityAt ?? Math.floor(Date.now() / 1000),
+      updated_at: held.updatedAt ?? stamp,
     };
   }
 
   async function deliver(
     convId: number,
-    held: { assigneeType?: string | null; status: string },
+    held: {
+      assigneeType?: string | null;
+      status: string;
+      lastActivityAt?: number;
+      updatedAt?: number;
+    },
     over: { event?: string; message?: Record<string, unknown> } = {},
   ): Promise<void> {
     deliverySeq += 1;
@@ -232,6 +246,63 @@ describe.skipIf(!dbUp)("the webhook gate leaves a trail", () => {
       outcome: "ownership_lost",
       status: "open",
     });
+  });
+
+  // The line has to name the reading the GATE decided on, and after #295 that is no longer the one
+  // the payload proposed: a payload is a snapshot of an earlier instant and the mirror row is what
+  // this event settled on, so the gate reads the mirror's status. `describeClosedGate` states the
+  // same rule from its own side — the status rides along instead of being re-read, because a second
+  // query would answer about a different moment — and a proposal is a different moment just as
+  // surely. Reported from the payload, a conversation the operator had already resolved was recorded
+  // as `ownership_lost` at `pending`, which sends an investigation after a missing assignee.
+  test("the status reported is the one the gate closed on, not the one proposed", async () => {
+    const info = spyOn(logger, "info");
+    const T = Math.floor(Date.now() / 1000);
+    // One delivery to put the conversation in the mirror, then the resolve written onto the row with
+    // its mark ahead of the message. Written rather than delivered because this file's `deliver`
+    // builds a MESSAGE payload, and a message may never write status by version — which is the very
+    // asymmetry under test.
+    await deliver(9107, {
+      status: "pending",
+      lastActivityAt: T - 120,
+      updatedAt: T - 120,
+    });
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: 9107 },
+      data: { status: "resolved", chatwootStatusAt: T + 3600 },
+    });
+    // The stranded message, serialized a minute BEFORE that resolve. Behind the status mark on its
+    // own clock, so the reopen exception refuses it and the mirror stays `resolved`.
+    await deliver(9107, {
+      status: "pending",
+      lastActivityAt: T - 60,
+      updatedAt: T - 60,
+    });
+
+    // The first delivery answered normally and wrote no handoff line, so the only row here belongs
+    // to the message the gate refused.
+    const rows = await handoffRows(9107);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.detail).toEqual({
+      outcome: "ownership_lost",
+      status: "resolved",
+    });
+    // The console line too, and not as a duplicate of the row above: the flow log is what an
+    // operator opens AFTER they suspect something, and this line is what they are reading when they
+    // do not yet. The two are written from separate arguments, so one can drift from the other —
+    // and drifting is the whole defect this test exists for.
+    expect(
+      info.mock.calls.find(
+        (c) => typeof c[0] === "string" && c[0].includes("bot silent by gate"),
+      ),
+    ).toEqual([
+      expect.stringContaining("bot silent by gate"),
+      "9107",
+      "message_created",
+      true,
+      "ownership_lost",
+      "resolved",
+    ]);
   });
 
   // The boundary, and it is the design decision: one line per customer message the bot did not

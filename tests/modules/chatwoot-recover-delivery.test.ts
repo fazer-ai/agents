@@ -1386,6 +1386,91 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     ).toBe(inboxDbId);
   });
 
+  test("the contact's identity is left where the mirror holds it, not restated at the message's clock", async () => {
+    // A review round asked for the opposite: carry `meta.sender` from the live conversation, since
+    // the stranded message may be the very event that would have refreshed the contact, and
+    // `authorizeContact` reads the STORED identity on a gate that fails closed. The live read does
+    // render it (measured at the fork: `conversations#show` renders the full contact partial).
+    //
+    // Carrying it was implemented and MEASURED, and it does not merely fail to help. The mirror
+    // positions identity per field by the payload's `last_activity_at`, and this body's is the
+    // stranded message's own clock. With the contact positioned at that same second — a sibling
+    // message of the same burst wrote it — and the live phone now different, the tie rule fires:
+    // a disagreement it cannot order by arrival drops BOTH readings and the field is emptied. The
+    // contact then reads as `no_identity` at exactly the gate that round wanted to protect, and the
+    // stored phone is gone. That is the fixture below, and what it asserts is that the phone is
+    // still there.
+    //
+    // The exposure that remains is real and bounded: the next event on this conversation carries
+    // the identity at its own clock and settles it.
+    const convId = 8981;
+    const messageId = 9481;
+    const CONTACT_CW = 77;
+    const contact = await suDb.contact.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootContactId: CONTACT_CW,
+        phone: "+5511900000000",
+        // Positioned at the stranded message's own second, as a sibling of its burst would leave it.
+        phoneAt: new Date(SENT_AT * 1000),
+      },
+      select: { id: true },
+    });
+    const conv = await seedConversation(convId);
+    await suDb.conversation.update({
+      where: { id: conv.id },
+      data: { contactId: contact.id },
+    });
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const stub = stubChatwoot({
+      page: pageWith([{ id: messageId, content: "oi" }]),
+    });
+    // The customer changed number AFTER that burst, so the live read disagrees with the stored value
+    // at the same position — the one shape that empties the field.
+    const inner = stub.makeClient;
+    const deps: RuntimeDeps = {
+      ...depsWith(stub),
+      makeClient: async (...a: Parameters<Stub["makeClient"]>) => {
+        const c = (await inner(...a)) as unknown as Record<string, unknown>;
+        const orig = c.getConversation as (
+          id: number,
+        ) => Promise<Record<string, unknown>>;
+        c.getConversation = async (id: number) => {
+          const r = await orig(id);
+          (r.meta as Record<string, unknown>).sender = {
+            id: CONTACT_CW,
+            name: "Cliente",
+            phone_number: "+5511911111111",
+          };
+          return r;
+        };
+        return c as never;
+      },
+    };
+
+    expect(
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps,
+      }),
+    ).toBe("recovered");
+
+    const after = await suDb.contact.findUniqueOrThrow({
+      where: { id: contact.id },
+      select: { phone: true, phoneAt: true },
+    });
+    // Untouched in BOTH directions: not emptied, and not overwritten with a value read an hour
+    // later under a position from an hour before.
+    expect(after.phone).toBe("+5511900000000");
+    expect(after.phoneAt?.getTime()).toBe(SENT_AT * 1000);
+  });
+
   test("a human who TAKES the conversation in that same window is not answered over either", async () => {
     // The status half of this pair was closed by reading the outcome instead of the proposal. The
     // assignee half is not the same rule and could not borrow it: a message payload may never write

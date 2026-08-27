@@ -37,11 +37,35 @@
 // WHAT IT DELIBERATELY DOES NOT CARRY, each one a field `normalizeChatwootEvent` reads and this body
 // leaves out, so the omission is a decision on the record rather than an oversight:
 //
-//   - `meta.sender` (the contact's attribute bag) and `conversation.custom_attributes`. Those drive
-//     the MIRROR's attribute merge, and the mirror is where this body's conversation half came from:
-//     re-merging them here would write the mirror back onto itself, and a stale read would undo an
-//     attribute an operator set while the row was stranded. Absent means "said nothing", which is
-//     the sentinel the mirror already honours.
+//   - `meta.sender` — the contact's identity (phone, email, identifier) and its attribute bag, and
+//     `conversation.custom_attributes` beside it. The attribute half is the easy half: those drive
+//     the MIRROR's attribute merge, and the mirror is where this body's conversation half came from,
+//     so re-merging them here would write the mirror back onto itself and a stale read would undo an
+//     attribute an operator set while the row was stranded.
+//
+//     THE IDENTITY HALF IS NOT THE SAME ARGUMENT, and it is the harder one, because the live
+//     conversation DOES render it (measured at the fork: `conversations#show` renders `meta.sender`
+//     through the full contact partial, with `phone_number`, `email` and `identifier`). So it is
+//     available, it is current, and a review round asked for it: a stranded message may be the very
+//     event that would have refreshed the contact, and `authorizeContact` reads the STORED identity
+//     on a gate that fails closed.
+//
+//     It still may not travel, and the reason is the POSITION rather than the value. The mirror
+//     positions identity per field by the payload's `last_activity_at` (mirror.ts), and this body's
+//     is the stranded message's own clock — deliberately, so a rescue does not stamp the customer's
+//     words with the rescue's hour. An identity read NOW carried at a clock from THEN is exactly the
+//     "source position, never a receipt time" the mirror forbids, and it does not merely fail to
+//     help: MEASURED here, with the contact positioned at that same second by a sibling message of
+//     the same burst and the live phone now different, the field is EMPTIED — the tie rule, which
+//     cannot break a disagreement by arrival order, drops both readings. The contact then reads as
+//     `no_identity` at the very gate the round wanted to protect, and the stored phone is gone.
+//
+//     There is no second position to carry it on: one payload has one clock, and it also orders the
+//     status, the assignee and the inbound watermark. So the identity stays where the mirror already
+//     holds it, absent means "said nothing" — the sentinel the mirror honours — and the exposure is
+//     bounded by the next event on that conversation, which carries the identity at its own clock
+//     and settles it. `tests/modules/chatwoot-recover-delivery.test.ts` pins the omission so this is
+//     not quietly "fixed" back into the empty phone.
 //   - the kanban card. Same reason, same sentinel.
 export interface RecoveryConversation {
   // Chatwoot's per-account DISPLAY id — the only id this may hold (issue #257).

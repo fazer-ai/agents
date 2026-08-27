@@ -1421,6 +1421,99 @@ describe.skipIf(!dbUp)("the agent family records its own changes", () => {
     expect(JSON.stringify([before, after])).not.toContain("sk-legacy");
   });
 
+  test("a credential pasted INSIDE a prompt is not kept verbatim", async () => {
+    // `new URL` is handed the whole string, so a sentence that merely contains the URL fails to
+    // parse and was kept as it was — and a prompt is exactly where one gets pasted inline.
+    const agent = await seedAgent({
+      systemPrompt:
+        "Consulte a agenda em https://u:hunter2@api.example.com/v1 e responda.",
+    });
+    await clearAudit();
+
+    await updateAgent(
+      ctx(),
+      BigInt(agent.id),
+      {
+        systemPrompt:
+          "Consulte a agenda em https://u:rotated@api.example.com/v1 e responda.",
+      },
+      appDb,
+    );
+
+    const got = await rows();
+    expect(got.length).toBe(1);
+    const dump = JSON.stringify([got[0]?.before, got[0]?.after]);
+    expect(dump).not.toContain("hunter2");
+    expect(dump).not.toContain("rotated");
+  });
+
+  test("a vault PREFIX is not a vault reference", async () => {
+    // `vault:sk-live-…` starts with the prefix and is a secret, and the unchanged-ref path is the
+    // one that never validates.
+    const agent = await seedAgent({ settings: { stt: { enabled: true } } });
+    await su?.$executeRawUnsafe(
+      `UPDATE agents SET settings = '{"stt":{"enabled":true,"credentialRef":"vault:sk-live-secret"}}'::jsonb WHERE id = ${agent.id}`,
+    );
+    await clearAudit();
+
+    await updateAgent(
+      ctx(),
+      BigInt(agent.id),
+      {
+        settings: {
+          stt: {
+            enabled: true,
+            credentialRef: "vault:sk-live-secret",
+            model: "whisper-1",
+          },
+        },
+      },
+      appDb,
+    );
+
+    const got = await rows();
+    expect(got.length).toBe(1);
+    expect(JSON.stringify([got[0]?.before, got[0]?.after])).not.toContain(
+      "sk-live-secret",
+    );
+  });
+
+  test("a tool precondition named __proto__ stays in the canonical view", async () => {
+    // `readToolPreconditions` builds its map with `Object.create(null)` and keys it by TOOL NAME, so
+    // that key arrives as an OWN property of the reader's output — measured. A plain assignment in
+    // the projection walk dropped it, taking an ACTIVE runtime precondition out of the canonical
+    // view: its removal then read as merely "unread configuration" instead of as the change it is.
+    //
+    // Seeded through SQL because Prisma drops an own `__proto__` on the way to the column, so the
+    // app cannot write this state — a row carrying one comes from a migration or a direct write.
+    const agent = await seedAgent();
+    await su?.$executeRawUnsafe(
+      `UPDATE agents SET settings = '{"toolPreconditions":{"__proto__":{"kind":"attribute","key":"cpf","scope":"conversation"}}}'::jsonb WHERE id = ${agent.id}`,
+    );
+    await clearAudit();
+
+    // The edit REMOVES it, which is deliverable through the app.
+    await updateAgent(
+      ctx(),
+      BigInt(agent.id),
+      { settings: { toolPreconditions: {} } },
+      appDb,
+    );
+
+    const got = await rows();
+    expect(got.map((r) => r.action)).toEqual(["agent.settings_set"]);
+    const before = got[0]?.before as Record<string, unknown> | undefined;
+    const after = got[0]?.after as Record<string, unknown> | undefined;
+    // What is observable is the CLASSIFICATION, not the key in the row: Prisma drops an own
+    // `__proto__` on the way to the column, so the recorded projection cannot show it either way.
+    // Carried in the canonical view, its removal is a change to `toolPreconditions` with a before
+    // and an after; dropped from it, the two views compare equal and the write degrades to a bare
+    // `unreadConfigChanged` — the trail saying "something you cannot see moved" about a precondition
+    // the runtime was enforcing.
+    expect(Object.keys(before ?? {})).toEqual(["toolPreconditions"]);
+    expect(after?.unreadConfigChanged).toBeUndefined();
+  });
+
   test("a base URL with no credential in it is recorded as itself", async () => {
     const agent = await seedAgent({
       modelConfig: {

@@ -131,6 +131,11 @@ function carriesCredential(v: unknown): boolean {
   // accepted — and `validateModelConfigForWrite` discards the parsed result, so the string reaches
   // the column with the space still on it. An anchored test on the raw string then says no.
   if (typeof v !== "string") return false;
+  // EMBEDDED, not only entire. `new URL` is handed the whole string, so a prompt reading
+  // `Use https://user:secret@example.com/api` fails to parse and was kept verbatim — and a prompt is
+  // exactly where an operator pastes one inline. Only the userinfo form is looked for inside text:
+  // it is the shape prose does not produce, whereas a `?` after a URL in a sentence is ordinary.
+  if (/https?:\/\/[^\s/@]+:[^\s/@]*@/i.test(v)) return true;
   const url = v.trim();
   // The RAW spelling only answers for a string that will not parse. `new URL` normalizes
   // `https:llm.example/v1?api_key=…` and `https:/llm.example/v1?api_key=…` to protocol `https:`,
@@ -174,7 +179,11 @@ function carriesCredential(v: unknown): boolean {
 // `normalizeCredentialRef`), which is why this asks about the NAME rather than repeating the list.
 function isUnvouchableCredRef(key: string, v: unknown): boolean {
   if (!/credentialRef$/i.test(key)) return false;
-  return typeof v === "string" && !v.startsWith(VAULT_REF_PREFIX);
+  if (typeof v !== "string") return false;
+  // The PREFIX is not the reference. `vault:sk-live-…` starts with it and is a secret, and the
+  // unchanged-ref path is exactly the one that never validates, so the id itself has to be one.
+  if (!v.startsWith(VAULT_REF_PREFIX)) return true;
+  return !/^\d+$/.test(v.slice(VAULT_REF_PREFIX.length));
 }
 
 function dropUnvouchableUrls(v: unknown): unknown {
@@ -190,10 +199,14 @@ function dropUnvouchableUrls(v: unknown): unknown {
   const out: Record<string, unknown> = {};
   for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
     if (carriesCredential(val) || isUnvouchableCredRef(k, val)) continue;
-    // Plain assignment, and the asymmetry with `residue` below is measured rather than an
-    // oversight: this walks a CANONICAL value, whose keys are the readers' and the schema's, so
-    // none of them can be `__proto__`. A `setOwn` here survived a mutation battery for that reason.
-    out[k] = dropUnvouchableUrls(val);
+    // `setOwn`, and the round trip to get here is the point. This was written as a plain assignment
+    // on the reasoning that a CANONICAL value's keys are the readers' and the schema's and so cannot
+    // be `__proto__`. The reasoning was wrong and the measurement says so: `readToolPreconditions`
+    // builds its map with `Object.create(null)` and keys it by TOOL NAME, so `out[name] = cond` on a
+    // null-prototype object creates `__proto__` as an OWN property — measured, the reader returns
+    // `["handoff_to_human", "__proto__"]` and a plain assignment here dropped the second one, taking
+    // an active runtime precondition out of the canonical view.
+    setOwn(out, k, dropUnvouchableUrls(val));
   }
   return out;
 }

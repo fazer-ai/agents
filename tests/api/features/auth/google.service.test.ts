@@ -1,4 +1,12 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import {
+  afterAll,
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  test,
+} from "bun:test";
 import config from "@/config";
 import {
   mockCreate,
@@ -13,12 +21,34 @@ import {
 
 setupPrismaMock();
 
-const mockJwtVerify = mock(() => Promise.resolve({ payload: {} as unknown }));
+// `mock.module` is process-global and PERMANENT: it rewrites the module for every file that runs
+// after this one, not just for this file's tests, and nothing in the runner puts it back. So this
+// stub answers every JWT verification in the process from here on, including session cookies in
+// files this one knows nothing about.
+//
+// Two things follow, and both are load-bearing. The stub carries the REAL module underneath, so a
+// later caller that needs `SignJWT` gets a working one. And `jwtVerify` DELEGATES to the real
+// implementation unless a test overrides it for its own call, which is why `beforeEach` below
+// clears rather than resets: a bare `mockReset()` leaves this function returning `undefined`, and
+// `undefined` is not a failed verification — it is a TypeError one `.payload` later, which each
+// caller's catch reports as an ordinary invalid token. Measured on 2026-08-27 (issue #420): it
+// turned every session cookie into a 401 for the files that ran after this one, and the failure
+// named the cookie rather than the mock.
+const realJose = await import("jose");
+
+const mockJwtVerify = mock(
+  realJose.jwtVerify as unknown as (...args: unknown[]) => Promise<unknown>,
+);
 
 mock.module("jose", () => ({
+  ...realJose,
   createRemoteJWKSet: () => null,
   jwtVerify: mockJwtVerify,
 }));
+
+afterAll(() => {
+  mock.module("jose", () => realJose);
+});
 
 const {
   verifyGoogleIdToken,
@@ -41,7 +71,9 @@ const originalSignupEnabled = config.signupEnabled;
 describe("google.service", () => {
   beforeEach(() => {
     resetPrismaMocks();
-    mockJwtVerify.mockReset();
+    // `mockReset` would strip the delegation above and leave this returning `undefined` for the
+    // rest of the process. Clear the call log, keep the real implementation.
+    mockJwtVerify.mockClear();
     // NOTE: Default to "setup done, signup open" so the existing creation tests
     // pass the registration gate; specific tests override these.
     completeSetup();

@@ -124,6 +124,7 @@ describe("reminderNudge", () => {
     startISO: "2026-06-25T10:00:00-03:00",
     eventId: "ev_1",
     calendarId: "primary",
+    canOperate: true,
   };
   test("last + confirmation → asks to confirm and to mark the event", () => {
     const n = reminderNudge({ ...args, isLast: true, askConfirmation: true });
@@ -140,6 +141,36 @@ describe("reminderNudge", () => {
     const n = reminderNudge({ ...args, isLast: true, askConfirmation: false });
     expect(n.instructions).not.toContain("calendar_confirm_appointment");
   });
+
+  // (#352) A booking that reached the platform through a tool's declaration has no Google event
+  // behind it, so naming a calendar tool at the model points it at one that cannot touch this
+  // appointment. The reminder itself is unchanged: same summary, same refs, same date and time.
+  test("without the calendar behind it, no calendar tool is named — in either shape", () => {
+    for (const askConfirmation of [true, false]) {
+      const n = reminderNudge({
+        ...args,
+        canOperate: false,
+        isLast: true,
+        askConfirmation,
+      });
+      expect(n.instructions).not.toContain("calendar_confirm_appointment");
+      expect(n.instructions).not.toContain("calendar_update_event");
+      expect(n.instructions).not.toContain("calendar_cancel_event");
+      // The control: it is still a reminder, and it still says so.
+      expect(n.instructions).toContain("Remind the customer");
+      expect(n.summary).toContain("Consulta");
+      expect(n.refs).toEqual({ event_id: "ev_1", calendar_id: "primary" });
+    }
+    // And the same call WITH the calendar does name them, on the same two shapes.
+    expect(
+      reminderNudge({ ...args, isLast: true, askConfirmation: true })
+        .instructions,
+    ).toContain("calendar_confirm_appointment");
+    expect(
+      reminderNudge({ ...args, isLast: false, askConfirmation: true })
+        .instructions,
+    ).toContain("calendar_update_event");
+  });
 });
 
 // NOTE: The reminder turn (and the customer's reply to it) must be able to act on the exact event:
@@ -152,6 +183,7 @@ describe("reminderNudge event identity", () => {
     startISO: "2026-06-25T10:00:00-03:00",
     eventId: "ev_identity_1",
     calendarId: "cal@group.calendar.google.com",
+    canOperate: true,
   };
   test("carries event_id and calendar_id as refs", () => {
     const n = reminderNudge(base);

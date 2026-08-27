@@ -25,10 +25,7 @@ import {
   buildAppointmentContextSection,
   loadAppointmentContext,
 } from "@/modules/appointments/context";
-import {
-  appointmentBooked,
-  cancelAppointment,
-} from "@/modules/appointments/reminders";
+import { appointmentSideEffects } from "@/modules/appointments/side-effect";
 import { parseSchedule, type Schedule } from "@/modules/business-hours/hours";
 import { readSchedule } from "@/modules/business-hours/service";
 import {
@@ -943,96 +940,25 @@ export async function buildToolset(
           errorMessage: e.err instanceof Error ? e.err.message : String(e.err),
         })
     : undefined;
-  // An appointment booked by a toolpack: write the record, then arm the reminders the integration
-  // asks for. Bound to the tenant + THIS conversation's thread (the per-conversation
-  // `tenant:instance:convId`, which runAgentNudge parses — NOT the per-contact-inbox memory thread).
-  // The POLICY (offsets/confirmation, or none at all) lives in the integration's config and is
-  // passed in by the toolpack; here we only wire the MECHANISM. Both are wired on any real
-  // conversation so appointments can be recorded and stale ones cleaned up regardless of the
-  // per-integration reminder toggle.
+  // The two closures a tool calls to say a booking now stands, or no longer does — the Calendar
+  // toolpack and any HTTP tool whose definition declares an appointment (issue #352). The POLICY
+  // (offsets/confirmation, or none at all) comes from the caller; this only binds the MECHANISM to
+  // the tenant and THIS conversation's thread. Wired on any real conversation, regardless of the
+  // per-integration reminder toggle: the RECORD is not about sending a reminder.
   const apptThreadId =
     ctx.conversationId > 0
       ? chatwootThreadId(ctx.tenantId, ctx.instanceId, ctx.conversationId)
       : null;
-  const appointmentBookedFn = apptThreadId
-    ? async (a: {
-        eventId: string;
-        calendarId: string;
-        startISO: string;
-        credentialRef: string | null;
-        reminders: {
-          offsetsHours: number[];
-          askConfirmationOnLast: boolean;
-        } | null;
-        summary: string | null;
-        calendarLabel: string | null;
-      }) => {
-        try {
-          const res = await appointmentBooked({
-            tenantId: ctx.tenantId,
-            threadId: apptThreadId,
-            eventId: a.eventId,
-            startISO: a.startISO,
-            summary: a.summary,
-            calendarId: a.calendarId,
-            calendarLabel: a.calendarLabel,
-            credentialRef: a.credentialRef,
-            reminders: a.reminders,
-            base: ctx.base,
-          });
-          // NOTE: The booking exists in the calendar and the platform cannot judge its start, so it
-          // holds no record: the follow-up pause, the console indicator and the agent's own prompt
-          // all behave as if there were no appointment. Reported rather than thrown, because the
-          // appointment itself is real and already made.
-          if (res.record === "unreadable-start") {
-            logger.warn(
-              "appointment recorded with an unreadable start (event=%s start=%s)",
-              a.eventId,
-              a.startISO,
-            );
-            onSideEffectError?.({
-              tool: "google_calendar",
-              phase: "appointment_record",
-              detail: { eventId: a.eventId },
-              err: new Error(`unreadable appointment start: ${a.startISO}`),
-            });
-          }
-        } catch (e) {
-          logger.warn(
-            "appointment booked handling failed: %s",
-            e instanceof Error ? e.message : String(e),
-          );
-          // NOTE: The appointment exists in the calendar but the platform did not record it and its
-          // reminders were never armed — the customer silently misses them, and re-engagement is not
-          // held. `google_calendar` is the toolpack family name (the closure does not know which
-          // calendar tool called it).
-          onSideEffectError?.({
-            tool: "google_calendar",
-            phase: "appointment_booked",
-            detail: { eventId: a.eventId },
-            err: e,
-          });
-        }
-      }
+  const apptSideEffects = apptThreadId
+    ? appointmentSideEffects({
+        tenantId: ctx.tenantId,
+        threadId: apptThreadId,
+        base: ctx.base,
+        report: onSideEffectError,
+      })
     : undefined;
-  const cancelAppointmentFn = apptThreadId
-    ? async (eventId: string) => {
-        try {
-          await cancelAppointment(ctx.tenantId, eventId, ctx.base);
-        } catch (e) {
-          logger.warn(
-            "appointment cancel failed: %s",
-            e instanceof Error ? e.message : String(e),
-          );
-          onSideEffectError?.({
-            tool: "google_calendar",
-            phase: "appointment_cancel",
-            detail: { eventId },
-            err: e,
-          });
-        }
-      }
-    : undefined;
+  const appointmentBookedFn = apptSideEffects?.booked;
+  const cancelAppointmentFn = apptSideEffects?.cancel;
   // Slow-tool ack emitter: posts the per-tool "I'll look into that…" message (with a typing
   // indicator) before the tool runs. Wired ONLY on a real conversation (conversationId > 0) — the
   // playground builds its toolset with conversationId 0 and a dummy client, so acks never fire
@@ -1246,6 +1172,12 @@ export async function buildToolset(
           : {}),
         ...cfg.httpToolContext,
       },
+      // The same two closures the toolpacks get, for a tool whose DEFINITION declares that its
+      // response describes an appointment (issue #352). Wired identically: undefined on the
+      // playground, where nothing is recorded, and the declaration then simply does nothing.
+      appointmentBooked: appointmentBookedFn,
+      cancelAppointment: cancelAppointmentFn,
+      onSideEffectError,
     }),
     ...mcpTools,
     ...toolpackTools,

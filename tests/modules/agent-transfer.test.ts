@@ -643,6 +643,15 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
         // A lookup that answers 404 for "no such order" is the canonical case of issue #59, and it
         // is exactly the sort of tool an operator moves between instances.
         expectedStatuses: [404],
+        // Same shape of statement, one issue later (#352): what this tool's response says about an
+        // appointment.
+        appointment: {
+          action: "book",
+          idPath: "data.id",
+          startPath: "data.start",
+          reminderOffsetsHours: [24, 1],
+          askConfirmationOnLast: true,
+        },
       },
     });
     const mcp = await suDb.mcpServerConnection.create({
@@ -915,6 +924,19 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     // Review finding, round 1: a declaration dropped in transfer makes the destination resume
     // alerting on a status the operator had already ruled a result, with nothing to point at.
     expect(td?.expectedStatuses).toEqual([404]);
+    // (#352) And the appointment declaration, for the same reason one issue later: a bundle that
+    // drops it re-imports a tool that books appointments the destination never hears about — no
+    // follow-up pause, no reminder, nothing in the prompt, and nothing saying why.
+    expect(td?.appointment).toEqual({
+      action: "book",
+      // The provider travels with it too: it is half the appointment identity, so a bundle that
+      // drops it re-imports a tool whose bookings collide with another system's ids.
+      provider: "declared",
+      idPath: "data.id",
+      startPath: "data.start",
+      reminderOffsetsHours: [24, 1],
+      askConfirmationOnLast: true,
+    });
     // credential absent on the destination ⇒ re-created as a PENDING entry with the ref kept wired
     // (the operator only fills the secret), not dropped.
     expect(td?.credentialRef).toMatch(/^vault:/);

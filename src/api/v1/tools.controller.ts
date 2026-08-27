@@ -124,6 +124,12 @@ export const writeBody = t.Object({
         "HTTP statuses this tool treats as ordinary results instead of integration failures (e.g. [404] for a lookup where 'not found' is data). The model receives the same 'HTTP <status>' text either way; only the log level and the alert dispatch change. Empty (the default) keeps every non-2xx a failure. 2xx entries and values outside 100-599 are dropped on save.",
     }),
   ),
+  appointment: t.Optional(
+    t.Union([t.Record(t.String(), t.Unknown()), t.Null()], {
+      description:
+        'What this tool\'s RESPONSE says about an appointment, so the platform can hold follow-ups while the booking stands and can remind ahead of it. Omit or null when the tool has nothing to do with appointments. Shape: {action:"book"|"cancel", idPath, startPath (book only), provider?, summaryPath?, reminderOffsetsHours?(hours before the start, e.g. [24,1]; at most 5, clamped to 1-8760h; absent arms no reminder), askConfirmationOnLast?}. A path is dot-separated keys, a numeric segment indexing an array: "data.items.0.id". The id has to be the same one the CANCEL tool answers with. `provider` names the booking system these ids belong to (lowercase slug, e.g. "feegow"): only needed when a tenant has MORE THAN ONE booking system, since an id is unique only within the system that issued it. The book and cancel tools of the same system must carry the SAME provider, or the cancel reaches no record. Reserved: "google_calendar".',
+    }),
+  ),
   ackEnabled: t.Optional(
     t.Boolean({
       description:

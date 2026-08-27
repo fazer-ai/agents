@@ -1,10 +1,11 @@
 import { z } from "zod";
-import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
+import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import { normalizeExpectedStatuses } from "@/graph/tools/http-status";
 import { AppError, ConflictError, NotFoundError } from "@/lib/errors";
 import { parseInput } from "@/lib/parse-input";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
+import { readAppointmentDeclaration } from "@/modules/tool-definitions/appointment";
 import { requireVaultRef } from "@/modules/vault/service";
 import { unsupportedBodyShape } from "./body-shape";
 import { normalizeToolShapes } from "./normalize";
@@ -35,6 +36,8 @@ export interface ToolDefinitionDto {
   expectedStatuses: number[];
   ackEnabled: boolean;
   ackMessage: string | null;
+  // What this tool's response declares about an appointment, or null (issue #352).
+  appointment: Record<string, unknown> | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -57,6 +60,7 @@ const SELECT = {
   expectedStatuses: true,
   ackEnabled: true,
   ackMessage: true,
+  appointment: true,
   createdAt: true,
   updatedAt: true,
 } as const;
@@ -79,6 +83,7 @@ function toDto(r: {
   expectedStatuses: number[];
   ackEnabled: boolean;
   ackMessage: string | null;
+  appointment: unknown;
   createdAt: Date;
   updatedAt: Date;
 }): ToolDefinitionDto {
@@ -100,6 +105,12 @@ function toDto(r: {
     expectedStatuses: r.expectedStatuses,
     ackEnabled: r.ackEnabled,
     ackMessage: r.ackMessage,
+    // Read back through the same reader the runtime uses, so what the editor shows is what would
+    // actually be honored: a declaration the reader refuses reads as none, here as well as there.
+    appointment: readAppointmentDeclaration(r.appointment) as Record<
+      string,
+      unknown
+    > | null,
     createdAt: r.createdAt,
     updatedAt: r.updatedAt,
   };
@@ -134,6 +145,17 @@ export const toolDefinitionCreateSchema = z
     // BEFORE this — typically slow — tool runs. Opt-in per tool.
     ackEnabled: z.boolean().optional(),
     ackMessage: z.string().max(2000).nullish(),
+    // What this tool's RESPONSE declares about an appointment (issue #352). Validated by the same
+    // reader the runtime uses — a shape it refuses is REJECTED here rather than stored and silently
+    // ignored later, because a declaration that looks saved and does nothing is exactly the silence
+    // this feature exists to remove. Null clears it.
+    appointment: z
+      .record(z.string(), z.unknown())
+      .nullish()
+      .refine((v) => v == null || readAppointmentDeclaration(v) !== null, {
+        message:
+          'appointment must be { action: "book"|"cancel", idPath, startPath (book only), summaryPath?, reminderOffsetsHours?, askConfirmationOnLast? }; a path is dot-separated keys with numeric array indexes, e.g. data.items.0.id',
+      }),
   })
   .strict();
 export type ToolDefinitionCreate = z.infer<typeof toolDefinitionCreateSchema>;
@@ -237,6 +259,11 @@ export async function createToolDefinition(
         expectedStatuses: normalizeExpectedStatuses(data.expectedStatuses),
         ackEnabled: data.ackEnabled ?? false,
         ackMessage: data.ackMessage ?? null,
+        // Stored as the READER understands it, not as it arrived: the zod refine above already
+        // refused anything unreadable, and normalizing here means the row can never hold a key the
+        // runtime would ignore.
+        appointment: (readAppointmentDeclaration(data.appointment) ??
+          Prisma.DbNull) as unknown as Prisma.InputJsonValue,
       },
       select: SELECT,
     });
@@ -324,6 +351,9 @@ export async function updateToolDefinition(
     if (data.ackEnabled !== undefined) patchData.ackEnabled = data.ackEnabled;
     if (data.ackMessage !== undefined)
       patchData.ackMessage = data.ackMessage ?? null;
+    if (data.appointment !== undefined)
+      patchData.appointment = (readAppointmentDeclaration(data.appointment) ??
+        Prisma.DbNull) as unknown as Prisma.InputJsonValue;
     await db.toolDefinition.update({ where: { id }, data: patchData });
     const row = await db.toolDefinition.findUniqueOrThrow({
       where: { id },

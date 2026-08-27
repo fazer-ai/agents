@@ -11,6 +11,10 @@ import {
   parseStartMs,
 } from "@/modules/appointments/context";
 import {
+  GOOGLE_CALENDAR_PROVIDER,
+  reminderScopeId,
+} from "@/modules/appointments/provider";
+import {
   cancelAppointmentRecord,
   cancelThreadAppointmentRecords,
   type RecordAppointmentResult,
@@ -48,9 +52,11 @@ function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
 }
 
-// The dedupeKey prefix for ALL of an event's reminders — cancelAppointment drops them by it.
-function reminderPrefix(eventId: string): string {
-  return `reminder:${eventId}:`;
+// The dedupeKey prefix for ALL of an appointment's reminders — cancelAppointment drops them by it.
+// Keyed by the PROVIDER-scoped id, so two operator systems that both count from 1 do not share a
+// dedupe key (and a Google appointment keeps the bare event id it has always been keyed by).
+function reminderPrefix(provider: string, eventId: string): string {
+  return `reminder:${reminderScopeId(provider, eventId)}:`;
 }
 
 export interface ReminderJob {
@@ -90,6 +96,10 @@ export function computeReminderJobs(
 export interface ScheduleAppointmentRemindersArgs {
   tenantId: bigint;
   threadId: string;
+  // The system that owns the booking; defaults to Google Calendar. Part of the dedupe key, never of
+  // the payload: the payload's eventId is what the reminder turn quotes back and what a Google
+  // lookup asks for, so it stays exactly as the owning system stated it.
+  provider?: string;
   eventId: string;
   calendarId: string;
   credentialRef: string | null;
@@ -118,7 +128,10 @@ export async function enqueueAppointmentReminders(
     await enqueue({
       tenantId: args.tenantId,
       kind: "APPOINTMENT_REMINDER",
-      dedupeKey: `${reminderPrefix(args.eventId)}${j.offsetHours}`,
+      dedupeKey: `${reminderPrefix(
+        args.provider ?? GOOGLE_CALENDAR_PROVIDER,
+        args.eventId,
+      )}${j.offsetHours}`,
       // NOTE: Armed when a customer books or reschedules, so the row being reused means the
       // appointment MOVED: the previous arm was cancelled (cancelAppointment) and this is
       // a different send, at a different time, for a start the previous one no longer describes.
@@ -145,6 +158,9 @@ export async function enqueueAppointmentReminders(
 export interface AppointmentBookedArgs {
   tenantId: bigint;
   threadId: string;
+  // The system that owns the booking. Absent means Google Calendar, which is what every caller was
+  // until a tool definition could declare one of its own (issue #352).
+  provider?: string;
   eventId: string;
   startISO: string;
   summary?: string | null;
@@ -204,11 +220,23 @@ export async function appointmentBooked(
   let remindersArmed = 0;
   let armError: unknown;
   try {
+    // RETIRE FIRST, and unconditionally. Arming only writes the offsets whose time is still ahead,
+    // so re-stating a booking at an EARLIER time silently keeps the offsets it outran — see
+    // retireReminderJobs. Unconditional because `reminders: null` is also a re-statement: an
+    // integration whose reminders were switched off between two bookings of the same appointment
+    // must not leave the first booking's reminders firing.
+    await retireReminderJobs(
+      args.tenantId,
+      args.provider ?? GOOGLE_CALENDAR_PROVIDER,
+      args.eventId,
+      args.base,
+    );
     if (args.reminders) {
       remindersArmed = await enqueueAppointmentReminders(
         {
           tenantId: args.tenantId,
           threadId: args.threadId,
+          provider: args.provider,
           eventId: args.eventId,
           calendarId: args.calendarId ?? "primary",
           credentialRef: args.credentialRef ?? null,
@@ -229,6 +257,7 @@ export async function appointmentBooked(
   const record = await recordAppointment({
     tenantId: args.tenantId,
     threadId: args.threadId,
+    provider: args.provider,
     externalId: args.eventId,
     startISO: args.startISO,
     summary: args.summary,
@@ -252,12 +281,32 @@ export async function cancelAppointment(
   tenantId: bigint,
   eventId: string,
   base: PrismaClient = basePrisma,
+  provider: string = GOOGLE_CALENDAR_PROVIDER,
 ): Promise<void> {
-  await cancelAppointmentRecord(tenantId, eventId, base);
+  await cancelAppointmentRecord(tenantId, eventId, base, provider);
+  await retireReminderJobs(tenantId, provider, eventId, base);
+}
+
+// The JOBS half of the cancel above, on its own because re-arming needs it without the record half.
+// Every reminder of this appointment stops: pending rows called off, every row tombstoned.
+//
+// The tombstone is what makes a RE-ARM complete rather than partial. `enqueueAppointmentReminders`
+// writes only the offsets whose time is still ahead, so an appointment moved EARLIER leaves the
+// offsets it outran untouched — same dedupe key, old run time, old start in the payload. Measured:
+// a booking 30h out with `[24, 1]`, re-stated 2h out, left `reminder:<id>:24` PENDING to fire FOUR
+// HOURS AFTER the appointment had already happened, describing the wrong day. Nothing downstream
+// catches it: `reminderAlreadyStarted` reads the payload's own stale start, and a booking with no
+// Google credential has no live event to be corrected against.
+async function retireReminderJobs(
+  tenantId: bigint,
+  provider: string,
+  eventId: string,
+  base: PrismaClient = basePrisma,
+): Promise<void> {
   await cancelPendingJobsByPrefix(
     tenantId,
     "APPOINTMENT_REMINDER",
-    reminderPrefix(eventId),
+    reminderPrefix(provider, eventId),
     base,
   );
   // NOTE: Tombstone EVERY row of this event (fired DONE rows included). Cancelling marks jobs DONE,
@@ -268,7 +317,10 @@ export async function cancelAppointment(
   // re-arm's payload is stamped or replaced whole, so a stale snapshot can never clobber it.
   await runScopedOn(base, sysCtx(tenantId), async (db) => {
     // LIKE needs its own escaping (Google recurrence ids carry `_`).
-    const likePrefix = `${reminderPrefix(eventId).replace(/[\\%_]/g, "\\$&")}%`;
+    const likePrefix = `${reminderPrefix(provider, eventId).replace(
+      /[\\%_]/g,
+      "\\$&",
+    )}%`;
     const stamp = JSON.stringify({ cancelledAt: new Date().toISOString() });
     await db.$executeRaw`
       UPDATE scheduler_jobs
@@ -369,6 +421,13 @@ export interface ReminderNudgeArgs {
   startISO: string;
   eventId: string;
   calendarId: string;
+  // Whether the calendar tools can actually act on THIS appointment. False for a booking that lives
+  // in the operator's own system and reached the platform through a tool's declaration (issue #352):
+  // there is no Google event behind it, so naming calendar_update_event at the model is pointing it
+  // at a tool that cannot touch this booking — the same reason buildAppointmentContextSection gates
+  // its own tool pointer. The discriminator is the credential: a Calendar booking cannot exist
+  // without one, since the create call needs the token it resolves.
+  canOperate: boolean;
 }
 
 // Pure: the system nudge for a reminder. The event's identity travels as fenced-data refs (the ids
@@ -376,16 +435,28 @@ export interface ReminderNudgeArgs {
 // cannot tell WHICH appointment the reminder was about), and the instructions point at the refs by
 // key. On the last reminder with confirmation enabled, instruct the agent to ask for confirmation
 // and to mark the event via calendar_confirm_appointment.
+//
+// Without the calendar tools behind it, the SAME reminder goes out and only the tool sentence
+// changes: the customer still hears the date and time, and the agent is told to handle a reschedule
+// the way it handles anything else it has no tool for, instead of being handed the name of one that
+// cannot reach this booking.
 export function reminderNudge(a: ReminderNudgeArgs): AgentNudge {
   const wantsConfirmation = a.isLast && a.askConfirmation;
+  const base = wantsConfirmation
+    ? "This is the final reminder before the appointment. Remind the customer warmly of the date and time, and ASK them to confirm they will attend."
+    : "Remind the customer warmly of their upcoming appointment, stating the date and time. Keep it short and natural.";
+  const tools = wantsConfirmation
+    ? " If they confirm, call calendar_confirm_appointment with eventId set to the event_id value from the fenced data line (and calendarId set to the calendar_id value)."
+    : " If they ask to reschedule or cancel, use calendar_update_event / calendar_cancel_event with eventId set to the event_id value from the fenced data line (and calendarId set to the calendar_id value).";
+  const noTools = wantsConfirmation
+    ? " Record what they answer in your reply; you have no tool to mark this appointment as confirmed."
+    : " If they ask to reschedule or cancel, say you will pass it on: you have no tool to change this appointment.";
   return {
     source: "appointment_reminder",
     kind: "reminder",
     summary: `Upcoming appointment "${a.summary}" starting at ${a.startISO}.`,
     refs: { event_id: a.eventId, calendar_id: a.calendarId },
-    instructions: wantsConfirmation
-      ? "This is the final reminder before the appointment. Remind the customer warmly of the date and time, and ASK them to confirm they will attend. If they confirm, call calendar_confirm_appointment with eventId set to the event_id value from the fenced data line (and calendarId set to the calendar_id value)."
-      : "Remind the customer warmly of their upcoming appointment, stating the date and time. Keep it short and natural. If they ask to reschedule or cancel, use calendar_update_event / calendar_cancel_event with eventId set to the event_id value from the fenced data line (and calendarId set to the calendar_id value).",
+    instructions: `${base}${a.canOperate ? tools : noTools}`,
   };
 }
 
@@ -584,6 +655,8 @@ export async function appointmentReminderHandler(
     nudge: reminderNudge({
       isLast,
       askConfirmation,
+      // See ReminderNudgeArgs.canOperate: the credential is what says a Google event is behind this.
+      canOperate: credentialRef !== null,
       summary,
       // The same value the start check just used, for the reason its header gives.
       startISO: authoritativeReminderStart(live, startISO),

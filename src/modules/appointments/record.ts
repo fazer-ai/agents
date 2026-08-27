@@ -2,6 +2,7 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { parseStartMs } from "@/modules/appointments/context";
+import { GOOGLE_CALENDAR_PROVIDER } from "@/modules/appointments/provider";
 
 // The record that a commitment exists in a conversation, and the ONLY thing the four readers of
 // "is this conversation holding an appointment?" consult.
@@ -24,7 +25,11 @@ export interface RecordAppointmentArgs {
   tenantId: bigint;
   // The per-conversation thread (`tenant:instance:convId`).
   threadId: string;
-  // The booking's identity in the system that owns it (a Google Calendar event id today).
+  // The system that owns the booking. Defaults to Google Calendar, which is what every caller was
+  // before a tool definition could declare one of its own (issue #352).
+  provider?: string;
+  // The booking's identity WITHIN that provider (a Google Calendar event id, a row id in the
+  // operator's own system).
   externalId: string;
   // The start as the owning system stated it, offset included. Stored verbatim AND parsed.
   startISO: string;
@@ -40,15 +45,17 @@ export interface RecordAppointmentArgs {
 // place the reader lands anyway, since nothing can decide liveness from a start it cannot parse.
 export type RecordAppointmentResult = "recorded" | "unreadable-start";
 
-// Upsert by (tenant, externalId): a reschedule of the same booking MOVES the record rather than
-// leaving a second one behind, and it CLEARS the tombstone, because the same appointment being
-// re-booked is the appointment standing again.
+// Upsert by (tenant, provider, externalId): a reschedule of the same booking MOVES the record rather
+// than leaving a second one behind, and it CLEARS the tombstone, because the same appointment being
+// re-booked is the appointment standing again. The provider is part of the key and not a note beside
+// it — without it two operator systems that both count from 1 overwrite each other's bookings.
 export async function recordAppointment(
   args: RecordAppointmentArgs,
 ): Promise<RecordAppointmentResult> {
   const startMs = parseStartMs(args.startISO);
   if (!Number.isFinite(startMs)) return "unreadable-start";
   const base = args.base ?? basePrisma;
+  const provider = args.provider ?? GOOGLE_CALENDAR_PROVIDER;
   const startAt = new Date(startMs);
   const data = {
     threadId: args.threadId,
@@ -62,12 +69,18 @@ export async function recordAppointment(
   await runScopedOn(base, sysCtx(args.tenantId), (db) =>
     db.appointment.upsert({
       where: {
-        tenantId_externalId: {
+        tenantId_provider_externalId: {
           tenantId: args.tenantId,
+          provider,
           externalId: args.externalId,
         },
       },
-      create: { tenantId: args.tenantId, externalId: args.externalId, ...data },
+      create: {
+        tenantId: args.tenantId,
+        provider,
+        externalId: args.externalId,
+        ...data,
+      },
       update: data,
     }),
   );
@@ -81,10 +94,11 @@ export async function cancelAppointmentRecord(
   tenantId: bigint,
   externalId: string,
   base: PrismaClient = basePrisma,
+  provider: string = GOOGLE_CALENDAR_PROVIDER,
 ): Promise<void> {
   await runScopedOn(base, sysCtx(tenantId), (db) =>
     db.appointment.updateMany({
-      where: { tenantId, externalId, cancelledAt: null },
+      where: { tenantId, provider, externalId, cancelledAt: null },
       data: { cancelledAt: new Date() },
     }),
   );

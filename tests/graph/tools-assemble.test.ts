@@ -132,6 +132,7 @@ describe("buildHttpTools — credentialParamName propagation", () => {
           headers: {},
           inputSchema: {},
           expectedStatuses: [],
+          appointment: null,
           credentialRef: "vault:1",
           credentialKind: "header",
           credentialParamName: "X-Token",

@@ -24,6 +24,8 @@ import { api } from "@/client/lib/api";
 import { cn } from "@/client/lib/utils";
 import { isValidUrlTemplate } from "@/client/lib/validation";
 import { normalizeToolName } from "@/graph/tools/toolName";
+import { readProviderSlug } from "@/modules/appointments/provider";
+import { isUsablePath } from "@/modules/tool-definitions/appointment";
 import {
   CONTEXT_VAR_NAMES,
   normalizeToolShapes,
@@ -197,6 +199,13 @@ function emptyForm() {
     expectedStatuses: "",
     ackEnabled: false,
     ackMessage: "",
+    apptAction: "" as "" | "book" | "cancel",
+    apptProvider: "",
+    apptIdPath: "",
+    apptStartPath: "",
+    apptSummaryPath: "",
+    apptOffsets: "",
+    apptAskConfirm: false,
   };
 }
 
@@ -264,6 +273,10 @@ export function payloadOf(form: ToolForm) {
     expectedStatuses: parseExpectedStatuses(form.expectedStatuses),
     ackEnabled: form.ackEnabled,
     ackMessage: form.ackEnabled ? form.ackMessage.trim() || null : null,
+    // What the tool's response says about an appointment, or null when it says nothing (issue #352).
+    // Here rather than at the call site: this function is the one place the body is built, and the
+    // refusal reader below keys off exactly these fields.
+    appointment: appointmentPayload(form),
   };
 }
 
@@ -382,6 +395,71 @@ export function formFromTool(tool: Tool) {
     expectedStatuses: (tool.expectedStatuses ?? []).join(", "),
     ackEnabled: tool.ackEnabled,
     ackMessage: tool.ackMessage ?? "",
+    ...appointmentForm(tool.appointment),
+  };
+}
+
+// The stored declaration, back into the flat fields the form edits. The server hands back what its
+// READER made of the row, so a declaration it would ignore shows here as none — the editor never
+// displays a rule the runtime is not following.
+function appointmentForm(raw: unknown) {
+  const a = (raw ?? {}) as Record<string, unknown>;
+  const action = a.action === "book" || a.action === "cancel" ? a.action : "";
+  return {
+    apptAction: action as "" | "book" | "cancel",
+    // The reader always answers with a provider, and the shared default is not worth showing: an
+    // operator with one booking system has nothing to disambiguate, and a prefilled "declared" only
+    // invites them to change it to something the paired cancel tool will not carry.
+    apptProvider:
+      typeof a.provider === "string" && a.provider !== "declared"
+        ? a.provider
+        : "",
+    apptIdPath: typeof a.idPath === "string" ? a.idPath : "",
+    apptStartPath: typeof a.startPath === "string" ? a.startPath : "",
+    apptSummaryPath: typeof a.summaryPath === "string" ? a.summaryPath : "",
+    apptOffsets: Array.isArray(a.reminderOffsetsHours)
+      ? a.reminderOffsetsHours.join(", ")
+      : "",
+    apptAskConfirm: a.askConfirmationOnLast === true,
+  };
+}
+
+// The flat fields back into the declaration the API takes, or null for "this tool has nothing to do
+// with appointments" — which is what an empty action means and what every tool means today.
+function appointmentPayload(form: {
+  apptAction: "" | "book" | "cancel";
+  apptProvider: string;
+  apptIdPath: string;
+  apptStartPath: string;
+  apptSummaryPath: string;
+  apptOffsets: string;
+  apptAskConfirm: boolean;
+}): Record<string, unknown> | null {
+  if (!form.apptAction) return null;
+  const offsets = form.apptOffsets
+    .split(/[,\s]+/)
+    .map((x) => Number(x))
+    .filter((n) => Number.isFinite(n) && n > 0);
+  const provider = form.apptProvider.trim()
+    ? { provider: form.apptProvider.trim() }
+    : {};
+  if (form.apptAction === "cancel") {
+    return { action: "cancel", ...provider, idPath: form.apptIdPath.trim() };
+  }
+  return {
+    action: "book",
+    ...provider,
+    idPath: form.apptIdPath.trim(),
+    startPath: form.apptStartPath.trim(),
+    ...(form.apptSummaryPath.trim()
+      ? { summaryPath: form.apptSummaryPath.trim() }
+      : {}),
+    ...(offsets.length > 0
+      ? {
+          reminderOffsetsHours: offsets,
+          askConfirmationOnLast: form.apptAskConfirm,
+        }
+      : {}),
   };
 }
 
@@ -771,6 +849,24 @@ export function ToolEditModal({
     !relativeWithoutBase && !isValidUrlTemplate(form.urlTemplate);
   // The ack tone example is required when the holding message is enabled: the runtime gate keys off a
   // non-empty ackMessage, so saving it blank would silently turn the feature off.
+  // The declaration is read by ONE function, and the server stores nothing it would not follow: a
+  // book without a usable id and start path is REFUSED on save, and an unusable provider or summary
+  // path is silently dropped. Either way the operator gets a tool that does not do what the form
+  // showed them, and the modal's only report is the generic "check the name and URL". So the same
+  // reader answers here, per field, before there is anything to save. Same shape as ackInvalid
+  // above: a value the runtime will not honour is not a value to save.
+  const apptOn = form.apptAction !== "";
+  const apptIdPathInvalid = apptOn && !isUsablePath(form.apptIdPath.trim());
+  const apptStartPathInvalid =
+    form.apptAction === "book" && !isUsablePath(form.apptStartPath.trim());
+  const apptSummaryPathInvalid =
+    form.apptAction === "book" &&
+    form.apptSummaryPath.trim() !== "" &&
+    !isUsablePath(form.apptSummaryPath.trim());
+  const apptProviderInvalid =
+    apptOn &&
+    form.apptProvider.trim() !== "" &&
+    readProviderSlug(form.apptProvider) === null;
   const ackInvalid = form.ackEnabled && !form.ackMessage.trim();
   const valid =
     !loadingForm &&
@@ -779,6 +875,10 @@ export function ToolEditModal({
     form.urlTemplate.trim() &&
     !relativeWithoutBase &&
     !urlTemplateInvalid &&
+    !apptIdPathInvalid &&
+    !apptStartPathInvalid &&
+    !apptSummaryPathInvalid &&
+    !apptProviderInvalid &&
     !ackInvalid;
   // NOTE: baseline is captured on open (create defaults / loaded tool); null while never opened or
   // while the edit fetch is in flight.
@@ -1189,6 +1289,178 @@ export function ToolEditModal({
               placeholder="404"
             />
           </FormField>
+
+          <div className="flex flex-col gap-3 rounded-md border border-border p-3">
+            <FormField
+              label={t(
+                "tools.appointment",
+                "This tool books or cancels an appointment",
+              )}
+              description={t(
+                "tools.appointmentHint",
+                "Tell the platform when this tool's answer is about a commitment, so it can hold follow-ups while the booking stands and remind ahead of it. Say where the booking's id and start time are in the response: dot-separated keys, a number for an array position, e.g. data.items.0.id. The id has to be the same one your cancellation tool answers with.",
+              )}
+            >
+              <Select
+                value={form.apptAction}
+                onChange={(e) =>
+                  setForm({
+                    ...form,
+                    apptAction: e.target.value as "" | "book" | "cancel",
+                  })
+                }
+              >
+                <option value="">
+                  {t(
+                    "tools.appointmentNone",
+                    "Neither — it is not about appointments",
+                  )}
+                </option>
+                <option value="book">
+                  {t("tools.appointmentBook", "It books one")}
+                </option>
+                <option value="cancel">
+                  {t("tools.appointmentCancel", "It cancels one")}
+                </option>
+              </Select>
+            </FormField>
+            {form.apptAction !== "" && (
+              <>
+                <FormField
+                  label={t("tools.appointmentIdPath", "Where the id is")}
+                >
+                  <Input
+                    value={form.apptIdPath}
+                    onChange={(e) =>
+                      setForm({ ...form, apptIdPath: e.target.value })
+                    }
+                    placeholder="data.id"
+                    error={apptIdPathInvalid}
+                    errorMessage={
+                      apptIdPathInvalid
+                        ? t(
+                            "tools.appointmentPathInvalid",
+                            "Dot-separated keys, with a number for a list position: data.items.0.id",
+                          )
+                        : undefined
+                    }
+                  />
+                </FormField>
+                <FormField
+                  label={t("tools.appointmentProvider", "Booking system")}
+                  description={t(
+                    "tools.appointmentProviderHint",
+                    "Only needed if you have more than one booking system: an id is unique only within the system that issued it. Use the same name on the tool that books and the tool that cancels, or the cancellation will not find the appointment.",
+                  )}
+                >
+                  <Input
+                    value={form.apptProvider}
+                    onChange={(e) =>
+                      setForm({ ...form, apptProvider: e.target.value })
+                    }
+                    placeholder="feegow"
+                    error={apptProviderInvalid}
+                    errorMessage={
+                      apptProviderInvalid
+                        ? t(
+                            "tools.appointmentProviderInvalid",
+                            'Lowercase letters, digits, - and _ only, and not "google_calendar".',
+                          )
+                        : undefined
+                    }
+                  />
+                </FormField>
+                {form.apptAction === "book" && (
+                  <>
+                    <FormField
+                      label={t(
+                        "tools.appointmentStartPath",
+                        "Where the start time is",
+                      )}
+                    >
+                      <Input
+                        value={form.apptStartPath}
+                        onChange={(e) =>
+                          setForm({ ...form, apptStartPath: e.target.value })
+                        }
+                        placeholder="data.start"
+                        error={apptStartPathInvalid}
+                        errorMessage={
+                          apptStartPathInvalid
+                            ? t(
+                                "tools.appointmentPathInvalid",
+                                "Dot-separated keys, with a number for a list position: data.items.0.id",
+                              )
+                            : undefined
+                        }
+                      />
+                    </FormField>
+                    <FormField
+                      label={t(
+                        "tools.appointmentSummaryPath",
+                        "Where the title is (optional)",
+                      )}
+                      description={t(
+                        "tools.appointmentSummaryPathHint",
+                        "Only used to describe the appointment to the AI. Leave empty if the response has no title.",
+                      )}
+                    >
+                      <Input
+                        value={form.apptSummaryPath}
+                        onChange={(e) =>
+                          setForm({ ...form, apptSummaryPath: e.target.value })
+                        }
+                        placeholder="data.title"
+                        error={apptSummaryPathInvalid}
+                        errorMessage={
+                          apptSummaryPathInvalid
+                            ? t(
+                                "tools.appointmentPathInvalid",
+                                "Dot-separated keys, with a number for a list position: data.items.0.id",
+                              )
+                            : undefined
+                        }
+                      />
+                    </FormField>
+                    <FormField
+                      label={t(
+                        "tools.appointmentOffsets",
+                        "Remind the customer this many hours before",
+                      )}
+                      description={t(
+                        "tools.appointmentOffsetsHint",
+                        "Comma-separated, e.g. 24, 1 (up to five, between 1 and 8760 hours). Leave empty and no reminder is sent — the booking still holds follow-ups and still reaches the AI. Use it only when your own system does not already remind them.",
+                      )}
+                    >
+                      <Input
+                        value={form.apptOffsets}
+                        onChange={(e) =>
+                          setForm({ ...form, apptOffsets: e.target.value })
+                        }
+                        placeholder="24, 1"
+                      />
+                    </FormField>
+                    {form.apptOffsets.trim() !== "" && (
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-sm text-text-primary">
+                          {t(
+                            "tools.appointmentAskConfirm",
+                            "On the last reminder, ask if they will attend",
+                          )}
+                        </span>
+                        <Switch
+                          checked={form.apptAskConfirm}
+                          onCheckedChange={(v) =>
+                            setForm({ ...form, apptAskConfirm: v })
+                          }
+                        />
+                      </div>
+                    )}
+                  </>
+                )}
+              </>
+            )}
+          </div>
 
           <div className="flex flex-col gap-3 rounded-md border border-border p-3">
             <div className="flex items-center justify-between gap-3">

@@ -12131,6 +12131,20 @@
                       ]
                     }
                   },
+                  "appointment": {
+                    "description": "What this tool's RESPONSE says about an appointment, so the platform can hold follow-ups while the booking stands and can remind ahead of it. Omit or null when the tool has nothing to do with appointments. Shape: {action:\"book\"|\"cancel\", idPath, startPath (book only), provider?, summaryPath?, reminderOffsetsHours?(hours before the start, e.g. [24,1]; at most 5, clamped to 1-8760h; absent arms no reminder), askConfirmationOnLast?}. A path is dot-separated keys, a numeric segment indexing an array: \"data.items.0.id\". The id has to be the same one the CANCEL tool answers with. `provider` names the booking system these ids belong to (lowercase slug, e.g. \"feegow\"): only needed when a tenant has MORE THAN ONE booking system, since an id is unique only within the system that issued it. The book and cancel tools of the same system must carry the SAME provider, or the cancel reaches no record. Reserved: \"google_calendar\".",
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "patternProperties": {
+                          "^(.*)$": {}
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "ackEnabled": {
                     "description": "Whether the tool sends an acknowledgement message before executing.",
                     "type": "boolean"
@@ -12265,6 +12279,20 @@
                       ]
                     }
                   },
+                  "appointment": {
+                    "description": "What this tool's RESPONSE says about an appointment, so the platform can hold follow-ups while the booking stands and can remind ahead of it. Omit or null when the tool has nothing to do with appointments. Shape: {action:\"book\"|\"cancel\", idPath, startPath (book only), provider?, summaryPath?, reminderOffsetsHours?(hours before the start, e.g. [24,1]; at most 5, clamped to 1-8760h; absent arms no reminder), askConfirmationOnLast?}. A path is dot-separated keys, a numeric segment indexing an array: \"data.items.0.id\". The id has to be the same one the CANCEL tool answers with. `provider` names the booking system these ids belong to (lowercase slug, e.g. \"feegow\"): only needed when a tenant has MORE THAN ONE booking system, since an id is unique only within the system that issued it. The book and cancel tools of the same system must carry the SAME provider, or the cancel reaches no record. Reserved: \"google_calendar\".",
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "patternProperties": {
+                          "^(.*)$": {}
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "ackEnabled": {
                     "description": "Whether the tool sends an acknowledgement message before executing.",
                     "type": "boolean"
@@ -12398,6 +12426,20 @@
                         }
                       ]
                     }
+                  },
+                  "appointment": {
+                    "description": "What this tool's RESPONSE says about an appointment, so the platform can hold follow-ups while the booking stands and can remind ahead of it. Omit or null when the tool has nothing to do with appointments. Shape: {action:\"book\"|\"cancel\", idPath, startPath (book only), provider?, summaryPath?, reminderOffsetsHours?(hours before the start, e.g. [24,1]; at most 5, clamped to 1-8760h; absent arms no reminder), askConfirmationOnLast?}. A path is dot-separated keys, a numeric segment indexing an array: \"data.items.0.id\". The id has to be the same one the CANCEL tool answers with. `provider` names the booking system these ids belong to (lowercase slug, e.g. \"feegow\"): only needed when a tenant has MORE THAN ONE booking system, since an id is unique only within the system that issued it. The book and cancel tools of the same system must carry the SAME provider, or the cancel reaches no record. Reserved: \"google_calendar\".",
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "patternProperties": {
+                          "^(.*)$": {}
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   },
                   "ackEnabled": {
                     "description": "Whether the tool sends an acknowledgement message before executing.",
@@ -12850,6 +12892,20 @@
                       ]
                     }
                   },
+                  "appointment": {
+                    "description": "What this tool's RESPONSE says about an appointment, so the platform can hold follow-ups while the booking stands and can remind ahead of it. Omit or null when the tool has nothing to do with appointments. Shape: {action:\"book\"|\"cancel\", idPath, startPath (book only), provider?, summaryPath?, reminderOffsetsHours?(hours before the start, e.g. [24,1]; at most 5, clamped to 1-8760h; absent arms no reminder), askConfirmationOnLast?}. A path is dot-separated keys, a numeric segment indexing an array: \"data.items.0.id\". The id has to be the same one the CANCEL tool answers with. `provider` names the booking system these ids belong to (lowercase slug, e.g. \"feegow\"): only needed when a tenant has MORE THAN ONE booking system, since an id is unique only within the system that issued it. The book and cancel tools of the same system must carry the SAME provider, or the cancel reaches no record. Reserved: \"google_calendar\".",
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "patternProperties": {
+                          "^(.*)$": {}
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "ackEnabled": {
                     "description": "Whether the tool sends an acknowledgement message before executing.",
                     "type": "boolean"
@@ -12978,6 +13034,20 @@
                       ]
                     }
                   },
+                  "appointment": {
+                    "description": "What this tool's RESPONSE says about an appointment, so the platform can hold follow-ups while the booking stands and can remind ahead of it. Omit or null when the tool has nothing to do with appointments. Shape: {action:\"book\"|\"cancel\", idPath, startPath (book only), provider?, summaryPath?, reminderOffsetsHours?(hours before the start, e.g. [24,1]; at most 5, clamped to 1-8760h; absent arms no reminder), askConfirmationOnLast?}. A path is dot-separated keys, a numeric segment indexing an array: \"data.items.0.id\". The id has to be the same one the CANCEL tool answers with. `provider` names the booking system these ids belong to (lowercase slug, e.g. \"feegow\"): only needed when a tenant has MORE THAN ONE booking system, since an id is unique only within the system that issued it. The book and cancel tools of the same system must carry the SAME provider, or the cancel reaches no record. Reserved: \"google_calendar\".",
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "patternProperties": {
+                          "^(.*)$": {}
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "ackEnabled": {
                     "description": "Whether the tool sends an acknowledgement message before executing.",
                     "type": "boolean"
@@ -13105,6 +13175,20 @@
                         }
                       ]
                     }
+                  },
+                  "appointment": {
+                    "description": "What this tool's RESPONSE says about an appointment, so the platform can hold follow-ups while the booking stands and can remind ahead of it. Omit or null when the tool has nothing to do with appointments. Shape: {action:\"book\"|\"cancel\", idPath, startPath (book only), provider?, summaryPath?, reminderOffsetsHours?(hours before the start, e.g. [24,1]; at most 5, clamped to 1-8760h; absent arms no reminder), askConfirmationOnLast?}. A path is dot-separated keys, a numeric segment indexing an array: \"data.items.0.id\". The id has to be the same one the CANCEL tool answers with. `provider` names the booking system these ids belong to (lowercase slug, e.g. \"feegow\"): only needed when a tenant has MORE THAN ONE booking system, since an id is unique only within the system that issued it. The book and cancel tools of the same system must carry the SAME provider, or the cancel reaches no record. Reserved: \"google_calendar\".",
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "patternProperties": {
+                          "^(.*)$": {}
+                        }
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   },
                   "ackEnabled": {
                     "description": "Whether the tool sends an acknowledgement message before executing.",

@@ -14,7 +14,7 @@
 // Secret VALUES are never imported, only empty placeholders.
 
 import { z } from "zod";
-import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
+import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
 import { normalizeExpectedStatuses } from "@/graph/tools/http-status";
@@ -52,6 +52,7 @@ import { disarmFullDetail } from "@/modules/flowlog/settings";
 import { normalizeSettingsForStorage } from "@/modules/images/settings";
 import { isKnownCatalogType } from "@/modules/integrations/catalog";
 import { assertNoSecrets } from "@/modules/n8n-export/n8n";
+import { readAppointmentDeclaration } from "@/modules/tool-definitions/appointment";
 import {
   canonicalBodyShape,
   unsupportedBodyShape,
@@ -176,6 +177,9 @@ const exportedHttpToolSchema = z.object({
   // Optional so bundles exported before issue #59 still import (defaults to [], which is today's
   // "every non-2xx is a failure").
   expectedStatuses: z.array(z.number()).optional(),
+  // Optional for the same reason, one issue later (#352): a bundle exported before the column
+  // existed carries nothing here, which is what every tool declared then.
+  appointment: z.record(z.string(), z.unknown()).nullable().optional(),
 });
 const exportedMcpServerSchema = z.object({
   name: z.string(),
@@ -717,6 +721,13 @@ export async function exportAgent(
           ackMessage: r.ackMessage,
           credentialRef: r.credentialRef,
           expectedStatuses: r.expectedStatuses,
+          // Carried, because a bundle that drops it re-imports the tool WITHOUT its declaration and
+          // the agent then books appointments the platform never hears about — the exact silence
+          // issue #352 removed, reintroduced by a round trip nobody would think to check.
+          appointment: (r.appointment ?? null) as Record<
+            string,
+            unknown
+          > | null,
         })),
         mcpServers: mcpRows.map((r) => ({
           name: r.name,
@@ -1402,6 +1413,10 @@ async function createMissingComponents(
           // Normalized like the shapes above, and for the same reason: the import writes straight to
           // the DB, so a hand-edited bundle would otherwise store a list the service would refuse.
           expectedStatuses: normalizeExpectedStatuses(tdef.expectedStatuses),
+          // Read through the runtime's own reader, like the shapes above: a hand-edited bundle
+          // otherwise stores a declaration the runtime would silently ignore.
+          appointment: (readAppointmentDeclaration(tdef.appointment) ??
+            Prisma.DbNull) as unknown as Prisma.InputJsonValue,
           ackEnabled: tdef.ackEnabled,
           ackMessage: tdef.ackMessage ?? null,
           credentialRef: resolveCredName(tdef.credentialRef),

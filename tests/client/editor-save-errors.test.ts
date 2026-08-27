@@ -152,6 +152,39 @@ describe("agent editor save errors", () => {
     expect(body).not.toContain("showToast");
   });
 
+  test("the banner is brought into view, once per sentence", () => {
+    // It sits above the tabs and the button that produced it does not: Behavior and Tools are long
+    // and their Save lives in a sticky bar at the bottom. Dropping the toast (round 2) took away the
+    // thing that answered from down there, so without this a sighted operator watches the save stop
+    // and sees nothing. `role="alert"` covers the screen reader; this is the other half.
+    const start = SRC.indexOf("const bannerRef =");
+    expect(start).toBeGreaterThan(-1);
+    const effect = SRC.slice(start, SRC.indexOf("}, [bannerMessage]);", start));
+    expect(effect).toContain("scrollIntoView");
+    // Once per SENTENCE. The banner stays up until the refusal is answered, so re-scrolling on every
+    // render would take the page out from under whoever is fixing the value.
+    expect(effect).toContain("announcedRef.current === bannerMessage");
+    expect(SRC).toContain("ref={bannerRef}");
+  });
+
+  test("what the boxes hold is normalized the way the wire is", () => {
+    // `sent` is read off the patch and `current` off this map, so a value the patch trims and the map
+    // keeps raw reads as "edited while the request was out" — and the refusal lands in the banner
+    // instead of on the textarea it is about, over nothing but surrounding whitespace.
+    const start = SRC.indexOf("currentRef.current = {");
+    expect(start).toBeGreaterThan(-1);
+    const body = SRC.slice(start, SRC.indexOf("\n  };", start));
+    for (const [field, writer] of [
+      ["availability.awayMessage", "awayMessage.trim()"],
+      ["contactAuth.denyMessage", "contactAuth.denyMessage.trim()"],
+      // Through the writer itself rather than a second spelling of what it does.
+      ["followUp", "followUpToStored(followUp)"],
+      ["vision.extractionPrompt", "DEFAULT_EXTRACTION_PROMPT"],
+    ] as const) {
+      expect(body, field).toContain(writer);
+    }
+  });
+
   test("the tools preflight compares against the stored bag, re-read when forced", () => {
     const start = SRC.indexOf("function settingsTextError");
     expect(start).toBeGreaterThan(-1);

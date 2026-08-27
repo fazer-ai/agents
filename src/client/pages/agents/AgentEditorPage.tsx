@@ -897,6 +897,13 @@ function AgentEditor() {
   // inside a save that started before them: this page's saves are long and the operator keeps typing
   // during them. Keyed by the wire name rather than by the state variable because that is the name a
   // refusal arrives carrying, and the name `placeRefusal` compares against what the request sent.
+  //
+  // EACH ENTRY NORMALIZES THE WAY ITS WRITER DOES, and that is a rule rather than a detail. The other
+  // side of the comparison is `sentFromPatch`, read off the request, so a value the patch trims and
+  // this map keeps raw reads as "the operator edited it while the request was out" — and the refusal
+  // then goes to the banner instead of to the textarea it is about, on nothing but surrounding
+  // whitespace. Where the writer is a function (`followUpToStored`), call it rather than restating
+  // what it does.
   const currentRef = useRef<Record<string, unknown>>({});
   currentRef.current = {
     name: name.trim(),
@@ -912,7 +919,13 @@ function AgentEditor() {
     "settings.guardrails.credentialRef": guardrails.credentialRef,
     "availability.awayMessage": awayMessage.trim(),
     "contactAuth.denyMessage": contactAuth.denyMessage.trim(),
-    "vision.extractionPrompt": vision.extractionPrompt,
+    // `buildSettings` stores null for an empty prompt or one still at the default, so an untouched
+    // vision block sends null and a raw copy here would never match it.
+    "vision.extractionPrompt":
+      vision.extractionPrompt.trim() &&
+      vision.extractionPrompt.trim() !== DEFAULT_EXTRACTION_PROMPT
+        ? vision.extractionPrompt.trim()
+        : null,
     "guardrails.customPolicy": guardrails.customPolicy,
     "guardrails.input.templateMessage": guardrails.input.templateMessage,
     "guardrails.output.templateMessage": guardrails.output.templateMessage,
@@ -922,8 +935,10 @@ function AgentEditor() {
     "toolGuidance.set_custom_attribute": customAttributeInstructions,
     "toolGuidance.assign_label": labelInstructions,
     "toolGuidance.update_kanban_task": updateKanbanTaskInstructions,
+    // Through the writer itself: `followUpToStored` trims each note, and a second spelling of that
+    // here is the drift this whole block is against.
     ...Object.fromEntries(
-      followUp.steps.map((step, i) => [
+      followUpToStored(followUp).steps.map((step, i) => [
         followUpStepField(i),
         step.instructions,
       ]),
@@ -1032,6 +1047,26 @@ function AgentEditor() {
     heldMessage && heldTarget && heldTarget.tab !== tab ? heldTarget : null;
   // Said only when the server NAMED a value and this editor draws no control for it. Not for a
   // refusal about no input at all (a 403, a conflict), where there is no value to go and change.
+  // BRING IT INTO VIEW, because the banner sits above the tabs and the button that produced it does
+  // not. Behavior and Tools are long, their Save lives in a sticky bar at the bottom, and the toast
+  // that used to answer from down there is gone — so a sighted operator would watch the save stop
+  // and see nothing until they scrolled back up. `role="alert"` already answers for a screen reader;
+  // this is the other half.
+  //
+  // Once per sentence, not once per render: the banner stays up until the refusal is answered, and
+  // re-scrolling on every keystroke would take the page out from under whoever is fixing the value.
+  const bannerRef = useRef<HTMLDivElement | null>(null);
+  const announcedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!bannerMessage) {
+      announcedRef.current = null;
+      return;
+    }
+    if (announcedRef.current === bannerMessage) return;
+    announcedRef.current = bannerMessage;
+    bannerRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [bannerMessage]);
+
   const bannerNoControl =
     !heldField &&
     refusedSave?.named != null &&
@@ -3151,8 +3186,9 @@ function AgentEditor() {
                 answers the refusal, or when they reach the tab that draws the mark. */}
             {bannerMessage && (
               <div
+                ref={bannerRef}
                 role="alert"
-                className="flex items-baseline justify-between gap-3 rounded-lg border border-error bg-error-soft px-4 py-3"
+                className="flex scroll-mt-4 items-baseline justify-between gap-3 rounded-lg border border-error bg-error-soft px-4 py-3"
               >
                 <span className="min-w-0 text-sm text-text-primary">
                   {bannerMessage}

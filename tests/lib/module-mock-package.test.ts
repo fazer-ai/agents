@@ -92,8 +92,12 @@ export function staleWaivers(
   return Object.keys(waived).filter((key) => !live.has(key));
 }
 
-function testFiles(): string[] {
-  return [...new Glob("**/*.test.{ts,tsx}").scanSync("tests")]
+// EVERY source file under `tests/`, not just `*.test.*`. A stub installed by a shared helper or by
+// a preload is exactly as process-global as one written in a test file, and `tests/utils/prisma-mock.ts`
+// is the proof that helpers here do install them — reading only test files would leave the whole
+// support layer as a blind spot in a sweep that claims to cover the tree.
+export function testFiles(): string[] {
+  return [...new Glob("**/*.{ts,tsx}").scanSync("tests")]
     .filter((rel) => rel !== SELF)
     .sort();
 }
@@ -138,6 +142,25 @@ describe("every third-party module stub is argued for", () => {
 
   test("the ledger may only shrink", () => {
     expectWaiverLedger("PACKAGE_MOCKS_WAIVED", PACKAGE_MOCKS_WAIVED, 10);
+  });
+
+  // What the sweep READS, asserted separately from what it decides. No helper stubs a package
+  // today, so narrowing this back to `*.test.*` would break nothing measurable — which is exactly
+  // the shape of a guard nobody would notice losing.
+  describe("what the sweep reads", () => {
+    test("support files that are not tests are read too", () => {
+      const files = testFiles();
+      expect(files).toContain("utils/prisma-mock.ts");
+      expect(files).toContain("setup.ts");
+    });
+
+    test("test files are still read", () => {
+      expect(testFiles()).toContain("api/features/auth/google.service.test.ts");
+    });
+
+    test("the sweep does not read itself", () => {
+      expect(testFiles()).not.toContain(SELF);
+    });
   });
 
   describe("the decision, over files it is handed", () => {

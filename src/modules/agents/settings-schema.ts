@@ -1,6 +1,17 @@
 import { z } from "zod";
 import { MODEL_PROVIDERS } from "@/graph/model-config";
 import { NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
+// NOTE: The caps are IMPORTED, never retyped. They go in `.describe()` and never into the schema
+// itself — the rule the file's header states is type and choice, never size, because these are
+// refused by assertSettingsTextSizes on the write rather than clamped by the reader. A caller has to
+// be able to build a valid call from tools/list without failing first (docs/mcp.md), and a number
+// copied here would be a second copy that drifts.
+import {
+  CUSTOM_POLICY_MAX,
+  GENERATION_PROMPT_MAX,
+  TEMPLATE_MESSAGE_MAX,
+  TOOL_INSTRUCTIONS_MAX,
+} from "@/modules/agents/text-caps";
 import { REDIRECT_DELAY_UNITS } from "@/modules/channel-redirect/service";
 import {
   FULL_DETAIL_MAX_HOURS,
@@ -484,22 +495,19 @@ const sharedChecks = {
 // Still LOOSE otherwise, for the reason the header gives: an undeclared key reaches the readers as
 // before, so a field someone adds to the reader is merged rather than silently dropped. What is
 // refused is the specific, known, direction-wrong set.
-const OUTPUT_ONLY_CHECK_FIELDS = [
-  "promptAdherence",
-  "answerRelevance",
-] as const;
-
-const inputChecks = z.looseObject(sharedChecks).check((ctx) => {
-  for (const field of OUTPUT_ONLY_CHECK_FIELDS) {
-    if ((ctx.value as Record<string, unknown>)?.[field] !== undefined) {
-      ctx.issues.push({
-        code: "custom",
-        input: ctx.value,
-        path: [field],
-        message: `${field} only applies to the output direction (activeChecks drops it for input)`,
-      });
-    }
-  }
+// PUBLISHED as a prohibition, not merely enforced. `docs/mcp.md` states the constraint this failed
+// on the first attempt: what the schema ENFORCES has to be what it PUBLISHES, because tools/list
+// ships the generated JSON Schema and a client may validate a call before sending it. A zod
+// `.check()` is invisible out there, so the client accepted what the server refused — the same shape
+// of mismatch the doc already records twice (a regex flag lost on the way out, a preprocess trim).
+// `z.never().optional()` serializes as `{"not": {}}`: both ends read the same rule.
+const inputChecks = z.looseObject({
+  ...sharedChecks,
+  // NOTE: These two only mean something about a REPLY — activeChecks drops them whenever the direction
+  // is `input` — so accepting them here would store configuration the runtime never acts on. That is
+  // the one outcome a caller cannot discover by trying, because what comes back is success.
+  promptAdherence: z.never().optional(),
+  answerRelevance: z.never().optional(),
 });
 
 const outputChecks = z.looseObject({
@@ -523,27 +531,18 @@ const directionCommon = {
   // NOTE: No length here, and that is the rule rather than an oversight: the reader CLIPS this
   // (TEMPLATE_MESSAGE_MAX), and a bound copied here would turn a clip into a refusal — the same
   // write would then succeed in the console and fail through MCP.
-  templateMessage: z.string().optional(),
+  templateMessage: z
+    .string()
+    .optional()
+    .describe(`refused above ${TEMPLATE_MESSAGE_MAX} characters, not trimmed`),
 };
 
-const guardrailInput = z
-  .looseObject({
-    ...directionCommon,
-    checks: inputChecks.optional(),
-  })
-  .check((ctx) => {
-    if (
-      (ctx.value as Record<string, unknown>)?.generationPrompt !== undefined
-    ) {
-      ctx.issues.push({
-        code: "custom",
-        input: ctx.value,
-        path: ["generationPrompt"],
-        message:
-          "generationPrompt only applies to the output direction (input analysis never generates a replacement reply)",
-      });
-    }
-  });
+const guardrailInput = z.looseObject({
+  ...directionCommon,
+  checks: inputChecks.optional(),
+  // NOTE: Input analysis never generates a replacement reply (prompts.ts reads this only for `output`).
+  generationPrompt: z.never().optional(),
+});
 
 const guardrailOutput = z.looseObject({
   ...directionCommon,
@@ -551,7 +550,9 @@ const guardrailOutput = z.looseObject({
   generationPrompt: z
     .string()
     .optional()
-    .describe("steers HOW a generated reply is written; empty = generic"),
+    .describe(
+      `steers HOW a generated reply is written; empty = generic. Refused above ${GENERATION_PROMPT_MAX} characters, not trimmed`,
+    ),
 });
 
 const guardrails = z.looseObject({
@@ -578,7 +579,9 @@ const guardrails = z.looseObject({
   customPolicy: z
     .string()
     .optional()
-    .describe("free text appended to every analysis prompt"),
+    .describe(
+      `free text appended to every analysis prompt; refused above ${CUSTOM_POLICY_MAX} characters, not trimmed`,
+    ),
   input: guardrailInput.optional().describe("screens the CUSTOMER message"),
   output: guardrailOutput
     .optional()
@@ -591,7 +594,7 @@ const kanban = z.looseObject({
     .nullable()
     .optional()
     .describe(
-      "funnel guidance appended to the kanban_move_card tool description; the board itself follows the conversation's linked card",
+      `funnel guidance appended to the kanban_move_card tool description; the board itself follows the conversation's linked card. Refused above ${TOOL_INSTRUCTIONS_MAX} characters, not trimmed`,
     ),
 });
 
@@ -614,9 +617,39 @@ const nativeToolKeys = <T extends z.ZodTypeAny>(value: T) => {
   );
 };
 
-const toolGuidance = nativeToolKeys(z.string().nullable()).describe(
-  "per-native-tool guidance appended to that tool's description; null clears one. A key outside the catalog is dropped by the reader, so only the names published here take effect.",
-);
+// NOTE: TWO SLOTS ARE OWNED BY ANOTHER BLOCK, and writing them here is accepted-and-dead configuration.
+// `prepare.ts` lets `handoff.instructions` and `kanban.instructions` WIN over the flat map for their
+// two tools, and the console only ever writes them there — so a value in this map for either name is
+// stored, audited, read back, and never reaches the tool description. Published as forbidden, with
+// the owning field named, rather than silently accepted (docs/mcp.md: a configuration the write
+// accepts and the runtime never acts on is the one outcome a caller cannot discover by trying).
+// NOTE: `null` and nothing else: writing TEXT here is dead configuration, but REMOVING a value already
+// stored has to stay possible — the same rule round 4 established for a non-native precondition. A
+// bag written before this shipped, or by an import, can hold one, and a field you can enforce and
+// cannot clear is the failure that finding named.
+const GUIDANCE_OWNED_ELSEWHERE = {
+  handoff_to_human: z
+    .null()
+    .optional()
+    .describe(
+      "owned by handoff.instructions, which wins over this map; null clears a legacy value",
+    ),
+  kanban_move_card: z
+    .null()
+    .optional()
+    .describe(
+      "owned by kanban.instructions, which wins over this map; null clears a legacy value",
+    ),
+};
+
+const toolGuidance = z
+  .looseObject({
+    ...(nativeToolKeys(z.string().nullable()) as unknown as z.ZodObject).shape,
+    ...GUIDANCE_OWNED_ELSEWHERE,
+  })
+  .describe(
+    `per-native-tool guidance appended to that tool's description; null clears one. A key outside the catalog is dropped by the reader, so only the names published here take effect. Each note is refused above ${TOOL_INSTRUCTIONS_MAX} characters, not trimmed.`,
+  );
 
 // NOTE: The field descriptions live on the BLOCK, once, rather than on each field — the value is
 // serialized once per key, so a per-field `.describe()` is published thirteen times. That alone was

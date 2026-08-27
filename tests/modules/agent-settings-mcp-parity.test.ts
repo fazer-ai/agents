@@ -311,6 +311,40 @@ describe("toolGuidance and toolPreconditions publish the native catalog", () => 
     }
   });
 
+  // ROUND 6. Every native name is a PROPERTY of toolGuidance, but two of them are forbidden values:
+  // prepare.ts lets handoff.instructions and kanban.instructions win over this map, so a value here
+  // for those two is stored and never used. A precondition on the same tools is NOT affected — that
+  // is a different mechanism, and handoff_to_human is the case issue #101 exists for.
+  test("toolGuidance forbids the two slots another block owns", async () => {
+    const published = await publishedProperties();
+    const patch = z.object(BEHAVIOR_PATCH_SHAPE);
+    for (const name of ["handoff_to_human", "kanban_move_card"]) {
+      const field = published.toolGuidance?.[name] as Record<string, unknown>;
+      expect(String(field?.description)).toContain("owned by");
+      // TEXT is refused (it would be stored and never used)...
+      expect(
+        patch.safeParse({ toolGuidance: { [name]: "some note" } }).success,
+      ).toBe(false);
+      // ...but the tombstone still works, because a legacy value can be there to clear.
+      expect(patch.safeParse({ toolGuidance: { [name]: null } }).success).toBe(
+        true,
+      );
+    }
+    // and the others still take text
+    expect(JSON.stringify(published.toolGuidance?.private_note)).not.toContain(
+      '"not"',
+    );
+  });
+
+  test("a precondition on those same tools is untouched", async () => {
+    const published = await publishedProperties();
+    for (const name of ["handoff_to_human", "kanban_move_card"]) {
+      expect(JSON.stringify(published.toolPreconditions?.[name])).not.toContain(
+        '"not"',
+      );
+    }
+  });
+
   test("a name added to the catalog needs no edit here", () => {
     // Generated from NATIVE_TOOL_NAMES rather than typed out, so this holds by construction. The
     // assertion is that the generation is actually wired — a hand-written list would pass the test
@@ -414,19 +448,24 @@ describe("a tool precondition can be removed", () => {
 // settings that store, read back and do nothing — the same failure `appointmentReminders` was
 // removed for, one level down.
 describe("the guardrail directions publish only what their direction uses", () => {
-  test("input does not advertise the output-only fields", async () => {
+  // ROUND 6: not "absent" — PUBLISHED AS FORBIDDEN. Absence is not a prohibition when the object is
+  // loose (`additionalProperties: {}` permits anything unnamed), so a client validating from
+  // tools/list would have accepted a call the server refuses. `z.never()` serializes as
+  // `{"not": {}}`, which is the same rule at both ends. docs/mcp.md is explicit that a zod-only
+  // constraint is a contract the two ends read differently.
+  test("input publishes the output-only fields as FORBIDDEN, not merely omitted", async () => {
     const published = await publishedProperties();
     const input = published.guardrails?.input as
       | { properties?: Record<string, unknown> }
       | undefined;
-    const props = Object.keys(
-      (input?.properties?.checks as { properties?: Record<string, unknown> })
-        ?.properties ?? {},
-    );
-    expect(props).not.toContain("promptAdherence");
-    expect(props).not.toContain("answerRelevance");
-    expect(Object.keys(input?.properties ?? {})).not.toContain(
-      "generationPrompt",
+    const checks = (
+      input?.properties?.checks as { properties?: Record<string, unknown> }
+    )?.properties;
+    for (const field of ["promptAdherence", "answerRelevance"]) {
+      expect(JSON.stringify(checks?.[field])).toBe('{"not":{}}');
+    }
+    expect(JSON.stringify(input?.properties?.generationPrompt)).toBe(
+      '{"not":{}}',
     );
   });
 

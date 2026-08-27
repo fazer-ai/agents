@@ -159,11 +159,14 @@ const SETTINGS_DESC_CEILING = 2_000;
 // toolPreconditions), and two of them are maps keyed by the native tool catalog, so their value is
 // published once per tool name — thirteen times each.
 //
-// The figure is a RE-MEASUREMENT after review, not the branch's first one. It read 20,839 while
-// `appointmentReminders` was published too; that block turned out not to be an agent-settings block
-// at all (its reader is only ever handed the Google Calendar instance's config), so it was removed
-// rather than paid for. Adding or subtracting the delta would have left a ceiling calibrated against
-// a tree that never shipped.
+// The figure is a RE-MEASUREMENT after review, not the branch's first one, and it moved twice more
+// before it settled. It read 20,839 while `appointmentReminders` was published too; that block
+// turned out not to be an agent-settings block at all (its reader is only ever handed the Google
+// Calendar instance's config), so it was removed rather than paid for, taking it to 20,443. Then
+// review found the text caps missing from the new blocks' descriptions — a caller cannot build a
+// valid call from tools/list without failing first — and publishing them cost 552 characters, to
+// 20,995. Every figure here is one measured under the tree that ships; adding deltas would have
+// left a ceiling calibrated against two trees that never did.
 //
 // Paid down before it was raised, and only where it cost the caller nothing: the per-field
 // `.describe()` on the two name-keyed blocks moved to the BLOCK, since a field description inside a
@@ -176,7 +179,7 @@ const SETTINGS_DESC_CEILING = 2_000;
 // a refusal, which is the exact hazard tests/api/v1/write-body-required.test.ts exists to keep out
 // of this codebase. The thirteen copies are what buys a refusal that can only name what the SERVER
 // declared.
-const SETTINGS_SCHEMA_CEILING = 20_900;
+const SETTINGS_SCHEMA_CEILING = 21_100;
 
 describe("MCP tool descriptions", () => {
   test("agent_settings_set stays under its ceiling", async () => {
@@ -316,7 +319,7 @@ describe("MCP tool descriptions", () => {
       schema += t.schema.length;
     }
     expect(desc).toBeLessThanOrEqual(27_250);
-    expect(schema).toBeLessThanOrEqual(50_500);
+    expect(schema).toBeLessThanOrEqual(50_700);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

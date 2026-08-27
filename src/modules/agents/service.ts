@@ -17,7 +17,10 @@ import { parseInput } from "@/lib/parse-input";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { collectCredentialRefWrites } from "@/modules/agents/credential-paths";
 import { collectOversizedTextChanges } from "@/modules/agents/text-caps";
-import { invalidToolPreconditions } from "@/modules/agents/tool-preconditions";
+import {
+  invalidToolPreconditions,
+  parseToolPrecondition,
+} from "@/modules/agents/tool-preconditions";
 import { isOutOfHoursNow, parseSchedule } from "@/modules/business-hours/hours";
 import { renameAgentBots } from "@/modules/chatwoot/provisioning";
 import { invalidateRouteTokenCache } from "@/modules/chatwoot/route-token-cache";
@@ -403,9 +406,34 @@ function storedPreconditionValues(settings: unknown): Map<string, string> {
   const bag = (settings as Record<string, unknown>).toolPreconditions;
   if (!bag || typeof bag !== "object" || Array.isArray(bag)) return out;
   for (const [name, raw] of Object.entries(bag as Record<string, unknown>)) {
-    out.set(name, JSON.stringify(raw) ?? "undefined");
+    out.set(name, canonicalPrecondition(raw));
   }
   return out;
+}
+
+// "IS THIS THE SAME RULE?", which is not the same question as "are these the same bytes".
+//
+// This comparison decides whether a write CHANGED an entry, and an unchanged one is exempt from the
+// catalog restriction — that exemption is what lets a caller read the config and write it back. But
+// `JSON.stringify` compares SPELLING: jsonb does not promise property order, and what
+// `agent_settings_get` returns is the reader's normalized shape, not the bytes that were stored. So
+// the same rule, read back and sent again, serialized differently and was refused as an edit.
+//
+// Parsed first, so two spellings of one rule collapse; falls back to the raw serialization for an
+// entry that does not parse, which is the case the by-value comparison was written for in the first
+// place (an already-broken entry re-sent untouched must not be refused).
+function canonicalPrecondition(raw: unknown): string {
+  if (raw === null) return "null";
+  const parsed = parseToolPrecondition(raw);
+  if (parsed) {
+    return JSON.stringify([
+      parsed.kind,
+      parsed.scope,
+      parsed.key,
+      parsed.equals ?? null,
+    ]);
+  }
+  return `raw:${JSON.stringify(raw) ?? "undefined"}`;
 }
 
 // A FALLBACK IS A PROVIDER AND A MODEL, OR IT IS NOTHING — and the write is the only place that can

@@ -598,15 +598,25 @@ async function runRecovery(params: {
   //
   // One read for both, taken here because nothing between this line and the fence awaits anything
   // that could move it again.
-  const contactInboxId =
-    (
-      await runScopedOn(base, sysCtx(params.tenantId), (db) =>
-        db.conversation.findUnique({
-          where: { id: conv.id },
-          select: { contactInboxId: true },
-        }),
-      )
-    )?.contactInboxId ?? null;
+  //
+  // The REDIRECT PAIRING comes back on the same reading, and it is a second consumer that makes it
+  // matter rather than the mirror. The mirror does order this one: the body states the pairing WITH
+  // its version, so a re-entry that replaced it while the REST reads ran wins and the old value is
+  // rejected as stale. `armRedirectChatFollowUp` is not the mirror — it takes the pairing off the
+  // normalized event and UPSERTS a scheduler payload keyed by the episode, so a body carrying the
+  // old pairing re-arms a follow-up for an episode the customer already left, on top of the one they
+  // are in.
+  const mirrorNow = await runScopedOn(base, sysCtx(params.tenantId), (db) =>
+    db.conversation.findUnique({
+      where: { id: conv.id },
+      select: {
+        contactInboxId: true,
+        redirectOriginDisplayId: true,
+        chatwootRedirectOriginAt: true,
+      },
+    }),
+  );
+  const contactInboxId = mirrorNow?.contactInboxId ?? null;
 
   const normalized = normalizeChatwootEvent(
     buildRecoveryPayload({
@@ -616,8 +626,8 @@ async function runRecovery(params: {
         // (MEASURED). Re-read immediately above rather than taken from the load at the top, because
         // the pairing DOES move — see there.
         contactInboxId,
-        redirectOriginDisplayId: conv.redirectOriginDisplayId,
-        redirectOriginAt: conv.chatwootRedirectOriginAt,
+        redirectOriginDisplayId: mirrorNow?.redirectOriginDisplayId ?? null,
+        redirectOriginAt: mirrorNow?.chatwootRedirectOriginAt ?? null,
         status: state.status,
         assigneeType: state.assigneeType,
         assigneeId: state.assigneeId,
@@ -659,10 +669,26 @@ async function runRecovery(params: {
   // and it is asked BEFORE the claim so a refusal spends no attempt.
   const sentAt =
     typeof message.created_at === "number" ? message.created_at : null;
-  if (
-    sentAt !== null &&
-    params.now.getTime() - sentAt * 1000 > MAX_RECOVERY_AGE_MS
-  ) {
+  // A MESSAGE WITH NO CLOCK IS A DEGRADED READ, and it is refused rather than replayed. The body's
+  // `last_activity_at` comes from this field, and without it the mirror falls back to the moment the
+  // rebuilt event arrives — which is the whole point of carrying the customer's own clock: the
+  // fallback moves `lastInboundAt` forward by however long the row sat stranded, and that column
+  // anchors BOTH the follow-up episode gate and the WhatsApp 24h service window, so a proactive send
+  // made later reads as in-window when it is not.
+  //
+  // `unreachable` for the same reason a body that can name no inbox is: the account answered with
+  // something unusable, which the next attempt may not. The fork renders `created_at` on every
+  // message the index serializes, so reaching this means the read is degraded, not that the message
+  // is odd.
+  if (sentAt === null) {
+    logger.warn(
+      "chatwoot recovery: %s came back without a created_at (conversation %d); the REST read is degraded",
+      row.deliveryId,
+      conversationId,
+    );
+    return "unreachable";
+  }
+  if (params.now.getTime() - sentAt * 1000 > MAX_RECOVERY_AGE_MS) {
     return "unrecoverable";
   }
 

@@ -369,6 +369,14 @@ export async function mirrorChatwootEvent(
           // in-window when it is not.
           //
           // Never backwards: `inboundAt` is written only when it is ahead of what is stored.
+          //
+          // NOT also guarded on the payload having MEASURED a timestamp, though a review round asked
+          // for it: an event carrying no `last_activity_at` never reaches this branch at all, because
+          // `decideConversationWrites` has nothing to order it BY and applies it. MEASURED — the
+          // guard was written, and the case built for it moved the watermark through the applied
+          // branch instead. A branch no input can take reads as a rule and is a comment. The harm it
+          // was aimed at is real and belongs where the undated body comes from: ./recover-delivery.ts
+          // refuses to rebuild one.
           ...(inboundAt != null &&
           (existing.lastInboundAt === null ||
             inboundAt.getTime() > existing.lastInboundAt.getTime())

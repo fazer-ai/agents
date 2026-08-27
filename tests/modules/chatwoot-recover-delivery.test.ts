@@ -12,6 +12,7 @@ import {
 } from "@/graph/inflight";
 import type { RuntimeDeps } from "@/graph/runtime";
 import { clearTurnOwning, markTurnOwning } from "@/graph/thread-claim";
+import { followUpDedupeKey } from "@/modules/channel-redirect/followup";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import {
   deliveryRecoveryDedupeKey,
@@ -342,7 +343,20 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
         // Debounce OFF, so the delivery path answers inline and the reply is assertable here. It is
         // ON by default in production, and the recovery goes through it exactly like a live
         // delivery — pinned by its own test below rather than assumed.
-        settings: { debounce: { enabled: false } },
+        //
+        // channelRedirect ON, because one case needs the SECOND reader of the redirect pairing: the
+        // follow-up ladder arms off the event rather than off the mirror, so it is the only place a
+        // rebuilt body carrying a stale pairing becomes observable. The entry inbox is a number no
+        // fixture uses, since nothing here posts to it.
+        settings: {
+          debounce: { enabled: false },
+          channelRedirect: {
+            enabled: true,
+            widgetInboxId: CHATWOOT_INBOX_ID,
+            entryInboxId: 74,
+            chatFollowupEnabled: true,
+          },
+        },
       },
     });
     agentDbId = agent.id;
@@ -1208,6 +1222,58 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     expect(isTurnInFlight(threadOf(convId))).toBe(false);
   });
 
+  test("a message with NO created_at is a degraded read, not a message to replay", async () => {
+    // The body's `last_activity_at` is the customer's own clock, taken from the REST message's
+    // `created_at`, and it is what keeps a recovery from moving `lastInboundAt` forward by however
+    // long the row sat stranded. Without it the mirror falls back to the moment the rebuilt event
+    // arrives, and that column anchors BOTH the follow-up episode gate and the WhatsApp 24h service
+    // window — so a proactive send made later reads as in-window when it is not.
+    //
+    // MEASURED at the mirror before this: an undated event does not reach the stale branch at all,
+    // because there is nothing to order it by, so it APPLIES and refreshes the watermark to now. The
+    // guard belongs here, where the undated body comes from.
+    const convId = 8967;
+    const messageId = 9468;
+    const conv = await seedConversation(convId, {
+      lastEventAt: new Date((SENT_AT - 600) * 1000),
+    });
+    const before = await suDb.conversation.findUniqueOrThrow({
+      where: { id: conv.id },
+      select: { lastInboundAt: true },
+    });
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const page = pageWith([{ id: messageId, content: "oi" }]) as {
+      payload: Record<string, unknown>[];
+    };
+    for (const m of page.payload) delete m.created_at;
+    const stub = stubChatwoot({ page });
+
+    expect(
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: depsWith(stub),
+      }),
+    ).toBe("unreachable");
+    expect(stub.sent).toEqual([]);
+    // The attempt is not spent: a degraded read is the account's problem, and the next one may
+    // answer properly.
+    expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 0 });
+    // And the anchor did not move.
+    expect(
+      (
+        await suDb.conversation.findUniqueOrThrow({
+          where: { id: conv.id },
+          select: { lastInboundAt: true },
+        })
+      ).lastInboundAt,
+    ).toEqual(before.lastInboundAt);
+  });
+
   test("a mirror that never learned the inbox rebuilds it from the live message", async () => {
     // The route is the one thing the rebuilt body cannot get wrong quietly. `Conversation.inboxId`
     // is nullable and the mirror writes it null for any event that named no inbox (`upsertInbox`
@@ -1828,6 +1894,25 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       select: { redirectOriginDisplayId: true },
     });
     expect(row.redirectOriginDisplayId).toBe(992);
+
+    // THE MIRROR IS NOT THE ONLY READER, and on its own the line above proves nothing about the
+    // rebuilt body: the body states the pairing WITH its version, so the mirror rejects the old one
+    // whichever value the body carried. `armRedirectChatFollowUp` has no version to compare — it
+    // takes the pairing straight off the event and UPSERTS the ladder's payload — so this is where a
+    // body still carrying 991 shows up, re-arming a follow-up for the episode the customer left.
+    // Keyed by THIS conversation's widget thread. Every recovery in this file arms a ladder now that
+    // the fixture agent has channelRedirect on, so an unscoped read answers with a neighbour's row.
+    const armed = await suDb.schedulerJob.findFirst({
+      where: {
+        tenantId,
+        kind: "REDIRECT_FOLLOWUP",
+        dedupeKey: followUpDedupeKey(threadOf(convId)),
+      },
+      select: { payload: true },
+    });
+    expect(
+      (armed?.payload as { originDisplayId?: number } | null)?.originDisplayId,
+    ).toBe(992);
   });
 
   test("a message older than the ceiling is refused on ITS clock, not on the row's", async () => {

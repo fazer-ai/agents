@@ -1371,6 +1371,56 @@ describe.skipIf(!dbUp)("the agent family records its own changes", () => {
     );
   });
 
+  test("a model config that omits `model` and one that sends it empty are the same", async () => {
+    // The schema defaults `model` to `""`, so both resolve identically at runtime — measured. A
+    // picker that preserved missing-versus-empty filed an `agent.update` for a save that changed
+    // nothing, in a trail whose whole rule is that it records changes.
+    const agent = await seedAgent({
+      modelConfig: { provider: "openai-compatible" },
+    });
+    await clearAudit();
+
+    await updateAgent(
+      ctx(),
+      BigInt(agent.id),
+      { modelConfig: { provider: "openai-compatible", model: "" } },
+      appDb,
+    );
+
+    expect(await rows()).toEqual([]);
+  });
+
+  test("a legacy config the schema refuses still projects, by the allowlist", async () => {
+    // The parse is the normalizer and the pick is the fallback; without the second, a config that no
+    // longer validates would project nothing at all.
+    const agent = await seedAgent();
+    await su?.$executeRawUnsafe(
+      `UPDATE agents SET model_config = '{"provider":"openai","apiKey":"sk-legacy"}'::jsonb WHERE id = ${agent.id}`,
+    );
+    await clearAudit();
+
+    await updateAgent(
+      ctx(),
+      BigInt(agent.id),
+      { modelConfig: { provider: "openai", model: "gpt-5.4-mini" } },
+      appDb,
+    );
+
+    const after = (await rows())[0]?.after as
+      | Record<string, unknown>
+      | undefined;
+    const before = (await rows())[0]?.before as
+      | Record<string, unknown>
+      | undefined;
+    const cfgBefore = before?.modelConfig as
+      | Record<string, unknown>
+      | undefined;
+    const cfgAfter = after?.modelConfig as Record<string, unknown> | undefined;
+    expect(cfgBefore?.provider).toBe("openai");
+    expect(cfgAfter?.model).toBe("gpt-5.4-mini");
+    expect(JSON.stringify([before, after])).not.toContain("sk-legacy");
+  });
+
   test("a base URL with no credential in it is recorded as itself", async () => {
     const agent = await seedAgent({
       modelConfig: {

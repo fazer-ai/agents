@@ -103,6 +103,14 @@ const CANONICAL: Partial<
   settings: (v, now) => jsonish(readBehaviorSettings(v, now)),
   modelConfig: (v) => {
     if (v === null || typeof v !== "object" || Array.isArray(v)) return v;
+    // PARSED when it parses, because the parse is what applies the schema's own defaults and those
+    // are what the runtime sees: `model` defaults to `""`, so a config that omits it and one that
+    // sends it empty are the same configuration — measured — and a picker that preserved the
+    // difference filed an `agent.update` for a save that changed nothing.
+    const parsed = modelConfigSchema.safeParse(v);
+    if (parsed.success) return parsed.data;
+    // PICKED when it does not. A legacy config that no longer validates still has to project
+    // something, and the pick is the same allowlist by another route.
     const src = v as Record<string, unknown>;
     const out: Record<string, unknown> = {};
     for (const k of MODEL_CONFIG_KEYS) if (k in src) out[k] = src[k];

@@ -90,9 +90,13 @@ function keywordOf(
   return hit[keyword];
 }
 
-// The blocks `agent_settings_set` exposes. `guardrails` is the one behavior block the tool does not
-// take, so the drift check must not demand a schema for it.
-const EXPOSED = BEHAVIOR_SETTINGS_KEYS.filter((k) => k !== "guardrails");
+// The blocks `agent_settings_set` exposes — now ALL of them. `guardrails` used to be filtered out
+// here, and that line was the only record anywhere that its absence was a decision rather than an
+// oversight; it did not say why, which is how it became indistinguishable from the four blocks that
+// were simply never registered (issue #402). Everything the aggregate owns is published, so the
+// filter is gone rather than re-pointed: a future exemption belongs in
+// tests/modules/agent-settings-mcp-parity.test.ts, whose NOT_PUBLISHED demands a written reason.
+const EXPOSED = BEHAVIOR_SETTINGS_KEYS;
 
 // Fields a reader DERIVES rather than stores. Computed from the block's own storable projection, so
 // it cannot describe a state the code has left — see the test below it.

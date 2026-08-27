@@ -154,7 +154,23 @@ const SETTINGS_DESC_CEILING = 2_000;
 // silent-failure shape as `includeMessageText` and the half-named `modelFallback` above. The
 // remaining 153 is the field name, the boolean, and that sentence. Headroom over 12,500 stays
 // tighter than a block, as before.
-const SETTINGS_SCHEMA_CEILING = 12_550;
+// #402 raises this the most any single change has: 12,550 → 20,900, measured at 20,839. Five blocks
+// of the settings bag reached MCP for the first time (guardrails, kanban, appointmentReminders,
+// toolGuidance, toolPreconditions), and two of them are maps keyed by the native tool catalog, so
+// their value is published once per tool name — thirteen times each.
+//
+// Paid down before it was raised, and only where it cost the caller nothing: the per-field
+// `.describe()` on the two name-keyed blocks moved to the BLOCK, since a field description inside a
+// thirteen-times-repeated value is published thirteen times. That was 22,807 → 20,839, and the text
+// a caller reads is unchanged.
+//
+// What was measured and REJECTED, so the next person does not re-derive it: `z.record(z.enum(...))`
+// publishes the value once and would have cost ~1 KB instead of 3.9 KB. It refuses an unrecognized
+// key with `Unrecognized key: "<what the caller sent>"` in the message — the caller's own string in
+// a refusal, which is the exact hazard tests/api/v1/write-body-required.test.ts exists to keep out
+// of this codebase. The thirteen copies are what buys a refusal that can only name what the SERVER
+// declared.
+const SETTINGS_SCHEMA_CEILING = 20_900;
 
 describe("MCP tool descriptions", () => {
   test("agent_settings_set stays under its ceiling", async () => {
@@ -270,6 +286,20 @@ describe("MCP tool descriptions", () => {
   // #103 moves the schema figure again and not the description one, for the same reason: the
   // follow-up step gains one boolean and its note, and no tool is added. Measured at 42,027 of
   // schema after the trim documented at SETTINGS_SCHEMA_CEILING, so the ceiling goes to 42,100.
+  //
+  // #402 moves the SCHEMA figure and not the description one, and it is the largest single move so
+  // far: measured at 50,394, so the ceiling goes to 50,500. No tool was added — five blocks of the
+  // settings bag became reachable through MCP at all, which is why the whole cost lands on schema.
+  // Re-measured on the combined tree rather than added to the previous figure, for the reason the
+  // paragraphs above give.
+  //
+  // Worth stating plainly, because this test exists to make it a decision rather than a surprise:
+  // the payload is now ~50 KB of schema plus ~27 KB of description across 107 tools, published in
+  // full on every tools/list before a client knows whether any of it will be used. Nothing here is
+  // waste in itself — every block a client cannot see is a block it cannot configure — but the
+  // TOTAL is now the thing worth an issue of its own, and the answer at that size is load-on-demand
+  // schemas rather than a smaller vocabulary. Splitting one tool into several is the intuitive move
+  // and the wrong one: the per-tool envelope is then paid more times, not fewer.
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;
@@ -279,7 +309,7 @@ describe("MCP tool descriptions", () => {
       schema += t.schema.length;
     }
     expect(desc).toBeLessThanOrEqual(27_250);
-    expect(schema).toBeLessThanOrEqual(42_100);
+    expect(schema).toBeLessThanOrEqual(50_500);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

@@ -1,11 +1,13 @@
 import { z } from "zod";
 import { MODEL_PROVIDERS } from "@/graph/model-config";
+import { NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
 import { REDIRECT_DELAY_UNITS } from "@/modules/channel-redirect/service";
 import {
   FULL_DETAIL_MAX_HOURS,
   parseIsoInstant,
 } from "@/modules/flowlog/settings";
 import { FOLLOW_UP_DELAY_UNITS } from "@/modules/followups/settings";
+import { GUARDRAIL_ACTIONS } from "@/modules/guardrails/settings";
 import { HANDOFF_MODES } from "@/modules/handoff/settings";
 import { STT_PROVIDER_NAMES } from "@/modules/stt/providers";
 import { LANG_RE } from "@/modules/stt/settings";
@@ -446,6 +448,144 @@ const modelFallback = z.looseObject({
 });
 
 // The 18 behavior blocks of `agent_settings_set`, each a partial patch over the stored block.
+// --- Blocks added by issue #402 ---------------------------------------------------------------
+//
+// Five blocks of the settings bag were written by the console and REST and reachable through MCP
+// not at all. Four were never registered anywhere; `guardrails` was the one deliberate omission, and
+// the reason was never written down. The guard that discovers this now
+// (tests/modules/agent-settings-mcp-parity.test.ts) probes the readers rather than reading a list,
+// so what follows only has to keep its promise: type and choice, never size.
+
+const guardrailChecks = z.looseObject({
+  toxicity: z.boolean().optional(),
+  unsafeContent: z.boolean().optional(),
+  competitorMentions: z
+    .boolean()
+    .optional()
+    .describe("matches the names in guardrails.competitors"),
+  promptAdherence: z.boolean().optional().describe("output direction only"),
+  answerRelevance: z
+    .boolean()
+    .optional()
+    .describe(
+      "output only, and OFF by default on purpose: it is the one check that can replace a CORRECT reply",
+    ),
+});
+
+const guardrailDirection = z.looseObject({
+  enabled: z.boolean().optional(),
+  checks: guardrailChecks.optional(),
+  action: oneOf(GUARDRAIL_ACTIONS)
+    .optional()
+    .describe(
+      "on a violation: template = send templateMessage verbatim; generated = guardrails writes a safe reply; silent = send nothing",
+    ),
+  // NOTE: No length here, and that is the rule rather than an oversight: the reader CLIPS both of these
+  // (TEMPLATE_MESSAGE_MAX / GENERATION_PROMPT_MAX), and a bound copied here would turn a clip into a
+  // refusal — the same write would then succeed in the console and fail through MCP.
+  templateMessage: z.string().optional(),
+  generationPrompt: z
+    .string()
+    .optional()
+    .describe("steers HOW a generated reply is written; empty = generic"),
+});
+
+const guardrails = z.looseObject({
+  enabled: z.boolean().optional(),
+  provider: oneOf(MODEL_PROVIDERS)
+    .optional()
+    .describe("the guardrails agent's OWN model provider, not the agent's"),
+  model: z
+    .string()
+    .optional()
+    .describe(
+      "empty resolves to the provider default (openai-compatible keeps empty: the server picks)",
+    ),
+  credentialRef: z
+    .string()
+    .nullable()
+    .optional()
+    .describe("vault entry NAME (never the key itself)"),
+  baseURL: z.string().nullable().optional(),
+  // NOTE: Item type declared, count and length not: readCompetitors DROPS a non-string (so declaring it
+  // turns a silent loss into a named refusal) but truncates the list and each name, which must keep
+  // parsing.
+  competitors: z.array(z.string()).optional(),
+  customPolicy: z
+    .string()
+    .optional()
+    .describe("free text appended to every analysis prompt"),
+  input: guardrailDirection.optional().describe("screens the CUSTOMER message"),
+  output: guardrailDirection
+    .optional()
+    .describe("screens the AGENT reply before it is sent"),
+});
+
+const kanban = z.looseObject({
+  instructions: z
+    .string()
+    .nullable()
+    .optional()
+    .describe(
+      "funnel guidance appended to the kanban_move_card tool description; the board itself follows the conversation's linked card",
+    ),
+});
+
+const appointmentReminders = z.looseObject({
+  enabled: z.boolean().optional(),
+  // NOTE: `number` and nothing else. The reader clamps each entry to 1..8760, rounds, de-dups, sorts
+  // descending and caps the count — all honored, so none of it belongs here — but it DISCARDS a
+  // non-number, which is the loss worth naming.
+  offsetsHours: z
+    .array(z.number())
+    .optional()
+    .describe(
+      "hours BEFORE the start, e.g. [24, 1]; clamped to 1-8760, de-duped, sorted far→near, capped",
+    ),
+  askConfirmationOnLast: z
+    .boolean()
+    .optional()
+    .describe("the closest reminder asks the customer to confirm attendance"),
+});
+
+// NOTE: Keyed BY THE CATALOG, and NOT by an open string-keyed record. Both of these are maps whose keys are
+// native tool names, and both readers DROP a key outside the catalog — so a record schema would
+// publish "any string" and let a typo be accepted by the API and ignored by the turn, which for a
+// precondition means an unguarded tool that reads as guarded. Generated from NATIVE_TOOL_NAMES so a
+// tool added later is publishable the day it ships instead of the day someone remembers this file.
+const nativeToolKeys = <T extends z.ZodTypeAny>(value: T) => {
+  // ONE instance shared by all thirteen keys, not thirteen `.optional()` calls. This is about the
+  // PUBLISHED schema, not about the parse: distinct instances serialize as thirteen full copies of
+  // the value, which for the precondition object alone came to 5.2 KB — 23% of the whole tool's
+  // schema, for one block, in a catalogue the model pays for on every conversation.
+  const shared = value.optional();
+  return z.looseObject(
+    Object.fromEntries(NATIVE_TOOL_NAMES.map((n) => [n, shared])) as Record<
+      (typeof NATIVE_TOOL_NAMES)[number],
+      z.ZodOptional<T>
+    >,
+  );
+};
+
+const toolGuidance = nativeToolKeys(z.string().nullable()).describe(
+  "per-native-tool guidance appended to that tool's description; null clears one. A key outside the catalog is dropped by the reader, so only the names published here take effect.",
+);
+
+// NOTE: The field descriptions live on the BLOCK, once, rather than on each field — the value is
+// serialized once per key, so a per-field `.describe()` is published thirteen times. That alone was
+// worth ~2 KB of a schema the model pays for on every conversation, and thirteen copies of the same
+// sentence is noise to the reader as much as it is bytes on the wire.
+const toolPreconditions = nativeToolKeys(
+  z.looseObject({
+    kind: z.literal("attribute"),
+    scope: z.enum(["conversation", "contact"]),
+    key: z.string(),
+    equals: z.string().optional(),
+  }),
+).describe(
+  "per-native-tool precondition, checked by the runtime BEFORE the call runs: `key` is the custom-attribute key that must be set on the chosen `scope`, and `equals` is the required value (omit it to require any non-blank value). Unmet, the tool does not run and the model is told why. Only native tools can be guarded (issue #389 tracks the rest).",
+);
+
 export const BEHAVIOR_PATCH_SHAPE = {
   debounce: debounce.optional(),
   stt: stt.optional(),
@@ -465,6 +605,11 @@ export const BEHAVIOR_PATCH_SHAPE = {
   observability: observability.optional(),
   memory: memory.optional(),
   modelFallback: modelFallback.optional(),
+  guardrails: guardrails.optional(),
+  kanban: kanban.optional(),
+  appointmentReminders: appointmentReminders.optional(),
+  toolGuidance: toolGuidance.optional(),
+  toolPreconditions: toolPreconditions.optional(),
 } satisfies z.ZodRawShape;
 
 export type BehaviorPatchArgs = z.infer<

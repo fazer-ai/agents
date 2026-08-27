@@ -1,0 +1,331 @@
+import { describe, expect, test } from "bun:test";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { z } from "zod";
+import { NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
+import { readBehaviorSettings } from "@/modules/agents/behavior-settings";
+import { BEHAVIOR_PATCH_SHAPE } from "@/modules/agents/settings-schema";
+import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
+import { buildMcpServer } from "@/modules/mcp/server";
+
+// EVERY BLOCK OF THE AGENT SETTINGS BAG REACHES `agent_settings_set`, OR SAYS WHY NOT.
+//
+// Issue #402. `tests/modules/mcp-settings-schema.test.ts` already guards this pair — but against
+// BEHAVIOR_SETTINGS_KEYS, a hand-kept list. A block is only checked if someone remembered to add it
+// there, so five never were: guardrails (deliberately, though the reason was never written down),
+// kanban, toolGuidance, toolPreconditions and appointmentReminders. The console wrote them, MCP
+// could not see them, and nothing anywhere reported a gap.
+//
+// The two situations that produced are indistinguishable from outside, and that is the actual
+// defect: "we decided not to expose this" and "nobody registered it" both look like absence.
+//
+// SO THE BLOCKS ARE DISCOVERED BY EXECUTION, NOT BY A LIST AND NOT BY A SOURCE SCAN. Same move as
+// tests/modules/agents/credential-paths.test.ts, which walks what the readers actually produce. A
+// source scan was tried first for this and got it wrong in BOTH directions on one pass: it reported
+// `allowedHosts` and `appointmentReminders` as top-level blocks (they matched a read of a block's
+// INNER bag, not of the root), and correcting that by hand then dropped `appointmentReminders`,
+// which is a real top-level block. A guard that mis-reports either way is a guard that gets muted.
+//
+// A Proxy in the bag's place records exactly the first-level keys a reader touches, so a reader that
+// reaches into its own sub-object cannot be mistaken for one that owns a block.
+
+const principal: VerifiedToken = {
+  userId: 1n,
+  tenantId: 1n,
+  role: "TENANT_ADMIN",
+  scopes: ["mcp:read", "mcp:write"],
+  clientId: "c",
+  jti: "j",
+};
+
+// TWO SOURCES, because neither covers the bag alone.
+//
+//   1. `readBehaviorSettings({})` — the aggregate reader, whose OUTPUT keys are the behavior blocks.
+//      Eight of them (split, serviceWindow, grounding, availability, channelRedirect,
+//      attributeContext, limits, modelFallback) have their reader in a file that is not a
+//      settings.ts, so the glob below never sees them.
+//   2. The per-module settings readers, probed — this is what finds a block that exists OUTSIDE the
+//      behavior aggregate, which is exactly how all four non-guardrails gaps came to be.
+//
+// WHAT THIS DOES NOT DO IS IMPORT THE WHOLE TREE. That was tried: importing every module and calling
+// every `read*` export ran real code, and a Prisma query went out to the database from what was
+// supposed to be a static check. A guard that performs I/O to decide whether a schema is complete is
+// a worse problem than the one it checks. The glob stays narrow and the aggregate covers the rest.
+//
+// The residual hole, stated rather than implied: a block whose reader lives outside `settings.ts`
+// AND outside the behavior aggregate is invisible here, and the fix is to add its file to the glob.
+// That is a smaller hole than today's (where a block is invisible unless someone edits a list), and
+// it is the one the comment above the glob asks the next author to close.
+const READER_GLOBS = [
+  "modules/**/settings.ts",
+  "modules/agents/tool-guidance.ts",
+  "modules/agents/tool-preconditions.ts",
+];
+
+// A block a reader owns but `agent_settings_set` deliberately does not take, with the reason. Empty
+// today. An entry here is a DECISION, and the string is not decoration: it is what tells the next
+// reader of this file that the absence was chosen rather than forgotten.
+const NOT_PUBLISHED: Record<string, string> = {};
+
+// Readers that cannot be probed with a bare bag (they need more than the settings object). Same
+// contract as above: named, with a reason, never skipped silently — a probe that quietly gives up on
+// a reader reports "no blocks" for it, which reads exactly like a reader that owns none.
+const UNPROBEABLE: Record<string, string> = {};
+
+// The per-block properties, as tools/list publishes them.
+async function publishedProperties(): Promise<
+  Record<string, Record<string, unknown>>
+> {
+  const server = buildMcpServer(principal);
+  const [clientT, serverT] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverT);
+  const client = new Client({ name: "props", version: "0" });
+  await client.connect(clientT);
+  try {
+    const tool = (await client.listTools()).tools.find(
+      (t) => t.name === "agent_settings_set",
+    );
+    if (!tool) throw new Error("agent_settings_set is not listed");
+    const blocks = (
+      tool.inputSchema as {
+        properties?: Record<string, { properties?: Record<string, unknown> }>;
+      }
+    ).properties;
+    const out: Record<string, Record<string, unknown>> = {};
+    for (const [name, block] of Object.entries(blocks ?? {})) {
+      if (block.properties) out[name] = block.properties;
+    }
+    return out;
+  } finally {
+    await client.close();
+  }
+}
+
+async function publishedBlocks(): Promise<Set<string>> {
+  const server = buildMcpServer(principal);
+  const [clientT, serverT] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverT);
+  const client = new Client({ name: "parity", version: "0" });
+  await client.connect(clientT);
+  try {
+    const tool = (await client.listTools()).tools.find(
+      (t) => t.name === "agent_settings_set",
+    );
+    if (!tool) throw new Error("agent_settings_set is not listed");
+    const props = (tool.inputSchema as { properties?: Record<string, unknown> })
+      .properties;
+    return new Set(Object.keys(props ?? {}));
+  } finally {
+    await client.close();
+  }
+}
+
+interface Owned {
+  block: string;
+  reader: string;
+}
+
+// Runs every discovered reader against a Proxy and records which first-level keys it read.
+async function ownedBlocks(): Promise<{
+  owned: Owned[];
+  unprobeable: string[];
+}> {
+  const { Glob } = await import("bun");
+  const owned: Owned[] = [];
+  const unprobeable: string[] = [];
+  // Source 1: the aggregate's own output keys.
+  for (const block of Object.keys(readBehaviorSettings({}))) {
+    owned.push({ block, reader: "readBehaviorSettings" });
+  }
+  const files = new Set<string>();
+  for (const pattern of READER_GLOBS) {
+    for await (const rel of new Glob(pattern).scan("src")) {
+      if (!rel.includes(".test.")) files.add(rel);
+    }
+  }
+  for (const rel of [...files].sort()) {
+    const mod: Record<string, unknown> = await import(`@/${rel}`);
+    for (const [name, fn] of Object.entries(mod)) {
+      if (typeof fn !== "function" || !/^read[A-Z]/.test(name)) continue;
+      const id = `src/${rel}::${name}`;
+      const seen = new Set<string>();
+      const probe = new Proxy(
+        {},
+        {
+          get(_t, p) {
+            if (typeof p === "string") seen.add(p);
+            return undefined;
+          },
+          has() {
+            return true;
+          },
+        },
+      );
+      try {
+        (fn as (bag: unknown) => unknown)(probe);
+      } catch {
+        unprobeable.push(id);
+        continue;
+      }
+      for (const block of seen) owned.push({ block, reader: id });
+    }
+  }
+  return { owned, unprobeable };
+}
+
+describe("every agent settings block reaches agent_settings_set", () => {
+  test("the probe finds readers at all, and reads blocks from them", async () => {
+    // The positive control, and it is not optional: a discovery pass that finds NOTHING passes every
+    // assertion below exactly like one that finds everything. Without this, a broken glob or a
+    // renamed directory would turn this whole file green while guarding nothing.
+    const { owned } = await ownedBlocks();
+    const blocks = new Set(owned.map((o) => o.block));
+    // ANCHORS, not a count. A number here would be calibrated against the size of ONE tree, and this
+    // test runs in both editions — the derivation drops modules, so the count legitimately differs
+    // and a pinned one would fail in the smaller tree for no defect at all.
+    for (const anchor of ["debounce", "stt", "tts", "guardrails", "memory"]) {
+      expect(blocks).toContain(anchor);
+    }
+    // Both sources reached: this one comes only from the aggregate, that one only from the glob.
+    expect(blocks).toContain("modelFallback");
+    expect(blocks).toContain("kanban");
+  });
+
+  test("no reader is silently skipped", async () => {
+    const { unprobeable } = await ownedBlocks();
+    expect(unprobeable.filter((r) => !(r in UNPROBEABLE))).toEqual([]);
+  });
+
+  test("every owned block is published, or named as not published with a reason", async () => {
+    const [{ owned }, published] = await Promise.all([
+      ownedBlocks(),
+      publishedBlocks(),
+    ]);
+    const missing = [
+      ...new Set(
+        owned
+          .filter((o) => !published.has(o.block) && !(o.block in NOT_PUBLISHED))
+          .map((o) => `${o.block} (${o.reader})`),
+      ),
+    ].sort();
+    expect(missing).toEqual([]);
+  });
+
+  test("an exemption names a block that still exists", async () => {
+    // A stale exemption is worse than none: it silently forgives whatever takes that name next.
+    const { owned } = await ownedBlocks();
+    const blocks = new Set(owned.map((o) => o.block));
+    expect(Object.keys(NOT_PUBLISHED).filter((b) => !blocks.has(b))).toEqual(
+      [],
+    );
+  });
+
+  test("every exemption carries a non-empty reason", () => {
+    expect(
+      Object.entries(NOT_PUBLISHED)
+        .concat(Object.entries(UNPROBEABLE))
+        .filter(([, why]) => why.trim() === "")
+        .map(([k]) => k),
+    ).toEqual([]);
+  });
+});
+
+// THE OTHER DIRECTION, and it has never had a guard at all: what `agent_settings_set` ACCEPTS,
+// `agent_settings_get` has to give back. A block that can be written and not read is a client that
+// cannot tell what it just did — and it is the shape the five gaps would have taken if only half of
+// this change had landed, since the two sides are wired from different places (the set derives its
+// keys from BEHAVIOR_PATCH_SHAPE, the get projects readBehaviorSettings).
+describe("agent_settings_get returns what agent_settings_set takes", () => {
+  test("every writable block is present in the read projection", () => {
+    const readable = new Set(Object.keys(readBehaviorSettings({})));
+    const writable = Object.keys(BEHAVIOR_PATCH_SHAPE);
+    expect(writable.filter((b) => !readable.has(b))).toEqual([]);
+  });
+
+  test("and nothing is readable that cannot be written", () => {
+    // The reverse is just as bad in practice: a block the read advertises and the write silently
+    // ignores reads as "I set that" to every client.
+    const writable = new Set(Object.keys(BEHAVIOR_PATCH_SHAPE));
+    const readable = Object.keys(readBehaviorSettings({}));
+    expect(readable.filter((b) => !writable.has(b))).toEqual([]);
+  });
+});
+
+// WHAT THE DECLARATIONS BUY, asserted — the mutation battery found all three of these surviving,
+// which means the schema said something no test was reading.
+//
+// The rule the schema file states is "type and choice, never size": a value the reader would THROW
+// AWAY is declared, so the call is refused with the field named instead of succeeding and storing a
+// default nobody asked for. That is only true if something checks it.
+describe("the new blocks declare type and choice", () => {
+  const patch = z.object(BEHAVIOR_PATCH_SHAPE);
+
+  test("a non-number offset is refused, not dropped", () => {
+    // readAppointmentReminderConfig skips a non-number silently, so without this the API would
+    // answer ok on `["24"]` and store the default pair — a reminder schedule the caller never wrote.
+    expect(
+      patch.safeParse({ appointmentReminders: { offsetsHours: ["24"] } })
+        .success,
+    ).toBe(false);
+    expect(
+      patch.safeParse({ appointmentReminders: { offsetsHours: [24, 1] } })
+        .success,
+    ).toBe(true);
+  });
+
+  test("an offset the reader CLAMPS still parses", () => {
+    // The other half of the rule, and the one that is easy to break by copying a bound in here:
+    // 100000 is clamped to 8760 by the reader, so refusing it would make the same write succeed in
+    // the console and fail through MCP.
+    expect(
+      patch.safeParse({ appointmentReminders: { offsetsHours: [100000] } })
+        .success,
+    ).toBe(true);
+  });
+
+  test("an unknown guardrail action is refused", () => {
+    expect(
+      patch.safeParse({ guardrails: { output: { action: "explode" } } })
+        .success,
+    ).toBe(false);
+    for (const action of ["template", "generated", "silent"]) {
+      expect(
+        patch.safeParse({ guardrails: { output: { action } } }).success,
+      ).toBe(true);
+    }
+  });
+
+  test("a guardrails message the reader CLIPS still parses", () => {
+    expect(
+      patch.safeParse({
+        guardrails: { output: { templateMessage: "x".repeat(10_000) } },
+      }).success,
+    ).toBe(true);
+  });
+});
+
+// The two name-keyed blocks PUBLISH the catalog, and that is their whole difference from a
+// `z.record(z.string(), …)`. Both readers drop a key outside the catalog, so the schema cannot refuse
+// one without diverging from the console — what it can do is tell the caller which names exist,
+// which is the difference between a typo the client sees and a rule that silently guards nothing.
+describe("toolGuidance and toolPreconditions publish the native catalog", () => {
+  test("every native tool name appears as a property of both", async () => {
+    const published = await publishedProperties();
+    for (const block of ["toolGuidance", "toolPreconditions"]) {
+      const props = Object.keys(published[block] ?? {});
+      expect(props.sort()).toEqual([...NATIVE_TOOL_NAMES].sort());
+    }
+  });
+
+  test("a name added to the catalog needs no edit here", () => {
+    // Generated from NATIVE_TOOL_NAMES rather than typed out, so this holds by construction. The
+    // assertion is that the generation is actually wired — a hand-written list would pass the test
+    // above today and go stale on the next native tool.
+    const shape = (
+      BEHAVIOR_PATCH_SHAPE.toolGuidance as unknown as {
+        unwrap: () => { shape: Record<string, unknown> };
+      }
+    ).unwrap().shape;
+    expect(Object.keys(shape).sort()).toEqual([...NATIVE_TOOL_NAMES].sort());
+  });
+});

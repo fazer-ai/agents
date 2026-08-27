@@ -1,5 +1,8 @@
 import { readModelFallbackConfig } from "@/graph/fallback-settings";
 import { readLimitsConfig } from "@/modules/agents/limits";
+import { readToolGuidance } from "@/modules/agents/tool-guidance";
+import { readToolPreconditions } from "@/modules/agents/tool-preconditions";
+import { readAppointmentReminderConfig } from "@/modules/appointments/settings";
 import { readAvailabilityConfig } from "@/modules/availability/away";
 import { readChannelRedirectConfig } from "@/modules/channel-redirect/service";
 import { readAttributeContextConfig } from "@/modules/chatwoot/attributes";
@@ -13,6 +16,7 @@ import { readFollowUpConfig } from "@/modules/followups/settings";
 import { readGuardrailsConfig } from "@/modules/guardrails/settings";
 import { readHandoffConfig } from "@/modules/handoff/settings";
 import { readSendImageConfig } from "@/modules/images/settings";
+import { readKanbanConfig } from "@/modules/kanban/settings";
 import { readMemoryConfig } from "@/modules/memory/settings";
 import { readServiceWindowConfig } from "@/modules/service-window/service";
 import { readSplitConfig } from "@/modules/split/service";
@@ -65,6 +69,16 @@ export interface BehaviorSettings {
   // NOTE: All four fields null is the ordinary state and means NO fallback, not "the agent's own
   // model" the way the two sibling overrides read it (see graph/fallback-settings).
   modelFallback: ReturnType<typeof readModelFallbackConfig>;
+  // NOTE: The five below joined this surface with issue #402, and they are the reason the guard over it
+  // changed shape. Each was already written by the console and by REST; none was reachable over MCP,
+  // because the check that should have noticed compared against the list right below rather than
+  // against what the readers produce. `guardrails` is the one that was left out on purpose, and the
+  // reason was never written anywhere — which is why "decided" and "forgotten" had become the same
+  // thing from outside.
+  kanban: ReturnType<typeof readKanbanConfig>;
+  appointmentReminders: ReturnType<typeof readAppointmentReminderConfig>;
+  toolGuidance: ReturnType<typeof readToolGuidance>;
+  toolPreconditions: ReturnType<typeof readToolPreconditions>;
 }
 
 // The keys this surface owns inside the settings bag. Any other key (future/unknown) is preserved
@@ -89,6 +103,10 @@ export const BEHAVIOR_SETTINGS_KEYS = [
   "observability",
   "memory",
   "modelFallback",
+  "kanban",
+  "appointmentReminders",
+  "toolGuidance",
+  "toolPreconditions",
 ] as const;
 export type BehaviorSettingsKey = (typeof BEHAVIOR_SETTINGS_KEYS)[number];
 
@@ -114,6 +132,10 @@ export function readBehaviorSettings(settings: unknown): BehaviorSettings {
     observability: readObservabilityConfig(settings),
     memory: readMemoryConfig(settings),
     modelFallback: readModelFallbackConfig(settings),
+    kanban: readKanbanConfig(settings),
+    appointmentReminders: readAppointmentReminderConfig(settings),
+    toolGuidance: readToolGuidance(settings),
+    toolPreconditions: readToolPreconditions(settings),
   };
 }
 
@@ -139,6 +161,10 @@ export interface BehaviorSettingsPatch {
   observability?: Record<string, unknown>;
   memory?: Record<string, unknown>;
   modelFallback?: Record<string, unknown>;
+  kanban?: Record<string, unknown>;
+  appointmentReminders?: Record<string, unknown>;
+  toolGuidance?: Record<string, unknown>;
+  toolPreconditions?: Record<string, unknown>;
 }
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
@@ -235,32 +261,38 @@ export function mergeBehaviorSettings(
   }
 
   // Re-read through the typed readers to clamp/validate, then write the normalized blocks back.
-  const normalized = readBehaviorSettings(next);
-  next.debounce = normalized.debounce;
-  next.stt = normalized.stt;
-  next.tts = normalized.tts;
-  next.vision = normalized.vision;
-  next.split = normalized.split;
-  next.serviceWindow = normalized.serviceWindow;
-  next.followUp = normalized.followUp;
-  next.handoff = normalized.handoff;
-  next.sendImage = normalized.sendImage;
-  next.limits = normalized.limits;
-  next.availability = normalized.availability;
-  next.contactAuth = normalized.contactAuth;
-  next.channelRedirect = normalized.channelRedirect;
-  next.guardrails = normalized.guardrails;
-  next.attributeContext = normalized.attributeContext;
+  //
+  // FROM THE KEY LIST, not eighteen assignments beside it. This was a line per block, and the guard
+  // over it (tests/modules/behavior-settings.test.ts) exists because `modelFallback` went in without
+  // one — the fourth block in a single change to reach one registration point and not the next. It
+  // happened again here: #402 added four blocks to the list above and the write-back kept the shape
+  // it had, so `kanban` and `appointmentReminders` merged and were never stored normalized. The
+  // guard caught it, which is the argument for deriving rather than for a more careful reviewer.
+  //
+  // The two exceptions are handled after the loop, and each is a real difference rather than an
+  // omission: see their own comments below.
+  const normalized = readBehaviorSettings(next) as unknown as Record<
+    string,
+    unknown
+  >;
+  const WRITTEN_BACK_SEPARATELY = new Set(["observability", "grounding"]);
+  for (const key of BEHAVIOR_SETTINGS_KEYS) {
+    if (WRITTEN_BACK_SEPARATELY.has(key)) continue;
+    next[key] = normalized[key];
+  }
   // Through the storable projection, not the read shape: `observability.fullDetail` is DERIVED, and
   // this line is what would persist it.
-  next.observability = storableObservability(normalized.observability);
-  next.memory = normalized.memory;
-  next.modelFallback = normalized.modelFallback;
+  next.observability = storableObservability(
+    normalized.observability as ReturnType<typeof readObservabilityConfig>,
+  );
   // grounding: only persist when a valid distance is set; otherwise leave whatever was there
   // (a null maxDistance means "no grounding filter" — represent it explicitly when the patch
   // touched grounding so the operator can clear it).
   if (patch.grounding !== undefined) {
-    next.grounding = { maxDistance: normalized.grounding.maxDistance };
+    next.grounding = {
+      maxDistance: (normalized.grounding as { maxDistance: number | null })
+        .maxDistance,
+    };
   }
   return next;
 }

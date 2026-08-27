@@ -239,6 +239,65 @@ describe("agent_settings_set argument schema", () => {
     expect(guidance).toBe("\\S");
   });
 
+  // THE OTHER DIRECTION OF THE SAME INVARIANT, and the reason it needed its own round: on the
+  // guidance side blank was ACCEPTED and thrown away; on the precondition side the server REFUSES it
+  // (`parseToolPrecondition` trims, the write boundary refuses what does not parse), so a
+  // schema-valid call came back as an MCP error with nothing published to predict it.
+  test("the published precondition refuses the blank the write refuses", async () => {
+    const published = await publishedSchema();
+    const value = published.toolPreconditions?.handoff_to_human;
+    if (!value)
+      throw new Error("toolPreconditions.handoff_to_human not published");
+    const branches = Array.isArray(value.anyOf)
+      ? (value.anyOf as Record<string, unknown>[])
+      : [value];
+    const object = branches.find((b) => b.type === "object") as {
+      properties: Record<string, { pattern?: string }>;
+    };
+    expect(object.properties.key?.pattern).toBe("\\S");
+    expect(object.properties.equals?.pattern).toBe("\\S");
+  });
+
+  // The refusal now happens in the PARSE, before the handler — which is the whole point, since a
+  // client validating against tools/list refuses it before sending. Asserted by the error text: a
+  // blank key must never reach `assertSettingsToolPreconditions`.
+  test("a blank precondition key is refused by the schema, not by the write boundary", () => {
+    const patch = {
+      toolPreconditions: {
+        handoff_to_human: { kind: "attribute", scope: "contact", key: "  " },
+      },
+    };
+    expect(() => z.object(BEHAVIOR_PATCH_SHAPE).parse(patch)).toThrow(
+      /toolPreconditions/,
+    );
+    // And `equals`, whose blank the reader refuses rather than treats as absent — a rule the write
+    // boundary already enforced and the schema did not publish.
+    expect(() =>
+      z.object(BEHAVIOR_PATCH_SHAPE).parse({
+        toolPreconditions: {
+          handoff_to_human: {
+            kind: "attribute",
+            scope: "contact",
+            key: "cpf",
+            equals: " ",
+          },
+        },
+      }),
+    ).toThrow(/equals/);
+  });
+
+  // And the rule that decides which server refusals belong in the schema at all, pinned by its one
+  // counterexample: `modelFallback` refuses a provider without a model, which is a requirement
+  // BETWEEN fields. docs/mcp.md puts those in the description, so the schema must NOT carry it —
+  // copying it in would refuse the half-pair a stored bag legitimately re-sends.
+  test("a between-fields requirement stays out of the schema", () => {
+    expect(() =>
+      z.object(BEHAVIOR_PATCH_SHAPE).parse({
+        modelFallback: { provider: "openai" },
+      }),
+    ).not.toThrow();
+  });
+
   // The other half, and the half that made round 9 of this PR a regression: `null` is the documented
   // way to clear, so it must still parse everywhere blank is refused.
   test("null still clears every field where blank is refused", () => {
@@ -485,6 +544,17 @@ describe("agent_settings_set over MCP", () => {
     });
     expect(r.isError).toBe(true);
     expect(r.text).toContain("toolGuidance.assign_label");
+  });
+
+  test("a blank precondition key is refused, naming the field", async () => {
+    const r = await callSettingsSet({
+      agent_id: "1",
+      toolPreconditions: {
+        assign_label: { kind: "attribute", scope: "contact", key: " " },
+      },
+    });
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain("toolPreconditions.assign_label.key");
   });
 
   test("a clamped value is NOT refused, it goes through to the readers", async () => {

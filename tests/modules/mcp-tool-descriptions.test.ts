@@ -203,8 +203,11 @@ const SETTINGS_DESC_CEILING = 2_000;
 // MERGED, and re-measured once more on the tree that came out of it. Both sides above raised this
 // same constant from 12,550 while the other was open, so the two figures are about two trees that
 // no longer exist: summing them would write 21,880, a number measured nowhere. The tree that ships
-// is measured at 21,930.
-const SETTINGS_SCHEMA_CEILING = 22_050;
+// is measured at 21,930. A round after it, the same declare-what-the-server-enforces rule reached
+// the precondition's own strings: `key` and `equals` are trimmed by `parseToolPrecondition` and
+// REFUSED by the write boundary, so a schema-valid call came back as an error with nothing published
+// to predict it. Two more patterns, published thirteen times each, at 22,346.
+const SETTINGS_SCHEMA_CEILING = 22_500;
 
 describe("MCP tool descriptions", () => {
   test("agent_settings_set stays under its ceiling", async () => {
@@ -354,7 +357,8 @@ describe("MCP tool descriptions", () => {
   //
   // And re-measured after the merge of the two, for the reason above: the branch figure (51,043) and
   // the base figure (42,497) are each about a tree the other had not landed on. The merged tree is
-  // 51,485 of schema and 26,764 of description.
+  // 51,485 of schema and 26,764 of description. The precondition patterns documented at
+  // SETTINGS_SCHEMA_CEILING then took the schema to 51,901; the ceiling goes to 52,100.
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;
@@ -364,7 +368,7 @@ describe("MCP tool descriptions", () => {
       schema += t.schema.length;
     }
     expect(desc).toBeLessThanOrEqual(27_250);
-    expect(schema).toBeLessThanOrEqual(51_650);
+    expect(schema).toBeLessThanOrEqual(52_100);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

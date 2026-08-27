@@ -236,8 +236,9 @@ const grounding = z.looseObject({
 // `followUps[].instructions` is deliberately NOT here: its stored default is `""` (see
 // modules/followups/settings.ts), the reader keeps it, and refusing it would break the round trip
 // this surface documents.
-const toolNote = () =>
-  z.string().regex(/\S/, "must not be blank; use null to clear it");
+const nonBlank = (message: string) => z.string().regex(/\S/, message);
+
+const toolNote = () => nonBlank("must not be blank; use null to clear it");
 
 const followUpStep = z.looseObject({
   delayValue: z.number().optional().describe("≥ 1, clamped"),
@@ -691,8 +692,22 @@ const toolPreconditions = nativeToolKeys(
     .looseObject({
       kind: z.literal("attribute"),
       scope: z.enum(["conversation", "contact"]),
-      key: z.string(),
-      equals: z.string().optional(),
+      // BLANK IS REFUSED BY THE SERVER HERE, so it is published rather than left to the caller to
+      // discover. `parseToolPrecondition` trims both and returns null for either — and the write
+      // boundary REFUSES what does not parse instead of dropping it, so a schema-valid call came
+      // back as an MCP error with nothing in tools/list to predict it.
+      //
+      // The line that decides which refusals belong in the schema is whether JSON Schema can carry
+      // them faithfully. A pattern can. `modelFallback`'s half-named pair cannot — that is a
+      // requirement BETWEEN fields, and docs/mcp.md puts those in the description, which is where
+      // it already is.
+      key: nonBlank("must not be blank"),
+      // NOTE: blank is refused rather than treated as absent, and the reader says why: dropping it
+      // would turn "the attribute must equal X" into "the attribute must exist", a weaker rule than
+      // the operator wrote, and weaker in silence.
+      equals: nonBlank(
+        "must not be blank; omit it to require only that the attribute is set",
+      ).optional(),
     })
     // NOTE: NULLABLE, and it is the only way to REMOVE a rule over this surface. The merge treats each
     // tool's value as a replacement and an absent key as "leave it alone", so without a tombstone

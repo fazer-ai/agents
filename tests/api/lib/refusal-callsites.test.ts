@@ -160,7 +160,7 @@ const NAMES_A_FIELD = new RegExp(
 // that stops matching is describing code that no longer exists.
 const NOT_ABOUT_AN_INPUT: Record<string, string> = {
   "src/lib/db-id.ts":
-    'requireDbId\'s `label` is a human noun phrase ("template id"), and what it refuses is a URL path segment, not an input on a form.',
+    "requireDbId's `label` names the value in the SENTENCE, and there is no control to attach it to: a path segment has no input, and the body ids that reach it (issue #407) are all written by a select the console fills from the API, so a malformed one cannot come from a form at all.",
 };
 
 // A refusal that spells a field into its sentence must pass that field as the wire argument.

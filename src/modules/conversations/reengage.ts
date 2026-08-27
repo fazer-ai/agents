@@ -21,6 +21,10 @@ import {
 import { coalesceAndRunTurn } from "@/modules/debounce/handler";
 import { readHandledWatermark } from "@/modules/debounce/watermark";
 import { emitFlowEvent } from "@/modules/flowlog/service";
+import {
+  announceSpendCeiling,
+  spendCeilingVerdict,
+} from "@/modules/spend-ceiling/service";
 import { clearConversationError } from "./error";
 
 // Manual re-engage (item 6): re-fire the agent turn on a conversation WITHOUT waiting for a new
@@ -70,7 +74,11 @@ export type ReengageOutcome =
   | RunAgentTurnOutcome
   | "empty"
   | "gate-closed"
-  | "not-authorized";
+  | "not-authorized"
+  // The tenant is past its month's tokens. Its own outcome rather than a silent no-reply, because
+  // this path is an operator pressing a button: they are owed the reason, and it is one they can
+  // act on from the settings page.
+  | "over-ceiling";
 
 export interface ReengageResult {
   outcome: ReengageOutcome;
@@ -157,6 +165,32 @@ export async function reengageConversation(
     { ourAgentBotId: resolved.loaded.agentBotId },
   );
   if (!gateOpen) return { outcome: "gate-closed" };
+
+  // The spend ceiling, asked here for the reason every other turn seam asks it: this is a billed
+  // call, and nothing above it is. An operator re-engaging a conversation by hand is spending the
+  // same budget a customer's message spends, so the same wall applies — and unlike the customer
+  // paths, this one REPORTS rather than going quiet, because somebody is looking at the button.
+  const ceiling = await spendCeilingVerdict({
+    tenantId,
+    source: "inbox",
+    base,
+  });
+  announceSpendCeiling(
+    {
+      tenantId,
+      turnId: crypto.randomUUID(),
+      source: "inbox",
+      conversationId: resolved.convDbId,
+      agentId: resolved.loaded.agentId,
+      inboxId: resolved.loaded.inboxDbId,
+      threadId: resolved.threadId,
+      base,
+    },
+    ceiling,
+    "inbox",
+    tenantId,
+  );
+  if (ceiling.state === "over") return { outcome: "over-ceiling" };
 
   // The contact-authorization gate (docs/contact-auth.md) applies here for the same reason it
   // applies to a follow-up: this runs the model and sends its answer to the customer, so it is a

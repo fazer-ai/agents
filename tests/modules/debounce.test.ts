@@ -3151,4 +3151,121 @@ describe.skipIf(!dbUp)("debounce", () => {
       expect(conv.lastErrorAt).not.toBeNull();
     });
   });
+
+  // THE SECOND ASK (issue #146). The webhook's spend gate covers the MESSAGE; the flush runs minutes
+  // later and is where the turn actually spends. A tenant that crosses its ceiling inside that
+  // window — from its own other conversations, or from this one's earlier burst — would otherwise
+  // have an already-armed flush spend past it, and many armed conversations would do it together.
+  describe("with the spend ceiling reached between arming and the flush", () => {
+    let previousTenantSettings: unknown = null;
+
+    beforeAll(async () => {
+      const before = await suDb.tenant.findUniqueOrThrow({
+        where: { id: tenantId },
+        select: { settings: true },
+      });
+      previousTenantSettings = before.settings;
+      await suDb.tenant.update({
+        where: { id: tenantId },
+        data: {
+          settings: {
+            ...(before.settings as object),
+            spendCeiling: { enabled: true, monthlyInboxTokens: 1000 },
+          },
+        },
+      });
+      await suDb.llmUsage.create({
+        data: {
+          tenantId,
+          model: "gpt-4o-mini",
+          source: "inbox",
+          promptTokens: 1200,
+          completionTokens: 0,
+        },
+      });
+    });
+
+    afterAll(async () => {
+      await suDb.llmUsage.deleteMany({ where: { tenantId } });
+      await suDb.tenant.update({
+        where: { id: tenantId },
+        data: { settings: previousTenantSettings as object },
+      });
+    });
+
+    test("the flush spends nothing, hands off, and counts the burst as handled", async () => {
+      await seedConversation(910);
+      const sent: Array<[number, string]> = [];
+      const toggles: Array<[number, string]> = [];
+      const out = await flushDebounceJob({
+        job: jobFor(910, { lastMessageId: 7 }),
+        base: appDb,
+        deps: {
+          // The assertion is the factory: a flush that reaches the model at all fails here.
+          makeModel: () => {
+            throw new Error("the model must not be invoked over the ceiling");
+          },
+          makeClient: makeResolveStub({
+            pages: [page([{ id: 7, content: "oi" }])],
+            sent,
+            calls: { getMessages: 0 },
+            toggles,
+          }),
+          checkpointer: new MemorySaver(),
+        },
+      });
+
+      expect(out).toEqual({ outcome: "done" });
+      // Nothing is said to the customer HERE: their next message reaches the webhook gate, which is
+      // over the ceiling and says it properly, with its own cooldown.
+      expect(sent).toEqual([]);
+      // ...but the conversation goes to the human queue, because unlike a refused contact nobody
+      // upstream refused anything, so it would otherwise sit with a bot that will never answer.
+      expect(toggles).toEqual([[910, "open"]]);
+      // The burst counts as handled, so it is not re-flushed into the same wall forever.
+      expect(await watermarkOf(910)).toBe(7);
+      await clearFlowLog(suDb, { tenantId });
+    });
+
+    test("with handoff off, the burst is still dropped and no status is touched", async () => {
+      await suDb.tenant.update({
+        where: { id: tenantId },
+        data: {
+          settings: {
+            ...(previousTenantSettings as object),
+            spendCeiling: {
+              enabled: true,
+              monthlyInboxTokens: 1000,
+              handoffEnabled: false,
+            },
+          },
+        },
+      });
+      await seedConversation(911);
+      const sent: Array<[number, string]> = [];
+      const toggles: Array<[number, string]> = [];
+      const out = await flushDebounceJob({
+        job: jobFor(911, { lastMessageId: 9 }),
+        base: appDb,
+        deps: {
+          makeModel: () => {
+            throw new Error("the model must not be invoked over the ceiling");
+          },
+          makeClient: makeResolveStub({
+            pages: [page([{ id: 9, content: "oi" }])],
+            sent,
+            calls: { getMessages: 0 },
+            toggles,
+          }),
+          checkpointer: new MemorySaver(),
+        },
+      });
+
+      expect(out).toEqual({ outcome: "done" });
+      expect(sent).toEqual([]);
+      expect(toggles).toEqual([]);
+      expect(await watermarkOf(911)).toBe(9);
+      await clearFlowLog(suDb, { tenantId });
+    });
+  });
 });

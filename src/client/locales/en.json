@@ -416,6 +416,7 @@
       "gateClosed": "A human owns this conversation; return it to the AI first.",
       "noReply": "The AI produced no reply.",
       "notAuthorized": "The authorization endpoint did not clear this contact, so the AI did not reply.",
+      "overCeiling": "This month's token ceiling has been reached, so the AI did not reply. Raise it in Settings or wait for the next month.",
       "posted": "The AI replied."
     },
     "reminders": {

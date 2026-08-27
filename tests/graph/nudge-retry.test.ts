@@ -16,8 +16,10 @@ const TABLE: Array<[RunAgentNudgeOutcome, boolean]> = [
   ["live-unavailable", true],
   ["deferred", true],
   // The month turns over on its own, and the operator can raise the number before it does. Spending
-  // the occasion here would lose a follow-up nobody resends, over a wall that is temporary by
-  // construction (issue #146).
+  // the occasion immediately would lose a follow-up nobody resends. What it buys is BOUNDED by this
+  // ladder, which is the same one `agent-unavailable` rides: 8 attempts, 15 minutes apart, so a
+  // ceiling still standing two hours later spends the occasion anyway. That is the common case
+  // covered, not a promise that the occasion waits for the month to turn (issue #146).
   ["over-ceiling", true],
   ["messaged", false],
   ["templated", false],

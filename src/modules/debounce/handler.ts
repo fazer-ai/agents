@@ -48,6 +48,10 @@ import {
   registerDeadLetterHandler,
   registerJobHandler,
 } from "@/modules/scheduler/worker";
+import {
+  announceSpendCeiling,
+  spendCeilingVerdict,
+} from "@/modules/spend-ceiling/service";
 import { readLastMessageId } from "./service";
 import { readDebounceConfig } from "./settings";
 import { advanceHandledWatermark, readHandledWatermark } from "./watermark";
@@ -574,6 +578,88 @@ export async function flushDebounceJob(
         afterMessageId: ctx.watermark ?? null,
         upToMessageId: last,
         heldByAnotherBot: ctx.heldByAnotherBot,
+        base,
+        label: "debounce flush",
+      });
+    }
+    return { outcome: "done" };
+  }
+
+  // The spend ceiling, again, at the point the TURN happens, and for the reason the gate below is
+  // asked twice: debounce means the message that ARMS a flush and the turn that runs it are minutes
+  // apart, and the tenant can cross its ceiling inside that window — from its own other
+  // conversations, or from this one's earlier burst. The webhook's ask covered the arming; this one
+  // covers the turn, which is the thing that actually spends.
+  //
+  // The burst is dropped the way a refused contact drops it, and for the same reason: the watermark
+  // advances off the payload's own last id, nothing is posted, and the flow line is what tells the
+  // operator. The one place it goes further is the HANDOFF. A contact refused here was already told
+  // and handed off by the webhook delivery that was refused; a ceiling crossed inside the window
+  // never refused anything, so the conversation is still the bot's and would sit there with nobody
+  // coming. The customer copy is deliberately NOT posted: their next message reaches the webhook
+  // gate, which is over the ceiling now and says it properly, with its own cooldown.
+  const flushCeiling = await spendCeilingVerdict({
+    tenantId,
+    source: "inbox",
+    base,
+  });
+  announceSpendCeiling(
+    {
+      tenantId,
+      turnId: crypto.randomUUID(),
+      source: "inbox",
+      conversationId: ctx.convDbId,
+      agentId: ctx.loaded.agentId,
+      inboxId: ctx.loaded.inboxDbId,
+      threadId,
+      base,
+    },
+    flushCeiling,
+    "inbox",
+    tenantId,
+  );
+  if (flushCeiling.state === "over") {
+    logger.info(
+      "debounce flush: spend ceiling reached (conv=%s used=%s ceiling=%s), dropping the burst",
+      String(conversationId),
+      String(flushCeiling.usedTokens),
+      String(flushCeiling.ceilingTokens),
+    );
+    if (flushCeiling.cfg.handoffEnabled) {
+      // Best-effort, like every other handoff: a Chatwoot that will not take the status change must
+      // not strand the flush, and the customer's next message re-tries it through the webhook gate.
+      const handoffClient = await loadChatwootClient(tenantId, instanceId, {
+        base,
+        makeClient: deps?.makeClient,
+      });
+      await handoffClient
+        .toggleStatus(conversationId, "open")
+        .catch((err: unknown) => {
+          logger.warn(
+            "debounce flush: could not open the conversation for humans (conv=%s): %s",
+            String(conversationId),
+            err instanceof Error ? err.message : String(err),
+          );
+        });
+    }
+    const last = readLastMessageId(job.payload);
+    if (last !== null) {
+      await advanceHandledWatermark({
+        tenantId,
+        conversationDbId: ctx.convDbId,
+        toMessageId: last,
+        base,
+      });
+      await settleGateExit({
+        tenantId,
+        instanceId,
+        conversationId,
+        conversationRowId: ctx.convDbId,
+        afterMessageId: ctx.watermark ?? null,
+        upToMessageId: last,
+        // False, and for the reason the gate below gives: what closed this exit is a decision about
+        // the TENANT, which holds for whichever route carried the message.
+        heldByAnotherBot: false,
         base,
         label: "debounce flush",
       });

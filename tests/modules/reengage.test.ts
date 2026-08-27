@@ -614,4 +614,97 @@ describe.skipIf(!dbUp)("reengage", () => {
       expect(sent).toEqual([]);
     });
   });
+
+  // The re-engage button is a billed call like any other, and nothing above it in this path is
+  // (issue #146). Unlike the customer-facing seams it REPORTS rather than going quiet: an operator
+  // is looking at the button, and the reason is one they can act on from the settings page.
+  describe("with the spend ceiling reached", () => {
+    let previousTenantSettings: unknown = null;
+
+    beforeAll(async () => {
+      const before = await suDb.tenant.findUniqueOrThrow({
+        where: { id: tenantId },
+        select: { settings: true },
+      });
+      previousTenantSettings = before.settings;
+      await suDb.tenant.update({
+        where: { id: tenantId },
+        data: {
+          settings: {
+            ...(before.settings as object),
+            spendCeiling: { enabled: true, monthlyInboxTokens: 1000 },
+          },
+        },
+      });
+      await suDb.llmUsage.create({
+        data: {
+          tenantId,
+          model: "gpt-4o-mini",
+          source: "inbox",
+          promptTokens: 1200,
+          completionTokens: 0,
+        },
+      });
+    });
+
+    afterAll(async () => {
+      await suDb.llmUsage.deleteMany({ where: { tenantId } });
+      await suDb.tenant.update({
+        where: { id: tenantId },
+        data: { settings: previousTenantSettings as object },
+      });
+    });
+
+    test("the button reports the ceiling instead of spending a turn", async () => {
+      const id = await seedConversation(920);
+      const sent: Array<[number, string]> = [];
+      const res = await reengageConversation(
+        ctx(),
+        id,
+        {
+          // The assertion is the factory: a re-engage that reaches the model at all fails here.
+          makeModel: () => {
+            throw new Error("the model must not be invoked over the ceiling");
+          },
+          makeClient: makeStub({
+            page: page([{ id: 1, content: "oi" }]),
+            sent,
+          }),
+          checkpointer: new MemorySaver(),
+        },
+        appDb,
+      );
+      expect(res.outcome).toBe("over-ceiling");
+      expect(sent).toEqual([]);
+    });
+
+    test("under the ceiling the button still answers", async () => {
+      await suDb.tenant.update({
+        where: { id: tenantId },
+        data: {
+          settings: {
+            ...(previousTenantSettings as object),
+            spendCeiling: { enabled: true, monthlyInboxTokens: 1_000_000 },
+          },
+        },
+      });
+      const id = await seedConversation(921);
+      const sent: Array<[number, string]> = [];
+      const res = await reengageConversation(
+        ctx(),
+        id,
+        {
+          makeModel: fakeModel,
+          makeClient: makeStub({
+            page: page([{ id: 1, content: "oi" }]),
+            sent,
+          }),
+          checkpointer: new MemorySaver(),
+        },
+        appDb,
+      );
+      expect(res.outcome).toBe("posted");
+      expect(sent.length).toBe(1);
+    });
+  });
 });

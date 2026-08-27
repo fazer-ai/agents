@@ -61,7 +61,13 @@ is ignored in the wrong one, and this ceiling is per **tenant** — a tenant spa
 accounts as it has instances, so one stored team would be meaningless in every account but one.
 
 Below the ceiling but past `warnAtPercent`, the turn runs and a `spend_ceiling` warn is emitted, so
-the operator hears about it through the alert channels **before** the agent goes quiet.
+the operator hears about it **before** the agent goes quiet.
+
+**Only the inbox half pages.** `writeFlowEvent` dispatches to alert channels for `source === "inbox"`
+only, which is the rule the whole flow log follows so playground telemetry never wakes anyone. The
+playground warning is therefore written to the Logs page and to the console's own bars, and nowhere
+else — which is the right reach for it, since the person spending that half is the one at the screen,
+and the refusal, when it comes, is a `429` that names the number.
 
 **How often each line is said** is decided in one place, `spendCeilingAnnouncement`. An `over` line
 is written per refused message, because each one is a turn that did not run and the Logs page is
@@ -83,10 +89,18 @@ red test.
 
 | node | gate |
 | --- | --- |
-| `agent` | the Chatwoot webhook (inbox) and `runPlaygroundTurn` (playground), before the graph is built |
+| `agent` | the Chatwoot webhook (inbox), the **debounce flush**, the **re-engage** button, and `runPlaygroundTurn` (playground) |
 | `nudge` | `runAgentNudge` and `runPlaygroundFollowup` |
 | `vision` | `extractInboundFile` / `extractPlaygroundFile`, asked before the download |
 | `guardrail`, `tts_normalize`, `memory_compact` | covered by the unit above them |
+
+**The turn is asked about more than once**, and the second ask is not redundant. The webhook's gate
+covers the message; the debounce flush runs minutes later, and a tenant can cross its ceiling inside
+that window from its own other conversations. So the flush asks again where the turn actually
+happens, exactly as the contact-authorization gate does and for the same reason. A flush refused
+there drops the burst and hands the conversation to humans (the webhook never refused anything, so
+nobody else would); the customer copy waits for the customer's next message, which reaches the
+webhook gate and says it properly, with its own cooldown.
 
 **Vision asks for itself** because it runs on the incoming attachment *before* the webhook's gates
 decide anything — the same asymmetry `#316` measured for attribution. **Guardrails deliberately do
@@ -100,9 +114,18 @@ it makes the *next* turn cost more, so gating it would raise spend rather than b
 The two directions are not a style choice.
 
 - **Customer-facing paths go quiet** (the webhook returns, the nudge returns `over-ceiling`, vision
-  skips). The webhook must never be stranded, and a `over-ceiling` nudge is a *repairable* refusal
-  (`isRepairableNudgeRefusal`), so a follow-up occasion is not burned against a ceiling the operator
-  can raise and a month that turns over on its own.
+  skips, the debounce flush drops the burst). The webhook must never be stranded, and an
+  `over-ceiling` nudge is a *repairable* refusal (`isRepairableNudgeRefusal`), so the occasion
+  survives a ceiling the operator raises in the next couple of hours.
+
+  **It does not survive longer than that**, and the bound is worth saying out loud: repairable
+  refusals ride the shared nudge ladder (8 attempts, 15 minutes apart), so about two hours after the
+  first refusal the caller stamps the follow-up, discards the reminder, or advances the redirect
+  ladder, exactly as it does for a provider that stayed down. A month's ceiling routinely outlasts
+  that. What the repairable answer buys is the common case — someone raises the number, or the
+  refusal happened near a rollover — not a guarantee that the occasion waits for the month to turn.
+  Scheduling a retry at the ceiling's own horizon would mean a second kind of retry on a ladder five
+  other outcomes share, which is a change to the retry contract rather than to this gate.
 - **The playground throws** `429 errors.spendCeilingReached` (`assertPlaygroundSpendCeiling`). The
   operator is looking at the screen, and a turn that silently produced nothing would read as a
   broken provider.

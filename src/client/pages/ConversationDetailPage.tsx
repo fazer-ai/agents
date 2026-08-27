@@ -1513,6 +1513,14 @@ export function ConversationDetailPage() {
           ),
           "warning",
         );
+      } else if (data.outcome === "over-ceiling") {
+        showToast(
+          t(
+            "conversation.reengage.overCeiling",
+            "This month's token ceiling has been reached, so the AI did not reply. Raise it in Settings or wait for the next month.",
+          ),
+          "warning",
+        );
       } else if (data.outcome === "empty") {
         showToast(
           t("conversation.reengage.empty", "Nothing new to answer."),

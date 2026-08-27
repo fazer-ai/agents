@@ -159,12 +159,23 @@ either way; only what is said and the status change are theirs to lose.
 re-check.
 
 **Vision asks for itself** because it runs on the incoming attachment *before* the webhook's gates
-decide anything — the same asymmetry `#316` measured for attribution. It asks but does **not**
-announce, and it is the only gate here that splits the two: it runs on the very message the webhook
-gate refuses moments later, so a line from each would put two `over` rows and two alert bumps on the
-Logs page for one customer message. Its own `vision` line already reports `skipped` with
-`spend_ceiling` as the reason, which is the stage an operator is filtering by when the question is
-why an attachment was never read. **Guardrails deliberately do
+decide anything — the same asymmetry `#316` measured for attribution. It is also the only gate that
+**announces the warning and not the refusal**, and the split follows from what each half leaves
+behind. The `over` line is written per refused message, and vision runs on the very message the
+webhook gate refuses moments later, so a line from each would put two refusal rows and two alert
+bumps on the Logs page for one customer message; nothing is lost by staying quiet, because its own
+`vision` line reports `skipped` with `spend_ceiling` as the reason, which is the stage an operator
+filters by when the question is why an attachment was never read. The **warning** leaves no such
+trace: the call proceeds, the attachment is read, and no line anywhere says the month crossed its
+fraction. And the gate that would have said it may never run — vision is upstream of every one of
+them, so a human-owned conversation, a silenced agent, a redirect or an hour outside the schedule
+consumes the delivery first and this billed call is the only thing that happened. It cannot
+double-write, because the warning's window is claimed once and a gate that follows writes nothing.
+
+That window is per **(tenant, source, month)**. The month is part of the identity because the
+warning is a statement about a month, and six hours is longer than the gap between the last message
+of one month and the first of the next: a window that outlived the rollover would suppress the first
+warning of a month whose ledger reads zero. **Guardrails deliberately do
 not**: on the output direction the reply is already written and paid for, so refusing there posts it
 unscreened or drops a reply the customer is waiting for, and a ceiling that switched moderation off
 would let a budget decide a safety question. Memory compaction is out for a sharper reason: skipping

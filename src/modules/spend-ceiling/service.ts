@@ -163,8 +163,17 @@ export const SPEND_CEILING_WARN_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 export function spendCeilingWarnKey(
   tenantId: bigint,
   source: UsageSource,
+  now: Date,
 ): string {
-  return `spend_ceiling_warn:${tenantId}:${source}`;
+  // THE MONTH IS PART OF THE IDENTITY, because the warning is a statement ABOUT a month: "this
+  // month's budget is 80% spent". A window that outlived the rollover would suppress the first
+  // warning of a month whose ledger reads zero, on the strength of a sentence about a month that
+  // has ended. Six hours is longer than the gap between 23:xx and 00:xx by construction, so the
+  // overlap is not a corner: it is every rollover in which a tenant was already past its fraction.
+  // The month start ITSELF, not a cut of it: `monthStart` already normalises everything past the
+  // month away, so the whole timestamp is the month, and a bare slice here would be one more entry
+  // in the astral-cap ledger for nothing.
+  return `spend_ceiling_warn:${tenantId}:${source}:${monthStart(now).toISOString()}`;
 }
 
 // WHAT, IF ANYTHING, TO WRITE. Separate from the emit below so the frequency rule can be proved
@@ -178,12 +187,13 @@ export function spendCeilingAnnouncement(
   result: SpendVerdict,
   source: UsageSource,
   tenantId: bigint,
+  now: Date = new Date(),
 ): FlowEvent | null {
   if (result.state === "allowed") return null;
   if (
     result.state === "warning" &&
     !claimContactAuthNotice(
-      spendCeilingWarnKey(tenantId, source),
+      spendCeilingWarnKey(tenantId, source, now),
       SPEND_CEILING_WARN_COOLDOWN_MS,
     )
   ) {
@@ -200,12 +210,36 @@ export function announceSpendCeiling(
   result: SpendVerdict,
   source: UsageSource,
   tenantId: bigint,
+  now?: Date,
 ): void {
   // NOTE: the claim is spent only when there is somewhere to write, so a caller with no flow
   // context does not silently consume another caller's window.
   if (!flow) return;
-  const ev = spendCeilingAnnouncement(result, source, tenantId);
+  const ev = spendCeilingAnnouncement(result, source, tenantId, now);
   if (ev) emitFlowEvent(flow, ev);
+}
+
+// THE WARNING HALF ON ITS OWN, for a caller that runs BEFORE the gate that will refuse the same
+// message. Vision is the only one (docs/spend-ceiling.md): it reads the incoming attachment before
+// any gate has decided anything, so an `over` written here would put a second refusal row and a
+// second alert bump on the Logs page for one customer message, and what this step did is already on
+// its own `vision` line as `skipped` with `spend_ceiling` as the reason.
+//
+// The WARNING is not symmetric with that, which is what made silence here wrong. It leaves no trace
+// anywhere else: the call proceeds, the attachment is read, and nothing says the month crossed its
+// fraction. And on a message no gate ever reaches — a human-owned conversation, a silenced agent, a
+// redirect, an hour outside the schedule — this is the only place that could have said it. It
+// cannot double-write either: the window is claimed once, so a gate that follows and asks the same
+// question writes nothing.
+export function announceSpendCeilingWarning(
+  flow: FlowContext | undefined,
+  result: SpendVerdict,
+  source: UsageSource,
+  tenantId: bigint,
+  now?: Date,
+): void {
+  if (result.state !== "warning") return;
+  announceSpendCeiling(flow, result, source, tenantId, now);
 }
 
 // The line the operator reads. `warning` is what makes this useful BEFORE the agent goes quiet,

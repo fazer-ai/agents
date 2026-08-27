@@ -13,6 +13,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { AppError } from "@/lib/errors";
 import type { TenantContext } from "@/lib/tenancy";
+import { clearContactAuthState } from "@/modules/contact-auth/state";
 import { settleFlowEvents } from "@/modules/flowlog/scheduled";
 import {
   runPlaygroundFollowup,
@@ -150,6 +151,9 @@ describe.skipIf(!dbUp)("the spend ceiling on the playground and vision", () => {
 
   beforeEach(async () => {
     await suDb.llmUsage.deleteMany({ where: { tenantId } });
+    // The warning's window is in-process and per (tenant, source, month), so a test that ran before
+    // this one could otherwise hold it and turn a missing line into a passing assertion.
+    clearContactAuthState();
   });
 
   afterAll(async () => {
@@ -322,6 +326,58 @@ describe.skipIf(!dbUp)("the spend ceiling on the playground and vision", () => {
     expect((rows[0]?.detail as { reason?: string })?.reason).toBe(
       "spend_ceiling",
     );
+    await clearFlowLog(suDb, { tenantId });
+  });
+
+  // THE OTHER HALF OF THAT ASYMMETRY. Silence is right for the refusal, because the `vision` line
+  // above already carries it; it is wrong for the WARNING, which leaves no trace anywhere else — the
+  // call proceeds, the attachment is read, and nothing says the month crossed its fraction. And the
+  // gate that would have said it may never run: vision is upstream of all of them, so a human-owned
+  // conversation or an hour outside the schedule consumes the delivery and this billed call is the
+  // only thing that happened.
+  test("vision past the warning fraction writes the warn line the gate never gets to", async () => {
+    await setCeiling({
+      enabled: true,
+      monthlyInboxTokens: 1000,
+      warnAtPercent: 80,
+    });
+    await spend("inbox", 900);
+    const turnId = `vision-warn-${process.pid}`;
+    await expect(
+      extractInboundFile({
+        tenantId,
+        instanceId,
+        conversationId: 77,
+        messageId: 78,
+        attachmentId: 79,
+        dataUrl: "https://203.0.113.31:9/a.png",
+        cfg: {
+          enabled: true,
+          provider: "openai",
+          model: "gpt-4o-mini",
+          credentialRef: visionRef,
+          baseURL: null,
+          extractionPrompt: "descreva",
+        },
+        base: appDb,
+        flow: { tenantId, turnId, source: "inbox", base: appDb },
+        deps: {
+          makeClient: (() => {
+            throw new Error("reached the download");
+          }) as never,
+        },
+      }),
+      // Under the ceiling, so the attachment IS read: the warning does not refuse anything.
+    ).rejects.toThrow("reached the download");
+    await settleFlowEvents();
+    const rows = await suDb.executionLog.findMany({
+      where: { turnId, stage: "spend_ceiling" },
+      select: { level: true, status: true, detail: true },
+    });
+    expect(rows.length).toBe(1);
+    expect(rows[0]?.level).toBe("warn");
+    expect(rows[0]?.status).toBe("ok");
+    expect((rows[0]?.detail as { state?: string })?.state).toBe("warning");
     await clearFlowLog(suDb, { tenantId });
   });
 

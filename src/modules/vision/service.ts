@@ -13,6 +13,7 @@ import {
   withFlowStage,
 } from "@/modules/flowlog/service";
 import {
+  announceSpendCeilingWarning,
   assertPlaygroundSpendCeiling,
   spendCeilingVerdict,
 } from "@/modules/spend-ceiling/service";
@@ -232,19 +233,31 @@ export async function extractInboundFile(
   // an image sent into a spent month would be billed with nothing to stop it. Asked ahead of the
   // download and the credential read, because those cost too.
   //
-  // IT ASKS BUT DOES NOT ANNOUNCE, which is the one thing this gate does differently from the other
-  // three. `spend_ceiling` is written per refused MESSAGE, and this runs on the same message the
-  // webhook gate refuses moments later: announcing here would put two `over` rows and two alert
+  // IT ANNOUNCES THE WARNING AND NOT THE REFUSAL, which is the one thing this gate does differently
+  // from the other four, and the asymmetry is what the two halves leave behind.
+  //
+  // `spend_ceiling` `over` is written per refused MESSAGE, and this runs on the same message the
+  // webhook gate refuses moments later: writing it here would put two refusal rows and two alert
   // bumps on the Logs page for one customer message, and the count of refusals is the number an
-  // operator reads off that page. What this step did is not lost — the `vision` line below says
-  // `skipped` with `spend_ceiling` as its reason, which is the stage the reader is filtering by when
-  // they are asking why an attachment was never read. The playground's own file path is untouched:
-  // it goes through `assertPlaygroundSpendCeiling`, where no webhook gate follows it.
+  // operator reads off that page. Nothing is lost by staying quiet, because the `vision` line below
+  // says `skipped` with `spend_ceiling` as its reason, which is the stage the reader filters by when
+  // they are asking why an attachment was never read.
+  //
+  // The WARNING leaves no such trace: the call proceeds, the attachment is read, and no line
+  // anywhere says the month crossed its fraction. And the gate that would have said it may never
+  // run — vision is upstream of every one of them, so a human-owned conversation, a silenced agent,
+  // a redirect or an hour outside the schedule consumes the delivery first, and this billed call is
+  // the only thing that happened. It cannot double-write: the warning's window is claimed once, so
+  // a gate that follows and asks the same question writes nothing.
+  //
+  // The playground's own file path is untouched: it goes through `assertPlaygroundSpendCeiling`,
+  // where no webhook gate follows it and both halves are its own to announce.
   const ceiling = await spendCeilingVerdict({
     tenantId: params.tenantId,
     source: "inbox",
     base,
   });
+  announceSpendCeilingWarning(params.flow, ceiling, "inbox", params.tenantId);
   if (ceiling.state === "over") {
     logger.info(
       "vision: spend ceiling reached (tenant=%s used=%s ceiling=%s) — the attachment was not read",

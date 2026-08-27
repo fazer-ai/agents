@@ -291,6 +291,30 @@ describe("how often the ceiling announces itself", () => {
     expect(said).toEqual(["warn", null, null, null, null]);
   });
 
+  // THE WINDOW BELONGS TO THE MONTH IT IS ABOUT. Six hours is longer than the gap between the last
+  // message of one month and the first of the next, so a window that carried only tenant and source
+  // would suppress the first warning of a month whose ledger reads zero — on the strength of a
+  // sentence about a month that has ended.
+  test("a new month is not silenced by the previous month's warning", () => {
+    const lastDay = new Date("2026-08-31T23:30:00.000Z");
+    const firstDay = new Date("2026-09-01T00:30:00.000Z");
+    expect(spendCeilingAnnouncement(warn, "inbox", 7n, lastDay)?.level).toBe(
+      "warn",
+    );
+    // Same month, inside the window: still silent, which is the rule this must not weaken.
+    expect(
+      spendCeilingAnnouncement(
+        warn,
+        "inbox",
+        7n,
+        new Date("2026-08-31T23:59:00.000Z"),
+      ),
+    ).toBeNull();
+    expect(spendCeilingAnnouncement(warn, "inbox", 7n, firstDay)?.level).toBe(
+      "warn",
+    );
+  });
+
   // The two halves have separate ceilings, so they get separate windows: the playground warning
   // must not be swallowed by an inbox one said a minute earlier.
   test("each source keeps its own window", () => {

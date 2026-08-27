@@ -825,6 +825,97 @@ describe.skipIf(!dbUp)("the agent family records its own changes", () => {
     );
   });
 
+  test("a credential in a BEHAVIOR block's URL is covered too, not just the model's", async () => {
+    // Eight of the nine URL-shaped fields in an audited projection live in settings blocks
+    // (`stt`, `tts` twice, `vision`, `contactAuth`, `guardrails`, `memory.compaction`,
+    // `modelFallback`), so a guard written on `modelConfig.baseURL` alone was a guard on one of
+    // nine. The rule is on the VALUE and applies at every depth.
+    const agent = await seedAgent({
+      settings: {
+        stt: { enabled: true, baseURL: "https://u:one@stt.example.com/v1" },
+      },
+    });
+    await clearAudit();
+
+    await updateAgent(
+      ctx(),
+      BigInt(agent.id),
+      {
+        settings: {
+          stt: { enabled: true, baseURL: "https://u:two@stt.example.com/v1" },
+        },
+      },
+      appDb,
+    );
+
+    const got = await rows();
+    expect(got.map((r) => r.action)).toEqual(["agent.settings_set"]);
+    const marked = got[0]?.after as Record<string, unknown> | undefined;
+    expect(marked?.unreadConfigChanged).toBe(true);
+    const dump = JSON.stringify([got[0]?.before, got[0]?.after]);
+    expect(dump).not.toContain("one");
+    expect(dump).not.toContain("two");
+  });
+
+  test("a credential in the QUERY or the FRAGMENT counts as one", async () => {
+    for (const [a, b] of [
+      [
+        "https://h.example.com/v1?api_key=aaa",
+        "https://h.example.com/v1?api_key=bbb",
+      ],
+      ["https://h.example.com/v1#tok=aaa", "https://h.example.com/v1#tok=bbb"],
+    ]) {
+      const agent = await seedAgent({
+        modelConfig: { provider: "openai-compatible", model: "m", baseURL: a },
+      });
+      await clearAudit();
+
+      await updateAgent(
+        ctx(),
+        BigInt(agent.id),
+        {
+          modelConfig: {
+            provider: "openai-compatible",
+            model: "m",
+            baseURL: b,
+          },
+        },
+        appDb,
+      );
+
+      const got = await rows();
+      expect(got.length).toBe(1);
+      const dump = JSON.stringify([got[0]?.before, got[0]?.after]);
+      expect(dump).not.toContain("aaa");
+      expect(dump).not.toContain("bbb");
+    }
+  });
+
+  test("an unread field inside a normalized LIST is not invisible", async () => {
+    // `followUp.steps` is a list the readers normalize element by element, so an unread field inside
+    // one element is absent from the canonical element. A residue that stopped at the array made
+    // every such write leave no row at all.
+    const step = { delayUnit: "minutes", delayValue: 60, instructions: "hi" };
+    const agent = await seedAgent({
+      settings: {
+        followUp: { enabled: true, steps: [{ ...step, futureOption: "keep" }] },
+      },
+    });
+    await clearAudit();
+
+    await updateAgent(
+      ctx(),
+      BigInt(agent.id),
+      { settings: { followUp: { enabled: true, steps: [step] } } },
+      appDb,
+    );
+
+    const got = await rows();
+    expect(got.map((r) => r.action)).toEqual(["agent.settings_set"]);
+    const marked = got[0]?.after as Record<string, unknown> | undefined;
+    expect(marked?.unreadConfigChanged).toBe(true);
+  });
+
   test("a base URL with no credential in it is recorded as itself", async () => {
     const agent = await seedAgent({
       modelConfig: {

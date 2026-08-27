@@ -89,29 +89,48 @@ const CANONICAL: Partial<Record<AuditedAgentField, (v: unknown) => unknown>> = {
     const src = v as Record<string, unknown>;
     const out: Record<string, unknown> = {};
     for (const k of MODEL_CONFIG_KEYS) if (k in src) out[k] = src[k];
-    // A base URL carrying HTTP userinfo is not canonicalizable, so it is left OUT rather than
-    // redacted in place: `https://user:pw@host` passes `z.string().url()` and the editor's own
-    // validator alike, and the row is append-only, so a password pasted there once would outlive the
-    // correction. Dropping the key means the residue below is what answers for it — a rotation of
-    // that credential reports that unread configuration moved, and never what it moved to.
-    if (typeof out.baseURL === "string" && hasUserinfo(out.baseURL))
-      delete out.baseURL;
     return out;
   },
 };
 
-function hasUserinfo(url: string): boolean {
+// An endpoint that carries its own credential, in any of the three places one fits.
+//
+// `https://user:pw@host`, `https://host/v1?api_key=…` and `https://host/v1#token=…` all pass
+// `z.string().url()` and the editor's own validator, and the row is append-only, so one pasted there
+// once would outlive the correction. Bounded to `http(s)` on purpose: it is what an endpoint is, and
+// it keeps operator prose out of the rule — measured, `"Pergunta: você quer?"` parses as a URL with
+// protocol `pergunta:`, and a rule keyed on parseability alone would start eating template messages.
+function carriesCredential(v: unknown): boolean {
+  if (typeof v !== "string" || !/^https?:\/\//i.test(v)) return false;
   try {
-    const u = new URL(url);
-    return u.username !== "" || u.password !== "";
+    const u = new URL(v);
+    return (
+      u.username !== "" || u.password !== "" || u.search !== "" || u.hash !== ""
+    );
   } catch {
-    // Unparseable is not vouched for either: it cannot be shown to carry no credential. This arm is
-    // defensive and currently unreachable — `validateModelConfigForWrite` refuses a `baseURL` that
-    // is not a URL on every write path, and a value only reaches the projection by changing, so a
-    // legacy row carrying one cannot be projected without first passing that gate. A mutation
-    // battery on it kills no test for that reason, rather than for want of one.
+    // Shaped like an endpoint and not parseable as one: it cannot be shown to carry no credential.
     return true;
   }
+}
+
+// Such an endpoint is dropped from the canonical form rather than redacted in place, so the residue
+// is what answers for it: rotating the credential reports that unread configuration moved, and never
+// what it moved to.
+//
+// Applied to every field at every depth, because the sites are not one. Counting the reader's own
+// output: `stt.baseURL`, `tts.baseURL`, `tts.normalizeBaseURL`, `vision.baseURL`, `contactAuth.url`,
+// `guardrails.baseURL`, `memory.compaction.baseURL`, `modelFallback.baseURL` — eight, plus
+// `modelConfig.baseURL`. A guard written on one of the nine is a guard on none of the other eight,
+// and the tenth arrives with the next block.
+function dropUnvouchableUrls(v: unknown): unknown {
+  if (Array.isArray(v)) return v.map(dropUnvouchableUrls);
+  if (v === null || typeof v !== "object") return v;
+  const out: Record<string, unknown> = {};
+  for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+    if (carriesCredential(val)) continue;
+    out[k] = dropUnvouchableUrls(val);
+  }
+  return out;
 }
 
 // The parts of a stored value that the canonical form does not describe — an unknown settings block,
@@ -123,7 +142,20 @@ function residue(
   raw: unknown,
   canon: unknown,
 ): Record<string, unknown> | undefined {
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+  if (Array.isArray(raw)) {
+    // A typed reader normalizes the elements of a list it knows (`followUp.steps`), so an unread
+    // field inside one of them survives in storage and is absent from the canonical element. Indexed
+    // rather than skipped: stopping at the array made every such write invisible.
+    const canonArr = Array.isArray(canon) ? canon : [];
+    const out: Record<string, unknown> = {};
+    raw.forEach((el, i) => {
+      const nested = residue(el, canonArr[i]);
+      if (nested !== undefined && Object.keys(nested).length > 0)
+        out[String(i)] = nested;
+    });
+    return out;
+  }
+  if (raw === null || typeof raw !== "object") {
     return undefined;
   }
   const c =
@@ -144,7 +176,7 @@ function residue(
 
 function canonical(field: AuditedAgentField, v: unknown): unknown {
   const fn = CANONICAL[field];
-  return fn ? fn(v) : v;
+  return dropUnvouchableUrls(fn ? fn(v) : v);
 }
 
 // The settings row carries the blocks that moved, never the bag: it arrives whole from every door,

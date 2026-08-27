@@ -451,6 +451,40 @@ describe.skipIf(!dbUp)("the agent family records its own changes", () => {
     expect(got.map((r) => r.actorType)).toEqual(["user", "mcp"]);
   });
 
+  test("the third transport leaves the same row, differing only in how it authenticated", async () => {
+    // The seam promises one row per change whichever door made it, and `actorType` is what names the
+    // door. The console (`user`) and MCP (`mcp`) are exercised above; this is the Bearer key, the
+    // one the PR body claimed without measuring.
+    //
+    // Asserted at the SERVICE and not through the route, and the line is worth drawing: what a
+    // Bearer request contributes is a context whose `actorType` is `api_key`, and that resolution —
+    // token to principal to context — is `#392`'s and is proven by its own test
+    // (`audit-seam.test.ts`, "a Bearer API key is attributed as one"). What is unproven for THIS
+    // family is that its rows carry whatever the context says, which is what this measures.
+    const viaKey = await seedAgent();
+    const viaConsole = await seedAgent();
+    await clearAudit();
+
+    for (const [agent, actorType] of [
+      [viaConsole, "user"],
+      [viaKey, "api_key"],
+    ] as const) {
+      await updateAgent(
+        ctx({ actorType }),
+        BigInt(agent.id),
+        { systemPrompt: "the same new text" },
+        appDb,
+      );
+    }
+
+    const got = await rows("agent.prompt_set");
+    expect(got.length).toBe(2);
+    expect(got.map((r) => r.actorType)).toEqual(["user", "api_key"]);
+    expect(got[0]?.before).toEqual(got[1]?.before);
+    expect(got[0]?.after).toEqual(got[1]?.after);
+    expect(got.map((r) => r.actorId)).toEqual([USER, USER]);
+  });
+
   test("a change that spans two fields is an update, and carries both", async () => {
     const agent = await seedAgent();
     await clearAudit();

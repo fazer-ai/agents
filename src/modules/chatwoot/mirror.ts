@@ -174,6 +174,9 @@ export async function mirrorChatwootEvent(
           chatwootCreatedAt: true,
           chatwootFirstReplyAt: true,
           chatwootRedirectOriginAt: true,
+          // Read for the stale branch, which advances this watermark only when the payload really is
+          // ahead of it. See the write there.
+          lastInboundAt: true,
         },
       });
       const prevAssigneeId = existing?.assigneeId ?? null;
@@ -351,6 +354,26 @@ export async function mirrorChatwootEvent(
             : {}),
           ...episodeRelease,
           ...staleSla,
+          // THE INBOUND WATERMARK IS MONOTONIC, and it is not state this branch's ordering decides.
+          // What a stale delivery lost is the order of the conversation's STATE; `lastInboundAt` is
+          // the time of a CUSTOMER MESSAGE, and a message really newer than the stored watermark is
+          // newer whatever the state did meanwhile. Same shape as the SLA pair above, for the same
+          // reason: a row that has never seen this reading is exactly the row a late delivery can
+          // still teach.
+          //
+          // MEASURED, on the delivery recovery (#295): a conversation whose activity had moved past
+          // the stranded message — an away message posted after it — reconciles to that later time,
+          // so the rebuilt body lands here, and the customer got their reply while `lastInboundAt`
+          // came out NULL. That column anchors BOTH the follow-up "new episode" gate and the
+          // WhatsApp 24h service window, so leaving it behind makes a later proactive send read as
+          // in-window when it is not.
+          //
+          // Never backwards: `inboundAt` is written only when it is ahead of what is stored.
+          ...(inboundAt != null &&
+          (existing.lastInboundAt === null ||
+            inboundAt.getTime() > existing.lastInboundAt.getTime())
+            ? { lastInboundAt: inboundAt }
+            : {}),
         };
         if (Object.keys(staleWrites).length > 0) {
           await db.conversation.update({

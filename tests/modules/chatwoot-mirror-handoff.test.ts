@@ -1790,5 +1790,100 @@ describe.skipIf(!dbUp)(
         );
       });
     });
+
+    describe("the inbound watermark is monotonic, not ordered with the state", () => {
+      // What a stale delivery lost is the order of the conversation's STATE. `lastInboundAt` is the
+      // time of a CUSTOMER MESSAGE and answers a different question — it anchors the follow-up "new
+      // episode" gate and the WhatsApp 24h service window — so the stale branch has to move it when
+      // the payload really is ahead of what is stored, and must never move it back.
+      //
+      // Found through the delivery recovery (#295): a conversation whose activity had moved past the
+      // stranded message reconciles to that later time, so the rebuilt body lands stale, and the
+      // customer got their reply while `lastInboundAt` stayed behind. But the rule belongs here, and
+      // so does the half the recovery cannot reach: Chatwoot's retry ladder re-sends a frozen
+      // snapshot of an OLD incoming message after a newer one already advanced the watermark, and
+      // writing that blind would drag the 24h anchor backwards.
+      const T = 1_786_500_000;
+      const inboundOf = async (convId: number) =>
+        (
+          await suDb.conversation.findFirstOrThrow({
+            where: { tenantId, chatwootConversationId: convId },
+            select: { lastInboundAt: true },
+          })
+        ).lastInboundAt;
+
+      // An incoming message whose conversation snapshot is BEHIND what is stored, which is what
+      // sends it down the stale branch.
+      const staleIncoming = (
+        convId: number,
+        over: { messageId: number; at: number; snapshotAt: number },
+      ) =>
+        mirror({
+          event: "message_created",
+          id: over.messageId,
+          content: "oi",
+          message_type: "incoming",
+          private: false,
+          conversation: convPayload(convId, {
+            status: "pending",
+            lastActivityAt: over.at,
+            updatedAt: over.snapshotAt,
+          }),
+        });
+
+      test("a stale incoming message AHEAD of the watermark moves it", async () => {
+        const convId = 90;
+        // The conversation exists and its state is at T + 600.
+        await mirror({
+          event: "conversation_updated",
+          ...convPayload(convId, {
+            status: "pending",
+            lastActivityAt: T + 600,
+            updatedAt: T + 600,
+          }),
+        });
+        expect(await inboundOf(convId)).toBeNull();
+
+        await staleIncoming(convId, {
+          messageId: 9001,
+          at: T + 300,
+          snapshotAt: T + 300,
+        });
+
+        // The message is older than the conversation's state and still newer than the (absent)
+        // watermark, so the watermark takes it and the state is left where it was.
+        expect((await inboundOf(convId))?.getTime()).toBe((T + 300) * 1000);
+        expect((await mirrored(convId)).lastEventAt?.getTime()).toBe(
+          (T + 600) * 1000,
+        );
+      });
+
+      test("a stale incoming message BEHIND the watermark does not drag it back", async () => {
+        const convId = 91;
+        await mirror({
+          event: "conversation_updated",
+          ...convPayload(convId, {
+            status: "pending",
+            lastActivityAt: T + 600,
+            updatedAt: T + 600,
+          }),
+        });
+        await staleIncoming(convId, {
+          messageId: 9002,
+          at: T + 400,
+          snapshotAt: T + 400,
+        });
+        expect((await inboundOf(convId))?.getTime()).toBe((T + 400) * 1000);
+
+        // The retry ladder re-sends an OLDER message's frozen snapshot.
+        await staleIncoming(convId, {
+          messageId: 9003,
+          at: T + 100,
+          snapshotAt: T + 100,
+        });
+
+        expect((await inboundOf(convId))?.getTime()).toBe((T + 400) * 1000);
+      });
+    });
   },
 );

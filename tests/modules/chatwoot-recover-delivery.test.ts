@@ -99,6 +99,10 @@ function stubChatwoot(opts: {
   // written again since the strand. Defaults to the anchored page, which is the ordinary case: a
   // conversation whose newest message still IS the stranded one.
   recent?: unknown;
+  // Runs on the ANCHORED read, which is inside the recovery's awaits: the window between the
+  // conversation load at the top and the fence before the handoff. A test uses it to move the world
+  // the way a webhook arriving right then would.
+  onAnchoredRead?: () => Promise<void>;
   throwOnRead?: boolean;
   conv?: {
     status?: string;
@@ -135,6 +139,7 @@ function stubChatwoot(opts: {
       if (opts.throwOnRead) throw new Error("connect ECONNREFUSED");
       if (o?.before === undefined)
         return opts.recent ?? opts.page ?? { payload: [] };
+      await opts.onAnchoredRead?.();
       return opts.page ?? { payload: [] };
     },
     sendMessage: async (conversationId: number, content: string) => {
@@ -741,6 +746,127 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       }),
     ).toBe("recovered");
     expect(stub.sent).toEqual([[convId, REPLY]]);
+  });
+
+  test("the recovered message advances the inbound watermark, even past the conversation's own state", async () => {
+    // The reply is not the whole repair. `lastInboundAt` anchors BOTH the follow-up "new episode"
+    // gate and the WhatsApp 24h service window, and the recovered message is the customer's, so it
+    // has to move it.
+    //
+    // The case where it did not: an away message posted after the strand. The live conversation's
+    // activity is then AHEAD of the stranded message, the recovery reconciles the mirror to that
+    // later time — correctly, since the conversation really did move — and the rebuilt body, stamped
+    // with the message's own `created_at`, lands in the mirror's stale branch. MEASURED before the
+    // fix: the customer got their reply and `lastInboundAt` came out NULL, so a proactive send made
+    // later would read as in-window when it is not.
+    const convId = 8956;
+    const messageId = 9456;
+    await seedConversation(convId, {
+      lastEventAt: new Date((SENT_AT - 600) * 1000),
+    });
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const page = pageWith([{ id: messageId, content: "tem alguém?" }]);
+    const stub = stubChatwoot({
+      page,
+      // Five minutes past the stranded message: the away message's own time, which is what the
+      // account reports as the conversation's last activity.
+      conv: { lastActivityAt: SENT_AT + 300 },
+      recent: {
+        payload: [
+          ...page.payload,
+          {
+            id: messageId + 4,
+            content: "Estamos fora do horário de atendimento.",
+            message_type: 1,
+            private: false,
+            inbox_id: CHATWOOT_INBOX_ID,
+            created_at: SENT_AT + 300,
+            sender: { id: 5, name: "Atendente" },
+            attachments: [],
+          },
+        ],
+      },
+    });
+
+    expect(
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: depsWith(stub),
+      }),
+    ).toBe("recovered");
+    expect(stub.sent).toEqual([[convId, REPLY]]);
+
+    const after = await suDb.conversation.findFirst({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { lastInboundAt: true, lastEventAt: true },
+    });
+    // The customer's message, not the away message and not `now`.
+    expect(after?.lastInboundAt).toEqual(new Date(SENT_AT * 1000));
+    // And the conversation's own state still holds the LATER time, so the watermark moved without
+    // dragging the state backwards with it.
+    expect(after?.lastEventAt).toEqual(new Date((SENT_AT + 300) * 1000));
+  });
+
+  test("the fence reads the contact inbox the conversation is on NOW, not the one it loaded", async () => {
+    // `contactInboxId` is not frozen for the length of a recovery: ./mirror.ts writes it on an
+    // unversioned event, so a webhook arriving during the two REST reads can move the conversation
+    // to a different graph thread. The fence is asked a second time precisely because of those
+    // awaits, and asking it about the OLD thread answers about a thread nobody is on.
+    //
+    // The move is made from inside the anchored read, which is that window, and the claim is taken
+    // on the NEW thread with this process's registry emptied — a live turn on another replica,
+    // holding the thread the conversation is on by the time the fence runs.
+    const convId = 8957;
+    const messageId = 9457;
+    const conv = await seedConversation(convId);
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const movedContactInboxId = 71_000 + convId + 1;
+    const owner = {
+      tenantId,
+      instanceId,
+      contactInboxId: movedContactInboxId,
+      graphThreadId: contactInboxThreadId(
+        tenantId,
+        instanceId,
+        movedContactInboxId,
+      ),
+    };
+    const stub = stubChatwoot({
+      page: pageWith([{ id: messageId, content: "oi" }]),
+      onAnchoredRead: async () => {
+        await suDb.conversation.update({
+          where: { id: conv.id },
+          data: { contactInboxId: movedContactInboxId },
+        });
+      },
+    });
+    const hold = await markTurnOwning(owner, appDb);
+    clearTurnInFlight(owner.graphThreadId);
+
+    let outcome: string;
+    try {
+      outcome = await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: depsWith(stub),
+      });
+    } finally {
+      markTurnInFlight(owner.graphThreadId);
+      await clearTurnOwning(owner, appDb, hold);
+    }
+
+    expect(outcome).toBe("deferred");
+    expect(stub.sent).toEqual([]);
+    expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 0 });
   });
 
   test("a mirror that never learned the inbox rebuilds it from the live message", async () => {

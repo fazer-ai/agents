@@ -603,22 +603,37 @@ async function runRecovery(params: {
   // overlap whenever debounce is off. What bounds it HERE is not that claim but the newest-message
   // check above: a live delivery is running because the customer wrote again, and a customer who
   // wrote again is already the case this recovery answers `unrecoverable` to.
+  //
+  // RE-READ rather than carried from the load at the top, and for the same reason this whole fence
+  // is asked twice: `contactInboxId` is one of the fields a webhook arriving during those awaits can
+  // move (./mirror.ts writes it on an unversioned event), and the thread key is built from it. A
+  // fence asked about the thread the conversation USED TO be on would miss the turn holding the one
+  // it is on now, which is the only turn it could still collide with.
+  const contactInboxId =
+    (
+      await runScopedOn(base, sysCtx(params.tenantId), (db) =>
+        db.conversation.findUnique({
+          where: { id: conv.id },
+          select: { contactInboxId: true },
+        }),
+      )
+    )?.contactInboxId ?? null;
   const graphKey = resolveGraphThreadId(
     params.tenantId,
     instanceId,
     conversationId,
-    conv.contactInboxId,
+    contactInboxId,
   );
   if (
     isTurnInFlight(
       chatwootThreadId(params.tenantId, instanceId, conversationId),
     ) ||
-    (conv.contactInboxId != null
+    (contactInboxId != null
       ? await turnOwnsThread(
           {
             tenantId: params.tenantId,
             instanceId,
-            contactInboxId: conv.contactInboxId,
+            contactInboxId,
             graphThreadId: graphKey,
           },
           base,

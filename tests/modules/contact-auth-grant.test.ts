@@ -13,7 +13,9 @@ import {
   clearContactAuthGrantState,
   contactAuthPolicyHash,
   dropContactAuthGrant,
+  knownContactCount,
   setMaxTrackedContactsForTest,
+  setRefusalProtectionForTest,
   unconfirmedWriteCount,
   writeContactAuthGrant,
 } from "@/modules/contact-auth/grants";
@@ -893,6 +895,28 @@ describe.skipIf(!dbUp)("contact authorization: reusing a verdict", () => {
       { askedAt: Date.now() - 1000 },
     );
     expect(await grants()).toHaveLength(0);
+  });
+
+  test("the overflow a refusal spike leaves behind drains on its own", async () => {
+    setMaxTrackedContactsForTest(1);
+    setRefusalProtectionForTest(60);
+    // Every marker young enough to be protected, so eviction cannot take any of them and the map is
+    // over its cap. Nothing else is coming: a spike that stops refusing is exactly the case where no
+    // later call arrives to look at this again, and the entries would sit there for the life of the
+    // process.
+    for (const contact of [contactId, ...spareContacts]) {
+      await dropContactAuthGrant(
+        appDb,
+        { tenantId, agentId, contactId: contact },
+        { refusedAt: Date.now() },
+      );
+    }
+    expect(knownContactCount()).toBeGreaterThan(1);
+    for (let i = 0; i < 40 && knownContactCount() > 1; i++) {
+      await Bun.sleep(25);
+    }
+    // Back to the cap, without another refusal having arrived.
+    expect(knownContactCount()).toBe(1);
   });
 
   test("an older refusal finishing late does not overwrite a newer one", async () => {

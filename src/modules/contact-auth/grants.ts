@@ -112,10 +112,21 @@ function sysCtx(tenantId: bigint): TenantContext {
 // been quiet longest.
 let maxTrackedContacts = 10_000;
 
-// NOTE: Test-only, so the eviction rule can be exercised without ten thousand contacts. Production
-// never calls it.
+// How long a refusal marker is protected from eviction: no check can outlive its own budget, and the
+// budget is clamped here (./settings.ts).
+let refusalProtectionMs: number = CONTACT_AUTH_TIMEOUT_MAX_MS;
+let sweepTimer: ReturnType<typeof setTimeout> | undefined;
+
+// NOTE: Test-only, so the eviction rule can be exercised without ten thousand contacts and without
+// waiting out the protection window. Production never calls these.
 export function setMaxTrackedContactsForTest(n: number): void {
   maxTrackedContacts = n;
+}
+export function setRefusalProtectionForTest(ms: number): void {
+  refusalProtectionMs = ms;
+}
+export function knownContactCount(): number {
+  return known.size;
 }
 const known = new Map<string, { refusedAt?: number; unconfirmed: boolean }>();
 
@@ -169,7 +180,7 @@ function evictOldestConfirmed(nowMs: number): void {
       if (entry.unconfirmed) continue;
       if (
         entry.refusedAt !== undefined &&
-        entry.refusedAt > nowMs - CONTACT_AUTH_TIMEOUT_MAX_MS
+        entry.refusedAt > nowMs - refusalProtectionMs
       ) {
         continue;
       }
@@ -177,8 +188,32 @@ function evictOldestConfirmed(nowMs: number): void {
       evicted = true;
       break;
     }
-    if (!evicted) return;
+    // Everything left is protected. The overflow is real memory, and it does not drain on its own
+    // unless something wakes up to look at it again: eviction otherwise runs only when a refusal
+    // arrives, and a spike that stops refusing is exactly the case where none does. Same idiom as
+    // the notice cooldown next door — one unref'd timer, armed for the earliest marker's release.
+    if (!evicted) {
+      scheduleEvictionSweep(nowMs);
+      return;
+    }
   }
+}
+
+function scheduleEvictionSweep(nowMs: number): void {
+  if (sweepTimer || known.size <= maxTrackedContacts) return;
+  let earliest: number | null = null;
+  for (const entry of known.values()) {
+    if (entry.unconfirmed || entry.refusedAt === undefined) continue;
+    if (earliest === null || entry.refusedAt < earliest)
+      earliest = entry.refusedAt;
+  }
+  if (earliest === null) return;
+  const delay = Math.max(0, earliest + refusalProtectionMs - nowMs) + 1;
+  sweepTimer = setTimeout(() => {
+    sweepTimer = undefined;
+    evictOldestConfirmed(Date.now());
+  }, delay);
+  sweepTimer.unref?.();
 }
 
 // A refusal landed at or after `since`, so an allow from a check that started then is not newer than
@@ -213,6 +248,9 @@ export async function retryUnconfirmedWrite(
 export function clearContactAuthGrantState(): void {
   known.clear();
   maxTrackedContacts = 10_000;
+  refusalProtectionMs = CONTACT_AUTH_TIMEOUT_MAX_MS;
+  if (sweepTimer) clearTimeout(sweepTimer);
+  sweepTimer = undefined;
 }
 
 export function unconfirmedWriteCount(): number {

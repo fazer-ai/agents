@@ -449,8 +449,11 @@ bounded by entry count like the notice cooldown — except for two kinds that ev
 DEBT, because dropping one silently is dropping the only thing that stops a refused contact being
 served from the row its refusal failed to remove; and a RECENT refusal, because a check cannot
 outlive its own budget, so a marker younger than the largest `timeoutMs` may still be one an
-unfinished allow has to lose to. What is left unbounded is a flood of ten thousand refusals inside
-ten seconds, which drains by itself as those markers age past the window. Restarting before the retry lands is the residual,
+unfinished allow has to lose to. A flood of ten thousand refusals inside ten seconds does exceed the
+cap while every marker is protected, and it drains on a scheduled sweep — one unref'd timer armed for
+the earliest marker's release, the same idiom as the notice cooldown next to it. Without it the
+overflow would sit there for the life of the process, since eviction otherwise runs only when a
+refusal arrives, and a spike that stops refusing is exactly the case where none does. Restarting before the retry lands is the residual,
 bounded by the grant's own TTL.
 
 **There is no clear-everything lever, deliberately.** What ends reuse is the TTL elapsing, the
@@ -504,7 +507,7 @@ grant the TTL still bounds:
   size. Stores ids and timestamps only.
 - **What is known about refusals** per `${tenantId}:${agentId}:${contactDbId}` (`grants.ts`): when a
   refusal was last asked for, and whether a bookkeeping write about that contact is unconfirmed. Ids
-  and timestamps, capped by entry count. It is also the queue that serializes this contact's grant
+  and timestamps, capped by entry count and swept actively past the cap. It is also the queue that serializes this contact's grant
   mutations, which is the same `withKeyedQueue` the ingest section uses and carries the same
   single-process scope. Losing it on a restart costs a stale grant, bounded by the TTL, and never a
   wrong refusal.

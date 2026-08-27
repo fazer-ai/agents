@@ -26,6 +26,7 @@ import {
   stdioCommandLauncher,
 } from "@/lib/mcp-launchers";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
+import { auditSafe } from "@/modules/agents/audit-projection";
 import {
   type CredentialFieldTab,
   credRefSlot,
@@ -1133,12 +1134,12 @@ export async function importAgent(
     await auditMutation(db, ctx, {
       action: "agent.import",
       target: `agent:${agent.id}`,
-      after: {
+      after: auditSafe({
         id: agent.id,
         name: agent.name,
         enabled: agent.enabled,
         mode: agent.mode,
-      },
+      }),
     });
     // De-dupe: the same credential/component referenced in several places should warn once, and the
     // toast count ("{{n}} warnings") must match the rendered list.

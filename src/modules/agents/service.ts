@@ -16,6 +16,7 @@ import { parseInput } from "@/lib/parse-input";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import {
   agentUpdateAudit,
+  auditSafe,
   grantSetChanged,
 } from "@/modules/agents/audit-projection";
 import { collectCredentialRefWrites } from "@/modules/agents/credential-paths";
@@ -956,11 +957,11 @@ export async function createAgent(
     await auditMutation(db, ctx, {
       action: "agent.create",
       target: `agent:${created.id}`,
-      after: {
+      after: auditSafe({
         id: created.id,
         name: created.name,
         enabled: created.enabled,
-      },
+      }),
     });
     return created;
   });
@@ -1000,7 +1001,7 @@ export async function deleteAgent(
     await auditMutation(db, ctx, {
       action: "agent.delete",
       target: `agent:${id}`,
-      before: { id: String(id), name: doomed?.name },
+      before: auditSafe({ id: String(id), name: doomed?.name }),
       after: null,
     });
   });
@@ -1081,11 +1082,11 @@ export async function cloneAgent(
     await auditMutation(db, ctx, {
       action: "agent.clone",
       target: `agent:${clone.id}`,
-      after: {
+      after: auditSafe({
         id: clone.id,
         name: clone.name,
         clonedFrom: String(id),
-      },
+      }),
     });
     return clone;
   });
@@ -1762,8 +1763,8 @@ export async function replaceAgentToolSelections(
       await auditMutation(db, ctx, {
         action: "agent.tools_set",
         target: `agent:${agentId}`,
-        before: { grants: grantsBefore },
-        after: { grants: next.grants },
+        before: auditSafe({ grants: grantsBefore }),
+        after: auditSafe({ grants: next.grants }),
       });
     }
     return next;

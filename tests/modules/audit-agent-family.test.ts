@@ -1129,6 +1129,68 @@ describe.skipIf(!dbUp)("the agent family records its own changes", () => {
     expect(dump).not.toContain("rotated");
   });
 
+  test("correcting an accidentally pasted credential is not refused by the trail", async () => {
+    // The audit shares the mutation's transaction, so a throw while building the row rolls the write
+    // back — and the write it rolled back was exactly the one that REMOVES the credential. Measured
+    // before the fix: `TypeError: undefined is not an object`.
+    const agent = await seedAgent({
+      systemPrompt: "https://u:hunter2@prompts.example.com/p",
+    });
+    await clearAudit();
+
+    await updateAgent(
+      ctx(),
+      BigInt(agent.id),
+      { systemPrompt: "plain operator text" },
+      appDb,
+    );
+
+    const still = await runScopedOn(appDb, ctx(), (db) =>
+      db.agent.findUnique({
+        where: { id: BigInt(agent.id) },
+        select: { systemPrompt: true },
+      }),
+    );
+    expect(still?.systemPrompt).toBe("plain operator text");
+
+    const got = await rows();
+    expect(got.map((r) => r.action)).toEqual(["agent.prompt_set"]);
+    const after = got[0]?.after as Record<string, unknown> | undefined;
+    expect(after?.systemPrompt).toEqual({
+      value: "plain operator text",
+      unreadConfigChanged: true,
+    });
+    expect(JSON.stringify([got[0]?.before, got[0]?.after])).not.toContain(
+      "hunter2",
+    );
+  });
+
+  test("the lifecycle rows sanitize a name the same way the update path does", async () => {
+    // `createAgent`, `cloneAgent`, `importAgent` and `deleteAgent` build their own projections, and
+    // `auditMutation` bounds sizes without knowing an endpoint can carry a credential. A rule the
+    // update path enforces and the other four do not is a rule on one row in five.
+    await clearAudit();
+    const url = "https://u:hunter2@named.example.com/x";
+    const created = await createAgent(ctx(), { name: url }, appDb);
+    const clone = await cloneAgent(ctx(), BigInt(created.id), url, appDb);
+    await deleteAgent(ctx(), BigInt(clone.id), appDb);
+
+    const got = await rows();
+    expect(got.map((r) => r.action)).toEqual([
+      "agent.create",
+      "agent.clone",
+      "agent.delete",
+    ]);
+    for (const r of got) {
+      expect(JSON.stringify([r.before, r.after])).not.toContain("hunter2");
+    }
+    // The rest of each projection survives — only the unvouchable field goes.
+    const createdRow = got[0]?.after as Record<string, unknown> | undefined;
+    const deletedRow = got[2]?.before as Record<string, unknown> | undefined;
+    expect(createdRow?.id).toBe(created.id);
+    expect(deletedRow?.id).toBe(clone.id);
+  });
+
   test("a base URL with no credential in it is recorded as itself", async () => {
     const agent = await seedAgent({
       modelConfig: {

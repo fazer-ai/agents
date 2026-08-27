@@ -281,6 +281,34 @@ export function grantSetChanged(before: unknown[], after: unknown[]): boolean {
   return key(before) !== key(after);
 }
 
+// A projection with the unread marker on it, whatever shape the projection had.
+//
+// A field whose canonical form was DROPPED projects `undefined`, and one whose canonical form is a
+// scalar projects a string or a number — assigning a property onto either throws. That is not a
+// cosmetic bug: the audit shares the mutation's transaction, so the throw rolls the write back, and
+// the write it rolls back is exactly the one an operator makes to REMOVE a credential they pasted
+// into a name or a prompt by accident. Measured, before this existed:
+// `TypeError: undefined is not an object`.
+function markable(v: unknown): Record<string, unknown> {
+  // Shaping and not a guard: without this arm a dropped field projects
+  // `{ value: undefined, unreadConfigChanged: true }`, which serializes to the same row, and a
+  // mutation battery on it kills nothing for that reason. It is kept so the value is honest before
+  // it is serialized, rather than relying on `JSON.stringify` to erase the difference.
+  if (v === undefined) return { unreadConfigChanged: true };
+  if (v !== null && typeof v === "object" && !Array.isArray(v)) {
+    return { ...(v as Record<string, unknown>), unreadConfigChanged: true };
+  }
+  return { value: v, unreadConfigChanged: true };
+}
+
+// The audit-safe form of any value a row is about to carry, for the projections built outside this
+// module. `auditMutation` bounds sizes and repairs what the column refuses; it does not know that an
+// endpoint can carry its own credential, and the create/clone/import/delete rows project a `name`
+// that an operator is free to make one.
+export function auditSafe(v: unknown): unknown {
+  return dropUnvouchableUrls(v);
+}
+
 // Returns null when nothing changed: the trail records changes, and the console PATCHes a whole tab
 // on every save, so writing a row per apply would fill the trail with saves that did nothing.
 export function agentUpdateAudit(
@@ -323,8 +351,8 @@ export function agentUpdateAudit(
       afterProj[field] = {};
     }
     if (unreadMoved) {
-      (beforeProj[field] as Record<string, unknown>).unreadConfigChanged = true;
-      (afterProj[field] as Record<string, unknown>).unreadConfigChanged = true;
+      beforeProj[field] = markable(beforeProj[field]);
+      afterProj[field] = markable(afterProj[field]);
     }
   }
 

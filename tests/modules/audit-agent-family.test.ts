@@ -607,18 +607,22 @@ describe.skipIf(!dbUp)("the agent family records its own changes", () => {
     expect(JSON.stringify(stored?.modelConfig)).toContain("sk-must-not-be");
     expect(JSON.stringify(got[0]?.after)).not.toContain("sk-must-not-be");
     const after = got[0]?.after as Record<string, unknown> | undefined;
+    // The readable half AND the fact that something unread moved: one write did both, and a row
+    // that stopped at the first would leave half the mutation out of the trail.
     expect(after?.modelConfig).toEqual({
       provider: "openai",
       model: "gpt-5.4-mini",
       temperature: 0.2,
+      unreadConfigChanged: true,
     });
   });
 
-  test("a settings edit the readers clamp to the same value says so, and says nothing else", async () => {
+  test("a settings edit the readers clamp to the same value leaves no row", async () => {
     // Raw-different, canonically equal: `debounce.windowSeconds` of 1 and of 2 both read as 3
-    // (measured). The column moved and nothing the runtime does moved with it, which is the same
-    // sentence the unread-block case gets, and it is the same answer here — not an empty diff and
-    // not silence.
+    // (measured). This is NOT the unread-configuration case, and the distinction is the one the
+    // residue draws: `windowSeconds` is a field the readers see, so it is not in the residue, and
+    // what moved is a value the platform then replaced. Nothing the runtime does changed and nothing
+    // is being kept from anyone, so there is nothing to record.
     const agent = await seedAgent({
       settings: { debounce: { enabled: true, windowSeconds: 1 } },
     });
@@ -631,9 +635,7 @@ describe.skipIf(!dbUp)("the agent family records its own changes", () => {
       appDb,
     );
 
-    const got = await rows();
-    expect(got.map((r) => r.action)).toEqual(["agent.settings_set"]);
-    expect(got[0]?.after).toEqual({ unreadConfigChanged: true });
+    expect(await rows()).toEqual([]);
   });
 
   test("a write no reader sees is recorded, and neither its content NOR its key reaches the row", async () => {
@@ -781,6 +783,101 @@ describe.skipIf(!dbUp)("the agent family records its own changes", () => {
       appDb,
     );
     expect(await rows()).toEqual([]);
+  });
+
+  test("a credential pasted into a base URL is recorded as movement, never as the credential", async () => {
+    // `https://user:pw@host` passes `z.string().url()` and the editor's validator alike, and the row
+    // is append-only: a password pasted there once would outlive the correction. It is left out of
+    // the canonical form rather than redacted in place, so the residue answers for it.
+    const agent = await seedAgent({
+      modelConfig: {
+        provider: "openai-compatible",
+        model: "m",
+        baseURL: "https://user:hunter2@llm.example.com/v1",
+      },
+    });
+    await clearAudit();
+
+    await updateAgent(
+      ctx(),
+      BigInt(agent.id),
+      {
+        modelConfig: {
+          provider: "openai-compatible",
+          model: "m",
+          baseURL: "https://user:rotated@llm.example.com/v1",
+        },
+      },
+      appDb,
+    );
+
+    const got = await rows();
+    expect(got.map((r) => r.action)).toEqual(["agent.update"]);
+    const cfg = (got[0]?.after as Record<string, unknown> | undefined)
+      ?.modelConfig as Record<string, unknown>;
+    expect(cfg.unreadConfigChanged).toBe(true);
+    expect(cfg.baseURL).toBeUndefined();
+    expect(JSON.stringify([got[0]?.before, got[0]?.after])).not.toContain(
+      "hunter2",
+    );
+    expect(JSON.stringify([got[0]?.before, got[0]?.after])).not.toContain(
+      "rotated",
+    );
+  });
+
+  test("a base URL with no credential in it is recorded as itself", async () => {
+    const agent = await seedAgent({
+      modelConfig: {
+        provider: "openai-compatible",
+        model: "m",
+        baseURL: "https://llm.example.com/v1",
+      },
+    });
+    await clearAudit();
+
+    await updateAgent(
+      ctx(),
+      BigInt(agent.id),
+      {
+        modelConfig: {
+          provider: "openai-compatible",
+          model: "m",
+          baseURL: "https://other.example.com/v1",
+        },
+      },
+      appDb,
+    );
+
+    const cfg = (
+      (await rows())[0]?.after as Record<string, unknown> | undefined
+    )?.modelConfig as Record<string, unknown>;
+    expect(cfg.baseURL).toBe("https://other.example.com/v1");
+    expect(cfg.unreadConfigChanged).toBeUndefined();
+  });
+
+  test("a settings write that moves a read value AND an unread one records both", async () => {
+    const agent = await seedAgent({
+      settings: {
+        debounce: { enabled: true, windowSeconds: 30, futureOption: "keep" },
+      },
+    });
+    await clearAudit();
+
+    await updateAgent(
+      ctx(),
+      BigInt(agent.id),
+      {
+        settings: {
+          debounce: { enabled: true, windowSeconds: 45, futureOption: "gone" },
+        },
+      },
+      appDb,
+    );
+
+    const after = (await rows())[0]?.after as Record<string, unknown>;
+    expect((after.debounce as Record<string, unknown>).windowSeconds).toBe(45);
+    expect(after.unreadConfigChanged).toBe(true);
+    expect(JSON.stringify(after)).not.toContain("gone");
   });
 
   test("a deadline the operator set reaches the row as the deadline, not as an empty object", async () => {

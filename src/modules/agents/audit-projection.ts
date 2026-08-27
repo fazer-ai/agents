@@ -89,9 +89,58 @@ const CANONICAL: Partial<Record<AuditedAgentField, (v: unknown) => unknown>> = {
     const src = v as Record<string, unknown>;
     const out: Record<string, unknown> = {};
     for (const k of MODEL_CONFIG_KEYS) if (k in src) out[k] = src[k];
+    // A base URL carrying HTTP userinfo is not canonicalizable, so it is left OUT rather than
+    // redacted in place: `https://user:pw@host` passes `z.string().url()` and the editor's own
+    // validator alike, and the row is append-only, so a password pasted there once would outlive the
+    // correction. Dropping the key means the residue below is what answers for it — a rotation of
+    // that credential reports that unread configuration moved, and never what it moved to.
+    if (typeof out.baseURL === "string" && hasUserinfo(out.baseURL))
+      delete out.baseURL;
     return out;
   },
 };
+
+function hasUserinfo(url: string): boolean {
+  try {
+    const u = new URL(url);
+    return u.username !== "" || u.password !== "";
+  } catch {
+    // Unparseable is not vouched for either: it cannot be shown to carry no credential. This arm is
+    // defensive and currently unreachable — `validateModelConfigForWrite` refuses a `baseURL` that
+    // is not a URL on every write path, and a value only reaches the projection by changing, so a
+    // legacy row carrying one cannot be projected without first passing that gate. A mutation
+    // battery on it kills no test for that reason, rather than for want of one.
+    return true;
+  }
+}
+
+// The parts of a stored value that the canonical form does not describe — an unknown settings block,
+// a nested field under a block the readers DO know, a stray `modelConfig` key, a base URL that was
+// dropped for carrying userinfo. Keyed by PATH and not by value, because a canonical value differs
+// from its stored one all over a settings bag (defaults materialize, numbers clamp) while saying
+// nothing about whether something unread moved.
+function residue(
+  raw: unknown,
+  canon: unknown,
+): Record<string, unknown> | undefined {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    return undefined;
+  }
+  const c =
+    canon !== null && typeof canon === "object" && !Array.isArray(canon)
+      ? (canon as Record<string, unknown>)
+      : {};
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (!Object.hasOwn(c, k)) {
+      out[k] = v;
+      continue;
+    }
+    const nested = residue(v, c[k]);
+    if (nested !== undefined && Object.keys(nested).length > 0) out[k] = nested;
+  }
+  return out;
+}
 
 function canonical(field: AuditedAgentField, v: unknown): unknown {
   const fn = CANONICAL[field];
@@ -114,9 +163,6 @@ function changedBlocks(
   }
   return { before: outBefore, after: outAfter };
 }
-
-// What a field's row says when the stored value moved and the canonical form did not.
-const UNREAD_ONLY = { unreadConfigChanged: true } as const;
 
 // Whether a replace-the-set write actually changed the set.
 //
@@ -155,29 +201,36 @@ export function agentUpdateAudit(
   const afterProj: Record<string, unknown> = {};
 
   for (const field of AUDITED_AGENT_FIELDS) {
+    const rawB = jsonish(before[field]);
+    const rawA = jsonish(after[field]);
     const canonB = canonical(field, before[field]);
     const canonA = canonical(field, after[field]);
-    if (same(canonB, canonA)) {
-      // Canonically equal, and the two comparisons answer different questions: this one asks what
-      // the runtime will do, and the one below asks what the column holds.
-      if (same(jsonish(before[field]), jsonish(after[field]))) continue;
-      changed.push(field);
-      beforeProj[field] = UNREAD_ONLY;
-      afterProj[field] = UNREAD_ONLY;
-      continue;
-    }
+    // Two questions, asked SEPARATELY and both recorded. The first is what the runtime will do
+    // differently; the second is whether anything moved that no reader sees. One write can do both
+    // at once — a `debounce.windowSeconds` edit alongside an unknown nested setting — and an answer
+    // that stopped at the first would leave half of that mutation out of the trail.
+    const canonMoved = !same(canonB, canonA);
+    const unreadMoved = !same(residue(rawB, canonB), residue(rawA, canonA));
+    if (!canonMoved && !unreadMoved) continue;
     changed.push(field);
-    if (field === "settings") {
+    if (canonMoved && field === "settings") {
       const diff = changedBlocks(
         canonB as Record<string, unknown>,
         canonA as Record<string, unknown>,
       );
       beforeProj.settings = diff.before;
       afterProj.settings = diff.after;
-      continue;
+    } else if (canonMoved) {
+      beforeProj[field] = canonB;
+      afterProj[field] = canonA;
+    } else {
+      beforeProj[field] = {};
+      afterProj[field] = {};
     }
-    beforeProj[field] = canonB;
-    afterProj[field] = canonA;
+    if (unreadMoved) {
+      (beforeProj[field] as Record<string, unknown>).unreadConfigChanged = true;
+      (afterProj[field] as Record<string, unknown>).unreadConfigChanged = true;
+    }
   }
 
   if (changed.length === 0) return null;

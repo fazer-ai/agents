@@ -60,73 +60,72 @@ const NOT_A_CALLERS_ID: Record<string, string> = {
     "the id of the document row this tool just issued.",
 };
 
-// Only the CODE. Every pattern here appears in the prose that explains it — `db-id.ts` spells the
-// forbidden call out twice in its own header — so a sweep that reads comments reports its own
-// documentation as the offence. String CONTENTS go too: a sentence can quote the call.
-export function codeOf(src: string): string {
-  let out = "";
+// Comments and string CONTENTS blanked to spaces of the same length, so a `BigInt(` quoted inside a
+// sentence is not mistaken for a call. `db-id.ts` spells the forbidden call out twice in its own
+// header, and an error message can quote it too; without this the sweep reports its own
+// documentation as the offence.
+//
+// Length-PRESERVING rather than removing, because the argument text is then sliced out of the
+// original source at these offsets. Collapsing a string to nothing made `slice("vault:".length)`
+// and `slice("other:".length)` the same waiver key, so one entry would silently cover a call it was
+// never argued for. Measured on CI, where the ninth vault-ref copy came back as `ref.slice("".length)`.
+export function blankNonCode(src: string): string {
+  const out = src.split("");
+  const blank = (from: number, to: number) => {
+    for (let i = from; i < to && i < out.length; i++) {
+      if (out[i] !== "\n") out[i] = " ";
+    }
+  };
   let quote: string | null = null;
-  let block = false;
+  let quoteAt = -1;
   for (let i = 0; i < src.length; i++) {
     const c = src[i] as string;
-    if (block) {
-      if (c === "*" && src[i + 1] === "/") {
-        block = false;
-        i++;
-      }
-      continue;
-    }
     if (quote) {
       if (c === "\\") {
         i++;
         continue;
       }
-      if (c === quote) quote = null;
+      if (c === quote) {
+        blank(quoteAt + 1, i);
+        quote = null;
+      }
       continue;
     }
     if (c === "/" && src[i + 1] === "*") {
-      block = true;
-      i++;
+      const close = src.indexOf("*/", i + 2);
+      const to = close === -1 ? src.length : close + 2;
+      blank(i, to);
+      i = to - 1;
       continue;
     }
     if (c === "/" && src[i + 1] === "/") {
-      while (i < src.length && src[i] !== "\n") i++;
-      out += "\n";
+      let to = src.indexOf("\n", i);
+      if (to === -1) to = src.length;
+      blank(i, to);
+      i = to - 1;
       continue;
     }
     if (c === '"' || c === "'" || c === "`") {
       quote = c;
-      out += c + c;
-      continue;
+      quoteAt = i;
     }
-    out += c;
   }
-  return out;
+  return out.join("");
 }
 
 // The argument of every `BigInt(...)` call, whitespace collapsed so a reformat does not move a
 // waiver. Balanced-paren, so a nested call comes back whole rather than truncated at its comma.
-export function bigIntArgs(code: string): string[] {
+// Detection runs over the blanked copy and the text comes out of the real source, so a waiver names
+// exactly what was written.
+export function bigIntArgs(src: string): string[] {
+  const code = blankNonCode(src);
   const found: string[] = [];
   let at = code.indexOf("BigInt(");
   while (at !== -1) {
     let depth = 0;
-    let quote: string | null = null;
     let end = -1;
     for (let i = at + 6; i < code.length; i++) {
       const c = code[i] as string;
-      if (quote) {
-        if (c === "\\") {
-          i++;
-          continue;
-        }
-        if (c === quote) quote = null;
-        continue;
-      }
-      if (c === '"' || c === "'" || c === "`") {
-        quote = c;
-        continue;
-      }
       if (c === "(") depth++;
       if (c === ")") {
         depth--;
@@ -140,7 +139,7 @@ export function bigIntArgs(code: string): string[] {
       // The trailing comma a formatter adds when the call wraps is not part of the argument, and a
       // waiver keyed with one would stop matching the day the line fits on one line again.
       found.push(
-        code
+        src
           .slice(at + 7, end)
           .replace(/\s+/g, " ")
           .trim()
@@ -167,7 +166,7 @@ describe("a caller's id is parsed, never cast", () => {
     const offenders: string[] = [];
     const seen = new Set<string>();
     for (const [path, src] of await sources()) {
-      for (const arg of bigIntArgs(codeOf(src))) {
+      for (const arg of bigIntArgs(src)) {
         const key = `${path} | ${arg}`;
         seen.add(key);
         if (!(key in NOT_A_CALLERS_ID)) offenders.push(key);
@@ -199,16 +198,14 @@ describe("a caller's id is parsed, never cast", () => {
   test("the extractor finds every shape a cast can take", () => {
     expect(
       bigIntArgs(
-        codeOf(
-          [
-            "BigInt(params.id)",
-            "agentId: b.agentId ? BigInt(b.agentId) : undefined,",
-            "ids.map((s) => BigInt(s))",
-            "ids.push(BigInt(r.slice(VAULT_REF_PREFIX.length)));",
-            "BigInt(parts[2] as string)",
-            "BigInt(\n  data.businessHoursId,\n)",
-          ].join("\n"),
-        ),
+        [
+          "BigInt(params.id)",
+          "agentId: b.agentId ? BigInt(b.agentId) : undefined,",
+          "ids.map((s) => BigInt(s))",
+          "ids.push(BigInt(r.slice(VAULT_REF_PREFIX.length)));",
+          "BigInt(parts[2] as string)",
+          "BigInt(\n  data.businessHoursId,\n)",
+        ].join("\n"),
       ),
     ).toEqual([
       "params.id",
@@ -230,6 +227,20 @@ describe("a caller's id is parsed, never cast", () => {
       'const b = BigInt("7");',
       "const c = requireDbId(params.id);",
     ].join("\n");
-    expect(bigIntArgs(codeOf(src))).toEqual([]);
+    expect(bigIntArgs(src)).toEqual([]);
+  });
+
+  // …and a string INSIDE an argument survives verbatim, which is what keeps two waivers apart. The
+  // blanking exists to stop a quoted call from being found, not to erase the argument's own text:
+  // erasing it collapsed every `slice("<prefix>".length)` in the tree onto one key.
+  test("two calls differing only inside a string literal are two keys", () => {
+    expect(
+      bigIntArgs(
+        [
+          'BigInt(ref.slice("vault:".length))',
+          'BigInt(ref.slice("other:".length))',
+        ].join("\n"),
+      ),
+    ).toEqual(['ref.slice("vault:".length)', 'ref.slice("other:".length)']);
   });
 });

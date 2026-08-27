@@ -1,13 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
+  appliedMigrations,
   DB_GATE_OPT_OUT,
   foreignMigrations,
   pendingMigrations,
   schemaOutOfStep,
 } from "../db-gate";
-import { testDbNameFor, withDbName } from "../db-name";
+import { checkoutRootFrom, testDbNameFor, withDbName } from "../db-name";
 
 // ONE DATABASE, MANY TREES, AND NOTHING THAT NOTICED (issue #417).
 //
@@ -31,7 +33,7 @@ import { testDbNameFor, withDbName } from "../db-name";
 // trees from sharing a database; the diff keeps a database that drifted anyway from being read as a
 // verdict about the code.
 
-const ROOT = new URL("../..", import.meta.url).pathname.replace(/\/$/, "");
+const ROOT = checkoutRootFrom(import.meta.url, "../..");
 
 describe("the test database's name belongs to ONE checkout", () => {
   test("two checkouts of the same repo do not share a database", () => {
@@ -126,6 +128,47 @@ describe("the test database's name belongs to ONE checkout", () => {
     },
   );
 
+  // A `file://` URL percent-encodes what a path may hold and a filesystem call does not decode it,
+  // so a checkout under a directory with a space in it reads its own root as `.../my%20tree` — and
+  // then `readdirSync` on `prisma/migrations` under it is ENOENT and EVERY database-backed run
+  // aborts. Measured before this was decoded: `ENOENT: no such file or directory, scandir
+  // '/private/tmp/tree%20with%20space/sub/prisma/migrations'`. Not exotic on macOS, where a home
+  // directory can sit under one.
+  test("a checkout path with a space is a path, not a percent-encoded one", () => {
+    expect(
+      checkoutRootFrom("file:///tmp/tree%20with%20space/tests/x.ts", ".."),
+    ).toBe("/tmp/tree with space");
+    // Not only the space: anything a `file://` URL escapes comes back escaped.
+    expect(
+      checkoutRootFrom("file:///tmp/%C3%A7a%20va/lib/tests/x.ts", "../.."),
+    ).toBe("/tmp/ça va");
+    expect(checkoutRootFrom("file:///tmp/plain/tests/x.ts", "..")).toBe(
+      "/tmp/plain",
+    );
+  });
+
+  // The truncation has to come off whichever half is long. Shortening only the checkout leaves a
+  // long BASE over the limit with nothing left to cut, and Postgres cuts it instead — silently, and
+  // through the end of the hash, which is the one part that has to survive for two checkouts to
+  // stay apart. Measured: a 57-character base produced 64 bytes, a 63-character one produced 70.
+  test("a long BASE name is truncated too, and the hash survives it", () => {
+    for (const len of [40, 52, 57, 63]) {
+      const base = `${"b".repeat(len - 5)}_test`;
+      const name = testDbNameFor(base, "/dev/agents/main");
+      expect(Buffer.byteLength(name, "utf8")).toBeLessThanOrEqual(63);
+      expect(name.endsWith("_test")).toBe(true);
+      // The full hash, not a prefix of it: a truncated hash is two checkouts sharing a database.
+      const hashed = testDbNameFor("x_test", "/dev/agents/main");
+      const hash = hashed.slice(-("_test".length + 6), -"_test".length);
+      expect(name).toContain(hash);
+    }
+    // And two long-based checkouts still differ.
+    const long = `${"b".repeat(58)}_test`;
+    expect(testDbNameFor(long, "/dev/agents/main")).not.toBe(
+      testDbNameFor(long, "/dev/agents/other"),
+    );
+  });
+
   // A name a human can read is the point of keeping the basename at all: `psql -l` has to say which
   // worktree owns which database, or the isolation just moves the confusion.
   test("the checkout is still readable in the name", () => {
@@ -155,6 +198,41 @@ describe("the test database's name belongs to ONE checkout", () => {
 
 describe("a database that is not this tree's database", () => {
   const local = ["20260101000000_a", "20260102000000_b"];
+
+  // `_prisma_migrations` keeps the row of a migration that FAILED half-way (`finished_at` still
+  // null, `logs` filled) and of one resolved as rolled back (`rolled_back_at` set). Reading the
+  // name alone counts both as applied, so a database left partially migrated reads as matching and
+  // the suite runs against a schema nobody finished writing. Measured on the real table: an
+  // interrupted apply leaves `{ finished_at: null, rolled_back_at: null }`.
+  test("a migration that never finished is not applied", () => {
+    const rows = [
+      {
+        migration_name: "20260101000000_a",
+        finished_at: new Date(),
+        rolled_back_at: null,
+      },
+      {
+        migration_name: "20260102000000_b",
+        finished_at: null,
+        rolled_back_at: null,
+      },
+    ];
+    expect(appliedMigrations(rows)).toEqual(["20260101000000_a"]);
+    expect(schemaOutOfStep("x_test", appliedMigrations(rows), local)).toContain(
+      "20260102000000_b",
+    );
+  });
+
+  test("a migration resolved as rolled back is not applied either", () => {
+    const rows = [
+      {
+        migration_name: "20260101000000_a",
+        finished_at: new Date(),
+        rolled_back_at: new Date(),
+      },
+    ];
+    expect(appliedMigrations(rows)).toEqual([]);
+  });
 
   test("a matching database is not stopped", () => {
     expect(schemaOutOfStep("x_test", local, local)).toBeNull();
@@ -235,8 +313,12 @@ describe("the refusal, as a run", () => {
   const live = process.env[DB_GATE_OPT_OUT] !== "1" && Boolean(suUrl);
   const BASE = "fzgate417_test";
   const FOREIGN = "20260828000000_left_by_another_branch";
-  const noop = new URL("../utils/db-gate-noop.ts", import.meta.url).pathname;
-  const repoRoot = new URL("../..", import.meta.url).pathname;
+  // `fileURLToPath`, not `.pathname`, for the same reason the derivation uses it: a repository
+  // under a directory with a space would otherwise hand `bun test` a filename that does not exist.
+  const noop = fileURLToPath(
+    new URL("../utils/db-gate-noop.ts", import.meta.url),
+  );
+  const repoRoot = ROOT;
 
   test.skipIf(!live)(
     "a database carrying another branch's migration stops the run, naming it",
@@ -255,13 +337,18 @@ describe("the refusal, as a run", () => {
         const seed = new Client({ connectionString: seedUrl.toString() });
         await seed.connect();
         try {
-          // Only the column the gate reads. The real table is wider, and a fixture that mirrored it
-          // would be asserting Prisma's schema rather than this refusal.
+          // Only the columns the gate reads, and all three of them: the name alone is not the
+          // question it asks, because a row can be there and describe a migration that failed.
+          // `finished_at` is set because this fixture is a migration that SUCCEEDED on another
+          // branch, which is the case the refusal is about.
           await seed.query(
-            `CREATE TABLE _prisma_migrations (migration_name text NOT NULL)`,
+            `CREATE TABLE _prisma_migrations (
+               migration_name text NOT NULL,
+               finished_at timestamptz,
+               rolled_back_at timestamptz)`,
           );
           await seed.query(
-            `INSERT INTO _prisma_migrations (migration_name) VALUES ($1)`,
+            `INSERT INTO _prisma_migrations (migration_name, finished_at) VALUES ($1, now())`,
             [FOREIGN],
           );
         } finally {
@@ -318,7 +405,7 @@ describe("the command the refusal names", () => {
     process.env[DB_GATE_OPT_OUT] !== "1" && Boolean(suUrl) && Boolean(appUrl);
   const BASE = "fzsetup417_test";
   const FOREIGN = "20260828000000_left_by_another_branch";
-  const repoRoot = new URL("../..", import.meta.url).pathname;
+  const repoRoot = ROOT;
 
   test.skipIf(!live)(
     "reprovisions a database that carries a migration this tree does not have",
@@ -343,10 +430,13 @@ describe("the command the refusal names", () => {
         await seed.connect();
         try {
           await seed.query(
-            `CREATE TABLE _prisma_migrations (migration_name text NOT NULL)`,
+            `CREATE TABLE _prisma_migrations (
+               migration_name text NOT NULL,
+               finished_at timestamptz,
+               rolled_back_at timestamptz)`,
           );
           await seed.query(
-            `INSERT INTO _prisma_migrations (migration_name) VALUES ($1)`,
+            `INSERT INTO _prisma_migrations (migration_name, finished_at) VALUES ($1, now())`,
             [FOREIGN],
           );
         } finally {

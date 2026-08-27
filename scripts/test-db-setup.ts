@@ -2,8 +2,8 @@
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { Client } from "pg";
-import { foreignMigrations } from "@/tests/db-gate";
-import { testDbNameFor, withDbName } from "@/tests/db-name";
+import { appliedMigrations, foreignMigrations } from "@/tests/db-gate";
+import { checkoutRootFrom, testDbNameFor, withDbName } from "@/tests/db-name";
 
 // Provisions (idempotently) the DEDICATED test database the integration suite runs against, so
 // tests never touch the dev DB. The suite does destructive, unscoped ops (e.g. `DELETE FROM
@@ -14,7 +14,7 @@ import { testDbNameFor, withDbName } from "@/tests/db-name";
 // Steps: CREATE DATABASE (if missing) → db-bootstrap (extension, role grants, langgraph schema) →
 // prisma migrate deploy. Safe to re-run.
 
-const ROOT = new URL("..", import.meta.url).pathname;
+const ROOT = checkoutRootFrom(import.meta.url, "..");
 
 function substitutePort(url: string): string {
   // biome-ignore lint/suspicious/noTemplateCurlyInString: matching the literal ${POSTGRES_PORT} placeholder from .env, not a JS template.
@@ -142,14 +142,15 @@ async function foreignOf(url: string): Promise<string[]> {
   const client = new Client({ connectionString: url });
   await client.connect();
   try {
-    const { rows } = await client.query<{ migration_name: string }>(
-      `SELECT migration_name FROM _prisma_migrations
+    const { rows } = await client.query<{
+      migration_name: string;
+      finished_at: Date | null;
+      rolled_back_at: Date | null;
+    }>(
+      `SELECT migration_name, finished_at, rolled_back_at FROM _prisma_migrations
        WHERE to_regclass('_prisma_migrations') IS NOT NULL`,
     );
-    return foreignMigrations(
-      rows.map((r) => r.migration_name),
-      localMigrations(),
-    );
+    return foreignMigrations(appliedMigrations(rows), localMigrations());
   } catch {
     return [];
   } finally {

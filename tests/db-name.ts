@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { basename } from "node:path";
+import { basename, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 // WHICH DATABASE BELONGS TO WHICH CHECKOUT (issue #417).
 //
@@ -18,6 +19,18 @@ import { basename } from "node:path";
 // `main`, and worktrees here are named after the issue they carry) nor safe to truncate — and it has
 // to be truncatable, since Postgres cuts an identifier at 63 bytes without saying so, which would
 // hand two long paths the same database through the fix for two paths sharing a database.
+
+// A `file://` URL PERCENT-ENCODES what a path may hold, and no filesystem call decodes it back: a
+// checkout under a directory with a space reads its own root as `.../my%20tree`, and every
+// `readdirSync` under it is ENOENT. Measured before this existed, against a fixture directory whose
+// name held a space: `ENOENT: no such file or directory, scandir
+// '/private/tmp/tree%20with%20space/sub/prisma/migrations'` — which would abort every
+// database-backed run, not degrade one. `fileURLToPath` is the decode; `resolve` is what makes the
+// result the same string whether the caller's URL ended in a separator or not, which matters
+// because the hash below is over this exact string.
+export function checkoutRootFrom(importMetaUrl: string, up: string): string {
+  return resolve(fileURLToPath(importMetaUrl), "..", up);
+}
 
 const MAX_IDENTIFIER_BYTES = 63;
 const HASH_CHARS = 6;
@@ -46,11 +59,20 @@ export function testDbNameFor(base: string, checkoutRoot: string): string {
   // The base may or may not already carry the suffix; the derived name always does, because
   // tests/setup.ts refuses to run the destructive suite against a target that does not end in
   // `_test` and scripts/test-db-setup.ts refuses to provision one.
-  const stem = identifierSafe(base.replace(/_test$/, ""));
-  const fixed = `${stem}__${hash}${SUFFIX}`.length;
-  const room = MAX_IDENTIFIER_BYTES - fixed;
-  const slug = identifierSafe(basename(root)).slice(0, Math.max(0, room));
-  return `${stem}_${slug}_${hash}${SUFFIX}`.replace(/__+/g, "_");
+  //
+  // The hash and the suffix are the two parts that may never be shortened: the suffix is what both
+  // guards read, and a truncated hash is two checkouts sharing a database — which is the failure
+  // this whole file exists to prevent, arriving through the fix for it. So the room is taken from
+  // the two readable halves, the checkout first and the stem after it, because a caller who set a
+  // long base still knows which database is theirs from the hash.
+  const tail = `_${hash}${SUFFIX}`;
+  const room = MAX_IDENTIFIER_BYTES - tail.length;
+  const slug = identifierSafe(basename(root)).slice(0, Math.max(0, room - 1));
+  const stem = identifierSafe(base.replace(/_test$/, "")).slice(
+    0,
+    Math.max(0, room - slug.length - (slug.length > 0 ? 1 : 0)),
+  );
+  return `${stem}_${slug}${tail}`.replace(/__+/g, "_").replace(/^_+/, "");
 }
 
 // Swaps the database out of a connection URL and leaves everything else — host, port, role,

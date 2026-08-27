@@ -2,6 +2,7 @@ import "@testing-library/jest-dom";
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import {
+  appliedMigrations,
   DB_GATE_OPT_OUT,
   missingDbConfig,
   PROBE_BACKSTOP_MS,
@@ -11,7 +12,7 @@ import {
   unreachableDb,
   withDeadline,
 } from "./db-gate";
-import { testDbNameFor, withDbName } from "./db-name";
+import { checkoutRootFrom, testDbNameFor, withDbName } from "./db-name";
 
 // NOTE: happy-dom registration and the Bun-native global capture live in
 // ./dom-setup.ts, which bunfig.toml preloads BEFORE this file. The DOM must
@@ -32,7 +33,7 @@ process.env.DATABASE_URL = "postgresql://test:test@localhost:5432/test";
 // test DB *name* from TEST_MIGRATION_DATABASE_URL. The `_test` guard refuses any other target, so
 // the destructive suite (unscoped `DELETE FROM scheduler_jobs`, tenant create/drop) can never hit
 // the dev DB. This preload never runs for `prisma migrate`, so the CLI keeps using the dev URLs.
-const REPO_ROOT = new URL("..", import.meta.url).pathname;
+const REPO_ROOT = checkoutRootFrom(import.meta.url, "..");
 const testSuUrl = process.env.TEST_MIGRATION_DATABASE_URL;
 if (testSuUrl) {
   const declared = new URL(testSuUrl).pathname.replace(/^\//, "");
@@ -123,14 +124,19 @@ if (process.env[DB_GATE_OPT_OUT] !== "1") {
     // has no `_prisma_migrations` at all, and that is a real state (a fresh CREATE DATABASE), not an
     // error. It reports as every local migration being unapplied, which is the truth and names the
     // same command.
+    type MigrationRow = {
+      migration_name: string;
+      finished_at: Date | null;
+      rolled_back_at: Date | null;
+    };
     const rows = await withDeadline(
-      reader.$queryRaw<{ migration_name: string }[]>`
-        SELECT migration_name FROM _prisma_migrations
+      reader.$queryRaw<MigrationRow[]>`
+        SELECT migration_name, finished_at, rolled_back_at FROM _prisma_migrations
         WHERE to_regclass('_prisma_migrations') IS NOT NULL`,
       PROBE_BACKSTOP_MS,
       "TEST_MIGRATION_DATABASE_URL",
-    ).catch(() => [] as { migration_name: string }[]);
-    const applied = rows.map((r) => r.migration_name);
+    ).catch(() => [] as MigrationRow[]);
+    const applied = appliedMigrations(rows);
     const local = readdirSync(join(REPO_ROOT, "prisma", "migrations"), {
       withFileTypes: true,
     })

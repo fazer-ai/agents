@@ -162,6 +162,24 @@ export function withDeadline<T>(
 // Pure, like `missingDbConfig`, so the decision can be proved with fixtures instead of with a
 // database that has to be broken to test the breakage.
 
+// `_prisma_migrations` is a LEDGER, not a list of what is in the schema. It keeps the row of a
+// migration that failed half-way (`finished_at` still null, `logs` filled) and of one resolved as
+// rolled back (`rolled_back_at` set), and reading the name alone counts both as applied — so a
+// database left partially migrated reads as matching this tree and the suite runs against a schema
+// nobody finished writing. This is the distinction `prisma migrate status` draws when it reports a
+// FAILED migration, and the one part of its answer worth keeping.
+export function appliedMigrations(
+  rows: {
+    migration_name: string;
+    finished_at: Date | null;
+    rolled_back_at: Date | null;
+  }[],
+): string[] {
+  return rows
+    .filter((r) => r.finished_at !== null && r.rolled_back_at === null)
+    .map((r) => r.migration_name);
+}
+
 export function foreignMigrations(
   applied: string[],
   local: string[],

@@ -11,7 +11,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import {
   clearContactAuthGrantState,
   contactAuthPolicyHash,
-  unclearedRefusalCount,
+  unconfirmedWriteCount,
 } from "@/modules/contact-auth/grants";
 import { authorizeContact } from "@/modules/contact-auth/service";
 import {
@@ -451,13 +451,13 @@ describe.skipIf(!dbUp)("contact authorization: reusing a verdict", () => {
     expect(denial.outcome).toBe("denied");
     // The row is still there, because the delete really did fail...
     expect(await grants()).toHaveLength(1);
-    expect(unclearedRefusalCount()).toBe(1);
+    expect(unconfirmedWriteCount()).toBe(1);
     // ...and it is not served when the operator switches the reuse back on. The next check asks the
     // endpoint, and the delete is retried there.
     const after = await ask({ cfg: cfg(), ...ep });
     expect(after.reused).toBeFalsy();
     expect(ep.calls).toHaveLength(3);
-    expect(unclearedRefusalCount()).toBe(0);
+    expect(unconfirmedWriteCount()).toBe(0);
   });
 
   test("a stored-verdict read that hangs spends the gate's budget, not more", async () => {
@@ -544,13 +544,64 @@ describe.skipIf(!dbUp)("contact authorization: reusing a verdict", () => {
       fetchImpl: ep.fetchImpl,
       base: failingDelete,
     });
-    expect(unclearedRefusalCount()).toBe(1);
+    expect(unconfirmedWriteCount()).toBe(1);
     // `perMessage` reads no grants at all, so a retry living on the read path would never run for
     // the mode where the refusal usually happens — and the entry would sit in memory for the life of
     // the process, for a delete that may well have succeeded on its own.
     await ask({ cfg: cfg({ mode: "perMessage" }), ...ep });
-    expect(unclearedRefusalCount()).toBe(0);
+    expect(unconfirmedWriteCount()).toBe(0);
     expect(await grants()).toHaveLength(0);
+  });
+
+  test("a retry does not make the old refusal newer than the check retrying it", async () => {
+    const ep = endpoint(allowed, denied, allowed);
+    await ask({ cfg: cfg(), ...ep });
+    await ask({
+      cfg: cfg({ mode: "perMessage" }),
+      fetchImpl: ep.fetchImpl,
+      base: baseWithGrantHook(appDb, (m) =>
+        m === "deleteMany"
+          ? () => {
+              throw new Error("delete is down");
+            }
+          : undefined,
+      ),
+    });
+    expect(unconfirmedWriteCount()).toBe(1);
+    // The retry lands inside THIS check, and it must not stamp the refusal with its own clock: an
+    // instant later than this check's own start would make the endpoint's fresh yes read as older
+    // than a refusal from before it, and the allow this ask paid for would be thrown away.
+    const fresh = await ask({ cfg: cfg(), ...ep });
+    expect(fresh.outcome).toBe("allowed");
+    expect(await grants()).toHaveLength(1);
+    expect(unconfirmedWriteCount()).toBe(0);
+  });
+
+  test("a write this process could not confirm leaves nothing servable", async () => {
+    const ep = endpoint(allowed, allowed, allowed);
+    await ask({ cfg: cfg({ grantTtlSeconds: 3600 }), ...ep });
+    // The upsert fails while a row for the SAME contact is on disk, written under a policy the next
+    // check will be back on. The statement may well have committed, so "it did not happen" is not a
+    // reading this process is entitled to.
+    const during = await ask({
+      cfg: cfg({ grantTtlSeconds: 1800 }),
+      fetchImpl: ep.fetchImpl,
+      base: baseWithGrantHook(appDb, (m) =>
+        m === "upsert"
+          ? () => {
+              throw new Error("upsert is down");
+            }
+          : undefined,
+      ),
+    });
+    expect(during.outcome).toBe("allowed");
+    expect(unconfirmedWriteCount()).toBe(1);
+    // Back on the original policy, the row on disk matches again — and is still not served, because
+    // the unconfirmed write outranks it. The check deletes first and asks.
+    const after = await ask({ cfg: cfg({ grantTtlSeconds: 3600 }), ...ep });
+    expect(after.reused).toBeFalsy();
+    expect(ep.calls).toHaveLength(3);
+    expect(unconfirmedWriteCount()).toBe(0);
   });
 
   test("the endpoint changing re-asks", async () => {

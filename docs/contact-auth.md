@@ -74,7 +74,7 @@ read, so a malformed bag can never break the webhook.
 | `enabled`               | `false` | The gate as a whole. Strict boolean: anything else reads as off.    |
 | `url`                   | `null`  | The endpoint. Fixed origin, no placeholders; http(s) only, and a URL carrying `user:pass@` is refused whole (credentials belong in the vault). |
 | `credentialRef`         | `null`  | Optional `vault:<id>`, injected per the entry's kind (bearer / header / query; managed-OAuth kinds send a fresh access token). A kind the vault marks as never-injected (`mcp_env`, `langfuse`) is refused as an error rather than falling back to a Bearer, which would hand an unrelated secret to the endpoint. |
-| `timeoutMs`             | `5000`  | Clamped 1000-10000. Past it the check counts as an error. Covers every step that waits, and the clock starts at the FIRST of them: reading the stored verdict under `mode: "once"` (a saturated pool holds the webhook exactly as a slow endpoint does), resolving the credential (a managed-OAuth entry refreshes its token there, over the network, under a ceiling of its own), the SSRF/DNS check on the final URL, the request, the body, and the grant bookkeeping after the answer. One budget for the lot — timed from the request instead, a gate set to one second could hold the webhook turn behind it for eleven. |
+| `timeoutMs`             | `5000`  | Clamped 1000-10000. Past it the check counts as an error. Covers every step that waits, and the clock starts at the FIRST of them: reading the stored verdict under `mode: "once"` (a saturated pool holds the webhook exactly as a slow endpoint does), resolving the credential (a managed-OAuth entry refreshes its token there, over the network, under a ceiling of its own), the SSRF/DNS check on the final URL, the request, and the body. The grant bookkeeping AFTER the answer is awaited without it, and that is deliberate: walking away from a Prisma statement does not stop it, so an abandoned upsert can commit after a later refusal deleted the row and revive an authorization the endpoint has withdrawn. A write nobody waits for is a write nobody can order. It costs one indexed single-statement transaction on the way out, and a failure there marks the contact unconfirmed. One budget for the lot — timed from the request instead, a gate set to one second could hold the webhook turn behind it for eleven. |
 | `noticeCooldownSeconds` | `60`    | Clamped 0-3600. Cooldown on the NOTICES for a refused message (the customer copy and the operator note, per conversation), never on the verdict: the endpoint is asked on every message regardless. 0 = notify on every refused message. |
 | `includeMessageText`    | `false` | Forward the triggering message's text as `message.text`, so the endpoint can accept an unlock code the customer sends. Under its own key, never inside `contact`. |
 | `denyMessage`           | `null`  | Fixed copy the CUSTOMER receives on a denial (≤ `TEMPLATE_MESSAGE_MAX`). `null` = say nothing, which is a real choice: with the handoff on, a human takes the conversation and may not want an automated refusal ahead of them, and towards an unknown number a reply confirms the channel exists. Null AND the handoff off means a refused customer gets nothing at all, so the editor raises `contactAuthSilentRefusal` for that pair. |
@@ -367,16 +367,26 @@ endpoint ERROR is not stored either — it is transient by contract, and a blip 
 contact the verdict they were legitimately given. What a fresh refusal DOES do is **drop** whatever
 was stored, so re-asking can only ever take a grant away.
 
-A grant stops holding on its own in four ways, and none of them needs a new endpoint or a new route:
+The whole rule, since stating it in pieces is what produced most of this section. A stored grant is
+served if and only if, at the moment it is read:
 
-| It stops holding when | Because |
+| It is served when | Kind of rule |
 | --- | --- |
-| `grantTtlSeconds` elapses | The operator's declared staleness budget ran out. |
-| The mirrored **identity** moves (phone, email or operator `identifier`) | The endpoint answered about whoever those named, and the mirror rewrites them, clears included. |
-| The **policy** changes (`url`, `credentialRef`, `includeMessageText`, `grantTtlSeconds`) | Those decide who answered and what was asked, so a grant counts only while the policy it was given under is the one in force. A MATCH rule, not a revocation — see below. |
-| A fresh check **refuses** | See above. This one holds under EVERY mode: only `once` grants, and grants outlive a switch back to `perMessage`, so a refusal arriving while the reuse is off still has to reach them. |
+| `grantTtlSeconds` has not elapsed | Time. The operator's declared staleness budget. |
+| It matches the mirrored **identity** (phone, email, operator `identifier`) | A MATCH rule. The endpoint answered about whoever those named, and the mirror rewrites them, clears included. |
+| It matches the **policy** (`url`, `credentialRef`, `includeMessageText`, `grantTtlSeconds`) | A MATCH rule. Those decide who answered and what was asked. |
+| This process holds no unconfirmed write about that contact | Fail-closed, see below. |
 
-**The policy half is not a clear, and it is worth being exact about that** because it reads like one.
+And a grant is REMOVED only by a refusal, or by the verdict that replaces it. The distinction between
+the two kinds of rule is the one worth keeping: a fingerprint that stops matching stops the grant
+being SERVED, and a value put back matches again — it is a question, not a revocation. Both
+identity and policy work that way.
+
+A refusal removes the row under EVERY mode: only `once` grants, and grants outlive a switch back to
+`perMessage`, so a refusal arriving while the reuse is off still has to reach them.
+
+**Neither fingerprint is a clear, and it is worth being exact about that** because they read like
+one.
 The fingerprint is a pure function of the policy: change a field and the grants stop matching, put it
 back and they match again. So "nudge the TTL to drop the stored verdicts" does not work, and it fails
 in two different ways depending on the traffic — a contact who writes nothing while the nudged value
@@ -395,8 +405,10 @@ dropped. Without that, one out-of-order answer serves the contact for the rest o
 
 **A refusal this process could not write down is not forgotten.** The DELETE is the one write here
 that ENDS an authorization, so unlike the read and the write it is not best-effort: a failure is
-remembered per contact, no stored verdict is served for that contact while it stands (the endpoint is
-asked instead, which is the fail-closed answer), and the delete is retried on the next check of
+remembered per contact — and so is a grant WRITE whose outcome this process could not confirm, since
+a statement that timed out may well have committed. No stored verdict is served for that contact
+while it stands (the endpoint is asked instead, which is the fail-closed answer), and the delete is
+retried on the next check of
 EITHER mode — `perMessage` reads no grants, so a retry that lived on the read path would never run
 for the mode where the refusal usually happens. What this process remembers about refusals is ids and
 timestamps, bounded by entry count like the notice cooldown. Restarting before the retry lands is the

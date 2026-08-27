@@ -40,54 +40,83 @@ import type { ContactAuthConfig } from "./settings";
 // endpoint, and one that refuses the write costs the same on the next message. Neither may turn an
 // answered check into a failed one.
 //
-// The DELETE is the exception, because it is the one write that ENDS an authorization. Swallowed,
-// it leaves a grant standing after the endpoint refused the contact, and the refusal is not repeated
-// until that contact writes again — which under `mode: "once"` may never happen, since a surviving
-// grant is exactly what stops the next message from asking. So a failed delete is REMEMBERED
-// (`unclearedRefusals` below): while a refusal is unrecorded for a contact, no grant of theirs is
-// served, and the delete is retried on the next read. That is fail-closed for the process; a restart
-// before the retry succeeds is the residual, bounded by the grant's own TTL.
+// THE WHOLE RULE, IN ONE PLACE, because it took four review rounds to stop stating it in pieces. A
+// stored grant is served if and only if, at read time:
 //
-// Every call here is bound by the CALLER'S deadline (`signal`), the same `timeoutMs` budget that
-// covers the credential, the SSRF check, the request and the body. A saturated pool therefore spends
-// the gate's budget instead of adding to it, which is what docs/contact-auth.md promises.
+//   1. it has not expired                          — time, and the operator chose the budget;
+//   2. it matches the identity in force             — a MATCH rule, not a revocation;
+//   3. it matches the policy in force               — likewise;
+//   4. this process holds no unconfirmed write about that contact — fail-closed.
+//
+// And it is removed only by a refusal, or by the verdict that replaces it. Nothing else "drops" a
+// grant: 2 and 3 are questions, so a fingerprint that stops matching stops SERVING, and a value put
+// back matches again. Writing those as revocations is what produced two rounds of findings against
+// claims the code never made.
+//
+// The DELETE is the one write that ENDS an authorization, so it alone is not best-effort: a failure
+// is remembered, and while it stands nothing stored is served for that contact.
+//
+// WHAT THE DEADLINE COVERS, and why the bookkeeping is not in it. The caller's `timeoutMs` bounds
+// everything that decides the ANSWER, the stored-verdict read included: a saturated pool holds the
+// webhook exactly as a slow endpoint does. The write and the delete run AFTER the answer, and they
+// are awaited without it — walking away from a Prisma statement does not stop it, so an abandoned
+// upsert can commit after a later refusal deleted the row and revive an authorization the endpoint
+// has withdrawn. A write nobody waits for is a write nobody can order. What they cost instead is one
+// indexed single-statement transaction on the way out, and a failure or a timeout there marks the
+// contact unconfirmed, which the next check settles by deleting first.
+//
+// The residual, stated rather than papered over: two checks that overlap in time can still interleave
+// their writes, and the bound on that is the TTL the operator chose — the same bound the mode already
+// carries for a revocation, and the same stance docs/contact-auth.md takes for verdicts themselves
+// ("the runtime does not serialise").
 
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
 }
 
-// WHAT THIS PROCESS KNOWS ABOUT REFUSALS, which the table on its own cannot answer. Memory only,
-// like the notice cooldown in ./state.ts and for the same reason: what it protects is a decision the
-// next check re-derives, and losing it on a restart costs a stale grant the TTL still bounds, never
-// a wrong refusal. Two facts per contact, and each closes a hole the other does not:
+// WHAT THIS PROCESS KNOWS THAT THE TABLE CANNOT SAY. Memory only, like the notice cooldown in
+// ./state.ts and for the same reason: what it protects is a decision the next check re-derives, and
+// losing it on a restart costs a stale grant the TTL still bounds, never a wrong refusal. Two facts
+// per contact, each closing a hole the other does not:
 //
-//   at       WHEN a refusal last landed. A check that started before it may still be in flight, and
-//            an allow it comes back with is older than that refusal however late it arrives. Without
-//            this, two concurrent asks for one contact (an unlock message and the next one carry
-//            different request keys, so single-flight does not coalesce them) can order themselves
-//            refusal-then-allow and leave a grant standing after the endpoint said no.
-//   pending  the DELETE did not land. While it stands nothing stored is served for that contact, and
-//            the next check of ANY mode retries it — `perMessage` reads no grants, so a retry that
-//            lived on the read path would never run for the mode where the refusal usually happens.
+//   refusedAt    WHEN a refusal last landed. A check that started before it may still be in flight,
+//                and an allow it comes back with is older than that refusal however late it arrives.
+//                Two concurrent asks for one contact are ordinary — an unlock message and the next
+//                one carry different request keys, so single-flight does not coalesce them.
+//   unconfirmed  a bookkeeping write this process could not confirm: a DELETE that failed, or an
+//                UPSERT that did. While it stands nothing stored is served for that contact, and the
+//                next check of ANY mode deletes first (`perMessage` reads no grants, so a retry that
+//                lived on the read path would never run for the mode where refusals usually happen).
 //
-// Bounded twice like the notice store, and for the same reason: the entries are ids and timestamps,
-// but a flood of failures must not grow memory without end. Insertion-ordered eviction drops the
-// oldest, which is the one whose contact has been quiet longest.
-const MAX_TRACKED_REFUSALS = 10_000;
-const refusals = new Map<string, { at: number; pending: boolean }>();
+// Bounded twice like the notice store: the entries are ids and timestamps, but a flood of failures
+// must not grow memory without end. Insertion-ordered eviction drops the oldest, whose contact has
+// been quiet longest.
+const MAX_TRACKED_CONTACTS = 10_000;
+const known = new Map<string, { refusedAt?: number; unconfirmed: boolean }>();
 
-function refusalKey(key: GrantKey): string {
+function contactKey(key: GrantKey): string {
   return `${key.tenantId}:${key.agentId}:${key.contactId}`;
 }
 
-function noteRefusal(key: GrantKey, landed: boolean, nowMs: number): void {
-  const k = refusalKey(key);
-  refusals.delete(k);
-  refusals.set(k, { at: nowMs, pending: !landed });
-  while (refusals.size > MAX_TRACKED_REFUSALS) {
-    const oldest = refusals.keys().next().value;
+function remember(
+  key: GrantKey,
+  patch: { refusedAt?: number; unconfirmed?: boolean },
+): void {
+  const k = contactKey(key);
+  const prev = known.get(k);
+  const next = {
+    // A retry that finally lands keeps the ORIGINAL instant: stamping it with the retry's own clock
+    // would make the refusal newer than the check performing the retry, and that check's own allow
+    // would then be discarded as stale — the endpoint asked, answered yes, and nothing stored.
+    refusedAt: patch.refusedAt ?? prev?.refusedAt,
+    unconfirmed: patch.unconfirmed ?? prev?.unconfirmed ?? false,
+  };
+  known.delete(k);
+  known.set(k, next);
+  while (known.size > MAX_TRACKED_CONTACTS) {
+    const oldest = known.keys().next().value;
     if (oldest === undefined) break;
-    refusals.delete(oldest);
+    known.delete(oldest);
   }
 }
 
@@ -95,40 +124,40 @@ function noteRefusal(key: GrantKey, landed: boolean, nowMs: number): void {
 // it. `>=` and not `>`: two events in the same millisecond cannot be ordered by this clock, and the
 // side to take when they cannot is the refusal.
 function refusedSince(key: GrantKey, since: number): boolean {
-  const entry = refusals.get(refusalKey(key));
-  return entry !== undefined && entry.at >= since;
+  const at = known.get(contactKey(key))?.refusedAt;
+  return at !== undefined && at >= since;
 }
 
-export function hasPendingRefusal(key: GrantKey): boolean {
-  return refusals.get(refusalKey(key))?.pending === true;
+export function hasUnconfirmedWrite(key: GrantKey): boolean {
+  return known.get(contactKey(key))?.unconfirmed === true;
 }
 
-// The retry, called by the gate on every check regardless of mode. A no-op unless this process owes
-// a delete for that contact.
-export async function retryPendingRefusal(
+// Called by the gate on every check, under either mode. A no-op unless this process owes a delete
+// for that contact.
+export async function retryUnconfirmedWrite(
   base: PrismaClient,
   key: GrantKey,
-  signal?: AbortSignal,
 ): Promise<void> {
-  if (!hasPendingRefusal(key)) return;
-  await dropContactAuthGrant(base, key, signal);
+  if (!hasUnconfirmedWrite(key)) return;
+  await dropContactAuthGrant(base, key);
 }
 
 // NOTE: Test isolation only; production clears an entry by finally landing the delete, or by the
 // eviction above.
 export function clearContactAuthGrantState(): void {
-  refusals.clear();
+  known.clear();
 }
 
-export function unclearedRefusalCount(): number {
+export function unconfirmedWriteCount(): number {
   let n = 0;
-  for (const entry of refusals.values()) if (entry.pending) n += 1;
+  for (const entry of known.values()) if (entry.unconfirmed) n += 1;
   return n;
 }
 
 // `underSignal` where there is a deadline, the bare promise where there is not (a direct caller, a
-// test). Awaiting the signal is what keeps a saturated pool inside the gate's budget instead of
-// beside it; the statement itself keeps running, which is fine for bookkeeping nobody reads back.
+// test). Only the READ takes one: it decides the answer, so the webhook has to be protected from a
+// slow pool the same way it is protected from a slow endpoint. The statement itself keeps running
+// when the wait is abandoned, which is why the two WRITES do not take one — see the header.
 function underSignalMaybe<T>(p: Promise<T>, signal?: AbortSignal): Promise<T> {
   return signal ? underSignal(p, signal) : p;
 }
@@ -210,7 +239,7 @@ export async function readContactAuthGrant(
   // A refusal this process could not write down outranks anything on disk. The retry belongs to the
   // caller (`retryPendingRefusal`), which runs under both modes; what belongs here is refusing to
   // serve a row while a refusal about it is unrecorded.
-  if (hasPendingRefusal(key)) return null;
+  if (hasUnconfirmedWrite(key)) return null;
   try {
     const row = await underSignalMaybe(
       runScopedOn(base, sysCtx(key.tenantId), (db) =>
@@ -254,14 +283,14 @@ export async function writeContactAuthGrant(
     context: AuthContext | null | undefined;
     ttlSeconds: number;
   },
-  opts: { signal?: AbortSignal; nowMs?: number; askedAt?: number } = {},
+  opts: { nowMs?: number; askedAt?: number } = {},
 ): Promise<void> {
   const nowMs = opts.nowMs ?? Date.now();
   // An allow from a check that started before a refusal LANDED is not newer than that refusal, no
   // matter which of the two answers arrived last. Storing it would leave the contact served after
   // the endpoint said no, for the whole TTL. Nothing is written, and the row goes.
   if (opts.askedAt !== undefined && refusedSince(key, opts.askedAt)) {
-    await dropContactAuthGrant(base, key, opts.signal);
+    await dropContactAuthGrant(base, key);
     return;
   }
   const context = contextToJson(grant.context);
@@ -273,19 +302,20 @@ export async function writeContactAuthGrant(
     expiresAt,
   };
   try {
-    await underSignalMaybe(
-      runScopedOn(base, sysCtx(key.tenantId), (db) =>
-        db.contactAuthGrant.upsert({
-          where: whereKey(key),
-          create: { ...key, ...data },
-          update: data,
-        }),
-      ),
-      opts.signal,
+    await runScopedOn(base, sysCtx(key.tenantId), (db) =>
+      db.contactAuthGrant.upsert({
+        where: whereKey(key),
+        create: { ...key, ...data },
+        update: data,
+      }),
     );
   } catch (err) {
+    // A write whose outcome this process does not know is not a write that did not happen: the
+    // statement may have committed. Serving nothing for that contact until a delete lands is the
+    // only honest reading of it.
+    remember(key, { unconfirmed: true });
     logger.warn(
-      "contact-auth: storing the grant failed (agent=%s): %s",
+      "contact-auth: storing the grant failed, so nothing stored will be served for this contact until it is cleared (agent=%s): %s",
       String(key.agentId),
       err instanceof Error ? err.message : String(err),
     );
@@ -298,26 +328,23 @@ export async function writeContactAuthGrant(
 export async function dropContactAuthGrant(
   base: PrismaClient,
   key: GrantKey,
-  signal?: AbortSignal,
+  refusedAt?: number,
 ): Promise<void> {
   try {
-    await underSignalMaybe(
-      runScopedOn(base, sysCtx(key.tenantId), (db) =>
-        db.contactAuthGrant.deleteMany({
-          where: {
-            tenantId: key.tenantId,
-            agentId: key.agentId,
-            contactId: key.contactId,
-          },
-        }),
-      ),
-      signal,
+    await runScopedOn(base, sysCtx(key.tenantId), (db) =>
+      db.contactAuthGrant.deleteMany({
+        where: {
+          tenantId: key.tenantId,
+          agentId: key.agentId,
+          contactId: key.contactId,
+        },
+      }),
     );
-    noteRefusal(key, true, Date.now());
+    remember(key, { refusedAt, unconfirmed: false });
   } catch (err) {
-    // NOT swallowed, unlike the other two: this is the write that ends an authorization, so what
+    // NOT swallowed, unlike the write above: this is the one that ENDS an authorization, so what
     // fails here is remembered until it lands. `error` rather than `warn` for the same reason.
-    noteRefusal(key, false, Date.now());
+    remember(key, { refusedAt, unconfirmed: true });
     logger.error(
       "contact-auth: a refusal could not be written down, so no stored verdict will be served for this contact until it is (agent=%s): %s",
       String(key.agentId),

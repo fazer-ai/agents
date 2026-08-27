@@ -22,7 +22,7 @@ import {
   contactAuthPolicyHash,
   dropContactAuthGrant,
   readContactAuthGrant,
-  retryPendingRefusal,
+  retryUnconfirmedWrite,
   writeContactAuthGrant,
 } from "./grants";
 import type { ContactAuthConfig } from "./settings";
@@ -162,10 +162,10 @@ export async function authorizeContact(
       const askedAt = Date.now();
       const timer = setTimeout(() => ctrl.abort(), cfg.timeoutMs);
       try {
-        // A delete this process still owes, retried under BOTH modes: the refusal that failed to
-        // land usually happened under `perMessage`, which reads no grants, so a retry that lived on
-        // the read path would never run for the mode that needs it.
-        await retryPendingRefusal(base, grantKey, ctrl.signal);
+        // A bookkeeping write this process could not confirm, settled by deleting. Under BOTH
+        // modes: the refusal that failed to land usually happened under `perMessage`, which reads no
+        // grants, so a retry that lived on the read path would never run for the mode that needs it.
+        await retryUnconfirmedWrite(base, grantKey);
         if (cfg.mode === "once") {
           const stored = await readContactAuthGrant(
             base,
@@ -252,7 +252,10 @@ export async function authorizeContact(
         // retries), and a blip of the endpoint must not cost a contact the verdict they were
         // legitimately given.
         if (verdict.outcome === "denied") {
-          await dropContactAuthGrant(base, grantKey, ctrl.signal);
+          // Stamped with the instant this check STARTED, not with the instant the delete lands: what
+          // orders a concurrent allow against this refusal is when each was asked, and a retry that
+          // finally lands minutes later must not read as a refusal from minutes later.
+          await dropContactAuthGrant(base, grantKey, askedAt);
         } else if (cfg.mode === "once" && verdict.outcome === "allowed") {
           await writeContactAuthGrant(
             base,
@@ -262,9 +265,9 @@ export async function authorizeContact(
               context: verdict.context,
               ttlSeconds: cfg.grantTtlSeconds,
             },
-            // `askedAt` is what makes this allow refusable: a refusal that landed while this check
+            // `askedAt` is what makes this allow refusable: a refusal asked for while this check
             // was in flight is newer than it, however late either answer arrived.
-            { signal: ctrl.signal, askedAt },
+            { askedAt },
           );
         }
         return verdict;

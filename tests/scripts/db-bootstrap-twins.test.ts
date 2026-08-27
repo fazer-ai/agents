@@ -115,6 +115,38 @@ const INVARIANTS: Array<{
     sql: /pg_stat_activity[\s\S]{0,200}?a\.usename = r\.rolname/,
   },
   {
+    // And the session is only HALF of it. Measured: a stale installation, after its database was
+    // dropped and recreated under the same name, reconnects and presents the same open session as a
+    // rotation — so the exemption is DECLARED by the operator, and the session only bounds it. A
+    // file that kept inferring it from the session alone passes the invariant above and is wrong.
+    what: "keeps a serving stray only where the operator DECLARED it",
+    ts: /retained\.has\(r\.rolname\)/,
+    sql: /r\.rolname = ANY \(v_retained\)/,
+  },
+  {
+    // A `fleet_super_admin` policy naming SOMEONE ELSE's fleet role is what a restore or a clone
+    // under a different name leaves behind, and measured across two real databases the source
+    // installation's runtime role then read 30 of 30 rows of the restored one.
+    what: "revokes the privileges of a FOREIGN fleet role named by the policies here",
+    ts: /REVOKE ALL ON ALL TABLES IN SCHEMA public FROM %I/,
+    sql: /REVOKE ALL ON ALL TABLES IN SCHEMA public FROM %I/,
+  },
+  {
+    // Only names the derivation itself could have produced are candidates, so an operator role that
+    // happens to appear in a policy is never one.
+    what: "considers only names matching the fleet-role prefix",
+    ts: /LIKE 'fazerai\\\\_fleet\\\\_%'/,
+    sql: /LIKE 'fazerai\\_fleet\\_%'/,
+  },
+  {
+    // The foreign role's CLUSTER-WIDE membership is deliberately untouched: it belongs to a source
+    // installation still running on its own database, and revoking it from here would break that
+    // one. Measured: the source keeps reading its own 30 of 30 after this runs.
+    what: "says it leaves the foreign role's cluster-wide membership alone",
+    ts: /cluster-wide membership is[\s\S]{0,40}?deliberately untouched/,
+    sql: /cluster-wide[\s\S]{0,200}?left\s*\n?--\s*alone on purpose/,
+  },
+  {
     // Severity, not just presence, and the two files diverged on exactly this: one raised and the
     // other warned past a membership that can read every tenant. A fence that only asks whether
     // both mention the state would have passed that.
@@ -180,6 +212,53 @@ describe("no RAISE prints an identifier through %I", () => {
     expect(
       raisesWithFormatI("EXECUTE format('DROP ROLE %I', v_role);"),
     ).toHaveLength(0);
+  });
+});
+
+// The repair has to OUTLIVE the refusal, and in the SQL that is a statement boundary rather than a
+// line of prose. Measured with both in one DO block: the script revoked the foreign role's
+// privileges, raised, and the RAISE rolled the revoke back with it — the restored database read 30
+// of 30 again immediately after the boot that had just announced closing it. At psql's top level
+// each statement is its own transaction, so the two must stay two blocks.
+describe("the foreign-fleet repair survives the refusal", () => {
+  // Top-level `DO $$ ... $$;` blocks. The script has no nested dollar-quoting, so splitting on the
+  // terminator is exact; a future nested `$tag$` would break this loudly rather than quietly.
+  const blocks = [...sql.matchAll(/DO \$\$([\s\S]*?)\$\$;/g)].map(
+    (m) => m[1] as string,
+  );
+
+  test("the block that revokes does not also raise", () => {
+    const repairing = blocks.filter((b) =>
+      b.includes("REVOKE ALL ON ALL TABLES IN SCHEMA public FROM %I"),
+    );
+    expect(repairing).toHaveLength(1);
+    expect(repairing[0]).not.toContain("RAISE EXCEPTION");
+  });
+
+  test("a later block does the refusing", () => {
+    const refusing = blocks.filter(
+      (b) =>
+        b.includes("RAISE EXCEPTION") &&
+        b.includes("carries fleet_super_admin policies naming"),
+    );
+    expect(refusing).toHaveLength(1);
+    expect(blocks.indexOf(refusing[0] as string)).toBeGreaterThan(
+      blocks.findIndex((b) =>
+        b.includes("REVOKE ALL ON ALL TABLES IN SCHEMA public FROM %I"),
+      ),
+    );
+  });
+
+  // The TypeScript twin reaches the same place by a different route: it runs in autocommit, so its
+  // revokes are already durable, and it must NOT throw — db-guard refuses at runtime on this exact
+  // condition, ahead of every override.
+  test("the TypeScript reports rather than throwing", () => {
+    const fn = ts.slice(
+      ts.indexOf("async function revokeForeignFleetAccess"),
+      ts.indexOf("async function provisionFleetRole"),
+    );
+    expect(fn).toContain("REVOKE ALL ON ALL TABLES IN SCHEMA public FROM %I");
+    expect(fn).not.toContain("throw new Error");
   });
 });
 

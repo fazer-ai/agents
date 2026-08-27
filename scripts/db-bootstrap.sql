@@ -110,6 +110,93 @@ END $$;
 -- (measured: permission denied before, 30 of 30 rows after). The expression is spelled out here
 -- rather than calling `public.fazerai_fleet_role()` because on a first install this script runs
 -- before the migration that creates that function.
+-- A fleet_super_admin policy naming SOMEONE ELSE's fleet role is what a restore or a clone under a
+-- different name leaves behind: the copied policies still say TO <source fleet role> and the copied
+-- grants still give that role every table, while its members survive untouched because a membership
+-- is CLUSTER-wide. Measured: the source installation's runtime role read 30 of 30 rows of the
+-- restored database, against 0 of 30 without the SET ROLE.
+--
+-- TWO blocks, and that is the load-bearing part. The first repairs and the second refuses, because
+-- a RAISE aborts the transaction it is in and takes the repair down with it — measured, with both
+-- in one block: the script refused, and the restored database read 30 of 30 again immediately
+-- after, the revoke having been rolled back by the very statement that announced it. At psql's top
+-- level each statement is its own transaction, so splitting them is what lets the repair survive.
+--
+-- The privileges go, in THIS database only. The foreign role's cluster-wide membership is left
+-- alone on purpose: it belongs to a source installation that is, in the ordinary case, running fine
+-- on its own database, and revoking it from here would break that one (measured: the source keeps
+-- reading its own 30 of 30 after this runs). Only names matching the derivation's own prefix are
+-- candidates, so an operator role that appears in a policy is never one.
+DO $$
+DECLARE
+  v_fleet name := ('fazerai_fleet_'
+                   || left(regexp_replace(current_database()::text, '[^a-zA-Z0-9_]', '_', 'g'), 30)
+                   || '_' || substr(md5(current_database()::text), 1, 8))::name;
+  v_stray text;
+BEGIN
+  FOR v_stray IN
+    SELECT DISTINCT r.rolname
+      FROM pg_policy p
+      JOIN pg_class c ON c.oid = p.polrelid
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      CROSS JOIN LATERAL unnest(p.polroles) AS pr(oid)
+      JOIN pg_roles r ON r.oid = pr.oid
+     WHERE n.nspname = 'public' AND p.polname = 'fleet_super_admin'
+       AND r.rolname <> v_fleet AND r.rolname LIKE 'fazerai\_fleet\_%'
+  LOOP
+    BEGIN
+      EXECUTE format('REVOKE ALL ON ALL TABLES IN SCHEMA public FROM %I', v_stray);
+      EXECUTE format('REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM %I', v_stray);
+      EXECUTE format('REVOKE ALL ON SCHEMA public FROM %I', v_stray);
+      RAISE NOTICE 'revoked the privileges of % here -- a foreign fleet role, which could read '
+                   'every tenant in this database through the policies naming it',
+                   quote_ident(v_stray);
+    EXCEPTION WHEN OTHERS THEN
+      RAISE NOTICE 'could not revoke privileges from %: %', quote_ident(v_stray), SQLERRM;
+    END;
+  END LOOP;
+END $$;
+
+-- The refusal, in its own statement so the repair above is already committed. It re-reads rather
+-- than trusting the loop, because a REVOKE issued by anyone who is not the GRANTOR removes nothing
+-- and reports success (measured).
+DO $$
+DECLARE
+  v_fleet name := ('fazerai_fleet_'
+                   || left(regexp_replace(current_database()::text, '[^a-zA-Z0-9_]', '_', 'g'), 30)
+                   || '_' || substr(md5(current_database()::text), 1, 8))::name;
+  v_foreign text;
+  v_held    text;
+BEGIN
+  SELECT string_agg(DISTINCT quote_ident(r.rolname), ', '),
+         string_agg(DISTINCT quote_ident(r.rolname), ', ') FILTER (WHERE
+           EXISTS (SELECT 1 FROM pg_class c2 JOIN pg_namespace n2 ON n2.oid = c2.relnamespace
+                    CROSS JOIN LATERAL aclexplode(c2.relacl) a
+                   WHERE n2.nspname = 'public' AND a.grantee = r.oid)
+        OR EXISTS (SELECT 1 FROM pg_namespace n3 CROSS JOIN LATERAL aclexplode(n3.nspacl) a
+                   WHERE n3.nspname = 'public' AND a.grantee = r.oid))
+    INTO v_foreign, v_held
+    FROM pg_policy p
+    JOIN pg_class c ON c.oid = p.polrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    CROSS JOIN LATERAL unnest(p.polroles) AS pr(oid)
+    JOIN pg_roles r ON r.oid = pr.oid
+   WHERE n.nspname = 'public' AND p.polname = 'fleet_super_admin'
+     AND r.rolname <> v_fleet AND r.rolname LIKE 'fazerai\_fleet\_%';
+  IF v_foreign IS NOT NULL THEN
+    RAISE EXCEPTION
+      'this database carries fleet_super_admin policies naming %, and not % -- the shape of a '
+      'database restored or cloned under a different name. %  Re-run the migration '
+      '20260827000000_rls_split_tenant_and_fleet_policies to rewrite the policies (its header '
+      'carries the migrate resolve --rolled-back step); this database will not serve until they '
+      'name its own role.',
+      v_foreign, quote_ident(v_fleet),
+      CASE WHEN v_held IS NULL THEN 'Their privileges here have been revoked.'
+           ELSE v_held || ' still hold privileges here, which this administrator is not the '
+                          'grantor of; clear them as their grantor or as a superuser.' END;
+  END IF;
+END $$;
+
 DO $$
 DECLARE
   v_role  text := current_setting('fazerai.app_role');
@@ -118,6 +205,13 @@ DECLARE
                    || '_' || substr(md5(current_database()::text), 1, 8))::name;
   v_stray text;
   v_left  text;
+  -- The rotation's outgoing role, DECLARED rather than inferred from an open session. The reason is
+  -- measured and lives in @/lib/tenancy/fleet-role: a stale installation, after its database was
+  -- dropped and recreated under the same name, reconnects and presents the same open session as a
+  -- rotation. This script has no environment, so the declaration arrives as a session GUC:
+  --   SET fazerai.retain_fleet_member = 'fazerai_app_v1';   -- comma-separated for two at once
+  v_retained text[] := string_to_array(
+    replace(coalesce(current_setting('fazerai.retain_fleet_member', true), ''), ' ', ''), ',');
   v_priv  text;
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = v_fleet) THEN
@@ -190,18 +284,19 @@ BEGIN
   -- this one is invoked by hand with someone watching (see the header), so a member it cannot clear
   -- stops the script instead of scrolling past. And it is re-read rather than trusted, because a
   -- REVOKE issued by someone who is not the GRANTOR removes nothing and reports success (measured).
-  -- A stray with an OPEN SESSION in this database is not a leftover: it is the OUTGOING role of a
-  -- credential rotation, and docs/deploy.md promises the container still serving on it stays alive
-  -- through the transfer. A previous installation's role, which is what this is for, has no session
-  -- here.
+  -- A stray is kept only where BOTH hold: the operator declared it in fazerai.retain_fleet_member,
+  -- and it still has a session here. The declaration authorises keeping the access (docs/deploy.md
+  -- promises the container still serving on a rotation's outgoing role survives the transfer); the
+  -- session bounds it, so a declaration left behind clears itself once the old process exits.
   FOR v_stray IN
     SELECT DISTINCT r.rolname
       FROM pg_auth_members am
       JOIN pg_roles r ON r.oid = am.member
       JOIN pg_roles d ON d.oid = am.roleid
      WHERE d.rolname = v_fleet AND r.rolname <> v_role AND r.rolname <> current_user
-       AND NOT EXISTS (SELECT 1 FROM pg_stat_activity a
-                        WHERE a.datname = current_database() AND a.usename = r.rolname)
+       AND NOT (r.rolname = ANY (v_retained)
+                AND EXISTS (SELECT 1 FROM pg_stat_activity a
+                             WHERE a.datname = current_database() AND a.usename = r.rolname))
   LOOP
     BEGIN
       -- CASCADE for the same reason as the TypeScript twin: a PREVIOUS ADMINISTRATOR is a stray
@@ -219,8 +314,9 @@ BEGIN
     JOIN pg_roles r ON r.oid = am.member
     JOIN pg_roles d ON d.oid = am.roleid
    WHERE d.rolname = v_fleet AND r.rolname <> v_role AND r.rolname <> current_user
-     AND NOT EXISTS (SELECT 1 FROM pg_stat_activity a
-                      WHERE a.datname = current_database() AND a.usename = r.rolname);
+     AND NOT (r.rolname = ANY (v_retained)
+              AND EXISTS (SELECT 1 FROM pg_stat_activity a
+                           WHERE a.datname = current_database() AND a.usename = r.rolname));
   IF v_left IS NOT NULL THEN
     RAISE EXCEPTION
       '% are still members of % and can read every tenant in this database through the '

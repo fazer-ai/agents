@@ -67,7 +67,12 @@ export class FleetPolicyMismatchError extends RuntimeIsolationError {
       `the fleet policies in this database do not name "${resolved}", which is the role this ` +
         `database resolves to: ${offenders}. Every cross-tenant read would match no policy and ` +
         "answer zero rows, with no error. This is what a database restored under a different name " +
-        "looks like. Point the policies at the resolved role (safe to re-run, and it touches only " +
+        "looks like — and refusing here is only half of it, because those policies grant the SOURCE " +
+        "installation's role every tenant in this database and this refusal stops only this " +
+        "process (measured: 30 of 30 rows, against 0 of 30 without the SET ROLE). " +
+        "`scripts/db-bootstrap` revokes that role's privileges here on the boot before this one; " +
+        "if it did not run, do that first. Then point the policies at the resolved role (safe to " +
+        "re-run, and it touches only " +
         "this database):\n" +
         "DO $$ DECLARE t text; BEGIN\n" +
         "  FOR t IN SELECT c.relname FROM pg_policy p\n" +

@@ -1,6 +1,9 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Client } from "pg";
-import { FLEET_ROLE_EXPR } from "@/lib/tenancy/fleet-role";
+import {
+  FLEET_ROLE_EXPR,
+  FLEET_ROLE_RETAINED_MEMBER_ENV,
+} from "@/lib/tenancy/fleet-role";
 import {
   assertFleetMembership,
   assertFleetRoleIsUnprivileged,
@@ -49,6 +52,11 @@ const SIDE_ROLE = `fazerai_bs_side_${process.pid}`;
 const HEIR_ROLE = `fazerai_bs_heir_${process.pid}`;
 const SETONLY_ROLE = `fazerai_bs_setonly_${process.pid}`;
 const PRIV_ROLE = `fazerai_bs_priv_${process.pid}`;
+// The shape a RESTORE leaves: a fleet role derived from SOME OTHER database name, named by the
+// copied policies of this one. The suffix is not this database's hash and does not need to be —
+// what makes it foreign is that it is not what this database derives.
+const ALIEN_FLEET_ROLE = `fazerai_fleet_bs_src_${process.pid}_deadbeef`;
+const ALIEN_MEMBER_ROLE = `fazerai_bs_alien_${process.pid}`;
 const PROBE_DB = `fazerai_bs_probe_${process.pid}`;
 const SOLO_DB = `fazerai_bs_solo_db_${process.pid}`;
 const NOINH_DB = `fazerai_bs_noinh_db_${process.pid}`;
@@ -1007,6 +1015,183 @@ describe.skipIf(!dbUp)(
       expect(members).toContain(ADMIN_ROLE);
 
       await db.query(`DROP ROLE IF EXISTS ${STRAY_ROLE}`);
+    });
+
+    // NOTE: the reconcile's one exemption, and it is DECLARED rather than inferred. The first
+    // version spared any member holding an open session here, reading that as a rotation's outgoing
+    // role. Measured false: drop a database and recreate it under the same name, and the stale
+    // installation's pool reconnects to that name, so its role presents an open session too — same
+    // catalog row, opposite meaning. `pg_stat_activity` holds nothing that separates them.
+    test("a serving member is kept only where it was declared", async () => {
+      const db = su as Client;
+      const fleet = await probeFleetRole();
+      await db.query(
+        `CREATE ROLE ${STRAY_ROLE} LOGIN PASSWORD 'straypw' NOSUPERUSER NOBYPASSRLS`,
+      );
+      // GRANTED BY the administrator, so the revoke is one it can actually make: the arm that
+      // proves an unrevokable grant is reported rather than assumed lives in the test above.
+      const regrant = async () => {
+        await db.query(`REVOKE "${fleet}" FROM ${STRAY_ROLE} CASCADE`);
+        await db.query(
+          `GRANT "${fleet}" TO ${STRAY_ROLE} WITH INHERIT FALSE, SET TRUE GRANTED BY ${ADMIN_ROLE}`,
+        );
+      };
+      const holdsFleet = async () =>
+        (
+          await db.query<{ n: string }>(
+            `SELECT count(*) AS n FROM pg_auth_members am
+               JOIN pg_roles r ON r.oid = am.member
+               JOIN pg_roles d ON d.oid = am.roleid
+              WHERE d.rolname = $1 AND r.rolname = $2`,
+            [fleet, STRAY_ROLE],
+          )
+        ).rows[0]?.n !== "0";
+
+      const serving = new Client({
+        connectionString: urlFor(STRAY_ROLE, "straypw", PROBE_DB),
+      });
+      await serving.connect();
+      try {
+        // First arm: serving, and nothing declared it. This is the previous installation, and it
+        // goes — the whole reason the exemption stopped being inferred.
+        await regrant();
+        const undeclared = await runBootstrap(APP_PW, APP_ROLE, {}, true);
+        expect(undeclared.exitCode).toBe(0);
+        expect(`${undeclared.stdout}${undeclared.stderr}`).toContain(
+          "but nothing declared it, so it is being revoked",
+        );
+        expect(await holdsFleet()).toBe(false);
+
+        // Second arm: the SAME catalog row and the SAME open session, declared. This is the
+        // rotation `docs/deploy.md` promises stays alive, and it keeps its access.
+        await regrant();
+        const declared = await runBootstrap(
+          APP_PW,
+          APP_ROLE,
+          {
+            [FLEET_ROLE_RETAINED_MEMBER_ENV]: STRAY_ROLE,
+          },
+          true,
+        );
+        expect(declared.exitCode).toBe(0);
+        expect(`${declared.stdout}${declared.stderr}`).toContain(
+          `was declared in ${FLEET_ROLE_RETAINED_MEMBER_ENV}`,
+        );
+        expect(await holdsFleet()).toBe(true);
+      } finally {
+        await serving.end();
+      }
+
+      // Third arm: still declared, no longer serving — the deploy finished and the variable was
+      // left behind. The session is what BOUNDS the exemption, so this clears itself rather than
+      // becoming permanent, which is the half that makes a forgotten declaration harmless.
+      await regrant();
+      const drained = await runBootstrap(
+        APP_PW,
+        APP_ROLE,
+        {
+          [FLEET_ROLE_RETAINED_MEMBER_ENV]: STRAY_ROLE,
+        },
+        true,
+      );
+      expect(drained.exitCode).toBe(0);
+      expect(await holdsFleet()).toBe(false);
+
+      await db.query(`DROP ROLE IF EXISTS ${STRAY_ROLE}`);
+    });
+
+    // NOTE: what a database restored or cloned under a DIFFERENT name looks like from inside — the
+    // copied `fleet_super_admin` policies still name the source installation's fleet role, and the
+    // copied grants still give it every table. Measured across two real databases: the source's
+    // runtime role read 30 of 30 rows of the restored one, against 0 of 30 without the `SET ROLE`.
+    // `src/lib/db-guard.ts` refuses to serve such a database, and that refusal stops our process
+    // and nothing else, so the privileges have to actually go.
+    test("a restored database's foreign fleet role loses its privileges here", async () => {
+      const db = su as Client;
+      await db.query(`CREATE ROLE ${ALIEN_FLEET_ROLE} NOLOGIN`);
+      await db.query(
+        `CREATE ROLE ${ALIEN_MEMBER_ROLE} LOGIN PASSWORD 'alienpw' NOSUPERUSER NOBYPASSRLS`,
+      );
+      await db.query(
+        `GRANT ${ALIEN_FLEET_ROLE} TO ${ALIEN_MEMBER_ROLE} WITH INHERIT FALSE, SET TRUE`,
+      );
+      await onProbe(urlFor(ADMIN_ROLE, ADMIN_PW, PROBE_DB), async (c) => {
+        await c.query("DROP TABLE IF EXISTS restored_probe");
+        await c.query(
+          "CREATE TABLE restored_probe (id bigserial primary key, tenant_id bigint not null)",
+        );
+        await c.query(
+          "INSERT INTO restored_probe (tenant_id) SELECT g % 3 + 1 FROM generate_series(1, 30) g",
+        );
+        await c.query("ALTER TABLE restored_probe ENABLE ROW LEVEL SECURITY");
+        await c.query(
+          `CREATE POLICY fleet_super_admin ON restored_probe TO ${ALIEN_FLEET_ROLE} USING (true) WITH CHECK (true)`,
+        );
+        await c.query(`GRANT USAGE ON SCHEMA public TO ${ALIEN_FLEET_ROLE}`);
+        await c.query(
+          `GRANT SELECT ON restored_probe TO ${ALIEN_FLEET_ROLE}, ${ALIEN_MEMBER_ROLE}`,
+        );
+      });
+
+      // To the EFFECT, before and after: the source installation's role reading this database
+      // through a policy that names a role it belongs to.
+      const readsThroughAlien = async () => {
+        const c = new Client({
+          connectionString: urlFor(ALIEN_MEMBER_ROLE, "alienpw", PROBE_DB),
+        });
+        await c.connect();
+        try {
+          await c.query(`SET ROLE ${ALIEN_FLEET_ROLE}`);
+          return (
+            await c.query<{ n: string }>(
+              "SELECT count(*) AS n FROM restored_probe",
+            )
+          ).rows[0]?.n as string;
+        } catch (err) {
+          return err instanceof Error ? err.message : String(err);
+        } finally {
+          await c.end();
+        }
+      };
+      expect(await readsThroughAlien()).toBe("30");
+
+      const { exitCode, stdout, stderr } = await runBootstrap(
+        APP_PW,
+        APP_ROLE,
+        {},
+        true,
+      );
+      const out = `${stdout}${stderr}`;
+      // The boot COMPLETES: refusing from here would roll the repair back with it — measured on the
+      // SQL twin, which raised from the same transaction and undid its own revoke. Refusing is
+      // db-guard's job, and it does it on this exact condition ahead of every override.
+      expect(exitCode).toBe(0);
+      expect(out).toContain("carries fleet_super_admin policies naming");
+      expect(out).toContain("revoked their privileges in this database");
+      expect(await readsThroughAlien()).toContain("permission denied");
+
+      // And the source installation is UNHARMED: the membership is cluster-wide, so revoking it
+      // from here would break a database this boot has no business touching. Privileges are
+      // per-database and are the right blast radius; the membership stays.
+      expect(
+        (
+          await db.query<{ n: string }>(
+            `SELECT count(*) AS n FROM pg_auth_members am
+               JOIN pg_roles r ON r.oid = am.member
+               JOIN pg_roles d ON d.oid = am.roleid
+              WHERE d.rolname = $1 AND r.rolname = $2`,
+            [ALIEN_FLEET_ROLE, ALIEN_MEMBER_ROLE],
+          )
+        ).rows[0]?.n,
+      ).toBe("1");
+
+      await onProbe(urlFor(ADMIN_ROLE, ADMIN_PW, PROBE_DB), (c) =>
+        c.query("DROP TABLE IF EXISTS restored_probe"),
+      );
+      for (const r of [ALIEN_MEMBER_ROLE, ALIEN_FLEET_ROLE]) {
+        await db.query(`DROP OWNED BY ${r} CASCADE`).catch(() => {});
+        await db.query(`DROP ROLE IF EXISTS ${r}`);
+      }
     });
 
     // NOTE: the live half of `assertFleetRoleIsUnprivileged`, and the branch it exists for — the one

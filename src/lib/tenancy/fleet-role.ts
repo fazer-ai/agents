@@ -72,3 +72,41 @@ export const FLEET_ROLE_FUNCTION_DDL = `CREATE OR REPLACE FUNCTION public.fazera
 // re-execute a historical backfill, and anything else that needs it cannot drift into three
 // spellings of the same thing.
 export const ENTER_FLEET_ROLE_SQL = `SELECT set_config('role', ${FLEET_ROLE_FN}, true)`;
+
+// The rotation's outgoing role is DECLARED, never inferred, and a measurement is why.
+//
+// `docs/deploy.md` promises that during a credential rotation the container still serving on the
+// outgoing role stays alive through the transfer, so the boot of the incoming release must not cut
+// that role's fleet access — every `asSuperAdmin` in the old process, API-key verification
+// included, would start reading zero rows mid-deploy. The first attempt spared any stray holding an
+// open session in this database, on the reasoning that a previous installation's role would have
+// none.
+//
+// Measured, and false: drop a database and recreate it under the same name, and the stale
+// installation's pool reconnects to that name. Its role then presents EXACTLY the shape of a
+// rotation — a member of this database's fleet role, with a live session here — while being the
+// leftover the reconcile exists to remove. `pg_stat_activity` cannot tell the two apart, because
+// there is nothing in it to tell them apart WITH.
+//
+// So the operator says which role is leaving. Both conditions are required, and each covers the
+// other's failure: the declaration is what authorises keeping the access, and the open session is
+// what bounds it, so a declaration left behind in the environment clears itself on the first boot
+// after the old process exits rather than becoming a permanent exemption.
+export const FLEET_ROLE_RETAINED_MEMBER_ENV = "FLEET_ROLE_RETAIN_MEMBER";
+
+// The same declaration for `scripts/db-bootstrap.sql`, which is run by hand in psql and has no
+// environment to read: `SET fazerai.retain_fleet_member = 'app_v1';` before the script.
+export const FLEET_ROLE_RETAINED_MEMBER_GUC = "fazerai.retain_fleet_member";
+
+// Splits either spelling of the declaration into role names. Comma-separated so a second rotation
+// started before the first one drained composes instead of overwriting.
+export function retainedFleetMembers(
+  declared: string | undefined | null,
+): Set<string> {
+  return new Set(
+    (declared ?? "")
+      .split(",")
+      .map((name) => name.trim())
+      .filter((name) => name.length > 0),
+  );
+}

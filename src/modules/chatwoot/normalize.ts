@@ -1,4 +1,4 @@
-import type { RenderableLocation } from "./render";
+import type { RenderableLocation, RenderableMessage } from "./render";
 import type {
   NormalizedChatwootAttachment,
   NormalizedChatwootEvent,
@@ -438,6 +438,29 @@ export function firstAudioAttachment(e: NormalizedChatwootEvent): {
 // still carry a usable fallback_title (place name + address). Neither ⇒ null, and the render falls
 // back to the generic attachment marker. Shared by the direct webhook path and the debounce
 // re-fetch (issue #45).
+// THE ONE MAPPING FROM A NORMALIZED EVENT TO WHAT THE AGENT WOULD READ. Two callers ask it and one
+// of them is not running a turn: the spend-ceiling gate has to know whether the message it is about
+// to refuse would have reached a model at all, and `runAgentTurn` answers `skipped` — before any
+// billed call — for a message that renders to nothing (blank content, an attachment type we do not
+// recognise, a reaction). Asking that there with a second copy of this shape would be a second
+// answer to one question, and the two would drift the first time a marker or a field is added.
+export function incomingRenderable(
+  n: NormalizedChatwootEvent,
+): RenderableMessage {
+  return {
+    text: n.message?.content ?? "",
+    transcribedText: n.message?.transcribedText,
+    imageDescription: n.message?.imageDescription,
+    extractedText: n.message?.extractedText,
+    attachmentTypes: (n.message?.attachments ?? [])
+      .map((a) => a.fileType)
+      .filter((t): t is string => t !== null),
+    location: firstLocationAttachment(n.message?.attachments),
+    inReplyTo: n.message?.inReplyTo,
+    isReaction: n.message?.isReaction,
+  };
+}
+
 export function firstLocationAttachment(
   attachments:
     | Array<

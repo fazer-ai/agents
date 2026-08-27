@@ -132,6 +132,7 @@ import {
   firstLocationAttachment,
   firstVisualAttachment,
   heldByAnotherParty,
+  incomingRenderable,
   isIncomingMessage,
   isNewHumanAgentMessage,
   isNewIncomingMessage,
@@ -2597,11 +2598,33 @@ async function maybeConsumeCommandOrGate(params: {
       // that a budget silenced an agent that could not have spoken anyway, and send them to raise a
       // number that changes nothing.
       //
+      // NOTHING TO ANSWER ⇒ NOTHING TO REFUSE, on the direct path as on the flush's. A message that
+      // renders to nothing for the agent — blank content, an attachment type we do not recognise, a
+      // reaction — makes `runAgentTurn` return `skipped` before any billed call, so under a ceiling
+      // with room this customer is already unanswered and in silence. Refusing it would send them
+      // the operator's sentence, put the conversation in a human's queue and write an `error` line,
+      // all about a message no model was ever going to see. Asked with `incomingRenderable`, the
+      // same shape the turn renders from, so the two cannot drift.
+      if (!renderInboundMessage(incomingRenderable(n))) {
+        logger.info(
+          "chatwoot: spend ceiling reached (conv=%s) — but the message renders to nothing, so there is no turn to refuse",
+          String(conversationId),
+        );
+        return false;
+      }
       // Read only on the refusing branch, so the ordinary message pays nothing for it, and asked of
       // the SAME function the turn asks rather than a second copy of its rules.
       // `skipExperiment` because resolving an A/B variant INSERTS the thread's assignment: a probe
       // must not enrol a turn that is not going to run.
-      const runnable = await runScopedOn(base, sysCtx(tenantId), (db) =>
+      //
+      // A PROBE THAT COULD NOT ANSWER IS NOT AN AGENT THAT CANNOT RUN, and the two must not collapse
+      // into one. The ceiling fails OPEN when the ceiling itself is unreadable — a customer must not
+      // be silenced by our own database hiccup — but here the verdict is read and says `over`, and
+      // this probe is only the escape hatch from it. An unreadable escape hatch does not open: the
+      // pool that refused this read has nothing to do with the budget the operator capped, and
+      // treating the error as "not runnable" would let the turn run and SPEND past the ceiling,
+      // which is the one outcome this gate exists to prevent.
+      const probe = await runScopedOn(base, sysCtx(tenantId), (db) =>
         loadAgentConfig(
           db,
           {
@@ -2613,8 +2636,18 @@ async function maybeConsumeCommandOrGate(params: {
           },
           { skipExperiment: true },
         ),
-      ).catch(() => null);
-      if (!runnable) {
+      ).then(
+        (cfg) => ({ read: true as const, cfg }),
+        (err) => {
+          logger.warn(
+            "chatwoot: could not read whether the agent is runnable (conv=%s): %s — the ceiling stands",
+            String(conversationId),
+            err instanceof Error ? err.message : String(err),
+          );
+          return { read: false as const, cfg: null };
+        },
+      );
+      if (probe.read && !probe.cfg) {
         logger.info(
           "chatwoot: spend ceiling reached (conv=%s) — but the agent is not runnable, so the silence is not the budget's",
           String(conversationId),

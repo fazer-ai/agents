@@ -138,6 +138,10 @@ call. Three shapes, all the same rule:
   longer resolves, and the turn then returns `agent-unavailable` before a model is built. The webhook
   gate asks it on the refusing branch, with `skipExperiment` so a probe cannot enrol a turn that is
   not going to run.
+- **a message the agent would never have read.** Blank content with no recognised attachment renders
+  to nothing, and `runAgentTurn` returns `skipped` before any billed call — so that customer is met
+  with silence under a ceiling with room too. The gate asks with `incomingRenderable`, the same shape
+  the turn renders from.
 - **a file this provider cannot read.** The extraction returns `unsupported` in a month with budget
   to spare, so answering `429` (playground) or a `spend_ceiling` skip (inbox) in a spent one reports
   a refusal that never happened and sends the operator to look at a budget over a file that would
@@ -150,6 +154,13 @@ calling costs at most a staler percentage in the line the operator reads — the
 month crossed its fraction, which is the whole content of the warning. That is why the gates
 announce both halves where they sit, and why "defer the warning until every no-call exit has passed"
 is recorded as rejected in `.codex-review-waived` rather than implemented.
+
+One thing does NOT follow this rule, and the difference is the direction of the failure: a probe that
+could not answer is not the same as an answer of "this would not have run". The ceiling fails **open**
+when the CEILING is unreadable, because no customer should be silenced by our own database hiccup —
+but once the verdict is read and says `over`, the checks above are escape hatches from it, and an
+unreadable escape hatch does not open. A pool timeout on the runnable probe leaves the refusal
+standing; treating it as "not runnable" would let the turn spend past a budget the operator capped.
 
 For the inbound attachment this means the ceiling sits **below** the download. The download is a
 Chatwoot fetch and not a billed one, and it is what tells that path the file's type in the first

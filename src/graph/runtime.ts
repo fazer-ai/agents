@@ -17,7 +17,7 @@ import {
 } from "@/modules/chatwoot/messages";
 import {
   firstAudioAttachment,
-  firstLocationAttachment,
+  incomingRenderable,
   isIncomingMessage,
   shouldBotHandle,
 } from "@/modules/chatwoot/normalize";
@@ -1497,19 +1497,9 @@ export async function runAgentTurn(
   if (n.conversationId == null || n.inboxId == null) return "skipped";
   if (!isIncomingMessage(n)) return "skipped";
   // Render the message for the agent (text / transcribed audio / image-or-file marker), mirroring the
-  // flush. transcribedText is set by the eager STT pass.
-  const renderable = {
-    text: n.message?.content ?? "",
-    transcribedText: n.message?.transcribedText,
-    imageDescription: n.message?.imageDescription,
-    extractedText: n.message?.extractedText,
-    attachmentTypes: (n.message?.attachments ?? [])
-      .map((a) => a.fileType)
-      .filter((t): t is string => t !== null),
-    location: firstLocationAttachment(n.message?.attachments),
-    inReplyTo: n.message?.inReplyTo,
-    isReaction: n.message?.isReaction,
-  };
+  // flush. transcribedText is set by the eager STT pass. The shape itself is `incomingRenderable`,
+  // shared with the spend-ceiling gate, which has to ask this same question before it refuses.
+  const renderable = incomingRenderable(n);
   let text = renderInboundMessage(renderable);
   if (!text) return "skipped";
   const conversationId = n.conversationId;

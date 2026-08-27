@@ -153,12 +153,18 @@ async function deliverCustomerMessage(params: {
   // Deliver on the tenant's SECOND Chatwoot account instead of the first. Only the multi-instance
   // tests pass it; every other caller keeps the single-account shape it always had.
   onSecond?: boolean;
+  // The message body. Blank (with no attachment) is a message that renders to nothing for the agent,
+  // which the turn skips before any billed call.
+  content?: string;
+  // A Prisma client that misbehaves in a named way, for the tests about what a gate does when a read
+  // it depends on cannot answer.
+  base?: PrismaClient;
 }): Promise<void> {
   seq += 1;
   const n = normalizeChatwootEvent({
     event: "message_created",
     id: params.messageId ?? 8000 + seq,
-    content: "oi, preciso de ajuda",
+    content: params.content ?? "oi, preciso de ajuda",
     message_type: "incoming",
     private: false,
     conversation: {
@@ -197,7 +203,7 @@ async function deliverCustomerMessage(params: {
     deliveryRowId: delivery.id,
     agentBotId: params.onSecond ? 41 : 31,
     normalized: n,
-    base: appDb,
+    base: params.base ?? appDb,
     deps: {
       makeClient: params.makeClient as never,
       makeModel: params.allowModel
@@ -511,6 +517,76 @@ describe.skipIf(!dbUp)("the spend ceiling (webhook e2e)", () => {
     await deliverCustomerMessage({ convId: 9418, makeClient: ok.makeClient });
     expect(ok.publicOn(9418).map((m) => m.content)).toEqual([OVER_COPY]);
     expect(await ceilingRows(9418)).toHaveLength(1);
+  });
+
+  // A MESSAGE THE AGENT WOULD NEVER HAVE READ IS NOT A MESSAGE THE BUDGET SILENCED. Blank content
+  // with no attachment renders to nothing, and `runAgentTurn` returns `skipped` before any billed
+  // call — so under a ceiling with room this customer is already met with silence. Refusing it would
+  // send the operator's sentence, queue the conversation for a human and write an `error` line about
+  // a message no model was ever going to see.
+  test("a message that renders to nothing is not refused", async () => {
+    await setCeiling({
+      enabled: true,
+      monthlyInboxTokens: 100,
+      overCeilingMessage: OVER_COPY,
+    });
+    await spend("inbox", 500);
+    await seedConversation(9419);
+    const s = stubChatwoot();
+    await deliverCustomerMessage({
+      convId: 9419,
+      makeClient: s.makeClient,
+      content: "   ",
+    });
+    expect(s.publicOn(9419)).toEqual([]);
+    expect(s.statusToggles.filter(([c]) => c === 9419)).toEqual([]);
+    expect(s.notesOn(9419)).toEqual([]);
+    expect(await ceilingRows(9419)).toEqual([]);
+  });
+
+  // A PROBE THAT COULD NOT ANSWER IS NOT AN AGENT THAT CANNOT RUN. The ceiling fails OPEN when the
+  // CEILING is unreadable, so a customer is never silenced by our own database hiccup — but here the
+  // verdict is read and says `over`, and the runnable probe is only the escape hatch from it. An
+  // unreadable escape hatch must not open, or a pool timeout would let the turn spend past a budget
+  // the operator capped, which is the one outcome this gate exists to prevent.
+  //
+  // The probe is told apart from every other agent read by its SELECT: it is the only one that asks
+  // for `modelConfig`, and the context load above it asks for `mode`. Without that discrimination
+  // the fixture would break the load instead, and the gate under test would never run.
+  test("a runnable probe that cannot be read leaves the refusal standing", async () => {
+    await setCeiling({
+      enabled: true,
+      monthlyInboxTokens: 100,
+      overCeilingMessage: OVER_COPY,
+    });
+    await spend("inbox", 500);
+    await seedConversation(9420);
+    let probes = 0;
+    const blind = appDb.$extends({
+      query: {
+        agent: {
+          async findUnique({ args, query }) {
+            if ((args.select as { modelConfig?: boolean })?.modelConfig) {
+              probes += 1;
+              throw new Error("connection reset");
+            }
+            return query(args);
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+    const s = stubChatwoot();
+    await deliverCustomerMessage({
+      convId: 9420,
+      makeClient: s.makeClient,
+      base: blind,
+    });
+    // The read the test is about actually ran; without this the assertion below would pass on a path
+    // that never reached it.
+    expect(probes).toBeGreaterThan(0);
+    // ...and the customer is refused anyway, which is the ceiling standing.
+    expect(s.publicOn(9420).map((m) => m.content)).toEqual([OVER_COPY]);
+    expect(await ceilingRows(9420)).toHaveLength(1);
   });
 
   // TWO ACCOUNTS, TWO MESSAGES THAT HAPPEN TO SHARE A NUMBER. Chatwoot ids are account-local, so a

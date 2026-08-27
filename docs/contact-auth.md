@@ -419,6 +419,13 @@ that allow can be stored and the contact served for the rest of the TTL. The bou
 and closing it properly means coordinating grant mutations in Postgres — the same post-MVP path
 `deploy.md` names for the rest of this class.
 
+**And the ordering is asymmetric on purpose.** An allow never survives a refusal; a refusal may cost a
+newer allow its row, because the delete is unconditional and the row records no trace of which check
+wrote it. Both halves are the same choice made twice: when two overlapping checks cannot be ordered
+from what is on disk, the side taken is the one that asks the endpoint again. The cost is one extra
+call after an overlap — an unlock that just succeeded is re-asked, and answered yes again — against
+a contact served after a refusal for the whole TTL, which is what the other direction costs.
+
 The READ is not in that queue, and that is the boundary of the guarantee rather than a gap in it. A
 refusal in flight is already covered, because it is remembered before its delete. What a queue would
 add is ordering against a refusal that lands after the read started, and "the read came first" and

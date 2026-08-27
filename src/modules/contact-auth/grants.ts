@@ -70,6 +70,17 @@ import type { ContactAuthConfig } from "./settings";
 // indexed single-statement transaction on the way out, and a failure or a timeout there marks the
 // contact unconfirmed, which the next check settles by deleting first.
 //
+// THE ORDERING IS ASYMMETRIC ON PURPOSE. An allow never survives a refusal, and a refusal may cost a
+// newer allow its row: the delete is unconditional, and the row carries no record of WHICH check
+// produced it, so an older refusal landing after a newer allow takes that grant with it. Both halves
+// are the same choice made twice — when two overlapping checks cannot be ordered from what is on
+// disk, the side taken is the one that asks the endpoint again. What the asymmetry costs is one
+// extra call after an overlap (an unlock that just succeeded is re-asked, and answered yes again);
+// what the other direction would cost is a contact served after a refusal, for the whole TTL.
+// Closing it symmetrically means storing the deciding check's instant on the row and making the
+// delete conditional on it, which is a protocol rather than a guard, for a symptom measured in one
+// endpoint call.
+//
 // The residual, stated rather than papered over: two checks that overlap in time can still interleave
 // their writes, and the bound on that is the TTL the operator chose — the same bound the mode already
 // carries for a revocation, and the same stance docs/contact-auth.md takes for verdicts themselves

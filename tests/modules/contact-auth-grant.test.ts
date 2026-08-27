@@ -851,6 +851,25 @@ describe.skipIf(!dbUp)("contact authorization: reusing a verdict", () => {
     await Promise.all([slowWriter, denial]);
   });
 
+  test("an older refusal landing late takes a newer grant with it, on purpose", async () => {
+    const ep = endpoint(allowed);
+    await ask({ cfg: cfg(), ...ep });
+    expect(await grants()).toHaveLength(1);
+    // A refusal whose own check started BEFORE that allow, arriving after it. The row carries no
+    // trace of which check wrote it, so this delete cannot spare it — and that is the direction to
+    // take: the contact is re-asked on the next message and answered yes again, where sparing it
+    // would mean serving a contact whose refusal simply lost a race, for the whole TTL. Asserted as
+    // a fact so nobody later "fixes" the asymmetry into the unsafe side without noticing.
+    await dropContactAuthGrant(
+      appDb,
+      { tenantId, agentId, contactId },
+      {
+        refusedAt: Date.now() - 5000,
+      },
+    );
+    expect(await grants()).toHaveLength(0);
+  });
+
   test("an older refusal finishing late does not overwrite a newer one", async () => {
     const key = { tenantId, agentId, contactId };
     const t1 = Date.now() - 3000;

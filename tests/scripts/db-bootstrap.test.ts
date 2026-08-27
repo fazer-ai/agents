@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { Client } from "pg";
 import {
   FLEET_ROLE_EXPR,
@@ -50,6 +51,10 @@ const SU_PARENT = `fazerai_bs_su_parent_${process.pid}`;
 const TEAM_ROLE = `fazerai_bs_team_${process.pid}`;
 const SIDE_ROLE = `fazerai_bs_side_${process.pid}`;
 const HEIR_ROLE = `fazerai_bs_heir_${process.pid}`;
+// The heir that reaches privilege WITHOUT inheriting it: the case every one of these checks
+// answered "safe" until round 16 measured it.
+const SETHEIR_ROLE = `fazerai_bs_setheir_${process.pid}`;
+const SETHEIR_PARENT = `fazerai_bs_setheir_parent_${process.pid}`;
 const SETONLY_ROLE = `fazerai_bs_setonly_${process.pid}`;
 const PRIV_ROLE = `fazerai_bs_priv_${process.pid}`;
 // The shape a RESTORE leaves: a fleet role derived from SOME OTHER database name, named by the
@@ -204,6 +209,54 @@ async function onProbe<T>(
 // The decision the whole change turns on, as a table: which statement each catalog state earns.
 // It is separated from the database because what makes it right is a privilege rule, not a
 // connection — and because the e2e below can only reach three of these five rows.
+// A rotation's outgoing role is DECLARED, and a declaration that cannot REACH the process declares
+// nothing. None of the deploy composes uses `env_file`: each lists its environment explicitly, so a
+// variable they do not name never arrives, and `docs/deploy.md` would be telling operators to set
+// something with no effect. Measured by reading them — all three whitelist, none inherits.
+describe("the retention declaration reaches a deployed container", () => {
+  const COMPOSES = [
+    "docker-compose.prod.yml",
+    "docker-compose.coolify.yml",
+    "docker-compose.portainer.yml",
+  ];
+
+  test("every deploy compose passes it through", () => {
+    for (const file of COMPOSES) {
+      expect([
+        file,
+        readFileSync(file, "utf8").includes(
+          `${FLEET_ROLE_RETAINED_MEMBER_ENV}=`,
+        ),
+      ]).toEqual([file, true]);
+    }
+  });
+
+  // The positive control for the premise above: if a compose ever grew an `env_file`, the whitelist
+  // would stop being the whole story and this fence would be asking the wrong question.
+  test("none of them inherits an env file instead", () => {
+    for (const file of COMPOSES) {
+      expect([file, readFileSync(file, "utf8").includes("env_file")]).toEqual([
+        file,
+        false,
+      ]);
+    }
+  });
+
+  // Where an operator looks the name up. `CLAUDE.md` makes this the rule for every new variable.
+  //
+  // Anchored on the DECLARATION, not on the name appearing somewhere: the note above it explains
+  // the variable in prose, so a substring check stayed green with the declaration line renamed —
+  // measured, as a mutation that survived.
+  test(".env.example declares it, commented out", () => {
+    const declared = readFileSync(".env.example", "utf8")
+      .split("\n")
+      .filter((line) =>
+        new RegExp(`^#?\\s*${FLEET_ROLE_RETAINED_MEMBER_ENV}=`).test(line),
+      );
+    expect(declared).toHaveLength(1);
+  });
+});
+
 describe("planRoleProvisioning", () => {
   const cases: [
     string,
@@ -443,7 +496,9 @@ describe("planRoleProvisioning", () => {
           ...ok,
           reaches: "rds_superuser",
         });
-      expect(inherited).toThrow(/inherits a privileged role \(rds_superuser\)/);
+      expect(inherited).toThrow(
+        /can become a privileged role \(rds_superuser\)/,
+      );
     });
 
     // The repair is a DROP, not a demotion: this installation does not own that role, and demoting
@@ -1980,6 +2035,58 @@ describe.skipIf(!dbUp)(
       }
     });
 
+    // NOTE: the arm that made all four of these checks wrong. `GRANT <superuser> TO <role> WITH
+    // INHERIT FALSE, SET TRUE` leaves `pg_has_role(role, superuser, 'USAGE')` FALSE — which is what
+    // every one of them asked — while the role runs `SET ROLE <superuser>` and comes back with
+    // `is_superuser = on`. Measured directly, and worse than it looks: SET permission is TRANSITIVE
+    // through the chain, so a runtime role granted a fleet role that is itself a SET-only member
+    // reaches the superuser in ONE statement, without entering the fleet role at all.
+    //
+    // 16-only by construction: before 16 a grant carried no options of its own, so this state
+    // cannot be built and `MEMBER` is the whole answer there.
+    test("a role that only SET-reaches privilege is refused too", async () => {
+      const db = su as Client;
+      const version = (
+        await db.query<{ v: number }>(
+          "SELECT current_setting('server_version_num')::int AS v",
+        )
+      ).rows[0]?.v as number;
+      if (version < 160000) return;
+
+      // Its OWN privileged parent, not the neighbouring test's: a fixture that depends on another
+      // test having run passes only in file order, and one that creates a role that test also
+      // creates breaks that test instead.
+      await db.query(`CREATE ROLE ${SETHEIR_PARENT} NOLOGIN BYPASSRLS`);
+      await db.query(
+        `CREATE ROLE ${SETHEIR_ROLE} LOGIN PASSWORD '${APP_PW}' NOSUPERUSER NOBYPASSRLS`,
+      );
+      await db.query(
+        `GRANT ${SETHEIR_PARENT} TO ${SETHEIR_ROLE} WITH INHERIT FALSE, SET TRUE`,
+      );
+      // The catalog's own answer to the two questions, so the fixture is proved to BE this state
+      // rather than assumed to be: what the old check asked is false, and the role is still there.
+      expect(
+        (
+          await db.query(
+            "SELECT pg_has_role($1, $2, 'USAGE') AS usage, pg_has_role($1, $2, 'SET') AS can_set",
+            [SETHEIR_ROLE, SETHEIR_PARENT],
+          )
+        ).rows[0],
+      ).toEqual({ usage: false, can_set: true });
+
+      const { exitCode, stdout, stderr } = await runBootstrap(
+        APP_PW,
+        SETHEIR_ROLE,
+      );
+      const out = `${stdout}${stderr}`;
+      expect(exitCode).toBe(1);
+      expect(out).toContain("reaches a privileged role through a membership");
+      expect(out).toContain(`${SETHEIR_PARENT} (via SET ROLE)`);
+
+      await db.query(`DROP ROLE IF EXISTS ${SETHEIR_ROLE}`);
+      await db.query(`DROP ROLE IF EXISTS ${SETHEIR_PARENT}`);
+    });
+
     test("a role that only INHERITS privilege is refused, like one that holds it", async () => {
       const db = su as Client;
       // NOTE: the attributes say safe and the role is not: it reaches BYPASSRLS through a
@@ -2051,7 +2158,10 @@ describe.skipIf(!dbUp)(
       const transitive = await runBootstrap(APP_PW, HEIR_ROLE);
       const via = `${transitive.stdout}${transitive.stderr}`;
       expect(transitive.exitCode).toBe(1);
-      expect(via).toContain(`(${SU_PARENT})`);
+      // Annotated with HOW it is reached, because the repairs differ: an inherited membership is
+      // revoked, a SET-only one has its option taken away with `GRANT … WITH SET FALSE`. Naming the
+      // role without saying which would leave the operator guessing between two statements.
+      expect(via).toContain(`${SU_PARENT} (inherited)`);
       expect(via).toContain(`REVOKE ${TEAM_ROLE} FROM "${HEIR_ROLE}"`);
       expect(via).not.toContain(`REVOKE ${SU_PARENT}`);
       expect(via).not.toContain(SIDE_ROLE);

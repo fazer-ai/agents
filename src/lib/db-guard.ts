@@ -1,8 +1,9 @@
-import type { PrismaClient } from "@/../generated/prisma/client";
+import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
 import { FLEET_ROLE_FN } from "@/lib/tenancy/fleet-role";
+import { privilegedReachSql } from "@/lib/tenancy/privileged-reach";
 
 // Boot-time fail-fast: the RUNTIME database connection must NOT be a superuser or a BYPASSRLS
 // role, directly OR via role membership. Our whole tenant-isolation model rests on RLS, and RLS
@@ -150,8 +151,9 @@ export async function assertRuntimeRoleIsNotSuperuser(
   const allow =
     opts.allow ?? (config.env !== "production" && config.allowSuperuserRuntime);
 
-  // current_user's own attributes + whether it is a member (recursively) of ANY superuser or
-  // bypassrls role. pg_has_role with 'USAGE' walks inherited memberships.
+  // current_user's own attributes + whether it can BECOME any superuser or bypassrls role. Not
+  // whether it INHERITS one: see `privilegedReachSql`, and the measurement that a SET-only grant
+  // reads as false there while the role runs `SET ROLE` into it and comes back a superuser.
   // Two queries rather than one, and the split is not stylistic: the privilege question is a plain
   // tagged template, while the fleet question needs the role NAME as a SQL expression (it carries
   // the database — see `@/lib/tenancy/fleet-role`) and therefore the Unsafe form. Keeping them
@@ -162,12 +164,7 @@ export async function assertRuntimeRoleIsNotSuperuser(
       r.rolname,
       r.rolsuper,
       r.rolbypassrls,
-      EXISTS (
-        SELECT 1 FROM pg_roles m
-        WHERE (m.rolsuper OR m.rolbypassrls)
-          AND m.oid <> r.oid
-          AND pg_has_role(r.oid, m.oid, 'USAGE')
-      ) AS inherits_privileged,
+      ${Prisma.raw(privilegedReachSql("r.oid"))} IS NOT NULL AS inherits_privileged,
       current_setting('server_version_num')::int AS server_version_num
     FROM pg_roles r
     WHERE r.rolname = current_user
@@ -256,7 +253,7 @@ export async function assertRuntimeRoleIsNotSuperuser(
   const reasons: string[] = [];
   if (row.rolsuper) reasons.push("SUPERUSER");
   if (row.rolbypassrls) reasons.push("BYPASSRLS");
-  if (row.inherits_privileged) reasons.push("inherits a privileged role");
+  if (row.inherits_privileged) reasons.push("can become a privileged role");
   // A superuser holds USAGE on every role, so this is redundant with the two above rather than a
   // separate finding there — and it is exactly the local-dev shape ALLOW_SUPERUSER_RUNTIME exists
   // to permit, which is why it must not be reported when the role is already privileged.

@@ -235,18 +235,31 @@ describe("the foreign-fleet repair survives the refusal", () => {
     expect(repairing[0]).not.toContain("RAISE EXCEPTION");
   });
 
-  test("a later block does the refusing", () => {
+  // And it comes after the block that CREATES this database's fleet role, which is a SECOND measured
+  // ordering: the statement the refusal prints names that role, so raised from where the repair sits
+  // the script aborted before provisioning it and pasting the repair answered `role … does not
+  // exist`. Moved to the end, the same paste rewrites every policy to the name the copy derives.
+  test("the refusal comes after both the repair and the provisioning", () => {
     const refusing = blocks.filter(
       (b) =>
         b.includes("RAISE EXCEPTION") &&
         b.includes("carries fleet_super_admin policies naming"),
     );
     expect(refusing).toHaveLength(1);
-    expect(blocks.indexOf(refusing[0] as string)).toBeGreaterThan(
+    const at = blocks.indexOf(refusing[0] as string);
+    expect(at).toBeGreaterThan(
       blocks.findIndex((b) =>
         b.includes("REVOKE ALL ON ALL TABLES IN SCHEMA public FROM %I"),
       ),
     );
+    expect(at).toBeGreaterThan(
+      blocks.findIndex((b) =>
+        b.includes("CREATE ROLE %I NOLOGIN NOSUPERUSER NOBYPASSRLS"),
+      ),
+    );
+    // It is the LAST block, so a statement added later cannot land between the provisioning and the
+    // refusal and be skipped on every restored database without anyone noticing.
+    expect(at).toBe(blocks.length - 1);
   });
 
   // The TypeScript twin reaches the same place by a different route: it runs in autocommit, so its

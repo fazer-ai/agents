@@ -157,45 +157,6 @@ BEGIN
   END LOOP;
 END $$;
 
--- The refusal, in its own statement so the repair above is already committed. It re-reads rather
--- than trusting the loop, because a REVOKE issued by anyone who is not the GRANTOR removes nothing
--- and reports success (measured).
-DO $$
-DECLARE
-  v_fleet name := ('fazerai_fleet_'
-                   || left(regexp_replace(current_database()::text, '[^a-zA-Z0-9_]', '_', 'g'), 30)
-                   || '_' || substr(md5(current_database()::text), 1, 8))::name;
-  v_foreign text;
-  v_held    text;
-BEGIN
-  SELECT string_agg(DISTINCT quote_ident(r.rolname), ', '),
-         string_agg(DISTINCT quote_ident(r.rolname), ', ') FILTER (WHERE
-           EXISTS (SELECT 1 FROM pg_class c2 JOIN pg_namespace n2 ON n2.oid = c2.relnamespace
-                    CROSS JOIN LATERAL aclexplode(c2.relacl) a
-                   WHERE n2.nspname = 'public' AND a.grantee = r.oid)
-        OR EXISTS (SELECT 1 FROM pg_namespace n3 CROSS JOIN LATERAL aclexplode(n3.nspacl) a
-                   WHERE n3.nspname = 'public' AND a.grantee = r.oid))
-    INTO v_foreign, v_held
-    FROM pg_policy p
-    JOIN pg_class c ON c.oid = p.polrelid
-    JOIN pg_namespace n ON n.oid = c.relnamespace
-    CROSS JOIN LATERAL unnest(p.polroles) AS pr(oid)
-    JOIN pg_roles r ON r.oid = pr.oid
-   WHERE n.nspname = 'public' AND p.polname = 'fleet_super_admin'
-     AND r.rolname <> v_fleet AND r.rolname LIKE 'fazerai\_fleet\_%';
-  IF v_foreign IS NOT NULL THEN
-    RAISE EXCEPTION
-      'this database carries fleet_super_admin policies naming %, and not % -- the shape of a '
-      'database restored or cloned under a different name. %  Re-run the migration '
-      '20260827000000_rls_split_tenant_and_fleet_policies to rewrite the policies (its header '
-      'carries the migrate resolve --rolled-back step); this database will not serve until they '
-      'name its own role.',
-      v_foreign, quote_ident(v_fleet),
-      CASE WHEN v_held IS NULL THEN 'Their privileges here have been revoked.'
-           ELSE v_held || ' still hold privileges here, which this administrator is not the '
-                          'grantor of; clear them as their grantor or as a superuser.' END;
-  END IF;
-END $$;
 
 DO $$
 DECLARE
@@ -233,12 +194,20 @@ BEGIN
     UNION ALL SELECT 'CREATEDB' FROM pg_roles WHERE rolname = v_fleet AND rolcreatedb
     UNION ALL SELECT 'CREATEROLE' FROM pg_roles WHERE rolname = v_fleet AND rolcreaterole
     UNION ALL SELECT 'REPLICATION' FROM pg_roles WHERE rolname = v_fleet AND rolreplication
-    UNION ALL SELECT 'inherits a privileged role'
+    -- REACHES, not inherits, and the difference is a measured hole: with
+    -- `GRANT <superuser> TO <fleet> WITH INHERIT FALSE, SET TRUE` the USAGE question answers FALSE
+    -- while the runtime role runs `SET ROLE <superuser>` and comes back with is_superuser = on --
+    -- SET permission is transitive through the chain. `SET` is 16-only as a privilege type; before
+    -- 16 a grant carried no options and MEMBER is the whole answer.
+    UNION ALL SELECT 'can become a privileged role'
                 FROM pg_roles r
                WHERE r.rolname = v_fleet
                  AND EXISTS (SELECT 1 FROM pg_roles m
                               WHERE (m.rolsuper OR m.rolbypassrls) AND m.oid <> r.oid
-                                AND pg_has_role(r.oid, m.oid, 'USAGE'))
+                                AND (pg_has_role(r.oid, m.oid, 'USAGE')
+                                     OR pg_has_role(r.oid, m.oid,
+                                          CASE WHEN current_setting('server_version_num')::int >= 160000
+                                               THEN 'SET' ELSE 'MEMBER' END)))
   ) x;
   IF v_priv IS NOT NULL THEN
     -- `quote_ident` in the ARGUMENT, not `%I` in the format string: PL/pgSQL's RAISE knows only `%`,
@@ -377,3 +346,56 @@ GRANT USAGE, CREATE ON SCHEMA langgraph TO :"app_role";
 -- down anything still serving on that role, so db-bootstrap.ts does it only for tables the
 -- administrator running it owns itself. This script is run once, by hand, and provisions.
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA langgraph TO :"app_role";
+
+-- The refusal, and it comes LAST for a measured reason on top of the transaction one.
+--
+-- Its own statement, so the repair it reports is already committed (a RAISE aborts the transaction
+-- it is in). And at the END of the script, because the statement it PRINTS names this database's
+-- own fleet role: raised from where the repair sits, the script aborted before provisioning that
+-- role, and pasting the repair answered `role ... does not exist` (measured). Everything above is
+-- idempotent and safe to have run on a database that will not serve, so provisioning first costs
+-- nothing and is what makes the repair runnable.
+--
+-- It re-reads rather than trusting the loop, because a REVOKE issued by anyone who is not the
+-- GRANTOR removes nothing and reports success (measured).
+DO $$
+DECLARE
+  v_fleet name := ('fazerai_fleet_'
+                   || left(regexp_replace(current_database()::text, '[^a-zA-Z0-9_]', '_', 'g'), 30)
+                   || '_' || substr(md5(current_database()::text), 1, 8))::name;
+  v_foreign text;
+  v_held    text;
+BEGIN
+  SELECT string_agg(DISTINCT quote_ident(r.rolname), ', '),
+         string_agg(DISTINCT quote_ident(r.rolname), ', ') FILTER (WHERE
+           EXISTS (SELECT 1 FROM pg_class c2 JOIN pg_namespace n2 ON n2.oid = c2.relnamespace
+                    CROSS JOIN LATERAL aclexplode(c2.relacl) a
+                   WHERE n2.nspname = 'public' AND a.grantee = r.oid)
+        OR EXISTS (SELECT 1 FROM pg_namespace n3 CROSS JOIN LATERAL aclexplode(n3.nspacl) a
+                   WHERE n3.nspname = 'public' AND a.grantee = r.oid))
+    INTO v_foreign, v_held
+    FROM pg_policy p
+    JOIN pg_class c ON c.oid = p.polrelid
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    CROSS JOIN LATERAL unnest(p.polroles) AS pr(oid)
+    JOIN pg_roles r ON r.oid = pr.oid
+   WHERE n.nspname = 'public' AND p.polname = 'fleet_super_admin'
+     AND r.rolname <> v_fleet AND r.rolname LIKE 'fazerai\_fleet\_%';
+  IF v_foreign IS NOT NULL THEN
+    RAISE EXCEPTION
+      'this database carries fleet_super_admin policies naming %, and not % -- the shape of a '
+      'database restored or cloned under a different name. %  Re-running the migration is NOT the '
+      'repair: it is recorded as applied in this copy, and migrate resolve --rolled-back answers '
+      'P3012 (not in a failed state). Rewrite the policies instead, which is idempotent and '
+      'touches only this database: DO $x$ DECLARE t text; BEGIN FOR t IN SELECT c.relname '
+      'FROM pg_policy p JOIN pg_class c ON c.oid = p.polrelid JOIN pg_namespace n ON '
+      'n.oid = c.relnamespace WHERE n.nspname = ''public'' AND p.polname = ''fleet_super_admin'' '
+      'LOOP EXECUTE format(''DROP POLICY fleet_super_admin ON %%I'', t); EXECUTE format('
+      '''CREATE POLICY fleet_super_admin ON %%I TO %%I USING (true) WITH CHECK (true)'', t, '
+      'public.fazerai_fleet_role()); END LOOP; END $x$;',
+      v_foreign, quote_ident(v_fleet),
+      CASE WHEN v_held IS NULL THEN 'Their privileges here have been revoked.'
+           ELSE v_held || ' still hold privileges here, which this administrator is not the '
+                          'grantor of; clear them as their grantor or as a superuser.' END;
+  END IF;
+END $$;

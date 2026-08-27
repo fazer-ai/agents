@@ -5,6 +5,7 @@ import {
   FLEET_ROLE_RETAINED_MEMBER_ENV,
   retainedFleetMembers,
 } from "@/lib/tenancy/fleet-role";
+import { privilegedReachSql } from "@/lib/tenancy/privileged-reach";
 
 // Deterministic, platform-independent DB provisioning. Run ONCE at deploy time (and safe to
 // re-run) as the FIRST step before `prisma migrate deploy`. It does what scripts/db-bootstrap.sql
@@ -154,7 +155,7 @@ export function assertFleetRoleIsUnprivileged(
     if (state[field]) reasons.push(word);
   }
   if (state.reaches !== null) {
-    reasons.push(`inherits a privileged role (${state.reaches})`);
+    reasons.push(`can become a privileged role (${state.reaches})`);
   }
   if (reasons.length === 0) return;
   throw new Error(
@@ -415,8 +416,10 @@ async function revokeForeignFleetAccess(client: Client, fleetRole: string) {
           "of; clear them as their grantor or as a superuser."
       : "db-bootstrap: revoked their privileges in this database. Their cluster-wide membership is " +
           "deliberately untouched — it belongs to a source installation still running on its own " +
-          "database. Re-run the migration 20260827000000_rls_split_tenant_and_fleet_policies (its " +
-          "header carries the `migrate resolve --rolled-back` step) to rewrite the policies.",
+          "database. The policies still name them, and re-running the migration is NOT the repair: " +
+          "it is recorded as applied in this copy, and `migrate resolve --rolled-back` answers " +
+          "`P3012 … not in a failed state` (measured). The boot refusal that follows prints the " +
+          "statement that rewrites them.",
   );
 }
 
@@ -463,10 +466,7 @@ async function provisionFleetRole(
     await client.query<Record<string, boolean> & { reaches: string | null }>(
       `SELECT r.rolsuper, r.rolbypassrls, r.rolcanlogin,
               r.rolcreatedb, r.rolcreaterole, r.rolreplication,
-              (SELECT string_agg(DISTINCT quote_ident(m.rolname), ', ')
-                 FROM pg_roles m
-                WHERE (m.rolsuper OR m.rolbypassrls) AND m.oid <> r.oid
-                  AND pg_has_role(r.oid, m.oid, 'USAGE')) AS reaches
+              ${privilegedReachSql("r.oid")} AS reaches
          FROM pg_roles r WHERE r.rolname = $1`,
       [fleetRole],
     )
@@ -1092,10 +1092,8 @@ async function main() {
         revokable: string | null;
       }>(
         `SELECT
-           (SELECT string_agg(DISTINCT quote_ident(m.rolname), ', ')
-              FROM pg_roles r
-              JOIN pg_roles m ON (m.rolsuper OR m.rolbypassrls) AND m.oid <> r.oid
-             WHERE r.rolname = $1 AND pg_has_role(r.oid, m.oid, 'USAGE')) AS reaches,
+           (SELECT ${privilegedReachSql("r.oid", FLEET_ROLE_EXPR)}
+              FROM pg_roles r WHERE r.rolname = $1) AS reaches,
            (SELECT string_agg(DISTINCT quote_ident(d.rolname), ', ')
               FROM pg_auth_members am
               JOIN pg_roles r ON r.oid = am.member

@@ -41,6 +41,14 @@ services:
       # through (nginx `$proxy_add_x_forwarded_for`, not `$http_x_forwarded_for`) — otherwise the last
       # entry is still the client's. Leave the hops at 1 unless the proxy nearest to this app is
       # configured to forward the chain it received; see .env.example.
+      # NOTE: the outgoing runtime role during a DATABASE_URL rotation, declared for the length of
+      # the overlap. Bootstrap reconciles fleet-role membership down to this database's runtime role
+      # and the administrator, so without this the outgoing role loses its cross-tenant path mid-
+      # drain and every asSuperAdmin call in the container still serving on it — API-key
+      # verification included — starts reading zero rows. Not inferred from an open session: a
+      # stale installation whose database was recreated under the same name presents exactly the
+      # same session (measured). Comma-separated; clear it once the old container is gone.
+      - FLEET_ROLE_RETAIN_MEMBER=${FLEET_ROLE_RETAIN_MEMBER:-}
       - TRUST_PROXY=${TRUST_PROXY:-false}
       - TRUSTED_PROXY_HOPS=${TRUSTED_PROXY_HOPS:-1}
       # NOTE: rate-limit ceilings, per client address. The first two are runaway guards, generous on

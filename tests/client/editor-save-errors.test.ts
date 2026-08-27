@@ -31,78 +31,47 @@ describe("agent editor save errors", () => {
   //
   // Source-level for the same reason as the rest of this file — the two sections are two arguments
   // to one function, and the distinction is invisible to anything that only watches the network.
-  test("a successful save clears only what the request carried", () => {
-    // Since #349 the holder covers every tab, so the question got wider. Scoping it by TAB is not
-    // enough and the gap is real: `saveGrants` writes the grant set alone and shares the Tools tab
-    // with the handoff, kanban and tool-guidance notes, so a grant-only PUT would clear a refusal
-    // about a note it never mentioned.
-    const start = SRC.indexOf("function clearRefusalFor");
+  test("a section is settled by one rule, whether it saved or discarded", () => {
+    // Both answer the same thing — the values that section owns are no longer in dispute — and
+    // written twice they drifted at once: the save half required the write to have carried the
+    // refused VALUE, which is false exactly when the operator has done what the refusal asked, so a
+    // corrected save left the stale hold in place and the mark came back the next time they typed
+    // the old value.
+    expect(SRC).not.toContain("clearRefusalFor");
+    expect(SRC).not.toContain("discardRefusalFor");
+    const start = SRC.indexOf("function settleRefusalFor");
     expect(start).toBeGreaterThan(-1);
     const body = SRC.slice(start, SRC.indexOf("\n  }", start));
-    expect(body).toContain("Object.hasOwn(sent, held)");
-    // And the VALUE, not only the path. `sent` is read from the patch, so a Behavior save carries
-    // `guardrails.customPolicy` from the last-synced bag — the stored value, not the edit the server
-    // refused. Presence alone would let that save answer a refusal it never re-sent.
-    expect(body).toContain("now.at(held, sent[held])");
-    // Through a ref, never the closure: a save handler closes over the render that launched it, and
-    // this page's saves are long enough for another tab's save to fail while one is in flight. An
-    // older success answering from its own render would clear a refusal that arrived after it — and
-    // `at` is memoized on the hold, so even the comparison would be the stale one.
-    expect(body).toContain("refusalRef.current");
-    expect(body).toContain("refusedSaveRef.current");
-    expect(body).not.toContain("refusal.field");
-    // A sentence the holder could place NOWHERE has no value to compare, so it is answered by the
-    // section that produced it.
-    expect(body).toContain("refusedSaveRef.current?.section === section");
-    // Never by tab or by target: both read the FIELD rather than the request.
-    expect(body).not.toContain("editorTargetFor");
 
-    // And every success path goes through it. The grant-only save answers for nothing and says so
-    // with an empty snapshot rather than by skipping the call, so a reader can tell "carried nothing"
-    // from "forgot to clear".
-    const cleared = [
-      ...SRC.matchAll(/(?<!function )clearRefusalFor\(([^)]*)\)/g),
-    ].map((m) => (m[1] as string).replace(/\s+/g, " ").trim());
-    expect(cleared.sort()).toEqual([
-      '"guardrails", sent',
-      '"knowledge", {}',
-      '"tools", sent',
-      "section, sent",
-    ]);
-    // The section a save answers for is the FORM it belongs to, not the tab its fields print on:
-    // `saveGrants` is the Knowledge tab's save (its only caller passes `dirty.knowledge`), and
-    // calling it `tools` let a successful Tools save clear a Knowledge failure still unsaved.
-    const grants = SRC.slice(SRC.indexOf("async function saveGrants("));
-    const grantsBody = grants.slice(0, grants.indexOf("\n  }"));
-    expect(grantsBody).toContain('clearRefusalFor("knowledge", {})');
-  });
-
-  test("discarding a section takes its refusal with it", () => {
-    // A fieldless refusal cannot expire by value the way a mark does, so without this the banner
-    // outlives the edit entirely — past the discard, past the next successful save of another
-    // section, indefinitely.
-    const start = SRC.indexOf("function discardRefusalFor");
-    expect(start).toBeGreaterThan(-1);
-    const body = SRC.slice(start, SRC.indexOf("\n  }", start));
-    // By the tab that DRAWS the value, not the section that wrote it: reverting Behavior restores the
-    // behavior form, and a mark a Behavior save left on a guardrails path is about a value the
-    // Guardrails tab still holds unsaved.
-    expect(body).toContain("editorTargetFor");
+    // By the tab that DRAWS the value, not by what the request serialized: a Behavior save spreads
+    // the last-synced `settings`, so it carries `guardrails.customPolicy` holding what is STORED
+    // rather than the edit the Guardrails tab still has unsaved.
     expect(body).toContain("target?.tab === section");
+    expect(body).not.toContain("Object.hasOwn(sent");
+    // A refusal the holder could place nowhere is about a SAVE, so its own section answers it.
     expect(body).toContain("refusedSaveRef.current?.section === section");
+    // Through refs, never the closure: a save handler closes over the render that launched it, and
+    // this page's saves are long enough for another tab's save to fail while one is in flight.
+    expect(body).toContain("refusalRef.current");
+    expect(body).not.toContain("refusal.field");
 
-    // Every revert goes through it, and discard-all clears outright.
-    const discarded = [
-      ...SRC.matchAll(/(?<!function )discardRefusalFor\("([^"]+)"\)/g),
-    ].map((m) => m[1] as string);
-    expect(discarded.sort()).toEqual([
+    // Every settling path goes through it: five saves and six discards.
+    const settled = [
+      ...SRC.matchAll(/(?<!function )settleRefusalFor\(([^)]*)\)/g),
+    ].map((m) => (m[1] as string).replace(/"/g, ""));
+    expect(settled.sort()).toEqual([
       "behavior",
       "channelRedirect",
       "general",
       "guardrails",
+      "guardrails",
       "knowledge",
+      "knowledge",
+      "section",
+      "tools",
       "tools",
     ]);
+    // Discard-all settles every section at once.
     expect(SRC).toContain("refusalRef.current.clear();");
   });
 
@@ -204,11 +173,17 @@ describe("agent editor save errors", () => {
     // and sees nothing. `role="alert"` covers the screen reader; this is the other half.
     const start = SRC.indexOf("const bannerRef =");
     expect(start).toBeGreaterThan(-1);
-    const effect = SRC.slice(start, SRC.indexOf("}, [bannerMessage]);", start));
+    const effect = SRC.slice(
+      start,
+      SRC.indexOf("}, [bannerMessage, refusalSeq]);", start),
+    );
     expect(effect).toContain("scrollIntoView");
-    // Once per SENTENCE. The banner stays up until the refusal is answered, so re-scrolling on every
-    // render would take the page out from under whoever is fixing the value.
-    expect(effect).toContain("announcedRef.current === bannerMessage");
+    // Once per ANSWERED REQUEST, counted rather than compared by text. The banner stays up until the
+    // refusal is answered, so re-scrolling every render would take the page out from under whoever is
+    // fixing the value — but keying on the sentence made two transport failures in a row, which say
+    // the same thing, announce once: the second looked like it did not happen.
+    expect(effect).toContain("announcedRef.current === refusalSeq");
+    expect(SRC).toContain("setRefusalSeq((n) => n + 1)");
     expect(SRC).toContain("ref={bannerRef}");
   });
 
@@ -256,6 +231,9 @@ describe("agent editor save errors", () => {
       // Through the writer itself rather than a second spelling of what it does.
       ["followUp", "followUpToStored(followUp)"],
       ["vision.extractionPrompt", "DEFAULT_EXTRACTION_PROMPT"],
+      ["handoff.instructions", "serializeHandoff(handoff).instructions"],
+      ["kanban.instructions", "kanbanInstructions.trim()"],
+      ["toolGuidance.assign_label", "labelInstructions.trim()"],
     ] as const) {
       expect(body, field).toContain(writer);
     }

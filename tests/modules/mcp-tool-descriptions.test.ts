@@ -160,9 +160,14 @@ const SETTINGS_DESC_CEILING = 2_000;
 // the base moved while this branch was open, and a sum assumes nothing else did. What the two
 // `.describe()` strings buy is the pair of facts a caller cannot get by trying — that `once` stops
 // asking until the verdict EXPIRES (a caller who assumes otherwise ships a gate that has stopped
-// consulting them), and that changing the TTL drops what is stored (the only lever for clearing it,
-// and it looks like a harmless number). Headroom over 12,864 stays tighter than a block, as before.
-const SETTINGS_SCHEMA_CEILING = 12_950;
+// consulting them), and what the TTL is part of, since it looks like a harmless number.
+//
+// The figure was re-measured at the END of that issue's review loop rather than left at the one
+// taken when it opened: the two `.describe()` strings were rewritten twice while the loop ran, and
+// the number they landed on is 12,942 — eight characters under the ceiling the first measurement
+// justified, which is not headroom, it is a coin flip on the next edit. Tighter than a block, and
+// not tighter than a sentence.
+const SETTINGS_SCHEMA_CEILING = 13_050;
 
 describe("MCP tool descriptions", () => {
   test("agent_settings_set stays under its ceiling", async () => {
@@ -283,7 +288,11 @@ describe("MCP tool descriptions", () => {
   // on the `contactAuth` block, no new tool. FRESH measurement of this tree — 26,764 of description
   // and 42,419 of schema — rather than 42,100 plus the 314 those fields cost on
   // `agent_settings_set`: the base gained tools while this branch was open, and adding deltas writes
-  // a number nobody measured. Schema ceiling to 42,500; the description ceiling does not move.
+  // a number nobody measured. The description ceiling does not move.
+  //
+  // Re-measured at the END of that loop, for the reason at SETTINGS_SCHEMA_CEILING: 26,764 of
+  // description and 42,497 of schema, which is three characters under the ceiling the first
+  // measurement justified. Schema ceiling to 42,600.
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;
@@ -293,7 +302,7 @@ describe("MCP tool descriptions", () => {
       schema += t.schema.length;
     }
     expect(desc).toBeLessThanOrEqual(27_250);
-    expect(schema).toBeLessThanOrEqual(42_500);
+    expect(schema).toBeLessThanOrEqual(42_600);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

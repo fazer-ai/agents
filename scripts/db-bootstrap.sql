@@ -116,6 +116,8 @@ DECLARE
   v_fleet name := ('fazerai_fleet_'
                    || left(regexp_replace(current_database()::text, '[^a-zA-Z0-9_]', '_', 'g'), 30)
                    || '_' || substr(md5(current_database()::text), 1, 8))::name;
+  v_stray text;
+  v_left  text;
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = v_fleet) THEN
     EXECUTE format(
@@ -129,6 +131,43 @@ BEGIN
                  ' GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO %I', v_fleet);
   EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA public'
                  ' GRANT USAGE, SELECT ON SEQUENCES TO %I', v_fleet);
+
+  -- Membership on this role is RECONCILED, not merely added to. Roles are cluster-wide while
+  -- databases are not, so a database dropped and recreated under the same name derives the SAME
+  -- fleet role -- and every membership the PREVIOUS installation granted survives it. Measured: the
+  -- old installation's runtime role read all 30 rows of the new installation's data through the new
+  -- policies, with nothing but a SET ROLE.
+  --
+  -- Loudly, unlike the TypeScript twin: that one runs unattended on every container boot and warns,
+  -- this one is invoked by hand with someone watching (see the header), so a member it cannot clear
+  -- stops the script instead of scrolling past. And it is re-read rather than trusted, because a
+  -- REVOKE issued by someone who is not the GRANTOR removes nothing and reports success (measured).
+  FOR v_stray IN
+    SELECT DISTINCT r.rolname
+      FROM pg_auth_members am
+      JOIN pg_roles r ON r.oid = am.member
+      JOIN pg_roles d ON d.oid = am.roleid
+     WHERE d.rolname = v_fleet AND r.rolname <> v_role AND r.rolname <> current_user
+  LOOP
+    BEGIN
+      EXECUTE format('REVOKE %I FROM %I', v_fleet, v_stray);
+      RAISE NOTICE 'revoked % from % -- a membership this database did not grant', v_stray, v_fleet;
+    EXCEPTION WHEN OTHERS THEN
+      RAISE NOTICE 'could not revoke % from %: %', v_stray, v_fleet, SQLERRM;
+    END;
+  END LOOP;
+
+  SELECT string_agg(DISTINCT r.rolname, ', ') INTO v_left
+    FROM pg_auth_members am
+    JOIN pg_roles r ON r.oid = am.member
+    JOIN pg_roles d ON d.oid = am.roleid
+   WHERE d.rolname = v_fleet AND r.rolname <> v_role AND r.rolname <> current_user;
+  IF v_left IS NOT NULL THEN
+    RAISE EXCEPTION
+      '% are still members of % and can read every tenant in this database through the '
+      'cross-tenant policy. This is what a database dropped and recreated under the same name '
+      'leaves behind; clear them as their grantor or as a superuser.', v_left, v_fleet;
+  END IF;
 
   -- The membership, and the half of it that is load-bearing is `INHERIT FALSE`.
   --

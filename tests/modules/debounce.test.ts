@@ -3358,6 +3358,70 @@ describe.skipIf(!dbUp)("debounce", () => {
       await clearFlowLog(suDb, { tenantId });
     });
 
+    // THE COMMAND, LANDING ON THE REFUSAL. `/reset` retires the burst, and a flush already claimed is
+    // past every cancel — the same window the turn path fences with `stillWanted`. Ownership cannot
+    // stand in for it here: the reset hands the conversation BACK to the bot, so the gate says yes
+    // at exactly the moment the command has said no. Nothing may be said, nothing reopened, and the
+    // burst must not be declared handled: it was withdrawn, not answered.
+    test("a burst retired while claimed is not told about the ceiling", async () => {
+      await seedConversation(913);
+      const thread = threadOf(913);
+      const row = await suDb.schedulerJob.create({
+        data: {
+          tenantId,
+          kind: "DEBOUNCE",
+          dedupeKey: debounceDedupeKey(thread),
+          status: "CLAIMED",
+          runAt: new Date(),
+          payload: {
+            threadId: thread,
+            agentBotId: 9,
+            burstStartedAt: 1,
+            lastMessageId: 13,
+          },
+        },
+        select: { id: true, claimSeq: true },
+      });
+      await retireJobsByDedupeKey(
+        tenantId,
+        "DEBOUNCE",
+        debounceDedupeKey(thread),
+        suDb,
+      );
+      const sent: Array<[number, string]> = [];
+      const toggles: Array<[number, string]> = [];
+      const notes: Array<[number, string]> = [];
+      const out = await flushDebounceJob({
+        job: {
+          ...jobFor(913, { lastMessageId: 13 }),
+          id: row.id,
+          claimSeq: row.claimSeq,
+        },
+        base: appDb,
+        deps: {
+          makeModel: () => {
+            throw new Error("the model must not be invoked over the ceiling");
+          },
+          makeClient: makeResolveStub({
+            pages: [page([{ id: 13, content: "oi" }])],
+            sent,
+            calls: { getMessages: 0 },
+            toggles,
+            notes,
+          }),
+          checkpointer: new MemorySaver(),
+        },
+      });
+
+      expect(out).toEqual({ outcome: "done" });
+      expect(sent).toEqual([]);
+      expect(toggles).toEqual([]);
+      expect(notes).toEqual([]);
+      // The one that outlives the command: the burst is still the customer's.
+      expect(await watermarkOf(913)).toBeNull();
+      await clearFlowLog(suDb, { tenantId });
+    });
+
     test("with handoff off, the burst is still dropped and no status is touched", async () => {
       await suDb.tenant.update({
         where: { id: tenantId },

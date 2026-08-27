@@ -144,6 +144,15 @@ is what ends the bot's attribution and after it the ownership fence would rightl
 the bot tried to say. The note goes **last**, because it is the only one of the three that can report
 whether the handoff actually happened.
 
+And every one of those acts is fenced by the **command** as well as by ownership, because they are
+different questions. `/reset` retires the burst, and a flush already claimed is past every cancel;
+ownership cannot stand in for that, since the reset hands the conversation back to the bot and the
+gate therefore says yes at exactly the moment the command has said no. Retired, the refusal is
+withdrawn with the burst rather than delivered about it: nothing is said, nothing is reopened, and
+the watermark stays where it was, so a later flush asks the ceiling again with a fresh notice window.
+Asked once per write, like the turn path's own `stillWanted`, because the three sends are network
+round trips a command can land inside.
+
 The flush's primitives carry two things that are easy to leave out of a second copy, and both were
 left out of the first draft of this one. They go out with the **persona's bot token**: `messages` and
 `toggle_status` are bot-token endpoints, and a client built without it raises before the call leaves

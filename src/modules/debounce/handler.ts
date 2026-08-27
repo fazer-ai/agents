@@ -711,6 +711,29 @@ export async function flushDebounceJob(
         makeClient: deps?.makeClient,
         botToken: ctx.loaded.agentBotToken ?? undefined,
       });
+    // THE COMMAND'S FENCE, on this branch too, and it is a different question from the one below.
+    // `/reset` retires the burst, and a flush already CLAIMED is past every cancel — that is the
+    // whole reason `stillWanted` exists on the turn path, asked once per WRITE rather than once per
+    // run. This branch writes as much as that path does: a sentence the customer reads, a status
+    // change that ends the bot's attribution, a note, and a watermark that declares the burst
+    // handled. Ownership does not stand in for it, because `/reset` hands the conversation BACK to
+    // the bot: the gate below says yes precisely when the command has just said no.
+    //
+    // Retired ⇒ this refusal is withdrawn with the burst rather than delivered about it. The
+    // watermark stays where it was, which is the contract the reset scenarios already fix: the
+    // burst was not answered, it was taken back, and a later flush asks the ceiling again with a
+    // fresh notice window. Lenient (`jobRetired`, not the strict probe): an unreadable retirement
+    // row leaves this acting, which is where every caller outside the thread's critical section
+    // sits, and the cost of that guess here is a sentence sent once too often.
+    const stillWanted = async (act: string): Promise<boolean> => {
+      if (!(await jobRetired(job, base))) return true;
+      logger.info(
+        "debounce flush: spend-ceiling %s withdrawn with the burst (conv=%s) — the job was retired",
+        act,
+        String(conversationId),
+      );
+      return false;
+    };
     // Asked again immediately before EACH act, which is the fence the webhook's own primitives carry
     // and for the same reason. The gate at the top of this flush judged the instant before two
     // database reads, and the send below is a network call the next act sits behind. A human
@@ -744,7 +767,8 @@ export async function flushDebounceJob(
         // Inside the try, deliberately: a fence that cannot answer has to report "not sent" like any
         // other failure, so the notice window it just claimed is given back.
         try {
-          if (!(await stillOurs("message"))) return false;
+          if (!(await stillWanted("message")) || !(await stillOurs("message")))
+            return false;
           await (await ceilingClient()).sendMessage(conversationId, text);
           return true;
         } catch (err) {
@@ -761,6 +785,10 @@ export async function flushDebounceJob(
       // the reason for the silence still needs saying.
       postPrivateNote: async (text) => {
         try {
+          // Fenced by the command but not by ownership, and the two lines above say why for each
+          // half: the note is the operator's, so a human inheriting the conversation does not
+          // withhold it, and a burst the operator withdrew has nothing left to explain.
+          if (!(await stillWanted("note"))) return false;
           await (await ceilingClient()).sendPrivateNote(conversationId, text);
           return true;
         } catch (err) {
@@ -774,7 +802,8 @@ export async function flushDebounceJob(
       },
       handoff: async () => {
         try {
-          if (!(await stillOurs("handoff"))) return false;
+          if (!(await stillWanted("handoff")) || !(await stillOurs("handoff")))
+            return false;
           await (await ceilingClient()).toggleStatus(conversationId, "open");
           return true;
         } catch (err) {
@@ -790,7 +819,11 @@ export async function flushDebounceJob(
       },
     });
     const last = readLastMessageId(job.payload);
-    if (last !== null) {
+    // The last write, and the last ask, because the three above are network round trips a command
+    // can land inside. This is the one the reset scenarios name explicitly: a retired burst was
+    // withdrawn, not answered, so the watermark stays where it was and a later flush re-coalesces
+    // it against the thread the command cleared.
+    if (last !== null && (await stillWanted("settlement"))) {
       await advanceHandledWatermark({
         tenantId,
         conversationDbId: ctx.convDbId,

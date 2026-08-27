@@ -26,13 +26,13 @@ import { replaceAgentToolSelections } from "@/modules/agents/service";
 // Ordering the read by `id` would NOT fix it — the recreated rows are assigned ids in the order the
 // client sent, so `ORDER BY id` reproduces the click history exactly. The anchor has to be the
 // SOURCE's identity (the connection / instance / definition row), which a grant re-save never
-// touches.
+// touches, and specifically its NAME, which an export/import preserves where its id is reassigned.
 //
-// SCOPE: this fixes the order, which is the half that moves under a re-save inside one tenant. It
-// does NOT make the exposed name stable across an export/import into another tenant, where the
-// connection rows themselves are recreated with new ids — a connection whose display name yields no
-// ASCII at all falls back to `mcp_<connId>` and comes back named after a different id. That half is
-// named in #389 and stays open.
+// SCOPE: this file is the re-save half, inside one tenant. The transfer half — the same question
+// asked across two tenants, where the import reassigns every id — is
+// tests/modules/agent-transfer-tool-names.test.ts (#412), and it is why the anchor below is the
+// source's NAME rather than its row id: the name is what the export carries, and it is unique per
+// tenant for both sources.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;

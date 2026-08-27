@@ -174,16 +174,18 @@ export function unmetPreconditionMessage(
 //     `dropDuplicateToolNames` puts natives first, so no other source can take the name from one.
 //   - HTTP: `ToolDefinition.name` is normalized on write and `@@unique([tenantId, name])`. Stable
 //     today, but a rename is a plain PATCH away and nothing would carry the rule across it.
-//   - MCP: `mcp__<slug>__<tool>`, where the slug is derived from the connection's display name and
-//     FALLS BACK to the connection id when the name yields no ASCII (an emoji- or CJK-only name).
-//     An export/import recreates the connection under a different id, so the exposed name changes
-//     and the imported rule matches nothing. A `_2` suffix on two slug-colliding connections is
-//     decided by grant order, and `replaceAgentToolSelections` deletes and recreates every row.
+//   - MCP: `mcp__<slug>__<tool>`, where the slug is derived from the connection's display name —
+//     including the fallback for a name that yields no ASCII at all (emoji-only, CJK-only), which is
+//     a digest of the name and no longer the connection id (#412). A `_2` suffix on two
+//     slug-colliding connections is decided by grant order, which is anchored on the connection's
+//     name. So the name survives a re-save (#389) and an export/import (#412) — and still moves
+//     under a RENAME of the connection, which nothing carries the rule across.
 //   - INTEGRATION: two instances of one catalog type expose the SAME names; the later is dropped,
-//     and which one survives is again grant order.
+//     and which one survives is again grant order, anchored on (catalogType, name) — so it too
+//     survives a transfer and moves under a rename.
 //
-// So the extension past native waits on stable exposed-name identity, which is its own change to
-// how MCP and toolpack tools are namespaced. The console offers exactly this set for the same
+// So the extension past native waits on a name a rename cannot move, which is its own change to how
+// MCP and toolpack tools are namespaced. The console offers exactly this set for the same
 // reason (ToolPreconditionsEditor), and docs/graph.md carries the boundary.
 //
 // This is the repo's existing shape for a settings bag keyed by tool name, not a new one:

@@ -101,12 +101,32 @@ export interface AgentToolSelections {
 // both times. The connection / instance / definition rows are the thing a grant POINTS AT, and a
 // grant re-save never touches them.
 //
-// SCOPE: within a tenant. An export/import into another tenant recreates those rows too, so the
-// exposed name can still move there — #389 keeps that half.
+// AND THE ANCHOR IS THE SOURCE'S NAME, not its id (#412). The id is identity inside one tenant and
+// nothing at all across two: `exportAgent` carries each component by NAME and `importAgent` matches
+// on it, creating a row only where the destination has none — so the destination's ids are whatever
+// that import assigned, in no relation to the source's. When the destination ALREADY has one of two
+// colliding sources, it is reused with its own (lower) id while its partner is created fresh, and
+// ordering by id puts the pair the other way round. Both tools still exist under both names, and each
+// name now reaches the OTHER server. Nothing is missing, so nothing looks wrong.
+//
+// The name is the right anchor because it is what the transfer preserves and what the database
+// already keeps unique (`@@unique([tenantId, name])` on the connection,
+// `@@unique([tenantId, catalogType, name])` on the instance). It is the same anchor a re-save needs,
+// so it replaces the id rather than joining it.
+//
+// The instance is ordered by name ALONE, without its catalogType, because the only pair that can
+// contest a name is two instances of ONE catalog type — every toolpack prefixes its tools with its
+// own catalog (`calendar_`, `asaas_`, `drive_`), so no two catalog types expose a common name — and
+// within one catalog type the name is already a total order. Adding the catalogType key first killed
+// no test in the mutation battery, which is what a rule with no observable effect looks like.
+//
+// HTTP and document grants stay on the id: their exposed names are the definition's name and
+// `send_<slug>`, both unique per tenant, so no two of them can contest a name and the order is
+// invisible either way (asserted in tests/graph/tool-grant-order.test.ts).
 const GRANT_ORDER: Prisma.AgentToolSelectionOrderByWithRelationInput[] = [
   { source: "asc" },
-  { mcpServerConnectionId: "asc" },
-  { integrationInstanceId: "asc" },
+  { mcpServerConnection: { name: "asc" } },
+  { integrationInstance: { name: "asc" } },
   { toolDefinitionId: "asc" },
   { documentTemplateId: "asc" },
 ];

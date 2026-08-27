@@ -357,7 +357,7 @@ const BARE_SLICES: Record<
   "src/client/pages/resources/ToolEditModal.tsx": [1, "index"],
   // The idempotency key's tail is a hex digest.
   "src/graph/tools/documents.ts": [1, "ascii"],
-  "src/graph/tools/mcp.ts": [4, "ascii"],
+  "src/graph/tools/mcp.ts": [5, "ascii"],
   "src/graph/tools/native.ts": [4, "array"],
   "src/graph/tools/toolName.ts": [1, "ascii"],
   "src/graph/trace.ts": [2, "array + index"],

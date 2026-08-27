@@ -217,6 +217,47 @@ describe.skipIf(!dbUp)("the order a turn reads an agent's grants in", () => {
     expect(sel.mcpSelections.map((s) => s.connId)).toEqual([connA, connB]);
   });
 
+  test("and where no name is contested, the order is invisible either way", async () => {
+    // THE SAFETY CLAIM OF THIS CHANGE, measured rather than argued: reordering the read renames
+    // nothing for an agent whose connections do not contest a name. Every tool is
+    // `mcp__<slug>__<tool>` regardless of who is assembled first, so the exposure is a function of
+    // the connection alone. Without this case the PR's "names of tools running today do not move"
+    // rests on reading the code, and the one collision case above cannot speak for the population
+    // that has no collision — which is the population almost every install is in.
+    const distinct = await suDb.mcpServerConnection.create({
+      data: {
+        tenantId,
+        name: "Billing",
+        transport: "streamableHttp",
+        url: "https://c.example.com/mcp",
+      },
+    });
+    const saveWith = async (order: bigint[]) => {
+      await replaceAgentToolSelections(
+        ctx(),
+        agentId,
+        order.map((id) => ({
+          source: "MCP" as const,
+          mcpServerConnectionId: String(id),
+          enabledTools: ["search"],
+        })),
+        appDb,
+      );
+      return exposedNameByServer();
+    };
+    const forward = await saveWith([connA, distinct.id]);
+    const reversed = await saveWith([distinct.id, connA]);
+    expect(reversed).toEqual(forward);
+    expect(forward).toEqual({
+      [NAME_A]: "mcp__acme_crm_production_connecti__search",
+      Billing: "mcp__billing__search",
+    });
+    // Neither name carries a suffix: nothing was contested, which is what makes the equality above
+    // a statement about the ordinary case and not another collision in disguise.
+    expect(Object.values(forward).some((n) => /_\d+$/.test(n))).toBe(false);
+    await suDb.mcpServerConnection.delete({ where: { id: distinct.id } });
+  });
+
   test("and so does the integration instance that wins the duplicate drop", async () => {
     await grantOrder("A");
     const first = await runScopedOn(appDb, ctx(), (db) =>

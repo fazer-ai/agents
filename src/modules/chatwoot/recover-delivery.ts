@@ -9,6 +9,7 @@ import {
 } from "@/graph/inflight";
 import type { RuntimeDeps } from "@/graph/runtime";
 import { turnOwnsThread } from "@/graph/thread-claim";
+import { parseDbId } from "@/lib/db-id";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { writeFlowEvent } from "@/modules/flowlog/service";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
@@ -1208,7 +1209,7 @@ export async function armDeliveryRecovery(
     // Now. The message has already waited out the staleness window; what it is waiting on next is
     // the shared tick, which is the delay this design accepts (lanes.ts).
     runAt: new Date(),
-    // A bigint does not survive JSON, and the payload column is one. Read back with BigInt().
+    // A bigint does not survive JSON, and the payload column is one. Read back with parseDbId.
     payload: { deliveryRowId: String(deliveryRowId) },
     rearm: "new-work",
     base,
@@ -1218,12 +1219,12 @@ export async function armDeliveryRecovery(
 function readDeliveryRowId(payload: unknown): bigint | null {
   if (!isRecord(payload)) return null;
   const v = payload.deliveryRowId;
-  if (typeof v !== "string" || !/^\d+$/.test(v)) return null;
-  try {
-    return BigInt(v);
-  } catch {
-    return null;
-  }
+  // `parseDbId` and not a local digits check, because the tree has ONE answer to "is this an id?"
+  // and a scheduler payload is a transport like any other (#371). The range half it adds is not
+  // load-bearing here: an id past 2^63-1 was measured to reach the CAS and match nothing, exactly
+  // as a wrong-but-in-range id would. What IS load-bearing is the digits check, and that one has a
+  // test — `BigInt` reads "0x10" as sixteen, which recovers a DIFFERENT row.
+  return typeof v === "string" ? parseDbId(v) : null;
 }
 
 async function deliveryRecoveryHandler(

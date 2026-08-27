@@ -381,6 +381,35 @@ async function runRecovery(params: {
   // `maxIncomingId`, the delivery path's OWN predicate, so the two cannot start disagreeing about
   // what counts — an outgoing away message or an operator's note moves the conversation forward
   // without answering anything, and must not block a recovery.
+  // AND THE PAGE HAS TO REACH BACK TO THE MESSAGE, or it cannot answer that question at all. One
+  // unanchored page is the newest twenty, and twenty outgoing or activity messages since the strand
+  // would push a newer CUSTOMER message off it — `maxIncomingId` would then find nothing and this
+  // would replay a message the customer has long since passed. The page reaches back exactly when it
+  // holds something at or below the stranded id; when it does not, the conversation moved more than
+  // a page since, which is not a state a later attempt walks back.
+  //
+  // A page that comes back EMPTY is a different answer: the account rendered nothing where the
+  // anchored read just found this message, which is a degraded read rather than a busy conversation.
+  const oldestSeen = recent.reduce<number | null>(
+    (a, m) => (a === null || m.id < a ? m.id : a),
+    null,
+  );
+  if (oldestSeen === null) {
+    logger.warn(
+      "chatwoot recovery: %s got an empty newest page on conversation %d; the REST read is degraded",
+      row.deliveryId,
+      conversationId,
+    );
+    return "unreachable";
+  }
+  if (oldestSeen > messageId) {
+    logger.info(
+      "chatwoot recovery: %s is more than a page behind on conversation %d; not answered",
+      row.deliveryId,
+      conversationId,
+    );
+    return "unrecoverable";
+  }
   const newest = maxIncomingId(recent, messageId);
   if (newest > messageId) {
     logger.info(
@@ -592,6 +621,31 @@ async function runRecovery(params: {
     agentId === null
       ? null
       : await agentBotChatwootId(params.tenantId, instanceId, agentId, base);
+  // A ROUTE THAT NAMES AN AGENT WITH NO BOT IDENTITY IS NOT A RECOVERY, and this is the one place
+  // where passing a null onward is worse than refusing. `heldByAnotherParty` compares ids, so with
+  // `ourAgentBotId` null it cannot: the gate goes LOOSE and a conversation another AgentBot holds
+  // reads as ours, which is precisely the state the gate exists to refuse. A live delivery never
+  // reaches that — its `agentBotId` is the route token's bot, and the route exists because the bot
+  // does — so this null is the recovery's own, and it must not be handed on.
+  //
+  // Nothing could come of it anyway: the reply is posted with the persona's token, and a client
+  // built without one refuses the call by name rather than sending (issue #79). So the whole pass
+  // would spend a model call to post nothing and then report a recovery.
+  //
+  // Not narrowed to "the assignee is another bot", because the identity is what is missing rather
+  // than the comparison: an unassigned conversation on this inbox cannot be answered either.
+  // `unrecoverable` rather than a deferral: the repair is an operator binding the inbox (which
+  // provisions the persona), not something the next attempt finds different — and the row stays in
+  // the worklist, which is where they will read it. The agent bound to NOTHING is a different state
+  // and deliberately still runs: the delivery path is what writes the operator's `no_agent` line.
+  if (agentId !== null && agentBotId === null) {
+    logger.warn(
+      "chatwoot recovery: %s routes to inbox %d, whose agent has no Chatwoot bot; not answered",
+      row.deliveryId,
+      routeInboxId,
+    );
+    return "unrecoverable";
+  }
   let outcome: Awaited<ReturnType<typeof processChatwootDelivery>>;
   try {
     outcome = await processChatwootDelivery({

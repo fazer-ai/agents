@@ -57,6 +57,12 @@ const appDb = app as PrismaClient;
 const suDb = su as PrismaClient;
 
 const CHATWOOT_INBOX_ID = 71;
+// An inbox BOUND to an agent that has no `ChatwootAgentBot` row: the persona was never provisioned,
+// or its row was deleted out of band. Deliveries still reach it, through another persona's route.
+const NO_PERSONA_INBOX = 72;
+// An inbox the mirror knows and NOBODY is bound to: #318's `no_agent`, whose operator-facing line
+// the delivery path writes.
+const UNBOUND_INBOX = 73;
 const AGENT_BOT_ID = 11;
 const REPLY = "Desculpe a demora, estou aqui!";
 // When the customer wrote, in epoch seconds. An hour ago rather than a fixed literal: it has to be
@@ -339,6 +345,32 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       },
     });
     inboxDbId = inbox.id;
+    const orphan = await suDb.agent.create({
+      data: {
+        tenantId,
+        name: "Sem persona",
+        systemPrompt: "Você é prestativa.",
+        modelConfig: { provider: "openai", model: "gpt-4o-mini" },
+        settings: { debounce: { enabled: false } },
+      },
+    });
+    await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: NO_PERSONA_INBOX,
+        name: "Sem persona",
+        agentId: orphan.id,
+      },
+    });
+    await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: UNBOUND_INBOX,
+        name: "Sem agente",
+      },
+    });
   });
 
   afterAll(async () => {
@@ -431,6 +463,181 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       select: { status: true },
     });
     expect(row.status).toBe("pending");
+  });
+
+  test("a route whose agent has no persona bot is refused, not answered loosely", async () => {
+    // `agentBotChatwootId` answers null for an inbox bound to an agent that was never provisioned a
+    // `ChatwootAgentBot` (or whose row was deleted out of band), and handing that null on is worse
+    // than refusing: `heldByAnotherParty` compares ids, so with no identity it cannot, the gate goes
+    // LOOSE, and a conversation another AgentBot holds reads as ours. A live delivery never reaches
+    // that state — its `agentBotId` is the route token's bot, and the route exists because the bot
+    // does. MEASURED before the fence existed: the turn ran and the reply was posted over the other
+    // bot's conversation.
+    const convId = 8950;
+    const messageId = 9450;
+    await seedConversation(convId, {
+      inboxId: null,
+      assigneeType: "AgentBot",
+      assigneeId: AGENT_BOT_ID + 500,
+      lastEventAt: new Date((SENT_AT - 600) * 1000),
+    });
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const stub = stubChatwoot({
+      page: pageWith([{ id: messageId, content: "oi" }], NO_PERSONA_INBOX),
+      conv: { assigneeType: "AgentBot", assigneeId: AGENT_BOT_ID + 500 },
+    });
+    const turns = { built: 0 };
+
+    expect(
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: depsWith(stub, turns),
+      }),
+    ).toBe("unrecoverable");
+    expect(stub.sent).toEqual([]);
+    expect(turns.built).toBe(0);
+    expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 0 });
+  });
+
+  test("the same refusal holds when nobody else owns the conversation", async () => {
+    // Not narrowed to "another bot holds it": what is missing is the identity, not the comparison.
+    // The reply is posted with the persona's token, and a client built without one refuses the call
+    // by name rather than sending (issue #79) — so an unassigned conversation on this inbox would
+    // spend a model call to post nothing and then report a recovery.
+    const convId = 8951;
+    const messageId = 9451;
+    await seedConversation(convId, {
+      inboxId: null,
+      lastEventAt: new Date((SENT_AT - 600) * 1000),
+    });
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const stub = stubChatwoot({
+      page: pageWith([{ id: messageId, content: "oi" }], NO_PERSONA_INBOX),
+    });
+    const turns = { built: 0 };
+
+    expect(
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: depsWith(stub, turns),
+      }),
+    ).toBe("unrecoverable");
+    expect(turns.built).toBe(0);
+  });
+
+  test("an inbox bound to NOBODY still runs the path, which is what writes the line", async () => {
+    // The neighbouring state, and it must not be swept into the refusal above: an inbox with no
+    // agent at all is #318's `no_agent`, and the operator's line for it is written by the delivery
+    // path. Refusing here would take that line away from the one customer message it is about.
+    const convId = 8952;
+    const messageId = 9452;
+    await seedConversation(convId, {
+      inboxId: null,
+      lastEventAt: new Date((SENT_AT - 600) * 1000),
+    });
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const stub = stubChatwoot({
+      page: pageWith([{ id: messageId, content: "oi" }], UNBOUND_INBOX),
+    });
+
+    expect(
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: depsWith(stub),
+      }),
+    ).toBe("recovered");
+    expect(stub.sent).toEqual([]);
+    expect((await ledger(rowId)).status).toBe("PROCESSED");
+  });
+
+  test("a newest page that does not reach the stranded message refuses", async () => {
+    // One unanchored page is the newest twenty. Twenty outgoing or activity messages since the
+    // strand push a newer CUSTOMER message off it, and `maxIncomingId` would then find nothing and
+    // replay a message the customer passed hours ago. The page answers the question only when it
+    // holds something at or below the stranded id.
+    const convId = 8953;
+    const messageId = 9453;
+    await seedConversation(convId, {
+      lastEventAt: new Date((SENT_AT - 600) * 1000),
+    });
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const stub = stubChatwoot({
+      page: pageWith([{ id: messageId, content: "tem alguém?" }]),
+      // A page of OUTGOING messages, every id above the stranded one. `maxIncomingId` finds nothing
+      // in it — which is exactly the trap: the page says "no newer customer message" while never
+      // reaching back far enough to have seen one.
+      recent: {
+        payload: Array.from({ length: 20 }, (_, i) => ({
+          id: messageId + 10 + i,
+          content: `nota ${i}`,
+          message_type: 1,
+          private: false,
+          inbox_id: CHATWOOT_INBOX_ID,
+          created_at: SENT_AT,
+          sender: { id: 5, name: "Atendente" },
+          attachments: [],
+        })),
+      },
+    });
+    const turns = { built: 0 };
+
+    expect(
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: depsWith(stub, turns),
+      }),
+    ).toBe("unrecoverable");
+    expect(turns.built).toBe(0);
+    expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 0 });
+  });
+
+  test("an empty newest page is a degraded read, not a busy conversation", async () => {
+    // The account rendered nothing where the anchored read just found this message. That is the
+    // account answering with something unusable, which the next attempt may not — so it keeps its
+    // budget instead of being written off.
+    const convId = 8954;
+    const messageId = 9454;
+    await seedConversation(convId, {
+      lastEventAt: new Date((SENT_AT - 600) * 1000),
+    });
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const stub = stubChatwoot({
+      page: pageWith([{ id: messageId, content: "tem alguém?" }]),
+      recent: { payload: [] },
+    });
+
+    expect(
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: depsWith(stub),
+      }),
+    ).toBe("unreachable");
+    expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 0 });
   });
 
   test("a customer who wrote again is not answered about the older message", async () => {

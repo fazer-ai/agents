@@ -216,8 +216,15 @@ export function invalidToolPreconditions(settings: unknown): string[] {
       // NOTE: The KEY is checked as well as the value, and it is the half a value-only check misses: a
       // padded name (`" handoff_to_human "`) parses fine as a condition, so the API reported success
       // on a rule that can never match, for a tool that stayed unguarded.
+      // NOTE: `null` is a REMOVAL, not an entry that failed to parse. The MCP merge consumes it as a
+      // tombstone (behavior-settings.ts) because an absent key there means "leave it alone"; over
+      // REST, where the bag is sent whole, omitting the key already removes the rule and a null is
+      // simply inert. Reading it as invalid would refuse the only way to delete one — but the NAME
+      // is still checked, so a tombstone for a tool that could never have been guarded is refused
+      // rather than reporting success for a no-op.
       ([name, raw]) =>
-        !isGuardableToolName(name) || parseToolPrecondition(raw) === null,
+        !isGuardableToolName(name) ||
+        (raw !== null && parseToolPrecondition(raw) === null),
     )
     .map(([name]) => name);
 }

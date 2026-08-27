@@ -5,6 +5,7 @@ import { z } from "zod";
 import { NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
 import { readBehaviorSettings } from "@/modules/agents/behavior-settings";
 import { BEHAVIOR_PATCH_SHAPE } from "@/modules/agents/settings-schema";
+import { invalidToolPreconditions } from "@/modules/agents/tool-preconditions";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import { buildMcpServer } from "@/modules/mcp/server";
 
@@ -319,5 +320,50 @@ describe("toolGuidance and toolPreconditions publish the native catalog", () => 
       }
     ).unwrap().shape;
     expect(Object.keys(shape).sort()).toEqual([...NATIVE_TOOL_NAMES].sort());
+  });
+});
+
+// ROUND 2 OF PR #404. The merge grew a `null` tombstone so a rule can be REMOVED over MCP, and the
+// schema was not told: `toolGuidance` accepted it only because its value was already `.nullable()`,
+// and `toolPreconditions` refused it at the boundary before the merge ever ran. The e2e written for
+// the tombstone happened to cover the half that already worked.
+//
+// The write boundary is the other half: `null` is a REMOVAL, not an entry that failed to parse, and
+// classifying it as invalid would refuse the only way to delete a rule.
+describe("a tool precondition can be removed", () => {
+  const patch = z.object(BEHAVIOR_PATCH_SHAPE);
+
+  test("the schema accepts a per-tool tombstone on BOTH tool-keyed blocks", () => {
+    for (const block of ["toolPreconditions", "toolGuidance"]) {
+      expect(
+        patch.safeParse({ [block]: { handoff_to_human: null } }).success,
+      ).toBe(true);
+    }
+  });
+
+  test("the write boundary does not read a tombstone as an invalid entry", () => {
+    expect(
+      invalidToolPreconditions({
+        toolPreconditions: { handoff_to_human: null },
+      }),
+    ).toEqual([]);
+  });
+
+  test("but a tombstone on a name that could never be guarded is still refused", () => {
+    // Removal is not a way around the catalog restriction: a rule that could not have been written
+    // cannot be deleted either, and accepting it would report success for a no-op.
+    expect(
+      invalidToolPreconditions({
+        toolPreconditions: { mcp__crm__create_deal: null },
+      }),
+    ).toEqual(["mcp__crm__create_deal"]);
+  });
+
+  test("an entry that is neither a condition nor a tombstone is still invalid", () => {
+    expect(
+      invalidToolPreconditions({
+        toolPreconditions: { handoff_to_human: "nope" },
+      }),
+    ).toEqual(["handoff_to_human"]);
   });
 });

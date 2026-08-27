@@ -559,14 +559,22 @@ const toolGuidance = nativeToolKeys(z.string().nullable()).describe(
 // worth ~2 KB of a schema the model pays for on every conversation, and thirteen copies of the same
 // sentence is noise to the reader as much as it is bytes on the wire.
 const toolPreconditions = nativeToolKeys(
-  z.looseObject({
-    kind: z.literal("attribute"),
-    scope: z.enum(["conversation", "contact"]),
-    key: z.string(),
-    equals: z.string().optional(),
-  }),
+  z
+    .looseObject({
+      kind: z.literal("attribute"),
+      scope: z.enum(["conversation", "contact"]),
+      key: z.string(),
+      equals: z.string().optional(),
+    })
+    // NOTE: NULLABLE, and it is the only way to REMOVE a rule over this surface. The merge treats each
+    // tool's value as a replacement and an absent key as "leave it alone", so without a tombstone
+    // there is no deletion at all — an empty object just replaces the rule with an unparseable one.
+    // `toolGuidance` accepted one from the start because its value was already nullable, which is
+    // exactly why the gap here survived a round: the test written for the tombstone covered the half
+    // that already worked.
+    .nullable(),
 ).describe(
-  "per-native-tool precondition, checked by the runtime BEFORE the call runs: `key` is the custom-attribute key that must be set on the chosen `scope`, and `equals` is the required value (omit it to require any non-blank value). Unmet, the tool does not run and the model is told why. Only native tools can be guarded (issue #389 tracks the rest).",
+  "per-native-tool precondition, checked by the runtime BEFORE the call runs (send `null` for a tool to remove its rule): `key` is the custom-attribute key that must be set on the chosen `scope`, and `equals` is the required value (omit it to require any non-blank value). Unmet, the tool does not run and the model is told why. Only native tools can be guarded (issue #389 tracks the rest).",
 );
 
 export const BEHAVIOR_PATCH_SHAPE = {

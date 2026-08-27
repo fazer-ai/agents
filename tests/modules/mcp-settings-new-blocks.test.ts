@@ -219,6 +219,74 @@ describe.skipIf(!dbUp)("the four blocks reach the agent through MCP", () => {
     );
   });
 
+  // ROUND 2: the tombstone e2e below only ever covered toolGuidance, whose value was already
+  // nullable — so it passed while toolPreconditions refused the same shape at the schema boundary.
+  // This is the half that was missing, end to end and against the stored bag.
+  test("a precondition is REMOVED by its tombstone, and its siblings stay", async () => {
+    await agentSettingsSet(
+      principal(),
+      {
+        agent_id: String(agentId),
+        dry_run: false,
+        toolPreconditions: {
+          private_note: {
+            kind: "attribute",
+            scope: "contact",
+            key: "plan",
+          },
+        },
+      } as never,
+      { base: appDb },
+    );
+    const r = await agentSettingsSet(
+      principal(),
+      {
+        agent_id: String(agentId),
+        dry_run: false,
+        toolPreconditions: { handoff_to_human: null },
+      } as never,
+      { base: appDb },
+    );
+    expect(r.ok).toBe(true);
+
+    const stored = (
+      await suDb.agent.findUniqueOrThrow({
+        where: { id: agentId },
+        select: { settings: true },
+      })
+    ).settings as Record<string, Record<string, unknown>>;
+    expect(stored.toolPreconditions?.handoff_to_human).toBeUndefined();
+    // Removed, not blanked: a null left in the bag would read as a configured entry to anything that
+    // counts keys rather than parsing them.
+    expect(
+      Object.hasOwn(stored.toolPreconditions ?? {}, "handoff_to_human"),
+    ).toBe(false);
+    expect(stored.toolPreconditions?.private_note).toBeDefined();
+  });
+
+  // The mutation battery found the boundary check on the MCP path surviving its removal: with the
+  // merge no longer destructive, a bad entry now reaches updateAgent, which refuses it. What that
+  // does NOT cover is the DRY RUN — it never calls updateAgent, so without the check the preview
+  // would happily describe a write the apply refuses. A preview that promises what the apply denies
+  // is worse than no preview.
+  test("a dry run REFUSES an unparseable precondition instead of previewing it", async () => {
+    const r = await agentSettingsSet(
+      principal(),
+      {
+        agent_id: String(agentId),
+        toolPreconditions: {
+          handoff_to_human: {
+            kind: "attribute",
+            scope: "conversation",
+            key: "   ",
+          },
+        },
+      } as never,
+      { base: appDb },
+    );
+    expect(r.ok).toBe(false);
+  });
+
   test("null clears one rule and leaves the others", async () => {
     const r = await agentSettingsSet(
       principal(),

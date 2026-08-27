@@ -306,6 +306,10 @@ async function buildPlaygroundGraph(params: {
   overrides?: AgentConfigOverrides;
   // Reused as the Langfuse trace id (item 10) so a playground trace correlates with the turn.
   turnId?: string;
+  // The config, when the caller already resolved it. The two turn entrypoints do, because the
+  // spend ceiling may only refuse a target that EXISTS — see the comment at their gates. Passing it
+  // through keeps that ordering from costing a second read of the same agent row.
+  loaded?: AgentConfig;
   // Same warn line the reactive turn leaves when a model call had to be retried. The caller passes
   // it because the FlowContext is the caller's.
   onModelRetry?: (info: ModelRetryInfo) => void;
@@ -335,13 +339,15 @@ async function buildPlaygroundGraph(params: {
 }) {
   const { ctx, agentId, threadId, base } = params;
   const tenantId = ctx.tenantId as bigint;
-  const loaded = await loadPlaygroundConfig({
-    ctx,
-    agentId,
-    threadId,
-    base,
-    overrides: params.overrides,
-  });
+  const loaded =
+    params.loaded ??
+    (await loadPlaygroundConfig({
+      ctx,
+      agentId,
+      threadId,
+      base,
+      overrides: params.overrides,
+    }));
   const rawTools = await buildPlaygroundToolset(loaded, {
     ctx,
     threadId,
@@ -511,6 +517,19 @@ export async function runPlaygroundTurn(
     threadId,
     base,
   };
+  // WHO IS BEING RUN, resolved before the ceiling is asked. A refusal says that spend was what stood
+  // in the way, and for an agent that does not exist — or has no runnable model — there was never a
+  // provider call to refuse: the same request in a month with budget to spare answers 404 or 400, so
+  // answering 429 in a spent one reports a refusal that did not happen and sends the operator to
+  // look at their budget over a selector that was simply wrong. The read is handed to the graph
+  // below, so asking in this order costs nothing.
+  const loadedConfig = await loadPlaygroundConfig({
+    ctx,
+    agentId,
+    threadId,
+    base,
+    overrides: params.overrides,
+  });
   // The playground's token ceiling, before the graph is built and before a single provider call.
   // Its own number, never the inbox one: an operator burning the month testing must not be able to
   // silence the agent for customers, and the two ledgers are already told apart by `source`.
@@ -526,6 +545,7 @@ export async function runPlaygroundTurn(
       overrides: params.overrides,
       turnId,
       flow,
+      loaded: loadedConfig,
       onModelRetry: ({ attempt, provider, model }) =>
         emitFlowEvent(flow, {
           stage: "generate",
@@ -883,6 +903,19 @@ export async function runPlaygroundFollowup(
     threadId,
     base,
   };
+  // WHO IS BEING RUN, resolved before the ceiling is asked. A refusal says that spend was what stood
+  // in the way, and for an agent that does not exist — or has no runnable model — there was never a
+  // provider call to refuse: the same request in a month with budget to spare answers 404 or 400, so
+  // answering 429 in a spent one reports a refusal that did not happen and sends the operator to
+  // look at their budget over a selector that was simply wrong. The read is handed to the graph
+  // below, so asking in this order costs nothing.
+  const loadedConfig = await loadPlaygroundConfig({
+    ctx,
+    agentId,
+    threadId,
+    base,
+    overrides: params.overrides,
+  });
   // The playground's token ceiling, before the graph is built and before a single provider call.
   // Its own number, never the inbox one: an operator burning the month testing must not be able to
   // silence the agent for customers, and the two ledgers are already told apart by `source`.
@@ -898,6 +931,7 @@ export async function runPlaygroundFollowup(
       overrides: params.overrides,
       turnId,
       flow,
+      loaded: loadedConfig,
       onModelRetry: ({ attempt, provider, model }) =>
         emitFlowEvent(flow, {
           stage: "generate",

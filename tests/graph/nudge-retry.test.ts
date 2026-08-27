@@ -160,6 +160,23 @@ describe("the occasion a nudge refusal belongs to", () => {
     );
   });
 
+  // AN INBOUND EVENT DESCRIBES ITSELF WITH NOTHING THE OTHER PARTS READ: `buildNudge` sets one
+  // `source`, a fixed `kind`, no `step` and no `refs`, so two separate deliveries on one conversation
+  // produced one key and the second refusal lost its row and its alert inside the first's two-hour
+  // window. The delivery row is the occasion, and the id is what says so.
+  test("two inbound deliveries are two occasions", () => {
+    const inbound = (deliveryId: string) => ({
+      source: "asaas",
+      kind: "agent_nudge",
+      occasionId: `delivery:${deliveryId}`,
+      status: "OVERDUE",
+    });
+    expect(key(inbound("41"))).not.toBe(key(inbound("42")));
+    // ...and the SAME delivery redelivered is the same occasion, which is the half that keeps this
+    // from being a per-attempt key wearing a different name.
+    expect(key(inbound("41"))).toBe(key(inbound("41")));
+  });
+
   // And the conversation is still part of it: two tenants' worth of identical jobs must not share a
   // window.
   test("the conversation is part of the identity", () => {

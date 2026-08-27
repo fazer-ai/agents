@@ -124,16 +124,28 @@ red test.
 
 | node | gate |
 | --- | --- |
-| `agent` | the Chatwoot webhook (inbox), the **debounce flush**, the **re-engage** button, and `runPlaygroundTurn` (playground) |
+| `agent` | the Chatwoot webhook (inbox), the **debounce flush**, the **re-engage** button, and `runPlaygroundTurn` (playground), which resolves its target first |
 | `nudge` | `runAgentNudge` and `runPlaygroundFollowup` |
-| `vision` | `extractInboundFile` / `extractPlaygroundFile`, asked before the download and **after** the file's type is known to be readable |
+| `vision` | `extractInboundFile` / `extractPlaygroundFile`, asked **after** the file is known to be readable and immediately before the provider call |
 | `guardrail`, `tts_normalize`, `memory_compact` | covered by the unit above them |
 
 A refusal says that **spend** was what stood in the way, so it is asked only where spend was
-actually next. For a playground upload whose type this provider cannot read, the extraction returns
-`unsupported` in a month with budget to spare, so answering `429` in a spent one reports a refusal
-that never happened and sends the operator to look at a budget over a file that would have been
-rejected either way. The support question is settled first, and only then the money.
+actually next: after everything that would have stopped the call anyway, and immediately before the
+call. Three shapes, all the same rule:
+
+- **a file this provider cannot read.** The extraction returns `unsupported` in a month with budget
+  to spare, so answering `429` (playground) or a `spend_ceiling` skip (inbox) in a spent one reports
+  a refusal that never happened and sends the operator to look at a budget over a file that would
+  have been rejected either way.
+- **an agent that does not exist**, or has no runnable model. The same playground request answers
+  404 or 400 under a ceiling with room, so the target is resolved before the money is asked about.
+- **the WARNING half, which is the part that costs something.** Reading the verdict *claims* its
+  six-hour window, so a verdict read over a call that never happens suppresses the next warning for
+  one that did.
+
+For the inbound attachment this means the ceiling sits **below** the download. The download is a
+Chatwoot fetch and not a billed one, and it is what tells that path the file's type in the first
+place.
 
 **The turn is asked about more than once**, and the second ask is not redundant. The webhook's gate
 covers the message; the debounce flush runs minutes later, and a tenant can cross its ceiling inside
@@ -246,9 +258,14 @@ own, and neither is traffic:
   times, and fifty pending jobs paged them four hundred. `runAgentNudge` sizes the window to that
   ladder and keys it by the **occasion** rather than by the conversation, which independent jobs
   share: `nudgeOccasionKey` reads the nudge descriptor the caller already writes (`source`, `kind`,
-  `step`, `refs`), so an appointment reminder refused an hour after an inactivity follow-up keeps its
-  own row. Derived from the descriptor rather than threaded in, because a parameter three callers
-  must remember is the one the fourth forgets. **Guardrails deliberately do
+  `step`, `refs`, `occasionId`), so an appointment reminder refused an hour after an inactivity
+  follow-up keeps its own row. Derived from the descriptor rather than threaded in, because a
+  parameter three callers must remember is the one the fourth forgets. `occasionId` is what a caller
+  whose descriptor says none of the rest uses to name the occasion outright: an **inbound** nudge
+  carries one fixed `kind`, no `step` and no `refs`, so two separate deliveries on one conversation
+  described themselves identically — the receptor names the occasion with the delivery row's id,
+  which is exactly one event, and a redelivery of that row is the same event on purpose. It is read
+  by the key and by nothing else, so unlike `refs` it never reaches the model. **Guardrails deliberately do
 not**: on the output direction the reply is already written and paid for, so refusing there posts it
 unscreened or drops a reply the customer is waiting for, and a ceiling that switched moderation off
 would let a budget decide a safety question. Memory compaction is out for a sharper reason: skipping

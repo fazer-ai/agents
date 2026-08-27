@@ -228,46 +228,6 @@ export async function extractInboundFile(
     return null;
   };
 
-  // THE SPEND CEILING, asked here and not by the caller. Vision runs on the incoming attachment
-  // BEFORE the webhook's gates decide anything, so the turn ceiling upstream has not run yet and
-  // an image sent into a spent month would be billed with nothing to stop it. Asked ahead of the
-  // download and the credential read, because those cost too.
-  //
-  // IT ANNOUNCES THE WARNING AND NOT THE REFUSAL, which is the one thing this gate does differently
-  // from the other four, and the asymmetry is what the two halves leave behind.
-  //
-  // `spend_ceiling` `over` is written per refused MESSAGE, and this runs on the same message the
-  // webhook gate refuses moments later: writing it here would put two refusal rows and two alert
-  // bumps on the Logs page for one customer message, and the count of refusals is the number an
-  // operator reads off that page. Nothing is lost by staying quiet, because the `vision` line below
-  // says `skipped` with `spend_ceiling` as its reason, which is the stage the reader filters by when
-  // they are asking why an attachment was never read.
-  //
-  // The WARNING leaves no such trace: the call proceeds, the attachment is read, and no line
-  // anywhere says the month crossed its fraction. And the gate that would have said it may never
-  // run — vision is upstream of every one of them, so a human-owned conversation, a silenced agent,
-  // a redirect or an hour outside the schedule consumes the delivery first, and this billed call is
-  // the only thing that happened. It cannot double-write: the warning's window is claimed once, so
-  // a gate that follows and asks the same question writes nothing.
-  //
-  // The playground's own file path is untouched: it goes through `assertPlaygroundSpendCeiling`,
-  // where no webhook gate follows it and both halves are its own to announce.
-  const ceiling = await spendCeilingVerdict({
-    tenantId: params.tenantId,
-    source: "inbox",
-    base,
-  });
-  announceSpendCeilingWarning(params.flow, ceiling, "inbox", params.tenantId);
-  if (ceiling.state === "over") {
-    logger.info(
-      "vision: spend ceiling reached (tenant=%s used=%s ceiling=%s) — the attachment was not read",
-      String(params.tenantId),
-      String(ceiling.usedTokens),
-      String(ceiling.ceilingTokens),
-    );
-    return skip("spend_ceiling");
-  }
-
   const provider = getVisionProvider(cfg.provider);
   if (!provider) {
     logger.warn("vision: unknown provider %s", cfg.provider);
@@ -322,6 +282,55 @@ export async function extractInboundFile(
     !visionAcceptsDocuments(cfg.provider, entry.baseUrl ?? cfg.baseURL)
   )
     return skip("document_not_supported");
+
+  // THE SPEND CEILING, asked here and not by the caller. Vision runs on the incoming attachment
+  // BEFORE the webhook's gates decide anything, so the turn ceiling upstream has not run yet and
+  // an image sent into a spent month would be billed with nothing to stop it.
+  //
+  // ASKED ONCE THE CALL IS KNOWN TO BE POSSIBLE, immediately before it, and not at the top of this
+  // function. A refusal says that spend was what stood in the way, and everything above — an unknown
+  // provider, a missing credential, a type this endpoint cannot read — is a reason the provider was
+  // never going to be called at all. Both halves of the verdict are spent when it is read: the
+  // refusal writes a `vision` line saying the attachment was skipped for budget, and the WARNING
+  // claims a six-hour window, so a verdict read over an unsupported file suppresses the next
+  // warning for a call that really happened. The download above is a Chatwoot fetch, not a billed
+  // one, and it is what tells this function the attachment's type in the first place.
+  //
+  // IT ANNOUNCES THE WARNING AND NOT THE REFUSAL, which is the one thing this gate does differently
+  // from the other four, and the asymmetry is what the two halves leave behind.
+  //
+  // `spend_ceiling` `over` is written per refused MESSAGE, and this runs on the same message the
+  // webhook gate refuses moments later: writing it here would put two refusal rows and two alert
+  // bumps on the Logs page for one customer message, and the count of refusals is the number an
+  // operator reads off that page. Nothing is lost by staying quiet, because the `vision` line below
+  // says `skipped` with `spend_ceiling` as its reason, which is the stage the reader filters by when
+  // they are asking why an attachment was never read.
+  //
+  // The WARNING leaves no such trace: the call proceeds, the attachment is read, and no line
+  // anywhere says the month crossed its fraction. And the gate that would have said it may never
+  // run — vision is upstream of every one of them, so a human-owned conversation, a silenced agent,
+  // a redirect or an hour outside the schedule consumes the delivery first, and this billed call is
+  // the only thing that happened. It cannot double-write: the warning's window is claimed once, so
+  // a gate that follows and asks the same question writes nothing.
+  //
+  // The playground's own file path asks in the same place, for the same reason, and differs only in
+  // what it does with the answer: it goes through `assertPlaygroundSpendCeiling`, where no webhook
+  // gate follows it and both halves are its own to announce.
+  const ceiling = await spendCeilingVerdict({
+    tenantId: params.tenantId,
+    source: "inbox",
+    base,
+  });
+  announceSpendCeilingWarning(params.flow, ceiling, "inbox", params.tenantId);
+  if (ceiling.state === "over") {
+    logger.info(
+      "vision: spend ceiling reached (tenant=%s used=%s ceiling=%s) — the attachment was not read",
+      String(params.tenantId),
+      String(ceiling.usedTokens),
+      String(ceiling.ceilingTokens),
+    );
+    return skip("spend_ceiling");
+  }
 
   let extracted: VisionResult;
   try {

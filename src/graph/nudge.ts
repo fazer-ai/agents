@@ -102,6 +102,13 @@ export interface AgentNudge {
   // For a follow-up sequence: the 1-based step that fired. Surfaced on the conversation timeline
   // ("Follow-up N enviado") and in the flow log. Undefined for non-sequenced nudges (inbound events).
   step?: number;
+  // NOTE: The caller's own name for THIS occasion, read by `nudgeOccasionKey` and by nothing else —
+  // never rendered, so it does not reach the model the way `refs` does. Set it when the descriptor's
+  // own fields cannot tell two independent occasions apart: an inbound delivery carries no `step`
+  // and no `refs`, so two separate events on one conversation describe themselves identically and
+  // would share a window. The inbound dispatcher passes the delivery row's id, which is exactly one
+  // occasion — a redelivery of that same row is the same occasion, and gets the same key on purpose.
+  occasionId?: string;
 }
 
 // WHICH SCHEDULED OCCASION A REFUSAL BELONGS TO. The `over` line is one per occasion, and the retry
@@ -110,8 +117,9 @@ export interface AgentNudge {
 // row and its alert. Derived from the nudge DESCRIPTOR rather than threaded in from the caller,
 // because a parameter three callers must remember to pass is the one the fourth forgets — and each
 // caller already describes its own occasion here: `source` and `kind` tell the three apart, `step`
-// separates the rungs of a follow-up sequence, and `refs` separates two reminders for two different
-// appointments on one conversation.
+// separates the rungs of a follow-up sequence, `refs` separates two reminders for two different
+// appointments on one conversation, and `occasionId` is what a caller whose descriptor says none of
+// those uses to name the occasion outright.
 //
 // What it deliberately does NOT separate is the first and the final reminder of the SAME appointment
 // inside one window: they differ only in their instructions, and the second alert would say what the
@@ -134,6 +142,7 @@ export function nudgeOccasionKey(
     nudge.source,
     nudge.kind ?? null,
     nudge.step ?? null,
+    nudge.occasionId ?? null,
   ])}:${refs}`;
 }
 

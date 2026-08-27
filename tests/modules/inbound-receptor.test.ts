@@ -530,6 +530,12 @@ describe.skipIf(!dbUp)("inbound receptor", () => {
       kind: "agent_nudge",
       source: "ASAAS",
       value: 100,
+      // WHICH OCCASION, named by the delivery row. Nothing else in an inbound descriptor separates
+      // two events on one conversation — no `step`, no `refs` — so without this the second one
+      // refused by the spend ceiling inside the first's two-hour window loses its flow line and its
+      // alert. Asserted at the WIRING and not only on `nudgeOccasionKey`, because the key function
+      // cannot fail on a field the dispatcher never set.
+      occasionId: `delivery:${r.deliveryId}`,
     });
 
     // The conversion is still recorded (durable barrier) and the delivery ends PROCESSED.

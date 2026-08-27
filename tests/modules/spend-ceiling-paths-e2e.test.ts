@@ -102,6 +102,33 @@ async function refusal(
   }
 }
 
+// A Chatwoot that SERVES the attachment, because the inbound gate now sits after the download: the
+// download is what tells that path the file's type, and a ceiling asked before it would be refusing
+// a call that an unsupported type was going to stop anyway. What the assertion moves to is the
+// PROVIDER — the billed call the ceiling exists in front of — so `providerCalls` is the count that
+// matters and the download is just setup.
+function visionStub(contentType = "image/png") {
+  const providerCalls: string[] = [];
+  return {
+    providerCalls,
+    deps: {
+      makeClient: (() => ({
+        downloadAttachment: async () => ({
+          bytes: new ArrayBuffer(8),
+          contentType,
+        }),
+        updateAttachmentMeta: async () => {},
+      })) as never,
+      fetchImpl: (async (url: string | URL | Request) => {
+        providerCalls.push(String(url));
+        throw new Error("the provider must not be called over the ceiling");
+      }) as never,
+      // So a provider failure does not wait out the retry backoff.
+      sleep: async () => {},
+    },
+  };
+}
+
 // A turn that runs at all fails the test: the model factory is the assertion.
 function refusingModel() {
   return () => {
@@ -187,6 +214,38 @@ describe.skipIf(!dbUp)("the spend ceiling on the playground and vision", () => {
     ).toEqual({ statusCode: 429, key: "errors.spendCeilingReached" });
   });
 
+  // A TARGET THAT DOES NOT EXIST WAS NEVER GOING TO SPEND. The same request in a month with budget
+  // to spare answers 404, so a 429 here reports a refusal that did not happen and points the
+  // operator at their budget over a selector that was simply wrong.
+  test("a playground turn on a missing agent is not found, not refused", async () => {
+    await setCeiling({ enabled: true, monthlyPlaygroundTokens: 1000 });
+    await spend("playground", 1200);
+    expect(
+      await refusal(() =>
+        runPlaygroundTurn({
+          ctx,
+          agentId: agentId + 9_999_999n,
+          message: "oi",
+          base: appDb,
+          deps: { makeModel: refusingModel(), checkpointer: new MemorySaver() },
+        }),
+      ),
+    ).toEqual({ statusCode: 404, key: "errors.agentNotFound" });
+    // The control, over the SAME blown ceiling: an agent that DOES exist is refused, so the 404
+    // above measures the target and not a gate that stopped running.
+    expect(
+      await refusal(() =>
+        runPlaygroundTurn({
+          ctx,
+          agentId,
+          message: "oi",
+          base: appDb,
+          deps: { makeModel: refusingModel(), checkpointer: new MemorySaver() },
+        }),
+      ),
+    ).toEqual({ statusCode: 429, key: "errors.spendCeilingReached" });
+  });
+
   test("a simulated follow-up over the ceiling never reaches the model", async () => {
     await setCeiling({ enabled: true, monthlyPlaygroundTokens: 1000 });
     await spend("playground", 1200);
@@ -246,11 +305,12 @@ describe.skipIf(!dbUp)("the spend ceiling on the playground and vision", () => {
     expect(verdict.state).toBe("allowed");
   });
 
-  // Vision asks BEFORE it spends anything, which is what this proves: the Chatwoot client factory
-  // throws, so an extraction that got as far as downloading the attachment fails the test.
-  test("vision over the ceiling reads no attachment", async () => {
+  // Vision asks BEFORE IT SPENDS, which is what this proves: the provider seam throws, so an
+  // extraction that got as far as the billed call fails the test.
+  test("vision over the ceiling never calls the provider", async () => {
     await setCeiling({ enabled: true, monthlyInboxTokens: 1000 });
     await spend("inbox", 1200);
+    const s = visionStub();
     const result = await extractInboundFile({
       tenantId,
       instanceId,
@@ -270,15 +330,53 @@ describe.skipIf(!dbUp)("the spend ceiling on the playground and vision", () => {
         extractionPrompt: "descreva",
       },
       base: appDb,
-      deps: {
-        makeClient: (() => {
-          throw new Error(
-            "the attachment must not be downloaded over the ceiling",
-          );
-        }) as never,
-      },
+      deps: s.deps,
     });
     expect(result).toBeNull();
+    expect(s.providerCalls).toEqual([]);
+  });
+
+  // AND THE FILE THAT WAS NEVER GOING TO BE READ IS NOT REFUSED. `application/zip` resolves to no
+  // vision kind, so the same attachment in a month with budget to spare is skipped as an unsupported
+  // type — answering `spend_ceiling` in a spent one reports a refusal that did not happen, and the
+  // WARNING half is worse than cosmetic: reading the verdict claims a six-hour window, so a warning
+  // spent on this file suppresses the next one for a call that really was billed.
+  test("an unsupported attachment over the ceiling is skipped as unsupported, not as spend", async () => {
+    await setCeiling({ enabled: true, monthlyInboxTokens: 1000 });
+    await spend("inbox", 1200);
+    const turnId = `vision-unsupported-${process.pid}`;
+    const s = visionStub("application/zip");
+    const result = await extractInboundFile({
+      tenantId,
+      instanceId,
+      conversationId: 77,
+      messageId: 78,
+      attachmentId: 79,
+      dataUrl: "https://203.0.113.31:9/a.zip",
+      cfg: {
+        enabled: true,
+        provider: "openai",
+        model: "gpt-4o-mini",
+        credentialRef: visionRef,
+        baseURL: null,
+        extractionPrompt: "descreva",
+      },
+      base: appDb,
+      flow: { tenantId, turnId, source: "inbox", base: appDb },
+      deps: s.deps,
+    });
+    expect(result).toBeNull();
+    expect(s.providerCalls).toEqual([]);
+    await settleFlowEvents();
+    const rows = await suDb.executionLog.findMany({
+      where: { turnId },
+      select: { stage: true, detail: true },
+    });
+    expect(rows.map((r) => r.stage)).toEqual(["vision"]);
+    expect((rows[0]?.detail as { reason?: string })?.reason).toBe(
+      "unsupported_mime",
+    );
+    await clearFlowLog(suDb, { tenantId });
   });
 
   // A REFUSAL IS A STATEMENT THAT SPEND WAS WHAT STOOD IN THE WAY, and for a file this provider
@@ -330,6 +428,7 @@ describe.skipIf(!dbUp)("the spend ceiling on the playground and vision", () => {
     await setCeiling({ enabled: true, monthlyInboxTokens: 1000 });
     await spend("inbox", 1200);
     const turnId = `vision-ceiling-${process.pid}`;
+    const s = visionStub();
     const result = await extractInboundFile({
       tenantId,
       instanceId,
@@ -347,15 +446,10 @@ describe.skipIf(!dbUp)("the spend ceiling on the playground and vision", () => {
       },
       base: appDb,
       flow: { tenantId, turnId, source: "inbox", base: appDb },
-      deps: {
-        makeClient: (() => {
-          throw new Error(
-            "the attachment must not be downloaded over the ceiling",
-          );
-        }) as never,
-      },
+      deps: s.deps,
     });
     expect(result).toBeNull();
+    expect(s.providerCalls).toEqual([]);
     // NOTE: the assertion is that a line EXISTS and another does NOT, so the settle is required
     // rather than a poll: polling for the absence would only spend the timeout before answering.
     await settleFlowEvents();
@@ -385,8 +479,12 @@ describe.skipIf(!dbUp)("the spend ceiling on the playground and vision", () => {
     });
     await spend("inbox", 900);
     const turnId = `vision-warn-${process.pid}`;
-    await expect(
-      extractInboundFile({
+    const s = visionStub();
+    // Under the ceiling, so the attachment IS read: the warning refuses nothing. The provider seam
+    // then fails, which the extraction absorbs (a provider error must not strand the delivery), so
+    // the answer is null and the CALL having been attempted is the proof it was let through.
+    expect(
+      await extractInboundFile({
         tenantId,
         instanceId,
         conversationId: 77,
@@ -403,14 +501,10 @@ describe.skipIf(!dbUp)("the spend ceiling on the playground and vision", () => {
         },
         base: appDb,
         flow: { tenantId, turnId, source: "inbox", base: appDb },
-        deps: {
-          makeClient: (() => {
-            throw new Error("reached the download");
-          }) as never,
-        },
+        deps: s.deps,
       }),
-      // Under the ceiling, so the attachment IS read: the warning does not refuse anything.
-    ).rejects.toThrow("reached the download");
+    ).toBeNull();
+    expect(s.providerCalls.length).toBe(1);
     await settleFlowEvents();
     const rows = await suDb.executionLog.findMany({
       where: { turnId, stage: "spend_ceiling" },
@@ -423,13 +517,16 @@ describe.skipIf(!dbUp)("the spend ceiling on the playground and vision", () => {
     await clearFlowLog(suDb, { tenantId });
   });
 
+  // THE CONTROL, and what it has to reach moved with the gate. Reaching the DOWNLOAD proves nothing
+  // now: the download runs above the ceiling either way, so a test that stopped there would be
+  // green with the gate refusing everything. The billed call is the thing the ceiling stands in
+  // front of, so that is what a tenant under its ceiling has to get to.
   test("vision under the ceiling is not stopped by the gate", async () => {
     await setCeiling({ enabled: true, monthlyInboxTokens: 1_000_000 });
     await spend("inbox", 10);
-    // Past the gate it fails on the client, which is exactly how far this test needs it to get:
-    // reaching the download is the proof that the ceiling let it through.
-    await expect(
-      extractInboundFile({
+    const s = visionStub();
+    expect(
+      await extractInboundFile({
         tenantId,
         instanceId,
         conversationId: 77,
@@ -445,12 +542,9 @@ describe.skipIf(!dbUp)("the spend ceiling on the playground and vision", () => {
           extractionPrompt: "descreva",
         },
         base: appDb,
-        deps: {
-          makeClient: (() => {
-            throw new Error("reached the download");
-          }) as never,
-        },
+        deps: s.deps,
       }),
-    ).rejects.toThrow("reached the download");
+    ).toBeNull();
+    expect(s.providerCalls.length).toBe(1);
   });
 });

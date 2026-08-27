@@ -386,10 +386,17 @@ export interface ProcessParams {
 function buildNudge(
   payload: Record<string, unknown>,
   source: string,
+  // WHICH OCCASION THIS IS, and the delivery row is the answer: one row is one event, a redelivery
+  // of that row is the same event, and two events on one conversation are two rows. Nothing else in
+  // this descriptor separates them — an inbound nudge carries no `step` and no `refs`, so two
+  // distinct deliveries would otherwise describe themselves identically and the second, refused by
+  // the spend ceiling inside the first's window, would lose its flow line and its alert.
+  deliveryId: bigint,
 ): AgentNudge {
   return {
     source,
     kind: "agent_nudge",
+    occasionId: `delivery:${deliveryId}`,
     status: asString(payload.status) ?? null,
     value: typeof payload.value === "number" ? payload.value : null,
     currency: asString(payload.currency) ?? null,
@@ -531,7 +538,7 @@ export async function processInboundDelivery(
           return {
             kind: "nudge",
             threadId: corr.threadId,
-            nudge: buildNudge(payload, source),
+            nudge: buildNudge(payload, source, params.deliveryId),
           };
         }
         await markProcessed();
@@ -563,7 +570,7 @@ export async function processInboundDelivery(
         return {
           kind: "nudge",
           threadId: ref.threadId,
-          nudge: buildNudge(payload, source),
+          nudge: buildNudge(payload, source, params.deliveryId),
         };
       }
 

@@ -4,7 +4,9 @@ import {
   editorRefusalFields,
   editorTargetFor,
   followUpStepField,
+  hasNoConsoleControl,
   sentFromPatch,
+  UNDRAWN_TOOL_NOTES,
 } from "@/client/lib/editorRefusal";
 import { NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
 import { SETTINGS_CREDENTIAL_PATHS } from "@/modules/agents/credential-paths";
@@ -47,10 +49,6 @@ function everyCappedPath(): string[] {
 // The thirteen native tools accept a note and the console draws three. The other ten can only have
 // been written through REST or MCP, so a refusal about one has nowhere to send anybody — and saying
 // "go to the Tools tab" about a control that is not there is worse than saying nothing.
-const NO_CONTROL = NATIVE_TOOL_NAMES.filter(
-  (n) =>
-    !["set_custom_attribute", "assign_label", "update_kanban_task"].includes(n),
-).map((n) => `toolGuidance.${n}`);
 
 describe("editorTargetFor", () => {
   test("every capped field either has a place in the editor or is one of the ten with no control", () => {
@@ -61,7 +59,10 @@ describe("editorTargetFor", () => {
     const unplaced = everyCappedPath().filter(
       (p) => editorTargetFor(p, { guardrailsEnabled: true }) === null,
     );
-    expect(unplaced.sort()).toEqual([...NO_CONTROL].sort());
+    // Compared against the exported set rather than a copy of it, and it is still a real comparison:
+    // `editorTargetFor` never consults that list, so this says the map's gaps are exactly the notes
+    // the editor draws no field for — nothing more and nothing less.
+    expect(unplaced.sort()).toEqual([...UNDRAWN_TOOL_NOTES].sort());
   });
 
   test("the two copy fields the customer reads land on their own sections", () => {
@@ -157,6 +158,49 @@ function view(over: Partial<EditorControlsShown> = {}): EditorControlsShown {
     ...over,
   };
 }
+
+describe("hasNoConsoleControl", () => {
+  test("only the native-tool notes the editor draws no field for", () => {
+    // The claim has to be DERIVABLE, not inferred from this map having no entry. Reading it off an
+    // absent target is what told the operator that `settings.modelFallback.model` and
+    // `observability.fullDetailUntil` can only be changed through the API, about pickers that are on
+    // screen. `toolGuidance` is the one closed set: thirteen names in NATIVE_TOOL_NAMES, three drawn.
+    for (const f of UNDRAWN_TOOL_NOTES) {
+      expect(hasNoConsoleControl(f), f).toBe(true);
+      // Both wire spellings, since the credential producer prefixes and the text one does not.
+      expect(hasNoConsoleControl(`settings.${f}`), f).toBe(true);
+    }
+    expect(UNDRAWN_TOOL_NOTES.length).toBe(NATIVE_TOOL_NAMES.length - 3);
+  });
+
+  test("never for a value the console draws, mapped or not", () => {
+    for (const f of [
+      "toolGuidance.assign_label",
+      "settings.modelFallback.model",
+      "observability.fullDetailUntil",
+      "toolPreconditions.assign_label",
+      "guardrails.customPolicy",
+      "name",
+    ]) {
+      expect(hasNoConsoleControl(f), f).toBe(false);
+    }
+  });
+
+  test("the three targeted-not-owned paths still have somewhere to send the operator", () => {
+    // Owning means marking one box with one value, and none of these is that: preconditions are a
+    // list, the fallback model comes from a picker, the observability window is a datetime. Targeting
+    // is the weaker and honest claim, and it is what the banner's jump needs.
+    const { owned } = editorRefusalFields(view());
+    for (const [field, sectionId] of [
+      ["settings.modelFallback.model", "modelFallback"],
+      ["observability.fullDetailUntil", "observability"],
+      ["toolPreconditions.assign_label", "tools-preconditions"],
+    ] as const) {
+      expect(editorTargetFor(field)?.sectionId, field).toBe(sectionId);
+      expect(owned, field).not.toContain(field);
+    }
+  });
+});
 
 describe("editorRefusalFields", () => {
   test("every credential the server can refuse is owned by the editor", () => {

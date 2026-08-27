@@ -58,6 +58,7 @@ import {
   editorRefusalFields,
   editorTargetFor,
   followUpStepField,
+  hasNoConsoleControl,
   sentFromPatch,
 } from "@/client/lib/editorRefusal";
 import { readRefusal } from "@/client/lib/fieldRefusal";
@@ -991,6 +992,25 @@ function AgentEditor() {
     );
   }
 
+  // Discarding a section restores the values it OWNS, so a refusal about one of those is moot and
+  // has to go with them. Without this a fieldless refusal outlives the edit entirely: it cannot
+  // expire by value the way a mark does, so the banner would sit there past the discard, past the
+  // next successful save of another section, forever.
+  //
+  // By the tab that DRAWS the value rather than by the section that wrote it: reverting Behavior
+  // restores the behavior form, and a mark a Behavior save left on `guardrails.customPolicy` is
+  // about a value the Guardrails tab still holds unsaved.
+  function discardRefusalFor(section: string): void {
+    const now = refusalRef.current;
+    const held = now.field;
+    const target = held
+      ? editorTargetFor(held, { guardrailsEnabled: guardrails.enabled })
+      : null;
+    if (target?.tab === section) now.clear();
+    if (!held && refusedSaveRef.current?.section === section) now.clear();
+    setRefusedSave((prev) => (prev?.section === section ? null : prev));
+  }
+
   // A save that goes through answers for what it CARRIED, and only that.
   //
   // Not for its TAB: `saveGrants` writes the grant set alone and shares the Tools tab with the
@@ -1054,8 +1074,17 @@ function AgentEditor() {
   const heldTarget = heldField
     ? editorTargetFor(heldField, { guardrailsEnabled: guardrails.enabled })
     : null;
-  const bannerTarget =
-    heldMessage && heldTarget && heldTarget.tab !== tab ? heldTarget : null;
+  // Somewhere to send them, from the mark when there is one and from the name the server used when
+  // there is not: a refusal this editor cannot MARK can still be about a value it draws (a tool
+  // precondition is edited as a list, so there is no single box to put the sentence in).
+  const namedTarget =
+    !heldField && refusedSave?.named
+      ? editorTargetFor(refusedSave.named, {
+          guardrailsEnabled: guardrails.enabled,
+        })
+      : null;
+  const jumpTo = heldMessage ? heldTarget : namedTarget;
+  const bannerTarget = jumpTo && jumpTo.tab !== tab ? jumpTo : null;
   // Said only when the server NAMED a value and this editor draws no control for it. Not for a
   // refusal about no input at all (a 403, a conflict), where there is no value to go and change.
   // BRING IT INTO VIEW, because the banner sits above the tabs and the button that produced it does
@@ -1078,12 +1107,15 @@ function AgentEditor() {
     bannerRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
   }, [bannerMessage]);
 
+  // Said only where it can be PROVED. It used to be read off this map having no entry, and absence
+  // proves nothing about the console: the map was missing `settings.modelFallback.model` and
+  // `observability.fullDetailUntil`, both of which have a visible control, so the banner told the
+  // operator the opposite of the truth about them. `hasNoConsoleControl` answers from the closed set
+  // it can derive -- the ten native-tool notes the editor draws no field for.
   const bannerNoControl =
     !heldField &&
     refusedSave?.named != null &&
-    editorTargetFor(refusedSave.named, {
-      guardrailsEnabled: guardrails.enabled,
-    }) === null;
+    hasNoConsoleControl(refusedSave.named);
 
   // The clone dialog is its own form: one input, and the route refuses a name already taken by name.
   // Separate from the editor's holder, because the two are on screen together.
@@ -2343,6 +2375,7 @@ function AgentEditor() {
   // syncSeq bump — only the reverted section returns to baseline, the other
   // tabs keep their own pending state.
   const revertGeneral = () => {
+    discardRefusalFor("general");
     const a = syncedAgentRef.current;
     if (!a) return;
     setName(a.name);
@@ -2352,6 +2385,7 @@ function AgentEditor() {
     setModel(readModelState(a));
   };
   const revertBehavior = () => {
+    discardRefusalFor("behavior");
     const a = syncedAgentRef.current;
     if (!a) return;
     const b = readBehaviorState(a);
@@ -2377,11 +2411,13 @@ function AgentEditor() {
     setAttributeContext(b.attributeContext);
   };
   const revertChannelRedirect = () => {
+    discardRefusalFor("channelRedirect");
     const a = syncedAgentRef.current;
     if (!a) return;
     setChannelRedirect(readChannelRedirectState(a));
   };
   const revertGuardrails = () => {
+    discardRefusalFor("guardrails");
     const a = syncedAgentRef.current;
     if (!a) return;
     setGuardrails(readGuardrailsFormState(a.settings));
@@ -2390,6 +2426,7 @@ function AgentEditor() {
   // non-RAG, Knowledge = RAG), so each discard restores only its slice and
   // keeps the other tab's pending edits.
   const revertTools = () => {
+    discardRefusalFor("tools");
     const synced = mapGrants(syncedGrantsRef.current);
     setGrants((cur) => [
       ...cur.filter((g) => g.source === "RAG"),
@@ -2399,6 +2436,7 @@ function AgentEditor() {
     if (syncedAgentRef.current) syncToolConfig(syncedAgentRef.current);
   };
   const revertKnowledge = () => {
+    discardRefusalFor("knowledge");
     const synced = mapGrants(syncedGrantsRef.current);
     setGrants((cur) => [
       ...synced.filter((g) => g.source === "RAG"),
@@ -2418,6 +2456,9 @@ function AgentEditor() {
       danger: true,
       confirmLabel: t("editor.discardAll", "Discard all"),
       onConfirm: () => {
+        // Every section at once, so every refusal goes with them.
+        refusalRef.current.clear();
+        setRefusedSave(null);
         const a = syncedAgentRef.current;
         if (a) {
           applyAgent(a);

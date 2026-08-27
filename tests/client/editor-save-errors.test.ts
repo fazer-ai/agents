@@ -77,6 +77,35 @@ describe("agent editor save errors", () => {
     expect(grantsBody).toContain('clearRefusalFor("knowledge", {})');
   });
 
+  test("discarding a section takes its refusal with it", () => {
+    // A fieldless refusal cannot expire by value the way a mark does, so without this the banner
+    // outlives the edit entirely — past the discard, past the next successful save of another
+    // section, indefinitely.
+    const start = SRC.indexOf("function discardRefusalFor");
+    expect(start).toBeGreaterThan(-1);
+    const body = SRC.slice(start, SRC.indexOf("\n  }", start));
+    // By the tab that DRAWS the value, not the section that wrote it: reverting Behavior restores the
+    // behavior form, and a mark a Behavior save left on a guardrails path is about a value the
+    // Guardrails tab still holds unsaved.
+    expect(body).toContain("editorTargetFor");
+    expect(body).toContain("target?.tab === section");
+    expect(body).toContain("refusedSaveRef.current?.section === section");
+
+    // Every revert goes through it, and discard-all clears outright.
+    const discarded = [
+      ...SRC.matchAll(/(?<!function )discardRefusalFor\("([^"]+)"\)/g),
+    ].map((m) => m[1] as string);
+    expect(discarded.sort()).toEqual([
+      "behavior",
+      "channelRedirect",
+      "general",
+      "guardrails",
+      "knowledge",
+      "tools",
+    ]);
+    expect(SRC).toContain("refusalRef.current.clear();");
+  });
+
   test("the page keeps no copy of the sentence", () => {
     // The rule three rounds of review arrived at the hard way. A page that stores the sentence beside
     // a holder that is already storing it has two sources of truth for one fact, and they drift in
@@ -119,10 +148,14 @@ describe("agent editor save errors", () => {
 
     // The jump is the part that is conditional, and only on there being somewhere to send anyone.
     const target = SRC.slice(
-      SRC.indexOf("const bannerTarget ="),
+      SRC.indexOf("const jumpTo ="),
       SRC.indexOf(";", SRC.indexOf("const bannerTarget =")),
     );
-    expect(target).toContain("heldTarget.tab !== tab");
+    expect(target).toContain("jumpTo.tab !== tab");
+    // From the mark when there is one and from the name the server used when there is not: a refusal
+    // this editor cannot MARK can still be about a value it draws, and a tool precondition is edited
+    // as a list so there is no single box to put the sentence in.
+    expect(target).toContain("namedTarget");
 
     const banner = SRC.slice(SRC.indexOf("{bannerMessage && ("));
     const body = banner.slice(0, banner.indexOf("\n            )}"));
@@ -136,7 +169,12 @@ describe("agent editor save errors", () => {
       SRC.indexOf("const bannerNoControl ="),
       SRC.indexOf(";", SRC.indexOf("const bannerNoControl =")),
     );
-    expect(noControl).toContain("editorTargetFor");
+    // Said only where it can be PROVED, never read off the map having no entry: absence proves
+    // nothing about the console, and the map WAS missing `settings.modelFallback.model` and
+    // `observability.fullDetailUntil`, both of which have a visible control. The banner told the
+    // operator the opposite of the truth about them.
+    expect(noControl).toContain("hasNoConsoleControl");
+    expect(noControl).not.toContain("editorTargetFor");
     // Never for a refusal about no input at all, where there is no value to go and change.
     expect(noControl).toContain("refusedSave?.named != null");
   });

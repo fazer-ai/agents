@@ -1,3 +1,4 @@
+import { NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
 import { SETTINGS_CREDENTIAL_PATHS } from "@/modules/agents/credential-paths";
 
 // WHERE THE AGENT EDITOR DRAWS A VALUE THE SERVER CAN NAME, as one map.
@@ -15,6 +16,24 @@ import { SETTINGS_CREDENTIAL_PATHS } from "@/modules/agents/credential-paths";
 // why: deriving the location as "the behavior tab, section = block" was right for four entries and
 // wrong for the fifth. Restating it would be a fourth copy of a list that has already been wrong
 // three times.
+
+// The native-tool notes the console draws no control for. `toolGuidance` takes one for all thirteen
+// tools in NATIVE_TOOL_NAMES and the editor renders three, so this set is closed and derivable --
+// which is what makes it safe to TELL the operator a value can only be changed through the API.
+//
+// That claim used to be read off the absence of a target, and absence proves nothing about the
+// console: the map was missing `settings.modelFallback.model` and `observability.fullDetailUntil`,
+// both of which have a visible control, so the banner said the opposite of the truth about them.
+export const UNDRAWN_TOOL_NOTES: readonly string[] = NATIVE_TOOL_NAMES.filter(
+  (n) =>
+    !["set_custom_attribute", "assign_label", "update_kanban_task"].includes(n),
+).map((n) => `toolGuidance.${n}`);
+
+// Whether the console really has no control for a value the server named, said only where it can be
+// proved rather than inferred from this map having no entry.
+export function hasNoConsoleControl(field: string): boolean {
+  return UNDRAWN_TOOL_NOTES.includes(field.replace(/^settings\./, ""));
+}
 
 export type EditorTab =
   | "general"
@@ -75,6 +94,31 @@ const TEXT_TARGETS: ReadonlyArray<{ match: RegExp } & EditorTarget> = [
   { match: /^guardrails\.output\./, tab: "guardrails", sectionId: "gr-output" },
   { match: /^vision\.extractionPrompt$/, tab: "behavior", sectionId: "vision" },
   { match: /^followUp\.steps\[/, tab: "behavior", sectionId: "proactive" },
+  // Not text caps: the other refusals an agent write names by a settings path. They are here for the
+  // same reason the caps are -- so a refusal about one can take the operator to it -- and their
+  // absence used to do worse than nothing, because the banner read "no entry" as "no control in the
+  // console" and said so about a picker that is on screen.
+  {
+    match: /^modelFallback\.model$/,
+    tab: "behavior",
+    sectionId: "modelFallback",
+  },
+  {
+    match: /^observability\.fullDetailUntil$/,
+    tab: "behavior",
+    sectionId: "observability",
+  },
+  // TARGETED AND NOT OWNED, all three of them, which is a distinction this map makes on purpose.
+  // Owning a name means marking a control with the server's sentence, and that needs one box holding
+  // one value: the tool preconditions are edited as a list rather than a control per tool, the
+  // fallback model comes out of a picker whose value the wire does not carry verbatim, and the
+  // observability window is a datetime. Targeting is the weaker and honest claim -- here is where
+  // that value is edited -- and it is all the banner needs to offer a way there.
+  {
+    match: /^toolPreconditions\./,
+    tab: "tools",
+    sectionId: "tools-preconditions",
+  },
 ];
 
 // The values the editor draws a control for OUTSIDE any bag: the two on the General tab plus the

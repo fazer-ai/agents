@@ -492,7 +492,6 @@ export async function tenantSettingsUpdate(
         },
       });
     }
-    const before = await getTenantSettings(ctx, base);
     if (args.embedding !== undefined) {
       await updateEmbeddingSettings(ctx, { credentialRef: embeddingRef }, base);
     }
@@ -509,36 +508,8 @@ export async function tenantSettingsUpdate(
       );
     }
     const after = await getTenantSettings(ctx, base);
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "tenant_settings.update",
-      target,
-      before: truncForAudit({
-        embedding: {
-          credentialRef: before.embedding.credentialRef,
-          model: before.embedding.model,
-        },
-        langfuse: {
-          enabled: before.langfuse.enabled,
-          sendContent: before.langfuse.sendContent,
-          debug: before.langfuse.debug,
-          credentialRef: before.langfuse.credentialRef,
-        },
-      }),
-      after: truncForAudit({
-        embedding: {
-          credentialRef: after.embedding.credentialRef,
-          model: after.embedding.model,
-        },
-        langfuse: {
-          enabled: after.langfuse.enabled,
-          sendContent: after.langfuse.sendContent,
-          debug: after.langfuse.debug,
-          credentialRef: after.langfuse.credentialRef,
-        },
-      }),
-    });
+    // NOTE: each block writer above records its own row, so a call touching both leaves TWO where
+    // this tool used to leave one summarizing both. Same shape the console has always produced.
     // Project stored vault:<id> refs back to NAMES for the response (never a secret value).
     const embName = after.embedding.credentialRef
       ? await vaultNameByRef(ctx, after.embedding.credentialRef, base)
@@ -640,16 +611,17 @@ export async function langfuseConnect(
       { enabled, credentialRef: ref, sendContent: args.send_content },
       base,
     );
+    // NOTE: narrowed to the VAULT write, which is the half `updateLangfuse` cannot record. Two
+    // writes, two rows, not one write recorded twice; this one goes when the vault family moves (#399).
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
       action: "langfuse.connect",
-      target: "tenant_settings:langfuse",
+      target: `vault:${name}`,
       before: null,
       after: truncForAudit({
         credentialName: name,
         baseUrl: args.base_url,
-        enabled: settings.enabled,
       }),
     });
     const lfName = settings.credentialRef

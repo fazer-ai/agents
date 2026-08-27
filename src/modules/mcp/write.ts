@@ -759,17 +759,11 @@ export async function tenantUpdate(
       });
     }
 
+    // The row is `updateTenant`'s to write, in its own transaction and under the tenant it
+    // changed, which is not necessarily this context's.
     const updated = await updateTenant(ctx, tenantId, patch, base);
     const afterProj = { name: updated.name };
     const diff = diffFields(beforeProj, afterProj);
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "tenant.update",
-      target,
-      before: truncForAudit(beforeProj),
-      after: truncForAudit(afterProj),
-    });
     return ok({ dryRun: false, applied: true, target, diff });
   } catch (e) {
     if (e instanceof AppError) return err(e.message);
@@ -879,7 +873,18 @@ export async function brandingSet(
       });
     }
 
-    const after = await updateBrandingColors(update);
+    // `updateBrandingColors` records its own fleet-level row (tenant_id NULL) inside the
+    // asSuperAdmin transaction that writes the identity.
+    const after = await updateBrandingColors(
+      {
+        tenantId: null,
+        userId: principal.userId,
+        role: "SUPER_ADMIN",
+        actorType: "mcp",
+      },
+      update,
+      base,
+    );
     const afterProj = {
       brandName: after.brandName,
       colorMode: after.colorMode,
@@ -890,19 +895,6 @@ export async function brandingSet(
       supportEmail: after.supportEmail,
       hideGithubLink: after.hideGithubLink,
     };
-    // Fleet-level audit (tenant_id NULL); the write tx runs asSuperAdmin.
-    await recordMcpAudit(
-      { tenantId: null, userId: principal.userId, role: "SUPER_ADMIN" },
-      base,
-      {
-        actorId: principal.userId,
-        actorType: "mcp",
-        action: "branding.set",
-        target,
-        before: truncForAudit(beforeProj),
-        after: truncForAudit(afterProj),
-      },
-    );
     return ok({
       dryRun: false,
       applied: true,
@@ -996,28 +988,19 @@ export async function brandingAssetSet(
     }
 
     // A Blob satisfies setBrandingAsset's structural type, so the multipart UI path and this MCP path
-    // share the exact same validation + write.
+    // share the exact same validation + write, and now the same audit row, from inside it.
     const blob = new Blob([bytes], { type: mime });
-    const after = await setBrandingAsset(kind, variant, blob);
-
-    await recordMcpAudit(
-      { tenantId: null, userId: principal.userId, role: "SUPER_ADMIN" },
-      base,
+    const after = await setBrandingAsset(
       {
-        actorId: principal.userId,
+        tenantId: null,
+        userId: principal.userId,
+        role: "SUPER_ADMIN",
         actorType: "mcp",
-        action: "branding_asset.set",
-        target,
-        // Metadata only — never the image bytes.
-        before: truncForAudit({ kind, variant, present: replacingExisting }),
-        after: truncForAudit({
-          kind,
-          variant,
-          present: after[kind][variant],
-          mime,
-          bytes: bytes.byteLength,
-        }),
       },
+      kind,
+      variant,
+      blob,
+      base,
     );
     return ok({
       dryRun: false,

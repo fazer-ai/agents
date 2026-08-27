@@ -1,6 +1,9 @@
 import { Elysia, t } from "elysia";
+import type { UserRole } from "@/../generated/prisma/client";
 import { authPlugin } from "@/api/lib/auth";
 import { doc, errors, jsonResponse } from "@/api/lib/openapi";
+import { ForbiddenError } from "@/lib/errors";
+import type { TenantContext } from "@/lib/tenancy";
 import {
   clearBrandingAsset,
   setBrandingAsset,
@@ -19,6 +22,34 @@ const variantParams = t.Object({
     description: 'Theme variant: accepts "dark" or "light".',
   }),
 });
+
+// The writes need a principal to attribute their audit row to. Resolved per WRITE HANDLER and not by
+// mounting `tenancyPlugin`: that plugin derives globally, so it would run on the two PUBLIC routes
+// here as well, on the identity config the login page loads before any session exists and on the
+// favicon. Measured on both routes, driving the real app: mounting it adds ONE `user.findUnique` per
+// request that carries a session cookie (0 -> 1 on each) and none for an anonymous one, and it turns
+// a transient DB failure into a 503 on the one route that has to answer before auth. These three are
+// SUPER_ADMIN-only
+// and rare, so paying one extra lookup here is the cheaper side by far.
+//
+// `tenantId` is pinned null rather than read: branding is fleet-level, and the audit row must not
+// follow whichever tenant this admin happens to have selected.
+async function actorOf(
+  getAuthUser: () => Promise<{
+    id: bigint;
+    role: UserRole;
+    isApiKey?: boolean;
+  } | null>,
+): Promise<TenantContext> {
+  const user = await getAuthUser();
+  if (!user) throw new ForbiddenError();
+  return {
+    tenantId: null,
+    userId: user.id,
+    role: user.role,
+    actorType: user.isApiKey ? "api_key" : "user",
+  };
+}
 
 export const brandingController = new Elysia({
   prefix: "/v1/branding",
@@ -86,66 +117,76 @@ export const brandingController = new Elysia({
     },
   )
   // SUPER_ADMIN: update colors (mode + brand color and/or per-theme token maps).
-  .patch("/", ({ body }) => updateBrandingColors(body), {
-    requireRole: "SUPER_ADMIN",
-    body: t.Object({
-      brandName: t.Optional(
-        t.Union([t.String({ maxLength: 128 }), t.Null()], {
-          description: "Display brand name, or null to clear it.",
-        }),
+  .patch(
+    "/",
+    async ({ getAuthUser, body }) =>
+      updateBrandingColors(await actorOf(getAuthUser), body),
+    {
+      requireRole: "SUPER_ADMIN",
+      body: t.Object({
+        brandName: t.Optional(
+          t.Union([t.String({ maxLength: 128 }), t.Null()], {
+            description: "Display brand name, or null to clear it.",
+          }),
+        ),
+        colorMode: t.Optional(
+          t.Union([t.Literal("SIMPLE"), t.Literal("ADVANCED")], {
+            description:
+              'Color editing mode: "SIMPLE" (single brand color) or "ADVANCED" (full token maps).',
+          }),
+        ),
+        brandColor: t.Optional(
+          t.Union([t.String({ maxLength: 64 }), t.Null()], {
+            description:
+              "Primary brand color (CSS color string), or null to clear it.",
+          }),
+        ),
+        tokensLight: t.Optional(
+          t.Record(t.String(), t.Unknown(), {
+            description: "Light-theme CSS token overrides keyed by token name.",
+          }),
+        ),
+        tokensDark: t.Optional(
+          t.Record(t.String(), t.Unknown(), {
+            description: "Dark-theme CSS token overrides keyed by token name.",
+          }),
+        ),
+        siteUrl: t.Optional(
+          t.Union([t.String({ maxLength: 512 }), t.Null()], {
+            description:
+              "Sidebar-footer website link (absolute http(s) URL), or null to use the default.",
+          }),
+        ),
+        supportEmail: t.Optional(
+          t.Union([t.String({ maxLength: 254 }), t.Null()], {
+            description:
+              "Support e-mail shown in the sidebar support modal, or null to use the default.",
+          }),
+        ),
+        hideGithubLink: t.Optional(
+          t.Boolean({
+            description:
+              "When true, the GitHub entry is removed from the sidebar footer.",
+          }),
+        ),
+      }),
+      detail: doc(
+        "Update branding colors",
+        "Updates the global branding color mode, brand color, and per-theme token maps. SUPER_ADMIN only.",
       ),
-      colorMode: t.Optional(
-        t.Union([t.Literal("SIMPLE"), t.Literal("ADVANCED")], {
-          description:
-            'Color editing mode: "SIMPLE" (single brand color) or "ADVANCED" (full token maps).',
-        }),
-      ),
-      brandColor: t.Optional(
-        t.Union([t.String({ maxLength: 64 }), t.Null()], {
-          description:
-            "Primary brand color (CSS color string), or null to clear it.",
-        }),
-      ),
-      tokensLight: t.Optional(
-        t.Record(t.String(), t.Unknown(), {
-          description: "Light-theme CSS token overrides keyed by token name.",
-        }),
-      ),
-      tokensDark: t.Optional(
-        t.Record(t.String(), t.Unknown(), {
-          description: "Dark-theme CSS token overrides keyed by token name.",
-        }),
-      ),
-      siteUrl: t.Optional(
-        t.Union([t.String({ maxLength: 512 }), t.Null()], {
-          description:
-            "Sidebar-footer website link (absolute http(s) URL), or null to use the default.",
-        }),
-      ),
-      supportEmail: t.Optional(
-        t.Union([t.String({ maxLength: 254 }), t.Null()], {
-          description:
-            "Support e-mail shown in the sidebar support modal, or null to use the default.",
-        }),
-      ),
-      hideGithubLink: t.Optional(
-        t.Boolean({
-          description:
-            "When true, the GitHub entry is removed from the sidebar footer.",
-        }),
-      ),
-    }),
-    detail: doc(
-      "Update branding colors",
-      "Updates the global branding color mode, brand color, and per-theme token maps. SUPER_ADMIN only.",
-    ),
-    response: errors(400, 401, 403, 422),
-  })
+      response: errors(400, 401, 403, 422),
+    },
+  )
   // SUPER_ADMIN: upload a logo/favicon variant (multipart). The service re-checks type + size.
   .put(
     "/asset/:kind/:variant",
-    ({ params, body }) =>
-      setBrandingAsset(params.kind, params.variant, body.file),
+    async ({ getAuthUser, params, body }) =>
+      setBrandingAsset(
+        await actorOf(getAuthUser),
+        params.kind,
+        params.variant,
+        body.file,
+      ),
     {
       requireRole: "SUPER_ADMIN",
       params: variantParams,
@@ -170,7 +211,12 @@ export const brandingController = new Elysia({
   // SUPER_ADMIN: remove a logo/favicon variant.
   .delete(
     "/asset/:kind/:variant",
-    ({ params }) => clearBrandingAsset(params.kind, params.variant),
+    async ({ getAuthUser, params }) =>
+      clearBrandingAsset(
+        await actorOf(getAuthUser),
+        params.kind,
+        params.variant,
+      ),
     {
       requireRole: "SUPER_ADMIN",
       params: variantParams,

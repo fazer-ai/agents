@@ -484,6 +484,75 @@ describe.skipIf(!dbUp)("contact authorization: reusing a verdict", () => {
     expect(verdict.reason).toBe("timeout");
   });
 
+  test("an allow in flight cannot outlive a refusal that lands first", async () => {
+    // Two checks for one contact, deliberately not coalesced: the unlock flow keys the single-flight
+    // by MESSAGE id, so two messages are two questions and two requests. The slow one is released
+    // only after the fast one has been refused, which is the order the fence exists for and the one
+    // that is otherwise decided by whichever socket answers first.
+    let release: (() => void) | undefined;
+    let entered: (() => void) | undefined;
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    // Resolved from INSIDE the slow request, so the refusal below is started at a point the first
+    // check has provably already reached its endpoint. Ordering by timing instead is how a race test
+    // comes to pass for the wrong reason — measured on this very case, which flipped order under the
+    // full file and held under `-t`.
+    const reached = new Promise<void>((r) => {
+      entered = r;
+    });
+    const calls: string[] = [];
+    const slowAllow = (async () => {
+      calls.push("slow");
+      entered?.();
+      await held;
+      return allowed();
+    }) as unknown as typeof fetch;
+    const fastDeny = (async () => {
+      calls.push("fast");
+      return denied();
+    }) as unknown as typeof fetch;
+
+    const slow = ask({ cfg: cfg(), fetchImpl: slowAllow });
+    await reached;
+    const denial = await ask({ cfg: cfg(), fetchImpl: fastDeny });
+    expect(denial.outcome).toBe("denied");
+    release?.();
+    const late = await slow;
+
+    // The verdict still stands for the message it answered — this is not about withholding a reply.
+    expect(late.outcome).toBe("allowed");
+    // What must not happen is the storage: an allow from a check that started before the refusal
+    // landed is older than it, however late it arrives, and storing it would serve the contact for
+    // the whole TTL after the endpoint said no.
+    expect(await grants()).toHaveLength(0);
+    expect(calls).toEqual(["slow", "fast"]);
+  });
+
+  test("a pending refusal is retried under perMessage too", async () => {
+    const ep = endpoint(allowed, denied, allowed);
+    await ask({ cfg: cfg(), ...ep });
+    const failingDelete = baseWithGrantHook(appDb, (m) =>
+      m === "deleteMany"
+        ? () => {
+            throw new Error("delete is down");
+          }
+        : undefined,
+    );
+    await ask({
+      cfg: cfg({ mode: "perMessage" }),
+      fetchImpl: ep.fetchImpl,
+      base: failingDelete,
+    });
+    expect(unclearedRefusalCount()).toBe(1);
+    // `perMessage` reads no grants at all, so a retry living on the read path would never run for
+    // the mode where the refusal usually happens — and the entry would sit in memory for the life of
+    // the process, for a delete that may well have succeeded on its own.
+    await ask({ cfg: cfg({ mode: "perMessage" }), ...ep });
+    expect(unclearedRefusalCount()).toBe(0);
+    expect(await grants()).toHaveLength(0);
+  });
+
   test("the endpoint changing re-asks", async () => {
     const ep = endpoint(allowed, allowed);
     await ask({ cfg: cfg(), ...ep });

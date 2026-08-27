@@ -22,6 +22,7 @@ import {
   contactAuthPolicyHash,
   dropContactAuthGrant,
   readContactAuthGrant,
+  retryPendingRefusal,
   writeContactAuthGrant,
 } from "./grants";
 import type { ContactAuthConfig } from "./settings";
@@ -158,8 +159,13 @@ export async function authorizeContact(
       // eleven, while `timeoutMs` promises to cover every step that waits. From this line to the
       // answer is one budget, and the grant bookkeeping after the answer is inside it too.
       const ctrl = new AbortController();
+      const askedAt = Date.now();
       const timer = setTimeout(() => ctrl.abort(), cfg.timeoutMs);
       try {
+        // A delete this process still owes, retried under BOTH modes: the refusal that failed to
+        // land usually happened under `perMessage`, which reads no grants, so a retry that lived on
+        // the read path would never run for the mode that needs it.
+        await retryPendingRefusal(base, grantKey, ctrl.signal);
         if (cfg.mode === "once") {
           const stored = await readContactAuthGrant(
             base,
@@ -256,7 +262,9 @@ export async function authorizeContact(
               context: verdict.context,
               ttlSeconds: cfg.grantTtlSeconds,
             },
-            { signal: ctrl.signal },
+            // `askedAt` is what makes this allow refusable: a refusal that landed while this check
+            // was in flight is newer than it, however late either answer arrived.
+            { signal: ctrl.signal, askedAt },
           );
         }
         return verdict;

@@ -386,11 +386,21 @@ way the operator ends up with a grant under whichever policy was in force when t
 wrote, never with an empty table. Both shapes are pinned in
 `tests/modules/contact-auth-grant.test.ts`.
 
+**An allow that was already in flight cannot outlive a refusal.** Two messages from one contact are
+two questions under the unlock flow (the single-flight is keyed by message id), so their checks run
+concurrently and can settle in either order. A verdict still answers the message it was asked about,
+but the STORAGE is ordered: an allow from a check that started before a refusal landed is older than
+that refusal however late it arrives, so it is not stored, and any row it would have replaced is
+dropped. Without that, one out-of-order answer serves the contact for the rest of the TTL.
+
 **A refusal this process could not write down is not forgotten.** The DELETE is the one write here
 that ENDS an authorization, so unlike the read and the write it is not best-effort: a failure is
 remembered per contact, no stored verdict is served for that contact while it stands (the endpoint is
-asked instead, which is the fail-closed answer), and the delete is retried on the next check.
-Restarting the process before that retry lands is the residual, bounded by the grant's own TTL.
+asked instead, which is the fail-closed answer), and the delete is retried on the next check of
+EITHER mode — `perMessage` reads no grants, so a retry that lived on the read path would never run
+for the mode where the refusal usually happens. What this process remembers about refusals is ids and
+timestamps, bounded by entry count like the notice cooldown. Restarting before the retry lands is the
+residual, bounded by the grant's own TTL.
 
 **There is no clear-everything lever, deliberately.** What ends reuse is the TTL elapsing, the
 identity moving, a refusal, and `mode: "perMessage"` — the last of which is immediate and complete

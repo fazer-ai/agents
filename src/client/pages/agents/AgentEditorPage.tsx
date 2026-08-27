@@ -1176,7 +1176,16 @@ function AgentEditor() {
         includeMessageText: contactAuth.includeMessageText,
         denyMessage: contactAuth.denyMessage.trim() || null,
         mode: contactAuth.mode === "once" ? "once" : "perMessage",
-        grantTtlSeconds: Number(contactAuth.grantTtlSeconds) || 86_400,
+        // NOTE: `|| 86_400` would turn a typed (or imported) ZERO into a day, which is the wrong
+        // direction for the one field here that decides how long an authorization counts: the reader
+        // clamps 0 up to the 60-second floor, so passing it through honours "as short as possible"
+        // instead of silently granting the opposite. Same shape as noticeCooldownSeconds above, and
+        // the twelve other `Number(x) || default` fields in this block keep theirs — they share the
+        // spelling, not the risk, since a zeroed debounce window or balloon size is cosmetic.
+        grantTtlSeconds:
+          contactAuth.grantTtlSeconds.trim() === ""
+            ? 86_400
+            : Number(contactAuth.grantTtlSeconds) || 0,
         handoffEnabled: contactAuth.handoffEnabled,
         handoffTeamId: Number(contactAuth.handoffTeamId) || null,
         // The account the team was picked from, saved with it. Never on its own: without a team it

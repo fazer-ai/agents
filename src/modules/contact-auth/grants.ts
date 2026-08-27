@@ -56,22 +56,74 @@ function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
 }
 
-// Contacts whose refusal could not be written down. Memory only, like the notice cooldown in
-// ./state.ts and for the same reason: what it protects is a decision the next read re-derives, and
-// losing it on a restart costs a stale grant that the TTL still bounds, never a wrong refusal.
-const unclearedRefusals = new Set<string>();
+// WHAT THIS PROCESS KNOWS ABOUT REFUSALS, which the table on its own cannot answer. Memory only,
+// like the notice cooldown in ./state.ts and for the same reason: what it protects is a decision the
+// next check re-derives, and losing it on a restart costs a stale grant the TTL still bounds, never
+// a wrong refusal. Two facts per contact, and each closes a hole the other does not:
+//
+//   at       WHEN a refusal last landed. A check that started before it may still be in flight, and
+//            an allow it comes back with is older than that refusal however late it arrives. Without
+//            this, two concurrent asks for one contact (an unlock message and the next one carry
+//            different request keys, so single-flight does not coalesce them) can order themselves
+//            refusal-then-allow and leave a grant standing after the endpoint said no.
+//   pending  the DELETE did not land. While it stands nothing stored is served for that contact, and
+//            the next check of ANY mode retries it — `perMessage` reads no grants, so a retry that
+//            lived on the read path would never run for the mode where the refusal usually happens.
+//
+// Bounded twice like the notice store, and for the same reason: the entries are ids and timestamps,
+// but a flood of failures must not grow memory without end. Insertion-ordered eviction drops the
+// oldest, which is the one whose contact has been quiet longest.
+const MAX_TRACKED_REFUSALS = 10_000;
+const refusals = new Map<string, { at: number; pending: boolean }>();
 
 function refusalKey(key: GrantKey): string {
   return `${key.tenantId}:${key.agentId}:${key.contactId}`;
 }
 
-// NOTE: Test isolation only; production clears an entry by finally landing the delete.
+function noteRefusal(key: GrantKey, landed: boolean, nowMs: number): void {
+  const k = refusalKey(key);
+  refusals.delete(k);
+  refusals.set(k, { at: nowMs, pending: !landed });
+  while (refusals.size > MAX_TRACKED_REFUSALS) {
+    const oldest = refusals.keys().next().value;
+    if (oldest === undefined) break;
+    refusals.delete(oldest);
+  }
+}
+
+// A refusal landed at or after `since`, so an allow from a check that started then is not newer than
+// it. `>=` and not `>`: two events in the same millisecond cannot be ordered by this clock, and the
+// side to take when they cannot is the refusal.
+function refusedSince(key: GrantKey, since: number): boolean {
+  const entry = refusals.get(refusalKey(key));
+  return entry !== undefined && entry.at >= since;
+}
+
+export function hasPendingRefusal(key: GrantKey): boolean {
+  return refusals.get(refusalKey(key))?.pending === true;
+}
+
+// The retry, called by the gate on every check regardless of mode. A no-op unless this process owes
+// a delete for that contact.
+export async function retryPendingRefusal(
+  base: PrismaClient,
+  key: GrantKey,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (!hasPendingRefusal(key)) return;
+  await dropContactAuthGrant(base, key, signal);
+}
+
+// NOTE: Test isolation only; production clears an entry by finally landing the delete, or by the
+// eviction above.
 export function clearContactAuthGrantState(): void {
-  unclearedRefusals.clear();
+  refusals.clear();
 }
 
 export function unclearedRefusalCount(): number {
-  return unclearedRefusals.size;
+  let n = 0;
+  for (const entry of refusals.values()) if (entry.pending) n += 1;
+  return n;
 }
 
 // `underSignal` where there is a deadline, the bare promise where there is not (a direct caller, a
@@ -155,13 +207,10 @@ export async function readContactAuthGrant(
   opts: { signal?: AbortSignal; nowMs?: number } = {},
 ): Promise<{ context: AuthContext | null } | null> {
   const nowMs = opts.nowMs ?? Date.now();
-  // A refusal this process could not write down outranks anything on disk: serve nothing, and take
-  // the retry here, where a caller is already waiting on the database anyway. Ordered before the
-  // read so a failing delete cannot be worked around by a row that still looks valid.
-  if (unclearedRefusals.has(refusalKey(key))) {
-    await dropContactAuthGrant(base, key, opts.signal);
-    return null;
-  }
+  // A refusal this process could not write down outranks anything on disk. The retry belongs to the
+  // caller (`retryPendingRefusal`), which runs under both modes; what belongs here is refusing to
+  // serve a row while a refusal about it is unrecorded.
+  if (hasPendingRefusal(key)) return null;
   try {
     const row = await underSignalMaybe(
       runScopedOn(base, sysCtx(key.tenantId), (db) =>
@@ -205,9 +254,16 @@ export async function writeContactAuthGrant(
     context: AuthContext | null | undefined;
     ttlSeconds: number;
   },
-  opts: { signal?: AbortSignal; nowMs?: number } = {},
+  opts: { signal?: AbortSignal; nowMs?: number; askedAt?: number } = {},
 ): Promise<void> {
   const nowMs = opts.nowMs ?? Date.now();
+  // An allow from a check that started before a refusal LANDED is not newer than that refusal, no
+  // matter which of the two answers arrived last. Storing it would leave the contact served after
+  // the endpoint said no, for the whole TTL. Nothing is written, and the row goes.
+  if (opts.askedAt !== undefined && refusedSince(key, opts.askedAt)) {
+    await dropContactAuthGrant(base, key, opts.signal);
+    return;
+  }
   const context = contextToJson(grant.context);
   const expiresAt = new Date(nowMs + grant.ttlSeconds * 1000);
   const data = {
@@ -257,11 +313,11 @@ export async function dropContactAuthGrant(
       ),
       signal,
     );
-    unclearedRefusals.delete(refusalKey(key));
+    noteRefusal(key, true, Date.now());
   } catch (err) {
     // NOT swallowed, unlike the other two: this is the write that ends an authorization, so what
     // fails here is remembered until it lands. `error` rather than `warn` for the same reason.
-    unclearedRefusals.add(refusalKey(key));
+    noteRefusal(key, false, Date.now());
     logger.error(
       "contact-auth: a refusal could not be written down, so no stored verdict will be served for this contact until it is (agent=%s): %s",
       String(key.agentId),

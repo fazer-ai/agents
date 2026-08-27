@@ -103,6 +103,34 @@ export interface AgentNudge {
   step?: number;
 }
 
+// WHICH SCHEDULED OCCASION A REFUSAL BELONGS TO. The `over` line is one per occasion, and the retry
+// ladder is only half of what "one occasion" has to mean: the conversation alone collapses genuinely
+// independent jobs, so an appointment reminder refused an hour after an inactivity follow-up lost its
+// row and its alert. Derived from the nudge DESCRIPTOR rather than threaded in from the caller,
+// because a parameter three callers must remember to pass is the one the fourth forgets — and each
+// caller already describes its own occasion here: `source` and `kind` tell the three apart, `step`
+// separates the rungs of a follow-up sequence, and `refs` separates two reminders for two different
+// appointments on one conversation.
+//
+// What it deliberately does NOT separate is the first and the final reminder of the SAME appointment
+// inside one window: they differ only in their instructions, and the second alert would say what the
+// first already said.
+export function nudgeOccasionKey(
+  conversationId: number,
+  nudge: AgentNudge,
+): string {
+  const refs = Object.entries(nudge.refs ?? {})
+    .filter(([, v]) => v != null)
+    // Explicit and code-unit ordered, never `localeCompare`: this key has to be the same string on
+    // every machine that builds it.
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([k, v]) => `${k}=${v}`)
+    .join(",");
+  return `nudge:${conversationId}:${nudge.source}:${nudge.kind ?? ""}:${
+    nudge.step ?? ""
+  }:${refs}`;
+}
+
 export type RunAgentNudgeOutcome =
   | "messaged"
   | "templated"
@@ -579,10 +607,10 @@ export async function runAgentNudge(
   });
   // ONE LINE PER OCCASION, not per attempt. A refused nudge is repairable, so the caller reschedules
   // it every fifteen minutes for two hours (`nudge-retry.ts`) — and the ceiling it walks into is one
-  // unchanging fact, not eight refusals. Keyed by the conversation because that is what an occasion
-  // belongs to here, and windowed to the ladder it has to outlast.
+  // unchanging fact, not eight refusals. Windowed to the ladder it has to outlast, and keyed by the
+  // occasion itself rather than by the conversation, which two independent jobs share.
   announceSpendCeiling(flow, ceiling, "inbox", tenantId, {
-    key: `nudge:${conversationId}`,
+    key: nudgeOccasionKey(conversationId, params.nudge),
     windowMs: NUDGE_RETRY_BACKOFF_MS * NUDGE_RETRY_LIMIT,
   });
   if (ceiling.state === "over") {

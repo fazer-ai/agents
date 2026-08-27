@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import type { RunAgentNudgeOutcome } from "@/graph/nudge";
+import {
+  type AgentNudge,
+  nudgeOccasionKey,
+  type RunAgentNudgeOutcome,
+} from "@/graph/nudge";
 import {
   isRepairableNudgeRefusal,
   NUDGE_RETRY_BACKOFF_MS,
@@ -95,4 +99,61 @@ describe("nextNudgeRetry", () => {
       expect(nextNudgeRetry({ nudgeRetries: bad }, now).attempt).toBe(1);
     });
   }
+});
+
+// WHICH SCHEDULED OCCASION A REFUSAL BELONGS TO, proved without a database. The `over` line the
+// ceiling writes is one per occasion, and the retry ladder is only half of what that has to mean:
+// the same conversation carries independent jobs, and collapsing them loses the second one's row and
+// its alert entirely.
+describe("the occasion a nudge refusal belongs to", () => {
+  const key = (nudge: AgentNudge) => nudgeOccasionKey(77, nudge);
+
+  test("the same job asked twice is one occasion", () => {
+    const job = { source: "followup", kind: "inactivity", step: 2 };
+    expect(key(job)).toBe(key({ ...job }));
+  });
+
+  test.each([
+    [
+      "a different source",
+      { source: "appointment_reminder", kind: "inactivity", step: 2 },
+    ],
+    ["a different kind", { source: "followup", kind: "resolved", step: 2 }],
+    ["a different step", { source: "followup", kind: "inactivity", step: 3 }],
+  ])("%s is a different occasion", (_name, other) => {
+    expect(key({ source: "followup", kind: "inactivity", step: 2 })).not.toBe(
+      key(other),
+    );
+  });
+
+  // Two reminders for two appointments on one conversation, which is an ordinary shape for a clinic.
+  test("two appointments are two occasions", () => {
+    const reminder = (eventId: string) => ({
+      source: "appointment_reminder",
+      kind: "reminder",
+      refs: { event_id: eventId, calendar_id: "cal-1" },
+    });
+    expect(key(reminder("evt-1"))).not.toBe(key(reminder("evt-2")));
+  });
+
+  // The key is a string built on whatever machine runs the job, so its parts cannot depend on
+  // insertion order or on a locale's collation.
+  test("the refs order does not change the key", () => {
+    const a = {
+      source: "appointment_reminder",
+      refs: { event_id: "e", calendar_id: "c" },
+    };
+    const b = {
+      source: "appointment_reminder",
+      refs: { calendar_id: "c", event_id: "e" },
+    };
+    expect(key(a)).toBe(key(b));
+  });
+
+  // And the conversation is still part of it: two tenants' worth of identical jobs must not share a
+  // window.
+  test("the conversation is part of the identity", () => {
+    const job = { source: "followup", kind: "inactivity", step: 1 };
+    expect(nudgeOccasionKey(77, job)).not.toBe(nudgeOccasionKey(78, job));
+  });
 });

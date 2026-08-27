@@ -20274,6 +20274,7 @@
                     "description": "What the customer is told when a turn is refused. null says nothing.",
                     "anyOf": [
                       {
+                        "maxLength": 2000,
                         "type": "string"
                       },
                       {
@@ -20372,6 +20373,7 @@
                     "description": "What the customer is told when a turn is refused. null says nothing.",
                     "anyOf": [
                       {
+                        "maxLength": 2000,
                         "type": "string"
                       },
                       {
@@ -20470,6 +20472,7 @@
                     "description": "What the customer is told when a turn is refused. null says nothing.",
                     "anyOf": [
                       {
+                        "maxLength": 2000,
                         "type": "string"
                       },
                       {

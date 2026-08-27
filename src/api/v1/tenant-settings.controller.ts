@@ -8,6 +8,7 @@ import {
 } from "@/lib/errors";
 import { instanceIdentity } from "@/lib/instance";
 import type { TenantContext } from "@/lib/tenancy";
+import { TEMPLATE_MESSAGE_MAX } from "@/modules/agents/text-caps";
 import { testLangfuseConnection } from "@/modules/analytics/langfuse-test";
 import {
   clearCompanyLogo,
@@ -219,7 +220,7 @@ export const tenantSettingsController = new Elysia({
           }),
         ),
         overCeilingMessage: t.Optional(
-          t.Union([t.String(), t.Null()], {
+          t.Union([t.String({ maxLength: TEMPLATE_MESSAGE_MAX }), t.Null()], {
             description:
               "What the customer is told when a turn is refused. null says nothing.",
           }),

@@ -351,6 +351,31 @@ describe.skipIf(!dbUp)("the spend ceiling (webhook e2e)", () => {
     // before it while silencing the whole tenant.
     expect(await nudge(9411)).toBe("over-ceiling");
     expect(await ceilingRows(9411)).toHaveLength(1);
+
+    // ...and so is a DIFFERENT JOB on the SAME conversation. An appointment reminder scheduled an
+    // hour after an inactivity follow-up is an independent occasion that happens to share a
+    // conversation, and a key that carried only the conversation would swallow it.
+    expect(
+      await runAgentNudge({
+        tenantId,
+        threadId: `${tenantId}:${instanceId}:9410`,
+        nudge: {
+          source: "appointment_reminder",
+          kind: "reminder",
+          refs: { event_id: "evt-1", calendar_id: "cal-1" },
+        },
+        base: appDb,
+        deps: {
+          makeClient: s.makeClient as never,
+          makeModel: () => {
+            throw new Error("the model must not be invoked over the ceiling");
+          },
+          checkpointer: new MemorySaver(),
+          persistUsage: async () => {},
+        },
+      }),
+    ).toBe("over-ceiling");
+    expect(await ceilingRows(9410)).toHaveLength(2);
   });
 
   // ONE REFUSED MESSAGE, ONE LINE, and the count of refusals is the number an operator reads off the

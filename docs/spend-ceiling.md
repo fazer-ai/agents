@@ -207,8 +207,12 @@ own, and neither is traffic:
 - **The same occasion, asked eight times.** `over-ceiling` is a repairable nudge refusal, so the
   caller reschedules it every fifteen minutes for two hours (`nudge-retry.ts`) against a wall that is
   temporary by construction: one follow-up that could not go out paged the alert channels eight
-  times, and fifty pending jobs paged them four hundred. `runAgentNudge` keys by the conversation and
-  sizes the window to that ladder. **Guardrails deliberately do
+  times, and fifty pending jobs paged them four hundred. `runAgentNudge` sizes the window to that
+  ladder and keys it by the **occasion** rather than by the conversation, which independent jobs
+  share: `nudgeOccasionKey` reads the nudge descriptor the caller already writes (`source`, `kind`,
+  `step`, `refs`), so an appointment reminder refused an hour after an inactivity follow-up keeps its
+  own row. Derived from the descriptor rather than threaded in, because a parameter three callers
+  must remember is the one the fourth forgets. **Guardrails deliberately do
 not**: on the output direction the reply is already written and paid for, so refusing there posts it
 unscreened or drops a reply the customer is waiting for, and a ceiling that switched moderation off
 would let a budget decide a safety question. Memory compaction is out for a sharper reason: skipping
@@ -266,6 +270,11 @@ the ceiling screen shows the zero.
 | `handoffEnabled` | `true` | open a refused conversation for humans |
 | `noticeCooldownSeconds` | `300` | cooldown on the copy and the note, never on the verdict |
 | `warnAtPercent` | `80` | fraction of a ceiling that raises the warning; `0` = none |
+
+The route's own body schema carries every maximum the service enforces, `overCeilingMessage`
+included. They are two schemas over one shape, and where they disagreed the longer message passed the
+boundary and threw a raw `ZodError` inside the service, which the global handler answers as a 500
+rather than the documented 422.
 
 REST: `GET /v1/tenant-settings` returns the block, `PUT /v1/tenant-settings/spend-ceiling` writes it,
 and `GET /v1/tenant-settings/spend-ceiling/usage` returns what the month has cost per source against

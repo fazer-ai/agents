@@ -797,6 +797,28 @@ describe("a schema assembled in an order no fresh database uses", () => {
     ).toEqual([]);
   });
 
+  // The tie-break and the inversion test have to be the SAME order, and it has to be Prisma's:
+  // code points, because it sorts the directory names as bytes. `localeCompare` is a different
+  // order and disagrees with `<` on exactly the characters a migration name carries — measured on
+  // `20260101000000-b` vs `20260101000000_a`, `a-b` vs `a_b`, `A_x` vs `a_x` and `m-1` vs `m_1`.
+  // Two orders means a tie sorted one way is reported as an inversion by the other, so a correct
+  // database is refused, recreated, and refused again.
+  test("a tie whose names carry punctuation is still not out of order", () => {
+    for (const [x, y] of [
+      ["20260101000000-b", "20260101000000_a"],
+      ["a-b", "a_b"],
+      ["A_x", "a_x"],
+      ["m-1", "m_1"],
+    ]) {
+      expect(
+        appliedOutOfOrder([at(x as string, 7), at(y as string, 7)]),
+      ).toEqual([]);
+      expect(
+        appliedOutOfOrder([at(y as string, 7), at(x as string, 7)]),
+      ).toEqual([]);
+    }
+  });
+
   test("a row that never finished is not part of the order at all", () => {
     expect(
       appliedOutOfOrder([

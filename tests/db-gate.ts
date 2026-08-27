@@ -266,21 +266,30 @@ export function changedMigrations(
 // exactly as a fresh build would have run them. A freshly provisioned database of this repo was
 // measured at 56 migrations and 0 disagreements, which is what makes this a signal rather than a
 // second way to refuse every run.
+// ONE comparator for both the sort and the comparison, and it is code-point order because that is
+// what Prisma applies in — it sorts the directory names as bytes. Using `localeCompare` for the
+// tie-break and `<` for the inversion was two different orders: measured, they disagree on
+// `20260101000000-b` vs `20260101000000_a`, on `a-b` vs `a_b`, on `A_x` vs `a_x` and on `m-1` vs
+// `m_1`, so a tie sorted one way is reported as an inversion by the other — refusing a correct
+// database, recreating it, and refusing it again. The same trap the ordering of exposed names hit
+// in #412, one layer down.
+function byName(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 export function appliedOutOfOrder(rows: MigrationRow[]): string[] {
   const finished = rows
     .filter((r) => r.finished_at !== null && r.rolled_back_at === null)
     .sort((a, b) => {
       const at = (a.finished_at as Date).getTime();
       const bt = (b.finished_at as Date).getTime();
-      return at === bt
-        ? a.migration_name.localeCompare(b.migration_name)
-        : at - bt;
+      return at === bt ? byName(a.migration_name, b.migration_name) : at - bt;
     });
   const out: string[] = [];
   for (let i = 1; i < finished.length; i++) {
     const prev = finished[i - 1] as MigrationRow;
     const cur = finished[i] as MigrationRow;
-    if (cur.migration_name < prev.migration_name) {
+    if (byName(cur.migration_name, prev.migration_name) < 0) {
       out.push(`${cur.migration_name} (ran after ${prev.migration_name})`);
     }
   }

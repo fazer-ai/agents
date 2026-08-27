@@ -43,10 +43,17 @@ describe("agent editor save errors", () => {
     // And the VALUE, not only the path. `sent` is read from the patch, so a Behavior save carries
     // `guardrails.customPolicy` from the last-synced bag — the stored value, not the edit the server
     // refused. Presence alone would let that save answer a refusal it never re-sent.
-    expect(body).toContain("refusal.at(held, sent[held])");
+    expect(body).toContain("now.at(held, sent[held])");
+    // Through a ref, never the closure: a save handler closes over the render that launched it, and
+    // this page's saves are long enough for another tab's save to fail while one is in flight. An
+    // older success answering from its own render would clear a refusal that arrived after it — and
+    // `at` is memoized on the hold, so even the comparison would be the stale one.
+    expect(body).toContain("refusalRef.current");
+    expect(body).toContain("refusedSaveRef.current");
+    expect(body).not.toContain("refusal.field");
     // A sentence the holder could place NOWHERE has no value to compare, so it is answered by the
     // section that produced it.
-    expect(body).toContain("refusedSave?.section === section");
+    expect(body).toContain("refusedSaveRef.current?.section === section");
     // Never by tab or by target: both read the FIELD rather than the request.
     expect(body).not.toContain("editorTargetFor");
 
@@ -165,6 +172,37 @@ describe("agent editor save errors", () => {
     // render would take the page out from under whoever is fixing the value.
     expect(effect).toContain("announcedRef.current === bannerMessage");
     expect(SRC).toContain("ref={bannerRef}");
+  });
+
+  test("every mark is read from the one place that holds its value", () => {
+    // `at` compares what it is handed against the value the mark was placed on, and that value came
+    // from `currentRef`. A reading that re-derives it from the state variable states the same fact a
+    // second time, and round 7 proved they drift: `currentRef` learned to normalize the way the wire
+    // does and the readings kept passing raw, so a refused follow-up note with surrounding
+    // whitespace matched nothing and the step got no inline error.
+    // Balanced, because one reading nests a call of its own (`followUpStepField(i)`) and a lazy
+    // regex would stop at the first `)` and read half of it.
+    const readings: string[] = [];
+    for (const m of SRC.matchAll(/refusal\.at\(/g)) {
+      let i = (m.index as number) + m[0].length;
+      let depth = 1;
+      const from = i;
+      while (i < SRC.length && depth > 0) {
+        const c = SRC[i];
+        if (c === "(") depth++;
+        else if (c === ")") depth--;
+        i++;
+      }
+      readings.push(
+        SRC.slice(from, i - 1)
+          .replace(/\s+/g, " ")
+          .trim(),
+      );
+    }
+    expect(readings.length).toBeGreaterThan(20);
+    for (const call of readings) {
+      expect(call, call).toContain("currentRef.current[");
+    }
   });
 
   test("what the boxes hold is normalized the way the wire is", () => {

@@ -621,6 +621,8 @@ function AgentEditor() {
     section: string;
     named: string | null;
   } | null>(null);
+  const refusedSaveRef = useRef(refusedSave);
+  refusedSaveRef.current = refusedSave;
   const [savingGrants, setSavingGrants] = useState(false);
   const [savingChannelRedirect, setSavingChannelRedirect] = useState(false);
   const [savingGuardrails, setSavingGuardrails] = useState(false);
@@ -893,6 +895,14 @@ function AgentEditor() {
   };
   const refusalFields = editorRefusalFields(refusalView);
   const refusal = useFieldRefusal(refusalFields.drawn, refusalFields.owned);
+  // The holder as it is NOW, for the success and failure paths of a request that started earlier.
+  //
+  // Same reason the hook keeps its own refs: a save handler closes over the render that launched it,
+  // and this page's saves are long enough for another tab's save to fail while one is still in
+  // flight. Answering from the closure would let an older success clear a refusal that arrived after
+  // it — `refusal.at` is memoized on the hold, so even the comparison would be the old one.
+  const refusalRef = useRef(refusal);
+  refusalRef.current = refusal;
   // What every placeable input holds right now, keyed by the SERVER'S name for it, readable from
   // inside a save that started before them: this page's saves are long and the operator keeps typing
   // during them. Keyed by the wire name rather than by the state variable because that is the name a
@@ -991,7 +1001,8 @@ function AgentEditor() {
     section: string,
     sent: Record<string, unknown>,
   ): void {
-    const held = refusal.field;
+    const now = refusalRef.current;
+    const held = now.field;
     // The VALUE, not just the path. Since sent is read from the patch, it reports every path the bag
     // carries -- and a Behavior save spreads the last-synced `settings`, so it carries
     // `guardrails.customPolicy` holding the value that was STORED, not the edit the server refused.
@@ -1003,12 +1014,12 @@ function AgentEditor() {
     // The case this must keep clearing is the one the mark cannot see on its own -- the operator
     // resubmits the same value after the server changes its mind (a duplicate name freed, a cap
     // raised), and only a success can tell that apart from the refusal still standing.
-    if (held && Object.hasOwn(sent, held) && refusal.at(held, sent[held])) {
-      refusal.clear();
+    if (held && Object.hasOwn(sent, held) && now.at(held, sent[held])) {
+      now.clear();
     }
     // A sentence the holder could place nowhere is about a SAVE rather than about a value, so the
     // section is what answers it: there is no field to compare a snapshot against.
-    if (!refusal.field && refusedSave?.section === section) refusal.clear();
+    if (!held && refusedSaveRef.current?.section === section) now.clear();
     setRefusedSave((prev) => (prev?.section === section ? null : prev));
   }
 
@@ -3215,11 +3226,14 @@ function AgentEditor() {
 
             {tab === "general" && (
               <GeneralTab
-                nameError={refusal.at("name", name.trim())}
-                promptError={refusal.at("systemPrompt", systemPrompt)}
+                nameError={refusal.at("name", currentRef.current["name"])}
+                promptError={refusal.at(
+                  "systemPrompt",
+                  currentRef.current["systemPrompt"],
+                )}
                 modelCredentialError={refusal.at(
                   "modelConfig.credentialRef",
-                  model.credentialRef,
+                  currentRef.current["modelConfig.credentialRef"],
                 )}
                 availability={promptAvailability}
                 name={name}
@@ -3301,23 +3315,23 @@ function AgentEditor() {
                 refusals={{
                   handoffInstructions: refusal.at(
                     "handoff.instructions",
-                    handoff.instructions,
+                    currentRef.current["handoff.instructions"],
                   ),
                   kanbanInstructions: refusal.at(
                     "kanban.instructions",
-                    kanbanInstructions,
+                    currentRef.current["kanban.instructions"],
                   ),
                   attributeInstructions: refusal.at(
                     "toolGuidance.set_custom_attribute",
-                    customAttributeInstructions,
+                    currentRef.current["toolGuidance.set_custom_attribute"],
                   ),
                   labelInstructions: refusal.at(
                     "toolGuidance.assign_label",
-                    labelInstructions,
+                    currentRef.current["toolGuidance.assign_label"],
                   ),
                   updateKanbanInstructions: refusal.at(
                     "toolGuidance.update_kanban_task",
-                    updateKanbanTaskInstructions,
+                    currentRef.current["toolGuidance.update_kanban_task"],
                   ),
                 }}
                 dirty={dirty.tools}
@@ -3405,46 +3419,51 @@ function AgentEditor() {
                 refusals={{
                   sttCredential: refusal.at(
                     "settings.stt.credentialRef",
-                    stt.credentialRef,
+                    currentRef.current["settings.stt.credentialRef"],
                   ),
                   ttsCredential: refusal.at(
                     "settings.tts.credentialRef",
-                    tts.credentialRef,
+                    currentRef.current["settings.tts.credentialRef"],
                   ),
                   ttsNormalizeCredential: refusal.at(
                     "settings.tts.normalizeCredentialRef",
-                    tts.normalizeCredentialRef,
+                    currentRef.current["settings.tts.normalizeCredentialRef"],
                   ),
                   visionCredential: refusal.at(
                     "settings.vision.credentialRef",
-                    vision.credentialRef,
+                    currentRef.current["settings.vision.credentialRef"],
                   ),
                   visionExtractionPrompt: refusal.at(
                     "vision.extractionPrompt",
-                    vision.extractionPrompt,
+                    currentRef.current["vision.extractionPrompt"],
                   ),
                   contactAuthCredential: refusal.at(
                     "settings.contactAuth.credentialRef",
-                    contactAuth.credentialRef,
+                    currentRef.current["settings.contactAuth.credentialRef"],
                   ),
                   contactAuthDenyMessage: refusal.at(
                     "contactAuth.denyMessage",
-                    contactAuth.denyMessage.trim(),
+                    currentRef.current["contactAuth.denyMessage"],
                   ),
                   memoryCredential: refusal.at(
                     "settings.memory.compaction.credentialRef",
-                    memory.credentialRef,
+                    currentRef.current[
+                      "settings.memory.compaction.credentialRef"
+                    ],
                   ),
                   modelFallbackCredential: refusal.at(
                     "settings.modelFallback.credentialRef",
-                    modelFallback.credentialRef,
+                    currentRef.current["settings.modelFallback.credentialRef"],
                   ),
                   awayMessage: refusal.at(
                     "availability.awayMessage",
-                    awayMessage.trim(),
+                    currentRef.current["availability.awayMessage"],
                   ),
-                  followUpSteps: followUp.steps.map((step, i) =>
-                    refusal.at(followUpStepField(i), step.instructions),
+                  followUpSteps: followUp.steps.map((_step, i) =>
+                    refusal.at(
+                      followUpStepField(i),
+                      currentRef.current[followUpStepField(i)],
+                    ),
                   ),
                 }}
                 dirty={dirty.behavior}
@@ -3471,23 +3490,23 @@ function AgentEditor() {
                 refusals={{
                   credential: refusal.at(
                     "settings.guardrails.credentialRef",
-                    guardrails.credentialRef,
+                    currentRef.current["settings.guardrails.credentialRef"],
                   ),
                   customPolicy: refusal.at(
                     "guardrails.customPolicy",
-                    guardrails.customPolicy,
+                    currentRef.current["guardrails.customPolicy"],
                   ),
                   inputTemplateMessage: refusal.at(
                     "guardrails.input.templateMessage",
-                    guardrails.input.templateMessage,
+                    currentRef.current["guardrails.input.templateMessage"],
                   ),
                   outputTemplateMessage: refusal.at(
                     "guardrails.output.templateMessage",
-                    guardrails.output.templateMessage,
+                    currentRef.current["guardrails.output.templateMessage"],
                   ),
                   outputGenerationPrompt: refusal.at(
                     "guardrails.output.generationPrompt",
-                    guardrails.output.generationPrompt,
+                    currentRef.current["guardrails.output.generationPrompt"],
                   ),
                 }}
                 dirty={dirty.guardrails}

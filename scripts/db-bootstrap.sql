@@ -143,8 +143,15 @@ BEGIN
       'making every tenant readable on an ordinary request. Repair with: '
       'GRANT fazerai_fleet TO %I WITH INHERIT FALSE, SET TRUE;', v_role, v_role;
   END IF;
-  IF NOT pg_has_role(v_role, 'fazerai_fleet', 'MEMBER') THEN
-    RAISE EXCEPTION 'runtime role % is not a member of fazerai_fleet: no cross-tenant read would '
+  -- The capability, not the membership: since PostgreSQL 16 a grant carries its own SET option and
+  -- `MEMBER` ignores it, so `WITH INHERIT FALSE, SET FALSE` reads as healthy while every SET ROLE is
+  -- denied (measured). `SET` is 16-only as a privilege type; on older servers the option does not
+  -- exist and `MEMBER` is the right question.
+  IF NOT pg_has_role(
+       v_role, 'fazerai_fleet',
+       CASE WHEN current_setting('server_version_num')::int >= 160000
+            THEN 'SET' ELSE 'MEMBER' END) THEN
+    RAISE EXCEPTION 'runtime role % cannot SET ROLE to fazerai_fleet: no cross-tenant read would '
       'return a row', v_role;
   END IF;
   -- The administrative role too: a DATA migration over a FORCE-RLS table opens with

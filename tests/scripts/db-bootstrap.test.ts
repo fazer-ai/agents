@@ -311,7 +311,7 @@ describe("planRoleProvisioning", () => {
       expect(
         reviewFleetMembership(
           "app_role",
-          { member: true, usage: false },
+          { can_set_role: true, usage: false },
           repair,
         ),
       ).toBeNull();
@@ -324,7 +324,7 @@ describe("planRoleProvisioning", () => {
       const boom = () =>
         reviewFleetMembership(
           "app_role",
-          { member: true, usage: true },
+          { can_set_role: true, usage: true },
           repair,
         );
       expect(boom).toThrow(/INHERITS/);
@@ -336,12 +336,16 @@ describe("planRoleProvisioning", () => {
       expect(boom).not.toThrow(/REVOKE/);
     });
 
-    test("a missing membership only WARNS, and says what stops working", () => {
+    // NOTE: the state below is what a grant with `SET FALSE` produces, and it is NOT "not a member".
+    // `pg_has_role(…, 'MEMBER')` answers true there while `SET ROLE` is denied (measured on 17.10),
+    // so asking the membership instead of the capability is how a broken install reads as healthy.
+    test("no SET capability only WARNS, and says what stops working", () => {
       const warning = reviewFleetMembership(
         "app_role",
-        { member: false, usage: false },
+        { can_set_role: false, usage: false },
         repair,
       );
+      expect(warning).toContain("cannot SET ROLE");
       expect(warning).toContain("permission denied to set role");
       expect(warning).toContain("tenant-scoped traffic is unaffected");
       expect(warning).toContain(repair);
@@ -350,11 +354,11 @@ describe("planRoleProvisioning", () => {
     // NOTE: inheriting without membership cannot happen on a healthy catalog, and the order of the
     // two checks is what decides which answer an impossible state gets. Inheritance is the one that
     // loses data, so it is asked first — and it is the one that refuses.
-    test("inheritance is reported ahead of missing membership", () => {
+    test("inheritance is reported ahead of a missing SET capability", () => {
       expect(() =>
         reviewFleetMembership(
           "app_role",
-          { member: false, usage: true },
+          { can_set_role: false, usage: true },
           repair,
         ),
       ).toThrow(/INHERITS/);
@@ -416,6 +420,10 @@ describe("planRoleProvisioning", () => {
       "WITH INHERIT",
       "inherit_option",
       "set_option",
+      // The privilege TYPE, added in 16 alongside the grant option it reports. Older servers reject
+      // it outright — `unrecognized privilege type` — which on a boot path is a crash loop, not a
+      // wrong answer, and is why it belongs in this list rather than in a comment.
+      "'SET')",
     ];
     const offenders = source
       .split("\n")
@@ -590,8 +598,12 @@ describe.skipIf(!dbUp)(
     // and for the same reason it is survived: nothing tenant-scoped depends on it.
     test("a fleet role this administrator cannot grant is reported, not crashed on", async () => {
       const db = su as Client;
+      // CASCADE, and it is not incidental: the previous boot granted the role onward to the runtime
+      // role using exactly this ADMIN OPTION, and Postgres refuses to revoke an option other grants
+      // depend on (`2BP01`, "Use CASCADE to revoke them too"). Dropping the dependent grant with it
+      // is what this test wants anyway.
       await db.query(
-        `REVOKE ADMIN OPTION FOR ${FLEET_ROLE} FROM ${ADMIN_ROLE}`,
+        `REVOKE ADMIN OPTION FOR ${FLEET_ROLE} FROM ${ADMIN_ROLE} CASCADE`,
       );
       await db.query(`REVOKE ${FLEET_ROLE} FROM ${APP_ROLE}`);
 
@@ -603,7 +615,7 @@ describe.skipIf(!dbUp)(
       expect(out).toContain(`could not grant "${FLEET_ROLE}"`);
       // The warning has to carry BOTH halves of the instruction: the statement, and who can run it.
       // The operator this message reaches is precisely the one the statement refuses.
-      expect(out).toContain("is not a member");
+      expect(out).toContain("cannot SET ROLE");
       expect(out).toContain("WITH INHERIT FALSE, SET TRUE;");
       expect(out).toContain("WITH ADMIN OPTION;");
 
@@ -621,19 +633,75 @@ describe.skipIf(!dbUp)(
       const repaired = await runBootstrap();
       expect(repaired.exitCode).toBe(0);
       expect(`${repaired.stdout}${repaired.stderr}`).not.toContain(
-        "is not a member",
+        "cannot SET ROLE",
       );
 
-      // Member, and NOT inheriting: the grant landed with the option that keeps the fleet policy
-      // off the runtime role.
+      // Able to SET ROLE, and NOT inheriting: the grant landed with both options that matter.
       const membership = (
         await db.query(
-          `SELECT pg_has_role($1, $2, 'MEMBER') AS member,
-                  pg_has_role($1, $2, 'USAGE')  AS usage`,
+          `SELECT pg_has_role($1, $2, 'SET')   AS can_set_role,
+                  pg_has_role($1, $2, 'USAGE') AS usage`,
           [APP_ROLE, FLEET_ROLE],
         )
       ).rows[0];
-      expect(membership).toEqual({ member: true, usage: false });
+      expect(membership).toEqual({ can_set_role: true, usage: false });
+    });
+
+    // NOTE: the same shared cluster, one notch subtler, and it is the state that separates the two
+    // questions the catalog can answer. A grant made `WITH SET FALSE` still makes the runtime role a
+    // MEMBER, so a check written against membership reports a healthy install while every
+    // `asSuperAdmin` call is denied. Bootstrap's re-grant normally repairs it — which is why the
+    // ADMIN OPTION has to be gone for the detection to be reachable at all.
+    test("a membership that cannot SET ROLE is reported, not read as healthy", async () => {
+      const db = su as Client;
+      // In this order, and CASCADE: the administrator's ADMIN OPTION is what the previous boot's
+      // onward grant depends on, so it cannot be revoked while that grant stands. Taking both and
+      // re-making the membership as the superuser is what leaves the runtime role holding a grant
+      // this administrator cannot repair — which is the whole point of the arrangement.
+      await db.query(
+        `REVOKE ADMIN OPTION FOR ${FLEET_ROLE} FROM ${ADMIN_ROLE} CASCADE`,
+      );
+      await db.query(
+        `GRANT ${FLEET_ROLE} TO ${APP_ROLE} WITH INHERIT FALSE, SET FALSE`,
+      );
+
+      // The catalog says member; the mechanism says no.
+      const catalog = (
+        await db.query(
+          `SELECT pg_has_role($1, $2, 'MEMBER') AS member,
+                  pg_has_role($1, $2, 'SET')    AS can_set_role`,
+          [APP_ROLE, FLEET_ROLE],
+        )
+      ).rows[0];
+      expect(catalog).toEqual({ member: true, can_set_role: false });
+      const denied = await onProbe(urlFor(APP_ROLE, APP_PW, PROBE_DB), (c) =>
+        c.query(`SET ROLE ${FLEET_ROLE}`).then(
+          () => null,
+          (e: Error) => e.message,
+        ),
+      );
+      expect(denied).toContain("permission denied to set role");
+
+      const reported = await runBootstrap();
+      expect(reported.exitCode).toBe(0);
+      expect(`${reported.stdout}${reported.stderr}`).toContain(
+        "cannot SET ROLE",
+      );
+
+      // And the repair is the same one grant, run by someone who can.
+      await db.query(`GRANT ${FLEET_ROLE} TO ${ADMIN_ROLE} WITH ADMIN OPTION`);
+      const repaired = await runBootstrap();
+      expect(`${repaired.stdout}${repaired.stderr}`).not.toContain(
+        "cannot SET ROLE",
+      );
+      const after = (
+        await db.query(
+          `SELECT pg_has_role($1, $2, 'SET') AS can_set_role,
+                  pg_has_role($1, $2, 'USAGE') AS usage`,
+          [APP_ROLE, FLEET_ROLE],
+        )
+      ).rows[0];
+      expect(after).toEqual({ can_set_role: true, usage: false });
     });
 
     test("the provisioned role can connect with the password from DATABASE_URL", async () => {

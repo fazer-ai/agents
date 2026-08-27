@@ -184,16 +184,27 @@ describe.skipIf(!dbUp)("RLS policy shape", () => {
 
   test("the fleet role is reachable by SET ROLE and NOT by inheritance", async () => {
     const who = (await appDb.$queryRaw`
-      SELECT pg_has_role(session_user, ${FLEET_ROLE}, 'MEMBER') AS member,
+      SELECT pg_has_role(session_user, ${FLEET_ROLE}, 'SET')    AS can_set_role,
+             pg_has_role(session_user, ${FLEET_ROLE}, 'MEMBER') AS member,
              pg_has_role(session_user, ${FLEET_ROLE}, 'USAGE')  AS usage`) as Array<{
+      can_set_role: boolean;
       member: boolean;
       usage: boolean;
     }>;
-    // MEMBER is what SET ROLE needs. USAGE is what makes the fleet policy apply PASSIVELY to the
-    // app role — measured on this schema: with `usage` true the app role reads every tenant's rows
-    // with no error and no plan difference, which is the whole isolation model gone silently.
+    // SET, not MEMBER, is what `asSuperAdmin` needs — a grant made `WITH SET FALSE` answers MEMBER
+    // true and denies `SET ROLE` (measured on 17.10). USAGE is the opposite failure: with it true
+    // the fleet policy applies PASSIVELY to the app role, which reads every tenant's rows with no
+    // error and no plan difference, i.e. the whole isolation model gone silently.
+    expect(who[0]?.can_set_role).toBe(true);
     expect(who[0]?.member).toBe(true);
     expect(who[0]?.usage).toBe(false);
+
+    // And the mechanism itself, not just the catalog's opinion of it.
+    const asFleet = await appDb.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT set_config('role', ${FLEET_ROLE}, true)`;
+      return tx.$queryRaw`SELECT current_user AS u`;
+    });
+    expect((asFleet as Array<{ u: string }>)[0]?.u).toBe(FLEET_ROLE);
   });
 
   test("the fleet role holds no privilege of its own", async () => {
@@ -288,6 +299,53 @@ describe.skipIf(!dbUp)("RLS policy shape", () => {
         .filter((p) => p.qual.includes("is_super_admin"))
         .map((p) => p.table_name),
     ).toEqual([]);
+  });
+
+  // The claim that decides POLICY over BYPASSRLS, which is the design this replaced rather than the
+  // one it fixes — so it had no number behind it until here. A table that gets RLS in some future
+  // migration and does not get its fleet policy is invisible to the fleet path under this design,
+  // and fully visible under the other one.
+  test("a table under RLS with no fleet policy fails CLOSED for the fleet path", async () => {
+    const probe = `rls382_forgotten_${process.pid}`;
+    const bypassRole = `rls382_bypass_${process.pid}`;
+    await suDb.$executeRawUnsafe(`
+      CREATE TABLE ${probe} (id bigserial PRIMARY KEY, tenant_id bigint NOT NULL);
+      INSERT INTO ${probe} (tenant_id) SELECT (g % 3) + 1 FROM generate_series(1, 30) g;
+      ALTER TABLE ${probe} ENABLE ROW LEVEL SECURITY;
+      ALTER TABLE ${probe} FORCE ROW LEVEL SECURITY;
+      CREATE POLICY tenant_isolation ON ${probe}
+        USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::bigint);
+      GRANT SELECT ON ${probe} TO ${FLEET_ROLE};`);
+    try {
+      const seen = await appDb.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT set_config('role', ${FLEET_ROLE}, true)`;
+        return tx.$queryRawUnsafe(`SELECT count(*)::int AS n FROM ${probe}`);
+      });
+      expect((seen as Array<{ n: number }>)[0]?.n).toBe(0);
+
+      // The counterfactual, measured rather than argued: the same table, reached by a BYPASSRLS role
+      // — the design this one was chosen over — hands back every row.
+      //
+      // The grantee is read from the APP connection, not written as `session_user`: inside the su
+      // client that resolves to the migration role, and the grant would land on the wrong account.
+      const runtimeRole = (
+        (await appDb.$queryRaw`SELECT session_user AS u`) as Array<{
+          u: string;
+        }>
+      )[0]?.u as string;
+      await suDb.$executeRawUnsafe(`
+        CREATE ROLE ${bypassRole} NOLOGIN NOSUPERUSER BYPASSRLS;
+        GRANT SELECT ON ${probe} TO ${bypassRole};
+        GRANT ${bypassRole} TO "${runtimeRole}" WITH INHERIT FALSE, SET TRUE;`);
+      const viaBypass = await appDb.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT set_config('role', ${bypassRole}, true)`;
+        return tx.$queryRawUnsafe(`SELECT count(*)::int AS n FROM ${probe}`);
+      });
+      expect((viaBypass as Array<{ n: number }>)[0]?.n).toBe(30);
+    } finally {
+      await suDb.$executeRawUnsafe(`DROP TABLE IF EXISTS ${probe}`);
+      await suDb.$executeRawUnsafe(`DROP ROLE IF EXISTS ${bypassRole}`);
+    }
   });
 
   test("every table with RLS enabled also FORCES it, so the owner is fenced too", async () => {

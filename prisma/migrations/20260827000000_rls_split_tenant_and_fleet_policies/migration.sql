@@ -113,6 +113,21 @@ CREATE POLICY fleet_super_admin ON "audit_logs" TO fazerai_fleet USING (true) WI
 
 -- 3. The migration's own positive control: one of each policy per table under RLS, or nothing here
 -- ran the way it reads. A loop over an empty catalog completes successfully and silently.
+--
+-- Raising here is safe to do, and what happens next was measured rather than assumed, because a
+-- neighbouring migration (`20260825140100_delivery_conversation_ref`) states the opposite in its
+-- header: that `prisma migrate deploy` does not wrap a migration in a transaction. For THIS file it
+-- does. Applied through the real command to a scratch database carrying a deliberate drift (a table
+-- with RLS whose policy has another name), the exception left `fleet_super_admin` at ZERO and all 41
+-- `tenant_isolation` policies still holding the old `OR` — nothing above was committed. So there is
+-- no half-split schema to clean up and no `IF EXISTS` needed to make a retry possible.
+--
+-- What DOES survive the failure is Prisma's own record of it, and that is the part an operator has
+-- to know: the next `migrate deploy` answers `migrate found failed migrations in the target
+-- database` and applies NOTHING, including migrations unrelated to this one. Recovery is to fix the
+-- drift, then `prisma migrate resolve --rolled-back 20260827000000_rls_split_tenant_and_fleet_policies`,
+-- then deploy again. That cost is deliberate: the alternative to raising is a schema split for some
+-- tables and not others, which nothing downstream would report.
 DO $$
 DECLARE
   n_rls    int;

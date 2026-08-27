@@ -149,7 +149,7 @@ export function fleetMembershipRepair(
 //                  no plan difference, nothing in a log: measured on this schema as 400 rows across
 //                  2 tenants where the fence expects 200 across 1. Silent isolation loss, so this
 //                  REFUSES — serving is the harm.
-//   MEMBER false -> `asSuperAdmin` cannot switch role, so every cross-tenant call fails at the
+//   SET false   -> `asSuperAdmin` cannot switch role, so every cross-tenant call fails at the
 //                  point of use with `permission denied to set role`. Loud, contained, and no
 //                  tenant-scoped traffic is affected — so this WARNS. Refusing here would take down
 //                  the working nine-tenths of an install to report the broken tenth.
@@ -172,7 +172,7 @@ export function fleetMembershipRepair(
 // Returns a warning to log, or null when the membership is what it should be.
 export function reviewFleetMembership(
   appRole: string,
-  state: { member: boolean; usage: boolean },
+  state: { can_set_role: boolean; usage: boolean },
   repair: string,
 ): string | null {
   if (state.usage) {
@@ -182,9 +182,9 @@ export function reviewFleetMembership(
         `request, with no error to see. Repair with: ${repair}`,
     );
   }
-  if (!state.member) {
+  if (!state.can_set_role) {
     return (
-      `runtime role "${appRole}" is not a member of "${FLEET_ROLE}", so every cross-tenant call ` +
+      `runtime role "${appRole}" cannot SET ROLE to "${FLEET_ROLE}", so every cross-tenant call ` +
       "will fail with `permission denied to set role` (tenant-scoped traffic is unaffected). " +
       `Repair with: ${repair}`
     );
@@ -326,16 +326,29 @@ async function provisionFleetRole(
     }
   }
 
+  // `MEMBER` is not the question, and answering it is how a broken install reads as healthy: since
+  // PostgreSQL 16 a membership carries a SET option of its own, and `MEMBER` ignores it. Measured on
+  // 17.10 with `WITH INHERIT FALSE, SET FALSE` — MEMBER true, USAGE false, and `SET ROLE` answering
+  // `permission denied to set role`. That is the exact state the caught grant above leaves behind on
+  // a shared cluster where an older grant already existed, so it is not hypothetical.
+  //
+  // `SET` is 16-only as a privilege type; on older servers the option does not exist either, every
+  // membership allows SET ROLE, and `MEMBER` IS the right question there.
+  let capabilityQuery = `SELECT pg_has_role($1, $2, 'MEMBER') AS can_set_role,
+              pg_has_role($1, $2, 'USAGE')  AS usage`;
+  if (serverVersionNum >= 160000) {
+    capabilityQuery = `SELECT pg_has_role($1, $2, 'SET')   AS can_set_role,
+              pg_has_role($1, $2, 'USAGE') AS usage`;
+  }
   const membership = (
-    await client.query<{ member: boolean; usage: boolean }>(
-      `SELECT pg_has_role($1, $2, 'MEMBER') AS member,
-              pg_has_role($1, $2, 'USAGE')  AS usage`,
+    await client.query<{ can_set_role: boolean; usage: boolean }>(
+      capabilityQuery,
       [role, FLEET_ROLE],
     )
   ).rows[0];
   const warning = reviewFleetMembership(
     role,
-    membership ?? { member: false, usage: false },
+    membership ?? { can_set_role: false, usage: false },
     repair,
   );
   if (warning) console.warn(`db-bootstrap: ${warning}`);

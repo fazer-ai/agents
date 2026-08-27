@@ -7,6 +7,7 @@ import {
   assertRuntimeRoleIsNotSuperuser,
   FLEET_INHERITED_REASON,
   FleetPolicyMismatchError,
+  FleetRoleUnreachableError,
   RuntimeIsolationError,
   SuperuserRuntimeError,
 } from "@/lib/db-guard";
@@ -62,6 +63,7 @@ describe("every refusal this guard makes is fatal at boot", () => {
     // Positive control: a scan that matched nothing would pass whatever the answer is.
     expect(errorClasses.map(([k]) => k).sort()).toEqual([
       "FleetPolicyMismatchError",
+      "FleetRoleUnreachableError",
       "SuperuserRuntimeError",
     ]);
     for (const [, cls] of errorClasses) {
@@ -152,6 +154,35 @@ describe.skipIf(!dbUp)("assertRuntimeRoleIsNotSuperuser", () => {
   // changes, so the check above sees nothing: the role stays NOSUPERUSER and NOBYPASSRLS through
   // both arms below, and only `pg_has_role(..., 'USAGE')` moves.
   describe("membership in the fleet role", () => {
+    // NOTE: refused BEFORE the ALLOW_SUPERUSER_RUNTIME branch, and `allow: true` is passed to prove
+    // it. That flag says "I accept that RLS may be a no-op on this connection" — a statement about
+    // isolation. Not being able to enter the fleet role is a different thing: the process would
+    // start and fail every authenticated request, because that is how an API key is verified.
+    test("a runtime that cannot enter the fleet role is refused, flag or no flag", async () => {
+      const fleetRole = (
+        (await suDb.$queryRawUnsafe(
+          `SELECT ${FLEET_ROLE_FN} AS role`,
+        )) as Array<{ role: string }>
+      )[0]?.role as string;
+      await withRoleCatalogLock(async (db) => {
+        await db.$executeRawUnsafe(`REVOKE "${fleetRole}" FROM ${SAFE_ROLE}`);
+      });
+      const err = await assertRuntimeRoleIsNotSuperuser(tmp as PrismaClient, {
+        allow: true,
+      }).then(
+        () => null,
+        (e: unknown) => e as Error,
+      );
+      expect(err).toBeInstanceOf(FleetRoleUnreachableError);
+      expect(err?.message).toContain("API key");
+      expect(err?.message).toContain("WITH INHERIT FALSE, SET TRUE;");
+      await withRoleCatalogLock(async (db) => {
+        await db.$executeRawUnsafe(
+          `GRANT "${fleetRole}" TO ${SAFE_ROLE} WITH INHERIT FALSE, SET TRUE`,
+        );
+      });
+    });
+
     test("SET ROLE is fine; INHERITING it is refused, and the message says which GRANT repairs it", async () => {
       // Resolved from the database: the name carries the database (see `@/lib/tenancy/fleet-role`),
       // so writing it here would be a second spelling of the thing under test.

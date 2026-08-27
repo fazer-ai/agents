@@ -30,7 +30,23 @@ import { FLEET_ROLE_FN } from "@/lib/tenancy/fleet-role";
 export abstract class RuntimeIsolationError extends Error {}
 
 export const FLEET_INHERITED_REASON = "inherits the fleet role";
-export const FLEET_UNREACHABLE_REASON = "cannot SET ROLE to the fleet role";
+// Not a "reason" on the privileged-role list, and the difference is what ALLOW_SUPERUSER_RUNTIME
+// means. That flag says "I accept that RLS may be a no-op on this connection" — a local-dev
+// statement about ISOLATION. Being unable to enter the fleet role is not that: `asSuperAdminOn` is
+// how an API key is verified (the tenant is unknown until the key row is read), how a Chatwoot route
+// is resolved, how the scheduler claims work and how the first admin is created, so the process
+// would start and fail every authenticated request. No flag should wave that through.
+export class FleetRoleUnreachableError extends RuntimeIsolationError {
+  constructor(role: string, fleetRole: string, repair: string) {
+    super(
+      `runtime role "${role}" cannot SET ROLE to "${fleetRole}". Every cross-tenant call fails ` +
+        "with `permission denied to set role`, and that is not only fleet administration: it is " +
+        "how an API key is verified, how a Chatwoot route is resolved, how the scheduler claims " +
+        `work, and how the first admin is created. Repair with: ${repair}`,
+    );
+    this.name = "FleetRoleUnreachableError";
+  }
+}
 
 // The fleet role's name carries the database it belongs to, so a database RESTORED under a new name
 // resolves a name its own dumped policies do not mention. Nothing errors: `SET ROLE` succeeds (the
@@ -194,6 +210,20 @@ export async function assertRuntimeRoleIsNotSuperuser(
     );
   }
 
+  // Also before the override, and for the same reason. A superuser can SET ROLE to anything, so this
+  // never fires on the connection ALLOW_SUPERUSER_RUNTIME exists for; what it catches is an ordinary
+  // role that was never granted the membership, on an install that happens to carry the flag.
+  if (fleet.fleet_role && !fleet.can_set_role) {
+    const version = row.server_version_num;
+    throw new FleetRoleUnreachableError(
+      row.rolname,
+      fleet.fleet_role,
+      version >= 160000
+        ? `GRANT "${fleet.fleet_role}" TO "${row.rolname}" WITH INHERIT FALSE, SET TRUE;`
+        : `ALTER ROLE "${row.rolname}" NOINHERIT; GRANT "${fleet.fleet_role}" TO "${row.rolname}";`,
+    );
+  }
+
   const reasons: string[] = [];
   if (row.rolsuper) reasons.push("SUPERUSER");
   if (row.rolbypassrls) reasons.push("BYPASSRLS");
@@ -204,13 +234,7 @@ export async function assertRuntimeRoleIsNotSuperuser(
   if (fleet.inherits_fleet && !row.rolsuper && !row.rolbypassrls) {
     reasons.push(FLEET_INHERITED_REASON);
   }
-  // The opposite failure, and it belongs here rather than in a warning: `asSuperAdminOn` is how an
-  // API key is verified (the tenant is unknown until the key row is read), how a Chatwoot route is
-  // resolved, how the scheduler claims work, and how the first admin is created. Without the
-  // capability the process starts and then fails every authenticated request.
-  if (fleet.fleet_role && !fleet.can_set_role) {
-    reasons.push(FLEET_UNREACHABLE_REASON);
-  }
+
   if (reasons.length === 0) return; // safe
 
   if (allow) {

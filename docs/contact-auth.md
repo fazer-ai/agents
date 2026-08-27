@@ -445,9 +445,12 @@ That retry is inside the gate's budget, because unlike the bookkeeping that foll
 BEFORE the answer. The budget bounds what the CALLER waits for and nothing else: a delete abandoned
 on the deadline keeps its place in that contact's queue until the statement settles, so a straggler
 cannot delete the grant the next message stores. What this process remembers is ids and timestamps,
-bounded by entry count like the notice cooldown — except for the debts themselves, which eviction
-walks past: dropping one silently is dropping the only thing that stops a refused contact being
-served from the row its refusal failed to remove. Restarting before the retry lands is the residual,
+bounded by entry count like the notice cooldown — except for two kinds that eviction walks past. A
+DEBT, because dropping one silently is dropping the only thing that stops a refused contact being
+served from the row its refusal failed to remove; and a RECENT refusal, because a check cannot
+outlive its own budget, so a marker younger than the largest `timeoutMs` may still be one an
+unfinished allow has to lose to. What is left unbounded is a flood of ten thousand refusals inside
+ten seconds, which drains by itself as those markers age past the window. Restarting before the retry lands is the residual,
 bounded by the grant's own TTL.
 
 **There is no clear-everything lever, deliberately.** What ends reuse is the TTL elapsing, the

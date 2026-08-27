@@ -4,7 +4,10 @@ import logger from "@/api/lib/logger";
 import { withKeyedQueue } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { type AuthContext, readAuthContext, underSignal } from "./check";
-import type { ContactAuthConfig } from "./settings";
+import {
+  CONTACT_AUTH_TIMEOUT_MAX_MS,
+  type ContactAuthConfig,
+} from "./settings";
 
 // STORING A POSITIVE VERDICT, AND EVERY WAY BACK OUT OF IT (issue #189).
 //
@@ -142,19 +145,34 @@ function remember(
   };
   known.delete(k);
   known.set(k, next);
-  evictOldestConfirmed();
+  // The wall clock, never the patch: a retry carries the ORIGINAL refusal instant, and measuring the
+  // in-flight window from that would age every other entry by however long the retry took.
+  evictOldestConfirmed(Date.now());
 }
 
-// The cap protects against a flood of ORDINARY entries, and an unconfirmed one is not ordinary: it
-// is a delete this process still owes, and dropping it silently is dropping the only thing that
-// stops a refused contact being served from the row the refusal failed to remove. So eviction walks
-// past those. What is left unbounded is the debt itself, which is bounded by the database being
-// down — and when it comes back, each contact's next check clears its own.
-function evictOldestConfirmed(): void {
+// The cap protects against a flood of ORDINARY entries, and two kinds here are not ordinary:
+//
+//   - an UNCONFIRMED entry is a delete this process still owes, and dropping it silently drops the
+//     only thing that stops a refused contact being served from the row its refusal failed to
+//     remove;
+//   - a RECENT refusal may still have an older check in flight against it. A check cannot outlive
+//     its own budget, and that budget is clamped at CONTACT_AUTH_TIMEOUT_MAX_MS, so a refusal older
+//     than that window can no longer be the one an unfinished allow has to lose to. Younger than it,
+//     evicting the marker lets that allow pass `refusedSince` and store a grant for the full TTL.
+//
+// So eviction walks past both. What is left unbounded is a flood of ten thousand refusals inside ten
+// seconds, which drains by itself as those entries age past the window.
+function evictOldestConfirmed(nowMs: number): void {
   while (known.size > maxTrackedContacts) {
     let evicted = false;
     for (const [k, entry] of known) {
       if (entry.unconfirmed) continue;
+      if (
+        entry.refusedAt !== undefined &&
+        entry.refusedAt > nowMs - CONTACT_AUTH_TIMEOUT_MAX_MS
+      ) {
+        continue;
+      }
       known.delete(k);
       evicted = true;
       break;

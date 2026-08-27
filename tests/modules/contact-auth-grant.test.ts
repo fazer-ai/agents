@@ -870,6 +870,31 @@ describe.skipIf(!dbUp)("contact authorization: reusing a verdict", () => {
     expect(await grants()).toHaveLength(0);
   });
 
+  test("eviction spares a refusal an older check can still lose to", async () => {
+    const key = { tenantId, agentId, contactId };
+    // A refusal recorded now, with a check for the same contact still in flight against it — the
+    // shape of every unlock burst. A check cannot outlive its own budget, so a marker younger than
+    // the largest budget is one that an unfinished allow may still have to lose to.
+    await dropContactAuthGrant(appDb, key, { refusedAt: Date.now() });
+    setMaxTrackedContactsForTest(2);
+    for (const contact of spareContacts) {
+      await dropContactAuthGrant(
+        appDb,
+        { tenantId, agentId, contactId: contact },
+        { refusedAt: Date.now() - 60_000 },
+      );
+    }
+    // The in-flight allow finally lands. Evicted, its marker is gone and this writes a grant for the
+    // full TTL over a refusal that already happened.
+    await writeContactAuthGrant(
+      appDb,
+      key,
+      { identityHash: "x", policyHash: "y", context: null, ttlSeconds: 3600 },
+      { askedAt: Date.now() - 1000 },
+    );
+    expect(await grants()).toHaveLength(0);
+  });
+
   test("an older refusal finishing late does not overwrite a newer one", async () => {
     const key = { tenantId, agentId, contactId };
     const t1 = Date.now() - 3000;

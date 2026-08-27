@@ -320,7 +320,7 @@ const contactAuth = z.looseObject({
     .number()
     .optional()
     .describe(
-      "how long a stored verdict counts for under mode=once; 60-2592000, clamped. Changing it drops every stored verdict",
+      "how long a stored verdict counts for under mode=once; 60-2592000, clamped. Part of the policy a verdict is stored under, so a stored verdict stops counting while a different value is in force",
     ),
   handoffTeamId: chatwootId().describe("Chatwoot team id"),
   handoffTeamInstanceId: chatwootId().describe(

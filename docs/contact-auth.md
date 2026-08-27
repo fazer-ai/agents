@@ -82,7 +82,7 @@ read, so a malformed bag can never break the webhook.
 | `handoffTeamId`         | `null`  | Chatwoot team assigned after the open (bot-token `assignments`). `null` = inbox routing. Flat beside `handoffEnabled` for the mergeBehaviorSettings one-level-merge reason the tts block documents. |
 | `handoffTeamInstanceId` | `null`  | Our ChatwootInstance id the team above was picked from, recorded with it: a team id belongs to one account, and the team is assigned only in that account. `null` = a value stored before this field existed (falls back to the multi-account check). |
 | `mode`                  | `"perMessage"` | `perMessage` re-checks every message. `once` stores the first positive verdict per contact and reuses it until it expires. Strict, like `enabled`: anything else reads as `perMessage`, so a malformed write can only ever make the gate ask MORE often. |
-| `grantTtlSeconds`       | `86400` | How long a stored verdict counts for under `once`. Clamped 60-2592000 (one minute to thirty days). It is part of the POLICY a grant is written under, so changing it drops every stored verdict — which is also the operator's lever for clearing them. |
+| `grantTtlSeconds`       | `86400` | How long a stored verdict counts for under `once`. Clamped 60-2592000 (one minute to thirty days). It is part of the POLICY a grant is written under, so a stored verdict stops counting while a different value is in force — a match rule, not a way to clear them (see [Reusing a verdict](#reusing-a-verdict-mode-once)). |
 
 ## Request / response contract
 
@@ -373,8 +373,25 @@ A grant stops holding on its own in four ways, and none of them needs a new endp
 | --- | --- |
 | `grantTtlSeconds` elapses | The operator's declared staleness budget ran out. |
 | The mirrored **identity** moves (phone, email or operator `identifier`) | The endpoint answered about whoever those named, and the mirror rewrites them, clears included. |
-| The **policy** changes (`url`, `credentialRef`, `includeMessageText`, `grantTtlSeconds`) | Those decide who answered and what was asked. Changing one is the operator's lever for dropping every stored verdict at once. |
+| The **policy** changes (`url`, `credentialRef`, `includeMessageText`, `grantTtlSeconds`) | Those decide who answered and what was asked, so a grant counts only while the policy it was given under is the one in force. A MATCH rule, not a revocation — see below. |
 | A fresh check **refuses** | See above. This one holds under EVERY mode: only `once` grants, and grants outlive a switch back to `perMessage`, so a refusal arriving while the reuse is off still has to reach them. |
+
+**The policy half is not a clear, and it is worth being exact about that** because it reads like one.
+The fingerprint is a pure function of the policy: change a field and the grants stop matching, put it
+back and they match again. So "nudge the TTL to drop the stored verdicts" does not work, and it fails
+in two different ways depending on the traffic — a contact who writes nothing while the nudged value
+stands keeps a grant that the restore makes valid again, and a contact who does write gets re-asked
+and a NEW grant written under the nudged policy, which the restore then invalidates in turn. Either
+way the operator ends up with a grant under whichever policy was in force when the contact last
+wrote, never with an empty table. Both shapes are pinned in
+`tests/modules/contact-auth-grant.test.ts`.
+
+**There is no clear-everything lever, deliberately.** What ends reuse is the TTL elapsing, the
+identity moving, a refusal, and `mode: "perMessage"` — the last of which is immediate and complete
+while it is off, and is the lever an operator reaches for when something is wrong. A stored-state
+purge would be a new operator surface (a button, a settings field, a monotonic epoch to compare
+against), and issue #189 scoped the way out as the TTL plus invalidation on identity change;
+inventing the rest along the way would be deciding it by accident.
 
 Switching the mode back to `perMessage` takes effect on the next message: nothing reads a grant under
 the default. The rows themselves are KEPT, because the mode decides who reads a grant and not who

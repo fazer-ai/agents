@@ -2470,7 +2470,7 @@ export function BehaviorTab({
                     )}
                     description={t(
                       "editor.contactAuthGrantTtlHint",
-                      "60-2,592,000 (30 days). A refusal is never stored, and a stored answer stops counting when the contact's phone, email or identifier changes. Changing this field, the URL, the credential or the message-text switch drops every stored answer, which is how you clear them.",
+                      "60-2,592,000 (30 days). A refusal is never stored, and a stored answer stops counting when the contact's phone, email or identifier changes. Changing this field, the URL or the credential only suspends the stored answers while the new value stands: it is not a way to clear them. To stop reusing altogether, switch back to asking on every message.",
                     )}
                   >
                     <Input

@@ -836,7 +836,7 @@
     "contactAuthDenyMessagePlaceholder": "This channel serves registered customers only.",
     "contactAuthEnabled": "Only answer contacts the external check authorizes",
     "contactAuthGrantTtl": "Reuse the answer for (s)",
-    "contactAuthGrantTtlHint": "60-2,592,000 (30 days). A refusal is never stored, and a stored answer stops counting when the contact's phone, email or identifier changes. Changing this field, the URL, the credential or the message-text switch drops every stored answer, which is how you clear them.",
+    "contactAuthGrantTtlHint": "60-2,592,000 (30 days). A refusal is never stored, and a stored answer stops counting when the contact's phone, email or identifier changes. Changing this field, the URL or the credential only suspends the stored answers while the new value stands: it is not a way to clear them. To stop reusing altogether, switch back to asking on every message.",
     "contactAuthHandoff": "Open refused conversations for humans",
     "contactAuthHint": "Before answering, ask an external system whether this contact may be served, by the phone number Chatwoot holds for them. While the check denies or cannot answer, the agent stays silent to the customer and the operator gets a private note. It does not run in the playground.",
     "contactAuthIncludeText": "Send the customer's message text",

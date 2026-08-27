@@ -25,10 +25,15 @@ import type { ContactAuthConfig } from "./settings";
 //             rewrites those, clears included, and a contact whose number changed is not necessarily
 //             the person the verdict was about.
 //   POLICY    the endpoint, the credential, the unlock opt-in and the TTL: who answered, what was
-//             asked, and for how long the answer counts. Changing any of them invalidates every
-//             stored grant at once, which is also the operator's lever for dropping them — there is
-//             deliberately no new authenticated route for that (it would be a public surface with an
-//             auth story of its own, for something the editor can already express).
+//             asked, and for how long the answer counts.
+//
+// The policy half is a MATCH rule and not a revocation, and the difference is worth being precise
+// about because it is easy to sell as one. A grant counts while the policy it was given under is the
+// policy in force; change a field and it stops counting, restore that field inside the TTL and it
+// counts again, because it is once more the answer to the question being asked. Nothing here is
+// monotonic, so "nudge the TTL to clear the grants" is NOT a lever — it clears them for exactly as
+// long as the nudge stands. What actually ends reuse for good is the TTL elapsing, the identity
+// moving, a refusal, or `mode: "perMessage"`, under which no grant is read at all.
 //
 // Both directions here are best-effort by construction: a grant is an optimization on top of a
 // verdict that already stands, so a database that refuses the read costs an extra call to the
@@ -58,6 +63,10 @@ export function contactAuthIdentityHash(identity: GrantIdentity): string {
 // The fields that decide WHO answered and WHAT was asked. `enabled` is not one of them: with the
 // gate off nothing reads a grant at all. `denyMessage`, the handoff and the notice cooldown are not
 // either — they are what happens AFTER a refusal, and a grant is only ever written for an allow.
+//
+// `mode` is not one of them either, and that one is a decision rather than an omission: it decides
+// who READS a grant, not who answered it, so grants survive a switch to `perMessage` (which is what
+// makes the unconditional drop-on-refusal at the call site necessary).
 export function contactAuthPolicyHash(cfg: ContactAuthConfig): string {
   return sha256([
     cfg.url,

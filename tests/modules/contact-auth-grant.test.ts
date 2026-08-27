@@ -8,6 +8,7 @@ import {
 } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
+import { contactAuthPolicyHash } from "@/modules/contact-auth/grants";
 import { authorizeContact } from "@/modules/contact-auth/service";
 import {
   CONTACT_AUTH_DEFAULTS,
@@ -30,7 +31,9 @@ import { seedChatwootInstance } from "../utils/chatwoot";
 //
 //   TTL       the grant expires, and the policy's current TTL is part of what it was granted under.
 //   IDENTITY  the mirror's phone/email/identifier is what the endpoint answered ABOUT.
-//   POLICY    url, credential and the unlock opt-in decide who answered and what was asked.
+//   POLICY    url, credential, the unlock opt-in and the TTL decide who answered and what was asked.
+//             A MATCH rule, not a revocation: nudging a field and putting it back clears nothing,
+//             which is asserted below rather than left to be discovered.
 //   DENIAL    a fresh refusal drops whatever was stored, so a re-ask can only ever un-grant. Under
 //             EVERY mode, which is not symmetry for its own sake: grants outlive a switch to
 //             `perMessage`, so a refusal arriving while the switch is off has to reach them.
@@ -435,12 +438,50 @@ describe.skipIf(!dbUp)("contact authorization: reusing a verdict", () => {
     expect(ep.calls).toHaveLength(2);
   });
 
-  test("the TTL changing re-asks, which is the operator's lever", async () => {
+  test("the TTL changing re-asks", async () => {
     const ep = endpoint(allowed, allowed);
     await ask({ cfg: cfg({ grantTtlSeconds: 3600 }), ...ep });
     const second = await ask({ cfg: cfg({ grantTtlSeconds: 1800 }), ...ep });
     expect(second.reused).toBeFalsy();
     expect(ep.calls).toHaveLength(2);
+  });
+
+  // A POLICY CHANGE IS A MATCH RULE, NOT A CLEAR. Stated as a fact, because the tempting reading of
+  // the four re-ask cases above is "so nudging a field is how I drop the stored verdicts", and it is
+  // not. The fingerprint is a pure function of the policy: change a field and the grants stop
+  // matching, put it back and they match again.
+  test("a fingerprint restored is a fingerprint that matches again", () => {
+    const before = contactAuthPolicyHash(cfg({ grantTtlSeconds: 3600 }));
+    const nudged = contactAuthPolicyHash(cfg({ grantTtlSeconds: 1800 }));
+    const restored = contactAuthPolicyHash(cfg({ grantTtlSeconds: 3600 }));
+    expect(nudged).not.toBe(before);
+    expect(restored).toBe(before);
+  });
+
+  test("nudging a field and putting it back clears nothing", async () => {
+    const ep = endpoint(allowed, allowed);
+    await ask({ cfg: cfg({ grantTtlSeconds: 3600 }), ...ep });
+    // The round trip as an operator would perform it: two saves, and no message in between. Nothing
+    // read a grant while the nudged value stood, so nothing happened to any of them, and the very
+    // next message is served from the verdict the nudge was supposed to have dropped.
+    const after = await ask({ cfg: cfg({ grantTtlSeconds: 3600 }), ...ep });
+    expect(after.reused).toBe(true);
+    expect(ep.calls).toHaveLength(1);
+  });
+
+  test("a message DURING the nudge moves the grant, it does not drop it", async () => {
+    const ep = endpoint(allowed, allowed, allowed);
+    await ask({ cfg: cfg({ grantTtlSeconds: 3600 }), ...ep });
+    // A contact who writes while the nudged value stands is re-asked, and that ask REPLACES the row
+    // with one written under the nudged policy — so restoring the original value invalidates it in
+    // turn. Either way the operator does not get a clear: they get a grant under whichever policy
+    // was in force when the contact last wrote.
+    const during = await ask({ cfg: cfg({ grantTtlSeconds: 1800 }), ...ep });
+    expect(during.reused).toBeFalsy();
+    expect(await grants()).toHaveLength(1);
+    const restored = await ask({ cfg: cfg({ grantTtlSeconds: 3600 }), ...ep });
+    expect(restored.reused).toBeFalsy();
+    expect(ep.calls).toHaveLength(3);
   });
 
   test("an expired grant re-asks", async () => {

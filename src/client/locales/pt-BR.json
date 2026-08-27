@@ -839,7 +839,7 @@
     "contactAuthDenyMessagePlaceholder": "Este canal atende apenas clientes cadastrados.",
     "contactAuthEnabled": "Responder apenas contatos autorizados pela verificação externa",
     "contactAuthGrantTtl": "Reaproveitar a resposta por (s)",
-    "contactAuthGrantTtlHint": "60-2.592.000 (30 dias). Recusa nunca é guardada, e a resposta guardada deixa de valer quando o telefone, o e-mail ou o identificador do contato muda. Mudar este campo, a URL, a credencial ou a chave do texto da mensagem descarta todas as respostas guardadas, e é assim que você as limpa.",
+    "contactAuthGrantTtlHint": "60-2.592.000 (30 dias). Recusa nunca é guardada, e a resposta guardada deixa de valer quando o telefone, o e-mail ou o identificador do contato muda. Mudar este campo, a URL ou a credencial só suspende as respostas guardadas enquanto o valor novo estiver valendo: não é jeito de limpá-las. Para parar de reaproveitar, volte a consultar em toda mensagem.",
     "contactAuthHandoff": "Abrir conversas recusadas para humanos",
     "contactAuthHint": "Antes de responder, pergunta a um sistema externo se este contato pode ser atendido, pela identidade que o Chatwoot tem dele (telefone, e-mail, identificador). Por padrão toda mensagem é verificada de novo, então revogar do seu lado vale imediatamente. Enquanto a verificação nega ou não consegue responder, o agente fica em silêncio com o cliente e o operador recebe uma nota privada. Não roda no playground.",
     "contactAuthIncludeText": "Enviar o texto da mensagem do cliente",

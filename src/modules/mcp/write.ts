@@ -619,6 +619,21 @@ export async function agentSettingsSet(
   // Object.hasOwn), `__proto__` is not the name of any tool, and a rule under it would be inert and
   // reported by the unmatched-precondition line. tests/modules/agent-settings-mcp-parity.test.ts
   // pins the CURRENT behaviour so a future SDK or zod change is noticed rather than assumed.
+  //
+  // AND THE DELETE HALF OF IT IS MOOT, which was measured rather than assumed. Losing a WRITE under
+  // this name costs nothing (there was never anything to name); losing a DELETE would matter, but
+  // only if such an entry could exist to begin with — a caller able to READ a rule and never remove
+  // it. It cannot:
+  //   * REST create/update parse `settings` with `z.record`, so the key is gone there too, and what
+  //     does reach assertSettingsToolPreconditions is refused as a non-native name;
+  //   * an agent IMPORT copies the bag verbatim past both (its `settings` is a record of
+  //     `z.unknown()`, so block keys are passed by reference) and carries the key all the way to the
+  //     `agent.create` call — and Prisma's own JSON rebuild drops it before Postgres. Nothing else
+  //     writes `agents.settings`; there is no raw-SQL path.
+  // So the row can never hold one, and `agent_settings_get` can never return one. Both halves are
+  // pinned: tests/modules/tool-keyed-unwritable.test.ts for zod, and the `__proto__` case in
+  // tests/modules/agent-transfer.test.ts, which asserts on the RAW jsonb — the day Prisma keeps the
+  // key, that goes red and this note is what says why it mattered.
   if (Object.keys(patch).length === 0) {
     // `filter`, not `slice`: the astral-cap sweep reads every bare `.slice(` in src/ as a possible
     // surrogate cut, and a list of keys is not worth an entry in that registry.

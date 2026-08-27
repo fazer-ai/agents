@@ -103,6 +103,10 @@ function stubChatwoot(opts: {
   // conversation load at the top and the fence before the handoff. A test uses it to move the world
   // the way a webhook arriving right then would.
   onAnchoredRead?: () => Promise<void>;
+  // What the unanchored read returns from the SECOND call on. There are exactly two on a recovery
+  // that reaches a turn — the recovery's own freshness read, then `shouldPost`'s — so this is how a
+  // test puts a message into the window between them.
+  recentAfterFirst?: unknown;
   throwOnRead?: boolean;
   conv?: {
     status?: string;
@@ -113,6 +117,7 @@ function stubChatwoot(opts: {
 }): Stub {
   const sent: Array<[number, string]> = [];
   const asked: Array<[number, number | undefined]> = [];
+  let unanchored = 0;
   const c = opts.conv ?? {};
   const client = {
     getConversation: async (conversationId: number) => {
@@ -137,8 +142,12 @@ function stubChatwoot(opts: {
     getMessages: async (conversationId: number, o?: { before?: number }) => {
       asked.push([conversationId, o?.before]);
       if (opts.throwOnRead) throw new Error("connect ECONNREFUSED");
-      if (o?.before === undefined)
+      if (o?.before === undefined) {
+        unanchored += 1;
+        if (unanchored > 1 && opts.recentAfterFirst !== undefined)
+          return opts.recentAfterFirst;
         return opts.recent ?? opts.page ?? { payload: [] };
+      }
       await opts.onAnchoredRead?.();
       return opts.page ?? { payload: [] };
     },
@@ -971,6 +980,104 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     // Exactly one closing line, for the row that actually closed.
     const lines = await deliveryLines(conv.id);
     expect(lines.length).toBe(1);
+  });
+
+  test("a reply WITHHELD to a message that landed mid-turn does not close the loss", async () => {
+    // The sliver the freshness check before the claim leaves open. That check reads the newest page
+    // once; a delivery for a message the customer sends AFTER it can start and finish while this
+    // recovery is still building its turn. `shouldPost` then sees the newer message and stands down,
+    // which is right for a live delivery — the newer message's own delivery carries the reply — and
+    // is not something a recovery can lean on, because that delivery can have finished before this
+    // turn ingested the stranded text.
+    //
+    // MEASURED before the fix: nothing was sent, and the recovery still returned `recovered` with
+    // the row on `PROCESSED` and a closing line written.
+    //
+    // The newer message is made to appear only on the SECOND unanchored read, which is
+    // `shouldPost`'s: the first is the recovery's own freshness read, and it has to still see the
+    // stranded message as the newest or the refusal would come from the earlier check instead.
+    const convId = 8960;
+    const messageId = 9461;
+    const conv = await seedConversation(convId);
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const stub = stubChatwoot({
+      page: pageWith([{ id: messageId, content: "oi" }]),
+      recentAfterFirst: pageWith([
+        { id: messageId, content: "oi" },
+        { id: messageId + 5, content: "ainda estou aqui?" },
+      ]),
+    });
+
+    expect(
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: depsWith(stub),
+      }),
+    ).toBe("superseded");
+
+    // The turn really did reach `shouldPost` — two unanchored reads, not one — otherwise the refusal
+    // would prove nothing about what happened inside the turn.
+    expect(stub.asked.filter(([, before]) => before === undefined).length).toBe(
+      2,
+    );
+    expect(stub.sent).toEqual([]);
+    expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 1 });
+    expect(await deliveryLines(conv.id)).toEqual([]);
+  });
+
+  test("the rebuilt BODY carries the moved contact inbox, not the one loaded", async () => {
+    // The fence and the body are built from the same reading on purpose. The fence is the reason the
+    // re-read exists, but the body is not inert: the mirror write it drives assigns `contactInboxId`
+    // on an unversioned event, so a body still carrying the pairing from before the REST reads can
+    // put it BACK — and the turn would then run on a graph thread nothing fenced.
+    //
+    // Same move as the fence's test, with nobody holding the new thread, so the recovery goes all
+    // the way through and the mirror write is what answers.
+    const convId = 8961;
+    const messageId = 9462;
+    // Behind the message, so the rebuilt body wins the ordering and reaches the branch that ASSIGNS
+    // the pairing. Landing in the mirror's stale branch instead would prove nothing: that branch
+    // writes no `contactInboxId` at all, and the assertion would hold whichever value the body had.
+    const conv = await seedConversation(convId, {
+      lastEventAt: new Date((SENT_AT - 600) * 1000),
+    });
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const moved = 71_000 + convId + 1;
+    const stub = stubChatwoot({
+      page: pageWith([{ id: messageId, content: "oi" }]),
+      onAnchoredRead: async () => {
+        await suDb.conversation.update({
+          where: { id: conv.id },
+          data: { contactInboxId: moved },
+        });
+      },
+    });
+
+    expect(
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: depsWith(stub),
+      }),
+    ).toBe("recovered");
+
+    expect(
+      (
+        await suDb.conversation.findUniqueOrThrow({
+          where: { id: conv.id },
+          select: { contactInboxId: true },
+        })
+      ).contactInboxId,
+    ).toBe(moved);
   });
 
   test("a mirror that never learned the inbox rebuilds it from the live message", async () => {

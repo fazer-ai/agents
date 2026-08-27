@@ -504,13 +504,33 @@ async function runRecovery(params: {
         );
   const agentId = inbox?.agentId ?? null;
 
+  // RE-READ rather than carried from the load at the top. `contactInboxId` is one of the fields a
+  // webhook arriving during the two REST reads and the reconcile can move (./mirror.ts writes it on
+  // an unversioned event), and TWO things downstream are built from it: the body this recovery hands
+  // the delivery path, and the graph key the fence below asks about. They have to be the same
+  // reading or the recovery fences one thread and runs on another — and a body carrying the OLD
+  // pairing is not inert, because the mirror write it drives can put that pairing back.
+  //
+  // One read for both, taken here because nothing between this line and the fence awaits anything
+  // that could move it again.
+  const contactInboxId =
+    (
+      await runScopedOn(base, sysCtx(params.tenantId), (db) =>
+        db.conversation.findUnique({
+          where: { id: conv.id },
+          select: { contactInboxId: true },
+        }),
+      )
+    )?.contactInboxId ?? null;
+
   const normalized = normalizeChatwootEvent(
     buildRecoveryPayload({
       conversation: {
         chatwootConversationId: conversationId,
         // From the mirror, and only this one: the REST conversation renders no `contact_inbox`
-        // (MEASURED), and the pairing does not move anyway.
-        contactInboxId: conv.contactInboxId,
+        // (MEASURED). Re-read immediately above rather than taken from the load at the top, because
+        // the pairing DOES move — see there.
+        contactInboxId,
         redirectOriginDisplayId: conv.redirectOriginDisplayId,
         redirectOriginAt: conv.chatwootRedirectOriginAt,
         status: state.status,
@@ -630,21 +650,6 @@ async function runRecovery(params: {
   // overlap whenever debounce is off. What bounds it HERE is not that claim but the newest-message
   // check above: a live delivery is running because the customer wrote again, and a customer who
   // wrote again is already the case this recovery answers `unrecoverable` to.
-  //
-  // RE-READ rather than carried from the load at the top, and for the same reason this whole fence
-  // is asked twice: `contactInboxId` is one of the fields a webhook arriving during those awaits can
-  // move (./mirror.ts writes it on an unversioned event), and the thread key is built from it. A
-  // fence asked about the thread the conversation USED TO be on would miss the turn holding the one
-  // it is on now, which is the only turn it could still collide with.
-  const contactInboxId =
-    (
-      await runScopedOn(base, sysCtx(params.tenantId), (db) =>
-        db.conversation.findUnique({
-          where: { id: conv.id },
-          select: { contactInboxId: true },
-        }),
-      )
-    )?.contactInboxId ?? null;
   const graphKey = resolveGraphThreadId(
     params.tenantId,
     instanceId,
@@ -733,12 +738,28 @@ async function runRecovery(params: {
   // replied to and take the row out of the worklist. MEASURED before this: with the model throwing,
   // the recovery returned `recovered`, the row went `PROCESSED`, and nothing was sent.
   //
-  // Asked for explicitly (`onTurnFailure`) rather than read back off the world afterwards. The two
+  // Asked for explicitly (`onDirectTurn`) rather than read back off the world afterwards. The two
   // readings available here — the conversation's recorded error, the absence of an outgoing message
   // — both answer about a MOMENT rather than about this turn: an error recorded by a previous
   // failure is still there, and an operator can post a reply of their own between the throw and any
   // read this side could make.
+  // WHAT THE CLAIM DOES NOT DO IS REVOKE THE ORIGINAL HANDLER, and that is worth saying rather than
+  // implying. `DEAD` is the sweep's verdict on a row nothing has moved for thirty minutes, and the
+  // one shape it can be wrong about is a handler that is merely stalled: it holds no lock this side
+  // can take away, so claiming the row from `DEAD` takes the LEDGER back and nothing else. If that
+  // handler resumes, its own tx2 CAS finds the row gone and settles nothing — but whatever it did
+  // before then is done.
+  //
+  // The overlap that matters is two INVOKES, and that one is fenced: a handler already inside
+  // `runAgentTurn` holds the thread's durable claim (issue #203), which is exactly what the fence
+  // above asks the row for, so the recovery defers rather than running beside it. What is left is a
+  // handler stalled for half an hour BEFORE its turn — every await between the claim and
+  // `runAgentTurn` is a scoped query or a REST read with its own deadline, so reaching that state
+  // means the process is pathological rather than slow — and there the two turns overlap the way two
+  // live deliveries for one conversation already can. The head of this file states the standing cost
+  // that leaves: a recovery re-runs a turn that may call side-effecting tools.
   let turnThrew = false;
+  let turnWithheld = false;
   try {
     outcome = await processChatwootDelivery({
       tenantId: params.tenantId,
@@ -747,8 +768,15 @@ async function runRecovery(params: {
       agentBotId,
       normalized,
       claimFrom: "DEAD",
-      onTurnFailure: () => {
-        turnThrew = true;
+      onDirectTurn: (r) => {
+        if (r.kind === "error") turnThrew = true;
+        // WITHHELD, not failed. `superseded` is `shouldPost` finding a message the customer sent
+        // after this one and standing down, which is the RIGHT answer for a live delivery: the newer
+        // message's own delivery is running and carries the reply. A recovery cannot lean on that —
+        // the newer delivery can have finished before this turn ingested the stranded text, and then
+        // nothing is coming at all. This is the same race the freshness check before the claim
+        // narrows, arriving in the sliver it leaves.
+        else if (r.outcome === "superseded") turnWithheld = true;
       },
       base,
       deps: params.deps,
@@ -779,7 +807,7 @@ async function runRecovery(params: {
   // anything else counting. `unreachable`, so the job backs off and eventually dead-letters: a model
   // or provider that keeps throwing is a condition an operator has to see, exactly like an account
   // that cannot be reached. No closing line, because nothing closed.
-  if (turnThrew) {
+  if (turnThrew || turnWithheld) {
     const restored = await runScopedOn(base, sysCtx(params.tenantId), (db) =>
       db.chatwootWebhookDelivery.updateMany({
         where: { id: row.id, status: "PROCESSED" },
@@ -787,12 +815,19 @@ async function runRecovery(params: {
       }),
     ).catch(() => ({ count: 0 }));
     logger.warn(
-      "chatwoot recovery: the turn threw on %s (conversation %d), so the loss is NOT closed; row put back to DEAD: %s",
+      "chatwoot recovery: the turn %s on %s (conversation %d), so the loss is NOT closed; row put back to DEAD: %s",
+      turnThrew ? "threw" : "withheld its reply to a newer message",
       row.deliveryId,
       conversationId,
       restored.count === 1 ? "yes" : "no, it had moved",
     );
-    return "unreachable";
+    // Two roads, because the two are waiting on different things. A THROW is a model or provider
+    // that could not answer, which is a condition an operator may have to fix, so it backs off
+    // toward the dead-letter line like an unreachable account. A WITHHELD reply is nothing broken:
+    // the message simply lost its race, and the next pass would refuse it at the freshness check
+    // anyway — so the job completes and the row stays DEAD on the operator's page, which is the only
+    // honest record left of a customer message nothing replied to.
+    return turnThrew ? "unreachable" : "superseded";
   }
 
   // THE LINE THAT CLOSES THE LOSS, and it has to be written HERE rather than left to

@@ -43,7 +43,7 @@ const app = new Elysia({
   // fetch handler ever runs (causa-raiz documentada em
   // elysiajs/elysia#1515 e issues do Bun #17595, #17363, #23999). The
   // bare /api carve-out covers requests without a trailing slash. Re-run
-  // the smoke test in CLAUDE.md when upgrading Elysia.
+  // the smoke test in docs/routing.md when upgrading Elysia.
   serve: {
     routes: {
       "/api": false,

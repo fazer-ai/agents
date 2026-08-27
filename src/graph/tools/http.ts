@@ -1,5 +1,6 @@
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import { z } from "zod";
+import { DEFAULT_TIMEZONE, partsInTimezone } from "@/graph/time";
 import { failableTool, toolFailure } from "@/graph/tools/failure";
 import {
   isExpectedResult,
@@ -8,6 +9,12 @@ import {
 import { AppError } from "@/lib/errors";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { clipText } from "@/lib/text";
+import { zonedWallClock } from "@/modules/integrations/toolpacks/calendar-slots";
+import {
+  type ExtractedAppointment,
+  extractAppointment,
+  readAppointmentDeclaration,
+} from "@/modules/tool-definitions/appointment";
 import { normalizeToolShapes } from "@/modules/tool-definitions/normalize";
 import { resolveSecretInjection } from "@/modules/vault/secret-types";
 import { normalizeToolName } from "./toolName";
@@ -56,6 +63,9 @@ export interface HttpToolDef {
   // Resolved ack message (null when the tool's ack is disabled): posted to the customer before the
   // tool runs. The ack flows only into the conversation, never into the request — it is not a secret.
   ackMessage?: string | null;
+  // What this tool's RESPONSE says about an appointment, when it says anything (issue #352). Read by
+  // readAppointmentDeclaration; anything it cannot make sense of declares nothing.
+  appointment?: unknown;
 }
 
 export interface HttpToolDeps {
@@ -72,6 +82,45 @@ export interface HttpToolDeps {
   // Conversation/contact context for {{placeholder}} interpolation in fixed fields, headers, the URL
   // and a raw body (e.g. {{conversation_id}}, {{contact_name}}). NEVER a secret.
   context?: Record<string, string>;
+  // The agent's own IANA timezone, and the ONLY thing that can say what an offset-less start from a
+  // declared response means: `14:00` is two in the afternoon where the operator is. Absent in the
+  // playground, which registers no appointments anyway. See WallClockResolver.
+  timezone?: string;
+  // The same two closures the toolpack layer gets, for a tool whose definition DECLARES that its
+  // response describes an appointment (issue #352). Bound to the tenant + this conversation's thread
+  // in prepare.ts; absent on the playground, where a tool that books is best-effort like every other
+  // side effect. NEVER model args.
+  appointmentBooked?: (args: {
+    eventId: string;
+    // The booking system, and the NAME of the tool that reached this closure. Both are optional and
+    // both default to Google Calendar, which is what the only caller was until #352: `provider`
+    // decides the record's identity and whether the Calendar tools can reach the appointment,
+    // `tool` decides which tool a failure is reported against.
+    provider?: string;
+    tool?: string;
+    calendarId?: string | null;
+    startISO: string;
+    credentialRef: string | null;
+    reminders: {
+      offsetsHours: number[];
+      askConfirmationOnLast: boolean;
+    } | null;
+    summary: string | null;
+    calendarLabel: string | null;
+  }) => Promise<void>;
+  cancelAppointment?: (
+    eventId: string,
+    opts?: { provider?: string; tool?: string },
+  ) => Promise<void>;
+  // Reports a side effect that failed INSIDE a tool that still returns success to the model. A
+  // declared path that does not resolve is exactly that: the booking is real and already made, so
+  // the tool succeeded, and the only thing to do with the miss is put it where the operator reads it.
+  onSideEffectError?: (e: {
+    tool: string;
+    phase: string;
+    detail?: Record<string, unknown>;
+    err: unknown;
+  }) => void;
 }
 
 // Scalar types serialize cleanly into a string (query/header/path); the richer types (enum/array/
@@ -265,6 +314,131 @@ function placeholderNames(template: string): Set<string> {
 // LangChain/provider tool names must be [a-zA-Z0-9_-]; the operator-friendly stored name (which may
 // carry spaces/accents) is normalized here via the shared helper (NFD + lowercase + "_").
 export const sanitizeToolName = normalizeToolName;
+
+// The declared appointment, taken off a successful response and handed to the same two closures the
+// Calendar toolpack uses. Best-effort by construction: the tool has ALREADY succeeded and the
+// booking already exists in the operator's system, so nothing here may change what the model is
+// told, and nothing here may throw into the turn.
+//
+// Every way this can go wrong is reported rather than swallowed, because each one is silent
+// otherwise and each one has a different fix: a body that is not JSON, a path that does not resolve
+// (named, so the operator knows which), and a write that failed.
+async function registerDeclaredAppointment(
+  def: HttpToolDef,
+  deps: HttpToolDeps,
+  rawBody: string,
+): Promise<void> {
+  const decl = readAppointmentDeclaration(def.appointment);
+  if (!decl) return;
+  const report = (
+    phase: string,
+    err: unknown,
+    detail?: Record<string, unknown>,
+  ) => deps.onSideEffectError?.({ tool: def.name, phase, detail, err });
+  let body: unknown;
+  try {
+    body = JSON.parse(rawBody);
+  } catch {
+    report(
+      "appointment_declaration",
+      new Error("the response is not JSON, so no declared path can be read"),
+    );
+    return;
+  }
+  // The wall clock resolver, bound to this turn's timezone. Returns the SAME wall clock carrying an
+  // explicit offset, so every later reader agrees on the instant while the string the reminder reads
+  // aloud keeps the time the operator's system stated. Null for a wall clock that does not exist in
+  // the zone (a DST gap), which the extractor reports as an unresolved path.
+  const tz = deps.timezone ?? DEFAULT_TIMEZONE;
+  const resolveWallClock = (wall: string): string | null => {
+    const local = wall.replace(" ", "T");
+    // `zonedWallClock`, not `zonedWallClockToInstant`: the second is single-pass and resolves a
+    // skipped hour to a best-effort instant, which is the guess this reader must not make. The first
+    // does the round trip and REPORTS whether the wall clock exists, which is exactly the question
+    // and the reason its own header says the two callers want opposite things with the answer.
+    const { ms, exists } = zonedWallClock(local, tz);
+    // `exists` answers the SPRING-FORWARD half: an hour the zone skipped is not a time at all.
+    if (!exists || !Number.isFinite(ms)) return null;
+    // And this answers the FALL-BACK half, which `exists` cannot see because both readings are real.
+    // `01:30` on a fall-back night happens TWICE, an hour apart, and zonedWallClock returns whichever
+    // it lands on — so an operator meaning the second occurrence would get an appointment and a
+    // reminder an hour early, silently. Two instants rendering the same wall clock is the whole test.
+    //
+    // The cost is one hour a year, in the zones that shift, for an API that answers without an
+    // offset: those bookings are reported as an unresolved start instead of being guessed at. The
+    // booking still stands in the operator's own system, and the report names the path they can point
+    // somewhere unambiguous.
+    const wallOf = (at: number): string => {
+      const q = partsInTimezone(new Date(at), tz);
+      return `${q.YYYY}-${q.MM}-${q.DD}T${q.HH}:${q.mm}:${q.ss}`;
+    };
+    const here = wallOf(ms);
+    // Every shift size a real zone has used, both directions. A half hour is Lord Howe; two hours is
+    // historical, and costs one comparison to keep covered.
+    for (const minutes of [-120, -60, -30, 30, 60, 120]) {
+      if (wallOf(ms + minutes * 60_000) === here) return null;
+    }
+    const asUtc = Date.parse(`${local}Z`);
+    if (!Number.isFinite(asUtc)) return null;
+    const offsetMin = Math.round((asUtc - ms) / 60_000);
+    const sign = offsetMin < 0 ? "-" : "+";
+    const abs = Math.abs(offsetMin);
+    const hh = String(Math.floor(abs / 60)).padStart(2, "0");
+    const mm = String(abs % 60).padStart(2, "0");
+    return `${local}${sign}${hh}:${mm}`;
+  };
+  const got = extractAppointment(decl, body, resolveWallClock);
+  if (!got.ok) {
+    report(
+      "appointment_declaration",
+      new Error(
+        `declared path(s) did not resolve in the response: ${got.missing.join(", ")}`,
+      ),
+      { missing: got.missing },
+    );
+    return;
+  }
+  try {
+    await applyExtractedAppointment(got.value, deps, def.name);
+  } catch (err) {
+    report("appointment_register", err, { externalId: got.value.externalId });
+  }
+}
+
+async function applyExtractedAppointment(
+  value: ExtractedAppointment,
+  deps: HttpToolDeps,
+  toolName: string,
+): Promise<void> {
+  if (value.action === "cancel") {
+    await deps.cancelAppointment?.(value.externalId, {
+      provider: value.provider,
+      tool: toolName,
+    });
+    return;
+  }
+  if (!value.startISO) return;
+  await deps.appointmentBooked?.({
+    eventId: value.externalId,
+    provider: value.provider,
+    tool: toolName,
+    // No calendar is involved, and every field that would name one says so. `calendarId` null is the
+    // record's column left empty; `credentialRef` null is what tells the reminder handler there is
+    // no Google to ask about this appointment (#376). The provider above is what tells the per-turn
+    // context block the same thing, since a record carries no credential.
+    calendarId: null,
+    startISO: value.startISO,
+    credentialRef: null,
+    reminders: value.reminderOffsetsHours
+      ? {
+          offsetsHours: value.reminderOffsetsHours,
+          askConfirmationOnLast: value.askConfirmationOnLast === true,
+        }
+      : null,
+    summary: value.summary ?? null,
+    calendarLabel: null,
+  });
+}
 
 export function buildHttpTool(
   def: HttpToolDef,
@@ -610,6 +784,14 @@ export function buildHttpTool(
       // this status a result for this tool (issue #59). The model sees the same "HTTP <status>" body
       // in both cases; only the failure marking moves.
       const resultText = `HTTP ${res.status}\n${trimmed}`;
+      // THE REGISTRATION, and it hangs off 2xx alone rather than off `isExpectedResult`. Those two
+      // answer different questions: `expectedStatuses` says "this status is a result, not an
+      // integration failure", which is how a lookup declares that its 404 means "no record" (issue
+      // #59). A 404 is not a booking. Registering on every status the operator called a result would
+      // record an appointment out of the response that says there is none.
+      if (res.status >= 200 && res.status < 300) {
+        await registerDeclaredAppointment(def, deps, text);
+      }
       return isExpectedResult(res.status, expectedStatuses)
         ? resultText
         : toolFailure(resultText);

@@ -46,6 +46,26 @@ function backfillStatement(text: string): string {
 
 const hours = (h: number) => new Date(Date.now() + h * 3_600_000).toISOString();
 
+// The backfill's ON CONFLICT names the unique key `appointments` had AT THAT POINT IN HISTORY, and
+// 20260827000000 later widened it to include the provider (issue #352). Replaying the statement
+// against today's table would fail to infer an arbiter index — a failure that says nothing about
+// the migration, which runs in order and meets the narrow key it was written for.
+//
+// So the transaction ADDS the historical key back, under a name of its own, and drops nothing. The
+// two coexist for the length of the transaction and `ON CONFLICT (tenant_id, external_id)` infers
+// the narrow one, because inference matches the columns exactly.
+//
+// Adding rather than swapping is the whole point. This is a SHARED database, and a transaction that
+// fails to roll back would otherwise leave the table without the unique key the current code upserts
+// through — every appointment write in every other suite then fails with `42P10`, in a way
+// `migrate deploy` cannot repair because the migration is already recorded as applied. (Measured:
+// that is exactly what happened.) Leaking an extra index instead is inert.
+async function withHistoricalKey(): Promise<void> {
+  await db.query(
+    'CREATE UNIQUE INDEX "appointments_historical_key_probe" ON "appointments"("tenant_id", "external_id")',
+  );
+}
+
 describe.skipIf(!dbUp)("migration: the appointment backfill", () => {
   test("the cast is fenced by a CASE, not by an AND chain", () => {
     // Postgres does not promise to evaluate WHERE conjuncts left to right, so the guard has to be
@@ -64,6 +84,7 @@ describe.skipIf(!dbUp)("migration: the appointment backfill", () => {
     await db.query("BEGIN");
     try {
       await db.query("SET LOCAL app.is_super_admin = 'on'");
+      await withHistoricalKey();
       const t = await db.query<{ id: string }>(
         "INSERT INTO tenants (name, slug, updated_at) VALUES ($1, $2, now()) RETURNING id",
         [`ApBackfill ${process.pid}`, `apbackfill-${process.pid}`],
@@ -160,6 +181,7 @@ describe.skipIf(!dbUp)("migration: the appointment backfill", () => {
     await db.query("BEGIN");
     try {
       await db.query("SET LOCAL app.is_super_admin = 'on'");
+      await withHistoricalKey();
       const t = await db.query<{ id: string }>(
         "INSERT INTO tenants (name, slug, updated_at) VALUES ($1, $2, now()) RETURNING id",
         [`ApBackfill2 ${process.pid}`, `apbackfill2-${process.pid}`],

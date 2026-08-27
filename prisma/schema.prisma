@@ -1073,6 +1073,15 @@ model ToolDefinition {
   // slow — tool. Per-tool, opt-in; only fires on a real conversation, never in the playground.
   ackEnabled       Boolean  @default(false) @map("ack_enabled")
   ackMessage       String?  @map("ack_message")
+  // What this tool's RESPONSE says about an appointment, when it says anything: { action:
+  // "book"|"cancel", idPath, startPath?, summaryPath?, reminderOffsetsHours?, askConfirmationOnLast? }.
+  // Null (the default) means the tool declares nothing and nothing is recorded.
+  //
+  // The platform learns about a booking from the code that made it — the Calendar toolpack calls
+  // `appointmentBooked` itself — and an operator's tool cannot have that line written into it,
+  // because the operator writes the tool. This column is where it says the same thing instead
+  // (issue #352). See src/modules/tool-definitions/appointment.ts for the reader.
+  appointment      Json?
   createdAt        DateTime @default(now()) @map("created_at")
   updatedAt        DateTime @updatedAt @map("updated_at")
 
@@ -1293,8 +1302,14 @@ model Appointment {
   tenantId      BigInt    @map("tenant_id")
   // The per-conversation thread (`tenant:instance:convId`), the same one the reminder payloads carry.
   threadId      String    @map("thread_id")
-  // The booking's identity in whatever system owns it (a Google Calendar event id today). Unique per
-  // tenant, so a re-book of the same appointment updates the record rather than duplicating it.
+  // WHO owns the booking: "google_calendar", or the slug a tool definition's appointment declaration
+  // names (issue #352). Half of the record's identity, and the only thing that says whether the
+  // Calendar tools can reach this appointment at all. See modules/appointments/provider.ts.
+  provider      String    @default("google_calendar")
+  // The booking's identity WITHIN that provider (a Google Calendar event id, a row id in the
+  // operator's own system). Unique per (tenant, provider), so a re-book of the same appointment
+  // updates the record rather than duplicating it, and two systems that both count from 1 do not
+  // collide.
   externalId    String    @map("external_id")
   startAt       DateTime  @map("start_at")
   startIso      String    @map("start_iso")
@@ -1309,7 +1324,7 @@ model Appointment {
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
-  @@unique([tenantId, externalId])
+  @@unique([tenantId, provider, externalId])
   // The access path of all four readers: this tenant's conversation, live rows first.
   @@index([tenantId, threadId])
   @@map("appointments")

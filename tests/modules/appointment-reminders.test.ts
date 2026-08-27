@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { BaseChatModel } from "@langchain/core/language_models/chat_models";
-import { AIMessage } from "@langchain/core/messages";
+import { AIMessage, type BaseMessage } from "@langchain/core/messages";
 import type { ChatResult } from "@langchain/core/outputs";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
 import { MemorySaver } from "@langchain/langgraph";
@@ -124,6 +124,8 @@ describe("reminderNudge", () => {
     startISO: "2026-06-25T10:00:00-03:00",
     eventId: "ev_1",
     calendarId: "primary",
+    provider: "google_calendar",
+    canOperate: true,
   };
   test("last + confirmation → asks to confirm and to mark the event", () => {
     const n = reminderNudge({ ...args, isLast: true, askConfirmation: true });
@@ -140,6 +142,96 @@ describe("reminderNudge", () => {
     const n = reminderNudge({ ...args, isLast: true, askConfirmation: false });
     expect(n.instructions).not.toContain("calendar_confirm_appointment");
   });
+
+  // (#352) A booking that reached the platform through a tool's declaration has no Google event
+  // behind it, so naming a calendar tool at the model points it at one that cannot touch this
+  // appointment. The reminder itself is unchanged: same summary, same refs, same date and time.
+  test("without the calendar behind it, no calendar tool is named — in either shape", () => {
+    for (const askConfirmation of [true, false]) {
+      const n = reminderNudge({
+        ...args,
+        canOperate: false,
+        provider: "feegow",
+        calendarId: null,
+        isLast: true,
+        askConfirmation,
+      });
+      expect(n.instructions).not.toContain("calendar_confirm_appointment");
+      expect(n.instructions).not.toContain("calendar_update_event");
+      expect(n.instructions).not.toContain("calendar_cancel_event");
+      // The control: it is still a reminder, and it still says so.
+      expect(n.instructions).toContain("Remind the customer");
+      expect(n.summary).toContain("Consulta");
+      // The refs say WHICH booking, and for a foreign one that takes the owning system: two operator
+      // systems may both answer with the same id, so the id alone does not identify the appointment.
+      expect(n.refs).toEqual({
+        event_id: "ev_1",
+        calendar_id: null,
+        booking_system: "feegow",
+      });
+    }
+    // And the same call WITH the calendar does name them, on the same two shapes.
+    expect(
+      reminderNudge({ ...args, isLast: true, askConfirmation: true })
+        .instructions,
+    ).toContain("calendar_confirm_appointment");
+    expect(
+      reminderNudge({ ...args, isLast: false, askConfirmation: true })
+        .instructions,
+    ).toContain("calendar_update_event");
+  });
+
+  // (#352, round 4) Not naming a Calendar tool is not the same as asserting the model holds no tool
+  // at all. The operator's own booking system may have an HTTP cancel/reschedule tool granted this
+  // very turn — buildAppointmentContextSection points the same model at exactly that, in the same
+  // prompt — so a flat "you have no tool" is both false and self-contradictory. The nudge may only
+  // rule out the Calendar family, which it can prove.
+  test("never claims the model has no tool, and defers to the booking system's own", () => {
+    for (const askConfirmation of [true, false]) {
+      const n = reminderNudge({
+        ...args,
+        canOperate: false,
+        provider: "feegow",
+        isLast: true,
+        askConfirmation,
+      });
+      expect(n.instructions).not.toMatch(/you have no tool/i);
+      expect(n.instructions).not.toMatch(/no tool to/i);
+      // What it says instead: use the booking system's own tool when there is one.
+      expect(n.instructions).toMatch(
+        /booking system's own tool if you have one/i,
+      );
+    }
+  });
+
+  // (#352, round 5) The refs ARE the fenced data the model reads back, so a fill-in here is an
+  // identifier the model is told the appointment has. There is no Google calendar behind a declared
+  // booking, and "primary" names a real one, so the ref is absent rather than invented.
+  test("no calendar behind it → no calendar_id ref at all", () => {
+    const n = reminderNudge({
+      ...args,
+      calendarId: null,
+      provider: "feegow",
+      canOperate: false,
+      isLast: true,
+      askConfirmation: true,
+    });
+    expect(n.refs).toEqual({
+      event_id: "ev_1",
+      calendar_id: null,
+      booking_system: "feegow",
+    });
+    // What the model actually sees: the key does not appear in the rendered fenced data.
+    expect(renderNudge(n, true)).not.toContain("calendar_id");
+    expect(renderNudge(n, true)).toContain("event_id=ev_1");
+    // The control: with a calendar, the ref is there and rendered.
+    expect(
+      renderNudge(
+        reminderNudge({ ...args, isLast: true, askConfirmation: true }),
+        true,
+      ),
+    ).toContain("calendar_id=primary");
+  });
 });
 
 // NOTE: The reminder turn (and the customer's reply to it) must be able to act on the exact event:
@@ -152,12 +244,15 @@ describe("reminderNudge event identity", () => {
     startISO: "2026-06-25T10:00:00-03:00",
     eventId: "ev_identity_1",
     calendarId: "cal@group.calendar.google.com",
+    provider: "google_calendar",
+    canOperate: true,
   };
   test("carries event_id and calendar_id as refs", () => {
     const n = reminderNudge(base);
     expect(n.refs).toEqual({
       event_id: "ev_identity_1",
       calendar_id: "cal@group.calendar.google.com",
+      booking_system: null,
     });
   });
   test("confirmation instruction points at the event_id ref (the id the tool call needs)", () => {
@@ -732,6 +827,149 @@ describe.skipIf(!dbUp)("a reminder retired while claimed", () => {
 
     expect(result).toEqual({ outcome: "done" });
     expect(s.sent.length).toBeGreaterThan(0);
+  });
+
+  // (#352, round 8) Two operator systems may both answer with `42` — that is why the record and the
+  // dedupe key carry the provider. The PAYLOAD had to carry it too: without it the reminder turn
+  // holds an id and no way to say which system issued it, and the sentence it was given points at
+  // "this booking system's own tool" without naming one. Asserted on what the MODEL received.
+  test("a declared payload names its booking system to the model", async () => {
+    const job = await armed("reminder:feegow/evt-src:60", {
+      isLast: true,
+      eventId: "evt-src",
+      provider: "feegow",
+      calendarId: null,
+      startISO: new Date(Date.now() + 3_600_000).toISOString(),
+    });
+    const s = stubClient();
+    let seen = "";
+    class Capturing extends BaseChatModel {
+      constructor() {
+        super({});
+      }
+      _llmType() {
+        return "capturing-src";
+      }
+      async _generate(messages: BaseMessage[]): Promise<ChatResult> {
+        seen += messages
+          .map((m) =>
+            typeof m.content === "string"
+              ? m.content
+              : JSON.stringify(m.content),
+          )
+          .join("\n");
+        return {
+          generations: [
+            { text: "Lembrete!", message: new AIMessage("Lembrete!") },
+          ],
+        };
+      }
+    }
+
+    await appointmentReminderHandler(job, appDb, {
+      makeModel: () => new Capturing(),
+      makeClient: s.makeClient,
+      checkpointer: new MemorySaver(),
+      persistUsage: async () => {},
+    });
+
+    expect(seen).toContain("event_id=evt-src");
+    expect(seen).toContain("booking_system=feegow");
+  });
+
+  // The control, and the reason the ref is conditional: a Google booking is identified by its
+  // calendar_id, and naming Google as the "booking system" would put the very tool family the
+  // no-calendar branch rules out back in front of the model.
+  test("a Google payload names no booking system", async () => {
+    const job = await armed("reminder:evt-nosrc:60", {
+      isLast: true,
+      eventId: "evt-nosrc",
+      startISO: new Date(Date.now() + 3_600_000).toISOString(),
+    });
+    const s = stubClient();
+    let seen = "";
+    class Capturing extends BaseChatModel {
+      constructor() {
+        super({});
+      }
+      _llmType() {
+        return "capturing-nosrc";
+      }
+      async _generate(messages: BaseMessage[]): Promise<ChatResult> {
+        seen += messages
+          .map((m) =>
+            typeof m.content === "string"
+              ? m.content
+              : JSON.stringify(m.content),
+          )
+          .join("\n");
+        return {
+          generations: [
+            { text: "Lembrete!", message: new AIMessage("Lembrete!") },
+          ],
+        };
+      }
+    }
+
+    await appointmentReminderHandler(job, appDb, {
+      makeModel: () => new Capturing(),
+      makeClient: s.makeClient,
+      checkpointer: new MemorySaver(),
+      persistUsage: async () => {},
+    });
+
+    // The control: the reminder did reach the model, so the absence is an absence in a real prompt.
+    expect(seen).toContain("event_id=evt-nosrc");
+    expect(seen).not.toContain("booking_system=");
+  });
+
+  // (#352, round 5) The payload is the only thing standing between a declared booking and the model:
+  // `calendarId: null` has to survive the handler's own read, or the fill-in reappears here and the
+  // fenced data tells the agent this appointment lives on Google's `primary` calendar. Asserted on
+  // what the MODEL received, not on the nudge object, because the whole chain is what the fix is.
+  test("a payload with no calendar sends the model no calendar_id", async () => {
+    const job = await armed("reminder:feegow/evt-nocal:60", {
+      isLast: true,
+      eventId: "evt-nocal",
+      calendarId: null,
+      startISO: new Date(Date.now() + 3_600_000).toISOString(),
+    });
+    const s = stubClient();
+    let seen = "";
+    class CapturingModel extends BaseChatModel {
+      constructor() {
+        super({});
+      }
+      _llmType() {
+        return "capturing-fake";
+      }
+      async _generate(messages: BaseMessage[]): Promise<ChatResult> {
+        seen += messages
+          .map((m) =>
+            typeof m.content === "string"
+              ? m.content
+              : JSON.stringify(m.content),
+          )
+          .join("\n");
+        return {
+          generations: [
+            { text: "Lembrete!", message: new AIMessage("Lembrete!") },
+          ],
+        };
+      }
+    }
+
+    await appointmentReminderHandler(job, appDb, {
+      makeModel: () => new CapturingModel(),
+      makeClient: s.makeClient,
+      checkpointer: new MemorySaver(),
+      persistUsage: async () => {},
+    });
+
+    // The control first: the reminder DID reach the model, so the absence below is an absence in a
+    // prompt that exists.
+    expect(seen).toContain("event_id=evt-nocal");
+    expect(seen).not.toContain("calendar_id");
   });
 
   test("a cancel landing during the retry survives the reschedule", async () => {

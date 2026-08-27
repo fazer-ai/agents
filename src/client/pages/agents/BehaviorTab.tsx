@@ -87,7 +87,7 @@ import {
   ttsNormalizerPickerSource,
   ttsNormalizerProviderChanged,
 } from "./ttsFormState";
-import type { Hours } from "./types";
+import type { BehaviorRefusals, Hours } from "./types";
 
 // Transcription providers (mirror src/modules/stt/providers.ts).
 const STT_PROVIDERS = [
@@ -249,6 +249,9 @@ export interface FollowUpState {
 
 interface BehaviorTabProps {
   agentId: string;
+  // The refused input this tab draws, if the standing refusal is about one of them. Read in
+  // AgentEditorPage and passed as answers -- see the note on the type.
+  refusals: BehaviorRefusals;
   hours: Hours[];
   businessHoursId: string;
   setBusinessHoursId: (v: string) => void;
@@ -784,10 +787,14 @@ function FollowUpStepsEditor({
   agentId,
   followUp,
   setFollowUp,
+  stepRefusals,
 }: {
   agentId: string;
   followUp: FollowUpState;
   setFollowUp: React.Dispatch<React.SetStateAction<FollowUpState>>;
+  // By index: the server refuses a note as `followUp.steps[2].instructions`, and the step it names is
+  // the one that has to carry the mark.
+  stepRefusals: readonly (string | null)[];
 }) {
   const { t } = useTranslation();
   const [labels, setLabels] = useState<InboxLabelOption[]>([]);
@@ -900,6 +907,7 @@ function FollowUpStepsEditor({
             </FormField>
             <FormField
               label={t("editor.followUpInstructions", "Follow-up instructions")}
+              error={stepRefusals[index] ?? null}
             >
               <Textarea
                 value={step.instructions}
@@ -977,6 +985,7 @@ function FollowUpStepsEditor({
 
 export function BehaviorTab({
   agentId,
+  refusals,
   hours,
   businessHoursId,
   setBusinessHoursId,
@@ -1378,6 +1387,7 @@ export function BehaviorTab({
             {awayEnabled && (
               <FormField
                 label={t("editor.awayMessage", "Out-of-hours message")}
+                error={refusals.awayMessage}
                 description={t(
                   "editor.awayMessageHint",
                   'Sent to the customer while the agent is outside these hours, at most once a day per conversation. Write {next_open} (or {proximo_atendimento} for a Portuguese message) where the next opening should appear: the customer reads something like "Monday, 08/25, 09:00".',
@@ -1514,7 +1524,11 @@ export function BehaviorTab({
                       ))}
                     </Select>
                   </FormField>
-                  <FormField label={t("editor.sttCredential", "API key")} group>
+                  <FormField
+                    label={t("editor.sttCredential", "API key")}
+                    error={refusals.sttCredential}
+                    group
+                  >
                     <CredentialPicker
                       value={stt.credentialRef}
                       onChange={(v) => setStt({ ...stt, credentialRef: v })}
@@ -1664,6 +1678,7 @@ export function BehaviorTab({
                   </FormField>
                   <FormField
                     label={t("editor.visionCredential", "API key")}
+                    error={refusals.visionCredential}
                     group
                   >
                     <CredentialPicker
@@ -1734,6 +1749,7 @@ export function BehaviorTab({
                   </FormField>
                 )}
                 <FormField
+                  error={refusals.visionExtractionPrompt}
                   label={
                     <span className="flex items-center justify-between gap-2">
                       <span>
@@ -1820,7 +1836,11 @@ export function BehaviorTab({
                       ))}
                     </Select>
                   </FormField>
-                  <FormField label={t("editor.ttsCredential", "API key")} group>
+                  <FormField
+                    label={t("editor.ttsCredential", "API key")}
+                    error={refusals.ttsCredential}
+                    group
+                  >
                     <CredentialPicker
                       value={tts.credentialRef}
                       onChange={(v) => setTts({ ...tts, credentialRef: v })}
@@ -1937,6 +1957,7 @@ export function BehaviorTab({
                     </FormField>
                     <FormField
                       label={t("editor.credential", "API key")}
+                      error={refusals.ttsNormalizeCredential}
                       description={t(
                         "editor.ttsNormalizeCredentialHint",
                         "Required when the provider differs from the agent's: the agent's key is never sent to another vendor, so without a key of its own the rewrite is skipped and the audio goes out unrewritten.",
@@ -2348,6 +2369,7 @@ export function BehaviorTab({
                 </FormField>
                 <FormField
                   label={t("editor.contactAuthCredential", "Credential")}
+                  error={refusals.contactAuthCredential}
                   group
                   description={t(
                     "editor.contactAuthCredentialHint",
@@ -2492,6 +2514,7 @@ export function BehaviorTab({
                     "editor.contactAuthDenyMessage",
                     "Message to a denied contact",
                   )}
+                  error={refusals.contactAuthDenyMessage}
                   description={t(
                     "editor.contactAuthDenyMessageHint",
                     "Sent when the check denies the contact, at most once per notice cooldown. Leave empty to send nothing.",
@@ -2652,6 +2675,7 @@ export function BehaviorTab({
                 </FormField>
                 <FormField
                   label={t("editor.credential", "API key")}
+                  error={refusals.memoryCredential}
                   description={t(
                     "editor.memoryCredentialHint",
                     "Required when the provider differs from the agent's: the agent's key is never sent to another vendor, so without a key of its own the summary is not written and the attendance stays in the thread raw.",
@@ -2811,6 +2835,7 @@ export function BehaviorTab({
             {!!modelFallback.provider && (
               <div className="flex flex-col gap-3">
                 <FormField
+                  error={refusals.modelFallbackCredential}
                   label={t("editor.credential", "API key")}
                   description={t(
                     "editor.modelFallbackCredentialHint",
@@ -3117,6 +3142,7 @@ export function BehaviorTab({
                     />
                   </FormField>
                   <FollowUpStepsEditor
+                    stepRefusals={refusals.followUpSteps}
                     agentId={agentId}
                     followUp={followUp}
                     setFollowUp={setFollowUp}

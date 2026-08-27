@@ -48,7 +48,12 @@ import { IntegrationEditModal } from "@/client/pages/resources/IntegrationEditMo
 import { McpEditModal } from "@/client/pages/resources/McpEditModal";
 import { ToolEditModal } from "@/client/pages/resources/ToolEditModal";
 import { TOOL_INSTRUCTIONS_MAX } from "@/modules/agents/text-caps";
-import type { GrantState, HandoffUiState, ToolCatalog } from "./types";
+import type {
+  GrantState,
+  HandoffUiState,
+  ToolCatalog,
+  ToolRefusals,
+} from "./types";
 
 // Service-logo adapters so a toolpack integration shows its brand mark in the SelectableCard's
 // `icon` slot (which expects a LucideIcon). Module-level → stable identity (no remount per render).
@@ -114,6 +119,8 @@ interface Props {
   // Operator-authored guidance for set_custom_attribute + assign_label (when to use each scope/label/
   // attribute), appended to their model-facing descriptions. Persisted in agent.settings.toolGuidance.
   customAttributeInstructions: string;
+  // The refused note this editor draws, if the standing refusal is about one -- see ToolRefusals.
+  refusals: ToolRefusals;
   setCustomAttributeInstructions: (v: string) => void;
   labelInstructions: string;
   setLabelInstructions: (v: string) => void;
@@ -450,6 +457,7 @@ export function ToolGrantsEditor({
   kanbanInstructions,
   setKanbanInstructions,
   customAttributeInstructions,
+  refusals,
   setCustomAttributeInstructions,
   labelInstructions,
   setLabelInstructions,
@@ -1443,6 +1451,7 @@ export function ToolGrantsEditor({
             )}
             <FormField
               label={t("editor.handoffInstructions", "Transfer instructions")}
+              error={refusals.handoffInstructions}
               group
               description={t(
                 "editor.handoffInstructionsHint",
@@ -1475,6 +1484,7 @@ export function ToolGrantsEditor({
           >
             <FormField
               label={t("editor.kanbanInstructions", "Funnel guidance")}
+              error={refusals.kanbanInstructions}
               group
               description={t(
                 "editor.kanbanInstructionsHint",
@@ -1505,6 +1515,7 @@ export function ToolGrantsEditor({
           >
             <FormField
               label={t("editor.updateKanbanInstructions", "Usage guidance")}
+              error={refusals.updateKanbanInstructions}
               group
               description={t(
                 "editor.updateKanbanInstructionsHint",
@@ -1537,6 +1548,7 @@ export function ToolGrantsEditor({
           >
             <FormField
               label={t("editor.attrInstructions", "Usage guidance")}
+              error={refusals.attributeInstructions}
               group
               description={t(
                 "editor.attrInstructionsHint",
@@ -1567,6 +1579,7 @@ export function ToolGrantsEditor({
           >
             <FormField
               label={t("editor.labelInstructions", "Usage guidance")}
+              error={refusals.labelInstructions}
               group
               description={t(
                 "editor.labelInstructionsHint",

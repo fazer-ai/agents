@@ -3,7 +3,7 @@ import { setupPrismaMock } from "@/tests/utils/prisma-mock";
 
 // Routing carve-out smoke for the v1 read API. Proves /api/v1/* is routed to Elysia (not
 // served the SPA HTMLBundle by Bun's native routes table) for BOTH GET and POST — the
-// load-bearing invariant from CLAUDE.md, extended to POST per the hardened spec (so a
+// load-bearing invariant from docs/routing.md, extended to POST per the hardened spec (so a
 // future webhook POST never silently receives index.html).
 setupPrismaMock();
 const app = (await import("@/app")).default;

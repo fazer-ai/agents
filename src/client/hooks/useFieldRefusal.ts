@@ -39,7 +39,20 @@ export interface FieldRefusal {
   // The input currently marked, for a caller that has to go somewhere to show it: the agent editor's
   // fields live behind tabs, and a mark on a tab nobody is looking at is not yet visible. Nothing
   // here navigates — which tab holds which path is the screen's knowledge, not this hook's.
+  //
+  // Null while the standing refusal is about no input of this form's, which `message` still carries.
   field: string | null;
+  // The standing refusal's sentence, whether or not it could be placed at an input.
+  //
+  // Here rather than in the caller because a caller that keeps its own copy has a SECOND source of
+  // truth for one fact, and the two drift in ways nothing can see: the copy outlives the mark it
+  // duplicates, it is tagged with the wrong owner, a second refusal about the same field leaves the
+  // first copy standing. Three review rounds on fazer-ai/agents#414 found three spellings of that,
+  // all of them a page holding the sentence beside a hook that was already holding it.
+  //
+  // Expires with the hold and never on its own: every `capture` overwrites it, and `clear` drops it.
+  // A caller rendering it for a PLACED mark still has to ask `at`, because that one expires by value.
+  message: string | null;
 }
 
 // `rendered` is what the form is DRAWING RIGHT NOW, and the tense is the whole of it.
@@ -60,10 +73,19 @@ export interface FieldRefusal {
 // Read through a ref, because the answer is needed AFTER the await and a submit handler closes over
 // the render it started in. That was the point of the boolean's ref too; it is the same fix, applied
 // to the thing that was always the real question.
-export function useFieldRefusal(rendered: readonly string[]): FieldRefusal {
+// `owned` is every name this form can mark, drawn or not, and it is the second argument because
+// almost nobody needs it: a form whose controls are all on screen together owns exactly what it
+// renders, and leaving it out says so. The agent editor is the one that does — thirty-odd values
+// behind eight tabs — and for it the two lists are genuinely different questions. See placeRefusal.
+export function useFieldRefusal(
+  rendered: readonly string[],
+  owned?: readonly string[],
+): FieldRefusal {
   const { showToast } = useToast();
+  // `field` is null for a refusal this form cannot place at an input. Held anyway, so the sentence
+  // has exactly one home — see `message` above.
   const [held, setHeld] = useState<{
-    field: string;
+    field: string | null;
     message: string;
     value: unknown;
   } | null>(null);
@@ -79,6 +101,8 @@ export function useFieldRefusal(rendered: readonly string[]): FieldRefusal {
   }, []);
   const fields = useRef(rendered);
   fields.current = rendered;
+  const ownedFields = useRef(owned);
+  ownedFields.current = owned;
 
   const capture = useCallback(
     (
@@ -89,11 +113,17 @@ export function useFieldRefusal(rendered: readonly string[]): FieldRefusal {
     ) => {
       // The form is where the operator is looking only if it is drawing something. An empty list is
       // a dismissed dialog, a tab left behind, a page unmounted — all the same answer.
-      const onForm = mounted.current && fields.current.length > 0;
+      // Drawing NOTHING is what takes the form off the screen, and a form that owns more than it
+      // draws is still on screen while the open tab happens to hold no placeable control: the empty
+      // list would otherwise read as a dismissed dialog.
+      const onForm =
+        mounted.current &&
+        (fields.current.length > 0 || (ownedFields.current?.length ?? 0) > 0);
       const placed = placeRefusal(readRefusal(e), fields.current, fallback, {
         mounted: onForm,
         sent,
         current,
+        owned: ownedFields.current,
       });
       if (placed.at !== undefined) {
         setHeld({
@@ -101,12 +131,20 @@ export function useFieldRefusal(rendered: readonly string[]): FieldRefusal {
           message: placed.message,
           value: placed.value,
         });
-        return null;
+        // Null unless the control is off screen. `placeRefusal` says which by handing back a
+        // sentence beside the mark, and the caller is the only one that can put that sentence
+        // somewhere the operator will read it AND take them to the control.
+        return placed.toast ?? null;
       }
       // NOTE: written even when nothing is placed, and that is the whole of "the capture is also the
       // clear": a mark left over from a refusal the server has stopped making would sit on a control
-      // while the toast says something else.
-      setHeld(null);
+      // while the toast says something else. The sentence is kept beside the empty field so a caller
+      // with a place to render it does not have to hold a copy of its own.
+      setHeld(
+        placed.toast
+          ? { field: null, message: placed.toast, value: undefined }
+          : null,
+      );
       // The caller's OTHER channel is inside the form for ten of the holders here: an error line
       // drawn between the dialog's title and its buttons, which `useOnModalOpen` then clears on the
       // next opening. Handing them a sentence for a form the operator has dismissed only moves the
@@ -138,5 +176,11 @@ export function useFieldRefusal(rendered: readonly string[]): FieldRefusal {
     [held],
   );
 
-  return { at, capture, clear, field: held?.field ?? null };
+  return {
+    at,
+    capture,
+    clear,
+    field: held?.field ?? null,
+    message: held?.message ?? null,
+  };
 }

@@ -10,6 +10,7 @@ import {
   cancelAppointment,
   hasLiveAppointment,
 } from "@/modules/appointments/reminders";
+import { type ClaimedJob, jobRetired } from "@/modules/scheduler/service";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // DB-backed mirror of issue #22: the appointment identity block must reach the system prompt after
@@ -410,5 +411,508 @@ describe.skipIf(!dbUp)("per-turn appointment context (issue #22)", () => {
     expect(await hasLiveAppointment(tenantId, threadOf(108), appDb)).toBe(
       false,
     );
+  });
+
+  // (#352) An id is only unique WITHIN the system that issued it, and a tool definition can now
+  // declare bookings from a system that is not Google. Two systems that both count from 1 land on
+  // the same id, and while the record's key was (tenant, external id) alone the second booking
+  // MOVED the first one and a cancel on either retired both.
+  test("(#352) two systems may issue the same id without touching each other", async () => {
+    await seedConversation(111);
+    const shared = "42";
+    for (const provider of ["feegow", "clinicorp"]) {
+      await appointmentBooked({
+        tenantId,
+        threadId: threadOf(111),
+        provider,
+        eventId: shared,
+        calendarId: null,
+        credentialRef: null,
+        startISO: inHours(provider === "feegow" ? 48 : 72),
+        summary: `Consulta ${provider}`,
+        calendarLabel: null,
+        reminders: { offsetsHours: [24], askConfirmationOnLast: false },
+        base: appDb,
+      });
+    }
+    const both = await runScopedOn(appDb, sysCtx(), (db) =>
+      loadAppointmentContext(db, tenantId, threadOf(111)),
+    );
+    expect(both.map((e) => e.provider)).toEqual(["feegow", "clinicorp"]);
+    // And no calendar is invented for them: the block would otherwise hand the model a calendar_id
+    // for a booking Google has never heard of.
+    expect(both.map((e) => e.calendarId)).toEqual([null, null]);
+    expect(both.map((e) => e.summary)).toEqual([
+      "Consulta feegow",
+      "Consulta clinicorp",
+    ]);
+    // The reminder jobs are keyed the same way, or the second arm would have replaced the first.
+    expect(
+      await runScopedOn(appDb, sysCtx(), (db) =>
+        db.schedulerJob.count({
+          where: {
+            tenantId,
+            kind: "APPOINTMENT_REMINDER",
+            dedupeKey: {
+              in: ["feegow/42:24", "clinicorp/42:24"].map(
+                (k) => `reminder:${k}`,
+              ),
+            },
+          },
+        }),
+      ),
+    ).toBe(2);
+
+    // Cancelling one leaves the other standing, record and reminder alike.
+    await cancelAppointment(tenantId, shared, appDb, "feegow");
+    const left = await runScopedOn(appDb, sysCtx(), (db) =>
+      loadAppointmentContext(db, tenantId, threadOf(111)),
+    );
+    expect(left.map((e) => e.provider)).toEqual(["clinicorp"]);
+    expect(
+      await runScopedOn(appDb, sysCtx(), (db) =>
+        db.schedulerJob.count({
+          where: {
+            tenantId,
+            kind: "APPOINTMENT_REMINDER",
+            dedupeKey: "reminder:clinicorp/42:24",
+            status: "PENDING",
+          },
+        }),
+      ),
+    ).toBe(1);
+    expect(await hasLiveAppointment(tenantId, threadOf(111), appDb)).toBe(true);
+  });
+
+  // (#352, and the reason the provider is a COLUMN.) The block's Google instruction is written into
+  // the system prompt of a real turn, and the same block can hold appointments that answer to it and
+  // appointments that do not. Measured on the prompt `loadAgentConfig` actually produces, with the
+  // Calendar write tools genuinely granted — the configuration where the model was previously told
+  // to cancel a Feegow booking with calendar_cancel_event.
+  test("(#352) the real prompt scopes the Google instruction to Google bookings", async () => {
+    await seedConversation(113);
+    const instance = await suDb.integrationInstance.create({
+      data: {
+        tenantId,
+        catalogType: "GOOGLE_CALENDAR",
+        name: `cal-${process.pid}`,
+        config: {},
+      },
+    });
+    await suDb.agentToolSelection.create({
+      data: {
+        tenantId,
+        agentId,
+        source: "INTEGRATION",
+        integrationInstanceId: instance.id,
+        knowledgeBaseIds: [],
+        enabledTools: ["calendar_create_event", "calendar_cancel_event"],
+      },
+    });
+    await appointmentBooked({
+      tenantId,
+      threadId: threadOf(113),
+      eventId: "ev_google_mix",
+      calendarId: "cal@group.calendar.google.com",
+      credentialRef: "vault:1",
+      startISO: inHours(24),
+      summary: "Consulta Google",
+      calendarLabel: "Agenda Dra. Ana",
+      reminders: null,
+      base: appDb,
+    });
+    await appointmentBooked({
+      tenantId,
+      threadId: threadOf(113),
+      provider: "feegow",
+      eventId: "77",
+      calendarId: null,
+      credentialRef: null,
+      startISO: inHours(30),
+      summary: "Consulta Feegow",
+      calendarLabel: null,
+      reminders: null,
+      base: appDb,
+    });
+    const prompt = await promptFor(113);
+    // The grant is real, so the Google affordance is there...
+    expect(prompt).toContain("calendar_cancel_event");
+    expect(prompt).toContain('event_id="ev_google_mix"');
+    expect(prompt).toContain('calendar_id="cal@group.calendar.google.com"');
+    // ...and the foreign booking is named as foreign, with no calendar invented for it and the
+    // Google tools explicitly fenced off.
+    expect(prompt).toContain('event_id="77"');
+    expect(prompt).toContain('source="feegow"');
+    expect(prompt).toContain("nunca calendar_update_event");
+    expect(prompt).not.toContain('event_id="77" calendar_id=');
+  });
+
+  // A booking RE-STATED at an earlier time. Arming only writes the offsets whose reminder time is
+  // still ahead, so the offsets the new start outran keep their old row: same dedupe key, old run
+  // time, old start in the payload. Measured on the un-fixed build: a booking 30h out with [24, 1],
+  // re-stated 2h out, left `reminder:<id>:24` PENDING to fire FOUR HOURS AFTER the appointment had
+  // already happened, describing the wrong day — and nothing downstream catches it, because
+  // `reminderAlreadyStarted` reads the payload's own stale start and a booking with no Google
+  // credential has no live event to be corrected against.
+  test("(#352) re-stating a booking earlier retires the reminders it outran", async () => {
+    await seedConversation(114);
+    const book = (hoursOut: number) =>
+      appointmentBooked({
+        tenantId,
+        threadId: threadOf(114),
+        provider: "feegow",
+        eventId: "restated",
+        calendarId: null,
+        credentialRef: null,
+        startISO: inHours(hoursOut),
+        summary: null,
+        calendarLabel: null,
+        reminders: { offsetsHours: [24, 1], askConfirmationOnLast: false },
+        base: appDb,
+      });
+    const rows = () =>
+      runScopedOn(appDb, sysCtx(), (db) =>
+        db.schedulerJob.findMany({
+          where: {
+            tenantId,
+            kind: "APPOINTMENT_REMINDER",
+            dedupeKey: { startsWith: "reminder:feegow/restated:" },
+          },
+          orderBy: { dedupeKey: "asc" },
+          select: { dedupeKey: true, status: true, payload: true },
+        }),
+      );
+
+    await book(30);
+    expect((await rows()).map((r) => [r.dedupeKey, r.status])).toEqual([
+      ["reminder:feegow/restated:1", "PENDING"],
+      ["reminder:feegow/restated:24", "PENDING"],
+    ]);
+
+    await book(2);
+    const after = await rows();
+    const tomb = (p: unknown) =>
+      (p as { cancelledAt?: string } | null)?.cancelledAt !== undefined;
+    // The 24h offset is 22 hours in the past for the new start, so nothing re-arms it: it has to be
+    // retired, or it fires on its own old schedule.
+    expect(after.map((r) => [r.dedupeKey, r.status, tomb(r.payload)])).toEqual([
+      ["reminder:feegow/restated:1", "PENDING", false],
+      ["reminder:feegow/restated:24", "DONE", true],
+    ]);
+    // And the survivor carries the NEW start, not the one it was armed with.
+    const survivorStart = (after[0]?.payload as { startISO?: string } | null)
+      ?.startISO;
+    expect(typeof survivorStart).toBe("string");
+    expect(Date.parse(survivorStart as string) - Date.now()).toBeLessThan(
+      3 * 3_600_000,
+    );
+  });
+
+  // The control, and the reason the retire is unconditional: reminders switched OFF between two
+  // statements of the same booking must not leave the first statement's reminders firing.
+  test("(#352) re-stating with reminders off leaves nothing armed", async () => {
+    await seedConversation(115);
+    await appointmentBooked({
+      tenantId,
+      threadId: threadOf(115),
+      provider: "feegow",
+      eventId: "off_after",
+      calendarId: null,
+      credentialRef: null,
+      startISO: inHours(30),
+      summary: null,
+      calendarLabel: null,
+      reminders: { offsetsHours: [24], askConfirmationOnLast: false },
+      base: appDb,
+    });
+    await appointmentBooked({
+      tenantId,
+      threadId: threadOf(115),
+      provider: "feegow",
+      eventId: "off_after",
+      calendarId: null,
+      credentialRef: null,
+      startISO: inHours(30),
+      summary: null,
+      calendarLabel: null,
+      reminders: null,
+      base: appDb,
+    });
+    expect(
+      await runScopedOn(appDb, sysCtx(), (db) =>
+        db.schedulerJob.count({
+          where: {
+            tenantId,
+            kind: "APPOINTMENT_REMINDER",
+            dedupeKey: { startsWith: "reminder:feegow/off_after:" },
+            status: "PENDING",
+          },
+        }),
+      ),
+    ).toBe(0);
+    // The appointment itself still stands — retiring the reminders is not cancelling the booking.
+    expect(await hasLiveAppointment(tenantId, threadOf(115), appDb)).toBe(true);
+  });
+
+  // The OTHER edge of the same unconditional retire (#352, round 5). A start the platform cannot
+  // read is not a re-statement: `recordAppointment` refuses to move the record on it and writes
+  // nothing, so the previous booking goes on standing at its old start. Retiring on that path would
+  // take its reminders with it and arm nothing back, leaving a live appointment the customer is
+  // never reminded of — and the only signal is the unreadable-start warning, which says nothing
+  // about reminders.
+  test("(#352) an unreadable re-statement leaves the standing booking's reminders alone", async () => {
+    await seedConversation(117);
+    const book = (startISO: string) =>
+      appointmentBooked({
+        tenantId,
+        threadId: threadOf(117),
+        provider: "feegow",
+        eventId: "unreadable",
+        calendarId: null,
+        credentialRef: null,
+        startISO,
+        summary: null,
+        calendarLabel: null,
+        reminders: { offsetsHours: [24], askConfirmationOnLast: false },
+        base: appDb,
+      });
+    const pending = () =>
+      runScopedOn(appDb, sysCtx(), (db) =>
+        db.schedulerJob.count({
+          where: {
+            tenantId,
+            kind: "APPOINTMENT_REMINDER",
+            dedupeKey: { startsWith: "reminder:feegow/unreadable:" },
+            status: "PENDING",
+          },
+        }),
+      );
+
+    expect((await book(inHours(48))).remindersArmed).toBe(1);
+    expect(await pending()).toBe(1);
+
+    // The operator's system answered with something no date parser accepts.
+    const again = await book("next tuesday-ish");
+    expect(again.record).toBe("unreadable-start");
+    expect(again.remindersArmed).toBe(0);
+
+    // Both halves are untouched: the appointment still stands at the readable start, and its
+    // reminder is still armed for it.
+    expect(await pending()).toBe(1);
+    expect(await hasLiveAppointment(tenantId, threadOf(117), appDb)).toBe(true);
+  });
+
+  // (#352, round 10) The retire has to survive the re-arm that FOLLOWS it. `isRetired` asks two
+  // questions — is there a tombstone, and did the claim token move — and the re-arm answers the first
+  // one away: enqueueJob's upsert replaces the payload wholesale, so a row a handler had already
+  // CLAIMED comes back with no stamp. Without the token moving too, that handler goes on to send a
+  // reminder built from its claim-time payload, announcing the start the re-statement just replaced.
+  // The very defect the retire exists to prevent, through the in-flight door instead of a leftover
+  // PENDING row.
+  test("(#352) a re-statement retires the reminder a handler is already running", async () => {
+    await seedConversation(119);
+    const book = (hoursOut: number) =>
+      appointmentBooked({
+        tenantId,
+        threadId: threadOf(119),
+        provider: "feegow",
+        eventId: "inflight",
+        calendarId: null,
+        credentialRef: null,
+        startISO: inHours(hoursOut),
+        summary: null,
+        calendarLabel: null,
+        reminders: { offsetsHours: [24], askConfirmationOnLast: false },
+        base: appDb,
+      });
+    const readRow = () =>
+      runScopedOn(appDb, sysCtx(), (db) =>
+        db.schedulerJob.findFirstOrThrow({
+          where: {
+            tenantId,
+            kind: "APPOINTMENT_REMINDER",
+            dedupeKey: "reminder:feegow/inflight:24",
+          },
+          select: { id: true, claimSeq: true, payload: true, status: true },
+        }),
+      );
+
+    await book(48);
+    // A worker picks it up: this is the snapshot the running handler holds.
+    const before = await readRow();
+    await runScopedOn(appDb, sysCtx(), (db) =>
+      db.schedulerJob.update({
+        where: { id: before.id },
+        data: { status: "CLAIMED" },
+      }),
+    );
+    const claimed: ClaimedJob = {
+      id: before.id,
+      tenantId,
+      kind: "APPOINTMENT_REMINDER",
+      payload: before.payload as Record<string, unknown>,
+      attempts: 0,
+      claimSeq: before.claimSeq,
+    };
+
+    // The customer moves the appointment while that handler is mid-run. 36h out keeps the 24h offset
+    // alive, so the row is re-armed rather than left retired — which is what clears the tombstone.
+    await book(36);
+    const after = await readRow();
+    expect(
+      (after.payload as { cancelledAt?: unknown } | null)?.cancelledAt,
+    ).toBeUndefined();
+
+    // Neither signal is the tombstone, so the token is the one that has to have moved.
+    expect(await jobRetired(claimed, appDb)).toBe(true);
+  });
+
+  // (#352, round 5) "primary" is a real Google calendar. A booking that lives in the operator's own
+  // system has no calendar at all, and the payload is what the nudge's fenced data is built from, so
+  // a fill-in here reaches the model as `calendar_id=primary` for an appointment Google never saw.
+  // The context block already answers this question by emitting no calendar_id for those bookings.
+  test("(#352) a declared booking arms reminders with no calendar id", async () => {
+    await seedConversation(118);
+    await appointmentBooked({
+      tenantId,
+      threadId: threadOf(118),
+      provider: "feegow",
+      eventId: "nocal",
+      calendarId: null,
+      credentialRef: null,
+      startISO: inHours(48),
+      summary: null,
+      calendarLabel: null,
+      reminders: { offsetsHours: [24], askConfirmationOnLast: false },
+      base: appDb,
+    });
+    const row = await runScopedOn(appDb, sysCtx(), (db) =>
+      db.schedulerJob.findFirst({
+        where: {
+          tenantId,
+          kind: "APPOINTMENT_REMINDER",
+          dedupeKey: "reminder:feegow/nocal:24",
+        },
+        select: { payload: true },
+      }),
+    );
+    expect((row?.payload as { calendarId?: unknown } | null)?.calendarId).toBe(
+      null,
+    );
+    // (#352, round 8) And the payload says WHICH system, because two of them may issue the same id:
+    // the reminder turn holds `42` and, without this, no way to name the system that issued it.
+    expect((row?.payload as { provider?: unknown } | null)?.provider).toBe(
+      "feegow",
+    );
+
+    // The control: a Google booking with no explicit calendar still gets Google's own default.
+    await appointmentBooked({
+      tenantId,
+      threadId: threadOf(118),
+      eventId: "gcal",
+      calendarId: null,
+      credentialRef: "vault:1",
+      startISO: inHours(48),
+      summary: null,
+      calendarLabel: null,
+      reminders: { offsetsHours: [24], askConfirmationOnLast: false },
+      base: appDb,
+    });
+    const gRow = await runScopedOn(appDb, sysCtx(), (db) =>
+      db.schedulerJob.findFirst({
+        where: {
+          tenantId,
+          kind: "APPOINTMENT_REMINDER",
+          dedupeKey: "reminder:gcal:24",
+        },
+        select: { payload: true },
+      }),
+    );
+    expect((gRow?.payload as { calendarId?: unknown } | null)?.calendarId).toBe(
+      "primary",
+    );
+    expect((gRow?.payload as { provider?: unknown } | null)?.provider).toBe(
+      "google_calendar",
+    );
+  });
+
+  // The reminder key is read back by PREFIX, so an id that contains the delimiter puts a second
+  // appointment inside the first one's prefix. A declared id is whatever the operator's system
+  // answers with, and `clinic:123` is an ordinary shape.
+  test("(#352) an id containing the delimiter does not reach its neighbour", async () => {
+    await seedConversation(116);
+    for (const eventId of ["foo", "foo:bar"]) {
+      await appointmentBooked({
+        tenantId,
+        threadId: threadOf(116),
+        provider: "clinic",
+        eventId,
+        calendarId: null,
+        credentialRef: null,
+        startISO: inHours(48),
+        summary: eventId,
+        calendarLabel: null,
+        reminders: { offsetsHours: [24], askConfirmationOnLast: false },
+        base: appDb,
+      });
+    }
+    const pending = () =>
+      runScopedOn(appDb, sysCtx(), (db) =>
+        db.schedulerJob.findMany({
+          where: {
+            tenantId,
+            kind: "APPOINTMENT_REMINDER",
+            status: "PENDING",
+            dedupeKey: { startsWith: "reminder:clinic/" },
+          },
+          select: { dedupeKey: true },
+        }),
+      );
+    // Sorted here, never by the database: `%` and `:` order differently under different collations,
+    // and the CI runs a different one from this machine.
+    const keys = async () => (await pending()).map((r) => r.dedupeKey).sort();
+    expect(await keys()).toEqual([
+      "reminder:clinic/foo%3Abar:24",
+      "reminder:clinic/foo:24",
+    ]);
+
+    // Retiring `foo` must not reach `foo:bar`, whose key would sit inside `reminder:clinic/foo:`
+    // if the id were not encoded.
+    await cancelAppointment(tenantId, "foo", appDb, "clinic");
+    expect(await keys()).toEqual(["reminder:clinic/foo%3Abar:24"]);
+    const left = await runScopedOn(appDb, sysCtx(), (db) =>
+      loadAppointmentContext(db, tenantId, threadOf(116)),
+    );
+    expect(left.map((e) => e.eventId)).toEqual(["foo:bar"]);
+  });
+
+  // The other half of the same rule: a Google appointment keeps the BARE event id in its dedupe key,
+  // because every reminder armed before providers existed is keyed that way and a cancel that
+  // started prefixing them would leave a real customer reminder firing.
+  test("(#352) a Google appointment's reminder key is unchanged", async () => {
+    await seedConversation(112);
+    await appointmentBooked({
+      tenantId,
+      threadId: threadOf(112),
+      eventId: "ev_gcal_key",
+      calendarId: "primary",
+      credentialRef: "vault:1",
+      startISO: inHours(48),
+      summary: null,
+      calendarLabel: null,
+      reminders: { offsetsHours: [24], askConfirmationOnLast: false },
+      base: appDb,
+    });
+    expect(
+      await runScopedOn(appDb, sysCtx(), (db) =>
+        db.schedulerJob.count({
+          where: {
+            tenantId,
+            kind: "APPOINTMENT_REMINDER",
+            dedupeKey: "reminder:ev_gcal_key:24",
+          },
+        }),
+      ),
+    ).toBe(1);
   });
 });

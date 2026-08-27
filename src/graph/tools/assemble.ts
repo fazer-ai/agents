@@ -11,7 +11,7 @@ import {
   tryResolveVaultEntry,
 } from "@/modules/vault/service";
 import type { DocumentSelection } from "./documents";
-import { buildHttpTool, type HttpToolDef } from "./http";
+import { buildHttpTool, type HttpToolDef, type HttpToolDeps } from "./http";
 import type { McpSelection } from "./mcp";
 
 // Per-agent tool assembly with fail-closed allowlists. The single source of truth is the
@@ -63,6 +63,11 @@ export interface LoadedHttpToolDef {
   // forgotten in — silently, since a missing column reads as `undefined` and normalizes to "declare
   // nothing". Keeping it required makes both the select and the mapping a compile error to skip.
   expectedStatuses: number[];
+  // What this tool's response declares about an appointment, or null when it declares nothing
+  // (issue #352). Required for the same reason `expectedStatuses` above is: a column that can be
+  // forgotten in the `select` reads as `undefined` and normalizes to "declare nothing", which is a
+  // feature going silently missing rather than failing.
+  appointment: unknown;
 }
 
 export interface AgentToolSelections {
@@ -199,6 +204,7 @@ export async function loadToolSelections(
           ackEnabled: true,
           ackMessage: true,
           expectedStatuses: true,
+          appointment: true,
         },
       },
       mcpServerConnection: {
@@ -282,6 +288,7 @@ export async function loadToolSelections(
           query: td.query,
           body: td.body,
           expectedStatuses: td.expectedStatuses,
+          appointment: td.appointment,
         });
         break;
       }
@@ -423,6 +430,15 @@ export interface HttpToolBuildDeps {
   // Conversation/contact context for {{placeholder}} interpolation in fixed fields, headers, URL and
   // the raw body (e.g. {{conversation_id}}, {{contact_name}}). Never a secret.
   context?: Record<string, string>;
+  // Passed straight through to every tool built here, for the ones whose definition declares that
+  // their response describes an appointment (issue #352). Named individually rather than spread from
+  // HttpToolDeps so that adding a dep to the runtime does not silently widen what this layer
+  // forwards.
+  // The agent zone an offset-less start is read in, same reason as the rest of this block.
+  timezone?: HttpToolDeps["timezone"];
+  appointmentBooked?: HttpToolDeps["appointmentBooked"];
+  cancelAppointment?: HttpToolDeps["cancelAppointment"];
+  onSideEffectError?: HttpToolDeps["onSideEffectError"];
 }
 
 // Builds StructuredTools from loaded ToolDefinition rows. Network (the actual HTTP call) happens
@@ -448,6 +464,7 @@ export function buildHttpTools(
       query: d.query,
       body: d.body,
       expectedStatuses: d.expectedStatuses,
+      appointment: d.appointment,
     };
     return buildHttpTool(def, deps);
   });

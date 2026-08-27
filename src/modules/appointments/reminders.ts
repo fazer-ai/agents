@@ -11,6 +11,10 @@ import {
   parseStartMs,
 } from "@/modules/appointments/context";
 import {
+  GOOGLE_CALENDAR_PROVIDER,
+  reminderScopeId,
+} from "@/modules/appointments/provider";
+import {
   cancelAppointmentRecord,
   cancelThreadAppointmentRecords,
   type RecordAppointmentResult,
@@ -48,9 +52,11 @@ function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
 }
 
-// The dedupeKey prefix for ALL of an event's reminders — cancelAppointment drops them by it.
-function reminderPrefix(eventId: string): string {
-  return `reminder:${eventId}:`;
+// The dedupeKey prefix for ALL of an appointment's reminders — cancelAppointment drops them by it.
+// Keyed by the PROVIDER-scoped id, so two operator systems that both count from 1 do not share a
+// dedupe key (and a Google appointment keeps the bare event id it has always been keyed by).
+function reminderPrefix(provider: string, eventId: string): string {
+  return `reminder:${reminderScopeId(provider, eventId)}:`;
 }
 
 export interface ReminderJob {
@@ -90,8 +96,16 @@ export function computeReminderJobs(
 export interface ScheduleAppointmentRemindersArgs {
   tenantId: bigint;
   threadId: string;
+  // The system that owns the booking; defaults to Google Calendar. It keys the dedupe AND travels in
+  // the payload, but never inside eventId: the id is what the reminder turn quotes back and what a
+  // Google lookup asks for, so it stays exactly as the owning system stated it, and the provider
+  // rides beside it.
+  provider?: string;
   eventId: string;
-  calendarId: string;
+  // Null when no Google calendar is behind the booking. It travels into the payload as null and
+  // reaches the nudge as an absent ref: "primary" is a real Google identifier, and writing it for a
+  // booking that lives in the operator's own system hands the model an id nobody issued (issue #352).
+  calendarId: string | null;
   credentialRef: string | null;
   startISO: string;
   offsetsHours: number[];
@@ -118,7 +132,10 @@ export async function enqueueAppointmentReminders(
     await enqueue({
       tenantId: args.tenantId,
       kind: "APPOINTMENT_REMINDER",
-      dedupeKey: `${reminderPrefix(args.eventId)}${j.offsetHours}`,
+      dedupeKey: `${reminderPrefix(
+        args.provider ?? GOOGLE_CALENDAR_PROVIDER,
+        args.eventId,
+      )}${j.offsetHours}`,
       // NOTE: Armed when a customer books or reschedules, so the row being reused means the
       // appointment MOVED: the previous arm was cancelled (cancelAppointment) and this is
       // a different send, at a different time, for a start the previous one no longer describes.
@@ -126,6 +143,7 @@ export async function enqueueAppointmentReminders(
       runAt: j.runAt,
       payload: {
         threadId: args.threadId,
+        provider: args.provider ?? GOOGLE_CALENDAR_PROVIDER,
         eventId: args.eventId,
         calendarId: args.calendarId,
         credentialRef: args.credentialRef,
@@ -145,6 +163,9 @@ export async function enqueueAppointmentReminders(
 export interface AppointmentBookedArgs {
   tenantId: bigint;
   threadId: string;
+  // The system that owns the booking. Absent means Google Calendar, which is what every caller was
+  // until a tool definition could declare one of its own (issue #352).
+  provider?: string;
   eventId: string;
   startISO: string;
   summary?: string | null;
@@ -203,25 +224,55 @@ export async function appointmentBooked(
 ): Promise<AppointmentBookedResult> {
   let remindersArmed = 0;
   let armError: unknown;
+  // The start is judged ONCE, before either half, because both answer to it. An unreadable start is
+  // not a re-statement of the appointment: recordAppointment refuses to move the record on it (it
+  // returns "unreadable-start" and writes nothing), so retiring here would strand the PREVIOUS
+  // booking, still standing at its old start, with every reminder it had gone and nothing armed in
+  // their place. Nothing is read, so nothing changes, on either side.
+  const startReadable = Number.isFinite(parseStartMs(args.startISO));
   try {
-    if (args.reminders) {
-      remindersArmed = await enqueueAppointmentReminders(
-        {
-          tenantId: args.tenantId,
-          threadId: args.threadId,
-          eventId: args.eventId,
-          calendarId: args.calendarId ?? "primary",
-          credentialRef: args.credentialRef ?? null,
-          startISO: args.startISO,
-          offsetsHours: args.reminders.offsetsHours,
-          askConfirmationOnLast: args.reminders.askConfirmationOnLast,
-          summary: args.summary,
-          calendarLabel: args.calendarLabel,
-          base: args.base,
-          now: args.now,
-        },
-        enqueue,
+    // RETIRE FIRST, and unconditionally. Arming only writes the offsets whose time is still ahead,
+    // so re-stating a booking at an EARLIER time silently keeps the offsets it outran — see
+    // retireReminderJobs. Unconditional because `reminders: null` is also a re-statement: an
+    // integration whose reminders were switched off between two bookings of the same appointment
+    // must not leave the first booking's reminders firing.
+    if (startReadable) {
+      await retireReminderJobs(
+        args.tenantId,
+        args.provider ?? GOOGLE_CALENDAR_PROVIDER,
+        args.eventId,
+        args.base ?? basePrisma,
+        // A re-statement: the arm right below replaces the payload of every offset that survives,
+        // taking the tombstone with it, so the token is the only mark that outlives it.
+        true,
       );
+      if (args.reminders) {
+        remindersArmed = await enqueueAppointmentReminders(
+          {
+            tenantId: args.tenantId,
+            threadId: args.threadId,
+            provider: args.provider,
+            eventId: args.eventId,
+            // "primary" is Google's own default calendar, so it is the right fill-in there and only
+            // there. A booking from the operator's system has no calendar at all — see the field.
+            calendarId:
+              args.calendarId ??
+              ((args.provider ?? GOOGLE_CALENDAR_PROVIDER) ===
+              GOOGLE_CALENDAR_PROVIDER
+                ? "primary"
+                : null),
+            credentialRef: args.credentialRef ?? null,
+            startISO: args.startISO,
+            offsetsHours: args.reminders.offsetsHours,
+            askConfirmationOnLast: args.reminders.askConfirmationOnLast,
+            summary: args.summary,
+            calendarLabel: args.calendarLabel,
+            base: args.base,
+            now: args.now,
+          },
+          enqueue,
+        );
+      }
     }
   } catch (e) {
     armError = e;
@@ -229,6 +280,7 @@ export async function appointmentBooked(
   const record = await recordAppointment({
     tenantId: args.tenantId,
     threadId: args.threadId,
+    provider: args.provider,
     externalId: args.eventId,
     startISO: args.startISO,
     summary: args.summary,
@@ -252,12 +304,37 @@ export async function cancelAppointment(
   tenantId: bigint,
   eventId: string,
   base: PrismaClient = basePrisma,
+  provider: string = GOOGLE_CALENDAR_PROVIDER,
 ): Promise<void> {
-  await cancelAppointmentRecord(tenantId, eventId, base);
+  await cancelAppointmentRecord(tenantId, eventId, base, provider);
+  // No arm follows a cancel, so the tombstone stands alone and the in-flight run keeps its token.
+  await retireReminderJobs(tenantId, provider, eventId, base, false);
+}
+
+// The JOBS half of the cancel above, on its own because re-arming needs it without the record half.
+// Every reminder of this appointment stops: pending rows called off, every row tombstoned.
+//
+// The tombstone is what makes a RE-ARM complete rather than partial. `enqueueAppointmentReminders`
+// writes only the offsets whose time is still ahead, so an appointment moved EARLIER leaves the
+// offsets it outran untouched — same dedupe key, old run time, old start in the payload. Measured:
+// a booking 30h out with `[24, 1]`, re-stated 2h out, left `reminder:<id>:24` PENDING to fire FOUR
+// HOURS AFTER the appointment had already happened, describing the wrong day. Nothing downstream
+// catches it: `reminderAlreadyStarted` reads the payload's own stale start, and a booking with no
+// Google credential has no live event to be corrected against.
+async function retireReminderJobs(
+  tenantId: bigint,
+  provider: string,
+  eventId: string,
+  base: PrismaClient,
+  // Whether an arm follows and may REPLACE the payload of the offsets that survive. Required rather
+  // than defaulted: the two callers want opposite answers, and a default is how the next caller gets
+  // the wrong one silently. See the note on the token bump below.
+  armFollows: boolean,
+): Promise<void> {
   await cancelPendingJobsByPrefix(
     tenantId,
     "APPOINTMENT_REMINDER",
-    reminderPrefix(eventId),
+    reminderPrefix(provider, eventId),
     base,
   );
   // NOTE: Tombstone EVERY row of this event (fired DONE rows included). Cancelling marks jobs DONE,
@@ -266,13 +343,34 @@ export async function cancelAppointment(
   // re-arm replaces the payload wholesale (enqueueJob's upsert is authoritative), clearing the stamp
   // on the offsets that survive. One atomic jsonb merge, never read-modify-write: a concurrent
   // re-arm's payload is stamped or replaced whole, so a stale snapshot can never clobber it.
+  //
+  // THE CLAIM TOKEN MOVES ONLY WHEN AN ARM FOLLOWS, and the asymmetry is the point.
+  //
+  // `isRetired` asks two questions: is there a tombstone, and did the claim token move. A re-arm
+  // ANSWERS THE FIRST ONE AWAY — enqueueJob's upsert replaces the payload, so a row already CLAIMED
+  // by a running handler comes back with no stamp and its original token, and that handler goes on to
+  // send a reminder built from its claim-time payload, announcing the start the re-statement just
+  // replaced. Only the token survives that rewrite, which is the same reasoning cancelJobsByKey
+  // spells out for /reset ("two marks, because neither survives alone").
+  //
+  // On a CANCEL nothing follows, so the tombstone stands on its own and moving the token would only
+  // fence the in-flight run's own bookkeeping: `rescheduleJob` CASes on the token the claim handed
+  // out, and issue #281 chose to let a run that could not author carry its retry counter forward, by
+  // MERGING it rather than replacing the payload. That choice is still right where no arm can erase
+  // the mark it merges into, and this parameter is what keeps the two callers from having to share
+  // one answer.
   await runScopedOn(base, sysCtx(tenantId), async (db) => {
     // LIKE needs its own escaping (Google recurrence ids carry `_`).
-    const likePrefix = `${reminderPrefix(eventId).replace(/[\\%_]/g, "\\$&")}%`;
+    const likePrefix = `${reminderPrefix(provider, eventId).replace(
+      /[\\%_]/g,
+      "\\$&",
+    )}%`;
     const stamp = JSON.stringify({ cancelledAt: new Date().toISOString() });
     await db.$executeRaw`
       UPDATE scheduler_jobs
-         SET payload = payload || ${stamp}::jsonb, updated_at = now()
+         SET payload = payload || ${stamp}::jsonb,
+             claim_seq = claim_seq + ${armFollows ? 1 : 0},
+             updated_at = now()
        WHERE tenant_id = ${tenantId}
          AND kind = 'APPOINTMENT_REMINDER'
          AND dedupe_key LIKE ${likePrefix}`;
@@ -368,7 +466,24 @@ export interface ReminderNudgeArgs {
   summary: string;
   startISO: string;
   eventId: string;
-  calendarId: string;
+  // The system that owns the booking, named to the model for a foreign one. Two operator systems may
+  // both answer with `42` (that is why they key the record separately), and without this the reminder
+  // turn holds an id and no way to say which system it belongs to. Omitted for Google, whose
+  // appointments are identified by the calendar_id ref instead — the same split the per-turn
+  // appointment block makes, and the two have to keep agreeing (issue #352).
+  provider: string;
+  // Null for a booking with no Google calendar behind it: the ref is then omitted from the fenced
+  // data entirely, rather than carrying "primary", which names a real Google calendar the operator's
+  // system never wrote to. The context block already answers the same question by emitting no
+  // calendar_id for those appointments; this is the same rule on the reminder path (issue #352).
+  calendarId: string | null;
+  // Whether the calendar tools can actually act on THIS appointment. False for a booking that lives
+  // in the operator's own system and reached the platform through a tool's declaration (issue #352):
+  // there is no Google event behind it, so naming calendar_update_event at the model is pointing it
+  // at a tool that cannot touch this booking — the same reason buildAppointmentContextSection gates
+  // its own tool pointer. The discriminator is the credential: a Calendar booking cannot exist
+  // without one, since the create call needs the token it resolves.
+  canOperate: boolean;
 }
 
 // Pure: the system nudge for a reminder. The event's identity travels as fenced-data refs (the ids
@@ -376,16 +491,44 @@ export interface ReminderNudgeArgs {
 // cannot tell WHICH appointment the reminder was about), and the instructions point at the refs by
 // key. On the last reminder with confirmation enabled, instruct the agent to ask for confirmation
 // and to mark the event via calendar_confirm_appointment.
+//
+// Without the calendar tools behind it, the SAME reminder goes out and only the tool sentence
+// changes: the customer still hears the date and time, and the agent is told to handle a reschedule
+// the way it handles anything else it has no tool for, instead of being handed the name of one that
+// cannot reach this booking.
 export function reminderNudge(a: ReminderNudgeArgs): AgentNudge {
   const wantsConfirmation = a.isLast && a.askConfirmation;
+  const base = wantsConfirmation
+    ? "This is the final reminder before the appointment. Remind the customer warmly of the date and time, and ASK them to confirm they will attend."
+    : "Remind the customer warmly of their upcoming appointment, stating the date and time. Keep it short and natural.";
+  const tools = wantsConfirmation
+    ? " If they confirm, call calendar_confirm_appointment with eventId set to the event_id value from the fenced data line (and calendarId set to the calendar_id value)."
+    : " If they ask to reschedule or cancel, use calendar_update_event / calendar_cancel_event with eventId set to the event_id value from the fenced data line (and calendarId set to the calendar_id value).";
+  // Names no tool, and asserts the absence of none either. Which Calendar tool cannot reach this
+  // booking is knowable here; which tool CAN is not: the operator may have granted this booking
+  // system's own HTTP cancel or reschedule tool this very turn, and buildAppointmentContextSection,
+  // which reaches the same model in the same prompt, points it at exactly that. A flat "you have no
+  // tool" would be false whenever such a grant exists and would contradict the block above it, so
+  // the sentence defers to a tool it cannot enumerate and falls back to passing the request on.
+  const noTools = wantsConfirmation
+    ? " Record what they answer in your reply, and mark the appointment as confirmed with this booking system's own tool if you have one."
+    : " If they ask to reschedule or cancel, use this booking system's own tool if you have one, and otherwise say you will pass the request on.";
   return {
     source: "appointment_reminder",
     kind: "reminder",
     summary: `Upcoming appointment "${a.summary}" starting at ${a.startISO}.`,
-    refs: { event_id: a.eventId, calendar_id: a.calendarId },
-    instructions: wantsConfirmation
-      ? "This is the final reminder before the appointment. Remind the customer warmly of the date and time, and ASK them to confirm they will attend. If they confirm, call calendar_confirm_appointment with eventId set to the event_id value from the fenced data line (and calendarId set to the calendar_id value)."
-      : "Remind the customer warmly of their upcoming appointment, stating the date and time. Keep it short and natural. If they ask to reschedule or cancel, use calendar_update_event / calendar_cancel_event with eventId set to the event_id value from the fenced data line (and calendarId set to the calendar_id value).",
+    refs: {
+      event_id: a.eventId,
+      calendar_id: a.calendarId,
+      // `booking_system`, not `source`: the nudge renderer already emits the nudge's OWN kind as
+      // `source=appointment_reminder` on this very line, and two different meanings under one name is
+      // worse than the missing ref was. The per-turn appointment block calls it `source` because it
+      // sits inside that appointment's own element, where nothing else claims the name.
+      // Falsy refs are dropped by the renderer, so Google's own name never reaches the model here.
+      booking_system:
+        a.provider === GOOGLE_CALENDAR_PROVIDER ? null : a.provider,
+    },
+    instructions: `${base}${a.canOperate ? tools : noTools}`,
   };
 }
 
@@ -507,10 +650,17 @@ export async function appointmentReminderHandler(
   if (!threadId || !eventId) return { outcome: "done" };
   const parsed = parseThreadId(threadId);
   if (!parsed || parsed.tenantId !== job.tenantId) return { outcome: "done" };
-  const calendarId =
-    typeof p.calendarId === "string" ? p.calendarId : "primary";
+  // Null survives all the way to the nudge's refs (see ReminderNudgeArgs.calendarId). The Google
+  // lookup below is the one place that needs a concrete calendar, and it is only reached with a
+  // credential, which is exactly when the payload carries a real one.
+  const calendarId = typeof p.calendarId === "string" ? p.calendarId : null;
   const credentialRef =
     typeof p.credentialRef === "string" ? p.credentialRef : null;
+  // Absent on every row armed before this shipped, and Google is what every one of those was.
+  const provider =
+    typeof p.provider === "string" && p.provider
+      ? p.provider
+      : GOOGLE_CALENDAR_PROVIDER;
   const startISO = typeof p.startISO === "string" ? p.startISO : "";
   const isLast = p.isLast === true;
   const askConfirmation = p.askConfirmation === true;
@@ -546,7 +696,10 @@ export async function appointmentReminderHandler(
   let summary =
     typeof p.summary === "string" && p.summary ? p.summary : "your appointment";
   let live: EventStatus | undefined;
-  if (credentialRef) {
+  // Both, not just the credential: a Google lookup asks for an event ON a calendar, so a payload
+  // that names none has nothing to ask. Today only a declared booking is in that shape and it never
+  // carries a credential either, which is why this reads as the type narrowing it also is.
+  if (credentialRef && calendarId) {
     live = await fetchEventStatus(
       tenantId,
       credentialRef,
@@ -584,6 +737,9 @@ export async function appointmentReminderHandler(
     nudge: reminderNudge({
       isLast,
       askConfirmation,
+      // See ReminderNudgeArgs.canOperate: the credential is what says a Google event is behind this.
+      canOperate: credentialRef !== null,
+      provider,
       summary,
       // The same value the start check just used, for the reason its header gives.
       startISO: authoritativeReminderStart(live, startISO),

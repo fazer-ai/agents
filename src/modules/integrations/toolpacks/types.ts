@@ -61,7 +61,12 @@ export interface ToolpackCtx {
   // pause as well (issue #376).
   appointmentBooked?: (args: {
     eventId: string;
-    calendarId: string;
+    // The booking system and the calling tool's name. A toolpack passes neither: it IS Google
+    // Calendar, which is what both default to. They exist for the HTTP tool whose DEFINITION
+    // declares an appointment (issue #352) — see graph/tools/http.ts.
+    provider?: string;
+    tool?: string;
+    calendarId?: string | null;
     startISO: string;
     credentialRef: string | null;
     reminders: {
@@ -76,7 +81,10 @@ export interface ToolpackCtx {
   // The appointment stopped standing: retire the record and its pending reminders (Calendar cancel;
   // the toolpack re-arms on reschedule by calling appointmentBooked again). Same gating as
   // appointmentBooked.
-  cancelAppointment?: (eventId: string) => Promise<void>;
+  cancelAppointment?: (
+    eventId: string,
+    opts?: { provider?: string; tool?: string },
+  ) => Promise<void>;
   // NOTE: Reports a side effect that failed INSIDE a tool that still returns success to the model
   // (e.g. the Asaas charge exists but persisting the correlation ref failed). prepare.ts binds this to a
   // flowlog `tool`-stage warn so the failure reaches the Logs page and alert channels; absent

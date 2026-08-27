@@ -571,7 +571,7 @@ describe("google calendar toolpack — appointment reminders + confirmation", ()
     });
     const scheduled: Array<{
       eventId: string;
-      calendarId: string;
+      calendarId?: string | null;
       startISO: string;
       credentialRef: string | null;
       reminders: {

@@ -18,6 +18,7 @@ describe("buildAppointmentContextSection", () => {
     eventId: "ev_1",
     calendarId: "cal@group.calendar.google.com",
     calendarLabel: "Agenda Dra. Ana",
+    provider: "google_calendar",
     startISO: FUTURE,
     summary: "Consulta",
   };
@@ -28,7 +29,7 @@ describe("buildAppointmentContextSection", () => {
 
   test("carries event_id, calendar_id, label, start and summary as XML attributes", () => {
     const s = buildAppointmentContextSection([event], true);
-    expect(s).toContain("## Agendamentos deste atendimento (Google Calendar)");
+    expect(s).toContain("## Agendamentos deste atendimento");
     expect(s).toContain('event_id="ev_1"');
     expect(s).toContain('calendar_id="cal@group.calendar.google.com"');
     expect(s).toContain('calendar="Agenda Dra. Ana"');
@@ -51,6 +52,50 @@ describe("buildAppointmentContextSection", () => {
     expect(withTools).toContain("event_id");
     const readOnly = buildAppointmentContextSection([event], false);
     expect(readOnly).not.toContain("calendar_update_event");
+  });
+
+  // `canOperate` answers for the TOOLSET and the provider answers for the APPOINTMENT, and an
+  // operator who declares bookings from their own system (issue #352) while also granting the
+  // Calendar toolpack has both in one block. Pointing the model at calendar_cancel_event with a
+  // Feegow id is a call that cannot work, made against a booking that is real.
+  const foreign = {
+    ...event,
+    eventId: "42",
+    provider: "feegow",
+    calendarId: null,
+    calendarLabel: null,
+  };
+
+  test("a foreign appointment is never pointed at the Google tools", () => {
+    const s = buildAppointmentContextSection([foreign], true);
+    expect(s).toContain('event_id="42"');
+    expect(s).toContain('source="feegow"');
+    // No calendar exists, so no calendar id is invented for it.
+    expect(s).not.toContain("calendar_id=");
+    expect(s).not.toContain("para reagendar use calendar_update_event");
+    expect(s).toContain("nunca calendar_update_event");
+  });
+
+  test("a Google appointment carries no source attribute", () => {
+    const s = buildAppointmentContextSection([event], true);
+    expect(s).not.toContain("source=");
+    expect(s).not.toContain("nunca calendar_update_event");
+  });
+
+  test("a mixed block scopes each instruction to the appointments it can reach", () => {
+    const s = buildAppointmentContextSection([event, foreign], true);
+    // The Google half keeps its affordance...
+    expect(s).toContain("Para os agendamentos que trazem calendar_id");
+    expect(s).toContain("calendar_update_event");
+    // ...and the foreign half is fenced off from it in the same paragraph.
+    expect(s).toContain("nunca calendar_update_event");
+    expect(s).toContain('source="feegow"');
+  });
+
+  test("without the calendar tools, a foreign appointment says nothing about Google", () => {
+    const s = buildAppointmentContextSection([foreign], false);
+    expect(s).not.toContain("Você NÃO tem ferramentas do Google Calendar aqui");
+    expect(s).toContain("outro sistema");
   });
 });
 

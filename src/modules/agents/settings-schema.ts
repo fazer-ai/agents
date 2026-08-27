@@ -610,17 +610,42 @@ const kanban = z.looseObject({
 // publish "any string" and let a typo be accepted by the API and ignored by the turn, which for a
 // precondition means an unguarded tool that reads as guarded. Generated from NATIVE_TOOL_NAMES so a
 // tool added later is publishable the day it ships instead of the day someone remembers this file.
+// NOTE: `__proto__` is refused BEFORE the object parser can lose it. It is the one key name that
+// survives JSON.parse as an own property and then disappears inside zod's loose-object rebuild, so
+// the entry reaches neither the write boundary nor the merge and the call answers ok having done
+// nothing — a tombstone the caller believes deleted an enforced rule, or a rule the catalog refusal
+// never sees. Checked on the RAW value, which is the only place it still exists.
+//
+// The runtime half of this hazard is already closed (#378 keys these maps on null-prototype objects
+// and looks up with Object.hasOwn); this is the same name at the transport boundary, where the loss
+// runs the other way.
+const refuseProtoKey = <T extends z.ZodObject>(schema: T) =>
+  schema.check((ctx) => {
+    const raw = ctx.value as Record<string, unknown> | null;
+    if (raw && Object.hasOwn(raw, "__proto__")) {
+      ctx.issues.push({
+        code: "custom",
+        input: ctx.value,
+        path: [],
+        message:
+          "__proto__ is not a usable tool name: it cannot survive parsing, so the entry would be silently dropped",
+      });
+    }
+  });
+
 const nativeToolKeys = <T extends z.ZodTypeAny>(value: T) => {
   // ONE instance shared by all thirteen keys, not thirteen `.optional()` calls. This is about the
   // PUBLISHED schema, not about the parse: distinct instances serialize as thirteen full copies of
   // the value, which for the precondition object alone came to 5.2 KB — 23% of the whole tool's
   // schema, for one block, in a catalogue the model pays for on every conversation.
   const shared = value.optional();
-  return z.looseObject(
-    Object.fromEntries(NATIVE_TOOL_NAMES.map((n) => [n, shared])) as Record<
-      (typeof NATIVE_TOOL_NAMES)[number],
-      z.ZodOptional<T>
-    >,
+  return refuseProtoKey(
+    z.looseObject(
+      Object.fromEntries(NATIVE_TOOL_NAMES.map((n) => [n, shared])) as Record<
+        (typeof NATIVE_TOOL_NAMES)[number],
+        z.ZodOptional<T>
+      >,
+    ),
   );
 };
 

@@ -600,6 +600,32 @@ export async function agentSettingsSet(
       (patch as Record<string, unknown>)[key] = value;
     }
   }
+  // NOTE: An EMPTY tool-keyed block is refused, and the reason is a key that no longer exists by the
+  // time this runs. `__proto__` survives JSON.parse as an own property and is then dropped inside
+  // zod's loose-object rebuild — inside the SDK's own argument parse, so it is gone before this
+  // function is entered. The patch arrives as `{}`, reaches neither the write boundary nor the
+  // merge, and the call answered `{"dryRun":true,"diff":{}}`: for a tombstone, "the rule you asked
+  // to delete is gone" while the runtime still enforces it.
+  //
+  // It cannot be refused BY NAME (the name is gone) and it cannot be refused inside the schema
+  // either: the shapes that see the raw value — z.custom, z.preprocess — do not survive into the
+  // published JSON Schema, and docs/mcp.md is explicit that a constraint the schema enforces and
+  // cannot publish is one the two ends read differently. What IS publishable is the rule itself:
+  // these maps merge by key, so an empty one is a no-op in every case, and a caller who sent one
+  // meant something the transport lost.
+  //
+  // Answered BEFORE any database access, like the check below it: this is a question about the
+  // patch's shape, and answering it after a lookup would make the message depend on whether the
+  // agent happens to exist.
+  for (const block of ["toolPreconditions", "toolGuidance"] as const) {
+    const sub = patch[block];
+    if (sub && Object.keys(sub).length === 0) {
+      return err(
+        `${block} was sent with no usable entries — an empty map changes nothing (a key such as "__proto__" is dropped in transit)`,
+      );
+    }
+  }
+
   if (Object.keys(patch).length === 0) {
     // `filter`, not `slice`: the astral-cap sweep reads every bare `.slice(` in src/ as a possible
     // surrogate cut, and a list of keys is not worth an entry in that registry.

@@ -571,3 +571,72 @@ describe("the guardrail directions publish only what their direction uses", () =
     }
   });
 });
+
+// ROUND 9. `__proto__` is the one key name that survives JSON.parse as an OWN property and then
+// disappears inside zod's loose-object parser. The entry never reaches the assertion or the merge,
+// so the call reports success having done nothing — which for a tombstone means an enforced rule the
+// caller believes they deleted, and for a new rule means the catalog refusal never fires.
+//
+// The runtime side of this was already handled (#378 keys these maps on null-prototype objects and
+// looks up with Object.hasOwn); this is the same hazard at the transport boundary, where the loss is
+// silent in the other direction.
+// ROUND 9, and it has to be measured THROUGH THE TRANSPORT — that is the whole finding. Calling
+// agentSettingsSet directly, `__proto__` survives as an own property and the write boundary already
+// refuses it. It is zod's loose-object rebuild, inside the SDK's own argument parse, that drops the
+// key: the patch arrives as `{}`, reaches neither the assertion nor the merge, and the call answered
+// `{"dryRun":true,"diff":{}}` — for a tombstone, "the rule you asked to delete is gone" while the
+// runtime still enforces it.
+//
+// Refused as an EMPTY BLOCK, because by the time any of our code runs the name is gone, and the zod
+// shapes that could see the raw value (z.custom, z.preprocess) cannot be published in the JSON
+// Schema — which docs/mcp.md forbids, since the two ends would then read different rules.
+describe("a tool map emptied in transit is refused", () => {
+  async function callThroughTransport(args: unknown) {
+    const server = buildMcpServer(principal);
+    const [clientT, serverT] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverT);
+    const client = new Client({ name: "proto", version: "0" });
+    await client.connect(clientT);
+    try {
+      const r = await client.callTool({
+        name: "agent_settings_set",
+        arguments: args as Record<string, unknown>,
+      });
+      return JSON.stringify(r);
+    } finally {
+      await client.close();
+    }
+  }
+
+  test("a __proto__-only patch is refused instead of reporting an empty diff", async () => {
+    for (const block of ["toolPreconditions", "toolGuidance"]) {
+      const out = await callThroughTransport(
+        JSON.parse(`{"agent_id":"1","${block}":{"__proto__":null}}`),
+      );
+      expect(out).toContain("changes nothing");
+      // The shape it used to answer with, pinned so a regression is unmistakable.
+      expect(out).not.toContain('\\"dryRun\\":true');
+    }
+  });
+
+  test("and the refusal happens before any database access", async () => {
+    // agent_id 1 need not exist: this is a question about the patch's shape, and answering it after
+    // a lookup would make the message depend on whether the agent happens to be there.
+    const out = await callThroughTransport(
+      JSON.parse(
+        '{"agent_id":"999999999","toolPreconditions":{"__proto__":null}}',
+      ),
+    );
+    expect(out).toContain("changes nothing");
+    expect(out).not.toContain("not found");
+  });
+
+  test("a patch with a real entry still goes through", async () => {
+    const out = await callThroughTransport(
+      JSON.parse(
+        '{"agent_id":"999999999","toolPreconditions":{"handoff_to_human":{"kind":"attribute","scope":"conversation","key":"k"}}}',
+      ),
+    );
+    expect(out).not.toContain("changes nothing");
+  });
+});

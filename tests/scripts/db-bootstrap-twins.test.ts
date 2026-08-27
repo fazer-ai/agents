@@ -55,6 +55,13 @@ const INVARIANTS: Array<{
     sql: /already exists and is privileged/,
   },
   {
+    // PL/pgSQL's RAISE knows only `%`, so an identifier it prints has to be quoted in the ARGUMENT.
+    // Measured: `%I` there emits the value followed by a literal `I` and quotes nothing.
+    what: "quotes identifiers it PRINTS, in the argument rather than the format string",
+    ts: /quote_ident\(\$1::text\)/,
+    sql: /quote_ident\(v_fleet\), quote_ident\(v_fleet\)/,
+  },
+  {
     what: "quotes catalog role names through the server, not by hand",
     ts: /format\('REVOKE %I FROM %I'/,
     sql: /format\('REVOKE %I FROM %I'/,
@@ -80,6 +87,58 @@ const ts = await Bun.file(
 const sql = await Bun.file(
   new URL("../../scripts/db-bootstrap.sql", import.meta.url).pathname,
 ).text();
+
+// PL/pgSQL's `RAISE` knows only `%`. `%I` there is not an identifier placeholder: it emits the value
+// followed by a literal `I` and quotes nothing — measured as `DROP ROLE some_roleI;`, a statement the
+// operator it was written for cannot run. It reads exactly like the `format()` spelling one line
+// away, which is why it survived a review round and appeared TWICE in one file.
+const migration = await Bun.file(
+  new URL(
+    "../../prisma/migrations/20260827000000_rls_split_tenant_and_fleet_policies/migration.sql",
+    import.meta.url,
+  ).pathname,
+).text();
+const FILES = [
+  ["scripts/db-bootstrap.sql", sql],
+  [
+    "prisma/migrations/20260827000000_rls_split_tenant_and_fleet_policies/migration.sql",
+    migration,
+  ],
+] as const;
+
+describe("no RAISE prints an identifier through %I", () => {
+  function raisesWithFormatI(source: string): string[] {
+    const stripped = source
+      .split("\n")
+      .filter((l) => !l.trim().startsWith("--"))
+      .join("\n");
+    return [
+      ...stripped.matchAll(/RAISE\s+(?:EXCEPTION|NOTICE|WARNING)([\s\S]*?);/g),
+    ]
+      .map((m) => m[1] as string)
+      .filter((body) => body.includes("%I"));
+  }
+
+  test("neither file does", () => {
+    for (const [name, source] of FILES) {
+      expect([name, ...raisesWithFormatI(source)]).toEqual([name]);
+    }
+  });
+
+  // The positive control: the predicate must reject the spelling it exists for, and accept the one
+  // beside it — `format()` DOES take `%I`, and this must not flag that.
+  test("the predicate tells RAISE from format", () => {
+    expect(
+      raisesWithFormatI("RAISE EXCEPTION 'drop %I;', v_role;"),
+    ).toHaveLength(1);
+    expect(
+      raisesWithFormatI("RAISE EXCEPTION 'drop %;', quote_ident(v_role);"),
+    ).toHaveLength(0);
+    expect(
+      raisesWithFormatI("EXECUTE format('DROP ROLE %I', v_role);"),
+    ).toHaveLength(0);
+  });
+});
 
 describe("db-bootstrap.ts and db-bootstrap.sql provision the same thing", () => {
   test("every invariant appears in both", () => {

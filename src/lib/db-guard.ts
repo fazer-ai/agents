@@ -97,6 +97,15 @@ interface FleetRow {
   misnamed_fleet_policies: string | null;
 }
 
+// The existence question, on its own connection round trip and with no reference to the function
+// itself — which is the whole point: naming it in the same statement is what fails to parse.
+async function client_hasFleetFunction(db: PrismaClient): Promise<boolean> {
+  const rows = await db.$queryRawUnsafe<Array<{ present: boolean }>>(
+    `SELECT to_regprocedure('${FLEET_ROLE_FN}') IS NOT NULL AS present`,
+  );
+  return rows[0]?.present === true;
+}
+
 export async function assertRuntimeRoleIsNotSuperuser(
   db: PrismaClient = basePrisma,
   opts: { allow?: boolean } = {},
@@ -129,22 +138,22 @@ export async function assertRuntimeRoleIsNotSuperuser(
   const row = rows[0];
   if (!row) throw new Error("could not resolve the current DB role");
 
-  // `to_regprocedure` rather than calling the function directly: on a database whose migrations have
-  // not run it does not exist, and a boot guard that throws `function does not exist` reports the
-  // wrong problem. Absent, both answers come back NULL and neither question below applies.
+  // TWO queries, because a CASE cannot protect a function call: PostgreSQL resolves the reference
+  // while PARSING, so `CASE WHEN to_regprocedure(…) IS NULL THEN NULL ELSE public.fazerai_fleet_role()
+  // END` raises `function … does not exist` on a database whose migrations have not run — measured.
+  // The first query only asks whether it is there; the second is sent only if it is.
   //
-  // `to_regrole` rather than a `::regrole` cast for the same shape of reason: the cast RAISES on a
-  // name no role carries, and the resolved role legitimately does not exist yet before bootstrap.
-  const fleet = (
-    await db.$queryRawUnsafe<FleetRow[]>(`
+  // `to_regrole` guards the name for the same shape of reason: a `::regrole` cast RAISES on a name
+  // no role carries, and the resolved role legitimately does not exist yet before bootstrap.
+  const hasFn = await client_hasFleetFunction(db);
+  const fleet: FleetRow = hasFn
+    ? ((
+        await db.$queryRawUnsafe<FleetRow[]>(`
       SELECT
         f.fleet_role,
-        -- to_regrole guards this as well, and for the same reason: pg_has_role RAISES on a
-        -- name no role carries (measured), so a database provisioned but not yet bootstrapped
-        -- would crash this guard with role does not exist instead of being reported.
         CASE WHEN to_regrole(f.fleet_role) IS NULL THEN false
              ELSE pg_has_role(current_user, f.fleet_role, 'USAGE') END AS inherits_fleet,
-        CASE WHEN f.fleet_role IS NULL THEN NULL ELSE (
+        (
           SELECT string_agg(DISTINCT p.polname || ' on ' || c.relname, ', ')
             FROM pg_policy p
             JOIN pg_class c ON c.oid = p.polrelid
@@ -153,17 +162,19 @@ export async function assertRuntimeRoleIsNotSuperuser(
              AND p.polname = 'fleet_super_admin'
              AND (to_regrole(f.fleet_role) IS NULL
                   OR NOT (to_regrole(f.fleet_role)::oid = ANY (p.polroles)))
-        ) END AS misnamed_fleet_policies
-      FROM (
-        SELECT CASE WHEN to_regprocedure('${FLEET_ROLE_FN}') IS NULL
-                    THEN NULL ELSE ${FLEET_ROLE_FN} END AS fleet_role
-      ) f
+        ) AS misnamed_fleet_policies
+      FROM (SELECT ${FLEET_ROLE_FN} AS fleet_role) f
     `)
-  )[0] ?? {
-    fleet_role: null,
-    inherits_fleet: false,
-    misnamed_fleet_policies: null,
-  };
+      )[0] ?? {
+        fleet_role: null,
+        inherits_fleet: false,
+        misnamed_fleet_policies: null,
+      })
+    : {
+        fleet_role: null,
+        inherits_fleet: false,
+        misnamed_fleet_policies: null,
+      };
 
   // Asked before the privilege questions below, and not covered by ALLOW_SUPERUSER_RUNTIME: that
   // flag means "I accept that RLS may be a no-op here", and this is not about RLS being skipped —

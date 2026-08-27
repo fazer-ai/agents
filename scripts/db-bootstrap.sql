@@ -141,10 +141,14 @@ BEGIN
                                 AND pg_has_role(r.oid, m.oid, 'USAGE'))
   ) x;
   IF v_priv IS NOT NULL THEN
+    -- `quote_ident` in the ARGUMENT, not `%I` in the format string: PL/pgSQL's RAISE knows only `%`,
+    -- so `%I` emits the value followed by a literal `I` and quotes nothing (measured:
+    -- `DROP ROLE some_roleI;`). The statement printed here is one an operator pastes.
     RAISE EXCEPTION
       'the cross-tenant role % already exists and is privileged (%). The runtime role SETs ROLE '
       'into it, so granting that would make RLS a no-op for every request. Drop it and let this '
-      'script create it: DROP OWNED BY %I; DROP ROLE %I;', v_fleet, v_priv, v_fleet, v_fleet;
+      'script create it: DROP OWNED BY %; DROP ROLE %;',
+      v_fleet, v_priv, quote_ident(v_fleet), quote_ident(v_fleet);
   END IF;
 
   EXECUTE format('GRANT USAGE ON SCHEMA public TO %I', v_fleet);
@@ -217,10 +221,12 @@ BEGIN
   -- 16 a grant carries its own SET option and `MEMBER` ignores it, so `SET FALSE` reads as healthy
   -- while every SET ROLE is denied (measured). `SET` is 16-only as a privilege type.
   IF pg_has_role(v_role, v_fleet, 'USAGE') THEN
+    -- `quote_ident` in the arguments, same as above: RAISE knows only `%`.
     RAISE EXCEPTION
       'runtime role % INHERITS %: the cross-tenant policy would apply to it passively, '
       'making every tenant readable on an ordinary request. Repair with: '
-      'GRANT %I TO %I WITH INHERIT FALSE, SET TRUE;', v_role, v_fleet, v_fleet, v_role;
+      'GRANT % TO % WITH INHERIT FALSE, SET TRUE;',
+      v_role, v_fleet, quote_ident(v_fleet), quote_ident(v_role);
   END IF;
   IF NOT pg_has_role(
        v_role, v_fleet,

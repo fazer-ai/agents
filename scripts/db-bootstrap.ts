@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { Client } from "pg";
-import { FLEET_ROLE } from "@/lib/tenancy/fleet-role";
+import { FLEET_ROLE_EXPR } from "@/lib/tenancy/fleet-role";
 
 // Deterministic, platform-independent DB provisioning. Run ONCE at deploy time (and safe to
 // re-run) as the FIRST step before `prisma migrate deploy`. It does what scripts/db-bootstrap.sql
@@ -121,11 +121,12 @@ export function assertRuntimeRoleIsUnprivileged(
 // exist and the member's `rolinherit` is the whole control.
 export function fleetMembershipRepair(
   appRole: string,
+  fleetRole: string,
   serverVersionNum: number,
 ): string {
-  let statement = `ALTER ROLE "${appRole}" NOINHERIT; GRANT ${FLEET_ROLE} TO "${appRole}";`;
+  let statement = `ALTER ROLE "${appRole}" NOINHERIT; GRANT "${fleetRole}" TO "${appRole}";`;
   if (serverVersionNum >= 160000) {
-    statement = `GRANT ${FLEET_ROLE} TO "${appRole}" WITH INHERIT FALSE, SET TRUE;`;
+    statement = `GRANT "${fleetRole}" TO "${appRole}" WITH INHERIT FALSE, SET TRUE;`;
   }
   // WHO runs it is half the instruction, and it is the half an operator hits second. Roles are
   // CLUSTER-wide while a database is not, so on a shared server the fleet role may have been
@@ -133,9 +134,9 @@ export function fleetMembershipRepair(
   // role it did not create, so this same statement answers `permission denied to grant role` for
   // exactly the person the message was written for (measured).
   return (
-    `${statement} (run it as a superuser, or as the role that created ${FLEET_ROLE}; ` +
+    `${statement} (run it as a superuser, or as the role that created "${fleetRole}"; ` +
     `a CREATEROLE administrator holds no ADMIN on a role it did not create, and can be given one ` +
-    `with: GRANT ${FLEET_ROLE} TO <administrator> WITH ADMIN OPTION;)`
+    `with: GRANT "${fleetRole}" TO <administrator> WITH ADMIN OPTION;)`
   );
 }
 
@@ -172,19 +173,20 @@ export function fleetMembershipRepair(
 // Returns a warning to log, or null when the membership is what it should be.
 export function reviewFleetMembership(
   appRole: string,
+  fleetRole: string,
   state: { can_set_role: boolean; usage: boolean },
   repair: string,
 ): string | null {
   if (state.usage) {
     throw new Error(
-      `runtime role "${appRole}" INHERITS "${FLEET_ROLE}", which makes the cross-tenant policy ` +
+      `runtime role "${appRole}" INHERITS "${fleetRole}", which makes the cross-tenant policy ` +
         "apply to it passively — every tenant's rows would be readable on an ordinary scoped " +
         `request, with no error to see. Repair with: ${repair}`,
     );
   }
   if (!state.can_set_role) {
     return (
-      `runtime role "${appRole}" cannot SET ROLE to "${FLEET_ROLE}", so every cross-tenant call ` +
+      `runtime role "${appRole}" cannot SET ROLE to "${fleetRole}", so every cross-tenant call ` +
       "will fail with `permission denied to set role` (tenant-scoped traffic is unaffected). " +
       `Repair with: ${repair}`
     );
@@ -262,12 +264,20 @@ async function provisionFleetRole(
   ident: string,
   serverVersionNum: number,
 ) {
-  const fleet = `"${FLEET_ROLE}"`;
+  // The name is resolved BY the database, because it carries the database (see
+  // `@/lib/tenancy/fleet-role` for the measurement that made it so). The expression rather than the
+  // function this repository also ships: on a first install this runs before `migrate deploy`, so
+  // the function does not exist yet. `tests/lib/rls-policy-shape.test.ts` proves the two agree.
+  const fleetRole = (
+    await client.query<{ role: string }>(`SELECT ${FLEET_ROLE_EXPR} AS role`)
+  ).rows[0]?.role as string;
+  const fleet = `"${fleetRole}"`;
   await client.query(`
     DO $$
     BEGIN
-      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${FLEET_ROLE}') THEN
-        CREATE ROLE ${fleet} NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = ${FLEET_ROLE_EXPR}) THEN
+        EXECUTE format('CREATE ROLE %I NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE',
+                       ${FLEET_ROLE_EXPR});
       END IF;
     END $$;
   `);
@@ -281,12 +291,13 @@ async function provisionFleetRole(
     await client.query(grant);
   }
 
-  // Two grants, and BOTH are best-effort, because the fleet role is a CLUSTER-wide object while a
-  // database is not: on a shared server whose fleet role was created by a DIFFERENT administrator,
-  // a CREATEROLE role holds no ADMIN on it and Postgres answers `permission denied to grant role`
-  // (measured). That is a real install, not a broken one — everything tenant-scoped works — so it is
-  // reported and survived, and the review below turns it into a message naming the exact repair.
-  const repair = fleetMembershipRepair(role, serverVersionNum);
+  // Two grants, and BOTH are best-effort. Roles are CLUSTER-wide objects while databases are not,
+  // so even a per-database NAME can land on a role this administrator did not create — a database
+  // dropped and recreated under the same name is the ordinary way — and a CREATEROLE role holds no
+  // ADMIN over such a role: Postgres answers `permission denied to grant role` (measured). That is a
+  // real install, not a broken one — everything tenant-scoped works — so it is reported and
+  // survived, and the review below turns it into a message naming the exact repair.
+  const repair = fleetMembershipRepair(role, fleetRole, serverVersionNum);
   try {
     if (serverVersionNum >= 160000) {
       await client.query(
@@ -298,7 +309,7 @@ async function provisionFleetRole(
     }
   } catch (err) {
     console.warn(
-      `db-bootstrap: could not grant "${FLEET_ROLE}" to runtime role "${role}" (${message(err)})`,
+      `db-bootstrap: could not grant "${fleetRole}" to runtime role "${role}" (${message(err)})`,
     );
   }
 
@@ -320,7 +331,7 @@ async function provisionFleetRole(
       );
     } catch (err) {
       console.warn(
-        `db-bootstrap: could not grant "${FLEET_ROLE}" to the administrative role ` +
+        `db-bootstrap: could not grant "${fleetRole}" to the administrative role ` +
           `(${message(err)}); a future DATA migration would fail on SET ROLE`,
       );
     }
@@ -343,15 +354,17 @@ async function provisionFleetRole(
   const membership = (
     await client.query<{ can_set_role: boolean; usage: boolean }>(
       capabilityQuery,
-      [role, FLEET_ROLE],
+      [role, fleetRole],
     )
   ).rows[0];
   const warning = reviewFleetMembership(
     role,
+    fleetRole,
     membership ?? { can_set_role: false, usage: false },
     repair,
   );
   if (warning) console.warn(`db-bootstrap: ${warning}`);
+  return fleetRole;
 }
 
 // Makes the LangGraph checkpointer schema usable by the runtime role, which is three different
@@ -792,12 +805,17 @@ async function main() {
       }
     }
 
-    await provisionFleetRole(client, role, ident, s.server_version_num);
+    const fleetRoleName = await provisionFleetRole(
+      client,
+      role,
+      ident,
+      s.server_version_num,
+    );
 
     await provisionCheckpointerSchema(client, role, ident);
 
     console.log(
-      `db-bootstrap: provisioned runtime role "${role}" + fleet role "${FLEET_ROLE}" ` +
+      `db-bootstrap: provisioned runtime role "${role}" + fleet role "${fleetRoleName}" ` +
         `(idempotent; ${plan}, ` +
         `admin=${s.admin_superuser ? "superuser" : "non-superuser"}, server=${s.server_version_num})`,
     );

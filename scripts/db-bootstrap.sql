@@ -93,9 +93,9 @@ BEGIN
 END $$;
 
 -- The role the cross-tenant path becomes, for the length of one transaction. `asSuperAdmin` does
--- `set_config('role', 'fazerai_fleet', true)`, and the `fleet_super_admin` policy every table under
--- RLS carries is written TO this role. It holds NOTHING of its own -- NOSUPERUSER, NOBYPASSRLS,
--- NOLOGIN -- so it is still fenced by RLS and merely has a policy that lets it through.
+-- `set_config('role', public.fazerai_fleet_role(), true)`, and the `fleet_super_admin` policy every
+-- table under RLS carries is written TO that role. It holds NOTHING of its own -- NOSUPERUSER,
+-- NOBYPASSRLS, NOLOGIN -- so it is still fenced by RLS and merely has a policy that lets it through.
 --
 -- Why a role rather than the GUC this replaces: the old policy read
 -- `is_super_admin = 'on' OR tenant_id = <guc>`, and a branch naming no column cannot become an
@@ -103,64 +103,69 @@ END $$;
 -- (issue #382; the measurements are in the migration that splits it). Two permissive policies do
 -- not help -- Postgres ORs those -- and `TO <role>` does, because a policy whose role does not
 -- match the caller is not part of the qual at all.
-DO $$
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'fazerai_fleet') THEN
-    CREATE ROLE fazerai_fleet NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
-  END IF;
-END $$;
-
-GRANT USAGE ON SCHEMA public TO fazerai_fleet;
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO fazerai_fleet;
-GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO fazerai_fleet;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public
-  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO fazerai_fleet;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public
-  GRANT USAGE, SELECT ON SEQUENCES TO fazerai_fleet;
-
--- The membership, and the half of it that is load-bearing is `INHERIT FALSE`.
 --
--- SET ROLE needs the membership; INHERITING it would apply `fleet_super_admin` to the runtime role
--- passively, and then an ordinary scoped request reads every tenant's rows with no error and no
--- plan difference. On 16+ the grant's own option is the control and the role attribute does NOT
--- override it: `ALTER ROLE <app> NOINHERIT` leaves an existing grant inheriting (measured). On 15
--- and older the option does not parse and `rolinherit` is the whole control.
+-- Why the NAME carries the database: roles are CLUSTER-wide while databases are not, so a fixed
+-- name would be one role shared by every installation on a server, and installation A's runtime
+-- role could SET ROLE into it inside installation B's database and read every tenant there
+-- (measured: permission denied before, 30 of 30 rows after). The expression is spelled out here
+-- rather than calling `public.fazerai_fleet_role()` because on a first install this script runs
+-- before the migration that creates that function.
 DO $$
 DECLARE
-  v_role text := current_setting('fazerai.app_role');
+  v_role  text := current_setting('fazerai.app_role');
+  v_fleet name := ('fazerai_fleet_'
+                   || left(current_database()::text, 30)
+                   || '_' || substr(md5(current_database()::text), 1, 8))::name;
 BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = v_fleet) THEN
+    EXECUTE format(
+      'CREATE ROLE %I NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE', v_fleet);
+  END IF;
+
+  EXECUTE format('GRANT USAGE ON SCHEMA public TO %I', v_fleet);
+  EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO %I', v_fleet);
+  EXECUTE format('GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO %I', v_fleet);
+  EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA public'
+                 ' GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO %I', v_fleet);
+  EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA public'
+                 ' GRANT USAGE, SELECT ON SEQUENCES TO %I', v_fleet);
+
+  -- The membership, and the half of it that is load-bearing is `INHERIT FALSE`.
+  --
+  -- SET ROLE needs the membership; INHERITING it would apply `fleet_super_admin` to the runtime role
+  -- passively, and then an ordinary scoped request reads every tenant's rows with no error and no
+  -- plan difference. On 16+ the grant's own option is the control and the role attribute does NOT
+  -- override it: `ALTER ROLE <app> NOINHERIT` leaves an existing grant inheriting (measured). On 15
+  -- and older the option does not parse and `rolinherit` is the whole control.
+  --
+  -- The administrative role gets it too: a DATA migration over a FORCE-RLS table opens with
+  -- `SET ROLE`, and on managed Postgres this role is the owner WITHOUT rolsuper, so without the
+  -- membership that line fails.
   IF current_setting('server_version_num')::int >= 160000 THEN
-    EXECUTE format('GRANT fazerai_fleet TO %I WITH INHERIT FALSE, SET TRUE', v_role);
+    EXECUTE format('GRANT %I TO %I WITH INHERIT FALSE, SET TRUE', v_fleet, v_role);
+    EXECUTE format('GRANT %I TO CURRENT_USER WITH INHERIT FALSE, SET TRUE', v_fleet);
   ELSE
     EXECUTE format('ALTER ROLE %I NOINHERIT', v_role);
-    EXECUTE format('GRANT fazerai_fleet TO %I', v_role);
+    EXECUTE format('GRANT %I TO %I', v_fleet, v_role);
+    EXECUTE format('GRANT %I TO CURRENT_USER', v_fleet);
   END IF;
+
   -- Asserted on the EFFECT rather than on the statements above, which is the only form that
-  -- survives a hand-made grant landing here first.
-  IF pg_has_role(v_role, 'fazerai_fleet', 'USAGE') THEN
+  -- survives a hand-made grant landing here first. And on the CAPABILITY, not the membership: since
+  -- 16 a grant carries its own SET option and `MEMBER` ignores it, so `SET FALSE` reads as healthy
+  -- while every SET ROLE is denied (measured). `SET` is 16-only as a privilege type.
+  IF pg_has_role(v_role, v_fleet, 'USAGE') THEN
     RAISE EXCEPTION
-      'runtime role % INHERITS fazerai_fleet: the cross-tenant policy would apply to it passively, '
+      'runtime role % INHERITS %: the cross-tenant policy would apply to it passively, '
       'making every tenant readable on an ordinary request. Repair with: '
-      'GRANT fazerai_fleet TO %I WITH INHERIT FALSE, SET TRUE;', v_role, v_role;
+      'GRANT %I TO %I WITH INHERIT FALSE, SET TRUE;', v_role, v_fleet, v_fleet, v_role;
   END IF;
-  -- The capability, not the membership: since PostgreSQL 16 a grant carries its own SET option and
-  -- `MEMBER` ignores it, so `WITH INHERIT FALSE, SET FALSE` reads as healthy while every SET ROLE is
-  -- denied (measured). `SET` is 16-only as a privilege type; on older servers the option does not
-  -- exist and `MEMBER` is the right question.
   IF NOT pg_has_role(
-       v_role, 'fazerai_fleet',
+       v_role, v_fleet,
        CASE WHEN current_setting('server_version_num')::int >= 160000
             THEN 'SET' ELSE 'MEMBER' END) THEN
-    RAISE EXCEPTION 'runtime role % cannot SET ROLE to fazerai_fleet: no cross-tenant read would '
-      'return a row', v_role;
-  END IF;
-  -- The administrative role too: a DATA migration over a FORCE-RLS table opens with
-  -- `SET ROLE fazerai_fleet`, and on managed Postgres this role is the owner WITHOUT rolsuper, so
-  -- without the membership that line fails. INHERIT FALSE for the same reason as above -- an
-  -- inheriting migration role would pass the policy passively, and a migration that forgot the
-  -- bypass would work here and silently no-op there.
-  IF current_setting('server_version_num')::int >= 160000 THEN
-    EXECUTE 'GRANT fazerai_fleet TO CURRENT_USER WITH INHERIT FALSE, SET TRUE';
+    RAISE EXCEPTION 'runtime role % cannot SET ROLE to %: no cross-tenant read would '
+      'return a row', v_role, v_fleet;
   END IF;
 END $$;
 

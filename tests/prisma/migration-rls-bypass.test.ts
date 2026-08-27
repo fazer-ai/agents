@@ -8,7 +8,7 @@ import { Client } from "pg";
 // spellings are each inert in the other's era, silently. Before 20260827000000 the policy carried
 // `is_super_admin = 'on' OR tenant_id = <guc>` and the GUC was the escape; that migration split the
 // OR out into a role-restricted policy (issue #382), after which the GUC grants nothing at all and
-// the escape is `SET ROLE fazerai_fleet`. Measured on 17.10, running the same UPDATE as a
+// the escape is entering the fleet role. Measured on 17.10, running the same UPDATE as a
 // non-superuser owner against the post-split policy: the GUC form reaches ZERO rows and reports
 // success, the SET ROLE form reaches them. Before the split the role does not exist yet, so the new
 // spelling is a hard error there.
@@ -71,6 +71,13 @@ export function needsBypass(sql: string, forcedTables: Set<string>): boolean {
 
 // The migration that split the policy. Its own directory name is the boundary, and the comparison
 // is lexicographic because the names are fixed-width timestamps.
+// The statement that enters the fleet role, as a migration writes it. `set_config` rather than
+// `SET ROLE` because the role's NAME is resolved by the database (it carries the database), and
+// `SET ROLE` takes a literal — so a migration cannot spell it any other way. The `true` is the
+// transaction-local flag and it is required: `false` would leak the role onto a pooled connection.
+export const FLEET_ENTRY_RE =
+  /^\s*SELECT\s+set_config\(\s*'role'\s*,\s*public\.fazerai_fleet_role\(\)\s*,\s*true\s*\)\s*;/m;
+
 export const POLICY_SPLIT_MIGRATION =
   "20260827000000_rls_split_tenant_and_fleet_policies";
 
@@ -80,7 +87,7 @@ export function hasBypass(sql: string, migrationName: string): boolean {
   const stripped = sql.replace(/^\s*--.*$/gm, "");
   return migrationName < POLICY_SPLIT_MIGRATION
     ? /^\s*SET\s+app\.is_super_admin\s*=/m.test(stripped)
-    : /^\s*SET\s+ROLE\s+fazerai_fleet\s*;/m.test(stripped);
+    : FLEET_ENTRY_RE.test(stripped);
 }
 
 describe.skipIf(!dbUp)("every data migration sets the RLS bypass", () => {
@@ -109,7 +116,7 @@ describe.skipIf(!dbUp)("every data migration sets the RLS bypass", () => {
     const before = "20260101000000_old";
     const after = "20270101000000_new";
     const guc = `SET app.is_super_admin = 'on';\n${bare}\nRESET app.is_super_admin;`;
-    const role = `SET ROLE fazerai_fleet;\n${bare}\nRESET ROLE;`;
+    const role = `SELECT set_config('role', public.fazerai_fleet_role(), true);\n${bare}`;
 
     expect(needsBypass(bare, forced)).toBe(true);
     expect(hasBypass(bare, before)).toBe(false);
@@ -130,9 +137,16 @@ describe.skipIf(!dbUp)("every data migration sets the RLS bypass", () => {
     expect(
       hasBypass(`SET LOCAL app.is_super_admin = 'on';\n${bare}`, before),
     ).toBe(false);
-    expect(hasBypass(`SET LOCAL ROLE fazerai_fleet;\n${bare}`, after)).toBe(
-      false,
-    );
+    // `false` is not `true`: the flag is what makes the role transaction-local, and without it the
+    // role would ride a pooled connection into the next statement.
+    expect(
+      hasBypass(
+        `SELECT set_config('role', public.fazerai_fleet_role(), false);\n${bare}`,
+        after,
+      ),
+    ).toBe(false);
+    // And the literal spelling is not it either: the name is resolved by the database.
+    expect(hasBypass(`SET ROLE fazerai_fleet;\n${bare}`, after)).toBe(false);
 
     // DDL alone never needs it.
     expect(
@@ -158,7 +172,7 @@ describe.skipIf(!dbUp)("every data migration sets the RLS bypass", () => {
         "",
       );
       const guc = /^\s*SET\s+app\.is_super_admin\s*=/m.test(sql);
-      const role = /^\s*SET\s+ROLE\s+fazerai_fleet\s*;/m.test(sql);
+      const role = FLEET_ENTRY_RE.test(sql);
       if (guc && name >= POLICY_SPLIT_MIGRATION) stale.push(name);
       if (role && name < POLICY_SPLIT_MIGRATION) early.push(name);
     }

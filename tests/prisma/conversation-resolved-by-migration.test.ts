@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Client } from "pg";
 import { PrismaClient } from "@/../generated/prisma/client";
-import { FLEET_ROLE } from "@/lib/tenancy/fleet-role";
+import { ENTER_FLEET_ROLE_SQL } from "@/lib/tenancy/fleet-role";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // Runs the ACTUAL migration file against the test database. The dashboard tells the operator that N
@@ -156,7 +156,7 @@ describe.skipIf(!dbUp)("migration: conversations.resolved_by", () => {
 
     test("under the bypass of the era it runs in, it reaches the historical rows", async () => {
       await clearOrigins();
-      await runAsApp(`SET ROLE ${FLEET_ROLE};\n${dataHalf(sql)}\nRESET ROLE;`);
+      await runAsApp(`${ENTER_FLEET_ROLE_SQL};\n${dataHalf(sql)}`);
       expect(await originOf("resolved")).toBe("legacy_unknown");
       expect(await originOf("open")).toBeNull();
     });

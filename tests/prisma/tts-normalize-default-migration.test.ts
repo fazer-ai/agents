@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Client } from "pg";
-import { FLEET_ROLE } from "@/lib/tenancy/fleet-role";
+import { ENTER_FLEET_ROLE_SQL } from "@/lib/tenancy/fleet-role";
 
 // Runs the ACTUAL migration file against the test database, over the settings shapes an install can
 // really hold. Two failure modes are being pinned, and neither is hypothetical:
@@ -199,7 +199,7 @@ describe.skipIf(!dbUp)("migration: tts normalize default on", () => {
     // the guard would be green by invisibility rather than by working.
     test("the migration's statements reach the rows under the bypass of the era they run in", async () => {
       const id = await seedProbe("rls-probe-with-bypass");
-      await runAsApp(`SET ROLE ${FLEET_ROLE};\n${sql}\nRESET ROLE;`);
+      await runAsApp(`${ENTER_FLEET_ROLE_SQL};\n${sql}`);
       expect(await normalizeStillStored(id)).toBe(false);
     });
 

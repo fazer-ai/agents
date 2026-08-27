@@ -5,7 +5,7 @@
 // column, so the planner could turn neither into an index condition: every tenant-scoped read
 // filtered on top of a scan it had already paid for. Measured on 1,000,000 rows, returning a page
 // of 51 to a tenant holding 0.01% of the table: 108 ms and 509,949 rows discarded, against
-// 0.033 ms and none once the OR is gone (issue #382).
+// 0.033 ms and none (issue #382).
 //
 // Splitting the OR into two PERMISSIVE policies does not help — Postgres ORs those together and
 // the qual comes out identical, buffer for buffer. What separates them is `TO <role>`: a policy
@@ -13,11 +13,50 @@
 // at PUBLIC (the migration therefore never has to know the deployment's app-role name, which is
 // configurable) and only the fleet policy names a role.
 //
-// The name is a fixed constant rather than configuration for the same reason: `CREATE POLICY ...
-// TO <role>` is written by a migration, which has no way to read a deployment's env.
-//
 // This role holds NO attribute of its own — it is NOSUPERUSER, NOBYPASSRLS, NOLOGIN. It is still
 // fenced by RLS like anything else; it just has a policy that lets it through, which means the
 // fleet path stays visible in `pg_policy` instead of disappearing into a role attribute, and a
-// table that gets RLS without a fleet policy fails closed rather than open.
-export const FLEET_ROLE = "fazerai_fleet";
+// table that gets RLS without a fleet policy fails closed rather than open (measured: 0 rows of 30
+// through the policy, 30 of 30 through a BYPASSRLS role, which is the design this replaced).
+//
+// ## Why the name is derived from the database rather than fixed
+//
+// Roles are CLUSTER-wide; databases are not. A fixed name would therefore be ONE role shared by
+// every installation on a server, and membership in it is cluster-wide too — so installation A's
+// runtime role could connect to installation B's database (databases grant CONNECT to PUBLIC by
+// default), `SET ROLE` into that shared role, and pick up the grants and the fleet policy B gave
+// it. Measured, with two databases and two distinct app roles: **permission denied before, 30 of
+// 30 rows after**. That is a boundary this change would otherwise have opened.
+//
+// It does not need an operator to wire it, either, which is what settles it. With the cluster
+// superuser as the migration role on both installations — the documented self-hosted setup — the
+// second bootstrap grants the membership with no manual step (measured; a CREATEROLE administrator
+// that did not create the role is the case that gets refused).
+//
+// So the name carries the database: a readable prefix, the database name truncated, and eight hex
+// of its md5 so two long names that share a prefix cannot collide. 53 bytes at most, inside the
+// 63-byte identifier limit that would otherwise truncate two names into one.
+//
+// The derivation lives in a FUNCTION rather than being repeated, and every caller uses the
+// function — except `db-bootstrap`, which on a first install runs BEFORE the migration that
+// creates it and therefore carries the expression inline. That is the only duplicate, and
+// `tests/lib/rls-policy-shape.test.ts` proves the two resolve to the same string.
+
+// Schema-qualified on purpose: `set_config('role', …)` resolves through `search_path`, and a role
+// that could create a function in an earlier schema would otherwise choose which role the fleet
+// path becomes. The runtime role holds USAGE on `public` and not CREATE, so it cannot shadow this.
+export const FLEET_ROLE_FN = "public.fazerai_fleet_role()";
+
+// The one duplicate of the function's body, for the boot path that predates the function. Both
+// spellings are compile-time constants of this repository; neither ever carries caller input.
+export const FLEET_ROLE_EXPR =
+  "('fazerai_fleet_' || left(current_database()::text, 30) || '_' || substr(md5(current_database()::text), 1, 8))";
+
+// The function's body, so the migration and this module cannot drift apart in review.
+export const FLEET_ROLE_FUNCTION_DDL = `CREATE OR REPLACE FUNCTION public.fazerai_fleet_role()
+  RETURNS name LANGUAGE sql STABLE AS $fn$ SELECT ${FLEET_ROLE_EXPR}::name $fn$`;
+
+// The one statement that enters the fleet role, so `asSuperAdmin`, the migration tests that
+// re-execute a historical backfill, and anything else that needs it cannot drift into three
+// spellings of the same thing.
+export const ENTER_FLEET_ROLE_SQL = `SELECT set_config('role', ${FLEET_ROLE_FN}, true)`;

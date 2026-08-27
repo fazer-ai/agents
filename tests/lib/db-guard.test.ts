@@ -1,12 +1,14 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
+import { Client } from "pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import {
   assertRuntimeRoleIsNotSuperuser,
   FLEET_INHERITED_REASON,
+  FleetPolicyMismatchError,
   SuperuserRuntimeError,
 } from "@/lib/db-guard";
-import { FLEET_ROLE } from "@/lib/tenancy/fleet-role";
+import { FLEET_ROLE_FN } from "@/lib/tenancy/fleet-role";
 
 // MIGRATION_DATABASE_URL connects as the Postgres superuser (the migration/owner role).
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -98,11 +100,18 @@ describe.skipIf(!dbUp)("assertRuntimeRoleIsNotSuperuser", () => {
   // isolation, and the difference between the two is one word in the GRANT. Neither attribute
   // changes, so the check above sees nothing: the role stays NOSUPERUSER and NOBYPASSRLS through
   // both arms below, and only `pg_has_role(..., 'USAGE')` moves.
-  describe(`membership in ${FLEET_ROLE}`, () => {
+  describe("membership in the fleet role", () => {
     test("SET ROLE is fine; INHERITING it is refused, and the message says which GRANT repairs it", async () => {
+      // Resolved from the database: the name carries the database (see `@/lib/tenancy/fleet-role`),
+      // so writing it here would be a second spelling of the thing under test.
+      const fleetRole = (
+        (await suDb.$queryRawUnsafe(
+          `SELECT ${FLEET_ROLE_FN} AS role`,
+        )) as Array<{ role: string }>
+      )[0]?.role as string;
       await withRoleCatalogLock(async (db) => {
         await db.$executeRawUnsafe(
-          `GRANT ${FLEET_ROLE} TO ${SAFE_ROLE} WITH INHERIT FALSE, SET TRUE`,
+          `GRANT "${fleetRole}" TO ${SAFE_ROLE} WITH INHERIT FALSE, SET TRUE`,
         );
       });
       await expect(
@@ -111,7 +120,7 @@ describe.skipIf(!dbUp)("assertRuntimeRoleIsNotSuperuser", () => {
 
       await withRoleCatalogLock(async (db) => {
         await db.$executeRawUnsafe(
-          `GRANT ${FLEET_ROLE} TO ${SAFE_ROLE} WITH INHERIT TRUE`,
+          `GRANT "${fleetRole}" TO ${SAFE_ROLE} WITH INHERIT TRUE`,
         );
       });
       const err = await assertRuntimeRoleIsNotSuperuser(
@@ -132,11 +141,109 @@ describe.skipIf(!dbUp)("assertRuntimeRoleIsNotSuperuser", () => {
       expect(attrs[0]).toEqual({ rolsuper: false, rolbypassrls: false });
 
       await withRoleCatalogLock(async (db) => {
-        await db.$executeRawUnsafe(`REVOKE ${FLEET_ROLE} FROM ${SAFE_ROLE}`);
+        await db.$executeRawUnsafe(`REVOKE "${fleetRole}" FROM ${SAFE_ROLE}`);
       });
     });
   });
 });
+
+// The fleet role's name carries the database, so a database RESTORED under a different name resolves
+// a name its own dumped policies do not mention — and nothing errors: SET ROLE succeeds and every
+// fleet read then matches no policy and answers zero rows. This is the one failure this guard exists
+// for that has no symptom of its own, so it gets a database of its own rather than a probe on the
+// shared one: a misnamed policy sitting in the suite's database, even briefly, is exactly what the
+// catalog fence in rls-policy-shape.test.ts would trip over.
+// The fleet role's name carries the database, so a database RESTORED under a different name resolves
+// a name its own dumped policies do not mention — and nothing errors: SET ROLE succeeds and every
+// fleet read then matches no policy and answers zero rows. This is the one failure this guard exists
+// for that has no symptom of its own, so it gets a database of its own rather than a probe on the
+// shared one: a misnamed policy sitting in the suite's database, even briefly, is exactly what the
+// catalog fence in rls-policy-shape.test.ts would trip over.
+//
+// And it creates no ROLE. Role DDL is cluster-wide and serialized here through an advisory lock that
+// db-bootstrap.test.ts holds at SESSION level for its whole suite — measured, taking it from this
+// file cost four 5-second timeouts in a full run. The mismatch is expressible without it: the policy
+// names a role that certainly exists and is not the resolved one, and the "repaired" arm redefines
+// the function to return that same role.
+describe.skipIf(!dbUp)(
+  "a database whose fleet policies name another role",
+  () => {
+    const PROBE_DB = `fazerai_guard_restore_${process.pid}`;
+    let probe: PrismaClient | undefined;
+    let probeUrl = "";
+
+    async function onProbeRaw(sql: string) {
+      const raw = new Client({ connectionString: probeUrl });
+      await raw.connect();
+      try {
+        await raw.query(sql);
+      } finally {
+        await raw.end();
+      }
+    }
+
+    beforeAll(async () => {
+      await suDb.$executeRawUnsafe(
+        `DROP DATABASE IF EXISTS ${PROBE_DB} WITH (FORCE)`,
+      );
+      await suDb.$executeRawUnsafe(`CREATE DATABASE ${PROBE_DB}`);
+      const url = new URL(suUrl as string);
+      url.pathname = `/${PROBE_DB}`;
+      probeUrl = url.toString();
+      probe = new PrismaClient({
+        adapter: new PrismaPg({ connectionString: probeUrl }),
+      });
+      // The shape a restore leaves behind: the function resolves THIS database's name (a role that
+      // does not exist here), while the policy carries the role of the database it was dumped from.
+      await onProbeRaw(`
+        CREATE OR REPLACE FUNCTION public.fazerai_fleet_role()
+          RETURNS name LANGUAGE sql STABLE AS $fn$
+            SELECT ('fazerai_fleet_'
+                    || left(current_database()::text, 30)
+                    || '_' || substr(md5(current_database()::text), 1, 8))::name
+          $fn$;
+        CREATE TABLE t (id bigserial PRIMARY KEY, tenant_id bigint NOT NULL);
+        ALTER TABLE t ENABLE ROW LEVEL SECURITY;
+        CREATE POLICY tenant_isolation ON t
+          USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::bigint);
+        CREATE POLICY fleet_super_admin ON t TO CURRENT_USER USING (true);`);
+    });
+
+    afterAll(async () => {
+      await probe?.$disconnect();
+      await suDb.$executeRawUnsafe(
+        `DROP DATABASE IF EXISTS ${PROBE_DB} WITH (FORCE)`,
+      );
+    });
+
+    test("refuses, and names the rename that repairs it", async () => {
+      // `allow: true` on purpose: this refusal is NOT what ALLOW_SUPERUSER_RUNTIME covers. That flag
+      // means "I accept that RLS may be a no-op here"; this is the cross-tenant path reading nothing
+      // at all, which no flag should wave through.
+      const err = await assertRuntimeRoleIsNotSuperuser(probe as PrismaClient, {
+        allow: true,
+      }).then(
+        () => null,
+        (e: unknown) => e as Error,
+      );
+      expect(err).toBeInstanceOf(FleetPolicyMismatchError);
+      expect(err?.message).toContain(`fazerai_fleet_${PROBE_DB.slice(0, 30)}`);
+      expect(err?.message).toContain("fleet_super_admin on t");
+      expect(err?.message).toContain("RENAME TO");
+    });
+
+    test("and passes once the resolved name is the one the policy carries", async () => {
+      // The repair, expressed from the other end: renaming the role the policies name IS what makes
+      // the resolved name match, and here that is done by resolving to the role already named.
+      await onProbeRaw(`
+        CREATE OR REPLACE FUNCTION public.fazerai_fleet_role()
+          RETURNS name LANGUAGE sql STABLE AS $fn$ SELECT current_user::name $fn$;`);
+      await expect(
+        assertRuntimeRoleIsNotSuperuser(probe as PrismaClient, { allow: true }),
+      ).resolves.toBeUndefined();
+    });
+  },
+);
 
 function dbName(url: string): string {
   return new URL(url).pathname.replace(/^\//, "");

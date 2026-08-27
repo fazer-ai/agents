@@ -1,7 +1,11 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
-import { FLEET_ROLE } from "@/lib/tenancy/fleet-role";
+import {
+  ENTER_FLEET_ROLE_SQL,
+  FLEET_ROLE_EXPR,
+  FLEET_ROLE_FN,
+} from "@/lib/tenancy/fleet-role";
 import { asSuperAdminOn, runScopedOn } from "@/lib/tenancy/multi-tenant";
 
 // Issue #382. The policy every tenant-scoped table carries decides whether a tenant index is
@@ -42,7 +46,16 @@ const suDb = su as PrismaClient;
 
 let t1 = 0n;
 let t2 = 0n;
+// Resolved from the database rather than written here: the name carries the database, and a copy in
+// this file would be a second spelling of the thing under test.
+let fleetRole = "";
 const slugPrefix = `rls382-${process.pid}`;
+// The plan probe runs on a table of its own. `outbound_webhook_deliveries` is written by other
+// files in this suite, and a concurrent DELETE moves the statistics out from under the planner:
+// measured, the same policy came out as an `Index Cond` alone and as a bare `Filter` in a full run.
+// What is under test is whether the QUAL can be pushed into an index, not which plan the planner
+// happens to cost cheapest today — and the real table's shape is held by the catalog fence below.
+const PROBE_TABLE = `rls382_plan_${process.pid}`;
 
 // The plan is read as JSON and reduced to the one distinction that matters: did the tenant
 // predicate land ON the index (an `Index Cond`), or on top of a scan that had already read the
@@ -53,15 +66,15 @@ async function planOf(setup: (tx: PrismaClient) => Promise<void>) {
   return appDb.$transaction(async (tx) => {
     await setup(tx as unknown as PrismaClient);
     await tx.$executeRaw`SET LOCAL enable_seqscan = off`;
-    const rows = (await tx.$queryRaw`
+    const rows = (await tx.$queryRawUnsafe(`
       EXPLAIN (FORMAT JSON)
-      SELECT id FROM outbound_webhook_deliveries ORDER BY id DESC LIMIT 51`) as Array<{
+      SELECT id FROM ${PROBE_TABLE} ORDER BY id DESC LIMIT 51`)) as Array<{
       "QUERY PLAN": Array<{ Plan: unknown }>;
     }>;
     const json = JSON.stringify(rows[0]?.["QUERY PLAN"]?.[0]?.Plan ?? {});
-    const visible = (await tx.$queryRaw`
+    const visible = (await tx.$queryRawUnsafe(`
       SELECT count(*)::int AS n, count(DISTINCT tenant_id)::int AS tenants
-        FROM outbound_webhook_deliveries`) as Array<{
+        FROM ${PROBE_TABLE}`)) as Array<{
       n: number;
       tenants: number;
     }>;
@@ -97,10 +110,39 @@ describe.skipIf(!dbUp)("RLS policy shape", () => {
         })),
       });
     }
-    await su.$executeRaw`ANALYZE outbound_webhook_deliveries`;
+    // The probe table, with the policies this change ships and the skew the issue measured: one
+    // small tenant whose rows are spread across the id range, so a backward primary-key scan has to
+    // walk the table to fill a page. 200 rows for t1, 3000 for t2.
+    for (const statement of [
+      `CREATE TABLE ${PROBE_TABLE} (
+         id bigserial PRIMARY KEY, tenant_id bigint NOT NULL, status text NOT NULL DEFAULT 'P')`,
+      `INSERT INTO ${PROBE_TABLE} (tenant_id)
+         SELECT CASE WHEN g % 16 = 7 THEN ${t1} ELSE ${t2} END FROM generate_series(1, 3200) g`,
+      `CREATE INDEX ${PROBE_TABLE}_tenant_id_id_idx ON ${PROBE_TABLE} (tenant_id, id)`,
+      `ALTER TABLE ${PROBE_TABLE} ENABLE ROW LEVEL SECURITY`,
+      `ALTER TABLE ${PROBE_TABLE} FORCE ROW LEVEL SECURITY`,
+      `CREATE POLICY tenant_isolation ON ${PROBE_TABLE}
+         USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::bigint)
+         WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::bigint)`,
+      `DO $do$ BEGIN EXECUTE format(
+         'CREATE POLICY fleet_super_admin ON ${PROBE_TABLE} TO %I USING (true) WITH CHECK (true)',
+         public.fazerai_fleet_role()); END $do$`,
+      `DO $do$ BEGIN EXECUTE format(
+         'GRANT SELECT ON ${PROBE_TABLE} TO %I', public.fazerai_fleet_role()); END $do$`,
+      `GRANT SELECT ON ${PROBE_TABLE} TO PUBLIC`,
+      `ANALYZE ${PROBE_TABLE}`,
+    ]) {
+      await su.$executeRawUnsafe(statement);
+    }
+    fleetRole = (
+      (await su.$queryRawUnsafe(`SELECT ${FLEET_ROLE_FN} AS role`)) as Array<{
+        role: string;
+      }>
+    )[0]?.role as string;
   });
 
   afterAll(async () => {
+    if (su) await su.$executeRawUnsafe(`DROP TABLE IF EXISTS ${PROBE_TABLE}`);
     if (su && t1) {
       await su.outboundWebhookDelivery.deleteMany({
         where: { tenantId: { in: [t1, t2] } },
@@ -129,14 +171,11 @@ describe.skipIf(!dbUp)("RLS policy shape", () => {
   // been split. The fleet path is `USING (true)`, so there is no tenant predicate to put anywhere.
   test("the fleet path has no tenant predicate to index, which is what makes the probe above meaningful", async () => {
     const plan = await planOf(async (tx) => {
-      await tx.$executeRaw`SELECT set_config('role', ${FLEET_ROLE}, true)`;
+      await tx.$executeRawUnsafe(ENTER_FLEET_ROLE_SQL);
     });
     expect(plan.indexCond).toBeNull();
-    // Bounds rather than equalities: this arm sees the WHOLE table, and other files in the suite
-    // write to it concurrently. The two seeded tenants are the floor, the count is not a ceiling,
-    // and what the assertion is actually about is that this arm crosses tenants at all.
-    expect(plan.rows).toBeGreaterThanOrEqual(400);
-    expect(plan.tenants).toBeGreaterThanOrEqual(2);
+    expect(plan.rows).toBe(3200);
+    expect(plan.tenants).toBe(2);
   });
 
   test("app.is_super_admin no longer elevates the app role", async () => {
@@ -184,9 +223,9 @@ describe.skipIf(!dbUp)("RLS policy shape", () => {
 
   test("the fleet role is reachable by SET ROLE and NOT by inheritance", async () => {
     const who = (await appDb.$queryRaw`
-      SELECT pg_has_role(session_user, ${FLEET_ROLE}, 'SET')    AS can_set_role,
-             pg_has_role(session_user, ${FLEET_ROLE}, 'MEMBER') AS member,
-             pg_has_role(session_user, ${FLEET_ROLE}, 'USAGE')  AS usage`) as Array<{
+      SELECT pg_has_role(session_user, ${fleetRole}, 'SET')    AS can_set_role,
+             pg_has_role(session_user, ${fleetRole}, 'MEMBER') AS member,
+             pg_has_role(session_user, ${fleetRole}, 'USAGE')  AS usage`) as Array<{
       can_set_role: boolean;
       member: boolean;
       usage: boolean;
@@ -201,16 +240,37 @@ describe.skipIf(!dbUp)("RLS policy shape", () => {
 
     // And the mechanism itself, not just the catalog's opinion of it.
     const asFleet = await appDb.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT set_config('role', ${FLEET_ROLE}, true)`;
+      await tx.$executeRawUnsafe(ENTER_FLEET_ROLE_SQL);
       return tx.$queryRaw`SELECT current_user AS u`;
     });
-    expect((asFleet as Array<{ u: string }>)[0]?.u).toBe(FLEET_ROLE);
+    expect((asFleet as Array<{ u: string }>)[0]?.u).toBe(fleetRole);
+  });
+
+  // The one duplicate in the design, fenced by measurement rather than by a comment asking for care.
+  // `db-bootstrap` runs BEFORE the migration that creates the function, so it carries the derivation
+  // inline; every other caller uses the function. If the two ever disagree, bootstrap provisions one
+  // role and the policies name another, and every cross-tenant read answers zero rows in silence.
+  test("the expression db-bootstrap carries resolves to the same name as the function", async () => {
+    const both = (await suDb.$queryRawUnsafe(
+      `SELECT ${FLEET_ROLE_EXPR} AS inline, ${FLEET_ROLE_FN} AS fn`,
+    )) as Array<{ inline: string; fn: string }>;
+    expect(both[0]?.inline).toBe(both[0]?.fn as string);
+    // And it is the name actually in use, not just two agreeing strings.
+    expect(both[0]?.fn).toBe(fleetRole);
+    // It carries the database, which is the whole reason it is derived at all.
+    const db = (
+      (await suDb.$queryRaw`SELECT current_database() AS d`) as Array<{
+        d: string;
+      }>
+    )[0]?.d as string;
+    expect(fleetRole).toContain(db.slice(0, 30));
+    expect(fleetRole.length).toBeLessThanOrEqual(63);
   });
 
   test("the fleet role holds no privilege of its own", async () => {
     const role = (await suDb.$queryRaw`
       SELECT rolsuper, rolbypassrls, rolcanlogin
-        FROM pg_roles WHERE rolname = ${FLEET_ROLE}`) as Array<{
+        FROM pg_roles WHERE rolname = ${fleetRole}`) as Array<{
       rolsuper: boolean;
       rolbypassrls: boolean;
       rolcanlogin: boolean;
@@ -227,7 +287,7 @@ describe.skipIf(!dbUp)("RLS policy shape", () => {
       (await appDb.$queryRaw`SELECT session_user AS u`) as Array<{ u: string }>
     )[0]?.u;
     await appDb.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT set_config('role', ${FLEET_ROLE}, true)`;
+      await tx.$executeRawUnsafe(ENTER_FLEET_ROLE_SQL);
     });
     const afterCommit = (await appDb.$queryRaw`
       SELECT current_user AS u`) as Array<{ u: string }>;
@@ -235,7 +295,7 @@ describe.skipIf(!dbUp)("RLS policy shape", () => {
 
     await expect(
       appDb.$transaction(async (tx) => {
-        await tx.$executeRaw`SELECT set_config('role', ${FLEET_ROLE}, true)`;
+        await tx.$executeRawUnsafe(ENTER_FLEET_ROLE_SQL);
         throw new Error("rollback");
       }),
     ).rejects.toThrow("rollback");
@@ -291,7 +351,7 @@ describe.skipIf(!dbUp)("RLS policy shape", () => {
     ).toEqual([]);
     expect(
       fleetPolicies
-        .filter((p) => p.roles.join() !== FLEET_ROLE)
+        .filter((p) => p.roles.join() !== fleetRole)
         .map((p) => p.table_name),
     ).toEqual([]);
     expect(
@@ -315,10 +375,10 @@ describe.skipIf(!dbUp)("RLS policy shape", () => {
       ALTER TABLE ${probe} FORCE ROW LEVEL SECURITY;
       CREATE POLICY tenant_isolation ON ${probe}
         USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::bigint);
-      GRANT SELECT ON ${probe} TO ${FLEET_ROLE};`);
+      GRANT SELECT ON ${probe} TO "${fleetRole}";`);
     try {
       const seen = await appDb.$transaction(async (tx) => {
-        await tx.$executeRaw`SELECT set_config('role', ${FLEET_ROLE}, true)`;
+        await tx.$executeRawUnsafe(ENTER_FLEET_ROLE_SQL);
         return tx.$queryRawUnsafe(`SELECT count(*)::int AS n FROM ${probe}`);
       });
       expect((seen as Array<{ n: number }>)[0]?.n).toBe(0);

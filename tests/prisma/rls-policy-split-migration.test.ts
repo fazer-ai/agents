@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { Client } from "pg";
-import { FLEET_ROLE } from "@/lib/tenancy/fleet-role";
+import { FLEET_ROLE_FN } from "@/lib/tenancy/fleet-role";
 
 // The migration that splits the tenant policy is driven off the CATALOG rather than off a list of
 // tables (the list is the thing that goes stale — `tenant_isolation` was written for 38 tables in
@@ -99,6 +99,15 @@ describe.skipIf(!dbUp)("the RLS policy split migration", () => {
     const failure = await applyMigration(OLD_POLICY("things", "tenant_id"));
     expect(failure).toBeNull();
 
+    // The role the probe database resolves to, asked of the probe database — its name carries the
+    // database, so it is NOT the one this suite's own database uses.
+    const fleetRole = await onProbe(
+      async (c) =>
+        (await c.query<{ role: string }>(`SELECT ${FLEET_ROLE_FN} AS role`))
+          .rows[0]?.role as string,
+    );
+    expect(fleetRole).toContain(PROBE_DB.slice(0, 30));
+
     const policies = await onProbe(
       async (c) =>
         (
@@ -134,7 +143,7 @@ describe.skipIf(!dbUp)("the RLS policy split migration", () => {
         expect(p.qual).not.toContain("is_super_admin");
         expect(p.roles).toEqual(["public"]);
       } else {
-        expect(p.roles).toEqual([FLEET_ROLE]);
+        expect(p.roles).toEqual([fleetRole]);
       }
     }
     // `tenants` is keyed by its own id, and the split has to preserve that rather than assume a

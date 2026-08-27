@@ -4,7 +4,7 @@ fazer.ai agents is multi-tenant. Isolation is **hybrid and defense-in-depth**: a
 
 ## The non-negotiables
 
-1. **Runtime connects as a NON-SUPERUSER, NON-BYPASSRLS role.** Superusers and table owners bypass RLS, so a superuser runtime connection makes the entire isolation model a no-op. `DATABASE_URL` must point at `fazerai_app` (provisioned by [`scripts/db-bootstrap.sql`](../scripts/db-bootstrap.sql)); `MIGRATION_DATABASE_URL` is the superuser/owner used only for DDL/migrations. The two MUST differ in production. This holds for the cross-tenant path too: it is a role (`fazerai_fleet`) with no attribute of its own, reached by `SET ROLE`, never a `BYPASSRLS` account — see the policy section below.
+1. **Runtime connects as a NON-SUPERUSER, NON-BYPASSRLS role.** Superusers and table owners bypass RLS, so a superuser runtime connection makes the entire isolation model a no-op. `DATABASE_URL` must point at `fazerai_app` (provisioned by [`scripts/db-bootstrap.sql`](../scripts/db-bootstrap.sql)); `MIGRATION_DATABASE_URL` is the superuser/owner used only for DDL/migrations. The two MUST differ in production. This holds for the cross-tenant path too: it is a role with no attribute of its own, reached by `SET ROLE`, never a `BYPASSRLS` account — see the policy section below.
 2. **Tenant scope is transaction-local.** `runScoped` opens a `$transaction` and issues `set_config('app.tenant_id', <id>, true)` as the first statement. The `true` makes it reset on commit/rollback, so it cannot leak to the next request on a pooled connection. A missing GUC yields NULL in the policy → **fail-closed (zero rows)**.
 3. **No network/LLM `await` inside a scoped transaction.** It pins a pooled connection; long I/O exhausts the pool. Do network I/O outside; keep the tx to DB work.
 4. **Never read the tenant from AsyncLocalStorage at query time.** The `$extends` is *closure-bound* to a fixed `tenantId` (reading ALS inside the extension callback is unreliable on `create`). ALS is plumbing for carrying context to nodes/workers, not the source of truth for a query's tenant.
@@ -15,7 +15,7 @@ fazer.ai agents is multi-tenant. Isolation is **hybrid and defense-in-depth**: a
 Everything lives under [`@/lib/tenancy`](../src/lib/tenancy):
 
 - `runScoped(ctx, fn)` — runs `fn(db)` in a tenant-scoped transaction. `db` is a branded `ScopedDb`; only the provider can produce one, so passing the base `prisma` into a service that expects a `ScopedDb` does not type-check. `create`/`createMany`/`upsert` auto-inject `tenant_id` (and override any caller-supplied value). Throws `TenantTargetRequiredError` if `ctx.tenantId` is null.
-- `asSuperAdmin(fn)` — audited fleet/cross-tenant path. Becomes `fazerai_fleet` for the length of the transaction (`set_config('role', …, true)`, which resets on commit and on rollback), and that role is what every table's `fleet_super_admin` policy is written `TO` — so RLS allows every row (incl. `tenant_id NULL` audit rows and creating new tenants). Only call when the principal is `SUPER_ADMIN`.
+- `asSuperAdmin(fn)` — audited fleet/cross-tenant path. Becomes the fleet role for the length of the transaction (`set_config('role', …, true)`, which resets on commit and on rollback), and that role is what every table's `fleet_super_admin` policy is written `TO` — so RLS allows every row (incl. `tenant_id NULL` audit rows and creating new tenants). Only call when the principal is `SUPER_ADMIN`.
 - `resolveRequestTenantContext(user, headerTenantId)` — pure resolution of the request `TenantContext`. `X-Tenant-Id` is honored **only** for `SUPER_ADMIN` (who has no home tenant and selects a target per request); for anyone else it is forgeable and ignored — a mismatch is flagged as an anomaly to log, never accepted.
 - `roleAtLeast` / `isAdminRole` — role hierarchy `SUPER_ADMIN > TENANT_ADMIN > AGENT` (the rank itself lives in the pure [`@/lib/roles`](../src/lib/roles.ts), shared with the React client and CLI scripts). Gate by rank, never by `!== "AGENT"`.
 
@@ -30,7 +30,7 @@ CREATE POLICY tenant_isolation ON <table>
   USING      (tenant_id = nullif(current_setting('app.tenant_id', true), '')::bigint)
   WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::bigint);
 
-CREATE POLICY fleet_super_admin ON <table> TO fazerai_fleet USING (true) WITH CHECK (true);
+CREATE POLICY fleet_super_admin ON <table> TO <fleet role> USING (true) WITH CHECK (true);
 ```
 
 The split is not cosmetic. Until #382 both branches lived in one policy, ORed together
@@ -48,13 +48,29 @@ Two consequences worth knowing before touching this:
   configuration (`DATABASE_URL`) and a migration cannot read a deployment's env, so a policy that had
   to name it could not be written in a migration at all. Only the fleet policy names a role, and that
   name is a fixed constant ([`@/lib/tenancy/fleet-role`](../src/lib/tenancy/fleet-role.ts)).
-- **The runtime role must hold `fazerai_fleet` WITHOUT inheriting it.** `SET ROLE` needs the
-  membership; inheriting it applies `fleet_super_admin` to the runtime role passively, and then an
-  ordinary scoped request reads every tenant's rows with no error and no plan difference. The grant
-  is made `WITH INHERIT FALSE` and the effective state is asserted in two places — `db-bootstrap`
-  refuses to provision otherwise, and [`db-guard`](../src/lib/db-guard.ts) refuses to serve. On
-  PostgreSQL 16+ the grant's own option is the control and `ALTER ROLE … NOINHERIT` does **not**
-  override it on a membership that already exists.
+- **The fleet role's NAME carries the database** — `fazerai_fleet_<database>_<8 hex of its md5>`,
+  resolved by `public.fazerai_fleet_role()`. Roles are cluster-wide while databases are not, so a
+  fixed name would be one role shared by every installation on a server: installation A's runtime
+  role could connect to installation B's database (databases grant `CONNECT` to `PUBLIC` by
+  default), `SET ROLE` into it, and pick up the grants and the fleet policy B gave it. Measured
+  across two databases with distinct app roles: **permission denied before this design, 30 of 30
+  rows with a fixed name** — and with the cluster superuser as the migration role on both, the
+  second bootstrap wires it with no manual step. The eight hex digits are there because the
+  identifier limit is 63 bytes and Postgres truncates silently.
+- **The runtime role must hold the fleet role WITHOUT inheriting it, and must be able to `SET` it.**
+  Two different questions: `SET ROLE` needs the membership's SET option, while INHERITING it applies
+  `fleet_super_admin` to the runtime role passively — and then an ordinary scoped request reads
+  every tenant's rows with no error and no plan difference. The grant is made
+  `WITH INHERIT FALSE, SET TRUE` and the effective state is asserted in two places —
+  `db-bootstrap` refuses to provision an inheriting one, and [`db-guard`](../src/lib/db-guard.ts)
+  refuses to serve. On PostgreSQL 16+ the grant's own options are the control: `ALTER ROLE …
+  NOINHERIT` does **not** override an existing membership, and `pg_has_role(…, 'MEMBER')` answers
+  true for a grant made `SET FALSE` that denies every `SET ROLE`.
+- **A database restored under a different name resolves a name its own policies do not carry.**
+  Nothing errors — `SET ROLE` succeeds and every fleet read then matches no policy and answers zero
+  rows — so `db-guard` refuses to serve and names the repair, which is one statement: a policy
+  references its role by OID, so `ALTER ROLE <the role the policies name> RENAME TO <the resolved
+  name>` leaves every policy pointing at the same role.
 
 `tenants` is keyed by `id`; `audit_logs` allows `tenant_id NULL` rows only through the fleet policy
 (never leaked to a tenant — `tenant_id = <value>` is never TRUE for a NULL row, and a missing GUC

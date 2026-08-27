@@ -36,27 +36,52 @@
 -- It holds no attribute of its own: NOSUPERUSER and NOBYPASSRLS, so it is still fenced by RLS like
 -- anything else and merely has a policy that lets it through. That keeps the fleet path visible in
 -- `pg_policy` instead of disappearing into a role attribute, and makes a future table that gets RLS
--- without a fleet policy fail CLOSED rather than open. NOLOGIN: nothing ever connects as it.
+-- without a fleet policy fail CLOSED rather than open (measured: 0 rows of 30 through the policy,
+-- 30 of 30 through a BYPASSRLS role, which is the design this replaced). NOLOGIN: nothing ever
+-- connects as it.
 --
+-- Its NAME carries the database, and that is not cosmetic. Roles are CLUSTER-wide while databases
+-- are not, so a fixed name would be ONE role shared by every installation on a server — and
+-- membership is cluster-wide too. Installation A's runtime role could then connect to installation
+-- B's database (databases grant CONNECT to PUBLIC by default), SET ROLE into that shared role, and
+-- pick up the grants and the fleet policy B gave it: measured across two databases with two
+-- distinct app roles as **permission denied before this change, 30 of 30 rows after**. Nor does it
+-- need an operator to wire it — with the cluster superuser as the migration role on both
+-- installations, which is the documented self-hosted setup, the second bootstrap grants the
+-- membership with no manual step (also measured).
+--
+-- The derivation lives in a function so that the runtime, the boot guard and this file cannot drift
+-- into three spellings of one name. Eight hex of md5 because the identifier limit is 63 bytes and
+-- Postgres truncates silently: two long database names sharing a prefix would otherwise become the
+-- same role.
+CREATE OR REPLACE FUNCTION public.fazerai_fleet_role()
+  RETURNS name LANGUAGE sql STABLE AS $fn$
+    SELECT ('fazerai_fleet_'
+            || left(current_database()::text, 30)
+            || '_' || substr(md5(current_database()::text), 1, 8))::name
+  $fn$;
+
 -- `scripts/db-bootstrap` is what owns roles and grants, and it creates this one too. It is repeated
 -- here so that `prisma migrate deploy` run on its own does not fail on a missing role — the
--- policies below reference it by name, and a missing role is a hard parse error, not a warning.
+-- policies below reference it by name, and a missing role is a hard error, not a warning.
 DO $$
+DECLARE
+  v_fleet name := public.fazerai_fleet_role();
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'fazerai_fleet') THEN
-    CREATE ROLE fazerai_fleet NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = v_fleet) THEN
+    EXECUTE format(
+      'CREATE ROLE %I NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE', v_fleet);
   END IF;
+  -- Same set the runtime role gets, and for the same reason: ALTER DEFAULT PRIVILEGES is scoped to
+  -- the role that runs it, so tables a later migration creates inherit these.
+  EXECUTE format('GRANT USAGE ON SCHEMA public TO %I', v_fleet);
+  EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO %I', v_fleet);
+  EXECUTE format('GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO %I', v_fleet);
+  EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA public'
+                 ' GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO %I', v_fleet);
+  EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA public'
+                 ' GRANT USAGE, SELECT ON SEQUENCES TO %I', v_fleet);
 END $$;
-
--- Same set the runtime role gets, and for the same reason: ALTER DEFAULT PRIVILEGES is scoped to
--- the role that runs it, so tables a later migration creates inherit these.
-GRANT USAGE ON SCHEMA public TO fazerai_fleet;
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO fazerai_fleet;
-GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO fazerai_fleet;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public
-  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO fazerai_fleet;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public
-  GRANT USAGE, SELECT ON SEQUENCES TO fazerai_fleet;
 
 -- 2. Rewrite every tenant policy, and give each table its fleet policy.
 --
@@ -67,7 +92,8 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public
 -- getting half of this.
 DO $$
 DECLARE
-  t text;
+  t       text;
+  v_fleet name := public.fazerai_fleet_role();
 BEGIN
   FOR t IN
     SELECT c.relname
@@ -86,8 +112,8 @@ BEGIN
         WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::bigint)
     $f$, t);
     EXECUTE format($f$
-      CREATE POLICY fleet_super_admin ON %I TO fazerai_fleet USING (true) WITH CHECK (true)
-    $f$, t);
+      CREATE POLICY fleet_super_admin ON %I TO %I USING (true) WITH CHECK (true)
+    $f$, t, v_fleet);
   END LOOP;
 END $$;
 
@@ -96,7 +122,9 @@ DROP POLICY tenant_isolation ON "tenants";
 CREATE POLICY tenant_isolation ON "tenants"
   USING (id = nullif(current_setting('app.tenant_id', true), '')::bigint)
   WITH CHECK (id = nullif(current_setting('app.tenant_id', true), '')::bigint);
-CREATE POLICY fleet_super_admin ON "tenants" TO fazerai_fleet USING (true) WITH CHECK (true);
+DO $$ BEGIN EXECUTE format(
+  'CREATE POLICY fleet_super_admin ON "tenants" TO %I USING (true) WITH CHECK (true)',
+  public.fazerai_fleet_role()); END $$;
 
 -- audit_logs: tenant_id may be NULL (fleet-level rows), and those must never reach a tenant.
 --
@@ -109,7 +137,9 @@ DROP POLICY tenant_isolation ON "audit_logs";
 CREATE POLICY tenant_isolation ON "audit_logs"
   USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::bigint)
   WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::bigint);
-CREATE POLICY fleet_super_admin ON "audit_logs" TO fazerai_fleet USING (true) WITH CHECK (true);
+DO $$ BEGIN EXECUTE format(
+  'CREATE POLICY fleet_super_admin ON "audit_logs" TO %I USING (true) WITH CHECK (true)',
+  public.fazerai_fleet_role()); END $$;
 
 -- 3. The migration's own positive control: one of each policy per table under RLS, or nothing here
 -- ran the way it reads. A loop over an empty catalog completes successfully and silently.

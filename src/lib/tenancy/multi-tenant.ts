@@ -5,7 +5,7 @@ import {
   TenantTargetRequiredError,
 } from "@/lib/errors";
 import type { ScopedDb, TenantContext } from "./context";
-import { FLEET_ROLE } from "./fleet-role";
+import { FLEET_ROLE_FN } from "./fleet-role";
 
 // NOTE: the closure-extended `$extends` client is not the bare PrismaClient type, but it
 // still exposes `$transaction`. Accept anything transaction-capable for the *On helpers so
@@ -181,7 +181,7 @@ export async function runScoped<T>(
   return runScopedOn(basePrisma, ctx, fn);
 }
 
-// NOTE: audited cross-tenant / fleet path. Becomes FLEET_ROLE for the length of this transaction,
+// NOTE: audited cross-tenant / fleet path. Becomes the fleet role for the length of this transaction,
 // which is what the `fleet_super_admin` policy on every table under RLS is written `TO` — so RLS
 // allows all rows (incl. tenant_id NULL audit rows and creating new tenants where WITH CHECK could
 // not otherwise pass). Caller must have role SUPER_ADMIN; enforce at the call site.
@@ -193,8 +193,13 @@ export async function runScoped<T>(
 //
 // `set_config('role', ...)` rather than `SET LOCAL ROLE`: it is the same transaction-local
 // mechanism (measured: `current_user` is back to the session user after both commit and rollback)
-// and it takes the role as a bind PARAMETER, exactly like the `set_config('app.tenant_id', ...)`
-// line above, so nothing is spliced into SQL we assemble.
+// and, unlike `SET ROLE`, it takes the role as an EXPRESSION — which is what lets the name be
+// resolved by the database rather than assembled here.
+//
+// `Prisma.raw` rather than `$executeRawUnsafe`: the function CALL has to reach Postgres as SQL and
+// not as a bind parameter, and this is the spelling that keeps the tagged template. It carries no
+// caller input — `FLEET_ROLE_FN` is a constant of this repository — and the name it resolves to
+// never leaves the server.
 //
 // It is not a privilege escalation the old GUC did not already allow: reaching this needs a
 // statement on the runtime connection, which is what setting the GUC needed too. What DID change is
@@ -205,7 +210,7 @@ export async function asSuperAdminOn<T>(
   fn: (db: ScopedDb) => Promise<T>,
 ): Promise<T> {
   return base.$transaction(async (tx) => {
-    await tx.$executeRaw`SELECT set_config('role', ${FLEET_ROLE}, true)`;
+    await tx.$executeRaw`SELECT set_config('role', ${Prisma.raw(FLEET_ROLE_FN)}, true)`;
     return fn(tx as unknown as ScopedDb);
   }, SCOPED_TX_OPTIONS);
 }

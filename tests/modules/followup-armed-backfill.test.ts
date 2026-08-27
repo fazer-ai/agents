@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
-import { FLEET_ROLE } from "@/lib/tenancy/fleet-role";
+import { ENTER_FLEET_ROLE_SQL } from "@/lib/tenancy/fleet-role";
 
 // The original `follow_up_armed_at` backfill (20260807032257) ends in a bare
 // `UPDATE "agents" SET "follow_up_armed_at" = NOW()`. `agents` carries FORCE ROW LEVEL SECURITY,
@@ -104,7 +104,7 @@ describe.skipIf(!dbUp)("follow_up_armed_at backfill under RLS", () => {
   test("arms the agents the original backfill left behind", async () => {
     const statements = await migrationStatements();
     await appDb.$transaction(
-      [`SET ROLE ${FLEET_ROLE}`, ...statements, "RESET ROLE"].map((s) =>
+      [ENTER_FLEET_ROLE_SQL, ...statements].map((s) =>
         appDb.$executeRawUnsafe(s),
       ),
     );

@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Client } from "pg";
 import { INGEST_ID_WINDOW } from "@/graph/ingest-dedup";
-import { FLEET_ROLE } from "@/lib/tenancy/fleet-role";
+import { ENTER_FLEET_ROLE_SQL } from "@/lib/tenancy/fleet-role";
 
 // Runs the ACTUAL backfill of 20260822150000 against the test database. Three things are pinned,
 // and the first is the one with an incident behind it:
@@ -203,7 +203,7 @@ describe.skipIf(!dbUp)("migration: agent thread recent message ids", () => {
     // the guard would be green by invisibility rather than by working.
     test("the backfill reaches the rows under the bypass of the era it runs in", async () => {
       const t = await seedThread("rls-with-bypass", 1100, null, 90005);
-      await runAsApp(`SET ROLE ${FLEET_ROLE};\n${dataSql}\nRESET ROLE;`);
+      await runAsApp(`${ENTER_FLEET_ROLE_SQL};\n${dataSql}`);
       expect((await windowOf(t)).synced.length).toBe(64);
     });
 

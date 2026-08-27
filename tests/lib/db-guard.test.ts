@@ -193,20 +193,26 @@ describe.skipIf(!dbUp)(
       probe = new PrismaClient({
         adapter: new PrismaPg({ connectionString: probeUrl }),
       });
-      // The shape a restore leaves behind: the function resolves THIS database's name (a role that
-      // does not exist here), while the policy carries the role of the database it was dumped from.
+      // The shape a restore leaves behind: the function resolves one name while the policies carry
+      // another. It resolves to `pg_monitor` — a built-in role, so this needs no role DDL, which
+      // matters: role DDL is cluster-wide and serialized here through an advisory lock that
+      // db-bootstrap.test.ts holds at SESSION level for its whole suite (measured, taking it from
+      // this file cost four 5-second timeouts in a full run). What the guard compares is a name
+      // against what the policies name, and that is the same comparison either way.
+      //
+      // TWO tables, because the repair has to reach all of them: one that fixes the table the
+      // message happened to list first is the same silent zero-row read on the one it missed.
       await onProbeRaw(`
         CREATE OR REPLACE FUNCTION public.fazerai_fleet_role()
-          RETURNS name LANGUAGE sql STABLE AS $fn$
-            SELECT ('fazerai_fleet_'
-                    || left(current_database()::text, 30)
-                    || '_' || substr(md5(current_database()::text), 1, 8))::name
-          $fn$;
+          RETURNS name LANGUAGE sql STABLE AS $fn$ SELECT 'pg_monitor'::name $fn$;
         CREATE TABLE t (id bigserial PRIMARY KEY, tenant_id bigint NOT NULL);
+        CREATE TABLE u (id bigserial PRIMARY KEY, tenant_id bigint NOT NULL);
         ALTER TABLE t ENABLE ROW LEVEL SECURITY;
+        ALTER TABLE u ENABLE ROW LEVEL SECURITY;
         CREATE POLICY tenant_isolation ON t
           USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::bigint);
-        CREATE POLICY fleet_super_admin ON t TO CURRENT_USER USING (true);`);
+        CREATE POLICY fleet_super_admin ON t TO CURRENT_USER USING (true);
+        CREATE POLICY fleet_super_admin ON u TO CURRENT_USER USING (true);`);
     });
 
     afterAll(async () => {
@@ -216,7 +222,7 @@ describe.skipIf(!dbUp)(
       );
     });
 
-    test("refuses, and names the rename that repairs it", async () => {
+    test("refuses, and lists every table whose policy is misnamed", async () => {
       // `allow: true` on purpose: this refusal is NOT what ALLOW_SUPERUSER_RUNTIME covers. That flag
       // means "I accept that RLS may be a no-op here"; this is the cross-tenant path reading nothing
       // at all, which no flag should wave through.
@@ -227,20 +233,53 @@ describe.skipIf(!dbUp)(
         (e: unknown) => e as Error,
       );
       expect(err).toBeInstanceOf(FleetPolicyMismatchError);
-      expect(err?.message).toContain(`fazerai_fleet_${PROBE_DB.slice(0, 30)}`);
+      expect(err?.message).toContain('do not name "pg_monitor"');
+      // Every offender, not just the first: a repair that fixes one table and leaves the next is
+      // the same silent zero-row read on the table it missed.
       expect(err?.message).toContain("fleet_super_admin on t");
-      expect(err?.message).toContain("RENAME TO");
+      expect(err?.message).toContain("fleet_super_admin on u");
     });
 
-    test("and passes once the resolved name is the one the policy carries", async () => {
-      // The repair, expressed from the other end: renaming the role the policies name IS what makes
-      // the resolved name match, and here that is done by resolving to the role already named.
-      await onProbeRaw(`
-        CREATE OR REPLACE FUNCTION public.fazerai_fleet_role()
-          RETURNS name LANGUAGE sql STABLE AS $fn$ SELECT current_user::name $fn$;`);
+    // The repair is run VERBATIM out of the message the guard produced, which is the only way to
+    // know it is runnable at all. The previous spelling of this message named a rename that could
+    // never work in the order this fires: bootstrap runs before the guard and has already created
+    // the resolved role, so `ALTER ROLE … RENAME TO` fails on a name that is taken.
+    test("and the repair the message prints actually repairs it", async () => {
+      const err = (await assertRuntimeRoleIsNotSuperuser(
+        probe as PrismaClient,
+        {
+          allow: true,
+        },
+      ).then(
+        () => null,
+        (e: unknown) => e as Error,
+      )) as Error;
+      const repair = err.message.slice(err.message.indexOf("DO $$"));
+      expect(repair).toStartWith("DO $$");
+      await onProbeRaw(repair);
       await expect(
         assertRuntimeRoleIsNotSuperuser(probe as PrismaClient, { allow: true }),
       ).resolves.toBeUndefined();
+
+      // And it landed on BOTH tables, not on the one the message happened to list first.
+      const named = new Client({ connectionString: probeUrl });
+      await named.connect();
+      try {
+        const rows = (
+          await named.query<{ relname: string; roles: string }>(`
+            SELECT c.relname,
+                   (SELECT string_agg(r.rolname, ',') FROM pg_roles r
+                     WHERE r.oid = ANY (p.polroles)) AS roles
+              FROM pg_policy p JOIN pg_class c ON c.oid = p.polrelid
+             WHERE p.polname = 'fleet_super_admin' ORDER BY 1`)
+        ).rows;
+        expect(rows.map((r) => `${r.relname}:${r.roles}`)).toEqual([
+          "t:pg_monitor",
+          "u:pg_monitor",
+        ]);
+      } finally {
+        await named.end();
+      }
     });
   },
 );

@@ -271,6 +271,10 @@ async function provisionFleetRole(
   const fleetRole = (
     await client.query<{ role: string }>(`SELECT ${FLEET_ROLE_EXPR} AS role`)
   ).rows[0]?.role as string;
+  // Interpolated rather than passed through `format('%I', …)` on every statement, and that is safe
+  // BECAUSE the derivation normalises the readable half to `[a-zA-Z0-9_]`: the name cannot carry a
+  // quote to escape. Before that normalisation it could, and did — a database name containing one
+  // produced `syntax error at or near …` on the first grant (measured).
   const fleet = `"${fleetRole}"`;
   await client.query(`
     DO $$
@@ -324,17 +328,28 @@ async function provisionFleetRole(
   // role would pass the fleet policy PASSIVELY, so a migration that forgot the bypass would work on
   // our machines and silently no-op on an install whose role is not a superuser — which is the exact
   // asymmetry the convention exists to remove.
-  if (serverVersionNum >= 160000) {
-    try {
+  //
+  // On 15 and older the options do not parse, and the grant still has to happen: skipping it there
+  // would leave every future data migration on a non-superuser owner failing with
+  // `permission denied to set role` — the exact contract docs/deploy.md states for that role. The
+  // member's own `rolinherit` is the control on those servers, and CURRENT_USER is the
+  // administrator: it is left alone rather than demoted, because taking INHERIT off an
+  // administrative account reaches every other membership it holds. A superuser can SET ROLE
+  // regardless, and a non-superuser owner that inherits this role gains nothing it did not already
+  // have as the table owner under FORCE RLS — the fleet policy is what it is missing.
+  try {
+    if (serverVersionNum >= 160000) {
       await client.query(
         `GRANT ${fleet} TO CURRENT_USER WITH INHERIT FALSE, SET TRUE`,
       );
-    } catch (err) {
-      console.warn(
-        `db-bootstrap: could not grant "${fleetRole}" to the administrative role ` +
-          `(${message(err)}); a future DATA migration would fail on SET ROLE`,
-      );
+    } else {
+      await client.query(`GRANT ${fleet} TO CURRENT_USER`);
     }
+  } catch (err) {
+    console.warn(
+      `db-bootstrap: could not grant "${fleetRole}" to the administrative role ` +
+        `(${message(err)}); a future DATA migration would fail on SET ROLE`,
+    );
   }
 
   // `MEMBER` is not the question, and answering it is how a broken install reads as healthy: since

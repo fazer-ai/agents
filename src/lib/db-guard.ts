@@ -27,15 +27,35 @@ export const FLEET_INHERITED_REASON = "inherits the fleet role";
 // The fleet role's name carries the database it belongs to, so a database RESTORED under a new name
 // resolves a name its own dumped policies do not mention. Nothing errors: `SET ROLE` succeeds (the
 // role exists and is granted), and every fleet read then matches no policy and returns ZERO ROWS.
-// That is the silent shape, so it refuses rather than warns — and the repair is one statement,
-// because a policy references its role by OID and a rename leaves it pointing at the same role.
+// That is the silent shape, so it refuses rather than warns.
+//
+// The repair rewrites the POLICIES, not the role, and the obvious alternative is why. Renaming the
+// role the policies name would work only if this database were the only one using it — roles are
+// cluster-wide, so on a server that also runs the database the dump came from, that rename breaks
+// the live one. And it cannot even be attempted in the order this fires: the documented boot order
+// is bootstrap → migrate → serve, so by the time this runs, bootstrap has ALREADY created the
+// resolved role and `ALTER ROLE … RENAME TO` fails on the name it would take. Rewriting the policies
+// touches nothing outside this database, is idempotent, and is the same statement the split
+// migration runs.
 export class FleetPolicyMismatchError extends Error {
   constructor(resolved: string, offenders: string) {
     super(
       `the fleet policies in this database do not name "${resolved}", which is the role this ` +
         `database resolves to: ${offenders}. Every cross-tenant read would match no policy and ` +
         "answer zero rows, with no error. This is what a database restored under a different name " +
-        `looks like; rename the role the policies DO name: ALTER ROLE "<that role>" RENAME TO "${resolved}";`,
+        "looks like. Point the policies at the resolved role (safe to re-run, and it touches only " +
+        "this database):\n" +
+        "DO $$ DECLARE t text; BEGIN\n" +
+        "  FOR t IN SELECT c.relname FROM pg_policy p\n" +
+        "             JOIN pg_class c ON c.oid = p.polrelid\n" +
+        "             JOIN pg_namespace n ON n.oid = c.relnamespace\n" +
+        "            WHERE n.nspname = 'public' AND p.polname = 'fleet_super_admin'\n" +
+        "  LOOP\n" +
+        "    EXECUTE format('DROP POLICY fleet_super_admin ON %I', t);\n" +
+        "    EXECUTE format('CREATE POLICY fleet_super_admin ON %I TO %I USING (true) WITH CHECK (true)',\n" +
+        "                   t, public.fazerai_fleet_role());\n" +
+        "  END LOOP;\n" +
+        "END $$;",
     );
     this.name = "FleetPolicyMismatchError";
   }

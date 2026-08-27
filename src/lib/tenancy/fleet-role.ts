@@ -33,9 +33,21 @@
 // second bootstrap grants the membership with no manual step (measured; a CREATEROLE administrator
 // that did not create the role is the case that gets refused).
 //
-// So the name carries the database: a readable prefix, the database name truncated, and eight hex
-// of its md5 so two long names that share a prefix cannot collide. 53 bytes at most, inside the
-// 63-byte identifier limit that would otherwise truncate two names into one.
+// So the name carries the database: a readable prefix, the database name, and eight hex of its md5
+// so two names that share a prefix cannot collide. The md5 is taken from the RAW name and the
+// readable half is normalised to `[a-zA-Z0-9_]` first, which is what makes the result both bounded
+// and safe to interpolate — and neither is theoretical:
+//
+//   * `left(…, 30)` counts CHARACTERS, and an identifier is limited to 63 BYTES. A 25-character
+//     Japanese database name derives an 86-byte name, which Postgres truncates SILENTLY — measured,
+//     the truncation cut the hash off entirely, and the first grant then failed with
+//     `role does not exist`. Two databases sharing a prefix would have collided into one role.
+//   * a database name may legally contain a double quote, and it landed inside the derived name:
+//     measured, the next `GRANT … TO "<name>"` came out as `syntax error at or near …`, so
+//     provisioning failed outright on a name Postgres accepts.
+//
+// Normalised, both come out at 44 and 32 bytes with the hash intact. The hash still comes from the
+// unnormalised name, so two databases differing only in punctuation stay distinct.
 //
 // The derivation lives in a FUNCTION rather than being repeated, and every caller uses the
 // function — except `db-bootstrap`, which on a first install runs BEFORE the migration that
@@ -50,7 +62,7 @@ export const FLEET_ROLE_FN = "public.fazerai_fleet_role()";
 // The one duplicate of the function's body, for the boot path that predates the function. Both
 // spellings are compile-time constants of this repository; neither ever carries caller input.
 export const FLEET_ROLE_EXPR =
-  "('fazerai_fleet_' || left(current_database()::text, 30) || '_' || substr(md5(current_database()::text), 1, 8))";
+  "('fazerai_fleet_' || left(regexp_replace(current_database()::text, '[^a-zA-Z0-9_]', '_', 'g'), 30) || '_' || substr(md5(current_database()::text), 1, 8))";
 
 // The function's body, so the migration and this module cannot drift apart in review.
 export const FLEET_ROLE_FUNCTION_DDL = `CREATE OR REPLACE FUNCTION public.fazerai_fleet_role()

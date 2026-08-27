@@ -114,7 +114,7 @@ DO $$
 DECLARE
   v_role  text := current_setting('fazerai.app_role');
   v_fleet name := ('fazerai_fleet_'
-                   || left(current_database()::text, 30)
+                   || left(regexp_replace(current_database()::text, '[^a-zA-Z0-9_]', '_', 'g'), 30)
                    || '_' || substr(md5(current_database()::text), 1, 8))::name;
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = v_fleet) THEN

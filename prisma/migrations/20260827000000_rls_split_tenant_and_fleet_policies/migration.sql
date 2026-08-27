@@ -57,7 +57,7 @@
 CREATE OR REPLACE FUNCTION public.fazerai_fleet_role()
   RETURNS name LANGUAGE sql STABLE AS $fn$
     SELECT ('fazerai_fleet_'
-            || left(current_database()::text, 30)
+            || left(regexp_replace(current_database()::text, '[^a-zA-Z0-9_]', '_', 'g'), 30)
             || '_' || substr(md5(current_database()::text), 1, 8))::name
   $fn$;
 

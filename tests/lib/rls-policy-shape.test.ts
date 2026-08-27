@@ -267,6 +267,47 @@ describe.skipIf(!dbUp)("RLS policy shape", () => {
     expect(fleetRole.length).toBeLessThanOrEqual(63);
   });
 
+  // The derivation has to survive names Postgres accepts and this repository did not think of. Both
+  // of these were live defects, measured before the normalisation went in:
+  //
+  //   * `left(…, 30)` counts CHARACTERS while an identifier is limited to 63 BYTES. A 25-character
+  //     Japanese name derived 86 bytes, Postgres truncated it SILENTLY, the truncation cut off the
+  //     hash, and the next grant failed with `role does not exist`.
+  //   * a database name may contain a double quote, and it landed inside the derived name: the next
+  //     `GRANT … TO "<name>"` came out as `syntax error at or near …`.
+  //
+  // Asked of the EXPRESSION this repository ships, with the database swapped for a parameter, so it
+  // cannot pass against a second copy of the rule written to agree with itself.
+  test("the derived name stays inside the identifier limit, and safe to interpolate", async () => {
+    const expr = FLEET_ROLE_EXPR.replaceAll("current_database()::text", "$1");
+    const hostile = [
+      "相談記録データベース本番環境用相談記録データベース",
+      'quo"te_db',
+      "agents_prod",
+      `${"a".repeat(60)}_one`,
+      `${"a".repeat(60)}_two`,
+      "relatórios_de_atendimento_ção_ão",
+    ];
+    const derived: string[] = [];
+    for (const name of hostile) {
+      const row = (await suDb.$queryRawUnsafe(
+        `SELECT ${expr} AS derived, octet_length(${expr}) AS bytes,
+                (${expr})::name AS as_identifier`,
+        name,
+      )) as Array<{ derived: string; bytes: number; as_identifier: string }>;
+      const r = row[0] as (typeof row)[number];
+      // Under the limit, so `::name` is not a truncation — and the hash survives, which is what
+      // keeps two long names that share a prefix from becoming one role.
+      expect(r.bytes).toBeLessThanOrEqual(63);
+      expect(r.as_identifier).toBe(r.derived);
+      expect(r.derived).toMatch(/^fazerai_fleet_[a-zA-Z0-9_]+_[0-9a-f]{8}$/);
+      derived.push(r.derived);
+    }
+    // Distinct names stay distinct, including the two that agree in their first 60 characters and
+    // the pair that differ only in punctuation the prefix normalises away.
+    expect(new Set(derived).size).toBe(hostile.length);
+  });
+
   test("the fleet role holds no privilege of its own", async () => {
     const role = (await suDb.$queryRaw`
       SELECT rolsuper, rolbypassrls, rolcanlogin

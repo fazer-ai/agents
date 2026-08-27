@@ -7,11 +7,9 @@ import { Client } from "pg";
 // WHICH bypass depends on when the migration runs, and that is not a style choice — the two
 // spellings are each inert in the other's era, silently. Before 20260827000000 the policy carried
 // `is_super_admin = 'on' OR tenant_id = <guc>` and the GUC was the escape; that migration split the
-// OR out into a role-restricted policy (issue #382), after which the GUC grants nothing at all and
-// the escape is entering the fleet role. Measured on 17.10, running the same UPDATE as a
-// non-superuser owner against the post-split policy: the GUC form reaches ZERO rows and reports
-// success, the SET ROLE form reaches them. Before the split the role does not exist yet, so the new
-// spelling is a hard error there.
+// OR out into a role-restricted policy (issue #382), after which the GUC grants nothing at all.
+// Measured on 17.10, running the same UPDATE as a non-superuser owner against the post-split
+// policy: the GUC form reaches ZERO rows and reports success.
 //
 // The rule itself is old and documented (docs/deploy.md): those tables carry FORCE ROW LEVEL
 // SECURITY, which binds the table OWNER as well, and `MIGRATION_DATABASE_URL` is only ever promised
@@ -71,12 +69,37 @@ export function needsBypass(sql: string, forcedTables: Set<string>): boolean {
 
 // The migration that split the policy. Its own directory name is the boundary, and the comparison
 // is lexicographic because the names are fixed-width timestamps.
-// The statement that enters the fleet role, as a migration writes it. `set_config` rather than
-// `SET ROLE` because the role's NAME is resolved by the database (it carries the database), and
-// `SET ROLE` takes a literal — so a migration cannot spell it any other way. The `true` is the
-// transaction-local flag and it is required: `false` would leak the role onto a pooled connection.
+// The bypass a migration writes, from the split onward: it lifts FORCE for the duration and puts it
+// back. Not the fleet role, and that was measured rather than chosen — `prisma migrate dev` replays
+// every migration in a fresh SHADOW database that bootstrap never touches, so the fleet role there
+// has no grants and no membership, and `set_config('role', …)` answers `permission denied to set
+// role`. The same three arms in that condition: no bypass reaches 0 of 30 rows, the fleet role
+// cannot be entered, and NO FORCE reaches 30 of 30.
+//
+// It is the OWNER's own table and only the owner's view changes; the runtime role is not the owner
+// and is unaffected. Leaving FORCE off is the risk, and it has its own backstop: the catalog fence
+// in tests/lib/rls-policy-shape.test.ts asserts every table under RLS also FORCES it.
 export const FLEET_ENTRY_RE =
-  /^\s*SELECT\s+set_config\(\s*'role'\s*,\s*public\.fazerai_fleet_role\(\)\s*,\s*true\s*\)\s*;/m;
+  /^\s*ALTER\s+TABLE\s+"?(\w+)"?\s+NO\s+FORCE\s+ROW\s+LEVEL\s+SECURITY\s*;/im;
+
+// And whatever it lifts, it restores — asked per table, because a file that lifts two and restores
+// one leaves the second permanently unfenced for the owner.
+export function liftsWithoutRestoring(sql: string): string[] {
+  const stripped = sql.replace(/^\s*--.*$/gm, "");
+  const lifted = [
+    ...stripped.matchAll(
+      /ALTER\s+TABLE\s+"?(\w+)"?\s+NO\s+FORCE\s+ROW\s+LEVEL\s+SECURITY/gi,
+    ),
+  ].map((m) => (m[1] as string).toLowerCase());
+  const restored = new Set(
+    [
+      ...stripped.matchAll(
+        /ALTER\s+TABLE\s+"?(\w+)"?\s+FORCE\s+ROW\s+LEVEL\s+SECURITY/gi,
+      ),
+    ].map((m) => (m[1] as string).toLowerCase()),
+  );
+  return [...new Set(lifted)].filter((t) => !restored.has(t));
+}
 
 export const POLICY_SPLIT_MIGRATION =
   "20260827000000_rls_split_tenant_and_fleet_policies";
@@ -116,7 +139,7 @@ describe.skipIf(!dbUp)("every data migration sets the RLS bypass", () => {
     const before = "20260101000000_old";
     const after = "20270101000000_new";
     const guc = `SET app.is_super_admin = 'on';\n${bare}\nRESET app.is_super_admin;`;
-    const role = `SELECT set_config('role', public.fazerai_fleet_role(), true);\n${bare}`;
+    const role = `ALTER TABLE "${table}" NO FORCE ROW LEVEL SECURITY;\n${bare}\nALTER TABLE "${table}" FORCE ROW LEVEL SECURITY;`;
 
     expect(needsBypass(bare, forced)).toBe(true);
     expect(hasBypass(bare, before)).toBe(false);
@@ -137,16 +160,21 @@ describe.skipIf(!dbUp)("every data migration sets the RLS bypass", () => {
     expect(
       hasBypass(`SET LOCAL app.is_super_admin = 'on';\n${bare}`, before),
     ).toBe(false);
-    // `false` is not `true`: the flag is what makes the role transaction-local, and without it the
-    // role would ride a pooled connection into the next statement.
+    // The fleet role is NOT it, and that is the correction this fence carries: it cannot be entered
+    // in the shadow database `prisma migrate dev` replays into (measured).
     expect(
       hasBypass(
-        `SELECT set_config('role', public.fazerai_fleet_role(), false);\n${bare}`,
+        `SELECT set_config('role', public.fazerai_fleet_role(), true);\n${bare}`,
         after,
       ),
     ).toBe(false);
-    // And the literal spelling is not it either: the name is resolved by the database.
-    expect(hasBypass(`SET ROLE fazerai_fleet;\n${bare}`, after)).toBe(false);
+    // And whatever a file lifts it must restore, asked per table.
+    expect(liftsWithoutRestoring(role)).toEqual([]);
+    expect(
+      liftsWithoutRestoring(
+        `ALTER TABLE "${table}" NO FORCE ROW LEVEL SECURITY;\n${bare}`,
+      ),
+    ).toEqual([table.toLowerCase()]);
 
     // DDL alone never needs it.
     expect(
@@ -173,6 +201,11 @@ describe.skipIf(!dbUp)("every data migration sets the RLS bypass", () => {
       );
       const guc = /^\s*SET\s+app\.is_super_admin\s*=/m.test(sql);
       const role = FLEET_ENTRY_RE.test(sql);
+      stale.push(
+        ...(liftsWithoutRestoring(sql).length
+          ? [`${name} (lifts FORCE without restoring)`]
+          : []),
+      );
       if (guc && name >= POLICY_SPLIT_MIGRATION) stale.push(name);
       if (role && name < POLICY_SPLIT_MIGRATION) early.push(name);
     }

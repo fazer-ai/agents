@@ -19,4 +19,5 @@ paths:
   END $$;
   ```
 - Never run a bare `prisma migrate reset`: it recreates the `public` schema and wipes the bootstrap-provisioned grants (Postgres `42501` on next boot). Use `bun db:reset`, or rerun `bun db:bootstrap` after any reset.
+- **A DATA migration over a tenant-scoped table lifts FORCE around the statement** (`ALTER TABLE x NO FORCE ROW LEVEL SECURITY;` … `ALTER TABLE x FORCE ROW LEVEL SECURITY;`), never entering the fleet role: `migrate dev` replays into a shadow database bootstrap never touches, where that role has no grants and no membership (measured — `permission denied to set role`). Whatever a file lifts it must restore; `tests/prisma/migration-rls-bypass.test.ts` asks both, per table.
 - RLS policies, partial/expression indexes and CHECK constraints are hand-written SQL in migrations (Prisma cannot model them). When adding a tenant-scoped table, add its `ENABLE`/`FORCE ROW LEVEL SECURITY` + `tenant_isolation` policy in the same migration (see the tail of the baseline migration).

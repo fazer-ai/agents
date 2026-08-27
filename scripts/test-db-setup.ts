@@ -1,8 +1,10 @@
 #!/usr/bin/env bun
-import { readdirSync } from "node:fs";
-import { join } from "node:path";
 import { Client } from "pg";
-import { reprovisionReasons } from "@/tests/db-gate";
+import {
+  localMigrations,
+  type MigrationRow,
+  reprovisionReasons,
+} from "@/tests/db-gate";
 import { checkoutRootFrom, testDbNameFor, withDbName } from "@/tests/db-name";
 
 // Provisions (idempotently) the DEDICATED test database the integration suite runs against, so
@@ -74,12 +76,21 @@ async function main() {
       "SELECT 1 FROM pg_database WHERE datname = $1",
       [dbName],
     );
-    // A database carrying a migration this tree has never heard of cannot be REPAIRED by deploying:
-    // the row is already in `_prisma_migrations`, so nothing is pending and whatever that migration
-    // dropped stays dropped. Reprovisioning is the only way back, and it costs nothing here because
-    // the database holds test fixtures and nothing else. The DROP is deliberately not FORCEd: if
-    // something is still connected, Postgres refusing is the right answer, not killing a suite that
-    // is mid-run.
+    // A database in one of the states `reprovisionReasons` names cannot be REPAIRED by deploying,
+    // so it is dropped and rebuilt, which costs nothing because it holds test fixtures and nothing
+    // else.
+    //
+    // The connections are closed first, and that reverses a decision made earlier in this change on
+    // the reasoning that Postgres refusing is safer than killing a suite mid-run. What refuted it
+    // was measuring the refusal: `database "…" is being accessed by other users`, exit 1, with the
+    // holder being ONE backend in `state=idle` whose last statement was `ROLLBACK` — a pool
+    // connection leaked by a test process that had already exited. That is the ordinary case, not
+    // the concurrent-run case, so the refusal fires where there is nothing to protect and hands the
+    // reader a Postgres error naming no way out.
+    //
+    // What makes closing them defensible is the OTHER half of this change: the database is derived
+    // per checkout, so the only thing that can be connected is this checkout's own work, and the
+    // person typing this command owns it. `datname` fences the termination to this database alone.
     if (rowCount !== 0) {
       const reasons = await reprovisionOf(targetSuUrl);
       if (reasons.length > 0) {
@@ -87,6 +98,16 @@ async function main() {
           `test-db-setup: "${dbName}" cannot be deployed onto (${reasons.length} reason(s)), so it is being reprovisioned:`,
         );
         for (const m of reasons) console.log(`  ${m}`);
+        const { rows: closed } = await maint.query(
+          `SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+            WHERE datname = $1 AND pid <> pg_backend_pid()`,
+          [dbName],
+        );
+        if (closed.length > 0) {
+          console.log(
+            `test-db-setup: closed ${closed.length} connection(s) still open on it`,
+          );
+        }
         await maint.query(`DROP DATABASE "${dbName}"`);
         await maint.query(`CREATE DATABASE "${dbName}"`);
         console.log(`test-db-setup: recreated database "${dbName}"`);
@@ -127,30 +148,17 @@ async function main() {
   console.log(`test-db-setup: "${dbName}" ready`);
 }
 
-// The migrations this tree carries, read the same way tests/setup.ts reads them at preload.
-function localMigrations(): string[] {
-  return readdirSync(join(ROOT, "prisma", "migrations"), {
-    withFileTypes: true,
-  })
-    .filter((e) => e.isDirectory())
-    .map((e) => e.name);
-}
-
 // `_prisma_migrations` may not exist at all (a database created and never migrated), and that is a
 // state and not an error: there is nothing to undo in it, only migrations to apply.
 async function reprovisionOf(url: string): Promise<string[]> {
   const client = new Client({ connectionString: url });
   await client.connect();
   try {
-    const { rows } = await client.query<{
-      migration_name: string;
-      finished_at: Date | null;
-      rolled_back_at: Date | null;
-    }>(
-      `SELECT migration_name, finished_at, rolled_back_at FROM _prisma_migrations
+    const { rows } = await client.query<MigrationRow>(
+      `SELECT migration_name, checksum, finished_at, rolled_back_at FROM _prisma_migrations
        WHERE to_regclass('_prisma_migrations') IS NOT NULL`,
     );
-    return reprovisionReasons(rows, localMigrations());
+    return reprovisionReasons(rows, localMigrations(ROOT));
   } catch {
     return [];
   } finally {

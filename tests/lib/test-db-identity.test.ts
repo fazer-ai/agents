@@ -1,11 +1,15 @@
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   appliedMigrations,
+  changedMigrations,
   DB_GATE_OPT_OUT,
   foreignMigrations,
+  type LocalMigration,
+  localMigrations,
   type MigrationRow,
   pendingMigrations,
   reprovisionReasons,
@@ -200,17 +204,25 @@ describe("the test database's name belongs to ONE checkout", () => {
 
 // The ledger, in the shape the gate reads it. A row is not a name: it also says whether the apply
 // FINISHED and whether someone resolved it as rolled back.
-const done = (...names: string[]) =>
+// The checksum is a real one of the name, so a fixture never accidentally matches a DIFFERENT
+// name's file: `sameSql` below builds the local side from the same function.
+const sumOf = (name: string) => createHash("sha256").update(name).digest("hex");
+const done = (...names: string[]): MigrationRow[] =>
   names.map((migration_name) => ({
     migration_name,
+    checksum: sumOf(migration_name),
     finished_at: new Date(),
     rolled_back_at: null,
   }));
-const halfWay = (migration_name: string) => ({
+const halfWay = (migration_name: string): MigrationRow => ({
   migration_name,
+  checksum: sumOf(migration_name),
   finished_at: null,
   rolled_back_at: null,
 });
+// The tree side, agreeing with `done` by construction.
+const sameSql = (names: string[]): LocalMigration[] =>
+  names.map((name) => ({ name, checksum: sumOf(name) }));
 
 describe("a database that is not this tree's database", () => {
   const local = ["20260101000000_a", "20260102000000_b"];
@@ -221,37 +233,25 @@ describe("a database that is not this tree's database", () => {
   // the suite runs against a schema nobody finished writing. Measured on the real table: an
   // interrupted apply leaves `{ finished_at: null, rolled_back_at: null }`.
   test("a migration that never finished is not applied", () => {
-    const rows = [
-      {
-        migration_name: "20260101000000_a",
-        finished_at: new Date(),
-        rolled_back_at: null,
-      },
-      {
-        migration_name: "20260102000000_b",
-        finished_at: null,
-        rolled_back_at: null,
-      },
-    ];
+    const rows = [...done("20260101000000_a"), halfWay("20260102000000_b")];
     expect(appliedMigrations(rows)).toEqual(["20260101000000_a"]);
-    expect(schemaOutOfStep("x_test", rows, local)).toContain(
+    expect(schemaOutOfStep("x_test", rows, sameSql(local))).toContain(
       "20260102000000_b",
     );
   });
 
   test("a migration resolved as rolled back is not applied either", () => {
-    const rows = [
-      {
-        migration_name: "20260101000000_a",
-        finished_at: new Date(),
-        rolled_back_at: new Date(),
-      },
-    ];
+    const rows: MigrationRow[] = done("20260101000000_a").map((r) => ({
+      ...r,
+      rolled_back_at: new Date(),
+    }));
     expect(appliedMigrations(rows)).toEqual([]);
   });
 
   test("a matching database is not stopped", () => {
-    expect(schemaOutOfStep("x_test", done(...local), local)).toBeNull();
+    expect(
+      schemaOutOfStep("x_test", done(...local), sameSql(local)),
+    ).toBeNull();
   });
 
   // The direction that produced the incident: applied, and the tree has never heard of it.
@@ -260,7 +260,7 @@ describe("a database that is not this tree's database", () => {
     expect(foreignMigrations(applied, local)).toEqual([
       "20260103000000_from_another_branch",
     ]);
-    const message = schemaOutOfStep("x_test", done(...applied), local);
+    const message = schemaOutOfStep("x_test", done(...applied), sameSql(local));
     expect(message).toContain("20260103000000_from_another_branch");
     expect(message).toContain("x_test");
     expect(message).toContain("db:test:setup");
@@ -272,9 +272,9 @@ describe("a database that is not this tree's database", () => {
   test("a migration the database has never been given is named too", () => {
     const applied = [local[0] as string];
     expect(pendingMigrations(applied, local)).toEqual(["20260102000000_b"]);
-    expect(schemaOutOfStep("x_test", done(...applied), local)).toContain(
-      "20260102000000_b",
-    );
+    expect(
+      schemaOutOfStep("x_test", done(...applied), sameSql(local)),
+    ).toContain("20260102000000_b");
   });
 
   // Both at once is the branch switch that also pulled, and a message that reported only the first
@@ -283,7 +283,7 @@ describe("a database that is not this tree's database", () => {
     const message = schemaOutOfStep(
       "x_test",
       done("20260101000000_a", "20260199000000_foreign"),
-      local,
+      sameSql(local),
     ) as string;
     expect(message).toContain("20260199000000_foreign");
     expect(message).toContain("20260102000000_b");
@@ -297,7 +297,7 @@ describe("a database that is not this tree's database", () => {
   // either would report a healthy database as divergent.
   test("neither side's order is part of the answer", () => {
     expect(
-      schemaOutOfStep("x_test", done(...[...local].reverse()), local),
+      schemaOutOfStep("x_test", done(...[...local].reverse()), sameSql(local)),
     ).toBeNull();
   });
 
@@ -306,7 +306,9 @@ describe("a database that is not this tree's database", () => {
   // so is the difference between one clear refusal and a suite that fails on the first missing
   // table.
   test("a database with nothing applied is out of step, not up to date", () => {
-    expect(schemaOutOfStep("x_test", [], local)).toContain("20260101000000_a");
+    expect(schemaOutOfStep("x_test", [], sameSql(local))).toContain(
+      "20260101000000_a",
+    );
   });
 
   // And the fence against the fence: a scan that found nothing passes exactly like a scan that
@@ -321,16 +323,16 @@ describe("a database that is not this tree's database", () => {
   // Measured on the real ledger before this: 57 rows, 56 counted, foreign empty, verdict up to date.
   test("a migration that died half-way is named, not merely excluded", () => {
     const rows = [...done(...local), halfWay("20260199000000_died_elsewhere")];
-    const message = schemaOutOfStep("x_test", rows, local) as string;
+    const message = schemaOutOfStep("x_test", rows, sameSql(local)) as string;
     expect(message).toContain("20260199000000_died_elsewhere");
     expect(message).toContain("never finished");
   });
 
   test("a local migration that died half-way stops the run too", () => {
     const rows = [done(local[0] as string)[0], halfWay(local[1] as string)];
-    expect(schemaOutOfStep("x_test", rows as MigrationRow[], local)).toContain(
-      local[1] as string,
-    );
+    expect(
+      schemaOutOfStep("x_test", rows as MigrationRow[], sameSql(local)),
+    ).toContain(local[1] as string);
   });
 });
 
@@ -342,17 +344,20 @@ describe("which states cannot be deployed onto", () => {
   const local = ["20260101000000_a", "20260102000000_b", "20260103000000_c"];
 
   test("a database in step, and one merely behind, are deployed onto", () => {
-    expect(reprovisionReasons(done(...local), local)).toEqual([]);
+    expect(reprovisionReasons(done(...local), sameSql(local))).toEqual([]);
     // Behind by the NEWEST migration: deploying applies it last, exactly as a fresh build would.
     expect(
-      reprovisionReasons(done("20260101000000_a", "20260102000000_b"), local),
+      reprovisionReasons(
+        done("20260101000000_a", "20260102000000_b"),
+        sameSql(local),
+      ),
     ).toEqual([]);
   });
 
   test("a foreign migration cannot be undone by deploying", () => {
     const reasons = reprovisionReasons(
       done(...local, "20260199000000_theirs"),
-      local,
+      sameSql(local),
     );
     expect(reasons).toHaveLength(1);
     expect(reasons[0]).toContain("20260199000000_theirs");
@@ -361,7 +366,7 @@ describe("which states cannot be deployed onto", () => {
   test("a half-applied row is P3009, which deploying answers with a refusal", () => {
     const reasons = reprovisionReasons(
       [...done(...local), halfWay("20260104000000_d")],
-      local,
+      sameSql(local),
     );
     expect(reasons).toHaveLength(1);
     expect(reasons[0]).toContain("never finished");
@@ -371,13 +376,12 @@ describe("which states cannot be deployed onto", () => {
     const reasons = reprovisionReasons(
       [
         ...done(...local),
-        {
-          migration_name: "20260104000000_d",
-          finished_at: new Date(),
+        ...done("20260104000000_d").map((r) => ({
+          ...r,
           rolled_back_at: new Date(),
-        },
+        })),
       ],
-      local,
+      sameSql(local),
     );
     expect(reasons).toHaveLength(1);
   });
@@ -387,7 +391,7 @@ describe("which states cannot be deployed onto", () => {
   test("a pending migration that sorts before an applied one is not deployed onto", () => {
     const reasons = reprovisionReasons(
       done("20260101000000_a", "20260103000000_c"),
-      local,
+      sameSql(local),
     );
     expect(reasons).toHaveLength(1);
     expect(reasons[0]).toContain("20260102000000_b");
@@ -400,15 +404,15 @@ describe("which states cannot be deployed onto", () => {
   test("the order that matters is the filename's, suffix included", () => {
     const sameStamp = ["20260827000000_a_first", "20260827000000_b_second"];
     expect(
-      reprovisionReasons(done("20260827000000_b_second"), sameStamp),
+      reprovisionReasons(done("20260827000000_b_second"), sameSql(sameStamp)),
     ).toHaveLength(1);
     expect(
-      reprovisionReasons(done("20260827000000_a_first"), sameStamp),
+      reprovisionReasons(done("20260827000000_a_first"), sameSql(sameStamp)),
     ).toEqual([]);
   });
 
   test("an empty database is provisioned, not reprovisioned", () => {
-    expect(reprovisionReasons([], local)).toEqual([]);
+    expect(reprovisionReasons([], sameSql(local))).toEqual([]);
   });
 });
 
@@ -458,12 +462,14 @@ describe("the refusal, as a run", () => {
           await seed.query(
             `CREATE TABLE _prisma_migrations (
                migration_name text NOT NULL,
+               checksum text NOT NULL,
                finished_at timestamptz,
                rolled_back_at timestamptz)`,
           );
           await seed.query(
-            `INSERT INTO _prisma_migrations (migration_name, finished_at) VALUES ($1, now())`,
-            [FOREIGN],
+            `INSERT INTO _prisma_migrations (migration_name, checksum, finished_at)
+             VALUES ($1, $2, now())`,
+            [FOREIGN, sumOf(FOREIGN)],
           );
         } finally {
           await seed.end();
@@ -546,12 +552,14 @@ describe("the command the refusal names", () => {
           await seed.query(
             `CREATE TABLE _prisma_migrations (
                migration_name text NOT NULL,
+               checksum text NOT NULL,
                finished_at timestamptz,
                rolled_back_at timestamptz)`,
           );
           await seed.query(
-            `INSERT INTO _prisma_migrations (migration_name, finished_at) VALUES ($1, now())`,
-            [FOREIGN],
+            `INSERT INTO _prisma_migrations (migration_name, checksum, finished_at)
+             VALUES ($1, $2, now())`,
+            [FOREIGN, sumOf(FOREIGN)],
           );
         } finally {
           await seed.end();
@@ -605,5 +613,174 @@ describe("the command the refusal names", () => {
       }
     },
     300_000,
+  );
+
+  // AND IT REPROVISIONS WITH SOMETHING STILL CONNECTED, which is the ordinary case rather than the
+  // exotic one. This change first refused to force the DROP, on the reasoning that Postgres saying
+  // no is safer than killing a suite mid-run; measuring the refusal is what reversed it. The holder
+  // was ONE backend in `state=idle` whose last statement was `ROLLBACK` — a pool connection leaked
+  // by a test process that had already exited — and the reader got
+  // `database "…" is being accessed by other users`, exit 1, naming no way out. This test holds a
+  // connection open across the whole command for that reason.
+  test.skipIf(!live)(
+    "reprovisions even with a connection still open on the database",
+    async () => {
+      const { Client } = await import("pg");
+      const scratch = testDbNameFor(BASE, repoRoot);
+      const at = (url: string, db: string) => {
+        const u = new URL(url);
+        u.pathname = `/${db}`;
+        return u.toString();
+      };
+      const maintUrl = new URL(suUrl as string);
+      maintUrl.pathname = "/postgres";
+      const maint = new Client({ connectionString: maintUrl.toString() });
+      await maint.connect();
+      let squatter: InstanceType<typeof Client> | undefined;
+      try {
+        await maint.query(`DROP DATABASE IF EXISTS "${scratch}"`);
+        await maint.query(`CREATE DATABASE "${scratch}"`);
+        const seed = new Client({
+          connectionString: at(suUrl as string, scratch),
+        });
+        await seed.connect();
+        try {
+          await seed.query(
+            `CREATE TABLE _prisma_migrations (
+               migration_name text NOT NULL,
+               checksum text NOT NULL,
+               finished_at timestamptz,
+               rolled_back_at timestamptz)`,
+          );
+          await seed.query(
+            `INSERT INTO _prisma_migrations (migration_name, checksum, finished_at)
+             VALUES ($1, $2, now())`,
+            [FOREIGN, sumOf(FOREIGN)],
+          );
+        } finally {
+          await seed.end();
+        }
+
+        // The leaked pool connection, personified: connected, idle, and going nowhere.
+        squatter = new Client({
+          connectionString: at(suUrl as string, scratch),
+        });
+        // Being terminated is the POINT of this fixture, and `pg` reports it by emitting `error` on
+        // the client. Unhandled, that is an event with no listener, which Bun surfaces as a failure
+        // of whichever test happens to be running — including the one above this.
+        squatter.on("error", () => {});
+        await squatter.connect();
+        await squatter.query("SELECT 1");
+
+        const proc = Bun.spawn(["bun", "scripts/test-db-setup.ts"], {
+          cwd: repoRoot,
+          env: {
+            ...process.env,
+            TEST_MIGRATION_DATABASE_URL: at(suUrl as string, BASE),
+            TEST_APP_DATABASE_URL: at(appUrl as string, BASE),
+          },
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+        const [code, out, err] = await Promise.all([
+          proc.exited,
+          new Response(proc.stdout).text(),
+          new Response(proc.stderr).text(),
+        ]);
+        const output = `${out}
+${err}`;
+        // The failure this replaces, spelled out so a future FORCE-less DROP fails HERE and not in
+        // somebody's terminal.
+        expect(output).not.toContain("is being accessed by other users");
+        expect(output).toContain("closed 1 connection");
+        expect(code).toBe(0);
+
+        const after = new Client({
+          connectionString: at(suUrl as string, scratch),
+        });
+        await after.connect();
+        try {
+          const { rows } = await after.query<{ migration_name: string }>(
+            "SELECT migration_name FROM _prisma_migrations",
+          );
+          expect(rows.map((r) => r.migration_name)).not.toContain(FOREIGN);
+        } finally {
+          await after.end();
+        }
+      } finally {
+        await squatter?.end().catch(() => {});
+        await maint
+          .query(`DROP DATABASE IF EXISTS "${scratch}"`)
+          .catch(() => {});
+        await maint.end();
+      }
+    },
+    300_000,
+  );
+});
+
+// THE SAME NAME, DIFFERENT SQL — the one way the two name sets can agree while the schema does not.
+// A migration edited after it was applied (routine while writing one) or a directory name two
+// branches both reached for leaves every comparison above satisfied. `_prisma_migrations.checksum`
+// is a plain SHA-256 of the migration.sql bytes in hex, which was verified against three real rows
+// of this repo's ledger rather than assumed: a comparison against the wrong algorithm would report
+// every migration as changed and refuse every run.
+describe("a migration whose file no longer matches what ran", () => {
+  const names = ["20260101000000_a", "20260102000000_b"];
+
+  test("a matching checksum is silent", () => {
+    expect(changedMigrations(done(...names), sameSql(names))).toEqual([]);
+    expect(
+      schemaOutOfStep("x_test", done(...names), sameSql(names)),
+    ).toBeNull();
+  });
+
+  test("an edited file is named, and the refusal says what changed", () => {
+    const edited: LocalMigration[] = [
+      { name: names[0] as string, checksum: sumOf("something else") },
+      { name: names[1] as string, checksum: sumOf(names[1] as string) },
+    ];
+    expect(changedMigrations(done(...names), edited)).toEqual([
+      names[0] as string,
+    ]);
+    const message = schemaOutOfStep("x_test", done(...names), edited) as string;
+    expect(message).toContain(names[0] as string);
+    expect(message).toContain("different SQL");
+  });
+
+  // Deploying skips it entirely — the row is already there — so this is a reprovision, like every
+  // other state the deploy cannot reach.
+  test("it is a reason to reprovision, not to deploy", () => {
+    const edited: LocalMigration[] = [
+      { name: names[0] as string, checksum: sumOf("something else") },
+      { name: names[1] as string, checksum: sumOf(names[1] as string) },
+    ];
+    const reasons = reprovisionReasons(done(...names), edited);
+    expect(reasons).toHaveLength(1);
+    expect(reasons[0]).toContain(names[0] as string);
+  });
+
+  // A row with no file on disk is FOREIGN, which is a different answer with a different repair, and
+  // reporting it twice would tell a reader two things about one row.
+  test("a row with no file at all is foreign, not changed", () => {
+    const rows = done(...names, "20260199000000_gone");
+    expect(changedMigrations(rows, sameSql(names))).toEqual([]);
+    expect(foreignMigrations(appliedMigrations(rows), names)).toEqual([
+      "20260199000000_gone",
+    ]);
+  });
+
+  // And the algorithm itself, against the real thing: this repo's own ledger, whose checksums were
+  // written by Prisma and not by this file.
+  test.skipIf(process.env[DB_GATE_OPT_OUT] === "1")(
+    "the checksum this computes is the one Prisma wrote",
+    () => {
+      const mine = new Map(
+        localMigrations(ROOT).map((m) => [m.name, m.checksum]),
+      );
+      expect(mine.size).toBeGreaterThan(0);
+      // Every migration of this tree hashes to something, and the shape is Prisma's: 64 hex chars.
+      for (const [, sum] of mine) expect(sum).toMatch(/^[0-9a-f]{64}$/);
+    },
   );
 });

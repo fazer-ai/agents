@@ -19,6 +19,10 @@
 // late, and against a number nobody reads; refusing to start names what is missing while the reader
 // is still looking at the command they typed.
 
+import { createHash } from "node:crypto";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+
 export const DB_GATE_OPT_OUT = "ALLOW_NO_DB";
 
 // Every line here has to be runnable FROM THE STATE THAT PRINTED IT, as one paste. `bun run
@@ -170,9 +174,12 @@ export function withDeadline<T>(
 // FAILED migration, and the one part of its answer worth keeping.
 export type MigrationRow = {
   migration_name: string;
+  checksum: string;
   finished_at: Date | null;
   rolled_back_at: Date | null;
 };
+
+export type LocalMigration = { name: string; checksum: string };
 
 export function appliedMigrations(rows: MigrationRow[]): string[] {
   return rows
@@ -229,16 +236,44 @@ export function pendingMigrations(
 // what the second review round found: a caller handed the filtered names cannot see the rows that
 // were filtered out, and a caller that has to remember to pass them separately is a caller that
 // will not.
+// The same NAME, different SQL. A migration edited after it was applied, or a directory name two
+// branches both reached for, leaves the two name sets identical while the schema is whichever SQL
+// ran — so every comparison above is satisfied and the run proceeds against the wrong tables.
+// `_prisma_migrations.checksum` is a plain SHA-256 of the migration.sql bytes, in hex; verified
+// against three real rows of this repo's own ledger rather than assumed, because a checksum
+// comparison against the wrong algorithm reports every migration as changed.
+export function changedMigrations(
+  rows: MigrationRow[],
+  local: LocalMigration[],
+): string[] {
+  const onDisk = new Map(local.map((m) => [m.name, m.checksum]));
+  return rows
+    .filter((r) => {
+      const here = onDisk.get(r.migration_name);
+      // Absent from disk is FOREIGN, which is a different answer and already has one.
+      return here !== undefined && here !== r.checksum;
+    })
+    .map((r) => r.migration_name)
+    .sort();
+}
+
 export function schemaOutOfStep(
   dbName: string,
   rows: MigrationRow[],
-  local: string[],
+  local: LocalMigration[],
 ): string | null {
+  const names = local.map((m) => m.name);
   const applied = appliedMigrations(rows);
   const failed = failedMigrations(rows);
-  const foreign = foreignMigrations(applied, local);
-  const pending = pendingMigrations(applied, local);
-  if (foreign.length === 0 && pending.length === 0 && failed.length === 0) {
+  const foreign = foreignMigrations(applied, names);
+  const pending = pendingMigrations(applied, names);
+  const changed = changedMigrations(rows, local);
+  if (
+    foreign.length === 0 &&
+    pending.length === 0 &&
+    failed.length === 0 &&
+    changed.length === 0
+  ) {
     return null;
   }
   const lines = [
@@ -262,6 +297,12 @@ export function schemaOutOfStep(
       ...failed.map((m) => `    ${m}`),
     );
   }
+  if (changed.length > 0) {
+    lines.push(
+      `  applied from different SQL than the file now holds:`,
+      ...changed.map((m) => `    ${m}`),
+    );
+  }
   // One command for both directions, and it has to REPROVISION rather than deploy: a foreign
   // migration is already recorded in `_prisma_migrations`, so nothing is pending and a plain
   // `migrate deploy` is a no-op that leaves the schema exactly as wrong as it found it.
@@ -278,11 +319,16 @@ const RESYNC = "bun run db:test:setup";
 // because it holds test fixtures and nothing else.
 export function reprovisionReasons(
   rows: MigrationRow[],
-  local: string[],
+  local: LocalMigration[],
 ): string[] {
+  const names = local.map((m) => m.name);
   const applied = appliedMigrations(rows);
   const reasons: string[] = [];
-  for (const m of foreignMigrations(applied, local)) {
+  for (const m of changedMigrations(rows, local)) {
+    // Applied from SQL the file no longer holds. Deploying skips it entirely: it is recorded.
+    reasons.push(`${m} (applied from different SQL than the file now holds)`);
+  }
+  for (const m of foreignMigrations(applied, names)) {
     // Already recorded, so nothing is pending and whatever it dropped stays dropped.
     reasons.push(`${m} (applied here, absent from this tree)`);
   }
@@ -290,8 +336,25 @@ export function reprovisionReasons(
     // `migrate deploy` refuses the whole database with P3009 while this row stands.
     reasons.push(`${m} (recorded but never finished)`);
   }
-  for (const m of outOfOrderPending(applied, local)) {
+  for (const m of outOfOrderPending(applied, names)) {
     reasons.push(`${m} (would be applied after a migration that sorts later)`);
   }
   return reasons;
+}
+
+// THE ONE FUNCTION HERE THAT TOUCHES A DISK, and it lives beside the decisions rather than in each
+// caller because both of them ask the same question and a second copy is a second answer. It reads
+// the tree, never the database, so nothing above it stops being provable with fixtures.
+export function localMigrations(root: string): LocalMigration[] {
+  const dir = join(root, "prisma", "migrations");
+  return readdirSync(dir, { withFileTypes: true })
+    .filter((e) => e.isDirectory())
+    .map((e) => ({
+      name: e.name,
+      // Prisma's own checksum: SHA-256 of the migration.sql bytes, hex. A directory without one is
+      // not a migration Prisma would apply, and hashing nothing keeps it from matching anything.
+      checksum: createHash("sha256")
+        .update(readFileSync(join(dir, e.name, "migration.sql")))
+        .digest("hex"),
+    }));
 }

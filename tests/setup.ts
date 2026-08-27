@@ -1,8 +1,7 @@
 import "@testing-library/jest-dom";
-import { readdirSync } from "node:fs";
-import { join } from "node:path";
 import {
   DB_GATE_OPT_OUT,
+  localMigrations,
   type MigrationRow,
   missingDbConfig,
   PROBE_BACKSTOP_MS,
@@ -126,16 +125,12 @@ if (process.env[DB_GATE_OPT_OUT] !== "1") {
     // same command.
     const rows = await withDeadline(
       reader.$queryRaw<MigrationRow[]>`
-        SELECT migration_name, finished_at, rolled_back_at FROM _prisma_migrations
+        SELECT migration_name, checksum, finished_at, rolled_back_at FROM _prisma_migrations
         WHERE to_regclass('_prisma_migrations') IS NOT NULL`,
       PROBE_BACKSTOP_MS,
       "TEST_MIGRATION_DATABASE_URL",
     ).catch(() => [] as MigrationRow[]);
-    const local = readdirSync(join(REPO_ROOT, "prisma", "migrations"), {
-      withFileTypes: true,
-    })
-      .filter((e) => e.isDirectory())
-      .map((e) => e.name);
+    const local = localMigrations(REPO_ROOT);
     const drift = schemaOutOfStep(
       new URL(suUrl).pathname.replace(/^\//, ""),
       rows,

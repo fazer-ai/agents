@@ -534,6 +534,17 @@ async function record(
   // query above reads PENDING and PROCESSING, so from here on the row is invisible to every later
   // pass of this sweep.
   //
+  // WHICH IS ALSO WHY A ROW THAT WAS ALREADY DEAD WHEN THIS SHIPPED IS NEVER RECOVERED, including
+  // one still inside the six-hour ceiling at the moment of the deploy. That is a decision and not an
+  // oversight, and a review round asked for the backfill that would close it. It is not here for two
+  // reasons that outlive this file: it would arm a whole backlog in one pass, each row a model call
+  // and a reply to a real customer, and what a BATCH of recoveries costs is the one thing about this
+  // feature nobody has measured. And those rows are not silent — they are exactly the
+  // `WHERE status = 'DEAD'` worklist issue #228 exists to produce, which is where an operator was
+  // already going to find them. A backfill is its own piece of work, with its own risk to weigh and
+  // its own trigger to choose (boot runs on every replica of every deploy; a migration cannot
+  // enqueue application work).
+  //
   // BEST-EFFORT, and the failure is survivable in exactly the way the loss line's is not: the row is
   // already DEAD and already in the worklist, so an operator still learns. What is lost is the
   // automatic attempt, which is why it is logged loudly rather than swallowed.

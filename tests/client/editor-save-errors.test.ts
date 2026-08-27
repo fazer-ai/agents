@@ -57,10 +57,29 @@ describe("agent editor save errors", () => {
     ].map((m) => (m[1] as string).replace(/\s+/g, " ").trim());
     expect(cleared.sort()).toEqual([
       '"guardrails", sent',
+      '"knowledge", {}',
       '"tools", sent',
-      '"tools", {}',
       "section, sent",
     ]);
+    // The section a save answers for is the FORM it belongs to, not the tab its fields print on:
+    // `saveGrants` is the Knowledge tab's save (its only caller passes `dirty.knowledge`), and
+    // calling it `tools` let a successful Tools save clear a Knowledge failure still unsaved.
+    const grants = SRC.slice(SRC.indexOf("async function saveGrants("));
+    const grantsBody = grants.slice(0, grants.indexOf("\n  }"));
+    expect(grantsBody).toContain('clearRefusalFor("knowledge", {})');
+    expect(grantsBody).toContain('"knowledge",');
+  });
+
+  test("the stored sentence never outlives the mark it duplicates", () => {
+    // `capture` sets BOTH for an off-screen placement: it holds the mark and hands back the sentence.
+    // The mark expires by value and the stored copy does not, so without this the sentence surfaces
+    // again the moment the operator edits the refused field — the server's words under a value the
+    // server never saw. Round 2 dropped this effect while rewriting the banner and round 3 found it.
+    const start = SRC.indexOf(
+      "useEffect(() => {\n    if (heldField) setStandingRefusal(null);",
+    );
+    expect(start).toBeGreaterThan(-1);
+    expect(SRC.slice(start, SRC.indexOf("]);", start))).toContain("[heldField");
   });
 
   test("what a save carried is snapshotted before the request goes out", () => {
@@ -79,7 +98,7 @@ describe("agent editor save errors", () => {
       const snapshot = body.indexOf("sentFor(");
       if (snapshot === -1) {
         // Only the grant-only save may carry nothing, and then it must say so literally.
-        expect(body, fn).toContain('clearRefusalFor("tools", {})');
+        expect(body, fn).toContain('clearRefusalFor("knowledge", {})');
         continue;
       }
       expect(snapshot, `${fn} snapshots after answering`).toBeLessThan(

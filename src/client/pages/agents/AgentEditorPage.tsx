@@ -1003,6 +1003,16 @@ function AgentEditor() {
     ? refusal.at(heldField, currentRef.current[heldField])
     : null;
   const bannerMessage = heldMessage ?? standingRefusal?.message ?? null;
+  // THE STORED SENTENCE IS A FALLBACK, never a second copy of a mark.
+  //
+  // `capture` hands back the sentence for an off-screen placement AND holds the mark, so both are
+  // set for one refusal. The mark expires by value; the stored copy would not, and it would then
+  // surface again the moment the operator edits the refused field — attributing the server's
+  // sentence to the value the server never saw, which is the exact thing `placeRefusal` refuses to
+  // do at the input. Dropped as soon as a mark exists, so only the un-placeable case survives here.
+  useEffect(() => {
+    if (heldField) setStandingRefusal(null);
+  }, [heldField]);
   // A jump only when there is somewhere to send them: a mark on the open tab is already as close as
   // the operator can get, and a sentence with no mark has no control to point at.
   const heldTarget = heldField
@@ -2461,14 +2471,16 @@ function AgentEditor() {
       setCatalog(data.catalog);
       markSynced(data.agentUpdatedAt ? String(data.agentUpdatedAt) : null);
       bumpSync("tools", "knowledge");
-      // Nothing: this request carries the grant set and none of the Tools tab's notes.
-      clearRefusalFor("tools", {});
+      // This is the KNOWLEDGE tab's save (it is the only caller), and it carries the grant set and
+      // none of the Tools tab's notes. Both halves matter: the empty snapshot says it answers for no
+      // field, and the section says whose banner it may take down.
+      clearRefusalFor("knowledge", {});
       showToast(t("editor.grantsSaved", "Tools updated."), "success");
     } catch (e) {
       answerRefusal(
         e,
         t("editor.grantsError", "Could not update tools."),
-        "tools",
+        "knowledge",
         {},
       );
     } finally {

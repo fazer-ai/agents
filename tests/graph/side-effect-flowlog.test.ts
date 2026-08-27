@@ -10,6 +10,7 @@ import type { ChatwootClient } from "@/modules/chatwoot/client";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
 import { createAlertChannel } from "@/modules/flowlog/channels";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { flowLogRows } from "../utils/flowlog";
 import { outboundUrl } from "../utils/outbound";
 
 // NOTE: Issue #46 end-to-end — a tool that SUCCEEDS for the model but whose side effect fails
@@ -97,7 +98,7 @@ async function pollToolRows(
 ): Promise<ToolRow[]> {
   let rows: ToolRow[] = [];
   for (let i = 0; i < 50; i++) {
-    rows = await suDb.executionLog.findMany({
+    rows = await flowLogRows(suDb, {
       where: {
         tenantId,
         stage: "tool",

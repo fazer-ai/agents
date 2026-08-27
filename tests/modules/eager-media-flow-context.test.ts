@@ -6,6 +6,7 @@ import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { flowLogRow } from "../utils/flowlog";
 
 // The eager-media stages (`stt`, `vision`) are the ONLY inbox-source flow lines that used to be
 // written with no conversation, agent or inbox: `runEagerMedia`'s context carried a threadId and
@@ -262,7 +263,7 @@ describe.skipIf(!dbUp)("the eager-media flow context", () => {
       | undefined;
     for (let i = 0; i < 200 && !row; i++) {
       row =
-        (await suDb.executionLog.findFirst({
+        (await flowLogRow(suDb, {
           where: { tenantId, threadId, stage: "stt" },
           select: { conversationId: true, agentId: true, inboxId: true },
         })) ?? undefined;
@@ -348,7 +349,7 @@ describe.skipIf(!dbUp)("the eager-media flow context", () => {
       | undefined;
     for (let i = 0; i < 200 && !row; i++) {
       row =
-        (await suDb.executionLog.findFirst({
+        (await flowLogRow(suDb, {
           where: { tenantId, threadId, stage: "stt" },
           select: { conversationId: true, agentId: true, inboxId: true },
         })) ?? undefined;

@@ -5,7 +5,7 @@ import config from "@/config";
 import { registerFlowlogRetentionHandler } from "@/modules/flowlog/retention";
 import type { ClaimedJob } from "@/modules/scheduler/service";
 import { getJobHandler, type JobResult } from "@/modules/scheduler/worker";
-import { clearFlowLog } from "@/tests/utils/flowlog";
+import { clearFlowLog, flowLogRows } from "@/tests/utils/flowlog";
 
 // FLOWLOG_SWEEP retention handler: deletes execution_logs (+ terminal alert_deliveries) older than
 // the retention window, RLS-scoped to the job's tenant, and reschedules +24h (no attempt consumed).
@@ -90,7 +90,7 @@ describe.skipIf(!dbUp)("flowlog retention", () => {
     }
     // flowlog-scope: tenant-wide — the assertion is WHICH rows survived the sweep, so it has to
     // read the tenant exhaustively; a scoped read could not say that old1/old2 are gone.
-    const remaining = await suDb.executionLog.findMany({
+    const remaining = await flowLogRows(suDb, {
       where: { tenantId },
       select: { turnId: true },
     });

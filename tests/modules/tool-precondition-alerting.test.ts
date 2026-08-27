@@ -9,6 +9,7 @@ import {
 import type { ToolPrecondition } from "@/modules/agents/tool-preconditions";
 import type { FlowContext } from "@/modules/flowlog/service";
 import { writeFlowEvent } from "@/modules/flowlog/service";
+import { flowLogCount } from "../utils/flowlog";
 
 // PR #378 states, in its body and in the seam's own header, that a precondition refusing a call does
 // NOT page an alert channel — the rule doing its job is the system working, not an incident. That
@@ -98,7 +99,7 @@ describe.skipIf(!dbUp)("a precondition refusal does not page anyone", () => {
     );
     expect(delivered).toBe(true);
 
-    const logs = await suDb.executionLog.count({
+    const logs = await flowLogCount(suDb, {
       where: { tenantId, stage: "tool", turnId: ctx.turnId },
     });
     expect(logs).toBe(1);

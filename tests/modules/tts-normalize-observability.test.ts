@@ -9,6 +9,7 @@ import { runAgentTurn } from "@/graph/runtime";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { flowLogRow } from "../utils/flowlog";
 import { UsageReportingModel } from "../utils/scripted-models";
 
 // The speech normalizer is a BILLED model call on the audio path, and it used to leave no trace at
@@ -119,7 +120,7 @@ async function seedConversation(convId: number) {
 // The flow emit is fire-and-forget, so the row lands shortly AFTER the turn returns.
 async function waitForLog(convChatwootId: number, stage: string) {
   for (let i = 0; i < 100; i++) {
-    const row = await suDb.executionLog.findFirst({
+    const row = await flowLogRow(suDb, {
       where: {
         tenantId,
         stage,

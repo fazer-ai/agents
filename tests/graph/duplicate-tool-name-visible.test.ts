@@ -14,7 +14,7 @@ import type { FlowContext } from "@/modules/flowlog/service";
 import { HANDOFF_DEFAULTS } from "@/modules/handoff/settings";
 import { SEND_IMAGE_DEFAULTS } from "@/modules/images/settings";
 import { KANBAN_DEFAULTS } from "@/modules/kanban/settings";
-import { clearFlowLog } from "../utils/flowlog";
+import { clearFlowLog, flowLogRows } from "../utils/flowlog";
 
 // ── A TOOL DROPPED FOR A DUPLICATE NAME HAS TO SAY SO WHERE THE OPERATOR LOOKS (#389) ──
 //
@@ -134,7 +134,7 @@ function flow(turnId: string): FlowContext {
 // exists, so a read without it can run first and see nothing.
 async function droppedLines(turnId: string) {
   await settleFlowEvents();
-  const rows = await suDb.executionLog.findMany({
+  const rows = await flowLogRows(suDb, {
     where: { turnId, stage: "tool" },
     orderBy: { id: "asc" },
   });

@@ -18,6 +18,7 @@ import {
   rebuildPlaygroundTurns,
 } from "@/modules/playground/sessions";
 import { listThreadTurnNotes } from "@/modules/playground/turn-notes";
+import { flowLogRow } from "../utils/flowlog";
 import { guardrailModel } from "../utils/scripted-models";
 
 // The context a console operator carries. The playground takes the REQUEST's context now, not an id
@@ -400,7 +401,7 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
     let detail: unknown;
     for (let i = 0; i < 50 && !detail; i++) {
       detail = (
-        await suDb.executionLog.findFirst({
+        await flowLogRow(suDb, {
           // flowlog-scope: agent — every test here shares the tenant but owns its agent, which is
           // what fences this read (the note above says which neighbour it would otherwise take).
           where: {

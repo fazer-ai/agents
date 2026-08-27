@@ -35,6 +35,7 @@ import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { selectClosedPrefix } from "@/modules/memory/cut";
 import { withJobHandler } from "@/tests/utils/job-registry";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { flowLogRows } from "../utils/flowlog";
 import {
   EmptyThenReplyModel,
   guardrailModel,
@@ -1626,7 +1627,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
       // Scoped to this nudge's own thread: 76 tests share the tenant, and `outcome`/`step` are
       // values several of them write. Filtered by tenant alone this poll can exit on a neighbour's
       // row and report a trail this turn never left (#258).
-      const rows = await suDb.executionLog.findMany({
+      const rows = await flowLogRows(suDb, {
         where: {
           tenantId,
           stage: "generate",
@@ -1843,7 +1844,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(s.resolved).toEqual([9908]);
     // And the trail carries no `messaged` line for this step. Checked after the run returned, so
     // there is no write left in flight: markFollowUp is called synchronously or not at all.
-    const rows = await suDb.executionLog.findMany({
+    const rows = await flowLogRows(suDb, {
       where: {
         tenantId,
         stage: "generate",
@@ -3702,7 +3703,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     // emitFlowEvent is fire-and-forget, so poll for the row instead of racing it.
     let logged = false;
     for (let i = 0; i < 30 && !logged; i++) {
-      const rows = await suDb.executionLog.findMany({
+      const rows = await flowLogRows(suDb, {
         where: {
           tenantId,
           stage: "generate",

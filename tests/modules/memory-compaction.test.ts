@@ -38,6 +38,7 @@ import { MEMORY_HEAD_MAX_ATTENDANCES } from "@/modules/memory/cut";
 import type { JobResult } from "@/modules/scheduler/worker";
 import { withJobHandler } from "@/tests/utils/job-registry";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { flowLogCount, flowLogRow } from "../utils/flowlog";
 import { UsageReportingModel } from "../utils/scripted-models";
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
@@ -242,7 +243,7 @@ describe.skipIf(!dbUp)("memory compaction", () => {
   }
 
   function countFlowLines(threadId: string) {
-    return suDb.executionLog.count({
+    return flowLogCount(suDb, {
       where: { tenantId, stage: "memory", threadId },
     });
   }
@@ -1029,7 +1030,7 @@ describe.skipIf(!dbUp)("memory compaction", () => {
     // The trail names the attendance that was actually folded, not the one this job was armed for.
     // Those differ exactly on a retry, which is when an operator most needs the line to be right.
     await waitForFlowLines(threadId, 1);
-    const trail = await suDb.executionLog.findFirst({
+    const trail = await flowLogRow(suDb, {
       where: { tenantId, stage: "memory", threadId },
     });
     expect(JSON.stringify(trail?.detail ?? {})).toContain(
@@ -1887,7 +1888,7 @@ describe.skipIf(!dbUp)("memory compaction", () => {
     );
 
     await waitForFlowLines(threadId, 1);
-    const row = await suDb.executionLog.findFirst({
+    const row = await flowLogRow(suDb, {
       where: { tenantId, stage: "memory", threadId },
     });
     expect(row).not.toBeNull();

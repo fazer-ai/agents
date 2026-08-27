@@ -30,6 +30,7 @@ import { createDocumentTemplate } from "@/modules/documents/templates";
 import { readGuardrailHealth } from "@/modules/guardrails/health";
 import { selectClosedPrefix } from "@/modules/memory/cut";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { flowLogRow, flowLogRows } from "../utils/flowlog";
 import {
   EmptyThenReplyModel,
   guardrailModel,
@@ -397,7 +398,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     // emitFlowEvent is fire-and-forget, so poll briefly.
     let retryLogged = false;
     for (let i = 0; i < 30 && !retryLogged; i++) {
-      const rows = await suDb.executionLog.findMany({
+      const rows = await flowLogRows(suDb, {
         where: {
           tenantId,
           stage: "generate",
@@ -1152,7 +1153,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     const conversation = await suDb.conversation.findFirstOrThrow({
       where: { tenantId, chatwootConversationId: convId },
     });
-    return suDb.executionLog.findFirst({
+    return flowLogRow(suDb, {
       where: { tenantId, stage: "handoff", conversationId: conversation.id },
       orderBy: { id: "desc" },
       select: { detail: true },
@@ -1167,7 +1168,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     // yet does not answer wrong, it THROWS, so what the scoping converted was a silent wrong answer
     // into a spurious failure. Poll for the row this conversation owes (#258).
     for (let i = 0; i < 30; i++) {
-      const row = await suDb.executionLog.findFirst({
+      const row = await flowLogRow(suDb, {
         where: { tenantId, stage: "handoff", conversationId: conversation.id },
         orderBy: { id: "desc" },
       });
@@ -1328,7 +1329,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     // emitFlowEvent is fire-and-forget, so poll briefly.
     let resolvedLogged = false;
     for (let i = 0; i < 30 && !resolvedLogged; i++) {
-      const rows = await suDb.executionLog.findMany({
+      const rows = await flowLogRows(suDb, {
         where: {
           tenantId,
           stage: "handoff",
@@ -2331,7 +2332,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       // line had simply not landed when the assertion read the table (#258).
       let named = false;
       for (let i = 0; i < 30 && !named; i++) {
-        const flow = await suDb.executionLog.findMany({
+        const flow = await flowLogRows(suDb, {
           where: {
             tenantId,
             stage: "tool",
@@ -2433,7 +2434,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       // fails on timing, which is a test that reports the wrong thing.
       let skipLogged = false;
       for (let i = 0; i < 30 && !skipLogged; i++) {
-        const flow = await suDb.executionLog.findMany({
+        const flow = await flowLogRows(suDb, {
           where: {
             tenantId,
             stage: "tool",
@@ -2712,7 +2713,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       let flow: { detail: unknown; status: string | null }[] = [];
       let unknown: typeof flow = [];
       for (let i = 0; i < 30 && unknown.length === 0; i++) {
-        flow = await suDb.executionLog.findMany({
+        flow = await flowLogRows(suDb, {
           where: {
             tenantId,
             stage: "tool",

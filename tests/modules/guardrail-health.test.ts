@@ -7,7 +7,7 @@ import {
   guardrailHealthWindowStart,
   readGuardrailHealth,
 } from "@/modules/guardrails/health";
-import { clearFlowLog } from "@/tests/utils/flowlog";
+import { clearFlowLog, flowLogRow } from "@/tests/utils/flowlog";
 
 // What the guardrail screen actually did, read back from the flow log. The reason this read exists
 // at all: analysis is fail-open, so a screen that can never run is indistinguishable from one that
@@ -335,7 +335,7 @@ describe.skipIf(!dbUp)("readGuardrailHealth", () => {
     });
     // flowlog-scope: seeded — reads the row this test inserted above with `create`, awaited. No
     // emit in the path, so neither the scope nor the wait obligation applies.
-    const newer = await suDb.executionLog.findFirst({
+    const newer = await flowLogRow(suDb, {
       where: { tenantId: tenantA, turnId: "g6" },
       select: { id: true },
     });

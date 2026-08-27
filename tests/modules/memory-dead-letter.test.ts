@@ -20,6 +20,7 @@ import {
 import { runCompactionTick } from "@/modules/memory/worker";
 import { getDeadLetterHandler, runClaimed } from "@/modules/scheduler/worker";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { flowLogRows } from "../utils/flowlog";
 
 // A compaction that will never happen has to SAY SO, in the trail the operator already reads by
 // conversation (issue #196).
@@ -265,7 +266,7 @@ describe.skipIf(!dbUp)("a compaction that will never happen", () => {
   }
 
   function memoryLines(threadId: string) {
-    return suDb.executionLog.findMany({
+    return flowLogRows(suDb, {
       where: { tenantId, stage: "memory", threadId },
       orderBy: { id: "asc" },
     });

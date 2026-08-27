@@ -5,6 +5,7 @@ import { encryptJson } from "@/api/lib/crypto";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { flowLogRows } from "../utils/flowlog";
 
 // AN INBOX NOBODY BOUND, AND THE MESSAGES IT SWALLOWS.
 //
@@ -197,7 +198,7 @@ describe.skipIf(!dbUp)("an unbound inbox says so", () => {
     if (!conv) return [];
     const deadline = Date.now() + waitMs;
     for (;;) {
-      const rows = await suDb.executionLog.findMany({
+      const rows = await flowLogRows(suDb, {
         where: { tenantId, stage: "route", conversationId: conv.id },
         orderBy: { id: "asc" },
       });

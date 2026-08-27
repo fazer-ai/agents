@@ -25,6 +25,7 @@ import {
 } from "@/modules/vision/service";
 import type { VisionConfig } from "@/modules/vision/settings";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { flowLogRows } from "../utils/flowlog";
 
 // A class that names a timeout without setting `name` — both vendor SDKs do this, which is why the
 // shared reducer matches the CONSTRUCTOR name too.
@@ -582,7 +583,7 @@ describe.skipIf(!dbUp)("vision retry", () => {
     // emit is fire-and-forget → poll until every line lands.
     let rows: Array<{ detail: unknown }> = [];
     for (let i = 0; i < 100 && rows.length < VISION_MAX_ATTEMPTS; i++) {
-      rows = await suDb.executionLog.findMany({
+      rows = await flowLogRows(suDb, {
         where: { tenantId, turnId, stage: "vision" },
         select: { detail: true },
         orderBy: { id: "asc" },

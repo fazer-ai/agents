@@ -9,6 +9,7 @@ import { runAgentTurn } from "@/graph/runtime";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { flowLogRows } from "../utils/flowlog";
 
 // Issue #55 end-to-end. The unit tests cover the rule; this one covers the two things only a real
 // turn can show. First, that the ceiling configured on the agent row actually reaches the model
@@ -123,7 +124,7 @@ async function setCeiling(maxHistoryTokens: number | null) {
 // read across the tenant is a claim about its neighbour: swapping the two `test()` blocks used to
 // turn this file red with `Received length: 2`, so the green depended on declaration order (#258).
 async function generateLines(convId: number) {
-  return suDb.executionLog.findMany({
+  return flowLogRows(suDb, {
     where: {
       tenantId,
       stage: "generate",

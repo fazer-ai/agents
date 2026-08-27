@@ -10,7 +10,7 @@ import {
   requeueWebhookDelivery,
 } from "@/modules/webhooks/outbound/deliveries";
 import { processOutboundBatch } from "@/modules/webhooks/outbound/worker";
-import { clearFlowLog } from "@/tests/utils/flowlog";
+import { clearFlowLog, flowLogRows } from "@/tests/utils/flowlog";
 
 // ── THE DELIVERY LEDGER AS A SUPPORTED SURFACE (issue #305) ──
 // Integration, real DB, real RLS: every call goes through `runScopedOn` exactly as the controller
@@ -101,7 +101,7 @@ async function webhookLines(expected: number, waitMs = 3000) {
     // clear site in the tree exposed, which is why issue #375 was answered at the clear instead: the
     // tenant is this file's own, and `clearFlowLog` settles the scheduled writes before deleting, so
     // the table is empty of the previous case's line AND of the one it had not written yet.
-    const rows = await suDb.executionLog.findMany({
+    const rows = await flowLogRows(suDb, {
       where: { tenantId, stage: "webhook" },
       orderBy: { id: "asc" },
     });

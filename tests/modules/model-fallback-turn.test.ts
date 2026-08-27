@@ -7,6 +7,7 @@ import { runAgentTurn } from "@/graph/runtime";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { flowLogRows } from "../utils/flowlog";
 import { FailingModel, UsageReportingModel } from "../utils/scripted-models";
 
 // WHAT THE CUSTOMER GETS WHEN THE AGENT'S PROVIDER CANNOT TAKE THE TURN (issue #143).
@@ -113,7 +114,7 @@ function usageRows(threadId: string) {
 }
 
 function generateRows(threadId: string) {
-  return suDb.executionLog.findMany({
+  return flowLogRows(suDb, {
     where: { tenantId, threadId, stage: "generate" },
     select: { level: true, provider: true, model: true, detail: true },
     orderBy: { id: "asc" },

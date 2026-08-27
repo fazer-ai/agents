@@ -24,7 +24,7 @@ import {
   extractPlaygroundFile,
 } from "@/modules/vision/service";
 import { seedChatwootInstance } from "../utils/chatwoot";
-import { clearFlowLog } from "../utils/flowlog";
+import { clearFlowLog, flowLogRows } from "../utils/flowlog";
 
 // The two paths the webhook gate does NOT stand in front of (issue #146).
 //
@@ -367,7 +367,7 @@ describe.skipIf(!dbUp)("the spend ceiling on the playground and vision", () => {
     expect(result).toBeNull();
     expect(s.providerCalls).toEqual([]);
     await settleFlowEvents();
-    const rows = await suDb.executionLog.findMany({
+    const rows = await flowLogRows(suDb, {
       where: { turnId },
       select: { stage: true, detail: true },
     });
@@ -452,7 +452,7 @@ describe.skipIf(!dbUp)("the spend ceiling on the playground and vision", () => {
     // NOTE: the assertion is that a line EXISTS and another does NOT, so the settle is required
     // rather than a poll: polling for the absence would only spend the timeout before answering.
     await settleFlowEvents();
-    const rows = await suDb.executionLog.findMany({
+    const rows = await flowLogRows(suDb, {
       where: { turnId },
       select: { stage: true, status: true, detail: true },
     });
@@ -505,7 +505,7 @@ describe.skipIf(!dbUp)("the spend ceiling on the playground and vision", () => {
     ).toBeNull();
     expect(s.providerCalls.length).toBe(1);
     await settleFlowEvents();
-    const rows = await suDb.executionLog.findMany({
+    const rows = await flowLogRows(suDb, {
       where: { turnId, stage: "spend_ceiling" },
       select: { level: true, status: true, detail: true },
     });

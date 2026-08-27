@@ -19,7 +19,7 @@ import {
   processChatwootDelivery,
   recordAndProcessChatwootDelivery,
 } from "@/modules/chatwoot/webhook";
-import { clearFlowLog } from "@/tests/utils/flowlog";
+import { clearFlowLog, flowLogRows } from "@/tests/utils/flowlog";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // A Chatwoot delivery stranded by a process death, and the sweep that says so (issue #228).
@@ -143,7 +143,7 @@ async function statusOf(rowId: bigint) {
 async function deliveryLines(convDbId: bigint, waitMs = 2000) {
   const started = Date.now();
   while (true) {
-    const rows = await suDb.executionLog.findMany({
+    const rows = await flowLogRows(suDb, {
       where: { tenantId, stage: "delivery", conversationId: convDbId },
       select: { level: true, status: true, source: true, detail: true },
     });
@@ -164,7 +164,7 @@ async function correctionOutcome(convId: number) {
   const deadline = Date.now() + 2000;
   let lines: Array<{ detail: unknown }> = [];
   while (Date.now() < deadline) {
-    lines = await suDb.executionLog.findMany({
+    lines = await flowLogRows(suDb, {
       where: { tenantId, conversationId: conv.id, stage: "delivery" },
       select: { detail: true },
     });
@@ -182,7 +182,7 @@ async function correctionOutcome(convId: number) {
 async function unscopedDeliveryLines(waitMs = 2000) {
   const started = Date.now();
   while (true) {
-    const rows = await suDb.executionLog.findMany({
+    const rows = await flowLogRows(suDb, {
       where: { tenantId, stage: "delivery", conversationId: null },
       select: { level: true, detail: true },
     });

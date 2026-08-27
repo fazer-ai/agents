@@ -5,6 +5,7 @@ import { encryptJson } from "@/api/lib/crypto";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { flowLogRows } from "../utils/flowlog";
 
 // The webhook's own ownership gate, and the line it leaves behind.
 //
@@ -203,7 +204,7 @@ describe.skipIf(!dbUp)("the webhook gate leaves a trail", () => {
     if (!conv) return [];
     const deadline = Date.now() + waitMs;
     for (;;) {
-      const rows = await suDb.executionLog.findMany({
+      const rows = await flowLogRows(suDb, {
         where: { tenantId, stage: "handoff", conversationId: conv.id },
         orderBy: { id: "asc" },
       });

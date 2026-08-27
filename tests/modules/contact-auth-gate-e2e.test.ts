@@ -20,6 +20,7 @@ import {
   contactAuthNoticeEntries,
 } from "@/modules/contact-auth/state";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { flowLogRow, flowLogRows } from "../utils/flowlog";
 import { PromptCapturingModel } from "../utils/scripted-models";
 
 // The contact authorization gate, wired end to end through processChatwootDelivery: what a denied /
@@ -244,7 +245,7 @@ async function deliverCustomerMessage(params: {
 async function flowRows(convId: number) {
   const threadId = `${tenantId}:${instanceId}:${convId}`;
   for (let i = 0; i < 200; i++) {
-    const rows = await suDb.executionLog.findMany({
+    const rows = await flowLogRows(suDb, {
       where: { tenantId, threadId, stage: "contact_auth" },
       select: { level: true, status: true, detail: true },
       orderBy: { id: "asc" },
@@ -263,7 +264,7 @@ async function handoffDetail(convId: number): Promise<unknown> {
     select: { id: true },
   });
   for (let i = 0; i < 200; i++) {
-    const row = await suDb.executionLog.findFirst({
+    const row = await flowLogRow(suDb, {
       where: { tenantId, stage: "handoff", conversationId: conv.id },
       select: { detail: true },
       orderBy: { id: "desc" },
@@ -278,7 +279,7 @@ async function handoffDetail(convId: number): Promise<unknown> {
 async function auditedPrompt(convId: number): Promise<string> {
   const threadId = `${tenantId}:${instanceId}:${convId}`;
   for (let i = 0; i < 200; i++) {
-    const row = await suDb.executionLog.findFirst({
+    const row = await flowLogRow(suDb, {
       where: { tenantId, threadId, stage: "generate" },
       select: { detail: true },
       orderBy: { id: "asc" },

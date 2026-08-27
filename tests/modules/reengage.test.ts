@@ -9,6 +9,7 @@ import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { reengageConversation } from "@/modules/conversations/reengage";
 import { settleFlowEvents } from "@/modules/flowlog/scheduled";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { flowLogRows } from "../utils/flowlog";
 import { PromptCapturingModel } from "../utils/scripted-models";
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
@@ -728,7 +729,7 @@ describe.skipIf(!dbUp)("reengage", () => {
       expect(res.outcome).toBe("empty");
       expect(sent).toEqual([]);
       await settleFlowEvents();
-      const rows = await suDb.executionLog.findMany({
+      const rows = await flowLogRows(suDb, {
         where: {
           tenantId,
           threadId: `${tenantId}:${instanceId}:923`,
@@ -764,7 +765,7 @@ describe.skipIf(!dbUp)("reengage", () => {
       expect(sent).toEqual([]);
       // ...and no refusal on the record, because nothing was refused.
       await settleFlowEvents();
-      const rows = await suDb.executionLog.findMany({
+      const rows = await flowLogRows(suDb, {
         where: {
           tenantId,
           threadId: `${tenantId}:${instanceId}:922`,

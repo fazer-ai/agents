@@ -18,6 +18,7 @@ import { encryptJson } from "@/api/lib/crypto";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { flowLogRows } from "../utils/flowlog";
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -238,32 +239,28 @@ describe.skipIf(!dbUp)("a control command that did not run says so", () => {
     });
   }
 
-  // Scoped to the conversation by its INTERNAL id, and polled for the count the test EXPECTS: the
-  // emit is fire-and-forget, so an unscoped read answers with a neighbour's row and one that stops
-  // at the first row reads the fan-out's first delivery while the second is still in flight, then
-  // calls that the answer. Zero is the same rule from the other side: nothing to wait for, so the
-  // window is spent before reading rather than short-circuited.
-  async function commandRows(convId: number, expected: number, waitMs = 2000) {
+  // Scoped to the conversation by its INTERNAL id, and SETTLED rather than polled: the emit is
+  // fire-and-forget, so an unscoped read answers with a neighbour's row and one that does not wait
+  // reads before the row lands. This used to poll for the count the test EXPECTS, which answered the
+  // presence cases correctly and could not answer the absence ones at all: a poll for zero spends
+  // its whole deadline and then reports the empty read it opened with. `flowLogRows` settles the
+  // scheduled writes first, so both directions are answered by the same read (#419), and `expected`
+  // stops being an input to HOW the read is taken.
+  async function commandRows(convId: number) {
     const conv = await suDb.conversation.findFirst({
       where: { tenantId, chatwootConversationId: convId },
       select: { id: true },
     });
     if (!conv) return [];
-    const deadline = Date.now() + waitMs;
-    for (;;) {
-      const rows = await suDb.executionLog.findMany({
-        where: { tenantId, stage: "command", conversationId: conv.id },
-        orderBy: { id: "asc" },
-      });
-      if (expected > 0 && rows.length >= expected) return rows;
-      if (Date.now() > deadline) return rows;
-      await new Promise((r) => setTimeout(r, 50));
-    }
+    return flowLogRows(suDb, {
+      where: { tenantId, stage: "command", conversationId: conv.id },
+      orderBy: { id: "asc" },
+    });
   }
 
   test("a command at a production agent is ordinary text, and the line says which mode dropped it", async () => {
     await deliver(9201, PROD_INBOX, "/teste", OUR_BOT);
-    const rows = await commandRows(9201, 1);
+    const rows = await commandRows(9201);
     expect(rows).toHaveLength(1);
     expect(rows[0]?.level).toBe("info");
     expect(rows[0]?.status).toBe("skipped");
@@ -278,7 +275,7 @@ describe.skipIf(!dbUp)("a control command that did not run says so", () => {
 
   test("a command at an inbox nobody bound names the mode as unresolved", async () => {
     await deliver(9301, UNBOUND_INBOX, "/reset", OUR_BOT);
-    const rows = await commandRows(9301, 1);
+    const rows = await commandRows(9301);
     expect(rows).toHaveLength(1);
     expect(rows[0]?.detail).toMatchObject({
       command: "reset",
@@ -291,7 +288,7 @@ describe.skipIf(!dbUp)("a control command that did not run says so", () => {
       where: { tenantId, chatwootConversationId: 9301 },
       select: { id: true },
     });
-    const route = await suDb.executionLog.findMany({
+    const route = await flowLogRows(suDb, {
       where: { tenantId, stage: "route", conversationId: conv.id },
     });
     expect(route).toHaveLength(1);
@@ -299,7 +296,7 @@ describe.skipIf(!dbUp)("a control command that did not run says so", () => {
 
   test("a delivery on another persona's route says it left the command to the inbox's", async () => {
     await deliver(9101, TEST_INBOX, "/teste", OTHER_BOT);
-    const rows = await commandRows(9101, 1);
+    const rows = await commandRows(9101);
     expect(rows).toHaveLength(1);
     expect(rows[0]?.level).toBe("info");
     expect(rows[0]?.detail).toMatchObject({
@@ -315,7 +312,7 @@ describe.skipIf(!dbUp)("a control command that did not run says so", () => {
   // misconfiguration to repair rather than a route deferring to its sibling.
   test("an inbox whose agent has no bot identity drops the command on every route, at warn", async () => {
     await deliver(9401, NO_PERSONA_INBOX, "/teste", OUR_BOT);
-    const rows = await commandRows(9401, 1);
+    const rows = await commandRows(9401);
     expect(rows).toHaveLength(1);
     expect(rows[0]?.level).toBe("warn");
     expect(rows[0]?.status).toBe("skipped");
@@ -333,7 +330,7 @@ describe.skipIf(!dbUp)("a control command that did not run says so", () => {
   test("the fan-out reports one command, not the same drop twice", async () => {
     await deliver(9202, PROD_INBOX, "/teste", OUR_BOT);
     await deliver(9202, PROD_INBOX, "/teste", OTHER_BOT, { sameMessage: true });
-    const rows = await commandRows(9202, 2);
+    const rows = await commandRows(9202);
     expect(rows).toHaveLength(2);
     expect(
       rows.map((r) => (r.detail as { reason: string }).reason).sort(),
@@ -360,7 +357,7 @@ describe.skipIf(!dbUp)("a control command that did not run says so", () => {
       sparse: true,
       sameMessage: true,
     });
-    const rows = await commandRows(9203, 2);
+    const rows = await commandRows(9203);
     expect(rows).toHaveLength(2);
     for (const r of rows) expect(r.agentId).toBe(prodAgentId);
     expect(
@@ -380,7 +377,7 @@ describe.skipIf(!dbUp)("a control command that did not run says so", () => {
   // committed, leaving the ledger row on PROCESSING with nothing running and no upstream retry.
   test("an unreadable persona still writes the line, and the delivery finishes", async () => {
     await deliver(9501, BAD_TOKEN_INBOX, "/teste", OUR_BOT);
-    const rows = await commandRows(9501, 1);
+    const rows = await commandRows(9501);
     expect(rows).toHaveLength(1);
     expect(rows[0]?.detail).toMatchObject({
       command: "teste",
@@ -396,13 +393,13 @@ describe.skipIf(!dbUp)("a control command that did not run says so", () => {
 
   test("a command that RUNS writes no dropped line", async () => {
     await deliver(9102, TEST_INBOX, "/teste", OUR_BOT);
-    const rows = await commandRows(9102, 0, 400);
+    const rows = await commandRows(9102);
     expect(rows).toHaveLength(0);
   });
 
   test("an ordinary message writes no dropped line", async () => {
     await deliver(9103, PROD_INBOX, "bom dia", OUR_BOT);
-    const rows = await commandRows(9103, 0, 400);
+    const rows = await commandRows(9103);
     expect(rows).toHaveLength(0);
   });
 });

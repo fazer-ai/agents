@@ -19,7 +19,7 @@ import { clearContactAuthState } from "@/modules/contact-auth/state";
 import { settleFlowEvents } from "@/modules/flowlog/scheduled";
 import { clearSpendCeilingFlights } from "@/modules/spend-ceiling/notice";
 import { seedChatwootInstance } from "../utils/chatwoot";
-import { clearFlowLog } from "../utils/flowlog";
+import { clearFlowLog, flowLogRows } from "../utils/flowlog";
 
 // The spend ceiling, wired end to end through processChatwootDelivery (issue #146). The rule is
 // pinned without a database in ./spend-ceiling-decide.test.ts; what these pin is that it reaches the
@@ -223,7 +223,7 @@ async function deliverCustomerMessage(params: {
 async function ceilingRows(convId: number, onSecond = false) {
   await settleFlowEvents();
   const threadId = `${tenantId}:${onSecond ? instance2Id : instanceId}:${convId}`;
-  return suDb.executionLog.findMany({
+  return flowLogRows(suDb, {
     where: { tenantId, threadId, stage: "spend_ceiling" },
     select: { level: true, status: true, detail: true },
     orderBy: { id: "asc" },

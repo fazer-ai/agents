@@ -12,6 +12,7 @@ import type { FlowContext } from "@/modules/flowlog/service";
 import { synthesizeReply } from "@/modules/tts/service";
 import { TTS_DEFAULTS, type TtsConfig } from "@/modules/tts/settings";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { flowLogRow } from "../utils/flowlog";
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -289,7 +290,7 @@ describe.skipIf(!dbUp)("tts", () => {
     // emit is fire-and-forget → poll for the row.
     let row: { level: string; status: string | null } | null = null;
     for (let i = 0; i < 100 && !row; i++) {
-      row = await suDb.executionLog.findFirst({
+      row = await flowLogRow(suDb, {
         where: { tenantId, turnId: "tts-skip-novoice", stage: "tts" },
         select: { level: true, status: true },
       });
@@ -348,7 +349,7 @@ describe.skipIf(!dbUp)("tts", () => {
       detail: unknown;
     } | null = null;
     for (let i = 0; i < 100 && !row; i++) {
-      row = await suDb.executionLog.findFirst({
+      row = await flowLogRow(suDb, {
         where: { tenantId, turnId: "tts-fail-400", stage: "tts" },
         select: {
           level: true,

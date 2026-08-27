@@ -16,6 +16,7 @@ import { failableTool, toolFailure } from "@/graph/tools/failure";
 import type { TenantContext } from "@/lib/tenancy";
 import { createAlertChannel } from "@/modules/flowlog/channels";
 import type { FlowContext } from "@/modules/flowlog/service";
+import { flowLogRows } from "../utils/flowlog";
 import { outboundUrl } from "../utils/outbound";
 
 // NOTE: The tool line of the execution-flow log must distinguish integration failures from successes:
@@ -66,7 +67,7 @@ type LogRow = {
 // NOTE: emitFlowEvent is fire-and-forget; poll until the expected row count lands.
 async function pollToolRows(turnId: string, count: number): Promise<LogRow[]> {
   for (let i = 0; i < 50; i++) {
-    const rows = await suDb.executionLog.findMany({
+    const rows = await flowLogRows(suDb, {
       where: { tenantId, turnId, stage: "tool" },
       select: {
         level: true,

@@ -13,6 +13,7 @@ import {
 import { listExecutionLogs } from "@/modules/flowlog/read";
 import type { FlowContext } from "@/modules/flowlog/service";
 import { withFlowStage } from "@/modules/flowlog/service";
+import { flowLogRow } from "../utils/flowlog";
 import { outboundUrl } from "../utils/outbound";
 
 // withFlowStage control flow is pure when no flow context is wired (zero overhead, just runs fn).
@@ -263,7 +264,7 @@ describe.skipIf(!dbUp)("flowlog", () => {
     // emit is fire-and-forget → poll until the row lands.
     let row: { level: string; status: string | null } | null = null;
     for (let i = 0; i < 100 && !row; i++) {
-      row = await suDb.executionLog.findFirst({
+      row = await flowLogRow(suDb, {
         where: { tenantId: tenantA, turnId: "b8-warn", stage: "tts" },
         select: { level: true, status: true },
       });

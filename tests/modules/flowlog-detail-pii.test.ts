@@ -12,6 +12,7 @@ import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
 import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
 import { clearContactAuthState } from "@/modules/contact-auth/state";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { flowLogRows } from "../utils/flowlog";
 import { guardrailModel, UsageReportingModel } from "../utils/scripted-models";
 
 // `docs/logs.md` promises that `execution_logs.detail` carries allowlisted ids, counts and enums and
@@ -118,7 +119,7 @@ async function seedConv(convId: number) {
 async function turnRows(convId: number, stages: readonly string[]) {
   const threadId = `${tenantId}:${instanceId}:${convId}`;
   for (let i = 0; i < 200; i++) {
-    const rows = await suDb.executionLog.findMany({
+    const rows = await flowLogRows(suDb, {
       where: { tenantId, threadId },
       select: { stage: true, detail: true, errorMessage: true },
     });

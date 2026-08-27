@@ -11,6 +11,7 @@ import {
 } from "@/modules/chatwoot/client";
 import { remoteInboxIsGone, removeInbox } from "@/modules/chatwoot/management";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { flowLogCount } from "../utils/flowlog";
 
 // #307: an inbox deleted in Chatwoot leaves its mirror behind FOREVER. Sync deliberately never
 // prunes (keeping a binding beats pruning one), and the explicit action that comment points at does
@@ -342,7 +343,7 @@ describe.skipIf(!dbUp)("#307 removing the mirror of a deleted inbox", () => {
     // for the removal. Asserting it here so a later cascade cannot delete an operator's spend record.
     expect(await suDb.llmUsage.count({ where: { inboxId: inbox.id } })).toBe(1);
     expect(
-      await suDb.executionLog.count({
+      await flowLogCount(suDb, {
         // flowlog-scope: seeded — the subject is the ONE line this test wrote, addressed by an
         // inbox id no other test uses. There is no turn here: the question is whether removing an
         // inbox takes its log lines with it, which is about the row, not about a trail.

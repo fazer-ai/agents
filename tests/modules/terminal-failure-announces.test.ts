@@ -22,7 +22,7 @@ import {
   processInboundDelivery,
   receiveInbound,
 } from "@/modules/webhooks/inbound/service";
-import { clearFlowLog } from "@/tests/utils/flowlog";
+import { clearFlowLog, flowLogRows } from "@/tests/utils/flowlog";
 import { withJobHandler } from "@/tests/utils/job-registry";
 
 // ── A UNIT OF WORK THAT DIES PERMANENTLY HAS TO SAY SO (issue #356) ──
@@ -79,7 +79,7 @@ const past = () => new Date(Date.now() - 60_000);
 async function deadRows(expected: number, waitMs = 4000) {
   const deadline = Date.now() + waitMs;
   for (;;) {
-    const rows = await suDb.executionLog.findMany({
+    const rows = await flowLogRows(suDb, {
       // flowlog-scope: tenant-wide — the subject is HOW MANY lines a terminal failure wrote, so a
       // reader scoped to one turn would answer a different question and stay green while a second,
       // duplicate line existed. None of these units HAS a turn; this file's tenant is its own, and

@@ -10,6 +10,7 @@ import type { ChatwootClient } from "@/modules/chatwoot/client";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
 import { DEBUG_MAX_STRING, emitFlowEvent } from "@/modules/flowlog/service";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { flowLogRow } from "../utils/flowlog";
 import { UsageReportingModel } from "../utils/scripted-models";
 
 // Issue #58 END TO END, at the effect the operator complained about: "I cannot see the whole prompt
@@ -124,7 +125,7 @@ async function setWindow(endsAt: Date | null) {
 async function generateRow(convId: number) {
   const threadId = `${tenantId}:${instanceId}:${convId}`;
   for (let i = 0; i < 200; i++) {
-    const row = await suDb.executionLog.findFirst({
+    const row = await flowLogRow(suDb, {
       where: { tenantId, threadId, stage: "generate" },
       select: { detail: true },
     });
@@ -282,7 +283,7 @@ describe.skipIf(!dbUp)("the log debug mode, on a real turn", () => {
     );
     let row: { detail: unknown } | null = null;
     for (let i = 0; i < 200 && row === null; i++) {
-      row = await suDb.executionLog.findFirst({
+      row = await flowLogRow(suDb, {
         where: { tenantId, turnId },
         select: { detail: true },
       });

@@ -14,6 +14,7 @@ import {
 } from "@/modules/stt/service";
 import type { SttConfig } from "@/modules/stt/settings";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { flowLogRows } from "../utils/flowlog";
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -266,7 +267,7 @@ describe.skipIf(!dbUp)("stt", () => {
     // NOTE: The lost write-back is observable on the flow log (stt stage, warn, step write_back).
     let warned = false;
     for (let i = 0; i < 30 && !warned; i++) {
-      const logs = await suDb.executionLog.findMany({
+      const logs = await flowLogRows(suDb, {
         where: { tenantId, turnId, stage: "stt", level: "warn" },
         select: { detail: true },
       });

@@ -31,7 +31,12 @@ import {
   enqueueJob,
   retireJobsByDedupeKey,
 } from "@/modules/scheduler/service";
-import { clearFlowLog } from "@/tests/utils/flowlog";
+import {
+  clearFlowLog,
+  flowLogCount,
+  flowLogRow,
+  flowLogRows,
+} from "@/tests/utils/flowlog";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import {
   EmptyThenReplyModel,
@@ -274,7 +279,7 @@ async function correctionLine(convId: number) {
   const deadline = Date.now() + 2000;
   let lines: Array<{ level: string; detail: unknown }> = [];
   while (Date.now() < deadline) {
-    lines = await suDb.executionLog.findMany({
+    lines = await flowLogRows(suDb, {
       where: { tenantId, conversationId, stage: "delivery" },
       select: { level: true, detail: true },
     });
@@ -756,7 +761,7 @@ describe.skipIf(!dbUp)("debounce", () => {
     });
     await new Promise((r) => setTimeout(r, 200));
     expect(
-      await suDb.executionLog.count({
+      await flowLogCount(suDb, {
         where: { tenantId, conversationId: conv.id, stage: "delivery" },
       }),
     ).toBe(0);
@@ -1829,7 +1834,7 @@ describe.skipIf(!dbUp)("debounce", () => {
       select: { id: true },
     });
     for (let i = 0; i < 40; i++) {
-      const row = await suDb.executionLog.findFirst({
+      const row = await flowLogRow(suDb, {
         where: { tenantId, stage: "handoff", conversationId: conversation.id },
         orderBy: { id: "desc" },
       });
@@ -1845,7 +1850,7 @@ describe.skipIf(!dbUp)("debounce", () => {
       select: { id: true },
     });
     for (let i = 0; i < 40; i++) {
-      const row = await suDb.executionLog.findFirst({
+      const row = await flowLogRow(suDb, {
         where: { tenantId, stage: "route", conversationId: conversation.id },
         orderBy: { id: "desc" },
       });
@@ -3406,7 +3411,7 @@ describe.skipIf(!dbUp)("debounce", () => {
       expect(notes).toEqual([]);
       // ...and no refusal line, because nothing was refused.
       await settleFlowEvents();
-      const rows = await suDb.executionLog.findMany({
+      const rows = await flowLogRows(suDb, {
         // Scoped to this flush's own thread, not to the tenant: the fixture is shared with the
         // refusals above, and a tenant-wide read would be asserting about their rows too.
         where: { tenantId, threadId: threadOf(914), stage: "spend_ceiling" },
@@ -3481,7 +3486,7 @@ describe.skipIf(!dbUp)("debounce", () => {
       // also swallow the window a real refusal needs later. The shape of the row this asserts the
       // absence of is proved by the refusals in the sibling tests above.
       await settleFlowEvents();
-      const rows = await suDb.executionLog.findMany({
+      const rows = await flowLogRows(suDb, {
         // This flush's own thread, not the tenant: the fixture is shared with those refusals.
         where: { tenantId, threadId: threadOf(913), stage: "spend_ceiling" },
         select: { level: true },
@@ -3533,7 +3538,7 @@ describe.skipIf(!dbUp)("debounce", () => {
       expect(await run()).toEqual({ outcome: "done" });
 
       await settleFlowEvents();
-      const rows = await suDb.executionLog.findMany({
+      const rows = await flowLogRows(suDb, {
         where: { tenantId, threadId: threadOf(916), stage: "spend_ceiling" },
         select: { level: true },
       });
@@ -3585,7 +3590,7 @@ describe.skipIf(!dbUp)("debounce", () => {
       expect(notes).toEqual([]);
       // ...and no refusal line, because nothing was refused.
       await settleFlowEvents();
-      const rows = await suDb.executionLog.findMany({
+      const rows = await flowLogRows(suDb, {
         where: { tenantId, threadId: threadOf(915), stage: "spend_ceiling" },
         select: { level: true },
       });

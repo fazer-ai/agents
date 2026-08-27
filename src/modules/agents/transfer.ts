@@ -671,13 +671,9 @@ export async function exportAgent(
       // AND the ones referenced INSIDE integration configs (e.g. Google Calendar's `businessHoursId`) —
       // those are otherwise a dead id at the destination, since the config is not remapped on import.
       const configBhIds = integrationRows.flatMap((r) => {
-        const raw = (r.config as Record<string, unknown> | null)
-          ?.businessHoursId;
-        if (typeof raw !== "string" || raw === "") return [];
-        // NOTE: this id came out of an integration CONFIG, which a caller wrote. A run of digits
-        // past 2^63-1 converts, so the `catch` this replaces never saw it and the value reached the
-        // `in` clause below — a 500 out of an export. Issue #407.
-        const id = parseDbId(raw);
+        const id = configBusinessHoursId(
+          r.config as Record<string, unknown> | null,
+        );
         return id === null ? [] : [id];
       });
       const bhIds = [
@@ -1131,13 +1127,28 @@ export async function importAgent(
 // `businessHoursId`). On EXPORT we rewrite that id to the schedule's NAME so it survives the tenant hop
 // (the referenced schedule is also bundled in components.businessHours); on IMPORT the name is resolved
 // back to the local id. A config with no such ref, or an unresolved one, is left untouched.
+// The schedule an integration config references, read the way the RUNTIME reads it.
+//
+// `resolveBusinessHoursId` in the Calendar toolpack trims before using the value, so a config
+// holding `" 7 "` is a working configuration pointing at schedule 7. Both halves of the export have
+// to agree with that reader or they disagree with each other: the bundling below would omit a
+// schedule the tool actually uses, and the id→name rewrite would leave a destination-invalid id in
+// the config. Bounded as well as trimmed, because a run of digits past 2^63-1 converts under
+// `BigInt` and would reach the `in` clause as a bind error. Issue #407.
+export function configBusinessHoursId(
+  config: Record<string, unknown> | null,
+): bigint | null {
+  const raw = config?.businessHoursId;
+  return typeof raw === "string" ? parseDbId(raw.trim()) : null;
+}
+
 export function remapConfigBusinessHoursIdToName(
   config: Record<string, unknown>,
   bhNameById: Map<string, string>,
 ): Record<string, unknown> {
-  const id = config.businessHoursId;
-  if (typeof id !== "string" || id === "") return config;
-  const name = bhNameById.get(id);
+  const id = configBusinessHoursId(config);
+  if (id === null) return config;
+  const name = bhNameById.get(id.toString());
   return name ? { ...config, businessHoursId: name } : config;
 }
 

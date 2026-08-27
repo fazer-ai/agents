@@ -7,8 +7,10 @@ import type { TenantContext } from "@/lib/tenancy";
 import { TOOL_INSTRUCTIONS_MAX } from "@/modules/agents/text-caps";
 import {
   type AgentExport,
+  configBusinessHoursId,
   exportAgent,
   importAgent,
+  remapConfigBusinessHoursIdToName,
 } from "@/modules/agents/transfer";
 import { documentStarter } from "@/modules/documents/starters";
 import { createDocumentTemplate } from "@/modules/documents/templates";
@@ -42,6 +44,54 @@ let agentId = 0n;
 function ctx(): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
 }
+
+// Which schedule an integration config points at, decided in one place because the export asks it
+// twice — once to BUNDLE the schedule and once to rewrite the id to a portable NAME — and the two
+// answering differently is a bundle whose config still carries a destination-invalid id.
+//
+// The padded row is the one that matters. `resolveBusinessHoursId` in the Calendar toolpack trims
+// before reading, so `" 7 "` is a WORKING configuration pointing at schedule 7; a reader here that
+// refused it would drop from the export a schedule the tool actually uses. Trimmed, then bounded.
+describe("the schedule an integration config references", () => {
+  test("a plain id, and the padded spelling the runtime already accepts", () => {
+    expect(configBusinessHoursId({ businessHoursId: "7" })).toBe(7n);
+    expect(configBusinessHoursId({ businessHoursId: " 7 " })).toBe(7n);
+    expect(configBusinessHoursId({ businessHoursId: "007" })).toBe(7n);
+  });
+
+  test("no reference at all", () => {
+    for (const config of [
+      null,
+      {},
+      { businessHoursId: "" },
+      { businessHoursId: "   " },
+      { businessHoursId: null },
+      { businessHoursId: 7 },
+    ]) {
+      expect(configBusinessHoursId(config)).toBeNull();
+    }
+  });
+
+  test("a value BigInt would convert but a bigint column would not", () => {
+    for (const raw of ["99999999999999999999", "0x7", "+7", "1e3", "-7"]) {
+      expect(configBusinessHoursId({ businessHoursId: raw })).toBeNull();
+    }
+  });
+
+  // …and the rewrite reads the SAME answer, so a padded ref leaves as a name like any other.
+  test("the id→name rewrite resolves what the bundling resolves", () => {
+    const names = new Map([["7", "Clinic hours"]]);
+    expect(
+      remapConfigBusinessHoursIdToName({ businessHoursId: " 7 " }, names),
+    ).toEqual({ businessHoursId: "Clinic hours" });
+    expect(
+      remapConfigBusinessHoursIdToName({ businessHoursId: "7" }, names),
+    ).toEqual({ businessHoursId: "Clinic hours" });
+    // An id no bundled schedule matches is left exactly as it was, config and all.
+    const untouched = { businessHoursId: "9", timeZone: "UTC" };
+    expect(remapConfigBusinessHoursIdToName(untouched, names)).toBe(untouched);
+  });
+});
 
 describe.skipIf(!dbUp)("agent export/import", () => {
   beforeAll(async () => {

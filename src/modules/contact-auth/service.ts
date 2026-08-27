@@ -165,7 +165,7 @@ export async function authorizeContact(
         // A bookkeeping write this process could not confirm, settled by deleting. Under BOTH
         // modes: the refusal that failed to land usually happened under `perMessage`, which reads no
         // grants, so a retry that lived on the read path would never run for the mode that needs it.
-        await retryUnconfirmedWrite(base, grantKey);
+        await retryUnconfirmedWrite(base, grantKey, ctrl.signal);
         if (cfg.mode === "once") {
           const stored = await readContactAuthGrant(
             base,
@@ -255,7 +255,7 @@ export async function authorizeContact(
           // Stamped with the instant this check STARTED, not with the instant the delete lands: what
           // orders a concurrent allow against this refusal is when each was asked, and a retry that
           // finally lands minutes later must not read as a refusal from minutes later.
-          await dropContactAuthGrant(base, grantKey, askedAt);
+          await dropContactAuthGrant(base, grantKey, { refusedAt: askedAt });
         } else if (cfg.mode === "once" && verdict.outcome === "allowed") {
           await writeContactAuthGrant(
             base,

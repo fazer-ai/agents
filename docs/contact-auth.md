@@ -399,9 +399,14 @@ wrote, never with an empty table. Both shapes are pinned in
 **An allow that was already in flight cannot outlive a refusal.** Two messages from one contact are
 two questions under the unlock flow (the single-flight is keyed by message id), so their checks run
 concurrently and can settle in either order. A verdict still answers the message it was asked about,
-but the STORAGE is ordered: an allow from a check that started before a refusal landed is older than
-that refusal however late it arrives, so it is not stored, and any row it would have replaced is
-dropped. Without that, one out-of-order answer serves the contact for the rest of the TTL.
+but the STORAGE is ordered: an allow from a check that started before a refusal is older than that
+refusal however late it arrives, so it is not stored, and any row it would have replaced is dropped.
+
+Two things make that hold rather than usually hold. A refusal is remembered BEFORE its delete is
+attempted, so it is visible for the length of the database round trip rather than after it; and every
+mutation of one contact's row runs alone, in a queue keyed by that contact, so reading the ordering
+rule and acting on it is one step. Split in two, an allow that passed the check a moment before the
+refusal arrived goes on to write anyway, and the row comes back for the rest of the TTL.
 
 **A refusal this process could not write down is not forgotten.** The DELETE is the one write here
 that ENDS an authorization, so unlike the read and the write it is not best-effort: a failure is

@@ -11,7 +11,9 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import {
   clearContactAuthGrantState,
   contactAuthPolicyHash,
+  dropContactAuthGrant,
   unconfirmedWriteCount,
+  writeContactAuthGrant,
 } from "@/modules/contact-auth/grants";
 import { authorizeContact } from "@/modules/contact-auth/service";
 import {
@@ -119,10 +121,19 @@ const broken = () => new Response("boom", { status: 500 });
 // the transaction client the module actually calls. Binding to `target` rather than forwarding the
 // proxy as the receiver keeps Prisma's own accessors (several are getters closing over the client)
 // working.
+//
+// The hook is handed the REAL delegate, and a hook that wants the statement to happen must call it:
+// forwarding to the outer client instead runs unscoped, and under RLS an unscoped statement matches
+// ZERO rows — a "slow delete" that deletes nothing and a read that always comes back empty, both of
+// which make a test pass while measuring the opposite of what it says.
 function baseWithGrantHook(
   real: PrismaClient,
-  // biome-ignore lint/suspicious/noExplicitAny: the delegate surface is not expressible here
-  hook: (method: string) => ((...args: any[]) => unknown) | undefined,
+  hook: (
+    method: string,
+    // biome-ignore lint/suspicious/noExplicitAny: the delegate surface is not expressible here
+    delegate: any,
+    // biome-ignore lint/suspicious/noExplicitAny: same
+  ) => ((...args: any[]) => unknown) | undefined,
 ): PrismaClient {
   const wrap = <T extends object>(obj: T, patch: (p: string) => unknown) =>
     new Proxy(obj, {
@@ -152,7 +163,9 @@ function baseWithGrantHook(
                       fn(
                         wrap(tx, (m) =>
                           m === "contactAuthGrant"
-                            ? wrap(tx.contactAuthGrant, hook)
+                            ? wrap(tx.contactAuthGrant, (call) =>
+                                hook(call, tx.contactAuthGrant),
+                              )
                             : undefined,
                         ),
                       ),
@@ -602,6 +615,173 @@ describe.skipIf(!dbUp)("contact authorization: reusing a verdict", () => {
     expect(after.reused).toBeFalsy();
     expect(ep.calls).toHaveLength(3);
     expect(unconfirmedWriteCount()).toBe(0);
+  });
+
+  test("an allow cannot slip through while a refusal's delete is in flight", async () => {
+    const ep = endpoint(allowed, denied, allowed);
+    await ask({ cfg: cfg(), ...ep });
+
+    let releaseAllow: (() => void) | undefined;
+    const heldAllow = new Promise<void>((r) => {
+      releaseAllow = r;
+    });
+    let deleteStarted: (() => void) | undefined;
+    const deleting = new Promise<void>((r) => {
+      deleteStarted = r;
+    });
+    const slowAllow = (async () => {
+      await heldAllow;
+      return allowed();
+    }) as unknown as typeof fetch;
+
+    // The allow is in flight first, so its check started before the refusal's.
+    const allowInFlight = ask({ cfg: cfg(), fetchImpl: slowAllow });
+    // The refusal's DELETE is entered and held there: the window where the row is already doomed and
+    // the database has not been told yet. Nothing about the refusal has "landed" in the old sense.
+    const denial = ask({
+      cfg: cfg({ mode: "perMessage" }),
+      fetchImpl: ep.fetchImpl,
+      base: baseWithGrantHook(appDb, (m, delegate) =>
+        m === "deleteMany"
+          ? async (...args: unknown[]) => {
+              deleteStarted?.();
+              await Bun.sleep(150);
+              return delegate.deleteMany(...args);
+            }
+          : undefined,
+      ),
+    });
+    await deleting;
+    releaseAllow?.();
+    const [late] = await Promise.all([allowInFlight, denial]);
+
+    expect(late.outcome).toBe("allowed");
+    // Checking `refusedSince` and writing are one step per contact, so the allow cannot pass the
+    // check in the gap the delete leaves open. Read and act in two steps and this row comes back.
+    expect(await grants()).toHaveLength(0);
+  });
+
+  test("an allow that already passed its check cannot revive the row behind a refusal", async () => {
+    const ep = endpoint(allowed, allowed, denied);
+    await ask({ cfg: cfg(), ...ep });
+    await suDb.contactAuthGrant.deleteMany({ where: { tenantId } });
+
+    let upsertStarted: (() => void) | undefined;
+    const upserting = new Promise<void>((r) => {
+      upsertStarted = r;
+    });
+    // The other interleaving, and the one a mark-before-delete does NOT close: this allow passes its
+    // ordering check while no refusal is known, and only then is slow. Whatever the refusal records
+    // afterwards, this write is already past the point that would have read it.
+    const allowInFlight = ask({
+      cfg: cfg(),
+      fetchImpl: ep.fetchImpl,
+      base: baseWithGrantHook(appDb, (m, delegate) =>
+        m === "upsert"
+          ? async (...args: unknown[]) => {
+              upsertStarted?.();
+              await Bun.sleep(200);
+              return delegate.upsert(...args);
+            }
+          : undefined,
+      ),
+    });
+    await upserting;
+    // The refusal runs to completion here, delete included, while that upsert is still in flight.
+    await ask({ cfg: cfg({ mode: "perMessage" }), ...ep });
+    await allowInFlight;
+
+    // One queue per contact is what makes this hold: the refusal's section waits for the allow's,
+    // so the delete is after the write rather than between its check and its write.
+    expect(await grants()).toHaveLength(0);
+  });
+
+  test("an older refusal finishing late does not overwrite a newer one", async () => {
+    const key = { tenantId, agentId, contactId };
+    const t1 = Date.now() - 3000;
+    const t2 = Date.now() - 2000;
+    const t3 = Date.now() - 1000;
+    // Three overlapping checks, played out through the two writers directly: the newest refusal
+    // lands first, the oldest lands after it, and an allow asked between them arrives last.
+    await dropContactAuthGrant(appDb, key, { refusedAt: t3 });
+    await dropContactAuthGrant(appDb, key, { refusedAt: t1 });
+    await writeContactAuthGrant(
+      appDb,
+      key,
+      {
+        identityHash: "x",
+        policyHash: "y",
+        context: null,
+        ttlSeconds: 3600,
+      },
+      { askedAt: t2 },
+    );
+    // What is remembered is the LATEST refusal known, not the last one recorded, so the allow from
+    // t2 is still older than the refusal from t3 and is not stored.
+    expect(await grants()).toHaveLength(0);
+  });
+
+  test("a grant that expires while its own read is in flight is not served", async () => {
+    const ep = endpoint(allowed, allowed);
+    await ask({ cfg: cfg(), ...ep });
+    await suDb.contactAuthGrant.updateMany({
+      where: { tenantId, agentId },
+      data: { expiresAt: new Date(Date.now() + 250) },
+    });
+    // The row is live when the query starts and dead when it comes back. The TTL is a promise about
+    // the moment the verdict is SERVED, so the clock that decides is the one read after the await.
+    const verdict = await ask({
+      cfg: cfg(),
+      fetchImpl: ep.fetchImpl,
+      base: baseWithGrantHook(appDb, (m, delegate) =>
+        m === "findUnique"
+          ? async (...args: unknown[]) => {
+              const row = await delegate.findUnique(...args);
+              await Bun.sleep(500);
+              return row;
+            }
+          : undefined,
+      ),
+    });
+    expect(verdict.reused).toBeFalsy();
+    expect(ep.calls).toHaveLength(2);
+  });
+
+  test("the retry of an unconfirmed write spends the gate's budget, not more", async () => {
+    const ep = endpoint(allowed, denied, allowed);
+    await ask({ cfg: cfg(), ...ep });
+    const failingDelete = baseWithGrantHook(appDb, (m) =>
+      m === "deleteMany"
+        ? () => {
+            throw new Error("delete is down");
+          }
+        : undefined,
+    );
+    await ask({
+      cfg: cfg({ mode: "perMessage" }),
+      fetchImpl: ep.fetchImpl,
+      base: failingDelete,
+    });
+    expect(unconfirmedWriteCount()).toBe(1);
+    // The retry runs BEFORE the answer, so it is inside the budget like the stored-verdict read.
+    // Left outside it, a pool in trouble adds the scoped transaction's own maxWait and timeout on
+    // top of a gate configured for one second.
+    const before = Date.now();
+    const verdict = await ask({
+      cfg: cfg({ timeoutMs: 1000 }),
+      fetchImpl: ep.fetchImpl,
+      base: baseWithGrantHook(appDb, (m) =>
+        m === "deleteMany"
+          ? async () => {
+              await Bun.sleep(5000);
+              return { count: 0 };
+            }
+          : undefined,
+      ),
+    });
+    expect(Date.now() - before).toBeLessThan(2500);
+    expect(verdict.outcome).toBe("error");
+    expect(verdict.reason).toBe("timeout");
   });
 
   test("the endpoint changing re-asks", async () => {

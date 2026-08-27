@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
+import { withKeyedQueue } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { type AuthContext, readAuthContext, underSignal } from "./check";
 import type { ContactAuthConfig } from "./settings";
@@ -104,11 +105,18 @@ function remember(
 ): void {
   const k = contactKey(key);
   const prev = known.get(k);
+  // The NEWEST refusal wins, and a retry that finally lands keeps the ORIGINAL instant. Both halves
+  // are the same rule read from two sides: what is kept is the latest refusal this process knows
+  // about. Taking the incoming value instead lets an older refusal finishing late overwrite a newer
+  // one, and an allow asked between them would then pass; stamping a retry with its own clock makes
+  // a months-old refusal look newer than the check retrying it, and that check's own yes is thrown
+  // away.
+  const refusedAt =
+    prev?.refusedAt !== undefined && patch.refusedAt !== undefined
+      ? Math.max(prev.refusedAt, patch.refusedAt)
+      : (patch.refusedAt ?? prev?.refusedAt);
   const next = {
-    // A retry that finally lands keeps the ORIGINAL instant: stamping it with the retry's own clock
-    // would make the refusal newer than the check performing the retry, and that check's own allow
-    // would then be discarded as stale — the endpoint asked, answered yes, and nothing stored.
-    refusedAt: patch.refusedAt ?? prev?.refusedAt,
+    refusedAt,
     unconfirmed: patch.unconfirmed ?? prev?.unconfirmed ?? false,
   };
   known.delete(k);
@@ -137,9 +145,14 @@ export function hasUnconfirmedWrite(key: GrantKey): boolean {
 export async function retryUnconfirmedWrite(
   base: PrismaClient,
   key: GrantKey,
+  signal?: AbortSignal,
 ): Promise<void> {
   if (!hasUnconfirmedWrite(key)) return;
-  await dropContactAuthGrant(base, key);
+  // Under the caller's deadline, unlike the bookkeeping that follows a verdict: this one runs BEFORE
+  // the answer, so a pool in trouble would otherwise hold the webhook for the scoped transaction's
+  // own maxWait plus timeout on top of the gate's budget. Abandoning the wait leaves the contact
+  // unconfirmed, which is where it already was.
+  await dropContactAuthGrant(base, key, { signal });
 }
 
 // NOTE: Test isolation only; production clears an entry by finally landing the delete, or by the
@@ -235,10 +248,9 @@ export async function readContactAuthGrant(
   fingerprints: { identityHash: string; policyHash: string },
   opts: { signal?: AbortSignal; nowMs?: number } = {},
 ): Promise<{ context: AuthContext | null } | null> {
-  const nowMs = opts.nowMs ?? Date.now();
-  // A refusal this process could not write down outranks anything on disk. The retry belongs to the
-  // caller (`retryPendingRefusal`), which runs under both modes; what belongs here is refusing to
-  // serve a row while a refusal about it is unrecorded.
+  // A write this process could not confirm outranks anything on disk. The retry belongs to the
+  // caller (`retryUnconfirmedWrite`), which runs under both modes; what belongs here is refusing to
+  // serve a row while one stands.
   if (hasUnconfirmedWrite(key)) return null;
   try {
     const row = await underSignalMaybe(
@@ -256,6 +268,10 @@ export async function readContactAuthGrant(
       opts.signal,
     );
     if (!row) return null;
+    // The clock is read AFTER the query, not before it: a row fetched just before its expiry and
+    // handed back after it has expired, and the TTL is a promise about the moment the verdict is
+    // SERVED. A test may pin the instant instead.
+    const nowMs = opts.nowMs ?? Date.now();
     const holds =
       row.expiresAt.getTime() > nowMs &&
       row.identityHash === fingerprints.identityHash &&
@@ -274,6 +290,38 @@ export async function readContactAuthGrant(
   }
 }
 
+// EVERY MUTATION OF ONE CONTACT'S ROW RUNS ALONE. What made the ordering rule below leak was never
+// the rule, it was that reading it and acting on it were two steps with an `await` between them: a
+// refusal could be remembered in that gap, or its delete could land in it, and the allow that had
+// already passed the check went on to write anyway. Inside one queue per contact the check and the
+// write are one step, which is the only shape that makes "an older allow does not survive a newer
+// refusal" true rather than usually true.
+//
+// One level only: the queued bodies below call the unqueued helpers, never each other's public
+// entry points, because taking the same key twice would wait for a link that cannot resolve.
+function queuedForContact<T>(key: GrantKey, fn: () => Promise<T>): Promise<T> {
+  return withKeyedQueue(`contact-auth-grant:${contactKey(key)}`, fn);
+}
+
+async function deleteRow(
+  base: PrismaClient,
+  key: GrantKey,
+  signal?: AbortSignal,
+): Promise<void> {
+  await underSignalMaybe(
+    runScopedOn(base, sysCtx(key.tenantId), (db) =>
+      db.contactAuthGrant.deleteMany({
+        where: {
+          tenantId: key.tenantId,
+          agentId: key.agentId,
+          contactId: key.contactId,
+        },
+      }),
+    ),
+    signal,
+  );
+}
+
 export async function writeContactAuthGrant(
   base: PrismaClient,
   key: GrantKey,
@@ -285,41 +333,52 @@ export async function writeContactAuthGrant(
   },
   opts: { nowMs?: number; askedAt?: number } = {},
 ): Promise<void> {
-  const nowMs = opts.nowMs ?? Date.now();
-  // An allow from a check that started before a refusal LANDED is not newer than that refusal, no
-  // matter which of the two answers arrived last. Storing it would leave the contact served after
-  // the endpoint said no, for the whole TTL. Nothing is written, and the row goes.
-  if (opts.askedAt !== undefined && refusedSince(key, opts.askedAt)) {
-    await dropContactAuthGrant(base, key);
-    return;
-  }
-  const context = contextToJson(grant.context);
-  const expiresAt = new Date(nowMs + grant.ttlSeconds * 1000);
-  const data = {
-    identityHash: grant.identityHash,
-    policyHash: grant.policyHash,
-    context,
-    expiresAt,
-  };
-  try {
-    await runScopedOn(base, sysCtx(key.tenantId), (db) =>
-      db.contactAuthGrant.upsert({
-        where: whereKey(key),
-        create: { ...key, ...data },
-        update: data,
-      }),
-    );
-  } catch (err) {
-    // A write whose outcome this process does not know is not a write that did not happen: the
-    // statement may have committed. Serving nothing for that contact until a delete lands is the
-    // only honest reading of it.
-    remember(key, { unconfirmed: true });
-    logger.warn(
-      "contact-auth: storing the grant failed, so nothing stored will be served for this contact until it is cleared (agent=%s): %s",
-      String(key.agentId),
-      err instanceof Error ? err.message : String(err),
-    );
-  }
+  await queuedForContact(key, async () => {
+    const nowMs = opts.nowMs ?? Date.now();
+    // An allow from a check that started before a refusal is not newer than that refusal, no matter
+    // which of the two answers arrived last. Storing it would leave the contact served after the
+    // endpoint said no, for the whole TTL. Nothing is written, and the row goes.
+    if (opts.askedAt !== undefined && refusedSince(key, opts.askedAt)) {
+      try {
+        await deleteRow(base, key);
+      } catch (err) {
+        remember(key, { unconfirmed: true });
+        logger.warn(
+          "contact-auth: clearing a superseded grant failed (agent=%s): %s",
+          String(key.agentId),
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+      return;
+    }
+    const context = contextToJson(grant.context);
+    const expiresAt = new Date(nowMs + grant.ttlSeconds * 1000);
+    const data = {
+      identityHash: grant.identityHash,
+      policyHash: grant.policyHash,
+      context,
+      expiresAt,
+    };
+    try {
+      await runScopedOn(base, sysCtx(key.tenantId), (db) =>
+        db.contactAuthGrant.upsert({
+          where: whereKey(key),
+          create: { ...key, ...data },
+          update: data,
+        }),
+      );
+    } catch (err) {
+      // A write whose outcome this process does not know is not a write that did not happen: the
+      // statement may have committed. Serving nothing for that contact until a delete lands is the
+      // only honest reading of it.
+      remember(key, { unconfirmed: true });
+      logger.warn(
+        "contact-auth: storing the grant failed, so nothing stored will be served for this contact until it is cleared (agent=%s): %s",
+        String(key.agentId),
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  });
 }
 
 // Used on a fresh refusal, so a re-ask can only ever take a grant AWAY — under EVERY mode, not only
@@ -328,27 +387,25 @@ export async function writeContactAuthGrant(
 export async function dropContactAuthGrant(
   base: PrismaClient,
   key: GrantKey,
-  refusedAt?: number,
+  opts: { refusedAt?: number; signal?: AbortSignal } = {},
 ): Promise<void> {
-  try {
-    await runScopedOn(base, sysCtx(key.tenantId), (db) =>
-      db.contactAuthGrant.deleteMany({
-        where: {
-          tenantId: key.tenantId,
-          agentId: key.agentId,
-          contactId: key.contactId,
-        },
-      }),
-    );
-    remember(key, { refusedAt, unconfirmed: false });
-  } catch (err) {
-    // NOT swallowed, unlike the write above: this is the one that ENDS an authorization, so what
-    // fails here is remembered until it lands. `error` rather than `warn` for the same reason.
-    remember(key, { refusedAt, unconfirmed: true });
-    logger.error(
-      "contact-auth: a refusal could not be written down, so no stored verdict will be served for this contact until it is (agent=%s): %s",
-      String(key.agentId),
-      err instanceof Error ? err.message : String(err),
-    );
-  }
+  await queuedForContact(key, async () => {
+    // Remembered BEFORE the delete is attempted, and marked unconfirmed for as long as it is in
+    // flight: the queue orders this contact's own writes, and this is what an unqueued reader (the
+    // stored-verdict read) sees while the statement runs. Recorded after, a refusal is invisible for
+    // the length of a database round trip, which is exactly the window an allow needs.
+    remember(key, { refusedAt: opts.refusedAt, unconfirmed: true });
+    try {
+      await deleteRow(base, key, opts.signal);
+      remember(key, { unconfirmed: false });
+    } catch (err) {
+      // NOT swallowed, unlike the write above: this is the one that ENDS an authorization, so what
+      // fails here stays remembered until it lands. `error` rather than `warn` for the same reason.
+      logger.error(
+        "contact-auth: a refusal could not be written down, so no stored verdict will be served for this contact until it is (agent=%s): %s",
+        String(key.agentId),
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  });
 }

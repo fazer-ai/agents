@@ -1,3 +1,7 @@
+/**
+ * biome-ignore-all lint/suspicious/noTemplateCurlyInString: the strings below are SOURCE CODE fed
+ * to the extractor under test, and a template hole is one of the shapes it has to classify.
+ */
 import { describe, expect, test } from "bun:test";
 import { Glob } from "bun";
 import { expectWaiverLedger } from "@/tests/utils/ledger";
@@ -138,19 +142,39 @@ export function bigIntArgs(src: string): string[] {
     if (end !== -1) {
       // The trailing comma a formatter adds when the call wraps is not part of the argument, and a
       // waiver keyed with one would stop matching the day the line fits on one line again.
-      found.push(
-        src
-          .slice(at + 7, end)
-          .replace(/\s+/g, " ")
-          .trim()
-          .replace(/,$/, "")
-          .trim(),
-      );
+      const tidy = (text: string) =>
+        text.replace(/\s+/g, " ").trim().replace(/,$/, "").trim();
+      const arg = tidy(src.slice(at + 7, end));
+      // WHOLLY a literal, judged on the blanked copy where a string's contents are spaces. Judging
+      // by the first character instead classified `BigInt("0" + params.id)` as a constant and
+      // dropped it from the sweep — an argument that starts with a literal is not a literal. A
+      // template literal is never treated as one: either it interpolates, or it is a constant
+      // written the one way that hides interpolation from this check.
+      const blanked = tidy(code.slice(at + 7, end));
+      const isLiteral =
+        /^(["'] *["']|[0-9][0-9_]*n?|0[xXoObB][0-9a-fA-F_]*n?)$/.test(blanked);
+      if (arg !== "" && !isLiteral) found.push(arg);
     }
     at = code.indexOf("BigInt(", at + 7);
   }
-  // A literal argument is the author's own constant, not anyone's input.
-  return found.filter((a) => a !== "" && !/^["'`\d]/.test(a));
+  return found;
+}
+
+// The calls a ledger does not account for. A waiver covers ONE call, not a spelling: waiving by key
+// alone meant a file could gain a second `BigInt(raw)` beside the one that was argued for, and the
+// sweep would stay green — the exact hole a tree-wide guard exists to close. Separate from the
+// sweep so the rule can be shown a case the tree does not currently contain.
+export function unwaived(
+  counts: Map<string, number>,
+  ledger: Record<string, string>,
+): string[] {
+  const out: string[] = [];
+  for (const [key, n] of counts) {
+    const allowed = key in ledger ? 1 : 0;
+    if (n > allowed)
+      out.push(n > 1 ? `${key} (${n} calls, ${allowed} waived)` : key);
+  }
+  return out;
 }
 
 async function sources(): Promise<Map<string, string>> {
@@ -163,21 +187,34 @@ async function sources(): Promise<Map<string, string>> {
 
 describe("a caller's id is parsed, never cast", () => {
   test("every non-literal BigInt in the tree is one that was argued for", async () => {
-    const offenders: string[] = [];
-    const seen = new Set<string>();
+    const counts = new Map<string, number>();
     for (const [path, src] of await sources()) {
       for (const arg of bigIntArgs(src)) {
         const key = `${path} | ${arg}`;
-        seen.add(key);
-        if (!(key in NOT_A_CALLERS_ID)) offenders.push(key);
+        counts.set(key, (counts.get(key) ?? 0) + 1);
       }
     }
-    expect(offenders).toEqual([]);
+    const offending = unwaived(counts, NOT_A_CALLERS_ID);
+    expect(offending).toEqual([]);
     // …and the other direction: a waiver describing code that no longer exists is a waiver that
     // would silently cover the next call written in its place.
-    expect(Object.keys(NOT_A_CALLERS_ID).filter((k) => !seen.has(k))).toEqual(
+    expect(Object.keys(NOT_A_CALLERS_ID).filter((k) => !counts.has(k))).toEqual(
       [],
     );
+  });
+
+  // The rule the tree cannot currently show, because every waived call happens to be the only one
+  // of its spelling in its file. Without this, the count is untested and a second call slips in
+  // under the first one's waiver.
+  test("a waiver covers one call, not every call that reads the same", () => {
+    const ledger = { "a.ts | raw": "argued for once" };
+    expect(unwaived(new Map([["a.ts | raw", 1]]), ledger)).toEqual([]);
+    expect(unwaived(new Map([["a.ts | raw", 2]]), ledger)).toEqual([
+      "a.ts | raw (2 calls, 1 waived)",
+    ]);
+    expect(unwaived(new Map([["b.ts | raw", 1]]), ledger)).toEqual([
+      "b.ts | raw",
+    ]);
   });
 
   test("the not-a-callers-id ledger may only shrink", () => {
@@ -215,6 +252,27 @@ describe("a caller's id is parsed, never cast", () => {
       "parts[2] as string",
       "data.businessHoursId",
     ]);
+  });
+
+  // An argument that STARTS with a literal is not a literal, and the difference is the whole sweep:
+  // judged by first character, `BigInt("0" + params.id)` was dropped as a constant while deriving
+  // its value from the path.
+  test("only a wholly literal argument is dropped", () => {
+    expect(
+      bigIntArgs(
+        [
+          'BigInt("0" + params.id)',
+          "BigInt(7n + offset)",
+          "BigInt(`${raw}`)",
+        ].join("\n"),
+      ),
+    ).toEqual(['"0" + params.id', "7n + offset", "`${raw}`"]);
+  });
+
+  // Two identical calls are two calls. A waiver covers one of them, and the sweep can only enforce
+  // that if the extractor reports both rather than deduplicating them here.
+  test("the same spelling twice is reported twice", () => {
+    expect(bigIntArgs("BigInt(raw)\nBigInt(raw)")).toEqual(["raw", "raw"]);
   });
 
   test("it leaves literals, prose and quoted code alone", () => {

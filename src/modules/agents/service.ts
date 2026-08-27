@@ -688,13 +688,6 @@ export async function updateAgent(
     // read-compute-write against concurrent saves: without it, a save that read the old ON state
     // could land last after another save turned follow-up OFF, restoring ON with the STALE watermark
     // and re-exposing the pre-arm backlog to the sweep. RLS still applies to the raw read.
-    // The full row, for the trail. The raw lock below reads the four columns the follow-up fence
-    // needs; the record answers for every column an operator can write, and which of the three
-    // actions this call IS comes from comparing them (see audit-projection.ts).
-    const beforeRow = await db.agent.findUnique({
-      where: { id },
-      select: AGENT_SELECT,
-    });
     const beforeRows = await db.$queryRaw<
       Array<{
         enabled: boolean;
@@ -705,6 +698,17 @@ export async function updateAgent(
       }>
     >`SELECT enabled, mode, settings, model_config, updated_at FROM agents WHERE id = ${id} FOR UPDATE`;
     const before = beforeRows[0];
+    // NOTE: read AFTER the lock, and that order is the whole point. The raw lock above reads the
+    // four columns the follow-up fence needs; the trail answers for every column an operator can
+    // write, and which of the three actions this call IS comes from comparing them
+    // (audit-projection.ts). Taken BEFORE the lock, this read can observe state A, wait on the lock
+    // while another save commits B, and then have its own write applied against B while the row
+    // says A — and a write that restores A would compare equal and go unrecorded entirely, which is
+    // the one outcome an audit trail cannot have.
+    const beforeRow = await db.agent.findUnique({
+      where: { id },
+      select: AGENT_SELECT,
+    });
     // NOTE: The optimistic-concurrency check comes FIRST, on the locked row. A stale editor resends
     // the settings it loaded, so if the other writer edited a capped field our copy of it is an edit
     // too — validating first would answer 400 "text too long" to what is really a 409, and the
@@ -1568,10 +1572,15 @@ export async function replaceAgentToolSelections(
   const tenantId = requireTenant(ctx);
   const grants = normalizeGrants(input);
   const view = await runScopedOn(base, ctx, async (db) => {
-    const agent = await db.agent.findUnique({
-      where: { id: agentId },
-      select: { id: true, updatedAt: true },
-    });
+    // NOTE: the agent row is LOCKED before its version is read, and the grant snapshot below is
+    // taken under that lock. The set lives in another table with no version of its own, so this row
+    // is what serializes two replacements against each other: unlocked, one call can read set A,
+    // wait while another commits B, and then write A back while its audit row claims A→A. The
+    // agent is also what `expectedUpdatedAt` is checked against, so the precondition and the
+    // snapshot now answer for the same instant. RLS still applies to the raw read.
+    const locked = await db.$queryRaw<Array<{ updated_at: Date }>>`
+      SELECT updated_at FROM agents WHERE id = ${agentId} FOR UPDATE`;
+    const agent = locked[0] ? { updatedAt: locked[0].updated_at } : null;
     if (!agent) {
       throw new NotFoundError("agent not found", "errors.agentNotFound");
     }

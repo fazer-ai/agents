@@ -102,6 +102,67 @@ async function seedAgent(over: Record<string, unknown> = {}) {
   );
 }
 
+// The snapshot a row is built from has to be read UNDER the lock that serializes the write, and the
+// window that opens otherwise is not one a behavioural test can pin: it needs two transactions to
+// interleave at one instant, and a passing run would prove nothing about the next. So the rule is
+// asserted structurally, on the source, the way an ordering the engine is merely ALLOWED to break
+// has to be. `lockedBeforeSnapshot` is extracted so the fixtures below can prove it catches the
+// order this PR was reviewed for, which a scan over a clean tree never would.
+export function lockedBeforeSnapshot(
+  body: string,
+  snapshot: string,
+): "locked" | "unlocked" | "not found" {
+  // Comment lines are dropped FIRST, and that is not tidiness. `updateAgent` explains its lock in a
+  // NOTE three lines above taking it, so a scan of the raw text finds "FOR UPDATE" in the prose and
+  // reports every order as locked — measured: this fence passed with the reviewed defect restored.
+  const code = body
+    .split("\n")
+    .filter((l) => !l.trim().startsWith("//"))
+    .join("\n");
+  const lock = code.indexOf("FOR UPDATE");
+  const snap = code.indexOf(snapshot);
+  if (lock < 0 || snap < 0) return "not found";
+  return lock < snap ? "locked" : "unlocked";
+}
+
+function bodyOf(src: string, fn: string): string {
+  const start = src.indexOf(`export async function ${fn}(`);
+  if (start < 0) throw new Error(`${fn} not found`);
+  const next = src.indexOf("\nexport ", start + 1);
+  return src.slice(start, next < 0 ? undefined : next);
+}
+
+describe("the audit snapshot is read under the write's lock", () => {
+  test("the predicate catches the order this PR was reviewed for", () => {
+    // Positive control: the shape the review found, and the shape that replaced it.
+    const wrong = "const before = read(SNAP);\nawait sql`… FOR UPDATE`;";
+    const right = "await sql`… FOR UPDATE`;\nconst before = read(SNAP);";
+    expect(lockedBeforeSnapshot(wrong, "SNAP")).toBe("unlocked");
+    expect(lockedBeforeSnapshot(right, "SNAP")).toBe("locked");
+    expect(lockedBeforeSnapshot("nothing here", "SNAP")).toBe("not found");
+    // And the prose that broke the first version of this fence.
+    const commented = `// the FOR UPDATE below serializes it\n${wrong}`;
+    expect(lockedBeforeSnapshot(commented, "SNAP")).toBe("unlocked");
+  });
+
+  test("updateAgent locks the row before reading the row the trail compares", async () => {
+    const src = await Bun.file("src/modules/agents/service.ts").text();
+    expect(
+      lockedBeforeSnapshot(bodyOf(src, "updateAgent"), "select: AGENT_SELECT"),
+    ).toBe("locked");
+  });
+
+  test("replaceAgentToolSelections locks the agent before reading the grants it records", async () => {
+    const src = await Bun.file("src/modules/agents/service.ts").text();
+    expect(
+      lockedBeforeSnapshot(
+        bodyOf(src, "replaceAgentToolSelections"),
+        "buildToolSelectionView(db, agentId)).grants",
+      ),
+    ).toBe("locked");
+  });
+});
+
 describe.skipIf(!dbUp)("the agent family records its own changes", () => {
   beforeAll(async () => {
     if (!su) return;
@@ -455,6 +516,32 @@ describe.skipIf(!dbUp)("the agent family records its own changes", () => {
     const got = await rows();
     expect(got.map((r) => r.action)).toEqual(["agent.update"]);
     expect(got[0]?.actorType).toBe("mcp");
+  });
+
+  test("a deadline the operator set reaches the row as the deadline, not as an empty object", async () => {
+    // `readBehaviorSettings` hands back `observability.fullDetailUntil` as a `Date`, and the seam's
+    // `truncForAudit` walks objects by their enumerable entries — a Date has none, so it lands as
+    // `{}` and the row says the window moved without saying to when.
+    const until = new Date(Date.now() + 3_600_000).toISOString();
+    const agent = await seedAgent({
+      settings: { observability: { logToolValues: false } },
+    });
+    await clearAudit();
+
+    await updateAgent(
+      ctx(),
+      BigInt(agent.id),
+      {
+        settings: {
+          observability: { logToolValues: false, fullDetailUntil: until },
+        },
+      },
+      appDb,
+    );
+
+    const after = (await rows())[0]?.after as Record<string, unknown>;
+    const obs = after?.observability as Record<string, unknown>;
+    expect(obs.fullDetailUntil).toBe(until);
   });
 
   // ── the row shares the mutation's transaction ──

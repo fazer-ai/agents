@@ -65,6 +65,16 @@ function same(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
+// The reader's output as the row can actually hold it. It is not all plain data — `observability`
+// carries `fullDetailUntil` as a `Date`, and `truncForAudit` walks objects by their enumerable
+// entries, of which a Date has none: it reaches the column as `{}`, so the row says the deadline
+// moved and cannot say to what (measured). The round-trip is the same conversion the comparison
+// above already performs, applied to what is STORED as well as to what is compared, and it answers
+// for the whole family rather than for the one block that has a Date today.
+function jsonish(v: unknown): Record<string, unknown> {
+  return JSON.parse(JSON.stringify(v ?? {})) as Record<string, unknown>;
+}
+
 // The settings bag arrives whole from every door, so "which block did the operator touch" is a
 // question only the comparison answers. Projecting the bag itself would put an agent's entire
 // configuration into both halves of every row that moved one number.
@@ -72,8 +82,8 @@ function changedBlocks(
   before: unknown,
   after: unknown,
 ): { before: Record<string, unknown>; after: Record<string, unknown> } {
-  const b = readBehaviorSettings(before) as unknown as Record<string, unknown>;
-  const a = readBehaviorSettings(after) as unknown as Record<string, unknown>;
+  const b = jsonish(readBehaviorSettings(before));
+  const a = jsonish(readBehaviorSettings(after));
   const outBefore: Record<string, unknown> = {};
   const outAfter: Record<string, unknown> = {};
   for (const key of new Set([...Object.keys(b), ...Object.keys(a)])) {

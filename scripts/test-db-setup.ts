@@ -2,7 +2,7 @@
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { Client } from "pg";
-import { appliedMigrations, foreignMigrations } from "@/tests/db-gate";
+import { reprovisionReasons } from "@/tests/db-gate";
 import { checkoutRootFrom, testDbNameFor, withDbName } from "@/tests/db-name";
 
 // Provisions (idempotently) the DEDICATED test database the integration suite runs against, so
@@ -81,12 +81,12 @@ async function main() {
     // something is still connected, Postgres refusing is the right answer, not killing a suite that
     // is mid-run.
     if (rowCount !== 0) {
-      const foreign = await foreignOf(targetSuUrl);
-      if (foreign.length > 0) {
+      const reasons = await reprovisionOf(targetSuUrl);
+      if (reasons.length > 0) {
         console.log(
-          `test-db-setup: "${dbName}" carries ${foreign.length} migration(s) this tree does not have, so it is being reprovisioned:`,
+          `test-db-setup: "${dbName}" cannot be deployed onto (${reasons.length} reason(s)), so it is being reprovisioned:`,
         );
-        for (const m of foreign) console.log(`  ${m}`);
+        for (const m of reasons) console.log(`  ${m}`);
         await maint.query(`DROP DATABASE "${dbName}"`);
         await maint.query(`CREATE DATABASE "${dbName}"`);
         console.log(`test-db-setup: recreated database "${dbName}"`);
@@ -137,8 +137,8 @@ function localMigrations(): string[] {
 }
 
 // `_prisma_migrations` may not exist at all (a database created and never migrated), and that is a
-// state and not an error: nothing is foreign in it.
-async function foreignOf(url: string): Promise<string[]> {
+// state and not an error: there is nothing to undo in it, only migrations to apply.
+async function reprovisionOf(url: string): Promise<string[]> {
   const client = new Client({ connectionString: url });
   await client.connect();
   try {
@@ -150,7 +150,7 @@ async function foreignOf(url: string): Promise<string[]> {
       `SELECT migration_name, finished_at, rolled_back_at FROM _prisma_migrations
        WHERE to_regclass('_prisma_migrations') IS NOT NULL`,
     );
-    return foreignMigrations(appliedMigrations(rows), localMigrations());
+    return reprovisionReasons(rows, localMigrations());
   } catch {
     return [];
   } finally {

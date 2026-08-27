@@ -6,7 +6,9 @@ import {
   appliedMigrations,
   DB_GATE_OPT_OUT,
   foreignMigrations,
+  type MigrationRow,
   pendingMigrations,
+  reprovisionReasons,
   schemaOutOfStep,
 } from "../db-gate";
 import { checkoutRootFrom, testDbNameFor, withDbName } from "../db-name";
@@ -196,6 +198,20 @@ describe("the test database's name belongs to ONE checkout", () => {
   });
 });
 
+// The ledger, in the shape the gate reads it. A row is not a name: it also says whether the apply
+// FINISHED and whether someone resolved it as rolled back.
+const done = (...names: string[]) =>
+  names.map((migration_name) => ({
+    migration_name,
+    finished_at: new Date(),
+    rolled_back_at: null,
+  }));
+const halfWay = (migration_name: string) => ({
+  migration_name,
+  finished_at: null,
+  rolled_back_at: null,
+});
+
 describe("a database that is not this tree's database", () => {
   const local = ["20260101000000_a", "20260102000000_b"];
 
@@ -218,7 +234,7 @@ describe("a database that is not this tree's database", () => {
       },
     ];
     expect(appliedMigrations(rows)).toEqual(["20260101000000_a"]);
-    expect(schemaOutOfStep("x_test", appliedMigrations(rows), local)).toContain(
+    expect(schemaOutOfStep("x_test", rows, local)).toContain(
       "20260102000000_b",
     );
   });
@@ -235,7 +251,7 @@ describe("a database that is not this tree's database", () => {
   });
 
   test("a matching database is not stopped", () => {
-    expect(schemaOutOfStep("x_test", local, local)).toBeNull();
+    expect(schemaOutOfStep("x_test", done(...local), local)).toBeNull();
   });
 
   // The direction that produced the incident: applied, and the tree has never heard of it.
@@ -244,7 +260,7 @@ describe("a database that is not this tree's database", () => {
     expect(foreignMigrations(applied, local)).toEqual([
       "20260103000000_from_another_branch",
     ]);
-    const message = schemaOutOfStep("x_test", applied, local);
+    const message = schemaOutOfStep("x_test", done(...applied), local);
     expect(message).toContain("20260103000000_from_another_branch");
     expect(message).toContain("x_test");
     expect(message).toContain("db:test:setup");
@@ -256,7 +272,7 @@ describe("a database that is not this tree's database", () => {
   test("a migration the database has never been given is named too", () => {
     const applied = [local[0] as string];
     expect(pendingMigrations(applied, local)).toEqual(["20260102000000_b"]);
-    expect(schemaOutOfStep("x_test", applied, local)).toContain(
+    expect(schemaOutOfStep("x_test", done(...applied), local)).toContain(
       "20260102000000_b",
     );
   });
@@ -266,7 +282,7 @@ describe("a database that is not this tree's database", () => {
   test("both directions are reported in one refusal, and told apart", () => {
     const message = schemaOutOfStep(
       "x_test",
-      ["20260101000000_a", "20260199000000_foreign"],
+      done("20260101000000_a", "20260199000000_foreign"),
       local,
     ) as string;
     expect(message).toContain("20260199000000_foreign");
@@ -280,7 +296,9 @@ describe("a database that is not this tree's database", () => {
   // the directory in whatever order the filesystem lists, so a set difference that depended on
   // either would report a healthy database as divergent.
   test("neither side's order is part of the answer", () => {
-    expect(schemaOutOfStep("x_test", [...local].reverse(), local)).toBeNull();
+    expect(
+      schemaOutOfStep("x_test", done(...[...local].reverse()), local),
+    ).toBeNull();
   });
 
   // An empty applied set is a database that exists and has never been migrated, which is what a
@@ -295,6 +313,102 @@ describe("a database that is not this tree's database", () => {
   // found everything, so an empty tree has to be the one case that cannot refuse.
   test("an empty tree asks nothing of any database", () => {
     expect(schemaOutOfStep("x_test", [], [])).toBeNull();
+  });
+
+  // The blind spot the FIRST fix opened, and the reason `schemaOutOfStep` takes rows rather than an
+  // applied set: excluding a half-applied row from `applied` also excludes it from every comparison
+  // built on `applied`, so a foreign migration that died half-way reads as a database in step.
+  // Measured on the real ledger before this: 57 rows, 56 counted, foreign empty, verdict up to date.
+  test("a migration that died half-way is named, not merely excluded", () => {
+    const rows = [...done(...local), halfWay("20260199000000_died_elsewhere")];
+    const message = schemaOutOfStep("x_test", rows, local) as string;
+    expect(message).toContain("20260199000000_died_elsewhere");
+    expect(message).toContain("never finished");
+  });
+
+  test("a local migration that died half-way stops the run too", () => {
+    const rows = [done(local[0] as string)[0], halfWay(local[1] as string)];
+    expect(schemaOutOfStep("x_test", rows as MigrationRow[], local)).toContain(
+      local[1] as string,
+    );
+  });
+});
+
+// THE DOOR HAS TO OPEN ON EVERY STATE THE WALL REFUSES. `prisma migrate deploy` is the right repair
+// for exactly one of them — a database simply BEHIND this tree, in this tree's own order. The rest
+// it either cannot fix or fixes into a schema a fresh database would never have, and a refusal
+// whose prescribed command cannot act on it is just a slower way to be stuck.
+describe("which states cannot be deployed onto", () => {
+  const local = ["20260101000000_a", "20260102000000_b", "20260103000000_c"];
+
+  test("a database in step, and one merely behind, are deployed onto", () => {
+    expect(reprovisionReasons(done(...local), local)).toEqual([]);
+    // Behind by the NEWEST migration: deploying applies it last, exactly as a fresh build would.
+    expect(
+      reprovisionReasons(done("20260101000000_a", "20260102000000_b"), local),
+    ).toEqual([]);
+  });
+
+  test("a foreign migration cannot be undone by deploying", () => {
+    const reasons = reprovisionReasons(
+      done(...local, "20260199000000_theirs"),
+      local,
+    );
+    expect(reasons).toHaveLength(1);
+    expect(reasons[0]).toContain("20260199000000_theirs");
+  });
+
+  test("a half-applied row is P3009, which deploying answers with a refusal", () => {
+    const reasons = reprovisionReasons(
+      [...done(...local), halfWay("20260104000000_d")],
+      local,
+    );
+    expect(reasons).toHaveLength(1);
+    expect(reasons[0]).toContain("never finished");
+  });
+
+  test("a rolled-back row counts the same way", () => {
+    const reasons = reprovisionReasons(
+      [
+        ...done(...local),
+        {
+          migration_name: "20260104000000_d",
+          finished_at: new Date(),
+          rolled_back_at: new Date(),
+        },
+      ],
+      local,
+    );
+    expect(reasons).toHaveLength(1);
+  });
+
+  // The merge case: a branch applied `_c`, then main brought in `_b`, which sorts BEFORE it.
+  // Deploying now runs `_b` after `_c`, and no fresh database would ever be built that way.
+  test("a pending migration that sorts before an applied one is not deployed onto", () => {
+    const reasons = reprovisionReasons(
+      done("20260101000000_a", "20260103000000_c"),
+      local,
+    );
+    expect(reasons).toHaveLength(1);
+    expect(reasons[0]).toContain("20260102000000_b");
+    expect(reasons[0]).toContain("sorts later");
+  });
+
+  // Order is decided by the FILENAME and by nothing else, and in this repo three migrations share
+  // the timestamp `20260827000000` — so which branch sorts first has nothing to do with which was
+  // written first, and the suffix is what decides.
+  test("the order that matters is the filename's, suffix included", () => {
+    const sameStamp = ["20260827000000_a_first", "20260827000000_b_second"];
+    expect(
+      reprovisionReasons(done("20260827000000_b_second"), sameStamp),
+    ).toHaveLength(1);
+    expect(
+      reprovisionReasons(done("20260827000000_a_first"), sameStamp),
+    ).toEqual([]);
+  });
+
+  test("an empty database is provisioned, not reprovisioned", () => {
+    expect(reprovisionReasons([], local)).toEqual([]);
   });
 });
 

@@ -2,8 +2,8 @@ import "@testing-library/jest-dom";
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import {
-  appliedMigrations,
   DB_GATE_OPT_OUT,
+  type MigrationRow,
   missingDbConfig,
   PROBE_BACKSTOP_MS,
   probePoolConfig,
@@ -124,11 +124,6 @@ if (process.env[DB_GATE_OPT_OUT] !== "1") {
     // has no `_prisma_migrations` at all, and that is a real state (a fresh CREATE DATABASE), not an
     // error. It reports as every local migration being unapplied, which is the truth and names the
     // same command.
-    type MigrationRow = {
-      migration_name: string;
-      finished_at: Date | null;
-      rolled_back_at: Date | null;
-    };
     const rows = await withDeadline(
       reader.$queryRaw<MigrationRow[]>`
         SELECT migration_name, finished_at, rolled_back_at FROM _prisma_migrations
@@ -136,7 +131,6 @@ if (process.env[DB_GATE_OPT_OUT] !== "1") {
       PROBE_BACKSTOP_MS,
       "TEST_MIGRATION_DATABASE_URL",
     ).catch(() => [] as MigrationRow[]);
-    const applied = appliedMigrations(rows);
     const local = readdirSync(join(REPO_ROOT, "prisma", "migrations"), {
       withFileTypes: true,
     })
@@ -144,7 +138,7 @@ if (process.env[DB_GATE_OPT_OUT] !== "1") {
       .map((e) => e.name);
     const drift = schemaOutOfStep(
       new URL(suUrl).pathname.replace(/^\//, ""),
-      applied,
+      rows,
       local,
     );
     if (drift) throw new Error(`tests: ${drift}`);

@@ -168,16 +168,45 @@ export function withDeadline<T>(
 // database left partially migrated reads as matching this tree and the suite runs against a schema
 // nobody finished writing. This is the distinction `prisma migrate status` draws when it reports a
 // FAILED migration, and the one part of its answer worth keeping.
-export function appliedMigrations(
-  rows: {
-    migration_name: string;
-    finished_at: Date | null;
-    rolled_back_at: Date | null;
-  }[],
-): string[] {
+export type MigrationRow = {
+  migration_name: string;
+  finished_at: Date | null;
+  rolled_back_at: Date | null;
+};
+
+export function appliedMigrations(rows: MigrationRow[]): string[] {
   return rows
     .filter((r) => r.finished_at !== null && r.rolled_back_at === null)
     .map((r) => r.migration_name);
+}
+
+// The rows `appliedMigrations` drops, which are not nothing: an apply that died half-way leaves the
+// row with `finished_at` still null, and `prisma migrate deploy` then refuses the whole database
+// with P3009 rather than continuing. Dropping them from the applied set and stopping there is how
+// the FIRST version of this check came to call such a database up to date — measured, with a
+// half-applied foreign row planted in a real ledger: 57 rows, 56 counted, `foreignMigrations`
+// empty, verdict "up to date". So they are named separately rather than merely excluded.
+export function failedMigrations(rows: MigrationRow[]): string[] {
+  return rows
+    .filter((r) => r.finished_at === null || r.rolled_back_at !== null)
+    .map((r) => r.migration_name)
+    .sort();
+}
+
+// A migration this tree has not applied yet whose NAME sorts before one it already applied. Prisma
+// applies pending migrations in filename order and nothing else, so deploying this one now runs it
+// AFTER the newer one — an order no fresh database would ever produce, and it is decided by the
+// filename rather than by when anybody wrote it. Not hypothetical in this repo: three migrations
+// share the timestamp `20260827000000` and are told apart by their suffixes alone, so which of two
+// branches sorts first has nothing to do with which was written first.
+export function outOfOrderPending(
+  applied: string[],
+  local: string[],
+): string[] {
+  const pending = pendingMigrations(applied, local);
+  const newest = [...applied].sort().pop();
+  if (newest === undefined) return [];
+  return pending.filter((p) => p < newest);
 }
 
 export function foreignMigrations(
@@ -196,14 +225,22 @@ export function pendingMigrations(
   return local.filter((m) => !done.has(m)).sort();
 }
 
+// Takes the LEDGER, not an applied set someone already filtered. The difference is the whole of
+// what the second review round found: a caller handed the filtered names cannot see the rows that
+// were filtered out, and a caller that has to remember to pass them separately is a caller that
+// will not.
 export function schemaOutOfStep(
   dbName: string,
-  applied: string[],
+  rows: MigrationRow[],
   local: string[],
 ): string | null {
+  const applied = appliedMigrations(rows);
+  const failed = failedMigrations(rows);
   const foreign = foreignMigrations(applied, local);
   const pending = pendingMigrations(applied, local);
-  if (foreign.length === 0 && pending.length === 0) return null;
+  if (foreign.length === 0 && pending.length === 0 && failed.length === 0) {
+    return null;
+  }
   const lines = [
     `the test database "${dbName}" does not match this tree, so failures below would be about its schema and not about the code.`,
   ];
@@ -219,6 +256,12 @@ export function schemaOutOfStep(
       ...pending.map((m) => `    ${m}`),
     );
   }
+  if (failed.length > 0) {
+    lines.push(
+      `  recorded but never finished, or resolved as rolled back:`,
+      ...failed.map((m) => `    ${m}`),
+    );
+  }
   // One command for both directions, and it has to REPROVISION rather than deploy: a foreign
   // migration is already recorded in `_prisma_migrations`, so nothing is pending and a plain
   // `migrate deploy` is a no-op that leaves the schema exactly as wrong as it found it.
@@ -227,3 +270,28 @@ export function schemaOutOfStep(
 }
 
 const RESYNC = "bun run db:test:setup";
+
+// WHY THE COMMAND ABOVE HAS TO REPROVISION AND NOT DEPLOY, per state. Deploying is only ever the
+// right repair for a database that is simply BEHIND this tree, in this tree's own order. Every
+// other state below is one `prisma migrate deploy` either cannot fix or fixes into a schema a fresh
+// database would not have, so the answer is to throw the database away — which costs nothing,
+// because it holds test fixtures and nothing else.
+export function reprovisionReasons(
+  rows: MigrationRow[],
+  local: string[],
+): string[] {
+  const applied = appliedMigrations(rows);
+  const reasons: string[] = [];
+  for (const m of foreignMigrations(applied, local)) {
+    // Already recorded, so nothing is pending and whatever it dropped stays dropped.
+    reasons.push(`${m} (applied here, absent from this tree)`);
+  }
+  for (const m of failedMigrations(rows)) {
+    // `migrate deploy` refuses the whole database with P3009 while this row stands.
+    reasons.push(`${m} (recorded but never finished)`);
+  }
+  for (const m of outOfOrderPending(applied, local)) {
+    reasons.push(`${m} (would be applied after a migration that sorts later)`);
+  }
+  return reasons;
+}

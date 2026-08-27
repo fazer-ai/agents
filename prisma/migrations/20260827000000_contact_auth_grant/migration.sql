@@ -29,6 +29,16 @@ CREATE TABLE "contact_auth_grants" (
 -- prefix (see tests/prisma/tenant-index-redundancy.test.ts).
 CREATE UNIQUE INDEX "contact_auth_grants_tenant_id_agent_id_contact_id_key" ON "contact_auth_grants"("tenant_id", "agent_id", "contact_id");
 
+-- CreateIndex
+-- Postgres does not index a foreign key on its own, and both of the cascades below probe this table
+-- by a column the unique index above cannot serve (it leads with tenant_id): deleting an agent, and
+-- the contact cleanup that runs when a Chatwoot deployment is disconnected. Without these the
+-- cascade falls back to a sequential scan per deleted row.
+CREATE INDEX "contact_auth_grants_agent_id_idx" ON "contact_auth_grants"("agent_id");
+
+-- CreateIndex
+CREATE INDEX "contact_auth_grants_contact_id_idx" ON "contact_auth_grants"("contact_id");
+
 -- AddForeignKey
 ALTER TABLE "contact_auth_grants" ADD CONSTRAINT "contact_auth_grants_tenant_id_fkey" FOREIGN KEY ("tenant_id") REFERENCES "tenants"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 

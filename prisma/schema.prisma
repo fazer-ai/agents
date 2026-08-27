@@ -490,6 +490,12 @@ model ContactAuthGrant {
   contact Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
 
   @@unique([tenantId, agentId, contactId])
+  // Postgres does not index a foreign key on its own, and both of these are ON DELETE CASCADE: a
+  // deleted agent, and the contact cleanup that runs when a Chatwoot deployment is disconnected,
+  // probe this table by `agent_id` and by `contact_id`. The unique above starts with `tenant_id`, so
+  // it serves neither, and the cascade would fall back to a sequential scan per deleted row.
+  @@index([agentId])
+  @@index([contactId])
   @@map("contact_auth_grants")
 }
 

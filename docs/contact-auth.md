@@ -408,6 +408,14 @@ mutation of one contact's row runs alone, in a queue keyed by that contact, so r
 rule and acting on it is one step. Split in two, an allow that passed the check a moment before the
 refusal arrived goes on to write anyway, and the row comes back for the rest of the TTL.
 
+**The ordering is per PROCESS**, like every other piece of in-process state in this module and like the
+`ingest:<threadId>` section the whole runtime already depends on (`docs/deploy.md`, "Single replica
+(or one leader)"). Run the extra web replicas that deploy note allows and the guarantee narrows to
+what each one saw: a refusal recorded on one replica does not order an allow in flight on another, so
+that allow can be stored and the contact served for the rest of the TTL. The bound is the same TTL,
+and closing it properly means coordinating grant mutations in Postgres — the same post-MVP path
+`deploy.md` names for the rest of this class.
+
 The READ is not in that queue, and that is the boundary of the guarantee rather than a gap in it. A
 refusal in flight is already covered, because it is remembered before its delete. What a queue would
 add is ordering against a refusal that lands after the read started, and "the read came first" and
@@ -461,8 +469,9 @@ apart from "we did not ask".
 
 ## In-process state (`state.ts`)
 
-Not a cache. Two things live here, both in memory (single-replica invariant), both harmless to
-lose on a restart:
+Not a cache. Three things live here, all in memory (single-replica invariant). The first two are
+harmless to lose on a restart; the third is the one the grants added, and losing it costs a stale
+grant the TTL still bounds:
 
 - **Single-flight** per `${tenantId}:${agentId}:${contactDbId}:${request}`: concurrent deliveries of
   the SAME asking coalesce into one request; the leader acts on the verdict, followers are consumed
@@ -478,6 +487,12 @@ lose on a restart:
 - **Notice cooldown** per `${tenantId}:${agentId}:${conversationRowId}:${notice}`, where `notice` is
   the customer copy or the operator note: when a refusal was last voiced. Swept actively (a rescheduled, unref'd timer wakes at the earliest lapse) and capped in
   size. Stores ids and timestamps only.
+- **What is known about refusals** per `${tenantId}:${agentId}:${contactDbId}` (`grants.ts`): when a
+  refusal was last asked for, and whether a bookkeeping write about that contact is unconfirmed. Ids
+  and timestamps, capped by entry count. It is also the queue that serializes this contact's grant
+  mutations, which is the same `withKeyedQueue` the ingest section uses and carries the same
+  single-process scope. Losing it on a restart costs a stale grant, bounded by the TTL, and never a
+  wrong refusal.
 
 ## Observability
 

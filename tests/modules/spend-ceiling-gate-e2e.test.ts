@@ -11,6 +11,7 @@ import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import { runAgentNudge } from "@/graph/nudge";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
@@ -305,6 +306,45 @@ describe.skipIf(!dbUp)("the spend ceiling (webhook e2e)", () => {
     const note = s.notesOn(9401)[0]?.content ?? "";
     expect(note).toContain("1.200");
     expect(note).toContain("1.000");
+  });
+
+  // ONE LINE PER REFUSED OCCASION, and for a proactive nudge the occasion is the JOB, not the
+  // attempt. `over-ceiling` is a repairable refusal, so its caller reschedules it every fifteen
+  // minutes for two hours (`nudge-retry.ts`): announcing per attempt paged the alert channels eight
+  // times for one follow-up that could not go out, multiplied by every pending job the tenant had.
+  test("a nudge refused by the ceiling is announced once, however often it is retried", async () => {
+    await setCeiling({ enabled: true, monthlyInboxTokens: 1000 });
+    await spend("inbox", 1200);
+    await seedConversation(9410);
+    await seedConversation(9411);
+    const s = stubChatwoot();
+    const nudge = (convId: number) =>
+      runAgentNudge({
+        tenantId,
+        threadId: `${tenantId}:${instanceId}:${convId}`,
+        nudge: { source: "followup", kind: "inactivity", step: 1 },
+        base: appDb,
+        deps: {
+          makeClient: s.makeClient as never,
+          makeModel: () => {
+            throw new Error("the model must not be invoked over the ceiling");
+          },
+          checkpointer: new MemorySaver(),
+          persistUsage: async () => {},
+        },
+      });
+
+    // The ladder, as the scheduler walks it: same job, same wall, three attempts.
+    expect(await nudge(9410)).toBe("over-ceiling");
+    expect(await nudge(9410)).toBe("over-ceiling");
+    expect(await nudge(9410)).toBe("over-ceiling");
+    expect(await ceilingRows(9410)).toHaveLength(1);
+
+    // A DIFFERENT conversation is a different occasion, so the window that quiets the retries above
+    // must not quiet it. Without this, a key that dropped the conversation would pass the assertion
+    // before it while silencing the whole tenant.
+    expect(await nudge(9411)).toBe("over-ceiling");
+    expect(await ceilingRows(9411)).toHaveLength(1);
   });
 
   test("the refusal is on the record, at error level", async () => {

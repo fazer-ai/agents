@@ -80,9 +80,18 @@ export const SPEND_CEILING_DEFAULTS: SpendCeilingConfig = {
 export const SPEND_CEILING_TOKENS_MAX = 1_000_000_000_000;
 export const SPEND_CEILING_NOTICE_COOLDOWN_MAX_SECONDS = 3600;
 
-// A token ceiling is a count, so anything that is not a non-negative whole number is not one. CLAMPS
-// rather than throws, like every other block in this bag: a malformed write must never be able to
-// break the webhook, and the safe direction here is the DEFAULT, never "no ceiling".
+// A token ceiling is a count, so anything that is not a non-negative whole number is not one. FALLS
+// BACK rather than throws, like every other block in this bag: a malformed write must never be able
+// to break the webhook.
+//
+// And it falls back to the DEFAULT, which for the two token fields is `0`, which is "no ceiling on
+// this half". Said plainly because it is the direction the whole feature takes and it deserves to
+// be read as a choice rather than found as a surprise: a `-1` that reached this column out of band
+// leaves the block enabled and bounding nothing. The alternative is to invent a positive number,
+// and a ceiling nobody typed is a ceiling that silences an agent for real customers on the strength
+// of corrupted data — the same trade the unreadable-ledger path already makes in the same
+// direction, one level up. It is not silent, either: the console renders exactly what this returns,
+// so an operator looking at the ceiling screen sees the zero.
 //
 // AND IT CLAMPS TO THE MAXIMUM THE WRITER ENFORCES, so this reader can never return a block the
 // writer would refuse. That is not the two sides collapsing into one question — one still answers

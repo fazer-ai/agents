@@ -144,6 +144,13 @@ is what ends the bot's attribution and after it the ownership fence would rightl
 the bot tried to say. The note goes **last**, because it is the only one of the three that can report
 whether the handoff actually happened.
 
+The whole sequence is **single-flighted per conversation**, not just claimed per notice. The claims
+make each write happen once and say nothing about order, and Chatwoot produces two deliveries of one
+message by design (the conversation's assigned bot and the inbox's): the second caller would find
+the copy's window already held, skip to the handoff, and open the conversation while the first was
+still awaiting its send — at which point the ownership fence correctly withholds a sentence nobody
+else was going to say. The second caller now awaits the first and inherits its answer.
+
 And every one of those acts is fenced by the **command** as well as by ownership, because they are
 different questions. `/reset` retires the burst, and a flush already claimed is past every cancel;
 ownership cannot stand in for that, since the reset hands the conversation back to the bot and the
@@ -181,10 +188,19 @@ them, so a human-owned conversation, a silenced agent, a redirect or an hour out
 consumes the delivery first and this billed call is the only thing that happened. It cannot
 double-write, because the warning's window is claimed once and a gate that follows writes nothing.
 
-That window is per **(tenant, source, month)**. The month is part of the identity because the
-warning is a statement about a month, and six hours is longer than the gap between the last message
-of one month and the first of the next: a window that outlived the rollover would suppress the first
-warning of a month whose ledger reads zero. **Guardrails deliberately do
+That window is per **(tenant, source, month)**, and the month comes off the **verdict's own**
+evaluation instant rather than the announcer's clock, so a verdict read at 23:59:59.9 and announced
+at 00:00:00.1 cannot report the old month's figures under the new month's key. The month is part of
+the identity because the warning is a statement about a month, and six hours is longer than the gap
+between the last message of one month and the first of the next: a window that outlived the rollover
+would suppress the first warning of a month whose ledger reads zero.
+
+**The `over` line has a window only where the refusal is retried.** For a customer message it has
+none, because each message is its own refusal and each is a customer left unanswered. A scheduled
+nudge is not: it comes back every fifteen minutes for two hours (`nudge-retry.ts`) against a wall
+that is temporary by construction, so one follow-up that cannot go out paged the alert channels
+eight times and fifty pending jobs paged them four hundred. `runAgentNudge` therefore announces under
+a per-conversation occasion window sized to that ladder. **Guardrails deliberately do
 not**: on the output direction the reply is already written and paid for, so refusing there posts it
 unscreened or drops a reply the customer is waiting for, and a ceiling that switched moderation off
 would let a budget decide a safety question. Memory compaction is out for a sharper reason: skipping
@@ -223,7 +239,15 @@ message re-asks having lost nothing but the tokens of one turn.
 `tenant.settings.spendCeiling`, read leniently at runtime (`readSpendCeilingConfig`, clamps and never
 throws, so a malformed bag cannot break the webhook) and validated strictly on the way in
 (`spendCeilingSettingsSchema`, so a ceiling typed with an extra zero comes back as a 422 the operator
-can read).
+can read). The reader never returns a block the writer would refuse, because `updateSpendCeiling`
+merges the stored block with the operator's patch and validates the merge: a value past a maximum
+would otherwise 422 every save on the screen over a field nobody touched.
+
+A malformed count falls back to its **default**, and for the two token fields that default is `0`,
+which is no ceiling on that half. That is the same direction the unreadable-ledger rule above takes:
+a ceiling nobody typed is a ceiling that silences an agent for real customers on the strength of
+corrupted data. It is not silent either — the console renders exactly what the reader returns, so
+the ceiling screen shows the zero.
 
 | field | default | meaning |
 | --- | --- | --- |

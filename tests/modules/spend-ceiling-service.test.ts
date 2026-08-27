@@ -227,6 +227,33 @@ describe.skipIf(!dbUp)("the spend ceiling against the ledger", () => {
       expect(v.ceilingTokens).toBe(2000);
     });
 
+    // THE `now` IS THE WINDOW, and it has to be read from the argument rather than from the clock.
+    // The August cases above cannot prove that while the suite itself runs in August: the two agree,
+    // so a verdict that ignored `now` entirely would pass every one of them. July is where they
+    // disagree, and the 9,000,001-token row seeded on the 31st is what makes the difference loud.
+    test("the month asked about is the month summed, not the month it is run in", async () => {
+      const cfg = {
+        ...(await readTenantSpendCeiling(tenantId, appDb)),
+        enabled: true,
+        monthlyInboxTokens: 2000,
+      };
+      const july = await spendCeilingVerdict({
+        tenantId,
+        source: "inbox",
+        base: appDb,
+        now: new Date("2026-07-15T00:00:00.000Z"),
+        cfg,
+      });
+      // July's 9,000,001 plus August's 2,250: the window is `since`, open at the top, because the
+      // month it is ever asked about in production is the current one and that has no future. What
+      // matters here is only that it is not 2,250 — a verdict reading its own clock would sum
+      // August alone, and the suite runs in August.
+      expect(july.usedTokens).toBe(9_002_251);
+      // ...and the verdict says which instant it answered for, because the announcement keys its
+      // window off that and not off its own clock.
+      expect(july.evaluatedAt.toISOString()).toBe("2026-07-15T00:00:00.000Z");
+    });
+
     // The two halves do not borrow from each other: the same ledger, the same month, opposite answers.
     test("the playground's own spending does not close the inbox", async () => {
       const cfg = {

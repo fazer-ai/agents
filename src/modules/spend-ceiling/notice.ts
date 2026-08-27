@@ -53,7 +53,36 @@ export interface SpendCeilingAnnounceParams {
 // the month is spent are each evaluated, and told once per window. The claim mechanism is
 // contact-auth's, under a key of this feature's own — it is a per-conversation notice cooldown and
 // nothing about it is specific to that gate.
+// ONE SEQUENCE AT A TIME PER CONVERSATION. The claims below make each of the three writes happen
+// once; they do not order them against a SECOND delivery of the same moment, and Chatwoot produces
+// those by design (a message reaches the conversation's assigned bot and the inbox's, two deliveries
+// with two ids). Without this, the second caller finds the copy's window already held, skips
+// straight to the handoff, and opens the conversation while the first is still awaiting its send —
+// and the ownership fence then correctly withholds a sentence nobody else is going to say. The
+// second caller now awaits the first and inherits its answer, which is what "the conversation is
+// told once" has to mean when two routes are telling it.
+const inFlight = new Map<string, Promise<{ handedOff: boolean }>>();
+
 export async function announceSpendCeilingOnConversation(
+  params: SpendCeilingAnnounceParams,
+): Promise<{ handedOff: boolean }> {
+  const flightKey = `spend_ceiling:${params.tenantId}:${params.conversationRowId}`;
+  const existing = inFlight.get(flightKey);
+  if (existing) return existing;
+  const flight = runSpendCeilingAnnouncement(params).finally(() => {
+    inFlight.delete(flightKey);
+  });
+  inFlight.set(flightKey, flight);
+  return flight;
+}
+
+// NOTE: Test isolation only, like contact-auth's own state reset. Production never clears this: a
+// flight removes itself when it settles.
+export function clearSpendCeilingFlights(): void {
+  inFlight.clear();
+}
+
+async function runSpendCeilingAnnouncement(
   params: SpendCeilingAnnounceParams,
 ): Promise<{ handedOff: boolean }> {
   const { tenantId, conversationRowId, cfg, verdict } = params;

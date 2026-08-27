@@ -81,7 +81,16 @@ export interface SpendCeilingParams {
   cfg?: SpendCeilingConfig;
 }
 
-export type SpendCeilingResult = SpendVerdict & { cfg: SpendCeilingConfig };
+// THE VERDICT CARRIES THE INSTANT IT WAS EVALUATED AT, because everything downstream of it is about
+// a MONTH and the answer to "which month" is this timestamp, not the one the reader happens to hold.
+// A verdict read at 23:59:59.9 and announced at 00:00:00.1 would otherwise report the old month's
+// figures under the new month's warning key, and burn the new month's first window on a sentence
+// about the month that ended. Carried in the value rather than asked of every caller: five gates ask
+// this question, and a `now` each of them has to remember to pass on is the one the sixth forgets.
+export type SpendCeilingResult = SpendVerdict & {
+  cfg: SpendCeilingConfig;
+  evaluatedAt: Date;
+};
 
 // THE ASK, and what an unreadable answer means.
 //
@@ -95,11 +104,18 @@ export async function spendCeilingVerdict(
   params: SpendCeilingParams,
 ): Promise<SpendCeilingResult> {
   const base = params.base ?? basePrisma;
+  const evaluatedAt = params.now ?? new Date();
   let cfg = SPEND_CEILING_DEFAULTS;
   try {
     cfg = params.cfg ?? (await readTenantSpendCeiling(params.tenantId, base));
     if (!cfg.enabled) {
-      return { state: "allowed", usedTokens: 0, ceilingTokens: null, cfg };
+      return {
+        state: "allowed",
+        usedTokens: 0,
+        ceilingTokens: null,
+        cfg,
+        evaluatedAt,
+      };
     }
     // NO CEILING ON THIS HALF ⇒ NO READ. `0` is the operator saying this source is unbounded, and
     // the sum below could only ever be compared against a ceiling that is not there. Asked before
@@ -109,16 +125,26 @@ export async function spendCeilingVerdict(
     // `decideSpend` reports `allowed` for a null ceiling whatever the count, and the console's own
     // numbers come from `spendCeilingUsage`, which always reads both halves.
     if (ceilingFor(cfg, params.source) === null) {
-      return { state: "allowed", usedTokens: 0, ceilingTokens: null, cfg };
+      return {
+        state: "allowed",
+        usedTokens: 0,
+        ceilingTokens: null,
+        cfg,
+        evaluatedAt,
+      };
     }
-    const since = monthStart(params.now ?? new Date());
+    const since = monthStart(evaluatedAt);
     const usedTokens = await tokensUsedSince(
       params.tenantId,
       params.source,
       since,
       base,
     );
-    return { ...decideSpend({ cfg, source: params.source, usedTokens }), cfg };
+    return {
+      ...decideSpend({ cfg, source: params.source, usedTokens }),
+      cfg,
+      evaluatedAt,
+    };
   } catch (err) {
     // The fail-open above, carried out. The catch wraps BOTH reads on purpose: the settings row and
     // the ledger sum fail the same way (a pool with no free connection, a statement timeout) and a
@@ -127,7 +153,13 @@ export async function spendCeilingVerdict(
       { err, tenantId: String(params.tenantId), source: params.source },
       "spend ceiling: could not be read; letting the call through",
     );
-    return { state: "allowed", usedTokens: 0, ceilingTokens: null, cfg };
+    return {
+      state: "allowed",
+      usedTokens: 0,
+      ceilingTokens: null,
+      cfg,
+      evaluatedAt,
+    };
   }
 }
 
@@ -183,18 +215,50 @@ export function spendCeilingWarnKey(
 // CLAIMING IS THE DECISION, which is why this is not a predicate: asking twice would consume the
 // window twice, and a caller that asked before deciding would silence the line it was about to
 // write. So it returns the event, or null, having already spent the window it needed.
+// A refusal the CALLER RETRIES, and the span its ladder covers. The `over` line is one per refused
+// OCCASION rather than one per attempt, and for the webhook those are the same thing: an occasion is
+// a customer message, asked once. A scheduled nudge is not — it comes back every fifteen minutes for
+// two hours against a wall that is temporary by construction, so one follow-up that cannot go out
+// paged the alert channels eight times, and a tenant holding fifty pending jobs paged them four
+// hundred. Same reasoning as the warning's own window, applied where the repetition comes from the
+// ladder instead of from the traffic.
+export interface RetriedOccasion {
+  key: string;
+  windowMs: number;
+}
+
+export function spendCeilingOverKey(
+  tenantId: bigint,
+  source: UsageSource,
+  occasion: string,
+): string {
+  return `spend_ceiling_over:${tenantId}:${source}:${occasion}`;
+}
+
 export function spendCeilingAnnouncement(
-  result: SpendVerdict,
+  result: SpendVerdict & { evaluatedAt?: Date },
   source: UsageSource,
   tenantId: bigint,
-  now: Date = new Date(),
+  occasion?: RetriedOccasion,
 ): FlowEvent | null {
   if (result.state === "allowed") return null;
+  // The verdict's own instant, so the window this claims belongs to the month the figures describe.
+  const now = result.evaluatedAt ?? new Date();
   if (
     result.state === "warning" &&
     !claimContactAuthNotice(
       spendCeilingWarnKey(tenantId, source, now),
       SPEND_CEILING_WARN_COOLDOWN_MS,
+    )
+  ) {
+    return null;
+  }
+  if (
+    result.state === "over" &&
+    occasion &&
+    !claimContactAuthNotice(
+      spendCeilingOverKey(tenantId, source, occasion.key),
+      occasion.windowMs,
     )
   ) {
     return null;
@@ -207,15 +271,15 @@ export function spendCeilingAnnouncement(
 // how often a line is written is the shape that ends up applied in three of them.
 export function announceSpendCeiling(
   flow: FlowContext | undefined,
-  result: SpendVerdict,
+  result: SpendVerdict & { evaluatedAt?: Date },
   source: UsageSource,
   tenantId: bigint,
-  now?: Date,
+  occasion?: RetriedOccasion,
 ): void {
   // NOTE: the claim is spent only when there is somewhere to write, so a caller with no flow
   // context does not silently consume another caller's window.
   if (!flow) return;
-  const ev = spendCeilingAnnouncement(result, source, tenantId, now);
+  const ev = spendCeilingAnnouncement(result, source, tenantId, occasion);
   if (ev) emitFlowEvent(flow, ev);
 }
 
@@ -233,13 +297,12 @@ export function announceSpendCeiling(
 // question writes nothing.
 export function announceSpendCeilingWarning(
   flow: FlowContext | undefined,
-  result: SpendVerdict,
+  result: SpendVerdict & { evaluatedAt?: Date },
   source: UsageSource,
   tenantId: bigint,
-  now?: Date,
 ): void {
   if (result.state !== "warning") return;
-  announceSpendCeiling(flow, result, source, tenantId, now);
+  announceSpendCeiling(flow, result, source, tenantId);
 }
 
 // The line the operator reads. `warning` is what makes this useful BEFORE the agent goes quiet,

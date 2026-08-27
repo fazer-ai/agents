@@ -2,6 +2,7 @@ import type { BaseMessage } from "@langchain/core/messages";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
+import { NUDGE_RETRY_BACKOFF_MS, NUDGE_RETRY_LIMIT } from "@/graph/nudge-retry";
 import { withKeyedQueue } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
@@ -576,7 +577,14 @@ export async function runAgentNudge(
     source: "inbox",
     base,
   });
-  announceSpendCeiling(flow, ceiling, "inbox", tenantId);
+  // ONE LINE PER OCCASION, not per attempt. A refused nudge is repairable, so the caller reschedules
+  // it every fifteen minutes for two hours (`nudge-retry.ts`) — and the ceiling it walks into is one
+  // unchanging fact, not eight refusals. Keyed by the conversation because that is what an occasion
+  // belongs to here, and windowed to the ladder it has to outlast.
+  announceSpendCeiling(flow, ceiling, "inbox", tenantId, {
+    key: `nudge:${conversationId}`,
+    windowMs: NUDGE_RETRY_BACKOFF_MS * NUDGE_RETRY_LIMIT,
+  });
   if (ceiling.state === "over") {
     logger.info(
       "nudge: spend ceiling reached (conv=%s used=%s ceiling=%s) — nothing was sent",

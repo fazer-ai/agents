@@ -5,6 +5,10 @@ import {
   decideSpend,
   monthStart,
 } from "@/modules/spend-ceiling/decide";
+import {
+  announceSpendCeilingOnConversation,
+  clearSpendCeilingFlights,
+} from "@/modules/spend-ceiling/notice";
 import { spendCeilingAnnouncement } from "@/modules/spend-ceiling/service";
 import {
   readSpendCeilingConfig,
@@ -295,24 +299,48 @@ describe("how often the ceiling announces itself", () => {
   // message of one month and the first of the next, so a window that carried only tenant and source
   // would suppress the first warning of a month whose ledger reads zero — on the strength of a
   // sentence about a month that has ended.
+  // The instant comes off the VERDICT, not off the reader's own clock: it is the same timestamp the
+  // ledger was summed against, so the window a warning claims always belongs to the month its
+  // figures describe.
   test("a new month is not silenced by the previous month's warning", () => {
-    const lastDay = new Date("2026-08-31T23:30:00.000Z");
-    const firstDay = new Date("2026-09-01T00:30:00.000Z");
-    expect(spendCeilingAnnouncement(warn, "inbox", 7n, lastDay)?.level).toBe(
-      "warn",
-    );
+    const at = (iso: string) => ({ ...warn, evaluatedAt: new Date(iso) });
+    expect(
+      spendCeilingAnnouncement(at("2026-08-31T23:30:00.000Z"), "inbox", 7n)
+        ?.level,
+    ).toBe("warn");
     // Same month, inside the window: still silent, which is the rule this must not weaken.
     expect(
-      spendCeilingAnnouncement(
-        warn,
-        "inbox",
-        7n,
-        new Date("2026-08-31T23:59:00.000Z"),
-      ),
+      spendCeilingAnnouncement(at("2026-08-31T23:59:00.000Z"), "inbox", 7n),
     ).toBeNull();
-    expect(spendCeilingAnnouncement(warn, "inbox", 7n, firstDay)?.level).toBe(
-      "warn",
+    expect(
+      spendCeilingAnnouncement(at("2026-09-01T00:30:00.000Z"), "inbox", 7n)
+        ?.level,
+    ).toBe("warn");
+  });
+
+  // ONE LINE PER REFUSED OCCASION. Without a window the `over` line is written every time it is
+  // asked, which is right for a customer message and wrong for a scheduled nudge: that one comes
+  // back every fifteen minutes for two hours against a wall that does not move.
+  test("a retried occasion is written once, and a fresh one is still written", () => {
+    const occasion = { key: "nudge:77", windowMs: 7_200_000 };
+    const said = [0, 1, 2, 3].map(
+      () =>
+        spendCeilingAnnouncement(over, "inbox", 7n, occasion)?.level ?? null,
     );
+    expect(said).toEqual(["error", null, null, null]);
+    // A different conversation is a different occasion, so it is not swallowed with it.
+    expect(
+      spendCeilingAnnouncement(over, "inbox", 7n, {
+        key: "nudge:78",
+        windowMs: 7_200_000,
+      })?.level,
+    ).toBe("error");
+    // ...and a caller that does NOT retry keeps writing every refusal, which is the webhook.
+    expect(
+      [0, 1].map(
+        () => spendCeilingAnnouncement(over, "inbox", 7n)?.level ?? null,
+      ),
+    ).toEqual(["error", "error"]);
   });
 
   // The two halves have separate ceilings, so they get separate windows: the playground warning
@@ -326,5 +354,131 @@ describe("how often the ceiling announces itself", () => {
   test("each tenant keeps its own window", () => {
     expect(spendCeilingAnnouncement(warn, "inbox", 7n)).not.toBeNull();
     expect(spendCeilingAnnouncement(warn, "inbox", 8n)).not.toBeNull();
+  });
+});
+
+// TWO DELIVERIES OF ONE MOMENT. Chatwoot dispatches an incoming message to the conversation's
+// assigned agent bot AND to the inbox's, which is two deliveries with two ids; the debounce flush
+// can also reach this branch alongside one of them. The per-notice claims make each write happen
+// once and say nothing about ORDER, so the second caller used to find the copy's window held, skip
+// to the handoff, and open the conversation while the first was still awaiting its send.
+describe("two over-ceiling sequences on one conversation", () => {
+  beforeEach(() => {
+    clearContactAuthState();
+    clearSpendCeilingFlights();
+  });
+
+  const ceilingCfg = {
+    ...SPEND_CEILING_DEFAULTS,
+    enabled: true,
+    monthlyInboxTokens: 100,
+    overCeilingMessage: "Orçamento do mês esgotado.",
+  };
+
+  test("the second awaits the first instead of overtaking it", async () => {
+    const order: string[] = [];
+    const copyStarted = Promise.withResolvers<void>();
+    const held = Promise.withResolvers<void>();
+
+    const run = (label: string, slowCopy: boolean) =>
+      announceSpendCeilingOnConversation({
+        tenantId: 7n,
+        conversationRowId: 99n,
+        cfg: ceilingCfg,
+        verdict: { usedTokens: 200, ceilingTokens: 100 },
+        postPublicMessage: async () => {
+          order.push(`copy:${label}`);
+          if (slowCopy) {
+            copyStarted.resolve();
+            await held.promise;
+          }
+          order.push(`copy-done:${label}`);
+          return true;
+        },
+        postPrivateNote: async () => {
+          order.push(`note:${label}`);
+          return true;
+        },
+        handoff: async () => {
+          order.push(`handoff:${label}`);
+          return true;
+        },
+      });
+
+    const first = run("A", true);
+    // Started, and parked inside the send: this is the exact window the race lived in.
+    await copyStarted.promise;
+    const second = run("B", false);
+    held.resolve();
+    const [a, b] = await Promise.all([first, second]);
+
+    // B never ran a sequence of its own; it inherited A's answer.
+    expect(order).toEqual(["copy:A", "copy-done:A", "handoff:A", "note:A"]);
+    expect(a).toEqual({ handedOff: true });
+    expect(b).toEqual(a);
+  });
+
+  // ...and the flight is per CONVERSATION. A key that dropped it would pass the test above while
+  // making every other conversation on the tenant inherit one performance of the sequence, which is
+  // the same class of bug as a notice window that forgets its subject.
+  test("two conversations do not share a flight", async () => {
+    const ran: string[] = [];
+    const parked = Promise.withResolvers<void>();
+    const started = Promise.withResolvers<void>();
+    const run = (conversationRowId: bigint, park: boolean) =>
+      announceSpendCeilingOnConversation({
+        tenantId: 7n,
+        conversationRowId,
+        cfg: ceilingCfg,
+        verdict: { usedTokens: 200, ceilingTokens: 100 },
+        postPublicMessage: async () => {
+          ran.push(`copy:${conversationRowId}`);
+          if (park) {
+            started.resolve();
+            await parked.promise;
+          }
+          return true;
+        },
+        postPrivateNote: async () => true,
+        handoff: async () => true,
+      });
+
+    const first = run(101n, true);
+    await started.promise;
+    // Different conversation, while the first is parked mid-send: it must run, not wait.
+    await run(102n, false);
+    expect(ran).toEqual(["copy:101", "copy:102"]);
+    parked.resolve();
+    await first;
+  });
+
+  // ...and the flight is released when it settles, so the NEXT refusal is not swallowed by a
+  // sequence that already finished. The claims are what make it quiet, not the flight.
+  test("a later sequence runs on its own, and the claims are what silence it", async () => {
+    const order: string[] = [];
+    const run = () =>
+      announceSpendCeilingOnConversation({
+        tenantId: 7n,
+        conversationRowId: 98n,
+        cfg: ceilingCfg,
+        verdict: { usedTokens: 200, ceilingTokens: 100 },
+        postPublicMessage: async () => {
+          order.push("copy");
+          return true;
+        },
+        postPrivateNote: async () => {
+          order.push("note");
+          return true;
+        },
+        handoff: async () => {
+          order.push("handoff");
+          return true;
+        },
+      });
+    await run();
+    await run();
+    // The handoff runs both times (it is outside the cooldown on purpose, so a failed open retries);
+    // the copy and the note are said once per window.
+    expect(order).toEqual(["copy", "handoff", "note", "handoff"]);
   });
 });

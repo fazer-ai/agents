@@ -364,10 +364,10 @@ describe.skipIf(!dbUp)("RLS policy shape", () => {
     // no scope is set, so it sees nothing.
     expect(await readsWithNoScope()).toBe(0);
 
-    await su.$executeRawUnsafe(
+    await suDb.$executeRawUnsafe(
       `DROP POLICY fleet_super_admin ON ${PROBE_TABLE}`,
     );
-    await su.$executeRawUnsafe(
+    await suDb.$executeRawUnsafe(
       `CREATE POLICY fleet_super_admin ON ${PROBE_TABLE} TO "${fleetRole}", "${appRole}"
          USING (true) WITH CHECK (true)`,
     );
@@ -375,10 +375,10 @@ describe.skipIf(!dbUp)("RLS policy shape", () => {
       // Every row, from the ordinary runtime connection, with no scope and no SET ROLE.
       expect(await readsWithNoScope()).toBe(3200);
     } finally {
-      await su.$executeRawUnsafe(
+      await suDb.$executeRawUnsafe(
         `DROP POLICY fleet_super_admin ON ${PROBE_TABLE}`,
       );
-      await su.$executeRawUnsafe(
+      await suDb.$executeRawUnsafe(
         `DO $do$ BEGIN EXECUTE format(
            'CREATE POLICY fleet_super_admin ON ${PROBE_TABLE} TO %I USING (true) WITH CHECK (true)',
            public.fazerai_fleet_role()); END $do$`,

@@ -5,7 +5,11 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { chatwootThreadId, contactInboxThreadId } from "@/graph/checkpointer";
-import { clearTurnInFlight, markTurnInFlight } from "@/graph/inflight";
+import {
+  clearTurnInFlight,
+  isTurnInFlight,
+  markTurnInFlight,
+} from "@/graph/inflight";
 import type { RuntimeDeps } from "@/graph/runtime";
 import { clearTurnOwning, markTurnOwning } from "@/graph/thread-claim";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
@@ -13,6 +17,7 @@ import {
   deliveryRecoveryDedupeKey,
   MAX_RECOVERY_AGE_MS,
   MAX_RECOVERY_ATTEMPTS,
+  putRowBack,
   recoverStrandedDelivery,
   registerDeliveryRecoveryHandler,
 } from "@/modules/chatwoot/recover-delivery";
@@ -82,7 +87,9 @@ const threadOf = (convId: number) =>
   chatwootThreadId(tenantId, instanceId, convId);
 
 interface Stub {
-  makeClient: RuntimeDeps["makeClient"];
+  // NonNullable, because it is optional on `RuntimeDeps` and every stub here supplies it: a test
+  // that wraps it needs `Parameters<...>` to resolve.
+  makeClient: NonNullable<RuntimeDeps["makeClient"]>;
   sent: Array<[number, string]>;
   asked: Array<[number, number | undefined]>;
 }
@@ -1153,6 +1160,54 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     }
   });
 
+  test("the conversation key is HELD across the handoff, not just probed before it", async () => {
+    // The fence answers about the moment it runs. A follow-up NUDGE needs no new customer message,
+    // so nothing earlier in this recovery says anything about one starting in the window between
+    // that answer and `runAgentTurn` taking its own claim — and it posts into this very
+    // conversation. `followUpHandler` reads the CONVERSATION key before it fires, so holding that
+    // key from the fence to the handoff is what makes it reschedule instead of running beside us.
+    //
+    // Observed at `deps.makeClient`, which the delivery path calls for its own client BEFORE the
+    // turn: the recovery's own build happens earlier, outside the hold, so the two readings
+    // distinguish the mark from the one `runAgentTurn` takes later on its own.
+    const convId = 8966;
+    const messageId = 9467;
+    await seedConversation(convId);
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const stub = stubChatwoot({
+      page: pageWith([{ id: messageId, content: "oi" }]),
+    });
+    const held: boolean[] = [];
+    const deps: RuntimeDeps = {
+      ...depsWith(stub),
+      makeClient: async (...a: Parameters<Stub["makeClient"]>) => {
+        held.push(isTurnInFlight(threadOf(convId)));
+        return stub.makeClient(...a);
+      },
+    };
+
+    expect(
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps,
+      }),
+    ).toBe("recovered");
+
+    // Three builds, and the middle one is the whole test. [0] is the recovery's own, before the
+    // hold. [1] is the delivery path's, inside the hold and BEFORE the turn — this is the reading
+    // that flips: measured, it is `false` without the mark. [2] is inside the turn, where
+    // `runAgentTurn` has marked the key itself and the answer is `true` either way, which is why
+    // asserting "some of them" would have proved nothing.
+    expect(held).toEqual([false, true, true]);
+    // Balanced: a mark left behind would make every reader defer on this conversation forever.
+    expect(isTurnInFlight(threadOf(convId))).toBe(false);
+  });
+
   test("a mirror that never learned the inbox rebuilds it from the live message", async () => {
     // The route is the one thing the rebuilt body cannot get wrong quietly. `Conversation.inboxId`
     // is nullable and the mirror writes it null for any event that named no inbox (`upsertInbox`
@@ -1880,10 +1935,82 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     );
     const block = tail.slice(0, tail.indexOf("\n  const closed"));
     // Guarded on the state this pass left it in, so a late tx2 that got through is never overwritten.
-    expect(block).toContain('where: { id: row.id, status: "PROCESSING" }');
-    expect(block).toContain('data: { status: "DEAD" }');
+    // The write itself is `putRowBack`, which has its own DB-backed tests below; what only the source
+    // can say is which state THIS branch names.
+    expect(block).toContain('from: "PROCESSING"');
     // `unreachable`, so the scheduler backs off and the retry finds a row it can claim.
     expect(block).toContain('return "unreachable"');
+  });
+
+  describe("putting the row back", () => {
+    // The compensating write both failure roads take, tested where it can be: against the real
+    // table. Three answers, and the caller acts differently on each — the source assertion above is
+    // only for the branch that cannot be reached behaviourally.
+    test("a row still in the state it was left in comes back to DEAD", async () => {
+      const rowId = await seedDeadDelivery({
+        conversationId: 8964,
+        inboundMessageId: 9465,
+        status: "PROCESSED",
+      });
+      expect(
+        await putRowBack({
+          base: appDb,
+          tenantId,
+          rowId,
+          from: "PROCESSED",
+          sleep: async () => {},
+        }),
+      ).toBe("restored");
+      expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 0 });
+    });
+
+    test("a row that MOVED is left alone, and says so", async () => {
+      // Not a failure: something else took it, and overwriting would undo that.
+      const rowId = await seedDeadDelivery({
+        conversationId: 8965,
+        inboundMessageId: 9466,
+        status: "PROCESSING",
+      });
+      expect(
+        await putRowBack({
+          base: appDb,
+          tenantId,
+          rowId,
+          from: "PROCESSED",
+          sleep: async () => {},
+        }),
+      ).toBe("moved");
+      expect(await ledger(rowId)).toEqual({
+        status: "PROCESSING",
+        attempts: 0,
+      });
+    });
+
+    test("a write that keeps failing is RETRIED and then reported, never swallowed", async () => {
+      // The case the caller must not read as success: a swallowed failure leaves the row where the
+      // delivery path put it, and from `PROCESSED` nothing revisits it — the customer is out of the
+      // worklist with nobody having answered.
+      let calls = 0;
+      // `runScopedOn` extends the client and then opens a transaction on the extension, so the seam
+      // a test can break is `$extends` — the first thing it touches.
+      const broken = {
+        $extends: () => {
+          calls += 1;
+          throw new Error("Timed out fetching a new connection from the pool");
+        },
+      } as unknown as typeof appDb;
+      expect(
+        await putRowBack({
+          base: broken,
+          tenantId,
+          rowId: 1n,
+          from: "PROCESSED",
+          sleep: async () => {},
+        }),
+      ).toBe("failed");
+      // Retried rather than given up on at the first blip, which is what the transient case needs.
+      expect(calls).toBeGreaterThan(1);
+    });
   });
 
   // Flips the bound agent to test mode for one case, which is the only mode a control command is

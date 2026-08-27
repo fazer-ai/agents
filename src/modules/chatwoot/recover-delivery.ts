@@ -2,7 +2,11 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { chatwootThreadId, resolveGraphThreadId } from "@/graph/checkpointer";
-import { isTurnInFlight } from "@/graph/inflight";
+import {
+  clearTurnInFlight,
+  isTurnInFlight,
+  markTurnInFlight,
+} from "@/graph/inflight";
 import type { RuntimeDeps } from "@/graph/runtime";
 import { turnOwnsThread } from "@/graph/thread-claim";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
@@ -256,6 +260,53 @@ interface LoadedRow {
   id: bigint;
   deliveryId: string;
   attempts: number;
+}
+
+// PUTTING THE ROW BACK, which is the compensating write both failure roads below take, and the one
+// place a swallowed error would cost a customer.
+//
+// Three answers, not two, because "it did not happen" and "it had already moved" are different
+// facts and only one of them is a problem. A row that MOVED was taken by something else, which is
+// fine. A write that FAILED leaves the row where the delivery path put it, and what that costs
+// depends on which state that is: `PROCESSING` is revisited — the sweep declares it stranded all
+// over again — while `PROCESSED` is never looked at by anything, so the customer is gone from the
+// worklist with nobody having answered. That is why the caller for `PROCESSED` says so at `error`.
+//
+// RETRIED, because the failure this guards against is a transient database blip and a second
+// statement a moment later is the whole fix for it. Bounded, and the last word is the log line.
+export async function putRowBack(params: {
+  base: PrismaClient;
+  tenantId: bigint;
+  rowId: bigint;
+  from: "PROCESSING" | "PROCESSED";
+  sleep?: (ms: number) => Promise<void>;
+}): Promise<"restored" | "moved" | "failed"> {
+  let lastErr: unknown = null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    if (attempt > 0)
+      await (params.sleep ?? ((ms: number) => Bun.sleep(ms)))(100 * attempt);
+    try {
+      const { count } = await runScopedOn(
+        params.base,
+        sysCtx(params.tenantId),
+        (db) =>
+          db.chatwootWebhookDelivery.updateMany({
+            where: { id: params.rowId, status: params.from },
+            data: { status: "DEAD" },
+          }),
+      );
+      return count === 1 ? "restored" : "moved";
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  logger.error(
+    "chatwoot recovery: could not put delivery row %s back to DEAD from %s: %s",
+    params.rowId,
+    params.from,
+    lastErr instanceof Error ? lastErr.message : String(lastErr),
+  );
+  return "failed";
 }
 
 async function runRecovery(params: {
@@ -685,22 +736,33 @@ async function runRecovery(params: {
   // row, so that key keeps the in-process answer, which is what the conversation key has anyway.
   //
   // It NARROWS the window and does not close it: the last one is `processChatwootDelivery`'s own
-  // path down to where `runAgentTurn` claims the thread. What is left is the same overlap two live
-  // deliveries for one conversation already have — the durable claim COUNTS turns rather than
-  // refusing a second one, deliberately, because two deliveries for one conversation really do
-  // overlap whenever debounce is off. What bounds it HERE is not that claim but the newest-message
-  // check above: a live delivery is running because the customer wrote again, and a customer who
-  // wrote again is already the case this recovery answers `unrecoverable` to.
+  // path down to where `runAgentTurn` claims the thread, and the durable claim COUNTS turns rather
+  // than refusing a second one, deliberately, because two deliveries for one conversation really do
+  // overlap whenever debounce is off.
+  //
+  // TWO different things can arrive in that window, and only one of them is bounded by what came
+  // before. A live DELIVERY is running because the customer wrote again, which is already the case
+  // the newest-message check answers `unrecoverable` to. A follow-up NUDGE needs no new message at
+  // all, so nothing above says anything about it — and it posts into this very conversation. What
+  // covers that one is the mark taken below, which is the key `followUpHandler` reads before it
+  // fires: held from here to the handoff, a nudge in this process reschedules instead of running
+  // beside the turn. In this process, which under the single-replica invariant docs/deploy.md §4
+  // states is every one of them; a nudge on another replica is issue #203's remaining edge and is
+  // written up in the PR rather than implied away here.
   const graphKey = resolveGraphThreadId(
     params.tenantId,
     instanceId,
     conversationId,
     contactInboxId,
   );
+  // The key a follow-up nudge reads before it fires, asked here and then HELD to the handoff.
+  const handoffKey = chatwootThreadId(
+    params.tenantId,
+    instanceId,
+    conversationId,
+  );
   if (
-    isTurnInFlight(
-      chatwootThreadId(params.tenantId, instanceId, conversationId),
-    ) ||
+    isTurnInFlight(handoffKey) ||
     (contactInboxId != null
       ? await turnOwnsThread(
           {
@@ -801,6 +863,11 @@ async function runRecovery(params: {
   // that leaves: a recovery re-runs a turn that may call side-effecting tools.
   let turnThrew = false;
   let turnWithheld = false;
+  // HELD ACROSS THE HANDOFF, not merely probed before it. The fence above answers about the moment
+  // it ran; this makes the answer stay true until the turn takes its own claim. Balanced in the
+  // `finally`, because an unbalanced mark is not a harmless leak — every reader of this key would
+  // defer on this conversation until the process restarts (../../graph/inflight.ts).
+  markTurnInFlight(handoffKey);
   try {
     outcome = await processChatwootDelivery({
       tenantId: params.tenantId,
@@ -823,20 +890,29 @@ async function runRecovery(params: {
       deps: params.deps,
     });
   } catch (e) {
-    const restored = await runScopedOn(base, sysCtx(params.tenantId), (db) =>
-      db.chatwootWebhookDelivery.updateMany({
-        where: { id: row.id, status: "PROCESSING" },
-        data: { status: "DEAD" },
-      }),
-    ).catch(() => ({ count: 0 }));
+    // The row is on PROCESSING here, which the sweep revisits, so a write that cannot land is
+    // recoverable without anyone: the row is declared stranded again thirty minutes later.
+    const put = await putRowBack({
+      base,
+      tenantId: params.tenantId,
+      rowId: row.id,
+      from: "PROCESSING",
+      sleep: params.deps?.sleep,
+    });
     logger.error(
       "chatwoot recovery: the delivery path threw on %s (conversation %d); row put back to DEAD: %s — %s",
       row.deliveryId,
       conversationId,
-      restored.count === 1 ? "yes" : "no, it had moved",
+      put === "restored"
+        ? "yes"
+        : put === "moved"
+          ? "no, it had moved"
+          : "NO, the write failed; the sweep will report it stranded again",
       e instanceof Error ? e.message : String(e),
     );
     return "unreachable";
+  } finally {
+    clearTurnInFlight(handoffKey);
   }
   // "skipped" means the claim matched nothing: another recovery took the row between the read above
   // and the CAS. The winner is running it, so this pass has nothing left to do and nothing to retry.
@@ -849,18 +925,34 @@ async function runRecovery(params: {
   // or provider that keeps throwing is a condition an operator has to see, exactly like an account
   // that cannot be reached. No closing line, because nothing closed.
   if (turnThrew || turnWithheld) {
-    const restored = await runScopedOn(base, sysCtx(params.tenantId), (db) =>
-      db.chatwootWebhookDelivery.updateMany({
-        where: { id: row.id, status: "PROCESSED" },
-        data: { status: "DEAD" },
-      }),
-    ).catch(() => ({ count: 0 }));
+    // From PROCESSED, and that is the state nothing revisits: the sweep reads PENDING and PROCESSING
+    // only. A write that cannot land here leaves the customer out of the worklist with nobody having
+    // answered, which is the exact loss this whole subsystem exists to make impossible — so it is
+    // said at `error`, naming the row, rather than folded into the line below.
+    const put = await putRowBack({
+      base,
+      tenantId: params.tenantId,
+      rowId: row.id,
+      from: "PROCESSED",
+      sleep: params.deps?.sleep,
+    });
+    if (put === "failed") {
+      logger.error(
+        "chatwoot recovery: %s (conversation %d) is left PROCESSED with nobody answered — nothing revisits that state, so it needs an operator",
+        row.deliveryId,
+        conversationId,
+      );
+    }
     logger.warn(
       "chatwoot recovery: the turn %s on %s (conversation %d), so the loss is NOT closed; row put back to DEAD: %s",
       turnThrew ? "threw" : "withheld its reply to a newer message",
       row.deliveryId,
       conversationId,
-      restored.count === 1 ? "yes" : "no, it had moved",
+      put === "restored"
+        ? "yes"
+        : put === "moved"
+          ? "no, it had moved"
+          : "NO, the write failed",
     );
     // Two roads, because the two are waiting on different things. A THROW is a model or provider
     // that could not answer, which is a condition an operator may have to fix, so it backs off

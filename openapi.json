@@ -2003,6 +2003,28 @@
           }
         },
         "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
           "401": {
             "description": "Unauthorized — missing or invalid credentials.",
             "content": {
@@ -13922,6 +13944,28 @@
           }
         ],
         "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
           "401": {
             "description": "Unauthorized — missing or invalid credentials.",
             "content": {
@@ -17427,7 +17471,6 @@
             "in": "path",
             "required": true,
             "schema": {
-              "pattern": "^\\d+$",
               "description": "Vault entry id (BigInt serialized as a decimal string).",
               "type": "string"
             }
@@ -17726,7 +17769,6 @@
             "in": "path",
             "required": true,
             "schema": {
-              "pattern": "^\\d+$",
               "description": "Vault entry id (BigInt serialized as a decimal string).",
               "type": "string"
             }
@@ -17744,6 +17786,28 @@
           }
         ],
         "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
           "401": {
             "description": "Unauthorized — missing or invalid credentials.",
             "content": {
@@ -17794,28 +17858,6 @@
               "application/json": {
                 "schema": {
                   "description": "Not found.",
-                  "type": "object",
-                  "required": [
-                    "error"
-                  ],
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "field": {
-                      "type": "string"
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
                   "type": "object",
                   "required": [
                     "error"
@@ -17849,7 +17891,6 @@
             "in": "path",
             "required": true,
             "schema": {
-              "pattern": "^\\d+$",
               "description": "Vault entry id (BigInt serialized as a decimal string).",
               "type": "string"
             }
@@ -17867,6 +17908,28 @@
           }
         ],
         "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
           "401": {
             "description": "Unauthorized — missing or invalid credentials.",
             "content": {
@@ -17917,28 +17980,6 @@
               "application/json": {
                 "schema": {
                   "description": "Not found.",
-                  "type": "object",
-                  "required": [
-                    "error"
-                  ],
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "field": {
-                      "type": "string"
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
                   "type": "object",
                   "required": [
                     "error"
@@ -18216,7 +18257,6 @@
             "in": "path",
             "required": true,
             "schema": {
-              "pattern": "^\\d+$",
               "description": "Vault entry id (BigInt serialized as a decimal string).",
               "type": "string"
             }
@@ -18420,7 +18460,6 @@
             "in": "path",
             "required": true,
             "schema": {
-              "pattern": "^\\d+$",
               "description": "Vault entry id (BigInt serialized as a decimal string).",
               "type": "string"
             }
@@ -18624,7 +18663,6 @@
             "in": "path",
             "required": true,
             "schema": {
-              "pattern": "^\\d+$",
               "description": "Vault entry id (BigInt serialized as a decimal string).",
               "type": "string"
             }
@@ -18714,28 +18752,6 @@
               "application/json": {
                 "schema": {
                   "description": "Not found.",
-                  "type": "object",
-                  "required": [
-                    "error"
-                  ],
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "field": {
-                      "type": "string"
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
                   "type": "object",
                   "required": [
                     "error"
@@ -18769,7 +18785,6 @@
             "in": "path",
             "required": true,
             "schema": {
-              "pattern": "^\\d+$",
               "description": "Vault entry id (BigInt serialized as a decimal string).",
               "type": "string"
             }
@@ -18859,28 +18874,6 @@
               "application/json": {
                 "schema": {
                   "description": "Not found.",
-                  "type": "object",
-                  "required": [
-                    "error"
-                  ],
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "field": {
-                      "type": "string"
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
                   "type": "object",
                   "required": [
                     "error"
@@ -19013,7 +19006,6 @@
             "in": "path",
             "required": true,
             "schema": {
-              "pattern": "^\\d+$",
               "description": "Vault entry id (BigInt serialized as a decimal string).",
               "type": "string"
             }
@@ -19103,28 +19095,6 @@
               "application/json": {
                 "schema": {
                   "description": "Not found.",
-                  "type": "object",
-                  "required": [
-                    "error"
-                  ],
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "field": {
-                      "type": "string"
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
                   "type": "object",
                   "required": [
                     "error"
@@ -19180,7 +19150,6 @@
             "in": "path",
             "required": true,
             "schema": {
-              "pattern": "^\\d+$",
               "description": "Vault entry id (BigInt serialized as a decimal string).",
               "type": "string"
             }
@@ -19270,28 +19239,6 @@
               "application/json": {
                 "schema": {
                   "description": "Not found.",
-                  "type": "object",
-                  "required": [
-                    "error"
-                  ],
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "field": {
-                      "type": "string"
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
                   "type": "object",
                   "required": [
                     "error"
@@ -19325,7 +19272,6 @@
             "in": "path",
             "required": true,
             "schema": {
-              "pattern": "^\\d+$",
               "description": "Vault entry id (BigInt serialized as a decimal string).",
               "type": "string"
             }
@@ -19415,28 +19361,6 @@
               "application/json": {
                 "schema": {
                   "description": "Not found.",
-                  "type": "object",
-                  "required": [
-                    "error"
-                  ],
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "field": {
-                      "type": "string"
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
                   "type": "object",
                   "required": [
                     "error"
@@ -30135,7 +30059,6 @@
             "in": "path",
             "required": true,
             "schema": {
-              "pattern": "^[0-9]+$",
               "description": "Template id (BigInt string).",
               "type": "string"
             }
@@ -30240,28 +30163,6 @@
                 }
               }
             }
-          },
-          "422": {
-            "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
-                  "type": "object",
-                  "required": [
-                    "error"
-                  ],
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "field": {
-                      "type": "string"
-                    }
-                  }
-                }
-              }
-            }
           }
         },
         "operationId": "getV1Document-templatesById"
@@ -30278,7 +30179,6 @@
             "in": "path",
             "required": true,
             "schema": {
-              "pattern": "^[0-9]+$",
               "description": "Template id (BigInt string).",
               "type": "string"
             }
@@ -30685,7 +30585,6 @@
             "in": "path",
             "required": true,
             "schema": {
-              "pattern": "^[0-9]+$",
               "description": "Template id (BigInt string).",
               "type": "string"
             }
@@ -30775,28 +30674,6 @@
               "application/json": {
                 "schema": {
                   "description": "Not found.",
-                  "type": "object",
-                  "required": [
-                    "error"
-                  ],
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "field": {
-                      "type": "string"
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
                   "type": "object",
                   "required": [
                     "error"
@@ -30830,7 +30707,6 @@
             "in": "path",
             "required": true,
             "schema": {
-              "pattern": "^[0-9]+$",
               "description": "Template id (BigInt string).",
               "type": "string"
             }
@@ -30920,28 +30796,6 @@
               "application/json": {
                 "schema": {
                   "description": "Not found.",
-                  "type": "object",
-                  "required": [
-                    "error"
-                  ],
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "field": {
-                      "type": "string"
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
                   "type": "object",
                   "required": [
                     "error"
@@ -31419,7 +31273,6 @@
             "in": "path",
             "required": true,
             "schema": {
-              "pattern": "^[0-9]+$",
               "description": "Document id (BigInt string).",
               "type": "string"
             }
@@ -31509,28 +31362,6 @@
               "application/json": {
                 "schema": {
                   "description": "Not found.",
-                  "type": "object",
-                  "required": [
-                    "error"
-                  ],
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "field": {
-                      "type": "string"
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
                   "type": "object",
                   "required": [
                     "error"
@@ -31564,7 +31395,6 @@
             "in": "path",
             "required": true,
             "schema": {
-              "pattern": "^[0-9]+$",
               "description": "Document id (BigInt string).",
               "type": "string"
             }
@@ -31654,28 +31484,6 @@
               "application/json": {
                 "schema": {
                   "description": "Not found.",
-                  "type": "object",
-                  "required": [
-                    "error"
-                  ],
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "field": {
-                      "type": "string"
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
                   "type": "object",
                   "required": [
                     "error"
@@ -33866,7 +33674,6 @@
             "in": "path",
             "required": true,
             "schema": {
-              "pattern": "^[0-9]+$",
               "description": "The approval id.",
               "type": "string"
             }
@@ -33884,6 +33691,28 @@
           }
         ],
         "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
           "401": {
             "description": "Unauthorized — missing or invalid credentials.",
             "content": {
@@ -33934,28 +33763,6 @@
               "application/json": {
                 "schema": {
                   "description": "Not found.",
-                  "type": "object",
-                  "required": [
-                    "error"
-                  ],
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "field": {
-                      "type": "string"
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
                   "type": "object",
                   "required": [
                     "error"

@@ -5,6 +5,7 @@ import config from "@/config";
 import { unstorableProblem } from "@/lib/text";
 import { BEHAVIOR_PATCH_SHAPE } from "@/modules/agents/settings-schema";
 import { TOOL_INSTRUCTIONS_MAX } from "@/modules/agents/text-caps";
+import { truncForAudit } from "@/modules/audit/projection";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import {
   agentList,
@@ -17,7 +18,6 @@ import {
   promptSet,
   resolveSecretRef,
   tenantUpdate,
-  truncForAudit,
 } from "@/modules/mcp/write";
 import { langfuseConnect } from "@/modules/mcp/write-settings";
 
@@ -502,7 +502,7 @@ describe.skipIf(!dbUp)("MCP write tools (DB)", () => {
     const row = await suDb.agent.findUnique({ where: { id: agentA } });
     expect(row?.systemPrompt).toBe("old prompt");
     const audits = await suDb.auditLog.count({
-      where: { tenantId: tenantA, action: "mcp.prompt_set" },
+      where: { tenantId: tenantA, action: "agent.prompt_set" },
     });
     expect(audits).toBe(0);
   });
@@ -523,7 +523,7 @@ describe.skipIf(!dbUp)("MCP write tools (DB)", () => {
     const row = await suDb.agent.findUnique({ where: { id: agentA } });
     expect(row?.systemPrompt).toBe("applied prompt");
     const audits = await suDb.auditLog.findMany({
-      where: { tenantId: tenantA, action: "mcp.prompt_set" },
+      where: { tenantId: tenantA, action: "agent.prompt_set" },
     });
     expect(audits).toHaveLength(1);
     expect(audits[0]?.actorType).toBe("mcp");
@@ -558,7 +558,7 @@ describe.skipIf(!dbUp)("MCP write tools (DB)", () => {
     const row = await suDb.agent.findUnique({ where: { id: agentA } });
     expect(row?.systemPrompt).toBe(straddling);
     const audits = await suDb.auditLog.count({
-      where: { tenantId: tenantA, action: "mcp.prompt_set" },
+      where: { tenantId: tenantA, action: "agent.prompt_set" },
     });
     expect(audits).toBe(2);
   });
@@ -603,7 +603,7 @@ describe.skipIf(!dbUp)("MCP write tools (DB)", () => {
     });
     expect(row?.status).toBe("pending");
     const audits = await suDb.auditLog.findMany({
-      where: { tenantId: tenantA, action: "mcp.credential_create" },
+      where: { tenantId: tenantA, action: "credential.create" },
     });
     expect(audits).toHaveLength(1);
     // The audit projection must never carry a secret (the tool never receives one).
@@ -684,7 +684,7 @@ describe.skipIf(!dbUp)("MCP write tools (DB)", () => {
     const row = await suDb.agent.findUnique({ where: { id: agentA } });
     expect(row?.settings).toEqual({});
     const audits = await suDb.auditLog.count({
-      where: { tenantId: tenantA, action: "mcp.agent_settings_set" },
+      where: { tenantId: tenantA, action: "agent.settings_set" },
     });
     expect(audits).toBe(0);
   });
@@ -780,7 +780,7 @@ describe.skipIf(!dbUp)("MCP write tools (DB)", () => {
     expect(blk(row?.settings, "grounding").maxDistance).toBe(0.4);
 
     const audits = await suDb.auditLog.findMany({
-      where: { tenantId: tenantA, action: "mcp.agent_settings_set" },
+      where: { tenantId: tenantA, action: "agent.settings_set" },
     });
     expect(audits).toHaveLength(1);
     expect(audits[0]?.actorType).toBe("mcp");
@@ -1012,7 +1012,7 @@ describe.skipIf(!dbUp)("MCP write tools (DB)", () => {
     const row = await suDb.tenant.findUnique({ where: { id: tenantA } });
     expect(blk(row?.settings, "langfuse").enabled).toBe(true);
     const audits = await suDb.auditLog.count({
-      where: { tenantId: tenantA, action: "mcp.langfuse_connect" },
+      where: { tenantId: tenantA, action: "langfuse.connect" },
     });
     expect(audits).toBe(1);
   });

@@ -42,6 +42,8 @@ const cfg = (over: Partial<ContactAuthConfig> = {}): ContactAuthConfig => ({
   credentialRef: "vault:1",
   timeoutMs: 1000,
   noticeCooldownSeconds: 60,
+  mode: "perMessage",
+  grantTtlSeconds: 86_400,
   includeMessageText: false,
   denyMessage: null,
   handoffEnabled: true,

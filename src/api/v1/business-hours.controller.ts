@@ -1,6 +1,7 @@
 import { Elysia, t } from "elysia";
 import { doc, errors } from "@/api/lib/openapi";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
+import { requireDbId } from "@/lib/db-id";
 import { ForbiddenError, TenantTargetRequiredError } from "@/lib/errors";
 import { instanceIdentity } from "@/lib/instance";
 import type { TenantContext } from "@/lib/tenancy";
@@ -155,7 +156,7 @@ export const businessHoursController = new Elysia({
       instance: instanceIdentity,
       businessHours: await getBusinessHours(
         ctxOrThrow(tenantContext),
-        BigInt(params.id),
+        requireDbId(params.id),
       ),
     }),
     {
@@ -197,7 +198,7 @@ export const businessHoursController = new Elysia({
       instance: instanceIdentity,
       businessHours: await updateBusinessHours(
         ctxOrThrow(tenantContext),
-        BigInt(params.id),
+        requireDbId(params.id),
         body as BusinessHoursUpdate,
       ),
     }),
@@ -219,7 +220,10 @@ export const businessHoursController = new Elysia({
   .delete(
     "/:id",
     async ({ tenantContext, params }) => {
-      await deleteBusinessHours(ctxOrThrow(tenantContext), BigInt(params.id));
+      await deleteBusinessHours(
+        ctxOrThrow(tenantContext),
+        requireDbId(params.id),
+      );
       return { instance: instanceIdentity, success: true };
     },
     {

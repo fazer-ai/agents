@@ -216,7 +216,7 @@ const CAPS: {
     name: "mcp: audit projection",
     cap: 4000,
     run: async (s) => {
-      const { truncForAudit } = await import("@/modules/mcp/write");
+      const { truncForAudit } = await import("@/modules/audit/projection");
       return String(
         (truncForAudit({ systemPrompt: s }) as { systemPrompt: string })
           .systemPrompt,

@@ -2,6 +2,7 @@ import { Elysia, t } from "elysia";
 import { getUserById, verifyPassword } from "@/api/features/auth/auth.service";
 import { doc, errors } from "@/api/lib/openapi";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
+import { requireDbId } from "@/lib/db-id";
 import {
   AppError,
   ForbiddenError,
@@ -257,7 +258,7 @@ export const chatwootAdminController = new Elysia({
     async ({ tenantContext, params }) => {
       await softDisconnectChatwootInstance(
         ctxOrThrow(tenantContext),
-        BigInt(params.id),
+        requireDbId(params.id),
       );
       return { instance: instanceIdentity, success: true };
     },
@@ -279,7 +280,7 @@ export const chatwootAdminController = new Elysia({
       instance: instanceIdentity,
       result: await reconnectChatwootInstance(
         ctxOrThrow(tenantContext),
-        BigInt(params.id),
+        requireDbId(params.id),
       ),
     }),
     {
@@ -302,7 +303,7 @@ export const chatwootAdminController = new Elysia({
     async ({ tenantContext, params, body }) => {
       const ctx = ctxOrThrow(tenantContext);
       const b = body as { confirmName: string; password: string };
-      const id = BigInt(params.id);
+      const id = requireDbId(params.id);
       const instance = await getChatwootInstance(ctx, id);
       const expected = instance.accountName ?? String(instance.accountId);
       if (b.confirmName.trim() !== expected) {
@@ -347,7 +348,10 @@ export const chatwootAdminController = new Elysia({
     "/instances/:id/sync-inboxes",
     async ({ tenantContext, params }) => ({
       instance: instanceIdentity,
-      result: await syncInboxes(ctxOrThrow(tenantContext), BigInt(params.id)),
+      result: await syncInboxes(
+        ctxOrThrow(tenantContext),
+        requireDbId(params.id),
+      ),
     }),
     {
       requireRole: "TENANT_ADMIN",
@@ -403,7 +407,7 @@ export const chatwootAdminController = new Elysia({
       instance: instanceIdentity,
       ...(await getWidgetInboxHealth(
         ctxOrThrow(tenantContext),
-        BigInt(params.id),
+        requireDbId(params.id),
       )),
     }),
     {
@@ -428,7 +432,7 @@ export const chatwootAdminController = new Elysia({
       instance: instanceIdentity,
       ...(await listAgentsAndTeams(
         ctxOrThrow(tenantContext),
-        BigInt(params.agentId),
+        requireDbId(params.agentId, "agentId"),
       )),
     }),
     {
@@ -451,7 +455,7 @@ export const chatwootAdminController = new Elysia({
       instance: instanceIdentity,
       ...(await listServiceWindowTemplates(
         ctxOrThrow(tenantContext),
-        BigInt(params.agentId),
+        requireDbId(params.agentId, "agentId"),
       )),
     }),
     {
@@ -474,7 +478,7 @@ export const chatwootAdminController = new Elysia({
       instance: instanceIdentity,
       ...(await listInboxLabels(
         ctxOrThrow(tenantContext),
-        BigInt(params.agentId),
+        requireDbId(params.agentId, "agentId"),
       )),
     }),
     {
@@ -497,7 +501,7 @@ export const chatwootAdminController = new Elysia({
       instance: instanceIdentity,
       ...(await listInboxCustomAttributes(
         ctxOrThrow(tenantContext),
-        BigInt(params.agentId),
+        requireDbId(params.agentId, "agentId"),
       )),
     }),
     {
@@ -524,7 +528,7 @@ export const chatwootAdminController = new Elysia({
         instance: instanceIdentity,
         inbox: await bindInbox(
           ctxOrThrow(tenantContext),
-          BigInt(params.id),
+          requireDbId(params.id),
           agentId,
         ),
       };
@@ -553,7 +557,7 @@ export const chatwootAdminController = new Elysia({
   .delete(
     "/inboxes/:id",
     async ({ tenantContext, params }) => {
-      await removeInbox(ctxOrThrow(tenantContext), BigInt(params.id));
+      await removeInbox(ctxOrThrow(tenantContext), requireDbId(params.id));
       return { instance: instanceIdentity, success: true };
     },
     {
@@ -574,7 +578,10 @@ export const chatwootAdminController = new Elysia({
     "/inboxes/:id/reconnect",
     async ({ tenantContext, params }) => ({
       instance: instanceIdentity,
-      inbox: await reconnectInbox(ctxOrThrow(tenantContext), BigInt(params.id)),
+      inbox: await reconnectInbox(
+        ctxOrThrow(tenantContext),
+        requireDbId(params.id),
+      ),
     }),
     {
       requireRole: "TENANT_ADMIN",

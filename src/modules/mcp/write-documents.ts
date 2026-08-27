@@ -1,5 +1,6 @@
 import basePrisma from "@/api/lib/prisma";
 import { AppError } from "@/lib/errors";
+import { truncForAudit } from "@/modules/audit/projection";
 import { parseDocumentStyle } from "@/modules/documents/blocks";
 import { documentStarter } from "@/modules/documents/starters";
 import {
@@ -20,7 +21,6 @@ import {
   ok,
   parseMcpId,
   recordMcpAudit,
-  truncForAudit,
   type WriteDeps,
   type WriteResult,
 } from "./write";
@@ -167,7 +167,7 @@ export async function documentTemplateCreate(
     await recordMcpAudit(gated, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.document_template_create",
+      action: "document_template.create",
       target,
       before: null,
       after: truncForAudit(projection(created)),
@@ -279,7 +279,7 @@ export async function documentTemplateUpdate(
     await recordMcpAudit(gated, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.document_template_update",
+      action: "document_template.update",
       target,
       before: truncForAudit(before),
       after: truncForAudit(projection(updated)),
@@ -319,7 +319,7 @@ export async function documentTemplateDelete(
     await recordMcpAudit(gated, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.document_template_delete",
+      action: "document_template.delete",
       target,
       before: truncForAudit(projection(current)),
       after: null,

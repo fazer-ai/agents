@@ -1,6 +1,7 @@
 import type { InboundAuthStrategy } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import { AppError } from "@/lib/errors";
+import { truncForAudit } from "@/modules/audit/projection";
 import {
   createAlertChannel,
   deleteAlertChannel,
@@ -38,7 +39,6 @@ import {
   recordMcpAudit,
   resolveSecretRef,
   resolveSecretValue,
-  truncForAudit,
   type WriteDeps,
   type WriteResult,
 } from "./write";
@@ -107,7 +107,7 @@ export async function webhookCreate(
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.webhook_create",
+      action: "webhook.create",
       target: `webhook:${created.id}`,
       before: null,
       after: truncForAudit({
@@ -190,7 +190,7 @@ export async function webhookUpdate(
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.webhook_update",
+      action: "webhook.update",
       target,
       before: truncForAudit(beforeProj),
       after: truncForAudit({
@@ -237,7 +237,7 @@ export async function webhookDelete(
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.webhook_delete",
+      action: "webhook.delete",
       target,
       before: truncForAudit(beforeProj),
       after: null,
@@ -311,7 +311,7 @@ export async function webhookDeliveryRequeue(
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.webhook_delivery_requeue",
+      action: "webhook_delivery.requeue",
       target,
       before: truncForAudit(before),
       after: truncForAudit({ status: after.status, attempts: after.attempts }),
@@ -406,7 +406,7 @@ export async function alertChannelCreate(
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.alert_channel_create",
+      action: "alert_channel.create",
       target: `alert_channel:${created.id}`,
       before: null,
       after: truncForAudit({
@@ -511,7 +511,7 @@ export async function alertChannelUpdate(
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.alert_channel_update",
+      action: "alert_channel.update",
       target,
       before: truncForAudit(beforeProj),
       after: truncForAudit({
@@ -558,7 +558,7 @@ export async function alertChannelDelete(
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.alert_channel_delete",
+      action: "alert_channel.delete",
       target,
       before: truncForAudit(beforeProj),
       after: null,
@@ -644,7 +644,7 @@ export async function integrationCreate(
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.integration_create",
+      action: "integration.create",
       target: `integration:${created.id}`,
       before: null,
       after: truncForAudit({
@@ -752,7 +752,7 @@ export async function integrationUpdate(
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.integration_update",
+      action: "integration.update",
       target,
       before: truncForAudit(beforeProj),
       after: truncForAudit(appliedProj),
@@ -798,7 +798,7 @@ export async function integrationDelete(
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.integration_delete",
+      action: "integration.delete",
       target,
       before: truncForAudit(beforeProj),
       after: null,

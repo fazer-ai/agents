@@ -1,6 +1,7 @@
 import { Elysia, t } from "elysia";
 import { doc, errors } from "@/api/lib/openapi";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
+import { requireDbId } from "@/lib/db-id";
 import { ForbiddenError, TenantTargetRequiredError } from "@/lib/errors";
 import { instanceIdentity } from "@/lib/instance";
 import type { TenantContext } from "@/lib/tenancy";
@@ -126,7 +127,7 @@ export const alertChannelsController = new Elysia({
       instance: instanceIdentity,
       channel: await updateAlertChannel(
         ctxOrThrow(tenantContext),
-        BigInt(params.id),
+        requireDbId(params.id),
         body as AlertChannelUpdate,
       ),
     }),
@@ -197,7 +198,10 @@ export const alertChannelsController = new Elysia({
   .delete(
     "/:id",
     async ({ tenantContext, params }) => {
-      await deleteAlertChannel(ctxOrThrow(tenantContext), BigInt(params.id));
+      await deleteAlertChannel(
+        ctxOrThrow(tenantContext),
+        requireDbId(params.id),
+      );
       return { instance: instanceIdentity, success: true };
     },
     {

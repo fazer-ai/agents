@@ -341,6 +341,18 @@ const contactAuth = z.looseObject({
     .optional()
     .describe("what a REFUSED contact receives; null = say nothing"),
   handoffEnabled: z.boolean().optional(),
+  mode: z
+    .enum(["perMessage", "once"])
+    .optional()
+    .describe(
+      "perMessage (default) re-checks every message; once stores the first positive verdict per contact and reuses it until it expires",
+    ),
+  grantTtlSeconds: z
+    .number()
+    .optional()
+    .describe(
+      "how long a stored verdict counts for under mode=once; 60-2592000, clamped. Part of the policy a verdict is stored under, so a stored verdict stops counting while a different value is in force",
+    ),
   handoffTeamId: chatwootId().describe("Chatwoot team id"),
   handoffTeamInstanceId: chatwootId().describe(
     "our ChatwootInstance id the team was picked from; the team is only assigned in that account",

@@ -15,6 +15,7 @@ import {
   updateAgent,
 } from "@/modules/agents/service";
 import { agentExportSchema, importAgent } from "@/modules/agents/transfer";
+import { truncForAudit } from "@/modules/audit/projection";
 import {
   createMcpConnection,
   deleteMcpConnection,
@@ -43,7 +44,6 @@ import {
   parseMcpId,
   recordMcpAudit,
   resolveSecretRef,
-  truncForAudit,
   type WriteDeps,
   type WriteResult,
 } from "./write";
@@ -135,7 +135,7 @@ export async function agentCreate(
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.agent_create",
+      action: "agent.create",
       target,
       before: null,
       after: truncForAudit(afterProj),
@@ -213,7 +213,7 @@ export async function agentUpdate(
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.agent_update",
+      action: "agent.update",
       target,
       before: truncForAudit(beforeProj),
       after: truncForAudit(appliedProj),
@@ -255,7 +255,7 @@ export async function agentClone(
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.agent_clone",
+      action: "agent.clone",
       target: `agent:${clone.id}`,
       before: null,
       after: truncForAudit({
@@ -324,7 +324,7 @@ export async function agentImport(
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.agent_import",
+      action: "agent.import",
       target: `agent:${agent.id}`,
       before: null,
       after: truncForAudit({
@@ -366,7 +366,7 @@ export async function agentDelete(
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.agent_delete",
+      action: "agent.delete",
       target,
       before: truncForAudit(beforeProj),
       after: null,
@@ -428,7 +428,7 @@ export async function agentToolsSet(
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.agent_tools_set",
+      action: "agent.tools_set",
       target,
       before: truncForAudit({ grants: current.grants }),
       after: truncForAudit({ grants: view.grants }),
@@ -551,7 +551,7 @@ export async function toolCreate(
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.tool_create",
+      action: "tool.create",
       target,
       before: null,
       after: truncForAudit({ id: created.id, name: created.name }),
@@ -632,7 +632,7 @@ export async function toolUpdate(
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.tool_update",
+      action: "tool.update",
       target,
       before: truncForAudit(beforeProj),
       after: truncForAudit(appliedProj),
@@ -675,7 +675,7 @@ export async function toolDelete(
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.tool_delete",
+      action: "tool.delete",
       target,
       before: truncForAudit(beforeProj),
       after: null,
@@ -751,7 +751,7 @@ export async function mcpConnectionCreate(
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.mcp_connection_create",
+      action: "mcp_connection.create",
       target,
       before: null,
       after: truncForAudit({ id: created.id, name: created.name }),
@@ -801,7 +801,7 @@ export async function mcpConnectionUpdate(
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.mcp_connection_update",
+      action: "mcp_connection.update",
       target,
       before: truncForAudit(beforeProj),
       after: truncForAudit(appliedProj),
@@ -843,7 +843,7 @@ export async function mcpConnectionDelete(
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.mcp_connection_delete",
+      action: "mcp_connection.delete",
       target,
       before: truncForAudit(beforeProj),
       after: null,

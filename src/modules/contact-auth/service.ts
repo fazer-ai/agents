@@ -9,6 +9,7 @@ import {
 } from "@/modules/vault/injectable";
 import { isNonInjectableSecret } from "@/modules/vault/secret-types";
 import {
+  type AuthContext,
   type CheckDeps,
   type ContactAuthVerdict,
   channelSlug,
@@ -16,14 +17,28 @@ import {
   reasonSlug,
   underSignal,
 } from "./check";
+import {
+  contactAuthIdentityHash,
+  contactAuthPolicyHash,
+  dropContactAuthGrant,
+  readContactAuthGrant,
+  readCredentialStamp,
+  retryUnconfirmedWrite,
+  writeContactAuthGrant,
+} from "./grants";
 import type { ContactAuthConfig } from "./settings";
 import { contactAuthFlightKey, singleFlight } from "./state";
 
 // The contact authorization check as the runtime calls it: identity from the mirrored contact,
 // credential from the vault, one request per incoming message (single-flight coalesces concurrent
-// deliveries; no verdict is cached, so the endpoint's answer is always current), and a verdict the
-// two callers (the webhook gate, the proactive nudge) act on the same way. The DB reads here are
-// short and scoped; the network call runs outside any transaction (docs/tenancy.md, rule 3).
+// deliveries), and a verdict the four callers (the webhook gate, the debounce flush, the proactive
+// nudge, the manual re-engage) act on the same way. The DB reads here are short and scoped; the
+// network call runs outside any transaction (docs/tenancy.md, rule 3).
+//
+// Under the default mode nothing is cached, so the endpoint's answer is always current. Under
+// `mode: "once"` a positive verdict is stored per contact and reused until it expires (issue #189,
+// grants.ts) — the reuse lives HERE, in the one function all four callers already go through, so no
+// caller has to remember it and none of them can disagree about when a stored verdict applies.
 
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
@@ -36,6 +51,18 @@ export interface ContactAuthResult extends ContactAuthVerdict {
   // request (single-flight). The gate acts (message, handoff, note) only on the leader's verdict,
   // so two deliveries racing do not act twice.
   shared: boolean;
+}
+
+// A verdict served from a stored grant carries the same outcome and the same facts as the ask that
+// produced it, so every caller acts on it exactly as before. What `reused` adds is the operator's
+// half: the flow line has to be able to say "the endpoint allowed this" apart from "we did not ask",
+// or a trail of allows looks like a trail of calls the endpoint never received.
+function reusedVerdict(context: AuthContext | null): ContactAuthVerdict {
+  return {
+    outcome: "allowed",
+    reused: true,
+    ...(context ? { context } : {}),
+  };
 }
 
 export interface AuthorizeContactParams {
@@ -115,14 +142,62 @@ export async function authorizeContact(
         return { outcome: "no_identity", reason: "no_identifiers" };
       }
       if (!cfg.url) return { outcome: "error", reason: "not_configured" };
-      // The deadline starts HERE, not inside the request, because the credential is resolved first
-      // and a managed-OAuth entry refreshes its token to produce it — a network call with a
-      // ten-second ceiling of its own. Timed from the request, a gate configured for one second
-      // could hold the webhook for eleven, while `timeoutMs` promises to cover every step that
-      // waits. From this line to the answer is one budget.
+      // The stored verdict, when the operator asked for one (issue #189). Read here rather than
+      // before the identity, because what a grant is ABOUT is the identity the mirror holds right
+      // now: a contact whose phone changed since is not necessarily the person the endpoint said
+      // yes to. Read before the credential too, so a reuse costs neither the vault round-trip nor
+      // the managed-OAuth refresh that a real ask would.
+      const grantKey = { tenantId, agentId, contactId: contactDbId };
+      // The deadline starts HERE, before the first step that can wait. The credential is resolved
+      // under it because a managed-OAuth entry refreshes its token to produce it — a network call
+      // with a ten-second ceiling of its own — and the stored-verdict read is under it because a
+      // saturated pool is exactly as capable of holding the webhook as a slow endpoint is. Timed
+      // from the request instead, a gate configured for one second could hold the webhook for
+      // eleven, while `timeoutMs` promises to cover every step that waits. From this line to the
+      // answer is one budget, and the grant bookkeeping after the answer is inside it too.
       const ctrl = new AbortController();
+      const askedAt = Date.now();
       const timer = setTimeout(() => ctrl.abort(), cfg.timeoutMs);
       try {
+        // A bookkeeping write this process could not confirm, settled by deleting. Under BOTH
+        // modes: the refusal that failed to land usually happened under `perMessage`, which reads no
+        // grants, so a retry that lived on the read path would never run for the mode that needs it.
+        await retryUnconfirmedWrite(base, grantKey, ctrl.signal);
+        // The credential's own revision is part of the policy a grant is written under, so it is
+        // read at the START of the check and the same value is used to look a grant up and to store
+        // one. Read once here rather than twice: taken again after the endpoint answered, a rotation
+        // landing in between would be written into the fingerprint of a verdict obtained before it.
+        // Only under `once`, and only when there is a credential at all — `perMessage` neither reads
+        // nor writes grants, so it would be paying for a fingerprint nobody builds.
+        const credentialStamp =
+          cfg.mode === "once"
+            ? await readCredentialStamp(
+                base,
+                tenantId,
+                cfg.credentialRef,
+                ctrl.signal,
+              )
+            : ({ ok: true, stamp: null } as const);
+        // A revision nobody could read is not a revision: without it there is no fingerprint that
+        // can be trusted to change when the credential does, so this check neither reads a stored
+        // verdict nor writes one. It costs an endpoint call, which is the fail-closed direction.
+        const grantsUsable = cfg.mode === "once" && credentialStamp.ok;
+        const fingerprints = {
+          identityHash: contactAuthIdentityHash({ phone, email, identifier }),
+          policyHash: contactAuthPolicyHash(
+            cfg,
+            credentialStamp.ok ? credentialStamp.stamp : null,
+          ),
+        };
+        if (grantsUsable) {
+          const stored = await readContactAuthGrant(
+            base,
+            grantKey,
+            fingerprints,
+            { signal: ctrl.signal },
+          );
+          if (stored) return reusedVerdict(stored.context);
+        }
         let credential: InjectableCredential | null = null;
         if (cfg.credentialRef) {
           let timedOut = false;
@@ -166,7 +241,7 @@ export async function authorizeContact(
             return { outcome: "error", reason: "credential_not_injectable" };
           }
         }
-        return await checkContactAuthorization(
+        const verdict = await checkContactAuthorization(
           cfg,
           {
             phone,
@@ -186,6 +261,37 @@ export async function authorizeContact(
             signal: ctrl.signal,
           },
         );
+        // ONLY `once` GRANTS; EVERY MODE UN-GRANTS. The asymmetry is the rule, not an oversight:
+        // the mode decides who READS a grant, and it is deliberately not part of the policy
+        // fingerprint, so grants written under `once` survive a switch to `perMessage`. Dropping
+        // only under `once` left a round trip open — grant, switch to `perMessage`, the endpoint
+        // starts refusing, switch back inside the TTL, and the contact is served from an allow
+        // older than the refusal. The cost on the other side is one indexed DELETE of nothing per
+        // refusal under the default mode, which is what the rule is worth.
+        //
+        // An error stores and drops nothing: it is transient by contract (the next message
+        // retries), and a blip of the endpoint must not cost a contact the verdict they were
+        // legitimately given.
+        if (verdict.outcome === "denied") {
+          // Stamped with the instant this check STARTED, not with the instant the delete lands: what
+          // orders a concurrent allow against this refusal is when each was asked, and a retry that
+          // finally lands minutes later must not read as a refusal from minutes later.
+          await dropContactAuthGrant(base, grantKey, { refusedAt: askedAt });
+        } else if (grantsUsable && verdict.outcome === "allowed") {
+          await writeContactAuthGrant(
+            base,
+            grantKey,
+            {
+              ...fingerprints,
+              context: verdict.context,
+              ttlSeconds: cfg.grantTtlSeconds,
+            },
+            // `askedAt` is what makes this allow refusable: a refusal asked for while this check
+            // was in flight is newer than it, however late either answer arrived.
+            { askedAt },
+          );
+        }
+        return verdict;
       } finally {
         clearTimeout(timer);
       }
@@ -214,6 +320,9 @@ export function contactAuthFlowEvent(result: ContactAuthResult): FlowEvent {
     detail: {
       outcome: result.outcome,
       shared: result.shared,
+      // Only when true: the ordinary line is an ask, and a key on every line to say "this was the
+      // ordinary case" is a key readers learn to skip.
+      ...(result.reused ? { reused: true } : {}),
       ...(result.status !== undefined ? { status: result.status } : {}),
       ...(reason ? { reason } : {}),
     },

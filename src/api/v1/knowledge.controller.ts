@@ -1,6 +1,7 @@
 import { Elysia, t } from "elysia";
 import { doc, errors } from "@/api/lib/openapi";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
+import { requireDbId } from "@/lib/db-id";
 import { ForbiddenError, TenantTargetRequiredError } from "@/lib/errors";
 import { instanceIdentity } from "@/lib/instance";
 import type { TenantContext } from "@/lib/tenancy";
@@ -152,7 +153,7 @@ export const knowledgeController = new Elysia({
     async ({ tenantContext, params }) => {
       const kb = await getKnowledgeBase({
         ctx: ctxOrThrow(tenantContext),
-        id: BigInt(params.id),
+        id: requireDbId(params.id),
       });
       return {
         instance: instanceIdentity,
@@ -175,7 +176,7 @@ export const knowledgeController = new Elysia({
     async ({ tenantContext, params, body }) => {
       await updateKnowledgeBase({
         ctx: ctxOrThrow(tenantContext),
-        id: BigInt(params.id),
+        id: requireDbId(params.id),
         name: body.name,
         description: body.description,
         chunkSize: body.chunkSize,
@@ -231,7 +232,7 @@ export const knowledgeController = new Elysia({
     async ({ tenantContext, params }) => {
       await deleteKnowledgeBase({
         ctx: ctxOrThrow(tenantContext),
-        id: BigInt(params.id),
+        id: requireDbId(params.id),
       });
       return { instance: instanceIdentity, success: true };
     },
@@ -275,7 +276,7 @@ export const knowledgeController = new Elysia({
     "/bases/:id/documents",
     async ({ tenantContext, params }) => {
       const ctx = ctxOrThrow(tenantContext);
-      const docs = await listDocuments(ctx, BigInt(params.id));
+      const docs = await listDocuments(ctx, requireDbId(params.id));
       const block = await readEmbeddingBlock(ctx);
       return {
         instance: instanceIdentity,
@@ -307,7 +308,7 @@ export const knowledgeController = new Elysia({
     async ({ tenantContext, params, body }) => {
       const doc = await createDocument({
         ctx: ctxOrThrow(tenantContext),
-        knowledgeBaseId: BigInt(params.id),
+        knowledgeBaseId: requireDbId(params.id),
         title: body.title,
         text: body.text,
         sourceType: "text",
@@ -353,7 +354,7 @@ export const knowledgeController = new Elysia({
       });
       const doc = await createDocument({
         ctx: ctxOrThrow(tenantContext),
-        knowledgeBaseId: BigInt(params.id),
+        knowledgeBaseId: requireDbId(params.id),
         title: body.title ?? file.name,
         text,
         sourceType: "file",
@@ -395,7 +396,7 @@ export const knowledgeController = new Elysia({
     async ({ tenantContext, params }) => {
       const doc = await getDocument(
         ctxOrThrow(tenantContext),
-        BigInt(params.id),
+        requireDbId(params.id),
       );
       return {
         instance: instanceIdentity,
@@ -423,7 +424,7 @@ export const knowledgeController = new Elysia({
     async ({ tenantContext, params, body }) => {
       const doc = await updateDocument(
         ctxOrThrow(tenantContext),
-        BigInt(params.id),
+        requireDbId(params.id),
         {
           title: body.title,
           text: body.text,
@@ -463,7 +464,7 @@ export const knowledgeController = new Elysia({
   .delete(
     "/documents/:id",
     async ({ tenantContext, params }) => {
-      await deleteDocument(ctxOrThrow(tenantContext), BigInt(params.id));
+      await deleteDocument(ctxOrThrow(tenantContext), requireDbId(params.id));
       return { instance: instanceIdentity, success: true };
     },
     {
@@ -481,7 +482,7 @@ export const knowledgeController = new Elysia({
   .post(
     "/documents/:id/retry",
     async ({ tenantContext, params }) => {
-      await retryDocument(ctxOrThrow(tenantContext), BigInt(params.id));
+      await retryDocument(ctxOrThrow(tenantContext), requireDbId(params.id));
       return { instance: instanceIdentity, success: true };
     },
     {
@@ -501,7 +502,7 @@ export const knowledgeController = new Elysia({
     async ({ tenantContext, params, query }) => {
       const result = await reindexKnowledgeBase(
         ctxOrThrow(tenantContext),
-        BigInt(params.id),
+        requireDbId(params.id),
         undefined,
         { includeFailed: query.includeFailed === true },
       );
@@ -628,7 +629,7 @@ export const knowledgeController = new Elysia({
       instance: instanceIdentity,
       result: await editApprovalItem({
         ctx: ctxOrThrow(tenantContext),
-        id: BigInt(params.id),
+        id: requireDbId(params.id),
         proposedTitle: body.title,
         proposedContent: body.content,
         rationale: body.rationale,
@@ -663,7 +664,7 @@ export const knowledgeController = new Elysia({
       instance: instanceIdentity,
       result: await approveApprovalItem({
         ctx: ctxOrThrow(tenantContext),
-        id: BigInt(params.id),
+        id: requireDbId(params.id),
       }),
     }),
     {
@@ -684,7 +685,7 @@ export const knowledgeController = new Elysia({
       instance: instanceIdentity,
       result: await rejectApprovalItem({
         ctx: ctxOrThrow(tenantContext),
-        id: BigInt(params.id),
+        id: requireDbId(params.id),
       }),
     }),
     {

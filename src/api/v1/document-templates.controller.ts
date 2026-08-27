@@ -245,12 +245,11 @@ export const documentTemplatesController = new Elysia({
       requireRole: "TENANT_ADMIN",
       params: t.Object({
         id: t.String({
-          pattern: "^[0-9]+$",
           description: "Template id (BigInt string).",
         }),
       }),
       detail: doc("Get document template", "Returns one document template."),
-      response: errors(400, 401, 403, 404, 422),
+      response: errors(400, 401, 403, 404),
     },
   )
   .get(
@@ -266,7 +265,6 @@ export const documentTemplatesController = new Elysia({
       requireRole: "TENANT_ADMIN",
       params: t.Object({
         id: t.String({
-          pattern: "^[0-9]+$",
           description: "Template id (BigInt string).",
         }),
       }),
@@ -274,7 +272,7 @@ export const documentTemplatesController = new Elysia({
         "List template references",
         "Agents that were granted this template, so deletion can warn first.",
       ),
-      response: errors(400, 401, 403, 404, 422),
+      response: errors(400, 401, 403, 404),
     },
   )
   .patch(
@@ -291,7 +289,6 @@ export const documentTemplatesController = new Elysia({
       requireRole: "TENANT_ADMIN",
       params: t.Object({
         id: t.String({
-          pattern: "^[0-9]+$",
           description: "Template id (BigInt string).",
         }),
       }),
@@ -317,7 +314,6 @@ export const documentTemplatesController = new Elysia({
       requireRole: "TENANT_ADMIN",
       params: t.Object({
         id: t.String({
-          pattern: "^[0-9]+$",
           description: "Template id (BigInt string).",
         }),
       }),
@@ -325,6 +321,6 @@ export const documentTemplatesController = new Elysia({
         "Delete document template",
         "Deletes a document template. Documents already issued from it keep their own copy.",
       ),
-      response: errors(400, 401, 403, 404, 422),
+      response: errors(400, 401, 403, 404),
     },
   );

@@ -154,7 +154,7 @@ export const webhooksController = new Elysia({
       instance: instanceIdentity,
       subscription: await updateWebhookSubscription(
         ctxOrThrow(tenantContext),
-        BigInt(params.id),
+        requireDbId(params.id),
         body as WebhookSubscriptionUpdate,
       ),
     }),
@@ -209,7 +209,7 @@ export const webhooksController = new Elysia({
     async ({ tenantContext, params }) => {
       await deleteWebhookSubscription(
         ctxOrThrow(tenantContext),
-        BigInt(params.id),
+        requireDbId(params.id),
       );
       return { instance: instanceIdentity, success: true };
     },
@@ -236,7 +236,7 @@ export const webhooksController = new Elysia({
       instance: instanceIdentity,
       result: await sendWebhookTest(
         ctxOrThrow(tenantContext),
-        BigInt(params.id),
+        requireDbId(params.id),
       ),
     }),
     {

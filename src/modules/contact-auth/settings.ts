@@ -10,6 +10,15 @@ import { TEMPLATE_MESSAGE_MAX } from "@/modules/agents/text-caps";
 // the verdict, so revoking there takes effect on the customer's next message. Off by default; every
 // other field clamps rather than throws, so a malformed write can never break the webhook.
 
+// How long a positive verdict counts for (issue #189). `perMessage` is the gate as it shipped: the
+// endpoint owns the answer, and asking it every time is what lets a revocation there land on the
+// contact's very next message. `once` trades that immediacy for the call: the first `authorized:
+// true` is stored per contact and reused until it expires. Two operators asked for it — an endpoint
+// that is expensive or rate-limited (a burst of five WhatsApp messages is five identical lookups),
+// and a gate that is an UNLOCK, where the customer sends a code once and should stay served
+// afterwards without the endpoint having to remember them.
+export type ContactAuthMode = "perMessage" | "once";
+
 export interface ContactAuthConfig {
   enabled: boolean;
   // The authorization endpoint: a fixed origin, no placeholders (the identity travels in the body).
@@ -37,6 +46,13 @@ export interface ContactAuthConfig {
   // nested object, because mergeBehaviorSettings merges a block one level deep: a patch that set
   // only the team would otherwise silently reset the switch (the tts block has the same note).
   handoffEnabled: boolean;
+  // Reuse policy. Strict, like `enabled`: anything that is not exactly "once" reads as perMessage,
+  // so a malformed write can only ever make the gate ask MORE often, never less.
+  mode: ContactAuthMode;
+  // How long a stored grant counts for, under `once`. Clamped 60s-30d. It is part of the POLICY a
+  // grant is written under (see grants.ts): changing it invalidates every stored grant, which is
+  // also the operator's lever for dropping them without a new endpoint to call.
+  grantTtlSeconds: number;
   handoffTeamId: number | null;
   // Our ChatwootInstance DB id the team above was picked from. A Chatwoot team id belongs to ONE
   // account, so the pinned number is only meaningful in the account it came from; the runtime
@@ -57,6 +73,8 @@ export const CONTACT_AUTH_DEFAULTS: ContactAuthConfig = {
   includeMessageText: false,
   denyMessage: null,
   handoffEnabled: true,
+  mode: "perMessage",
+  grantTtlSeconds: 86_400,
   handoffTeamId: null,
   handoffTeamInstanceId: null,
 };
@@ -64,6 +82,12 @@ export const CONTACT_AUTH_DEFAULTS: ContactAuthConfig = {
 export const CONTACT_AUTH_TIMEOUT_MIN_MS = 1000;
 export const CONTACT_AUTH_TIMEOUT_MAX_MS = 10_000;
 export const CONTACT_AUTH_NOTICE_COOLDOWN_MAX_SECONDS = 3600;
+// A grant shorter than a minute is a grant that expires inside the burst it exists to collapse, and
+// one longer than a month outlives most of the facts an endpoint decides on. "Never reuse" is the
+// MODE, not a TTL of zero: two ways to say the same thing, and the second one says it in the more
+// confusing place.
+export const CONTACT_AUTH_GRANT_TTL_MIN_SECONDS = 60;
+export const CONTACT_AUTH_GRANT_TTL_MAX_SECONDS = 30 * 24 * 3600;
 
 function str(v: unknown): string | null {
   return typeof v === "string" && v.trim() ? v.trim() : null;
@@ -132,6 +156,13 @@ export function readContactAuthConfig(settings: unknown): ContactAuthConfig {
       typeof b.handoffEnabled === "boolean"
         ? b.handoffEnabled
         : CONTACT_AUTH_DEFAULTS.handoffEnabled,
+    mode: b.mode === "once" ? "once" : "perMessage",
+    grantTtlSeconds: clampInt(
+      b.grantTtlSeconds,
+      CONTACT_AUTH_DEFAULTS.grantTtlSeconds,
+      CONTACT_AUTH_GRANT_TTL_MIN_SECONDS,
+      CONTACT_AUTH_GRANT_TTL_MAX_SECONDS,
+    ),
     handoffTeamId: posInt(b.handoffTeamId),
     handoffTeamInstanceId: posInt(b.handoffTeamInstanceId),
   };

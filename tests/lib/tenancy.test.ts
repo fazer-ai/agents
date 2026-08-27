@@ -72,6 +72,67 @@ describe("resolveRequestTenantContext", () => {
     expect(context?.tenantId).toBeNull();
   });
 
+  // The half the test above did not reach. The old parse was `BigInt` in a try, so it refused only
+  // the spellings BigInt THROWS on: every row here used to come back as a target. The first four
+  // selected tenant 7 under a spelling no column has, and the last two parsed to a value the column
+  // cannot hold, which Postgres refuses at bind time with a 500 on a path documented as 400.
+  test("a selector BigInt would accept and a column would not is reported malformed", () => {
+    for (const header of [
+      "0x7",
+      "+7",
+      " 7 ",
+      "0b111",
+      "9223372036854775808",
+      "99999999999999999999",
+      "not-a-number",
+    ]) {
+      const { context, malformedSelector } = resolveRequestTenantContext(
+        superAdmin,
+        header,
+      );
+      expect(context?.tenantId).toBeNull();
+      // Reported, not folded into "no selector at all": the routes downstream answer those two
+      // differently, and one of them answers 200.
+      expect(malformedSelector).toBe(header);
+    }
+  });
+
+  // The control for the row above: the same digits, unpadded, still select and report nothing.
+  test("a plain decimal selector still selects", () => {
+    const { context, malformedSelector } = resolveRequestTenantContext(
+      superAdmin,
+      "7",
+    );
+    expect(context?.tenantId).toBe(7n);
+    expect(malformedSelector).toBeUndefined();
+  });
+
+  // Absent and empty are the same thing and neither is malformed: the console omits the header when
+  // nothing is selected (src/client/lib/api.ts), so refusing an empty value would refuse a request
+  // that named no tenant, which every route already answers on its own terms.
+  test("an absent or empty selector is not malformed", () => {
+    for (const header of [undefined, ""]) {
+      const { context, malformedSelector } = resolveRequestTenantContext(
+        superAdmin,
+        header,
+      );
+      expect(context?.tenantId).toBeNull();
+      expect(malformedSelector).toBeUndefined();
+    }
+  });
+
+  // The header decides nothing for anyone but a SUPER_ADMIN, so its shape decides nothing either.
+  // Refusing on it would let a forgeable value nobody reads fail another principal's request.
+  test("a malformed selector from a non-super-admin is ignored, not refused", () => {
+    const { context, malformedSelector, anomaly } = resolveRequestTenantContext(
+      tenantAdmin,
+      "0x7",
+    );
+    expect(context?.tenantId).toBe(3n);
+    expect(malformedSelector).toBeUndefined();
+    expect(anomaly).toBe(true);
+  });
+
   test("tenant admin keeps own tenant and flags a forged header as anomaly", () => {
     const ok = resolveRequestTenantContext(tenantAdmin, "3");
     expect(ok.context?.tenantId).toBe(3n);

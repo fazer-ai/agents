@@ -66,6 +66,49 @@ describe("readContactAuthConfig", () => {
     ).toBe(5000);
   });
 
+  // The reuse mode (issue #189). Anything that is not the one alternative spelling reads as the
+  // default, for the reason the `enabled` switch is strict: a malformed write may only ever leave
+  // the gate asking MORE often, never less.
+  test("the mode is perMessage unless the bag says exactly `once`", () => {
+    expect(readContactAuthConfig({ contactAuth: {} }).mode).toBe("perMessage");
+    expect(readContactAuthConfig({ contactAuth: { mode: "once" } }).mode).toBe(
+      "once",
+    );
+    expect(readContactAuthConfig({ contactAuth: { mode: "ONCE" } }).mode).toBe(
+      "perMessage",
+    );
+    expect(
+      readContactAuthConfig({ contactAuth: { mode: "cached" } }).mode,
+    ).toBe("perMessage");
+    expect(readContactAuthConfig({ contactAuth: { mode: true } }).mode).toBe(
+      "perMessage",
+    );
+  });
+
+  test("the grant TTL clamps into its documented range", () => {
+    expect(readContactAuthConfig({ contactAuth: {} }).grantTtlSeconds).toBe(
+      86_400,
+    );
+    expect(
+      readContactAuthConfig({ contactAuth: { grantTtlSeconds: 5 } })
+        .grantTtlSeconds,
+    ).toBe(60);
+    expect(
+      readContactAuthConfig({ contactAuth: { grantTtlSeconds: 99_999_999 } })
+        .grantTtlSeconds,
+    ).toBe(2_592_000);
+    expect(
+      readContactAuthConfig({ contactAuth: { grantTtlSeconds: "1h" } })
+        .grantTtlSeconds,
+    ).toBe(86_400);
+    // Zero is not "never reuse": the mode says that. A TTL of zero would be a grant that expires
+    // before it is read, which is the same thing said twice and in the more confusing place.
+    expect(
+      readContactAuthConfig({ contactAuth: { grantTtlSeconds: 0 } })
+        .grantTtlSeconds,
+    ).toBe(60);
+  });
+
   test("includeMessageText needs a real boolean, and is the STORED opt-in", () => {
     expect(
       readContactAuthConfig({
@@ -291,6 +334,8 @@ describe.skipIf(!dbUp)("contactAuth on the write surfaces", () => {
             includeMessageText: true,
             denyMessage: "  Atendemos apenas clientes.  ",
             handoffEnabled: false,
+            mode: "once",
+            grantTtlSeconds: 99_999_999,
             handoffTeamId: 12,
             handoffTeamInstanceId: 3,
           },
@@ -311,6 +356,8 @@ describe.skipIf(!dbUp)("contactAuth on the write surfaces", () => {
       includeMessageText: true,
       denyMessage: "Atendemos apenas clientes.",
       handoffEnabled: false,
+      mode: "once",
+      grantTtlSeconds: 2_592_000,
       handoffTeamId: 12,
       handoffTeamInstanceId: 3,
     });

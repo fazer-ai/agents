@@ -154,6 +154,19 @@ const SETTINGS_DESC_CEILING = 2_000;
 // silent-failure shape as `includeMessageText` and the half-named `modelFallback` above. The
 // remaining 153 is the field name, the boolean, and that sentence. Headroom over 12,500 stays
 // tighter than a block, as before.
+//
+// RAISED from 12,550 for issue #189, which adds `contactAuth.mode` and `contactAuth.grantTtlSeconds`
+// at 314 characters together. Re-measured on this tree at 12,864, not added to the previous figure:
+// the base moved while this branch was open, and a sum assumes nothing else did. What the two
+// `.describe()` strings buy is the pair of facts a caller cannot get by trying — that `once` stops
+// asking until the verdict EXPIRES (a caller who assumes otherwise ships a gate that has stopped
+// consulting them), and what the TTL is part of, since it looks like a harmless number.
+//
+// The figure was re-measured at the END of that issue's review loop rather than left at the one
+// taken when it opened: the two `.describe()` strings were rewritten twice while the loop ran, and
+// the number they landed on is 12,942 — eight characters under the ceiling the first measurement
+// justified, which is not headroom, it is a coin flip on the next edit. Tighter than a block, and
+// not tighter than a sentence.
 // #402 raises this the most any single change has: 12,550 → 20,900, measured at 20,443. Four blocks
 // of the settings bag reached MCP for the first time (guardrails, kanban, toolGuidance,
 // toolPreconditions), and two of them are maps keyed by the native tool catalog, so their value is
@@ -186,7 +199,12 @@ const SETTINGS_DESC_CEILING = 2_000;
 // a refusal, which is the exact hazard tests/api/v1/write-body-required.test.ts exists to keep out
 // of this codebase. The thirteen copies are what buys a refusal that can only name what the SERVER
 // declared.
-const SETTINGS_SCHEMA_CEILING = 21_600;
+//
+// MERGED, and re-measured once more on the tree that came out of it. Both sides above raised this
+// same constant from 12,550 while the other was open, so the two figures are about two trees that
+// no longer exist: summing them would write 21,880, a number measured nowhere. The tree that ships
+// is measured at 21,930.
+const SETTINGS_SCHEMA_CEILING = 22_050;
 
 describe("MCP tool descriptions", () => {
   test("agent_settings_set stays under its ceiling", async () => {
@@ -303,6 +321,15 @@ describe("MCP tool descriptions", () => {
   // follow-up step gains one boolean and its note, and no tool is added. Measured at 42,027 of
   // schema after the trim documented at SETTINGS_SCHEMA_CEILING, so the ceiling goes to 42,100.
   //
+  // #189 moves the schema figure and not the description one, again for the same reason: two fields
+  // on the `contactAuth` block, no new tool. FRESH measurement of this tree — 26,764 of description
+  // and 42,419 of schema — rather than 42,100 plus the 314 those fields cost on
+  // `agent_settings_set`: the base gained tools while this branch was open, and adding deltas writes
+  // a number nobody measured. The description ceiling does not move.
+  //
+  // Re-measured at the END of that loop, for the reason at SETTINGS_SCHEMA_CEILING: 26,764 of
+  // description and 42,497 of schema, which is three characters under the ceiling the first
+  // measurement justified. Schema ceiling to 42,600.
   // #402 moves the SCHEMA figure and not the description one, and it is the largest single move so
   // far: measured at 49,998, so the ceiling goes to 50,500. No tool was added — four blocks of the
   // settings bag became reachable through MCP at all, which is why the whole cost lands on schema.
@@ -324,6 +351,10 @@ describe("MCP tool descriptions", () => {
   // TOTAL is now the thing worth an issue of its own, and the answer at that size is load-on-demand
   // schemas rather than a smaller vocabulary. Splitting one tool into several is the intuitive move
   // and the wrong one: the per-tool envelope is then paid more times, not fewer.
+  //
+  // And re-measured after the merge of the two, for the reason above: the branch figure (51,043) and
+  // the base figure (42,497) are each about a tree the other had not landed on. The merged tree is
+  // 51,485 of schema and 26,764 of description.
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;
@@ -333,7 +364,7 @@ describe("MCP tool descriptions", () => {
       schema += t.schema.length;
     }
     expect(desc).toBeLessThanOrEqual(27_250);
-    expect(schema).toBeLessThanOrEqual(51_300);
+    expect(schema).toBeLessThanOrEqual(51_650);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

@@ -72,6 +72,31 @@ describe("resolveRequestTenantContext", () => {
     expect(context?.tenantId).toBeNull();
   });
 
+  // The half the test above did not reach. The old parse was `BigInt` in a try, so it refused only
+  // the spellings BigInt THROWS on: every row here used to come back as a target. The first four
+  // selected tenant 7 under a spelling no column has, and the last two parsed to a value the column
+  // cannot hold, which Postgres refuses at bind time with a 500 on a path documented as 400.
+  test("a selector BigInt would accept and a column would not is still no target", () => {
+    for (const header of [
+      "0x7",
+      "+7",
+      " 7 ",
+      "0b111",
+      "9223372036854775808",
+      "99999999999999999999",
+    ]) {
+      const { context } = resolveRequestTenantContext(superAdmin, header);
+      expect(context?.tenantId).toBeNull();
+    }
+  });
+
+  // The control for the row above: the same digits, unpadded, still select.
+  test("a plain decimal selector still selects", () => {
+    expect(resolveRequestTenantContext(superAdmin, "7").context?.tenantId).toBe(
+      7n,
+    );
+  });
+
   test("tenant admin keeps own tenant and flags a forged header as anomaly", () => {
     const ok = resolveRequestTenantContext(tenantAdmin, "3");
     expect(ok.context?.tenantId).toBe(3n);

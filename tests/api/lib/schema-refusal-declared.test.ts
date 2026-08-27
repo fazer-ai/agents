@@ -150,6 +150,17 @@ export function bodyViolation(s: Schema): { path: string[]; bad: unknown } {
     const type = sub?.type;
     if (type === "string") return { path: [key], bad: 42 };
     if (type !== undefined) return { path: [key], bad: "zzz" };
+    // NOTE: a UNION is permissive for the junk `violation` looks for, which is a STRING outside the
+    // members, and still refuses a type no member declares. `POST /v1/vault/:id/test` is the case
+    // that pays for this line: its only body property is `string | null`, so it takes any string and
+    // answers 422 for a number. That 422 was measurable before only through the route's PATH
+    // pattern, and went dark when the pattern moved into the handler (issue #371).
+    const members = (sub?.anyOf ?? []) as Schema[];
+    const takesANumber = members.some(
+      (m) =>
+        m?.type === undefined || m.type === "number" || m.type === "integer",
+    );
+    if (members.length > 0 && !takesANumber) return { path: [key], bad: 42 };
   }
   return { path: [], bad: undefined };
 }

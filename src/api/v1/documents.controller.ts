@@ -202,7 +202,6 @@ export const documentsController = new Elysia({
       requireRole: "TENANT_ADMIN",
       params: t.Object({
         id: t.String({
-          pattern: "^[0-9]+$",
           description: "Document id (BigInt string).",
         }),
       }),
@@ -210,7 +209,7 @@ export const documentsController = new Elysia({
         "Revoke document",
         "Revokes an issued document; its PDF stops being served.",
       ),
-      response: errors(400, 401, 403, 404, 422),
+      response: errors(400, 401, 403, 404),
     },
   )
   .get(
@@ -239,7 +238,6 @@ export const documentsController = new Elysia({
       requireAuth: true,
       params: t.Object({
         id: t.String({
-          pattern: "^[0-9]+$",
           description: "Document id (BigInt string).",
         }),
       }),
@@ -247,6 +245,6 @@ export const documentsController = new Elysia({
         "Download document PDF",
         "Streams the rendered PDF for inline viewing.",
       ),
-      response: errors(400, 401, 403, 404, 422),
+      response: errors(400, 401, 403, 404),
     },
   );

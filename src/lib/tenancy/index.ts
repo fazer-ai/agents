@@ -22,6 +22,8 @@ export {
   runScopedOn,
 } from "./multi-tenant";
 
+import { parseDbId } from "@/lib/db-id";
+
 // NOTE: fail-closed cross-tenant gate. SUPER_ADMIN may target any tenant (the actual
 // data access still goes through asSuperAdmin, which is audited). Everyone else may only
 // touch their own tenant; a mismatch or missing target is Forbidden.
@@ -47,14 +49,12 @@ export function resolveRequestTenantContext(
   if (!user) return { context: null, anomaly: false };
 
   if (user.role === "SUPER_ADMIN") {
-    let target: bigint | null = null;
-    if (headerTenantId) {
-      try {
-        target = BigInt(headerTenantId);
-      } catch {
-        target = null;
-      }
-    }
+    // NOTE: `parseDbId`, not `BigInt` in a try. The catch only saw the spellings BigInt THROWS on,
+    // so the comment above was true of `abc` and false of the rest: `0x7`, `+7` and ` 7 ` all
+    // selected tenant 7 under a spelling no column has, and a selector past 2^63-1 parsed here and
+    // was refused by Postgres when the lookup bound it, answering 500 where this says 400. Same
+    // rule as the route ids in src/api, one surface further out. Issue #371.
+    const target = headerTenantId ? parseDbId(headerTenantId) : null;
     return {
       context: { tenantId: target, userId: user.id, role: user.role },
       anomaly: false,

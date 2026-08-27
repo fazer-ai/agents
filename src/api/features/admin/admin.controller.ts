@@ -12,6 +12,7 @@ import { translate } from "@/api/lib/i18n";
 import { doc, errors } from "@/api/lib/openapi";
 import { parseQueryCount, parseQueryId } from "@/api/lib/query-filters";
 import config from "@/config";
+import { requireDbId } from "@/lib/db-id";
 import { UnauthorizedError } from "@/lib/errors";
 import {
   CannotDeleteSelfError,
@@ -153,7 +154,11 @@ export const adminController = new Elysia({
         set.status = 401;
         return { error: translate("errors.unauthorized", "Unauthorized") };
       }
-      if (user.id.toString() === params.id && body.role === "AGENT") {
+      // NOTE: the PARSED id, not the path segment. `parseDbId` accepts leading zeros, so `007`
+      // addresses row 7 while failing string equality against `"7"`, and comparing the raw segment
+      // let a caller past the guard that exists to stop them locking themselves out. Issue #371.
+      const targetId = requireDbId(params.id);
+      if (user.id === targetId && body.role === "AGENT") {
         set.status = 403;
         return {
           error: translate("errors.cannotDemoteSelf", "Cannot demote yourself"),
@@ -164,7 +169,7 @@ export const adminController = new Elysia({
         // a TENANT_ADMIN is fenced to its own tenant.
         const updated = await updateUserRole(
           user.tenantId,
-          BigInt(params.id),
+          targetId,
           body.role,
         );
         return {
@@ -223,7 +228,7 @@ export const adminController = new Elysia({
       try {
         await deleteUser(
           resolveScope(user, undefined),
-          BigInt(params.id),
+          requireDbId(params.id),
           user.id,
         );
         return { success: true };
@@ -267,7 +272,7 @@ export const adminController = new Elysia({
         "Delete user",
         "Permanently delete a user within the caller's tenant scope. Requires the acting admin's password; cannot delete yourself or the last admin.",
       ),
-      response: errors(401, 403, 404, 409, 422),
+      response: errors(400, 401, 403, 404, 409, 422),
     },
   )
   // Invite a user into a tenant. A SUPER_ADMIN targets one explicitly via body.tenantId (400 if
@@ -376,7 +381,7 @@ export const adminController = new Elysia({
       const user = await getAuthUser();
       try {
         // SUPER_ADMIN may revoke any invite (own tenant null → unscoped); others are fenced.
-        await revokeInvite(user?.tenantId ?? null, BigInt(params.id));
+        await revokeInvite(user?.tenantId ?? null, requireDbId(params.id));
         return { success: true };
       } catch (error) {
         if (error instanceof InviteNotFoundError) {

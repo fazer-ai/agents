@@ -419,11 +419,16 @@ that ENDS an authorization, so unlike the read and the write it is not best-effo
 remembered per contact — and so is a grant WRITE whose outcome this process could not confirm, since
 a statement that timed out may well have committed. No stored verdict is served for that contact
 while it stands (the endpoint is asked instead, which is the fail-closed answer), and the delete is
-retried on the next check of
-EITHER mode — `perMessage` reads no grants, so a retry that lived on the read path would never run
-for the mode where the refusal usually happens. What this process remembers about refusals is ids and
-timestamps, bounded by entry count like the notice cooldown. Restarting before the retry lands is the
-residual, bounded by the grant's own TTL.
+retried on the next check of EITHER
+mode — `perMessage` reads no grants, so a retry that lived on the read path would never run for the
+mode where the refusal usually happens.
+
+That retry is inside the gate's budget, because unlike the bookkeeping that follows a verdict it runs
+BEFORE the answer. The budget bounds what the CALLER waits for and nothing else: a delete abandoned
+on the deadline keeps its place in that contact's queue until the statement settles, so a straggler
+cannot delete the grant the next message stores. What this process remembers is ids and timestamps,
+bounded by entry count like the notice cooldown. Restarting before the retry lands is the residual,
+bounded by the grant's own TTL.
 
 **There is no clear-everything lever, deliberately.** What ends reuse is the TTL elapsing, the
 identity moving, a refusal, and `mode: "perMessage"` — the last of which is immediate and complete

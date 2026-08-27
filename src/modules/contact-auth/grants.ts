@@ -398,14 +398,20 @@ export async function dropContactAuthGrant(
   key: GrantKey,
   opts: { refusedAt?: number; signal?: AbortSignal } = {},
 ): Promise<void> {
-  await queuedForContact(key, async () => {
+  // THE QUEUE HOLDS THE STATEMENT, THE CALLER HOLDS ONLY ITS WAIT. Walking away from a Prisma
+  // statement does not stop it, so a delete abandoned on the deadline is still on its way to the
+  // database. Released from the queue at that moment, the next message's allow can be stored and
+  // then deleted by that straggler, which costs an endpoint call it should not have had to make.
+  // The signal therefore bounds what the CALLER waits for, and nothing else: the slot stays taken
+  // until the statement settles.
+  const settled = queuedForContact(key, async () => {
     // Remembered BEFORE the delete is attempted, and marked unconfirmed for as long as it is in
     // flight: the queue orders this contact's own writes, and this is what an unqueued reader (the
     // stored-verdict read) sees while the statement runs. Recorded after, a refusal is invisible for
     // the length of a database round trip, which is exactly the window an allow needs.
     remember(key, { refusedAt: opts.refusedAt, unconfirmed: true });
     try {
-      await deleteRow(base, key, opts.signal);
+      await deleteRow(base, key);
       remember(key, { unconfirmed: false });
     } catch (err) {
       // NOT swallowed, unlike the write above: this is the one that ENDS an authorization, so what
@@ -417,4 +423,15 @@ export async function dropContactAuthGrant(
       );
     }
   });
+  try {
+    await underSignalMaybe(settled, opts.signal);
+  } catch {
+    // The deadline ran out while waiting. The contact stays unconfirmed until the statement settles,
+    // which is the state the next check already knows how to handle, and the queue still holds the
+    // slot — so nothing this caller does next can be undone by the straggler.
+    logger.warn(
+      "contact-auth: stopped waiting for a refusal's delete on the gate deadline (agent=%s)",
+      String(key.agentId),
+    );
+  }
 }

@@ -728,6 +728,46 @@ describe.skipIf(!dbUp)("contact authorization: reusing a verdict", () => {
     expect(ep.calls).toHaveLength(3);
   });
 
+  test("a delete abandoned on the deadline cannot delete the next grant", async () => {
+    const ep = endpoint(allowed, denied, allowed, allowed);
+    await ask({ cfg: cfg(), ...ep });
+    await ask({
+      cfg: cfg({ mode: "perMessage" }),
+      fetchImpl: ep.fetchImpl,
+      base: baseWithGrantHook(appDb, (m) =>
+        m === "deleteMany"
+          ? () => {
+              throw new Error("delete is down");
+            }
+          : undefined,
+      ),
+    });
+    expect(unconfirmedWriteCount()).toBe(1);
+
+    // The retry runs into a delete that outlives the gate's budget. The caller walks away on time;
+    // the STATEMENT does not stop, and it is still on its way to the database.
+    const timedOut = await ask({
+      cfg: cfg({ timeoutMs: 1000 }),
+      fetchImpl: ep.fetchImpl,
+      base: baseWithGrantHook(appDb, (m, delegate) =>
+        m === "deleteMany"
+          ? async (...args: unknown[]) => {
+              await Bun.sleep(1500);
+              return delegate.deleteMany(...args);
+            }
+          : undefined,
+      ),
+    });
+    expect(timedOut.outcome).toBe("error");
+
+    // The next message is allowed and its grant is stored. Released from the queue when the CALLER
+    // gave up, the straggler would delete this row and cost an endpoint call nobody needed.
+    const stored = await ask({ cfg: cfg(), ...ep });
+    expect(stored.outcome).toBe("allowed");
+    await Bun.sleep(1200);
+    expect(await grants()).toHaveLength(1);
+  });
+
   test("an older refusal finishing late does not overwrite a newer one", async () => {
     const key = { tenantId, agentId, contactId };
     const t1 = Date.now() - 3000;

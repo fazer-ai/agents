@@ -61,6 +61,7 @@ const INBOX_FULL = 771; // deny message + handoff to team 77
 const INBOX_NO_COPY = 772; // denyMessage null, handoff on
 const INBOX_UNLOCK = 773; // POST + includeMessageText, handoff off (the unlock flow)
 const INBOX_FOREIGN_TEAM = 774; // handoff to a team pinned in ANOTHER Chatwoot account
+const INBOX_ONCE = 775; // mode "once": the positive verdict is stored and reused (#189)
 const TEAM_ID = 77;
 const UNLOCK_COPY = "Envie seu código de acesso para ser atendido.";
 
@@ -70,6 +71,7 @@ let inboxFullDbId = 0n;
 let inboxNoCopyDbId = 0n;
 let inboxUnlockDbId = 0n;
 let inboxForeignTeamDbId = 0n;
+let inboxOnceDbId = 0n;
 let foreignTeamAgentId = 0n;
 
 interface Sent {
@@ -402,11 +404,32 @@ describe.skipIf(!dbUp)("contact authorization gate (webhook e2e)", () => {
       select: { id: true },
     });
     foreignTeamAgentId = foreignTeam.id;
+    // The reuse mode (issue #189): a positive verdict is stored per contact and reused until it
+    // expires, so a burst of messages costs the operator's endpoint one lookup instead of five.
+    const once = await suDb.agent.create({
+      data: {
+        ...baseAgent,
+        name: "Verdicto reaproveitado",
+        settings: {
+          debounce: { enabled: false },
+          split: { enabled: false },
+          contactAuth: {
+            ...contactAuthBase,
+            mode: "once",
+            grantTtlSeconds: 3600,
+            denyMessage: DENY_COPY,
+            handoffEnabled: false,
+          },
+        },
+      },
+      select: { id: true },
+    });
     for (const [agentId, botId] of [
       [full.id, 21],
       [noCopy.id, 22],
       [unlock.id, 23],
       [foreignTeam.id, 24],
+      [once.id, 25],
     ] as const) {
       await suDb.chatwootAgentBot.create({
         data: {
@@ -465,6 +488,17 @@ describe.skipIf(!dbUp)("contact authorization gate (webhook e2e)", () => {
       select: { id: true },
     });
     inboxForeignTeamDbId = d.id;
+    const e = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: INBOX_ONCE,
+        name: "Verdicto reaproveitado",
+        agentId: once.id,
+      },
+      select: { id: true },
+    });
+    inboxOnceDbId = e.id;
   });
 
   beforeEach(() => {
@@ -479,6 +513,7 @@ describe.skipIf(!dbUp)("contact authorization gate (webhook e2e)", () => {
       "execution_logs",
       "agent_threads",
       "conversations",
+      "contact_auth_grants",
       "contacts",
       "chatwoot_webhook_deliveries",
       "inboxes",
@@ -575,6 +610,66 @@ describe.skipIf(!dbUp)("contact authorization gate (webhook e2e)", () => {
     expect(cw.statusToggles).toEqual([]);
     const rows = await flowRows(convId);
     expect(rows[0]?.detail).toMatchObject({ outcome: "allowed" });
+  });
+
+  // ── mode "once": the endpoint is asked until it says yes, and not after (issue #189) ──
+
+  test("once: the second message is served without asking the endpoint again", async () => {
+    const convId = 9320;
+    await seedConversation(convId, inboxOnceDbId);
+    const cw = stubChatwoot();
+    // ONE canned answer for TWO messages: a second ask would throw inside the double, so the count
+    // below is not the only thing keeping this honest.
+    const auth = authDouble(authorized);
+    for (const reply of ["Posso ajudar!", "Claro, já verifico."]) {
+      await deliverCustomerMessage({
+        convId,
+        chatwootInboxId: INBOX_ONCE,
+        senderId: 820,
+        phone: PHONE,
+        fetchImpl: auth.fetchImpl,
+        makeClient: cw.makeClient,
+        makeModel: () => new FakeListChatModel({ responses: [reply] }),
+      });
+    }
+    // The customer was served both times, and the operator's endpoint saw one request.
+    expect(cw.publicOn(convId).map((s) => s.content)).toEqual([
+      "Posso ajudar!",
+      "Claro, já verifico.",
+    ]);
+    expect(auth.calls).toHaveLength(1);
+    // And the log SAYS which of the two was answered from a stored verdict, so an operator reading
+    // the trail can tell "the endpoint allowed this" from "we did not ask".
+    const rows = await flowRows(convId);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]?.detail).toMatchObject({ outcome: "allowed" });
+    expect(rows[0]?.detail).not.toMatchObject({ reused: true });
+    expect(rows[1]?.detail).toMatchObject({ outcome: "allowed", reused: true });
+  });
+
+  test("once: a refusal is asked again on the next message", async () => {
+    const convId = 9321;
+    await seedConversation(convId, inboxOnceDbId);
+    const cw = stubChatwoot();
+    // The unlock shape: refused, then allowed. A stored denial would make the block permanent, which
+    // is precisely what a gate the customer can unlock must never do.
+    const auth = authDouble(() => denied("not_customer"), authorized);
+    for (const reply of ["primeira", "segunda"]) {
+      await deliverCustomerMessage({
+        convId,
+        chatwootInboxId: INBOX_ONCE,
+        senderId: 821,
+        phone: PHONE,
+        fetchImpl: auth.fetchImpl,
+        makeClient: cw.makeClient,
+        makeModel: () => new FakeListChatModel({ responses: [reply] }),
+      });
+    }
+    expect(auth.calls).toHaveLength(2);
+    expect(cw.publicOn(convId).map((s) => s.content)).toEqual([
+      DENY_COPY,
+      "segunda",
+    ]);
   });
 
   // The window this gate OPENS. The attribution gate runs before the authorization call, and that

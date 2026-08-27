@@ -90,9 +90,13 @@ function keywordOf(
   return hit[keyword];
 }
 
-// The blocks `agent_settings_set` exposes. `guardrails` is the one behavior block the tool does not
-// take, so the drift check must not demand a schema for it.
-const EXPOSED = BEHAVIOR_SETTINGS_KEYS.filter((k) => k !== "guardrails");
+// The blocks `agent_settings_set` exposes — now ALL of them. `guardrails` used to be filtered out
+// here, and that line was the only record anywhere that its absence was a decision rather than an
+// oversight; it did not say why, which is how it became indistinguishable from the four blocks that
+// were simply never registered (issue #402). Everything the aggregate owns is published, so the
+// filter is gone rather than re-pointed: a future exemption belongs in
+// tests/modules/agent-settings-mcp-parity.test.ts, whose NOT_PUBLISHED demands a written reason.
+const EXPOSED = BEHAVIOR_SETTINGS_KEYS;
 
 // Fields a reader DERIVES rather than stores. Computed from the block's own storable projection, so
 // it cannot describe a state the code has left — see the test below it.
@@ -199,6 +203,124 @@ describe("agent_settings_set argument schema", () => {
     expect(asClientWouldCompileIt.test("pt")).toBe(true);
     expect(asClientWouldCompileIt.test("pt-BR")).toBe(true);
     expect(asClientWouldCompileIt.test("portugues")).toBe(false);
+  });
+
+  // BLANK IS DISCARDED BY THE READER, so it belongs to the kind the schema declares. Every field read
+  // through `readToolInstructions` is here, and the sweep was by that question rather than by block:
+  // a note that trims to nothing replaces the note that was there and then never reaches a tool
+  // description, so the call reports success and the guidance is gone.
+  //
+  // `followUps[].instructions` is deliberately absent — its stored default IS `""` and the reader
+  // keeps it, so refusing it would break the round trip. That asymmetry is the whole reason this is
+  // asserted per field instead of per type.
+  test("the published schema refuses a blank note wherever the reader drops one", async () => {
+    const published = await publishedSchema();
+    for (const [block, field] of [
+      ["handoff", "instructions"],
+      ["kanban", "instructions"],
+    ] as const) {
+      const pattern = keywordOf(published, block, field, "pattern");
+      expect(`${block}.${field}: ${String(pattern)}`).toBe(
+        `${block}.${field}: \\S`,
+      );
+      // Compiled the way a client would, with no flags: what the server refuses, a client refuses.
+      const asClientWouldCompileIt = new RegExp(pattern as string);
+      expect(asClientWouldCompileIt.test("")).toBe(false);
+      expect(asClientWouldCompileIt.test("   ")).toBe(false);
+      expect(asClientWouldCompileIt.test("peça o CPF")).toBe(true);
+    }
+    // The tool-keyed map publishes it per native key, which is where a caller reads it from.
+    const guidance = keywordOf(
+      published,
+      "toolGuidance",
+      "handoff_to_human",
+      "pattern",
+    );
+    expect(guidance).toBe("\\S");
+  });
+
+  // THE OTHER DIRECTION OF THE SAME INVARIANT, and the reason it needed its own round: on the
+  // guidance side blank was ACCEPTED and thrown away; on the precondition side the server REFUSES it
+  // (`parseToolPrecondition` trims, the write boundary refuses what does not parse), so a
+  // schema-valid call came back as an MCP error with nothing published to predict it.
+  test("the published precondition refuses the blank the write refuses", async () => {
+    const published = await publishedSchema();
+    const value = published.toolPreconditions?.handoff_to_human;
+    if (!value)
+      throw new Error("toolPreconditions.handoff_to_human not published");
+    const branches = Array.isArray(value.anyOf)
+      ? (value.anyOf as Record<string, unknown>[])
+      : [value];
+    const object = branches.find((b) => b.type === "object") as {
+      properties: Record<string, { pattern?: string }>;
+    };
+    expect(object.properties.key?.pattern).toBe("\\S");
+    expect(object.properties.equals?.pattern).toBe("\\S");
+  });
+
+  // The refusal now happens in the PARSE, before the handler — which is the whole point, since a
+  // client validating against tools/list refuses it before sending. Asserted by the error text: a
+  // blank key must never reach `assertSettingsToolPreconditions`.
+  test("a blank precondition key is refused by the schema, not by the write boundary", () => {
+    const patch = {
+      toolPreconditions: {
+        handoff_to_human: { kind: "attribute", scope: "contact", key: "  " },
+      },
+    };
+    expect(() => z.object(BEHAVIOR_PATCH_SHAPE).parse(patch)).toThrow(
+      /toolPreconditions/,
+    );
+    // And `equals`, whose blank the reader refuses rather than treats as absent — a rule the write
+    // boundary already enforced and the schema did not publish.
+    expect(() =>
+      z.object(BEHAVIOR_PATCH_SHAPE).parse({
+        toolPreconditions: {
+          handoff_to_human: {
+            kind: "attribute",
+            scope: "contact",
+            key: "cpf",
+            equals: " ",
+          },
+        },
+      }),
+    ).toThrow(/equals/);
+  });
+
+  // And the rule that decides which server refusals belong in the schema at all, pinned by its one
+  // counterexample: `modelFallback` refuses a provider without a model, which is a requirement
+  // BETWEEN fields. docs/mcp.md puts those in the description, so the schema must NOT carry it —
+  // copying it in would refuse the half-pair a stored bag legitimately re-sends.
+  test("a between-fields requirement stays out of the schema", () => {
+    expect(() =>
+      z.object(BEHAVIOR_PATCH_SHAPE).parse({
+        modelFallback: { provider: "openai" },
+      }),
+    ).not.toThrow();
+  });
+
+  // The other half, and the half that made round 9 of this PR a regression: `null` is the documented
+  // way to clear, so it must still parse everywhere blank is refused.
+  test("null still clears every field where blank is refused", () => {
+    for (const patch of [
+      { handoff: { instructions: null } },
+      { kanban: { instructions: null } },
+      { toolGuidance: { handoff_to_human: null } },
+    ]) {
+      expect(() => z.object(BEHAVIOR_PATCH_SHAPE).parse(patch)).not.toThrow();
+    }
+  });
+
+  // And the round trip itself: a blank note never comes BACK from the readers, so echoing a get can
+  // never hit the refusal this adds.
+  test("no reader ever emits the blank this refuses", () => {
+    const read = readBehaviorSettings({
+      handoff: { mode: "route", instructions: "   " },
+      kanban: { instructions: "" },
+      toolGuidance: { handoff_to_human: "  ", assign_label: "" },
+    });
+    expect(read.handoff.instructions).toBeNull();
+    expect(read.kanban.instructions).toBeNull();
+    expect(read.toolGuidance).toEqual({});
   });
 
   // A value the readers HONOR has to parse. Each row is a real reader behavior, not a hypothetical:
@@ -413,6 +535,26 @@ describe("agent_settings_set over MCP", () => {
     expect(r.text).toContain("tts.mode");
     expect(r.text).toContain("never");
     expect(r.text).toContain("preference");
+  });
+
+  test("a blank note is refused, naming the field", async () => {
+    const r = await callSettingsSet({
+      agent_id: "1",
+      toolGuidance: { assign_label: "   " },
+    });
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain("toolGuidance.assign_label");
+  });
+
+  test("a blank precondition key is refused, naming the field", async () => {
+    const r = await callSettingsSet({
+      agent_id: "1",
+      toolPreconditions: {
+        assign_label: { kind: "attribute", scope: "contact", key: " " },
+      },
+    });
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain("toolPreconditions.assign_label.key");
   });
 
   test("a clamped value is NOT refused, it goes through to the readers", async () => {

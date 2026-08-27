@@ -1,6 +1,7 @@
 import { Elysia, t } from "elysia";
 import { doc, errors } from "@/api/lib/openapi";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
+import { requireDbId } from "@/lib/db-id";
 import { ForbiddenError, TenantTargetRequiredError } from "@/lib/errors";
 import { instanceIdentity } from "@/lib/instance";
 import type { TenantContext } from "@/lib/tenancy";
@@ -121,7 +122,7 @@ export const mcpConnectionsController = new Elysia({
       instance: instanceIdentity,
       connection: await getMcpConnection(
         ctxOrThrow(tenantContext),
-        BigInt(params.id),
+        requireDbId(params.id),
       ),
     }),
     {
@@ -131,7 +132,7 @@ export const mcpConnectionsController = new Elysia({
         "Returns a single consumed MCP server connection by id.",
       ),
       params: idParams,
-      response: errors(401, 403, 404),
+      response: errors(400, 401, 403, 404),
     },
   )
   .get(
@@ -140,7 +141,7 @@ export const mcpConnectionsController = new Elysia({
       instance: instanceIdentity,
       references: await mcpReferences(
         ctxOrThrow(tenantContext),
-        BigInt(params.id),
+        requireDbId(params.id),
       ),
     }),
     {
@@ -178,7 +179,7 @@ export const mcpConnectionsController = new Elysia({
       instance: instanceIdentity,
       connection: await updateMcpConnection(
         ctxOrThrow(tenantContext),
-        BigInt(params.id),
+        requireDbId(params.id),
         body as McpConnectionUpdate,
       ),
     }),
@@ -196,7 +197,10 @@ export const mcpConnectionsController = new Elysia({
   .delete(
     "/:id",
     async ({ tenantContext, params }) => {
-      await deleteMcpConnection(ctxOrThrow(tenantContext), BigInt(params.id));
+      await deleteMcpConnection(
+        ctxOrThrow(tenantContext),
+        requireDbId(params.id),
+      );
       return { instance: instanceIdentity, success: true };
     },
     {
@@ -214,7 +218,7 @@ export const mcpConnectionsController = new Elysia({
     async ({ tenantContext, params }) => {
       const discovered = await discoverMcpTools(
         ctxOrThrow(tenantContext),
-        BigInt(params.id),
+        requireDbId(params.id),
       );
       return {
         instance: instanceIdentity,

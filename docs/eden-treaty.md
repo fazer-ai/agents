@@ -56,3 +56,10 @@ Renames, additions, and union widenings on the server propagate to the client at
 For nested fetches (e.g. `api.api.admin.users({ id }).licenses.get`), repeat the pattern with `ReturnType<ReturnType<typeof api.api.admin.users>["licenses"]["get"]>`.
 
 If you need to override a single field (e.g. typing a `Json` column more strictly), use `Omit<Base, "field"> & { field: BetterType }` instead of redeclaring the whole shape.
+
+## Two more rules, same root cause
+
+Both come from the same fact: Eden cannot tell statically which `return` maps to which status, because `set.status` is runtime.
+
+- **Throw on error paths; never `set.status = 4xx; return { error }`.** A handler that returns its errors makes Eden infer the (undeclared) 200 `data` as the **union of every return**, so success fields come out as `string | undefined` in the client and the type-check breaks. Throw the classes from `@/lib/errors` (`NotFoundError`/`UnauthorizedError`/`ForbiddenError`/`AppError`) instead: they go to the global `onError` and stay **outside** the handler's return type, leaving `data` as just the success object. Keep `response: errors(...)` for the docs. Redirect/browser-only endpoints (e.g. `/authorize`) may keep `set.status + return`, since nothing consumes their `data` typed.
+- **`response` keys must be numeric literals, never `Record<number, Schema>`.** An index signature tells the treaty that EVERY status (200 included) is the error schema, so `Awaited<ReturnType<typeof api….get>>["data"]` collapses to `{ error: string }` across the whole client — hundreds of TS errors in every consumer. `errors()` in `src/api/lib/openapi.ts` exists for this, with a `const` type param: `errors<const S extends readonly number[]>(...statuses: S): { [K in S[number]]: typeof ErrorResponse }`, so `errors(400, 404)` yields literal keys. Do not regress it to `Record<number>` or a plain `number[]`. This is doc-only and cannot validate the 200 path, because runtime errors are raw `Response.json({ error })` from `onError` and Elysia does not validate those. `.ws()` remains the exception: never give it a `response` at all.

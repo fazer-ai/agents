@@ -1,7 +1,16 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { Client } from "pg";
 import {
+  FLEET_ROLE_EXPR,
+  FLEET_ROLE_RETAINED_MEMBER_ENV,
+} from "@/lib/tenancy/fleet-role";
+import {
+  assertFleetMembership,
+  assertFleetRoleIsUnprivileged,
   assertRuntimeRoleIsUnprivileged,
+  FLEET_ROLE_FORBIDDEN_ATTRIBUTES,
+  fleetMembershipRepair,
   parseAppRole,
   planRoleProvisioning,
 } from "../../scripts/db-bootstrap";
@@ -27,6 +36,8 @@ if (suUrl) {
 
 const ADMIN_ROLE = `fazerai_bs_admin_${process.pid}`;
 const APP_ROLE = `fazerai_bs_app_${process.pid}`;
+// A role the PREVIOUS installation of a recreated database left as a member of the fleet role.
+const STRAY_ROLE = `fazerai_bs_stray_${process.pid}`;
 const FOREIGN_ROLE = `fazerai_bs_foreign_${process.pid}`;
 const UNREACHABLE_ROLE = `fazerai_bs_unreachable_${process.pid}`;
 const ROT_A_ROLE = `fazerai_bs_rot_a_${process.pid}`;
@@ -40,8 +51,19 @@ const SU_PARENT = `fazerai_bs_su_parent_${process.pid}`;
 const TEAM_ROLE = `fazerai_bs_team_${process.pid}`;
 const SIDE_ROLE = `fazerai_bs_side_${process.pid}`;
 const HEIR_ROLE = `fazerai_bs_heir_${process.pid}`;
+// The heir that reaches privilege WITHOUT inheriting it: the case every one of these checks
+// answered "safe" until round 16 measured it.
+const SETHEIR_ROLE = `fazerai_bs_setheir_${process.pid}`;
+const SETHEIR_PARENT = `fazerai_bs_setheir_parent_${process.pid}`;
+// Elevated WITHOUT defeating RLS, which is the whole point of the arm it serves.
+const MINTER_ROLE = `fazerai_bs_minter_${process.pid}`;
 const SETONLY_ROLE = `fazerai_bs_setonly_${process.pid}`;
 const PRIV_ROLE = `fazerai_bs_priv_${process.pid}`;
+// The shape a RESTORE leaves: a fleet role derived from SOME OTHER database name, named by the
+// copied policies of this one. The suffix is not this database's hash and does not need to be —
+// what makes it foreign is that it is not what this database derives.
+const ALIEN_FLEET_ROLE = `fazerai_fleet_bs_src_${process.pid}_deadbeef`;
+const ALIEN_MEMBER_ROLE = `fazerai_bs_alien_${process.pid}`;
 const PROBE_DB = `fazerai_bs_probe_${process.pid}`;
 const SOLO_DB = `fazerai_bs_solo_db_${process.pid}`;
 const NOINH_DB = `fazerai_bs_noinh_db_${process.pid}`;
@@ -58,19 +80,95 @@ function urlFor(user: string, password: string, database: string): string {
   return u.toString();
 }
 
+// The fleet role is CLUSTER-wide and this file boots a dozen installations against a handful of
+// probe databases, so it accumulates members across tests — several granted by the SUPERUSER, which
+// a CREATEROLE administrator cannot revoke even with CASCADE, and which bootstrap then correctly
+// refuses to boot past. Production does not accumulate that way: one installation, one runtime role,
+// rotations cleared by the same administrator that made them.
+//
+// So every boot starts from the state a real one starts from. It takes the DATABASE and the
+// ADMINISTRATOR of the boot it is about to run, because both vary here — a helper that assumed the
+// default probe database cleared the wrong role and a helper that assumed the default administrator
+// revoked the ADMIN OPTION out from under the boot. Tests that are ABOUT a leftover pass
+// `keepStrays` and create it themselves.
+async function clearFleetMembers(migrationUrl: string, appRole: string) {
+  const admin = new URL(migrationUrl).username;
+  const c = new Client({ connectionString: migrationUrl });
+  await c.connect();
+  try {
+    const fleet = (
+      await c.query<{ role: string }>(`SELECT ${FLEET_ROLE_EXPR} AS role`)
+    ).rows[0]?.role as string;
+    // Nothing to reconcile before the FIRST boot: the role is what that boot creates.
+    const exists = (
+      await c.query<{ e: boolean }>(
+        "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1) AS e",
+        [fleet],
+      )
+    ).rows[0]?.e;
+    if (!exists) return;
+    const strays = (
+      await c.query<{ rolname: string }>(
+        `SELECT DISTINCT r.rolname
+           FROM pg_auth_members am
+           JOIN pg_roles r ON r.oid = am.member
+           JOIN pg_roles d ON d.oid = am.roleid
+          WHERE d.rolname = $1 AND r.rolname <> $2 AND r.rolname <> $3
+            AND NOT EXISTS (SELECT 1 FROM pg_stat_activity a
+                             WHERE a.datname = current_database()
+                               AND a.usename = r.rolname)`,
+        [fleet, appRole, admin],
+      )
+    ).rows;
+    // A role with an OPEN SESSION here is skipped, exactly as bootstrap skips it: that is the
+    // OUTGOING role of a rotation, which docs/deploy.md promises stays alive through the transfer,
+    // and two tests below are about precisely that.
+    //
+    // As the SUPERUSER, because the point is to reach what the administrator cannot.
+    const db = su as Client;
+    for (const { rolname } of strays) {
+      await db.query(`REVOKE "${fleet}" FROM "${rolname}" CASCADE`);
+    }
+    // And the runtime role of the boot about to run HAS the membership, which is the other half of
+    // "the state a real install is in". Several tests here create their runtime role as the
+    // superuser, so the CREATEROLE administrator holds no ADMIN over it and cannot grant it
+    // anything — bootstrap then refuses, correctly, on a state those tests are not about.
+    // Only if it is already there: several tests boot a runtime role bootstrap itself creates, and
+    // this runs before that.
+    const appExists = (
+      await c.query<{ e: boolean }>(
+        "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1) AS e",
+        [appRole],
+      )
+    ).rows[0]?.e;
+    if (appExists) {
+      await db.query(
+        `GRANT "${fleet}" TO "${appRole}" WITH INHERIT FALSE, SET TRUE`,
+      );
+    }
+  } finally {
+    await c.end();
+  }
+}
+
 async function runBootstrap(
   appPassword = APP_PW,
   appRole = APP_ROLE,
   extraEnv: Record<string, string> = {},
+  keepStrays = false,
 ) {
+  const env = {
+    ...process.env,
+    MIGRATION_DATABASE_URL: urlFor(ADMIN_ROLE, ADMIN_PW, PROBE_DB),
+    DATABASE_URL: urlFor(appRole, appPassword, PROBE_DB),
+    ...extraEnv,
+  };
+  if (!keepStrays) {
+    await clearFleetMembers(env.MIGRATION_DATABASE_URL as string, appRole);
+  }
   const proc = Bun.spawn(["bun", "scripts/db-bootstrap.ts"], {
     cwd: REPO_ROOT,
-    env: {
-      ...process.env,
-      MIGRATION_DATABASE_URL: urlFor(ADMIN_ROLE, ADMIN_PW, PROBE_DB),
-      DATABASE_URL: urlFor(appRole, appPassword, PROBE_DB),
-      ...extraEnv,
-    },
+    env,
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -80,6 +178,21 @@ async function runBootstrap(
     proc.exited,
   ]);
   return { exitCode, stdout, stderr };
+}
+
+// The fleet role's name carries the database (see `@/lib/tenancy/fleet-role`), so it is asked of the
+// probe database rather than written here — a copy would be a second spelling of the thing the live
+// tests below are about. The EXPRESSION rather than `public.fazerai_fleet_role()`, because this
+// probe database is provisioned by db-bootstrap alone and never migrated: the function that
+// `migrate deploy` creates does not exist here, which is exactly the state bootstrap is written for.
+async function probeFleetRole(): Promise<string> {
+  const admin = new URL(suUrl as string);
+  return onProbe(
+    urlFor(admin.username, admin.password, PROBE_DB),
+    async (c) =>
+      (await c.query<{ role: string }>(`SELECT ${FLEET_ROLE_EXPR} AS role`))
+        .rows[0]?.role as string,
+  );
 }
 
 async function onProbe<T>(
@@ -98,6 +211,54 @@ async function onProbe<T>(
 // The decision the whole change turns on, as a table: which statement each catalog state earns.
 // It is separated from the database because what makes it right is a privilege rule, not a
 // connection — and because the e2e below can only reach three of these five rows.
+// A rotation's outgoing role is DECLARED, and a declaration that cannot REACH the process declares
+// nothing. None of the deploy composes uses `env_file`: each lists its environment explicitly, so a
+// variable they do not name never arrives, and `docs/deploy.md` would be telling operators to set
+// something with no effect. Measured by reading them — all three whitelist, none inherits.
+describe("the retention declaration reaches a deployed container", () => {
+  const COMPOSES = [
+    "docker-compose.prod.yml",
+    "docker-compose.coolify.yml",
+    "docker-compose.portainer.yml",
+  ];
+
+  test("every deploy compose passes it through", () => {
+    for (const file of COMPOSES) {
+      expect([
+        file,
+        readFileSync(file, "utf8").includes(
+          `${FLEET_ROLE_RETAINED_MEMBER_ENV}=`,
+        ),
+      ]).toEqual([file, true]);
+    }
+  });
+
+  // The positive control for the premise above: if a compose ever grew an `env_file`, the whitelist
+  // would stop being the whole story and this fence would be asking the wrong question.
+  test("none of them inherits an env file instead", () => {
+    for (const file of COMPOSES) {
+      expect([file, readFileSync(file, "utf8").includes("env_file")]).toEqual([
+        file,
+        false,
+      ]);
+    }
+  });
+
+  // Where an operator looks the name up. `CLAUDE.md` makes this the rule for every new variable.
+  //
+  // Anchored on the DECLARATION, not on the name appearing somewhere: the note above it explains
+  // the variable in prose, so a substring check stayed green with the declaration line renamed —
+  // measured, as a mutation that survived.
+  test(".env.example declares it, commented out", () => {
+    const declared = readFileSync(".env.example", "utf8")
+      .split("\n")
+      .filter((line) =>
+        new RegExp(`^#?\\s*${FLEET_ROLE_RETAINED_MEMBER_ENV}=`).test(line),
+      );
+    expect(declared).toHaveLength(1);
+  });
+});
+
 describe("planRoleProvisioning", () => {
   const cases: [
     string,
@@ -296,6 +457,160 @@ describe("planRoleProvisioning", () => {
     });
   });
 
+  // NOTE: the sibling post-condition, and it refuses in BOTH directions because the two failures
+  // are opposite and only one is loud. Without the membership the cross-tenant path cannot switch
+  // role and every fleet read answers zero rows; WITH it inherited, the fleet policy applies to the
+  // runtime role passively and every tenant becomes readable on an ordinary request. Neither shows
+  // up in a role ATTRIBUTE, which is why `assertRuntimeRoleIsUnprivileged` above cannot see it.
+  // NOTE: the third post-condition, and the one that is about what the fleet role IS rather than who
+  // reaches it. This script only CREATES the role when it is absent, so on the branch that finds an
+  // existing one — a database dropped and recreated leaves it behind — nothing had asked whether it
+  // is the harmless NOLOGIN role this design describes.
+  describe("assertFleetRoleIsUnprivileged", () => {
+    const ok = { reaches: null };
+
+    test("the role this design creates passes", () => {
+      expect(() =>
+        assertFleetRoleIsUnprivileged("fleet_role", ok),
+      ).not.toThrow();
+    });
+
+    // Each attribute on its own, because a check written as one boolean would pass five of these —
+    // and the list is every attribute that OUTLIVES a SET ROLE, not just the two that defeat RLS:
+    // the runtime role acquires CREATEDB, CREATEROLE and REPLICATION the moment it enters this role.
+    test("every way of being privileged is refused, and named", () => {
+      expect(FLEET_ROLE_FORBIDDEN_ATTRIBUTES.map(([, w]) => w)).toEqual([
+        "SUPERUSER",
+        "BYPASSRLS",
+        "LOGIN",
+        "CREATEDB",
+        "CREATEROLE",
+        "REPLICATION",
+      ]);
+      for (const [field, word] of FLEET_ROLE_FORBIDDEN_ATTRIBUTES) {
+        const boom = () =>
+          assertFleetRoleIsUnprivileged("fleet_role", { ...ok, [field]: true });
+        expect(boom).toThrow(/already exists and is privileged/);
+        expect(boom).toThrow(new RegExp(word));
+      }
+      const inherited = () =>
+        assertFleetRoleIsUnprivileged("fleet_role", {
+          ...ok,
+          reaches: "rds_superuser",
+        });
+      expect(inherited).toThrow(
+        /can become a privileged role \(rds_superuser\)/,
+      );
+    });
+
+    // The repair is a DROP, not a demotion: this installation does not own that role, and demoting
+    // someone else's role reaches every database on the cluster that uses it.
+    test("the repair drops the role rather than demoting it", () => {
+      const boom = () =>
+        assertFleetRoleIsUnprivileged("fleet_role", { ...ok, rolsuper: true });
+      expect(boom).toThrow(
+        /DROP OWNED BY "fleet_role"; DROP ROLE "fleet_role";/,
+      );
+      expect(boom).not.toThrow(/NOSUPERUSER/);
+    });
+  });
+
+  describe("assertFleetMembership", () => {
+    const repair = fleetMembershipRepair("app_role", "fleet_role", 170000);
+
+    test("able to SET ROLE and not inheriting is the only state that passes", () => {
+      expect(() =>
+        assertFleetMembership(
+          "app_role",
+          "fleet_role",
+          { can_set_role: true, usage: false },
+          repair,
+        ),
+      ).not.toThrow();
+    });
+
+    // Both refuse. The first version of this made the missing capability a WARNING, on the claim
+    // that only fleet administration breaks — counting the call sites says otherwise, and the
+    // message now names them, so a change back to warning has to argue with the text.
+    test("inheriting THROWS, and the repair keeps SET ROLE possible", () => {
+      const boom = () =>
+        assertFleetMembership(
+          "app_role",
+          "fleet_role",
+          { can_set_role: true, usage: true },
+          repair,
+        );
+      expect(boom).toThrow(/INHERITS/);
+      // A GRANT, never a REVOKE: revoking would fix the inheritance and break the cross-tenant path
+      // in the same statement.
+      expect(boom).toThrow(
+        /GRANT "fleet_role" TO "app_role" WITH INHERIT FALSE, SET TRUE;/,
+      );
+      expect(boom).not.toThrow(/REVOKE/);
+    });
+
+    // NOTE: the state below is what a grant with `SET FALSE` produces, and it is NOT "not a member".
+    // `pg_has_role(…, 'MEMBER')` answers true there while `SET ROLE` is denied (measured on 17.10),
+    // so asking the membership instead of the capability is how a broken install reads as healthy.
+    test("no SET capability is refused too, and names what stops working", () => {
+      const boom = () =>
+        assertFleetMembership(
+          "app_role",
+          "fleet_role",
+          { can_set_role: false, usage: false },
+          repair,
+        );
+      expect(boom).toThrow(/cannot SET ROLE/);
+      // The call sites that make this fatal rather than cosmetic. The first version of this check
+      // WARNED, on the claim that only fleet administration breaks; counting them says otherwise —
+      // an API key cannot be verified before its tenant is known, so that lookup is one of these.
+      expect(boom).toThrow(/API key/);
+      expect(boom).toThrow(/Chatwoot route/);
+      expect(boom).toThrow(/scheduler/);
+      expect(boom).toThrow(/first admin/);
+    });
+
+    // NOTE: inheriting without membership cannot happen on a healthy catalog, and the order of the
+    // two checks is what decides which answer an impossible state gets. Inheritance is the one that
+    // loses data, so it is asked first — and it is the one that refuses.
+    test("inheritance is reported ahead of a missing SET capability", () => {
+      expect(() =>
+        assertFleetMembership(
+          "app_role",
+          "fleet_role",
+          { can_set_role: false, usage: true },
+          repair,
+        ),
+      ).toThrow(/INHERITS/);
+    });
+
+    // The repair is a statement an operator pastes, so it has to be one their server can parse.
+    // `WITH INHERIT` is 16+ syntax; 15 refuses it outright, and the control there is the attribute.
+    test("the repair is spelled for the server that will run it", () => {
+      expect(
+        fleetMembershipRepair("app_role", "fleet_role", 170000),
+      ).toStartWith(
+        'GRANT "fleet_role" TO "app_role" WITH INHERIT FALSE, SET TRUE;',
+      );
+      expect(fleetMembershipRepair("app_role", "fleet_role", 160000)).toContain(
+        "WITH INHERIT FALSE",
+      );
+      const old = fleetMembershipRepair("app_role", "fleet_role", 150000);
+      expect(old).not.toContain("WITH INHERIT FALSE, SET TRUE;");
+      expect(old).toStartWith('ALTER ROLE "app_role" NOINHERIT;');
+      expect(old).toContain('GRANT "fleet_role" TO "app_role";');
+    });
+
+    // NOTE: and it says WHO can run it, which is the half an operator hits second. The statement is
+    // one a CREATEROLE administrator is refused on a fleet role another installation created — so a
+    // repair that stopped at the statement would send them into the same `permission denied`.
+    test("the repair names the role that can actually run it", () => {
+      const repair = fleetMembershipRepair("app_role", "fleet_role", 170000);
+      expect(repair).toContain("run it as a superuser");
+      expect(repair).toContain("WITH ADMIN OPTION;");
+    });
+  });
+
   // NOTE: this reads the script's own source, which is not how anything else here is tested, and
   // the reason is that the failure it guards cannot be reached from this suite: the only servers
   // available run PostgreSQL 17, and the statement in question is one an older server refuses to
@@ -303,14 +618,71 @@ describe("planRoleProvisioning", () => {
   // that runs everywhere — after it had already shipped into the branch, and nothing red would
   // have said so. So the rule is asserted where it can be: every 16-only spelling in this file
   // lives inside the version gate, and the portable spelling is used everywhere else.
+  // NOTE: the twin of the test below, and it exists because a mutation survived: deleting the pre-16
+  // branch of the administrative grant broke nothing in this suite, and could not — every server
+  // available here is 17. The consequence is not small, though. On PostgreSQL 15 with a
+  // non-superuser owner, skipping it leaves every future DATA migration failing with
+  // `permission denied to set role`, which is the contract docs/deploy.md states for that role.
+  //
+  // So the rule is asserted where it can be: the fleet role is granted to CURRENT_USER on BOTH
+  // sides of the version gate, in the version-appropriate spelling.
+  test("the administrative grant exists on both sides of the version gate", async () => {
+    const source = await Bun.file(
+      new URL("../../scripts/db-bootstrap.ts", import.meta.url).pathname,
+    ).text();
+    // The needle is written with an escaped dollar rather than as a plain string, so the linter does
+    // not read a literal `${` as a template someone forgot to interpolate.
+    const needle = `\${fleet} TO CURRENT_USER`;
+    const grants = source
+      .split("\n")
+      .map((l) => l.trim())
+      // Scoped to the FLEET role: the runtime role is granted to CURRENT_USER further down for an
+      // unrelated reason (the langgraph schema's AUTHORIZATION), and counting it would make this
+      // assert a number instead of a rule.
+      .filter((l) => !l.startsWith("//") && l.includes(needle));
+    // One per branch, and no more: a third would mean a path nobody accounted for.
+    expect(grants.length).toBe(2);
+    expect(
+      grants.filter((l) => l.includes("WITH INHERIT FALSE, SET TRUE")),
+    ).toHaveLength(1);
+    // The pre-16 one takes no options at all — 15 refuses to parse them.
+    const legacy = grants.find((l) => !l.includes("WITH "));
+    expect(legacy).toBeDefined();
+    expect(legacy).not.toContain("INHERIT");
+    expect(legacy).not.toContain("SET TRUE");
+
+    // And each sits on its own side of the gate: the optioned one inside a `>= 160000` branch, the
+    // bare one in the `else` that closes it.
+    const optionedAt = source.indexOf(`${needle} WITH INHERIT FALSE, SET TRUE`);
+    const gate = source.lastIndexOf(
+      "if (serverVersionNum >= 160000) {",
+      optionedAt,
+    );
+    const elseAt = source.indexOf("} else {", optionedAt);
+    const bareAt = source.indexOf(`${needle}\``, elseAt);
+    expect(gate).toBeGreaterThan(-1);
+    expect(optionedAt).toBeGreaterThan(gate);
+    expect(elseAt).toBeGreaterThan(optionedAt);
+    expect(bareAt).toBeGreaterThan(elseAt);
+  });
+
   test("16-only syntax stays behind the version gate", async () => {
     const source = await Bun.file(
       new URL("../../scripts/db-bootstrap.ts", import.meta.url).pathname,
     ).text();
-    const gateStart = source.indexOf("if (s.server_version_num >= 160000) {");
-    expect(gateStart).toBeGreaterThan(-1);
-    const gateEnd = source.indexOf("\n    }", gateStart);
-    expect(gateEnd).toBeGreaterThan(gateStart);
+    // Every gate, not "the" gate. The file had one when this was written; the count was the proxy,
+    // never the rule, and a second gate arriving is not the thing to make red. What the rule says is
+    // that a 16-only spelling sits inside SOME `>= 160000` branch, so the ranges are collected.
+    const gates: Array<[number, number]> = [];
+    const gateRe = /if\s*\([^)]*>=\s*160000\)\s*\{/g;
+    for (const m of source.matchAll(gateRe)) {
+      const start = m.index as number;
+      // The branch ends at the first `}` back at the opening line's indentation.
+      const indent = source.slice(source.lastIndexOf("\n", start) + 1, start);
+      const close = source.indexOf(`\n${indent}}`, start);
+      gates.push([start, close === -1 ? source.length : close]);
+    }
+    expect(gates.length).toBeGreaterThan(0);
 
     // Spellings PostgreSQL 15 cannot parse or resolve, as they appear in a statement.
     const sixteenOnly = [
@@ -318,6 +690,10 @@ describe("planRoleProvisioning", () => {
       "WITH INHERIT",
       "inherit_option",
       "set_option",
+      // The privilege TYPE, added in 16 alongside the grant option it reports. Older servers reject
+      // it outright — `unrecognized privilege type` — which on a boot path is a crash loop, not a
+      // wrong answer, and is why it belongs in this list rather than in a comment.
+      "'SET')",
     ];
     const offenders = source
       .split("\n")
@@ -329,7 +705,7 @@ describe("planRoleProvisioning", () => {
       })
       .filter(({ at }) => {
         const offset = source.split("\n").slice(0, at).join("\n").length;
-        return offset < gateStart || offset > gateEnd;
+        return !gates.some(([lo, hi]) => offset >= lo && offset <= hi);
       })
       .map(({ line }) => line.trim());
 
@@ -387,6 +763,7 @@ describe.skipIf(!dbUp)(
       await db.query(`DROP DATABASE IF EXISTS ${NOINH_DB}`);
       await db.query(`DROP DATABASE IF EXISTS ${PROBE_DB}`);
       await db.query(`DROP ROLE IF EXISTS ${APP_ROLE}`);
+      await db.query(`DROP ROLE IF EXISTS ${STRAY_ROLE}`);
       await db.query(`DROP ROLE IF EXISTS ${FOREIGN_ROLE}`);
       await db.query(`DROP ROLE IF EXISTS ${UNREACHABLE_ROLE}`);
       await db.query(`DROP ROLE IF EXISTS ${ROT_A_ROLE}`);
@@ -424,7 +801,21 @@ describe.skipIf(!dbUp)(
       await db.query(`DROP DATABASE IF EXISTS ${SOLO_DB}`);
       await db.query(`DROP DATABASE IF EXISTS ${NOINH_DB}`);
       await db.query(`DROP DATABASE IF EXISTS ${PROBE_DB}`);
+      // The fleet roles those databases provisioned, whose NAMES carry them. Dropped before the
+      // administrators are, because the membership each administrator granted onward is a
+      // dependency of that administrator: without this the DROP ROLE below fails with
+      // `privileges for membership of role … in role …` and the cluster keeps one role per run.
+      for (const { rolname } of (
+        await db.query<{ rolname: string }>(
+          "SELECT rolname FROM pg_roles WHERE rolname LIKE $1",
+          [`fazerai_fleet_%${process.pid}%`],
+        )
+      ).rows) {
+        await db.query(`DROP OWNED BY "${rolname}" CASCADE`);
+        await db.query(`DROP ROLE IF EXISTS "${rolname}"`);
+      }
       await db.query(`DROP ROLE IF EXISTS ${APP_ROLE}`);
+      await db.query(`DROP ROLE IF EXISTS ${STRAY_ROLE}`);
       await db.query(`DROP ROLE IF EXISTS ${FOREIGN_ROLE}`);
       await db.query(`DROP ROLE IF EXISTS ${UNREACHABLE_ROLE}`);
       await db.query(`DROP ROLE IF EXISTS ${ROT_A_ROLE}`);
@@ -484,6 +875,492 @@ describe.skipIf(!dbUp)(
         "permission denied to alter role",
       );
       expect(exitCode).toBe(0);
+    });
+
+    // NOTE: the fleet role's name carries the database, but roles are still CLUSTER-wide objects and
+    // databases are not — so a database dropped and recreated leaves the previous one's fleet role
+    // behind, and a CREATEROLE administrator holds no ADMIN over a role it did not create. The
+    // membership grant is then refused, exactly like the three above, and for the same reason it is
+    // survived: nothing tenant-scoped depends on it.
+    test("a fleet role this administrator cannot grant stops the boot, with the repair", async () => {
+      const db = su as Client;
+      const fleet = await probeFleetRole();
+      const FLEET_ROLE = `"${fleet}"`;
+      // CASCADE, and it is not incidental: the previous boot granted the role onward to the runtime
+      // role using exactly this ADMIN OPTION, and Postgres refuses to revoke an option other grants
+      // depend on (`2BP01`, "Use CASCADE to revoke them too"). Dropping the dependent grant with it
+      // is what this test wants anyway.
+      await db.query(
+        `REVOKE ADMIN OPTION FOR ${FLEET_ROLE} FROM ${ADMIN_ROLE} CASCADE`,
+      );
+      await db.query(`REVOKE ${FLEET_ROLE} FROM ${APP_ROLE}`);
+
+      const refused = await runBootstrap(APP_PW, APP_ROLE, {}, true);
+      expect(refused.exitCode).toBe(1);
+      const out = `${refused.stdout}${refused.stderr}`;
+      expect(out).toContain(`could not grant ${FLEET_ROLE}`);
+      // The warning has to carry BOTH halves of the instruction: the statement, and who can run it.
+      // The operator this message reaches is precisely the one the statement refuses.
+      expect(out).toContain("cannot SET ROLE");
+      // It REFUSES rather than warning: `asSuperAdminOn` is how an API key is verified, so an
+      // installation without it starts and then fails every authenticated request.
+      expect(out).toContain("API key");
+      expect(out).toContain("WITH INHERIT FALSE, SET TRUE;");
+      expect(out).toContain("WITH ADMIN OPTION;");
+
+      // And it is a real gap, not a cosmetic one: the cross-tenant path cannot switch role.
+      const denied = await onProbe(urlFor(APP_ROLE, APP_PW, PROBE_DB), (c) =>
+        c.query(`SET ROLE ${FLEET_ROLE}`).then(
+          () => null,
+          (e: Error) => e.message,
+        ),
+      );
+      expect(denied).toContain("permission denied to set role");
+
+      // The repair the message named, run by someone who can, and the next boot closes it.
+      await db.query(`GRANT ${FLEET_ROLE} TO ${ADMIN_ROLE} WITH ADMIN OPTION`);
+      const repaired = await runBootstrap(APP_PW, APP_ROLE, {}, true);
+      expect(repaired.exitCode).toBe(0);
+      expect(`${repaired.stdout}${repaired.stderr}`).not.toContain(
+        "cannot SET ROLE",
+      );
+
+      // Able to SET ROLE, and NOT inheriting: the grant landed with both options that matter.
+      const membership = (
+        await db.query(
+          `SELECT pg_has_role($1, $2, 'SET')   AS can_set_role,
+                  pg_has_role($1, $2, 'USAGE') AS usage`,
+          [APP_ROLE, fleet],
+        )
+      ).rows[0];
+      expect(membership).toEqual({ can_set_role: true, usage: false });
+    });
+
+    // NOTE: the same shared cluster, one notch subtler, and it is the state that separates the two
+    // questions the catalog can answer. A grant made `WITH SET FALSE` still makes the runtime role a
+    // MEMBER, so a check written against membership reports a healthy install while every
+    // `asSuperAdmin` call is denied. Bootstrap's re-grant normally repairs it — which is why the
+    // ADMIN OPTION has to be gone for the detection to be reachable at all.
+    test("a membership that cannot SET ROLE stops the boot, not read as healthy", async () => {
+      const db = su as Client;
+      const fleet = await probeFleetRole();
+      const FLEET_ROLE = `"${fleet}"`;
+      // In this order, and CASCADE: the administrator's ADMIN OPTION is what the previous boot's
+      // onward grant depends on, so it cannot be revoked while that grant stands. Taking both and
+      // re-making the membership as the superuser is what leaves the runtime role holding a grant
+      // this administrator cannot repair — which is the whole point of the arrangement.
+      await db.query(
+        `REVOKE ADMIN OPTION FOR ${FLEET_ROLE} FROM ${ADMIN_ROLE} CASCADE`,
+      );
+      await db.query(
+        `GRANT ${FLEET_ROLE} TO ${APP_ROLE} WITH INHERIT FALSE, SET FALSE`,
+      );
+
+      // The catalog says member; the mechanism says no.
+      const catalog = (
+        await db.query(
+          `SELECT pg_has_role($1, $2, 'MEMBER') AS member,
+                  pg_has_role($1, $2, 'SET')    AS can_set_role`,
+          [APP_ROLE, fleet],
+        )
+      ).rows[0];
+      expect(catalog).toEqual({ member: true, can_set_role: false });
+      const denied = await onProbe(urlFor(APP_ROLE, APP_PW, PROBE_DB), (c) =>
+        c.query(`SET ROLE ${FLEET_ROLE}`).then(
+          () => null,
+          (e: Error) => e.message,
+        ),
+      );
+      expect(denied).toContain("permission denied to set role");
+
+      const reported = await runBootstrap(APP_PW, APP_ROLE, {}, true);
+      expect(reported.exitCode).toBe(1);
+      expect(`${reported.stdout}${reported.stderr}`).toContain(
+        "cannot SET ROLE",
+      );
+
+      // And the repair is the same one grant, run by someone who can.
+      await db.query(`GRANT ${FLEET_ROLE} TO ${ADMIN_ROLE} WITH ADMIN OPTION`);
+      const repaired = await runBootstrap(APP_PW, APP_ROLE, {}, true);
+      expect(`${repaired.stdout}${repaired.stderr}`).not.toContain(
+        "cannot SET ROLE",
+      );
+      const after = (
+        await db.query(
+          `SELECT pg_has_role($1, $2, 'SET') AS can_set_role,
+                  pg_has_role($1, $2, 'USAGE') AS usage`,
+          [APP_ROLE, fleet],
+        )
+      ).rows[0];
+      expect(after).toEqual({ can_set_role: true, usage: false });
+
+      // The grant this test made as the SUPERUSER is a SECOND row in pg_auth_members (one per
+      // grantor since 16), and the administrator cannot revoke someone else's. Left behind, the
+      // later tests here boot for a DIFFERENT runtime role and bootstrap correctly refuses on a
+      // membership it cannot clear — a state this test created, not one they are about.
+      await db.query(`REVOKE ${FLEET_ROLE} FROM ${APP_ROLE}`);
+      await db.query(
+        `GRANT ${FLEET_ROLE} TO ${APP_ROLE} WITH INHERIT FALSE, SET TRUE GRANTED BY ${ADMIN_ROLE}`,
+      );
+    });
+
+    // NOTE: roles are cluster-wide while databases are not, so a database dropped and recreated under
+    // the same name derives the SAME fleet role — and every membership the previous installation
+    // granted survives it. Measured before this reconcile existed: the old installation's runtime
+    // role read all 30 rows of the new installation's data through the new policies, with nothing
+    // but a SET ROLE. Adding to the membership set is therefore not enough; it has to be reconciled.
+    test("a membership this database did not grant is revoked and named", async () => {
+      const db = su as Client;
+      const fleet = await probeFleetRole();
+      await db.query(
+        `CREATE ROLE ${STRAY_ROLE} LOGIN PASSWORD 'straypw' NOSUPERUSER NOBYPASSRLS`,
+      );
+      await db.query(
+        `GRANT "${fleet}" TO ${STRAY_ROLE} WITH INHERIT FALSE, SET TRUE`,
+      );
+      expect(
+        (
+          await db.query("SELECT pg_has_role($1, $2, 'SET') AS s", [
+            STRAY_ROLE,
+            fleet,
+          ])
+        ).rows[0],
+      ).toEqual({ s: true });
+
+      const membersOfFleet = async () =>
+        (
+          await db.query<{ rolname: string }>(
+            `SELECT DISTINCT r.rolname FROM pg_auth_members am
+               JOIN pg_roles r ON r.oid = am.member
+               JOIN pg_roles d ON d.oid = am.roleid
+              WHERE d.rolname = $1 ORDER BY 1`,
+            [fleet],
+          )
+        ).rows.map((r) => r.rolname);
+
+      // First arm: the grant was made by the SUPERUSER, which this administrator cannot revoke —
+      // and Postgres says nothing about that. Bootstrap has to report what is still there rather
+      // than what it attempted, and REFUSE: that member can read every tenant in this database, so
+      // it is an active breach rather than a degraded feature.
+      const stuck = await runBootstrap(APP_PW, APP_ROLE, {}, true);
+      expect(stuck.exitCode).toBe(1);
+      const stuckOut = `${stuck.stdout}${stuck.stderr}`;
+      // Unquoted here, and that is `quote_ident` doing its job: it quotes only what needs it, so a
+      // plain lowercase name comes out bare and the statement is still valid SQL. The arm that
+      // proves the quoting matters is the one below, with a name that carries a double quote.
+      expect(stuckOut).toContain(`${STRAY_ROLE} is still a member`);
+      expect(stuckOut).toContain(`REVOKE ${fleet} FROM ${STRAY_ROLE} CASCADE;`);
+      expect(await membersOfFleet()).toContain(STRAY_ROLE);
+
+      // Second arm: a grant this administrator CAN revoke is revoked, silently and for good.
+      await db.query(`REVOKE "${fleet}" FROM ${STRAY_ROLE}`);
+      await db.query(
+        `GRANT "${fleet}" TO ${STRAY_ROLE} WITH INHERIT FALSE, SET TRUE GRANTED BY ${ADMIN_ROLE}`,
+      );
+      const cleared = await runBootstrap(APP_PW, APP_ROLE, {}, true);
+      expect(cleared.exitCode).toBe(0);
+      const clearedOut = `${cleared.stdout}${cleared.stderr}`;
+      expect(clearedOut).not.toContain("is still a member");
+      // And it SAYS so: a security reconcile that happens quietly reads as one that did not happen.
+      expect(clearedOut).toContain(`revoked "${STRAY_ROLE}"`);
+
+      // Gone, and the two that belong are still there — a reconcile that revoked everything would
+      // satisfy the line above and break the install.
+      const members = await membersOfFleet();
+      expect(members).not.toContain(STRAY_ROLE);
+      expect(members).toContain(APP_ROLE);
+      expect(members).toContain(ADMIN_ROLE);
+
+      await db.query(`DROP ROLE IF EXISTS ${STRAY_ROLE}`);
+    });
+
+    // NOTE: the reconcile's one exemption, and it is DECLARED rather than inferred. The first
+    // version spared any member holding an open session here, reading that as a rotation's outgoing
+    // role. Measured false: drop a database and recreate it under the same name, and the stale
+    // installation's pool reconnects to that name, so its role presents an open session too — same
+    // catalog row, opposite meaning. `pg_stat_activity` holds nothing that separates them.
+    test("a serving member is kept only where it was declared", async () => {
+      const db = su as Client;
+      const fleet = await probeFleetRole();
+      await db.query(
+        `CREATE ROLE ${STRAY_ROLE} LOGIN PASSWORD 'straypw' NOSUPERUSER NOBYPASSRLS`,
+      );
+      // GRANTED BY the administrator, so the revoke is one it can actually make: the arm that
+      // proves an unrevokable grant is reported rather than assumed lives in the test above.
+      const regrant = async () => {
+        await db.query(`REVOKE "${fleet}" FROM ${STRAY_ROLE} CASCADE`);
+        await db.query(
+          `GRANT "${fleet}" TO ${STRAY_ROLE} WITH INHERIT FALSE, SET TRUE GRANTED BY ${ADMIN_ROLE}`,
+        );
+      };
+      const holdsFleet = async () =>
+        (
+          await db.query<{ n: string }>(
+            `SELECT count(*) AS n FROM pg_auth_members am
+               JOIN pg_roles r ON r.oid = am.member
+               JOIN pg_roles d ON d.oid = am.roleid
+              WHERE d.rolname = $1 AND r.rolname = $2`,
+            [fleet, STRAY_ROLE],
+          )
+        ).rows[0]?.n !== "0";
+
+      const serving = new Client({
+        connectionString: urlFor(STRAY_ROLE, "straypw", PROBE_DB),
+      });
+      await serving.connect();
+      try {
+        // First arm: serving, and nothing declared it. This is the previous installation, and it
+        // goes — the whole reason the exemption stopped being inferred.
+        await regrant();
+        const undeclared = await runBootstrap(APP_PW, APP_ROLE, {}, true);
+        expect(undeclared.exitCode).toBe(0);
+        expect(`${undeclared.stdout}${undeclared.stderr}`).toContain(
+          "but nothing declared it, so it is being revoked",
+        );
+        expect(await holdsFleet()).toBe(false);
+
+        // Second arm: the SAME catalog row and the SAME open session, declared. This is the
+        // rotation `docs/deploy.md` promises stays alive, and it keeps its access.
+        await regrant();
+        const declared = await runBootstrap(
+          APP_PW,
+          APP_ROLE,
+          {
+            [FLEET_ROLE_RETAINED_MEMBER_ENV]: STRAY_ROLE,
+          },
+          true,
+        );
+        expect(declared.exitCode).toBe(0);
+        expect(`${declared.stdout}${declared.stderr}`).toContain(
+          `was declared in ${FLEET_ROLE_RETAINED_MEMBER_ENV}`,
+        );
+        expect(await holdsFleet()).toBe(true);
+      } finally {
+        await serving.end();
+      }
+
+      // Third arm: still declared, no longer serving — the deploy finished and the variable was
+      // left behind. The session is what BOUNDS the exemption, so this clears itself rather than
+      // becoming permanent, which is the half that makes a forgotten declaration harmless.
+      await regrant();
+      const drained = await runBootstrap(
+        APP_PW,
+        APP_ROLE,
+        {
+          [FLEET_ROLE_RETAINED_MEMBER_ENV]: STRAY_ROLE,
+        },
+        true,
+      );
+      expect(drained.exitCode).toBe(0);
+      expect(await holdsFleet()).toBe(false);
+
+      await db.query(`DROP ROLE IF EXISTS ${STRAY_ROLE}`);
+    });
+
+    // NOTE: what a database restored or cloned under a DIFFERENT name looks like from inside — the
+    // copied `fleet_super_admin` policies still name the source installation's fleet role, and the
+    // copied grants still give it every table. Measured across two real databases: the source's
+    // runtime role read 30 of 30 rows of the restored one, against 0 of 30 without the `SET ROLE`.
+    // `src/lib/db-guard.ts` refuses to serve such a database, and that refusal stops our process
+    // and nothing else, so the privileges have to actually go.
+    test("a restored database's foreign fleet role loses its privileges here", async () => {
+      const db = su as Client;
+      await db.query(`CREATE ROLE ${ALIEN_FLEET_ROLE} NOLOGIN`);
+      await db.query(
+        `CREATE ROLE ${ALIEN_MEMBER_ROLE} LOGIN PASSWORD 'alienpw' NOSUPERUSER NOBYPASSRLS`,
+      );
+      await db.query(
+        `GRANT ${ALIEN_FLEET_ROLE} TO ${ALIEN_MEMBER_ROLE} WITH INHERIT FALSE, SET TRUE`,
+      );
+      await onProbe(urlFor(ADMIN_ROLE, ADMIN_PW, PROBE_DB), async (c) => {
+        await c.query("DROP TABLE IF EXISTS restored_probe");
+        await c.query(
+          "CREATE TABLE restored_probe (id bigserial primary key, tenant_id bigint not null)",
+        );
+        await c.query(
+          "INSERT INTO restored_probe (tenant_id) SELECT g % 3 + 1 FROM generate_series(1, 30) g",
+        );
+        await c.query("ALTER TABLE restored_probe ENABLE ROW LEVEL SECURITY");
+        await c.query(
+          `CREATE POLICY fleet_super_admin ON restored_probe TO ${ALIEN_FLEET_ROLE} USING (true) WITH CHECK (true)`,
+        );
+        await c.query(`GRANT USAGE ON SCHEMA public TO ${ALIEN_FLEET_ROLE}`);
+        await c.query(
+          `GRANT SELECT ON restored_probe TO ${ALIEN_FLEET_ROLE}, ${ALIEN_MEMBER_ROLE}`,
+        );
+      });
+
+      // To the EFFECT, before and after: the source installation's role reading this database
+      // through a policy that names a role it belongs to.
+      const readsThroughAlien = async () => {
+        const c = new Client({
+          connectionString: urlFor(ALIEN_MEMBER_ROLE, "alienpw", PROBE_DB),
+        });
+        await c.connect();
+        try {
+          await c.query(`SET ROLE ${ALIEN_FLEET_ROLE}`);
+          return (
+            await c.query<{ n: string }>(
+              "SELECT count(*) AS n FROM restored_probe",
+            )
+          ).rows[0]?.n as string;
+        } catch (err) {
+          return err instanceof Error ? err.message : String(err);
+        } finally {
+          await c.end();
+        }
+      };
+      expect(await readsThroughAlien()).toBe("30");
+
+      const { exitCode, stdout, stderr } = await runBootstrap(
+        APP_PW,
+        APP_ROLE,
+        {},
+        true,
+      );
+      const out = `${stdout}${stderr}`;
+      // The boot COMPLETES: refusing from here would roll the repair back with it — measured on the
+      // SQL twin, which raised from the same transaction and undid its own revoke. Refusing is
+      // db-guard's job, and it does it on this exact condition ahead of every override.
+      expect(exitCode).toBe(0);
+      expect(out).toContain("carries fleet_super_admin policies naming");
+      expect(out).toContain("revoked their privileges in this database");
+      expect(await readsThroughAlien()).toContain("permission denied");
+
+      // And the source installation is UNHARMED: the membership is cluster-wide, so revoking it
+      // from here would break a database this boot has no business touching. Privileges are
+      // per-database and are the right blast radius; the membership stays.
+      expect(
+        (
+          await db.query<{ n: string }>(
+            `SELECT count(*) AS n FROM pg_auth_members am
+               JOIN pg_roles r ON r.oid = am.member
+               JOIN pg_roles d ON d.oid = am.roleid
+              WHERE d.rolname = $1 AND r.rolname = $2`,
+            [ALIEN_FLEET_ROLE, ALIEN_MEMBER_ROLE],
+          )
+        ).rows[0]?.n,
+      ).toBe("1");
+
+      await onProbe(urlFor(ADMIN_ROLE, ADMIN_PW, PROBE_DB), (c) =>
+        c.query("DROP TABLE IF EXISTS restored_probe"),
+      );
+      for (const r of [ALIEN_MEMBER_ROLE, ALIEN_FLEET_ROLE]) {
+        await db.query(`DROP OWNED BY ${r} CASCADE`).catch(() => {});
+        await db.query(`DROP ROLE IF EXISTS ${r}`);
+      }
+    });
+
+    // NOTE: the live half of `assertFleetRoleIsUnprivileged`, and the branch it exists for — the one
+    // where the role is FOUND rather than created. A database dropped and recreated leaves the old
+    // role standing, and nothing else in this script would have looked at what it is.
+    test("a pre-existing fleet role that is privileged stops the boot", async () => {
+      const db = su as Client;
+      const fleet = await probeFleetRole();
+      await db.query(`ALTER ROLE "${fleet}" BYPASSRLS`);
+      try {
+        const refused = await runBootstrap(APP_PW, APP_ROLE, {}, true);
+        expect(refused.exitCode).toBe(1);
+        const out = `${refused.stdout}${refused.stderr}`;
+        expect(out).toContain("already exists and is privileged");
+        expect(out).toContain("BYPASSRLS");
+        // The repair drops it: this installation does not own that role, and demoting someone
+        // else's role reaches every database on the cluster that uses it.
+        expect(out).toContain(`DROP ROLE "${fleet}";`);
+      } finally {
+        await db.query(`ALTER ROLE "${fleet}" NOBYPASSRLS`);
+      }
+      // And the next boot is clean again, so the refusal is a gate rather than a dead end.
+      expect((await runBootstrap(APP_PW, APP_ROLE, {}, true)).exitCode).toBe(0);
+    });
+
+    // NOTE: a role name may legally contain a double quote, and the reconcile interpolates names it
+    // read out of the catalog. Quoted by hand, this member survives the revoke — the statement is
+    // invalid SQL and the catch reads it as a permission problem.
+    // NOTE: the asymmetry the direct list already argued against and the reachability check did not
+    // implement. `FLEET_ROLE_FORBIDDEN_ATTRIBUTES` refuses CREATEDB, CREATEROLE and REPLICATION on
+    // the fleet role because "the runtime role ACQUIRES all of them the moment it enters this role"
+    // — and the reach beside it asked only about SUPERUSER and BYPASSRLS, so REACHING one of those
+    // roles passed while HOLDING the attribute did not.
+    //
+    // Measured end to end before this: with the fleet role a SET-only member of a CREATEROLE role,
+    // the runtime role entered it and CREATED A NEW CLUSTER ROLE. RLS is untouched in that state,
+    // which is exactly why the two-attribute question missed it.
+    test("a fleet role that can BECOME CREATEROLE stops the boot", async () => {
+      const db = su as Client;
+      const fleet = await probeFleetRole();
+      await db.query(`CREATE ROLE ${MINTER_ROLE} NOLOGIN CREATEROLE`);
+      try {
+        // The catalog's own answer, so the fixture is proved to be this state: not privileged by
+        // the RLS pair, and privileged by the set that survives a SET ROLE.
+        expect(
+          (
+            await db.query(
+              `SELECT (m.rolsuper OR m.rolbypassrls) AS rls_pair,
+                      (m.rolsuper OR m.rolbypassrls OR m.rolcreatedb
+                       OR m.rolcreaterole OR m.rolreplication) AS outlives
+                 FROM pg_roles m WHERE m.rolname = $1`,
+              [MINTER_ROLE],
+            )
+          ).rows[0],
+        ).toEqual({ rls_pair: false, outlives: true });
+        await db.query(
+          `GRANT ${MINTER_ROLE} TO "${fleet}" WITH INHERIT FALSE, SET TRUE`,
+        );
+
+        const { exitCode, stdout, stderr } = await runBootstrap(
+          APP_PW,
+          APP_ROLE,
+          {},
+          true,
+        );
+        const out = `${stdout}${stderr}`;
+        expect(exitCode).toBe(1);
+        expect(out).toContain("already exists and is privileged");
+        expect(out).toContain(`can become a privileged role (${MINTER_ROLE}`);
+        expect(out).toContain("(via SET ROLE)");
+      } finally {
+        await db
+          .query(
+            `REVOKE ${MINTER_ROLE} FROM "${await probeFleetRole()}" CASCADE`,
+          )
+          .catch(() => {});
+        await db.query(`DROP ROLE IF EXISTS ${MINTER_ROLE}`);
+      }
+      // And the boot is clean again once the membership is gone, so this is a gate and not a dead
+      // end — the same shape as the privileged-attribute arm above it.
+      expect((await runBootstrap(APP_PW, APP_ROLE, {}, true)).exitCode).toBe(0);
+    });
+
+    test("a stray member whose name carries a quote is still revoked", async () => {
+      const db = su as Client;
+      const fleet = await probeFleetRole();
+      const quoted = `fazerai_bs_qu"ote_${process.pid}`;
+      await db.query(`CREATE ROLE "${quoted.replace(/"/g, '""')}" NOLOGIN`);
+      try {
+        // GRANTED BY the administrator, so the revoke is one it can actually make — the arm where
+        // it cannot is the test above, and mixing the two would prove neither.
+        await db.query(
+          `GRANT "${fleet}" TO "${quoted.replace(/"/g, '""')}" WITH INHERIT FALSE, SET TRUE GRANTED BY ${ADMIN_ROLE}`,
+        );
+        const { exitCode, stdout, stderr } = await runBootstrap(
+          APP_PW,
+          APP_ROLE,
+          {},
+          true,
+        );
+        expect(exitCode).toBe(0);
+        expect(`${stdout}${stderr}`).toContain(`revoked "${quoted}"`);
+        const still = (
+          await db.query("SELECT pg_has_role($1, $2, 'SET') AS s", [
+            quoted,
+            fleet,
+          ])
+        ).rows[0];
+        expect(still).toEqual({ s: false });
+      } finally {
+        await db.query(`DROP ROLE IF EXISTS "${quoted.replace(/"/g, '""')}"`);
+      }
     });
 
     test("the provisioned role can connect with the password from DATABASE_URL", async () => {
@@ -1215,6 +2092,58 @@ describe.skipIf(!dbUp)(
       }
     });
 
+    // NOTE: the arm that made all four of these checks wrong. `GRANT <superuser> TO <role> WITH
+    // INHERIT FALSE, SET TRUE` leaves `pg_has_role(role, superuser, 'USAGE')` FALSE — which is what
+    // every one of them asked — while the role runs `SET ROLE <superuser>` and comes back with
+    // `is_superuser = on`. Measured directly, and worse than it looks: SET permission is TRANSITIVE
+    // through the chain, so a runtime role granted a fleet role that is itself a SET-only member
+    // reaches the superuser in ONE statement, without entering the fleet role at all.
+    //
+    // 16-only by construction: before 16 a grant carried no options of its own, so this state
+    // cannot be built and `MEMBER` is the whole answer there.
+    test("a role that only SET-reaches privilege is refused too", async () => {
+      const db = su as Client;
+      const version = (
+        await db.query<{ v: number }>(
+          "SELECT current_setting('server_version_num')::int AS v",
+        )
+      ).rows[0]?.v as number;
+      if (version < 160000) return;
+
+      // Its OWN privileged parent, not the neighbouring test's: a fixture that depends on another
+      // test having run passes only in file order, and one that creates a role that test also
+      // creates breaks that test instead.
+      await db.query(`CREATE ROLE ${SETHEIR_PARENT} NOLOGIN BYPASSRLS`);
+      await db.query(
+        `CREATE ROLE ${SETHEIR_ROLE} LOGIN PASSWORD '${APP_PW}' NOSUPERUSER NOBYPASSRLS`,
+      );
+      await db.query(
+        `GRANT ${SETHEIR_PARENT} TO ${SETHEIR_ROLE} WITH INHERIT FALSE, SET TRUE`,
+      );
+      // The catalog's own answer to the two questions, so the fixture is proved to BE this state
+      // rather than assumed to be: what the old check asked is false, and the role is still there.
+      expect(
+        (
+          await db.query(
+            "SELECT pg_has_role($1, $2, 'USAGE') AS usage, pg_has_role($1, $2, 'SET') AS can_set",
+            [SETHEIR_ROLE, SETHEIR_PARENT],
+          )
+        ).rows[0],
+      ).toEqual({ usage: false, can_set: true });
+
+      const { exitCode, stdout, stderr } = await runBootstrap(
+        APP_PW,
+        SETHEIR_ROLE,
+      );
+      const out = `${stdout}${stderr}`;
+      expect(exitCode).toBe(1);
+      expect(out).toContain("reaches a privileged role through a membership");
+      expect(out).toContain(`${SETHEIR_PARENT} (via SET ROLE)`);
+
+      await db.query(`DROP ROLE IF EXISTS ${SETHEIR_ROLE}`);
+      await db.query(`DROP ROLE IF EXISTS ${SETHEIR_PARENT}`);
+    });
+
     test("a role that only INHERITS privilege is refused, like one that holds it", async () => {
       const db = su as Client;
       // NOTE: the attributes say safe and the role is not: it reaches BYPASSRLS through a
@@ -1286,7 +2215,10 @@ describe.skipIf(!dbUp)(
       const transitive = await runBootstrap(APP_PW, HEIR_ROLE);
       const via = `${transitive.stdout}${transitive.stderr}`;
       expect(transitive.exitCode).toBe(1);
-      expect(via).toContain(`(${SU_PARENT})`);
+      // Annotated with HOW it is reached, because the repairs differ: an inherited membership is
+      // revoked, a SET-only one has its option taken away with `GRANT … WITH SET FALSE`. Naming the
+      // role without saying which would leave the operator guessing between two statements.
+      expect(via).toContain(`${SU_PARENT} (inherited)`);
       expect(via).toContain(`REVOKE ${TEAM_ROLE} FROM "${HEIR_ROLE}"`);
       expect(via).not.toContain(`REVOKE ${SU_PARENT}`);
       expect(via).not.toContain(SIDE_ROLE);

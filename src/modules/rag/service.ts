@@ -1,5 +1,6 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
+import { parseDbId } from "@/lib/db-id";
 import { AppError, NotFoundError } from "@/lib/errors";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { readEmbeddingSettings } from "@/modules/tenant-settings/service";
@@ -201,7 +202,10 @@ export type ApprovalSource =
   | { kind: "playground"; agentId: string; agentName: string | null }
   | null;
 
-function parseThreadOrigin(
+// Exported for its decision table (tests/modules/rag-thread-origin.test.ts). What it decides is
+// which id a stored thread key carries, and the key was written from a request body, so every
+// answer here is about a value a caller chose.
+export function parseThreadOrigin(
   threadId: string | null,
 ):
   | { kind: "conversation"; instanceId: bigint; displayId: number }
@@ -209,21 +213,21 @@ function parseThreadOrigin(
   | null {
   if (!threadId) return null;
   const parts = threadId.split(":");
-  try {
-    if (parts.length === 4 && parts[1] === "playground") {
-      return { kind: "playground", agentId: BigInt(parts[2] as string) };
-    }
-    if (parts.length === 3 && parts[1] !== "playground") {
-      const displayId = Number(parts[2]);
-      if (!Number.isInteger(displayId)) return null;
-      return {
-        kind: "conversation",
-        instanceId: BigInt(parts[1] as string),
-        displayId,
-      };
-    }
-  } catch {
-    return null;
+  // NOTE: `parseDbId`, and the `try` it replaces is why. This thread id was written from a REQUEST
+  // BODY and read back out of the approval row, so an id past 2^63-1 was stored once and then made
+  // every later read of the pending list answer 500 — a `catch` around `BigInt` never saw it,
+  // because that value converts. A thread id that carries no usable id has no origin. Issue #407.
+  if (parts.length === 4 && parts[1] === "playground") {
+    const agentId = parseDbId(parts[2]);
+    return agentId === null ? null : { kind: "playground", agentId };
+  }
+  if (parts.length === 3 && parts[1] !== "playground") {
+    const displayId = Number(parts[2]);
+    if (!Number.isInteger(displayId)) return null;
+    const instanceId = parseDbId(parts[1]);
+    return instanceId === null
+      ? null
+      : { kind: "conversation", instanceId, displayId };
   }
   return null;
 }

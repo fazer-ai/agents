@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import { type Connection, MultiServerMCPClient } from "@langchain/mcp-adapters";
 import logger from "@/api/lib/logger";
@@ -147,10 +148,21 @@ export function filterAllowed(
 const MCP_NS = "mcp";
 const MAX_TOOL_NAME = 64;
 
-// ASCII-safe server segment, derived from the connection's (unique) display name; falls back to the
-// connection id when the name has no usable characters. (Own normalization rather than
-// normalizeToolName, whose "tool" fallback would mask an empty slug.)
-export function mcpServerSlug(name: string, connId: bigint): string {
+// ASCII-safe server segment, derived from the connection's (unique) display name. (Own normalization
+// rather than normalizeToolName, whose "tool" fallback would mask an empty slug.)
+//
+// A PURE FUNCTION OF THE NAME, and the row id is deliberately not a parameter (#412). The fallback
+// used to be `mcp_<connId>`, for the names that yield no usable characters at all — emoji-only,
+// CJK-only. `exportAgent` carries the connection by NAME and `importAgent` matches on it, so
+// everything else about the exposed name is portable; the id was the one part the import reassigns,
+// and the same connection came back on the other side under a different tool name. Hashing the name
+// keeps the fallback readable-ish, keeps it unique for the same reason the name is unique
+// (`@@unique([tenantId, name])`), and makes it the same on both sides of a transfer.
+//
+// The digest is of the RAW name, before sanitizing: two different emoji both sanitize to the empty
+// string, and hashing the sanitized form would give them one slug and put them back in the collision
+// this is meant to take them out of.
+export function mcpServerSlug(name: string): string {
   const slug = name
     .normalize("NFD")
     .replace(/\p{Diacritic}/gu, "")
@@ -159,7 +171,9 @@ export function mcpServerSlug(name: string, connId: bigint): string {
     .replace(/_+/g, "_")
     .replace(/^[_-]+|[_-]+$/g, "")
     .slice(0, 28);
-  return slug || `mcp_${connId}`;
+  return (
+    slug || `mcp_${createHash("sha256").update(name).digest("hex").slice(0, 8)}`
+  );
 }
 
 // `mcp__<slug>__<tool>`, sanitized, unique within `used`, ≤64 chars. To stay under the limit the slug
@@ -405,7 +419,7 @@ export async function loadMcpToolsForAgent(
       const instructions = deps.instructionsFor
         ? await deps.instructionsFor(effective).catch(() => null)
         : cachedInstructions(tenantId, sel.connId);
-      const slug = mcpServerSlug(sel.name, sel.connId);
+      const slug = mcpServerSlug(sel.name);
       const server: McpServerMeta = {
         label: sel.name,
         instructions: instructions ?? null,

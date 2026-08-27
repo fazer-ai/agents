@@ -1,6 +1,7 @@
 import { Elysia, t } from "elysia";
 import { doc, errors } from "@/api/lib/openapi";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
+import { requireDbId } from "@/lib/db-id";
 import { ForbiddenError, TenantTargetRequiredError } from "@/lib/errors";
 import { instanceIdentity } from "@/lib/instance";
 import type { TenantContext } from "@/lib/tenancy";
@@ -184,7 +185,7 @@ export const toolsController = new Elysia({
       instance: instanceIdentity,
       tool: await getToolDefinition(
         ctxOrThrow(tenantContext),
-        BigInt(params.id),
+        requireDbId(params.id),
       ),
     }),
     {
@@ -207,7 +208,7 @@ export const toolsController = new Elysia({
       instance: instanceIdentity,
       references: await toolReferences(
         ctxOrThrow(tenantContext),
-        BigInt(params.id),
+        requireDbId(params.id),
       ),
     }),
     {
@@ -249,7 +250,7 @@ export const toolsController = new Elysia({
       instance: instanceIdentity,
       tool: await updateToolDefinition(
         ctxOrThrow(tenantContext),
-        BigInt(params.id),
+        requireDbId(params.id),
         body as ToolDefinitionUpdate,
       ),
     }),
@@ -271,7 +272,10 @@ export const toolsController = new Elysia({
   .delete(
     "/:id",
     async ({ tenantContext, params }) => {
-      await deleteToolDefinition(ctxOrThrow(tenantContext), BigInt(params.id));
+      await deleteToolDefinition(
+        ctxOrThrow(tenantContext),
+        requireDbId(params.id),
+      );
       return { instance: instanceIdentity, success: true };
     },
     {

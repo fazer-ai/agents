@@ -84,3 +84,9 @@ One clinic calendar serves MANY WhatsApp contacts, so every event the agent crea
 **Legacy/staff events without a stamp are invisible to the agent by design** (the list fence and the re-verify both exclude them; update/cancel refuse them) — not a bug, the cost of fail-closed.
 
 **Deploy gotcha:** `registerToolpack` runs at **import time**, so a hot-reload may keep an old toolpack build in memory. A stale process (pre-isolation code still running) is what masked the isolation in an early live test — **restart the process on deploy**, do not rely on hot-reload for toolpack changes (see `docs/deploy.md`).
+
+## Positioning: an external CRM is a bridge, never a second funnel
+
+Chatwoot's Kanban is the **native sales funnel and the source of truth**. An external CRM is the bridge to the system of record the customer already runs, and must not become a second funnel competing with the Kanban. Where the operator has no external CRM, the Kanban IS the CRM; where they already run one, the agent syncs to it and the funnel stays here.
+
+So the idiomatic way to integrate a real external CRM is the one this document already describes: a `CATALOG` entry plus a toolpack and a mapper, under Components → Integrations. `catalogType` is a validated String with no migration behind it — a CRM integration is **not** a new screen.

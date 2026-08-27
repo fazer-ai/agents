@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Client } from "pg";
 import { INGEST_ID_WINDOW } from "@/graph/ingest-dedup";
+import { ENTER_FLEET_ROLE_SQL } from "@/lib/tenancy/fleet-role";
 
 // Runs the ACTUAL backfill of 20260822150000 against the test database. Three things are pinned,
 // and the first is the one with an incident behind it:
@@ -194,26 +195,24 @@ describe.skipIf(!dbUp)("migration: agent thread recent message ids", () => {
       }
     }
 
-    test("the backfill as written reaches the rows", async () => {
-      const t = await seedThread("rls-with-guc", 1100, null, 90005);
-      await runAsApp(dataSql);
+    // The file's own `SET app.is_super_admin` line is INERT against today's schema. The policy that
+    // read it was split into a role-restricted one (issue #382), and this migration only ever runs
+    // BEFORE that split, on a database whose policy still carried the OR. So re-executing it here
+    // has to supply the bypass of the era it is being run in, or the pair below stops
+    // discriminating: both halves would report "changed nothing", for two different reasons, and
+    // the guard would be green by invisibility rather than by working.
+    test("the backfill reaches the rows under the bypass of the era it runs in", async () => {
+      const t = await seedThread("rls-with-bypass", 1100, null, 90005);
+      await runAsApp(`${ENTER_FLEET_ROLE_SQL};\n${dataSql}`);
       expect((await windowOf(t)).synced.length).toBe(64);
     });
 
-    test("the same backfill WITHOUT the GUC silently changes nothing", async () => {
-      const t = await seedThread("rls-no-guc", 1200, null, 90006);
-      // Drop the GUC statements only. "SET" is a substring of "RESET", so match the whole statement.
-      const stripped = dataSql
-        .split(";")
-        .map((s) => s.trim())
-        .filter(
-          (s) => s.length > 0 && !/^(SET|RESET)\s+app\.is_super_admin/i.test(s),
-        )
-        .join(";\n");
-      expect(stripped).not.toMatch(/app\.is_super_admin/);
-      expect(stripped).toMatch(/UPDATE\s+"agent_threads"/);
-      // No error, no rows: exactly the failure this guard exists for.
-      await runAsApp(`${stripped};`);
+    test("the same backfill with no bypass silently changes nothing", async () => {
+      const t = await seedThread("rls-no-bypass", 1200, null, 90006);
+      // The file exactly as shipped, which today carries only the inert guard. No error, no rows:
+      // exactly the failure this guard exists for.
+      expect(dataSql).toMatch(/^\s*SET\s+app\.is_super_admin/m);
+      await runAsApp(dataSql);
       expect((await windowOf(t)).synced).toEqual([]);
     });
   });

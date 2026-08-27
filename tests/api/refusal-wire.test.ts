@@ -11,6 +11,7 @@ import {
   NotFoundError,
 } from "@/lib/errors";
 import { SettingsTextTooLongError } from "@/modules/agents/service";
+import { refuseUnstorable } from "@/modules/rag/documents";
 import { expectWaiverLedger } from "@/tests/utils/ledger";
 import { setupPrismaMock } from "@/tests/utils/prisma-mock";
 
@@ -46,10 +47,22 @@ app.get("/__refusal/unnamed", () => {
 app.get("/__refusal/ambient-tenant", () => {
   throw new ActiveTenantNotFoundError(1234n);
 });
+// The shared refusal for a character Postgres will not store, reached by every document, approval
+// and knowledge-base write. Its field lived only in `translationParams`, so the body it answered was
+// `{ error }` alone and the console had nothing to key on — for `title` and `text`, which are the
+// two boxes those forms draw.
+app.get("/__refusal/unstorable", () => {
+  refuseUnstorable([
+    ["title", "fine"],
+    ["text", `has a ${NUL} in it`],
+  ]);
+});
 // The caller-named refusal, spelled exactly as `getTenant` spells it today.
 app.get("/__refusal/named-tenant", () => {
   throw new NotFoundError("Tenant not found", "errors.tenantNotFound");
 });
+const NUL = "\u0000";
+
 const refusal = async (
   path: string,
   lang: string,
@@ -95,6 +108,15 @@ describe("a refusal over the wire", () => {
     const { status, body } = await refusal("/__refusal/declared", "en");
     expect(status).toBe(400);
     expect(body.field).toBe("kanban.instructions");
+  });
+
+  test("the unstorable-character refusal names the field it is about", async () => {
+    // The one the client wiring for documents and approvals depends on: `DOC_FIELDS` declares
+    // `title` and `text`, and neither can be placed if the body carries no name.
+    const { status, body } = await refusal("/__refusal/unstorable", "en");
+    expect(status).toBe(400);
+    expect(body.field).toBe("text");
+    expect(body.error).toContain("U+0000");
   });
 
   test("a refusal that names no field answers the same body it answers today", async () => {
@@ -250,6 +272,11 @@ app.get("/__real/notfound", () => {
 app.get("/__real/notfound-status", () => {
   throw Object.assign(new ElysiaNotFoundError(), { status: 418 });
 });
+// A `SyntaxError` from a bare `BigInt`, which used to have an arm of its own here: an `onError`
+// branch that recognised it by its MESSAGE and answered a plain-text 400. It is gone (issue #407),
+// because a catch-all keyed on an error message is not a refusal — it is a net under every handler
+// that forgot to parse, and it turned a missing parse into an answer the caller could not read and
+// nobody would go looking for. Now it is what it is: an unhandled throw.
 app.get("/__logged/bigint", () => {
   throw new SyntaxError("Cannot convert 9007199254740993x to a BigInt");
 });
@@ -435,9 +462,13 @@ describe("the access log records the status actually answered", () => {
     expect(await loggedStatusFor("/__real/notfound-status")).toBe("404");
   });
 
-  test("the BigInt guard's raw 400 is logged as 400, not 500", async () => {
-    expect(await wireStatusFor("/__logged/bigint")).toBe(400);
-    expect(await loggedStatusFor("/__logged/bigint")).toBe("400");
+  // The arm that used to answer this is gone, and this is what keeps it gone: an unparsed id now
+  // reaches the generic arm and is answered — and recorded — as the unhandled error it is. Every
+  // caller-supplied id has a parse of its own (tests/lib/caller-id-spelling.test.ts sweeps for the
+  // spelling that skips one), so nothing on an HTTP path throws this any more.
+  test("a bare BigInt throw is answered 500 and logged 500", async () => {
+    expect(await wireStatusFor("/__logged/bigint")).toBe(500);
+    expect(await loggedStatusFor("/__logged/bigint")).toBe("500");
   });
 });
 

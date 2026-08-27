@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Client } from "pg";
+import { ENTER_FLEET_ROLE_SQL } from "@/lib/tenancy/fleet-role";
 
 // Runs the ACTUAL migration file against the test database, over the settings shapes an install can
 // really hold. Two failure modes are being pinned, and neither is hypothetical:
@@ -190,23 +191,25 @@ describe.skipIf(!dbUp)("migration: tts normalize default on", () => {
       }
     }
 
-    test("the migration as written reaches the rows", async () => {
-      const id = await seedProbe("rls-probe-with-guc");
-      await runAsApp(sql);
+    // The file's own `SET app.is_super_admin` line is INERT against today's schema. The policy that
+    // read it was split into a role-restricted one (issue #382), and this migration only ever runs
+    // BEFORE that split, on a database whose policy still carried the OR. So re-executing it here
+    // has to supply the bypass of the era it is being run in, or the pair below stops
+    // discriminating: both halves would report "changed nothing", for two different reasons, and
+    // the guard would be green by invisibility rather than by working.
+    test("the migration's statements reach the rows under the bypass of the era they run in", async () => {
+      const id = await seedProbe("rls-probe-with-bypass");
+      await runAsApp(`${ENTER_FLEET_ROLE_SQL};\n${sql}`);
       expect(await normalizeStillStored(id)).toBe(false);
     });
 
-    test("the same migration WITHOUT the GUC silently changes nothing", async () => {
-      const id = await seedProbe("rls-probe-no-guc");
-      // Drop the GUC STATEMENTS only (the header comment names them too, and "SET" is a substring of
-      // "RESET", so a naive replace leaves a dangling "RE").
-      const stripped = sql
-        .split("\n")
-        .filter((l) => !/^\s*(SET|RESET)\s+app\.is_super_admin/.test(l))
-        .join("\n");
-      expect(stripped).not.toMatch(/^\s*(SET|RESET)\s+app\.is_super_admin/m);
-      await runAsApp(stripped);
-      // No error, no rows: exactly the failure this guard exists for.
+    test("the same statements with no bypass silently change nothing", async () => {
+      const id = await seedProbe("rls-probe-no-bypass");
+      // The file exactly as shipped, which today carries only the inert guard. No error, no rows:
+      // exactly the failure this guard exists for, and the reason the fence in
+      // migration-rls-bypass.test.ts asks for the CURRENT spelling from the split onward.
+      expect(sql).toMatch(/^\s*SET\s+app\.is_super_admin/m);
+      await runAsApp(sql);
       expect(await normalizeStillStored(id)).toBe(true);
     });
   });

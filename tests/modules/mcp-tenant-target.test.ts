@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { resolveTenantSelector } from "@/api/v1/tenants.service";
+import { MAX_DB_ID } from "@/lib/db-id";
 import { NotFoundError } from "@/lib/errors";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import { agentGet } from "@/modules/mcp/read";
@@ -119,6 +120,16 @@ describe.skipIf(!dbUp)("MCP tenant targeting (DB)", () => {
   test("resolveTenantSelector throws NotFound for an unknown selector", async () => {
     await expect(
       resolveTenantSelector(`ghost-${process.pid}`, appDb),
+    ).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  // An all-digits selector past what the column holds. The guard here was `/^\d+$/`, which this
+  // passes, and the value then reached Postgres as a bind error — a 500 out of a lookup whose only
+  // other outcome is a 404. It is also not a slug anyone can register, so NotFound is the whole
+  // answer. Issue #407.
+  test("resolveTenantSelector answers NotFound for digits past the column, not a bind error", async () => {
+    await expect(
+      resolveTenantSelector((MAX_DB_ID + 1n).toString(), appDb),
     ).rejects.toBeInstanceOf(NotFoundError);
   });
 

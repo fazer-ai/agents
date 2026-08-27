@@ -1,5 +1,5 @@
 import { BellRing, Pencil, Plus, Trash2 } from "lucide-react";
-import { useCallback, useEffect, useId, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Badge,
@@ -20,10 +20,10 @@ import {
   useOnModalOpen,
   useToast,
 } from "@/client/components";
+import { useFieldRefusal } from "@/client/hooks/useFieldRefusal";
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
 import { flowStageLabel } from "@/client/lib/flowLabels";
-import type { ApiErrorPayload } from "@/client/lib/types";
 import { cn, formatDate } from "@/client/lib/utils";
 import { isValidHttpUrl } from "@/client/lib/validation";
 import { FLOW_STAGES } from "@/modules/flowlog/stages";
@@ -63,9 +63,18 @@ function AlertChannelModal({
   const [secretRef, setSecretRef] = useState("");
   const [enabled, setEnabled] = useState(true);
   const [error, setError] = useState("");
+  const refusal = useFieldRefusal(
+    modal.isOpen
+      ? type === "webhook"
+        ? ALERT_WEBHOOK_FIELDS
+        : ALERT_FIELDS
+      : [],
+  );
   const [loading, setLoading] = useState(false);
 
   useOnModalOpen(modal, () => {
+    // The component outlives the dialog, so a mark from the last session is still held here.
+    refusal.clear();
     const ch = modal.payload?.channel;
     setName(ch?.name ?? "");
     setType((ch?.type as "discord" | "webhook") ?? "discord");
@@ -104,9 +113,34 @@ function AlertChannelModal({
     stages.size > 0 &&
     (editing ? true : url.trim().length > 0);
 
+  // What the inputs hold right now, in the server's vocabulary. `url` is omitted on an edit that
+  // leaves it blank, which is how "keep the stored one" is spelled on the wire.
+  const currentOf = () => {
+    const body: Record<string, unknown> = {
+      name,
+      type,
+      minLevel,
+      stages: allStagesChecked ? [] : [...stages],
+      secretRef: secretRef.trim() || null,
+      enabled,
+    };
+    if (!editing || url.trim()) body.url = url.trim();
+    return body;
+  };
+  const currentRef = useRef(currentOf());
+  currentRef.current = currentOf();
+
   const handleSubmit = async () => {
     setError("");
     setLoading(true);
+    const sent = currentOf();
+    const held = (e: unknown) =>
+      refusal.capture(
+        e,
+        t("alerts.saveFailed", "Could not save the channel"),
+        sent,
+        currentRef.current,
+      ) ?? "";
     try {
       const ref = secretRef.trim() || null;
       // All stages selected → persist [] (canonical "all", future-proof so a newly added stage is
@@ -140,16 +174,18 @@ function AlertChannelModal({
         ).error;
       }
       if (apiError) {
-        setError(
-          (apiError as { value?: ApiErrorPayload }).value?.error ||
-            t("alerts.saveFailed", "Could not save the channel"),
-        );
+        setError(held(apiError));
         return;
       }
+      refusal.clear();
       onSaved();
       modal.close();
-    } catch {
-      setError(t("alerts.saveFailed", "Could not save the channel"));
+    } catch (e) {
+      // Through `held` like the branch above, and not because the sentence changes — the fallback IS
+      // this sentence. It is the CHANNEL: `error` is drawn inside the dialog, and the operator can
+      // dismiss one while its save is out (docs/modals.md), after which this line reaches nobody.
+      // `capture` is what knows the form has gone and sends the words somewhere still on screen.
+      setError(held(e));
     } finally {
       setLoading(false);
     }
@@ -189,6 +225,8 @@ function AlertChannelModal({
             required
             disabled={loading}
             placeholder={t("alerts.namePlaceholder", "e.g. Ops Discord")}
+            error={!!refusal.at("name", name)}
+            errorMessage={refusal.at("name", name) ?? undefined}
           />
         </div>
 
@@ -210,6 +248,11 @@ function AlertChannelModal({
               {t("alerts.type.webhook", "Generic webhook")}
             </option>
           </select>
+          {refusal.at("type", type) && (
+            <p className="mt-1 text-error text-xs">
+              {refusal.at("type", type)}
+            </p>
+          )}
         </div>
 
         <div>
@@ -227,6 +270,8 @@ function AlertChannelModal({
                 ? editing.urlMasked
                 : "https://discord.com/api/webhooks/…"
             }
+            error={!!refusal.at("url", url.trim())}
+            errorMessage={refusal.at("url", url.trim()) ?? undefined}
             helperText={
               editing
                 ? t(
@@ -311,6 +356,7 @@ function AlertChannelModal({
           <FormField
             label={t("alerts.secretRef", "Signing secret (optional)")}
             group
+            error={refusal.at("secretRef", secretRef.trim() || null)}
             description={t(
               "alerts.secretRefHint",
               "Signs each delivery (HMAC) so your endpoint can verify it. Discord ignores this.",
@@ -354,6 +400,15 @@ function AlertChannelModal({
     </Modal>
   );
 }
+
+// The keys of the body this form writes: the route refuses by them, and `requireVaultRef` names
+// `secretRef`. `stages` and `minLevel` are chip rows and a Select with nowhere to render a sentence.
+const ALERT_FIELDS = ["name", "type", "url"] as const;
+
+// The signing secret belongs to a webhook, and its picker is drawn only there. The ref stays in the
+// BODY when the operator switches to Discord, though — a credential picked and then stranded — so
+// the server can still refuse it by name, on a dialog with no picker to mark.
+const ALERT_WEBHOOK_FIELDS = [...ALERT_FIELDS, "secretRef"] as const;
 
 export function AlertChannelsSection() {
   const { t } = useTranslation();

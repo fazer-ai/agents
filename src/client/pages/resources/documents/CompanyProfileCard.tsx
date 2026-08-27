@@ -184,10 +184,11 @@ export function CompanyProfileCard({
         sent,
         formRef.current.draft,
       );
-      showToast(
-        toast ?? t("documents.company.saveError", "Could not save."),
-        "error",
-      );
+      // `if (toast)`, never `toast ?? fallback`: null is the hook saying the operator has already
+      // been told — the sentence is on the control, or, for a form that has left the screen, in the
+      // global toast it raised itself. Substituting a fallback there fires the second channel on top
+      // of the first, which is the noise that teaches people to stop reading toasts.
+      if (toast) showToast(toast, "error");
     } finally {
       setBusy(null);
     }

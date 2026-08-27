@@ -6,10 +6,9 @@ import config from "@/config";
 import { DEFAULT_MODEL_CONFIG, modelConfigSchema } from "@/graph/model-config";
 import { modelOptionalFor } from "@/graph/model-defaults";
 import { NATIVE_TOOL_NAMES, RAG_TOOL_NAMES } from "@/graph/tools/catalog";
-import { parseDbId } from "@/lib/db-id";
+import { parseDbId, requireDbId } from "@/lib/db-id";
 import {
   AppError,
-  type ErrorTranslationKey,
   NotFoundError,
   TenantTargetRequiredError,
 } from "@/lib/errors";
@@ -17,7 +16,10 @@ import { parseInput } from "@/lib/parse-input";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { collectCredentialRefWrites } from "@/modules/agents/credential-paths";
 import { collectOversizedTextChanges } from "@/modules/agents/text-caps";
-import { invalidToolPreconditions } from "@/modules/agents/tool-preconditions";
+import {
+  invalidToolPreconditions,
+  parseToolPrecondition,
+} from "@/modules/agents/tool-preconditions";
 import { isOutOfHoursNow, parseSchedule } from "@/modules/business-hours/hours";
 import { renameAgentBots } from "@/modules/chatwoot/provisioning";
 import { invalidateRouteTokenCache } from "@/modules/chatwoot/route-token-cache";
@@ -357,9 +359,33 @@ export function assertSettingsToolPreconditions(
   }
   const before = storedPreconditionValues(stored);
   const now = storedPreconditionValues(settings);
-  const introduced = next.find((name) => now.get(name) !== before.get(name));
+  const introduced = next.find(
+    (name) =>
+      now.get(name) !== before.get(name) &&
+      !removesAStoredRule(name, now, before),
+  );
   if (introduced === undefined) return;
   throw new InvalidToolPreconditionError(introduced);
+}
+
+// A TOMBSTONE FOR A RULE THAT IS ACTUALLY THERE, which the catalog restriction must not block.
+//
+// The restriction is about what may be CREATED: outside the native catalog the exposed tool name is
+// not stable identity, so a rule written on one can follow the name onto another tool or stop
+// matching (issue #389). It is NOT about what may be removed — and a non-native rule can genuinely
+// exist, because an agent import copies the settings bag verbatim and the RUNTIME enforces whatever
+// name matches (only the write boundary filters by catalog). Refusing its tombstone left a caller
+// able to READ an active guard and unable to delete it.
+//
+// Both halves matter. A tombstone for a name with nothing stored under it is still refused: there is
+// nothing to delete, so accepting it would report success for a no-op — and that is exactly the
+// shape a caller sends while believing they had created something.
+function removesAStoredRule(
+  name: string,
+  now: Map<string, string>,
+  before: Map<string, string>,
+): boolean {
+  return now.get(name) === "null" && before.get(name) !== undefined;
 }
 
 // The raw entries, serialized, so "did this one change?" is one comparison. `undefined` for a name
@@ -379,9 +405,34 @@ function storedPreconditionValues(settings: unknown): Map<string, string> {
   const bag = (settings as Record<string, unknown>).toolPreconditions;
   if (!bag || typeof bag !== "object" || Array.isArray(bag)) return out;
   for (const [name, raw] of Object.entries(bag as Record<string, unknown>)) {
-    out.set(name, JSON.stringify(raw) ?? "undefined");
+    out.set(name, canonicalPrecondition(raw));
   }
   return out;
+}
+
+// "IS THIS THE SAME RULE?", which is not the same question as "are these the same bytes".
+//
+// This comparison decides whether a write CHANGED an entry, and an unchanged one is exempt from the
+// catalog restriction — that exemption is what lets a caller read the config and write it back. But
+// `JSON.stringify` compares SPELLING: jsonb does not promise property order, and what
+// `agent_settings_get` returns is the reader's normalized shape, not the bytes that were stored. So
+// the same rule, read back and sent again, serialized differently and was refused as an edit.
+//
+// Parsed first, so two spellings of one rule collapse; falls back to the raw serialization for an
+// entry that does not parse, which is the case the by-value comparison was written for in the first
+// place (an already-broken entry re-sent untouched must not be refused).
+function canonicalPrecondition(raw: unknown): string {
+  if (raw === null) return "null";
+  const parsed = parseToolPrecondition(raw);
+  if (parsed) {
+    return JSON.stringify([
+      parsed.kind,
+      parsed.scope,
+      parsed.key,
+      parsed.equals ?? null,
+    ]);
+  }
+  return `raw:${JSON.stringify(raw) ?? "undefined"}`;
 }
 
 // A FALLBACK IS A PROVIDER AND A MODEL, OR IT IS NOTHING — and the write is the only place that can
@@ -567,16 +618,6 @@ export const agentUpdateSchema = z
 
 export type AgentUpdate = z.infer<typeof agentUpdateSchema>;
 
-function refOrThrow(v: string, notFoundKey: ErrorTranslationKey): bigint {
-  try {
-    return BigInt(v);
-  } catch {
-    // A non-numeric id certainly does not exist; collapse into the same NotFound the DB check
-    // would raise, so the caller gets one consistent error.
-    throw new NotFoundError("not found", notFoundKey);
-  }
-}
-
 export async function updateAgent(
   ctx: TenantContext,
   id: bigint,
@@ -600,13 +641,17 @@ export async function updateAgent(
       "errors.noUpdatableFields",
     );
   }
+  // NOTE: refused, not collapsed into the NotFound the ownership check below raises. This used
+  // to answer 404 for a non-numeric id, which tells a caller who mistyped that the row is gone —
+  // and the same file already answered 400 for a malformed tool-grant id (`bigOrThrow`), so one
+  // mistake got two answers depending on which field carried it. Issue #407.
   const bhId =
     hasBh && businessHoursId !== null
-      ? refOrThrow(businessHoursId, "errors.businessHoursNotFound")
+      ? requireDbId(businessHoursId, "businessHoursId")
       : null;
   const fuhId =
     hasFuh && followUpHoursId !== null
-      ? refOrThrow(followUpHoursId, "errors.businessHoursNotFound")
+      ? requireDbId(followUpHoursId, "followUpHoursId")
       : null;
   const dto = await runScopedOn(base, ctx, async (db) => {
     if (bhId !== null) {
@@ -812,9 +857,13 @@ export async function createAgent(
   const data = parseInput(agentCreateSchema, input);
   validateModelConfigForWrite(data.modelConfig);
   const bhId =
-    data.businessHoursId != null ? BigInt(data.businessHoursId) : null;
+    data.businessHoursId != null
+      ? requireDbId(data.businessHoursId, "businessHoursId")
+      : null;
   const fuhId =
-    data.followUpHoursId != null ? BigInt(data.followUpHoursId) : null;
+    data.followUpHoursId != null
+      ? requireDbId(data.followUpHoursId, "followUpHoursId")
+      : null;
   const dto = await runScopedOn(base, ctx, async (db) => {
     if (bhId !== null) {
       const bh = await db.businessHours.findUnique({

@@ -32,6 +32,7 @@ import {
   useToast,
 } from "@/client/components";
 import { Tooltip } from "@/client/components/Tooltip";
+import { useFieldRefusal } from "@/client/hooks/useFieldRefusal";
 import { useTenantEvents } from "@/client/hooks/useTenantEvents";
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
@@ -116,6 +117,15 @@ export interface KnowledgeManager {
 // Knowledge panel and the agent editor's Knowledge tab so a base can be created/edited/fed documents
 // without leaving the agent. `onChanged` is called after any mutation so the consumer refetches its
 // own list (the bases list itself is NOT owned here — each consumer renders its own).
+// The keys of the bodies these forms write, spelled the way the routes refuse them.
+const BASE_FIELDS = [
+  "name",
+  "description",
+  "chunkSize",
+  "chunkOverlap",
+] as const;
+const DOC_FIELDS = ["title", "text"] as const;
+
 export function useKnowledgeManager(opts: {
   onChanged: () => void | Promise<void>;
   // Optional: called with the freshly-created base so a caller (the agent editor) can auto-select it.
@@ -143,7 +153,22 @@ export function useKnowledgeManager(opts: {
   const docEditModal = useModalController<{ id: string; title: string }>();
   const confirm = useModalController<ConfirmPayload>();
 
+  // Above the holders because one of them reads it: the add dialog's tab decides whether the text
+  // box is on screen at all.
+  const [addTab, setAddTab] = useState("texto");
+
   // Create/edit KB fields
+  // Three forms here, three holders: the base (create and edit share their inputs and are never open
+  // together), the "add text" document, and the document editor.
+  const baseRefusal = useFieldRefusal(
+    createModal.isOpen || editModal.isOpen ? BASE_FIELDS : [],
+  );
+  // The add dialog has two tabs and the text box belongs to one of them: on the file tab there is no
+  // control for `title` or `text`, so a refusal naming either has to go to the toast.
+  const addDocRefusal = useFieldRefusal(
+    addContentModal.isOpen && addTab === "texto" ? DOC_FIELDS : [],
+  );
+  const editDocRefusal = useFieldRefusal(docEditModal.isOpen ? DOC_FIELDS : []);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [chunkSize, setChunkSize] = useState(1000);
@@ -152,8 +177,11 @@ export function useKnowledgeManager(opts: {
   const [chunkOverlapError, setChunkOverlapError] = useState("");
 
   // Add content fields (the add form is a modal stacked over the documents list).
-  const [addTab, setAddTab] = useState("texto");
   const [docTitle, setDocTitle] = useState("");
+  // What each form's inputs hold right now, readable from inside a request that started before them.
+  const baseRef = useRef<Record<string, unknown>>({});
+  const editDocRef = useRef<Record<string, unknown>>({});
+  const addDocRef = useRef<Record<string, unknown>>({});
   const [text, setText] = useState("");
   const [picked, setPicked] = useState<PickedFile[]>([]);
   const [dragOver, setDragOver] = useState(false);
@@ -206,6 +234,17 @@ export function useKnowledgeManager(opts: {
   // Doc edit (title + text); the text loads from the GET-by-id, then a PATCH re-ingests on change.
   const [editDocTitle, setEditDocTitle] = useState("");
   const [editDocText, setEditDocText] = useState("");
+  baseRef.current = {
+    name: name.trim(),
+    description: description.trim(),
+    chunkSize,
+    chunkOverlap,
+  };
+  editDocRef.current = { title: editDocTitle.trim(), text: editDocText };
+  addDocRef.current = {
+    title: docTitle.trim() || t("knowledge.docTitle", "Title"),
+    text: text.trim(),
+  };
   const [editDocLoading, setEditDocLoading] = useState(false);
   const [editDocOriginal, setEditDocOriginal] = useState({
     title: "",
@@ -334,6 +373,8 @@ export function useKnowledgeManager(opts: {
   }
 
   useOnModalOpen(createModal, () => {
+    // The component outlives the dialog, so a mark from the last session is still held here.
+    baseRefusal.clear();
     setName("");
     setDescription("");
     setChunkSize(1000);
@@ -343,6 +384,8 @@ export function useKnowledgeManager(opts: {
   });
 
   useOnModalOpen(editModal, () => {
+    // The component outlives the dialog, so a mark from the last session is still held here.
+    baseRefusal.clear();
     const b = editModal.payload;
     if (!b) return;
     setName(b.name);
@@ -354,6 +397,8 @@ export function useKnowledgeManager(opts: {
   });
 
   useOnModalOpen(addContentModal, () => {
+    // The component outlives the dialog, so a mark from the last session is still held here.
+    addDocRefusal.clear();
     setAddTab("texto");
     setDocTitle("");
     setText("");
@@ -382,6 +427,8 @@ export function useKnowledgeManager(opts: {
   });
 
   useOnModalOpen(docEditModal, () => {
+    // The component outlives the dialog, so a mark from the last session is still held here.
+    editDocRefusal.clear();
     const payload = docEditModal.payload;
     if (!payload) return;
     setEditDocTitle(payload.title);
@@ -443,6 +490,7 @@ export function useKnowledgeManager(opts: {
         description: description.trim() || undefined,
       });
       if (err || !data) throw err;
+      baseRefusal.clear();
       if (chunkSize !== 1000 || chunkOverlap !== 200) {
         await api.api.v1.knowledge
           .bases({ id: data.base.id })
@@ -453,10 +501,13 @@ export function useKnowledgeManager(opts: {
       void onChanged();
       opts.onCreated?.({ id: data.base.id, name: name.trim() });
     } catch (e) {
-      showToast(
-        apiErrorMessage(e) || t("knowledge.createError", "Could not create."),
-        "error",
+      const toast = baseRefusal.capture(
+        e,
+        t("knowledge.createError", "Could not create."),
+        { name: name.trim(), description: description.trim() || undefined },
+        baseRef.current,
       );
+      if (toast) showToast(toast, "error");
     } finally {
       setBusy(false);
     }
@@ -477,14 +528,23 @@ export function useKnowledgeManager(opts: {
           chunkOverlap,
         });
       if (err) throw err;
+      baseRefusal.clear();
       showToast(t("knowledge.updated", "Knowledge base updated."), "success");
       editModal.close();
       void onChanged();
     } catch (e) {
-      showToast(
-        apiErrorMessage(e) || t("knowledge.updateError", "Could not update."),
-        "error",
+      const toast = baseRefusal.capture(
+        e,
+        t("knowledge.updateError", "Could not update."),
+        {
+          name: name.trim(),
+          description: description.trim() || null,
+          chunkSize,
+          chunkOverlap,
+        },
+        baseRef.current,
       );
+      if (toast) showToast(toast, "error");
     } finally {
       setBusy(false);
     }
@@ -495,13 +555,15 @@ export function useKnowledgeManager(opts: {
     if (!payload || !text.trim()) return;
     setBusy(true);
     try {
+      const sent = {
+        title: docTitle.trim() || t("knowledge.docTitle", "Title"),
+        text: text.trim(),
+      };
       const { error: err } = await api.api.v1.knowledge
         .bases({ id: payload.id })
-        .documents.post({
-          title: docTitle.trim() || t("knowledge.docTitle", "Title"),
-          text: text.trim(),
-        });
+        .documents.post(sent);
       if (err) throw err;
+      addDocRefusal.clear();
       showToast(
         t("knowledge.addedQueued", "Document queued for processing."),
         "success",
@@ -514,12 +576,17 @@ export function useKnowledgeManager(opts: {
     } catch (e) {
       // The server's own message when it sent one: a refusal that names the field and the character
       // is the whole answer, and collapsing it into "Could not add document" throws away the only
-      // part the operator can act on (issue #247).
-      showToast(
-        apiErrorMessage(e) ??
-          t("knowledge.addError", "Could not add document."),
-        "error",
+      // part the operator can act on (issue #247) — at the input it named, when this form draws one.
+      const toast = addDocRefusal.capture(
+        e,
+        t("knowledge.addError", "Could not add document."),
+        {
+          title: docTitle.trim() || t("knowledge.docTitle", "Title"),
+          text: text.trim(),
+        },
+        addDocRef.current,
       );
+      if (toast) showToast(toast, "error");
     } finally {
       setBusy(false);
     }
@@ -678,16 +745,19 @@ export function useKnowledgeManager(opts: {
         .documents({ id: payload.id })
         .patch({ title: editDocTitle.trim(), text: editDocText });
       if (err) throw err;
+      editDocRefusal.clear();
       showToast(t("knowledge.docUpdated", "Document updated."), "success");
       docEditModal.close();
       if (docsModal.payload) await reloadDocs(docsModal.payload.id);
       void onChanged();
     } catch (e) {
-      showToast(
-        apiErrorMessage(e) ||
-          t("knowledge.docUpdateError", "Could not update the document."),
-        "error",
+      const toast = editDocRefusal.capture(
+        e,
+        t("knowledge.docUpdateError", "Could not update the document."),
+        { title: editDocTitle.trim(), text: editDocText },
+        editDocRef.current,
       );
+      if (toast) showToast(toast, "error");
     } finally {
       setBusy(false);
     }
@@ -1025,23 +1095,35 @@ export function useKnowledgeManager(opts: {
         }
       >
         <div className="flex flex-col gap-4">
-          <FormField label={t("knowledge.name", "Name")} required>
+          <FormField
+            label={t("knowledge.name", "Name")}
+            required
+            error={baseRefusal.at("name", name.trim())}
+          >
             <Input value={name} onChange={(e) => setName(e.target.value)} />
           </FormField>
-          <FormField label={t("knowledge.description", "Description")}>
+          <FormField
+            label={t("knowledge.description", "Description")}
+            error={baseRefusal.at("description", description.trim())}
+          >
             <Textarea
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               rows={2}
             />
           </FormField>
+          {/* `||` and not `??`: these two hold "" when there is nothing wrong, so a nullish fallback
+              never reaches the refusal behind it. The local check tests BOUNDS only, and the schema
+              is `t.Integer` — a chunk size of 100.5 passes here and is refused there by name, which
+              is exactly the case that was landing on a reading nobody could reach. Local first
+              because it is about what the box holds now. */}
           <FormField
             label={t("knowledge.chunkSize", "Chunk size (chars)")}
             hint={t(
               "knowledge.chunkSizeHint",
               "Controls how large each indexed text chunk is. Smaller chunks give more precision; larger chunks preserve more context.",
             )}
-            error={chunkSizeError}
+            error={chunkSizeError || baseRefusal.at("chunkSize", chunkSize)}
           >
             <Input
               type="number"
@@ -1057,7 +1139,9 @@ export function useKnowledgeManager(opts: {
               "knowledge.chunkOverlapHint",
               "Number of characters shared between consecutive chunks. Helps preserve context across chunk boundaries.",
             )}
-            error={chunkOverlapError}
+            error={
+              chunkOverlapError || baseRefusal.at("chunkOverlap", chunkOverlap)
+            }
           >
             <Input
               type="number"
@@ -1085,10 +1169,17 @@ export function useKnowledgeManager(opts: {
         }
       >
         <div className="flex flex-col gap-4">
-          <FormField label={t("knowledge.name", "Name")} required>
+          <FormField
+            label={t("knowledge.name", "Name")}
+            required
+            error={baseRefusal.at("name", name.trim())}
+          >
             <Input value={name} onChange={(e) => setName(e.target.value)} />
           </FormField>
-          <FormField label={t("knowledge.description", "Description")}>
+          <FormField
+            label={t("knowledge.description", "Description")}
+            error={baseRefusal.at("description", description.trim())}
+          >
             <Textarea
               value={description}
               onChange={(e) => setDescription(e.target.value)}
@@ -1101,7 +1192,7 @@ export function useKnowledgeManager(opts: {
               "knowledge.chunkSizeHint",
               "Controls how large each indexed text chunk is. Smaller chunks give more precision; larger chunks preserve more context.",
             )}
-            error={chunkSizeError}
+            error={chunkSizeError || baseRefusal.at("chunkSize", chunkSize)}
           >
             <Input
               type="number"
@@ -1117,7 +1208,9 @@ export function useKnowledgeManager(opts: {
               "knowledge.chunkOverlapHint",
               "Number of characters shared between consecutive chunks. Helps preserve context across chunk boundaries.",
             )}
-            error={chunkOverlapError}
+            error={
+              chunkOverlapError || baseRefusal.at("chunkOverlap", chunkOverlap)
+            }
           >
             <Input
               type="number"
@@ -1160,13 +1253,20 @@ export function useKnowledgeManager(opts: {
           />
           {addTab === "texto" && (
             <div className="flex flex-col gap-4">
-              <FormField label={t("knowledge.docTitle", "Title")}>
+              <FormField
+                label={t("knowledge.docTitle", "Title")}
+                error={addDocRefusal.at("title", docTitle.trim())}
+              >
                 <Input
                   value={docTitle}
                   onChange={(e) => setDocTitle(e.target.value)}
                 />
               </FormField>
-              <FormField label={t("knowledge.text", "Text")} required>
+              <FormField
+                label={t("knowledge.text", "Text")}
+                required
+                error={addDocRefusal.at("text", text.trim())}
+              >
                 <Textarea
                   value={text}
                   onChange={(e) => setText(e.target.value)}
@@ -1569,7 +1669,11 @@ export function useKnowledgeManager(opts: {
           </div>
         ) : (
           <div className="flex flex-col gap-4">
-            <FormField label={t("knowledge.docTitleLabel", "Title")} required>
+            <FormField
+              label={t("knowledge.docTitleLabel", "Title")}
+              required
+              error={editDocRefusal.at("title", editDocTitle.trim())}
+            >
               <Input
                 value={editDocTitle}
                 onChange={(e) => setEditDocTitle(e.target.value)}
@@ -1582,6 +1686,7 @@ export function useKnowledgeManager(opts: {
                 "knowledge.docEditHint",
                 "Editing the content re-indexes the document (it is re-embedded).",
               )}
+              error={editDocRefusal.at("text", editDocText)}
             >
               <Textarea
                 value={editDocText}

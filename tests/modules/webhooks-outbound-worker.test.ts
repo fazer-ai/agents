@@ -15,7 +15,7 @@ import { processOutboundBatch } from "@/modules/webhooks/outbound/worker";
 
 // ── integration (real DB) ──
 // Uses the non-superuser app role for processOutboundBatch (realistic RLS: the claim runs
-// under asSuperAdmin/is_super_admin, outcomes under the tenant scope) and the superuser
+// under asSuperAdmin, i.e. the fleet role; outcomes under the tenant scope) and the superuser
 // client for fixtures/teardown. Network is stubbed (fetchImpl) and SSRF is bypassed
 // (assertSafe) except where a test exercises the real guard.
 const appUrl = process.env.TEST_APP_DATABASE_URL;

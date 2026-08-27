@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
+import { parseDbId } from "@/lib/db-id";
 import { NotFoundError } from "@/lib/errors";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 
@@ -78,9 +79,13 @@ export async function resolveTenantSelector(
   const sel = selector.trim();
   if (sel) {
     const row = await asSuperAdminOn(base, async (db) => {
-      if (/^\d+$/.test(sel)) {
+      // NOTE: `parseDbId`, not a digits test. A run of digits past 2^63-1 passes `/^\d+$/`,
+      // converts, and is refused by POSTGRES when the query binds it — a 500 on a lookup whose
+      // other outcome is a 404. A selector that is not an id is simply tried as a slug. Issue #407.
+      const asId = parseDbId(sel);
+      if (asId !== null) {
         const byId = await db.tenant.findUnique({
-          where: { id: BigInt(sel) },
+          where: { id: asId },
           select: TENANT_SELECT,
         });
         if (byId) return byId;

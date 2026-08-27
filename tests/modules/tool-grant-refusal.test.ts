@@ -173,10 +173,16 @@ describe("a refused tool grant says WHICH rule refused it", () => {
 });
 
 // The same question one layer up, on the OTHER refusal `updateAgent` raises before it opens a
-// transaction: a business-hours id that is not a number. `refOrThrow` takes the key to refuse with
-// as an argument, and nothing asserted WHICH key came out — a mutation that hard-coded
-// `errors.agentNotFound` there broke no test, so the caller could have been told the AGENT was
-// missing when the id they typed was the schedule's.
+// transaction: a business-hours id that is not a number. The rule this pins is that the refusal
+// names the RIGHT thing — a mutation that hard-coded `errors.agentNotFound` broke no test, so the
+// caller could have been told the AGENT was missing when the id they typed was the schedule's.
+//
+// It used to be a 404 ("Business hours not found"), on the reasoning that a non-numeric id
+// certainly does not exist. That collapsed two situations only one of which the caller can act on,
+// and the same file already answered 400 for a malformed tool-grant id, so one mistake had two
+// answers depending on which field carried it. Now both say 400 and name the field (issue #407),
+// which serves this test's own point better than the old key did: `businessHoursId` and
+// `followUpHoursId` are told apart, where "Business hours not found." covered both.
 describe("a business-hours id that is not a number", () => {
   async function updateRefusal(patch: Record<string, unknown>) {
     const { updateAgent } = await import("@/modules/agents/service");
@@ -189,14 +195,13 @@ describe("a business-hours id that is not a number", () => {
     throw new Error("expected a refusal, got none");
   }
 
-  test("is refused as a missing SCHEDULE, in both languages", async () => {
+  test("is refused by its own field name, in both languages", async () => {
     for (const field of ["businessHoursId", "followUpHoursId"]) {
       const err = await updateRefusal({ [field]: "not-a-number" });
-      expect(err.translationKey).toBe("errors.businessHoursNotFound");
-      expect(shown(err, "en")).toBe("Business hours not found.");
-      expect(shown(err, "pt-BR")).toBe(
-        "Horário de atendimento não encontrado.",
-      );
+      expect(err.statusCode).toBe(400);
+      expect(err.translationKey).toBe("errors.invalidId");
+      expect(shown(err, "en")).toBe(`Not a valid ${field}`);
+      expect(shown(err, "pt-BR")).toBe(`Não é um ${field} válido`);
       // Named, not merely "not the agent one": the two sentences must not be the same string, which
       // is the state that made this refusal indistinguishable in the first place.
       expect(shown(err, "en")).not.toBe(shown(err, "pt-BR"));

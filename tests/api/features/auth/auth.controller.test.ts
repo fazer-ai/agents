@@ -168,6 +168,10 @@ describe("authController", () => {
         "error",
         "Email already in use",
       );
+      // And the input it is about. The signup form has two boxes and only one of them can be fixed,
+      // so a sentence with no name sends the operator to guess (#320). Built by hand in the
+      // controller rather than raised as an AppError, which is why `refusalBody` never sees it.
+      expect(response.error?.value).toHaveProperty("field", "email");
     });
 
     test("validates email format (returns 422)", async () => {

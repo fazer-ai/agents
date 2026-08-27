@@ -13,6 +13,14 @@ services:
       - NODE_ENV=production
       - PORT=${PORT:-3000}
       - PUBLIC_URL=${SERVICE_URL_AGENTS}
+      # NOTE: the outgoing runtime role during a DATABASE_URL rotation, declared for the length of
+      # the overlap. Bootstrap reconciles fleet-role membership down to this database's runtime role
+      # and the administrator, so without this the outgoing role loses its cross-tenant path mid-
+      # drain and every asSuperAdmin call in the container still serving on it — API-key
+      # verification included — starts reading zero rows. Not inferred from an open session: a
+      # stale installation whose database was recreated under the same name presents exactly the
+      # same session (measured). Comma-separated; clear it once the old container is gone.
+      - FLEET_ROLE_RETAIN_MEMBER=${FLEET_ROLE_RETAIN_MEMBER:-}
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - JWT_SECRET=${SERVICE_PASSWORD_64_JWTSECRET}
       - ENCRYPTION_KEY=${SERVICE_PASSWORD_64_ENCRYPTIONKEY}

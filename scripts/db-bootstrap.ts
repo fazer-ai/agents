@@ -1,5 +1,14 @@
 #!/usr/bin/env bun
 import { Client } from "pg";
+import {
+  FLEET_ROLE_EXPR,
+  FLEET_ROLE_RETAINED_MEMBER_ENV,
+  retainedFleetMembers,
+} from "@/lib/tenancy/fleet-role";
+import {
+  OUTLIVES_SET_ROLE,
+  privilegedReachSql,
+} from "@/lib/tenancy/privileged-reach";
 
 // Deterministic, platform-independent DB provisioning. Run ONCE at deploy time (and safe to
 // re-run) as the FIRST step before `prisma migrate deploy`. It does what scripts/db-bootstrap.sql
@@ -112,6 +121,140 @@ export function assertRuntimeRoleIsUnprivileged(
   );
 }
 
+// The fleet role is a SET ROLE target for the runtime role, so what it may BE is the same question
+// `assertRuntimeRoleIsUnprivileged` asks of the runtime role itself — and it has to be asked of a
+// role that already EXISTS, because this script only creates one when it is absent. A stale or
+// hand-made role carrying the derived name can be SUPERUSER, BYPASSRLS or LOGIN, and granting the
+// runtime role a path into it hands away exactly what this design refuses to hand away.
+//
+// It REFUSES rather than warning, unlike the missing-membership case beside it, because the loss
+// here can already be silent: if the runtime role is a member from an earlier boot (the reconcile
+// keeps that membership by design), every request can reach a privileged role right now, with RLS a
+// no-op and nothing in a log. LOGIN counts for the same reason it is refused on the runtime role —
+// a role nothing should connect as should not be connectable.
+// The attribute list is every one `CREATE ROLE` can carry that outlives a SET ROLE, not just the two
+// that defeat RLS: the runtime role ACQUIRES all of them the moment it enters this role, so
+// CREATEDB, CREATEROLE and REPLICATION are cluster-level privileges handed to every request path.
+// LOGIN counts for its own reason — a role nothing should connect as should not be connectable.
+export const FLEET_ROLE_FORBIDDEN_ATTRIBUTES = [
+  ["rolsuper", "SUPERUSER"],
+  ["rolbypassrls", "BYPASSRLS"],
+  ["rolcanlogin", "LOGIN"],
+  ["rolcreatedb", "CREATEDB"],
+  ["rolcreaterole", "CREATEROLE"],
+  ["rolreplication", "REPLICATION"],
+] as const;
+
+export function assertFleetRoleIsUnprivileged(
+  fleetRole: string,
+  state: Partial<
+    Record<(typeof FLEET_ROLE_FORBIDDEN_ATTRIBUTES)[number][0], boolean>
+  > & {
+    reaches: string | null;
+  },
+) {
+  const reasons: string[] = [];
+  for (const [field, word] of FLEET_ROLE_FORBIDDEN_ATTRIBUTES) {
+    if (state[field]) reasons.push(word);
+  }
+  if (state.reaches !== null) {
+    reasons.push(`can become a privileged role (${state.reaches})`);
+  }
+  if (reasons.length === 0) return;
+  throw new Error(
+    `the cross-tenant role "${fleetRole}" already exists and is privileged ` +
+      `(${reasons.join(", ")}). The runtime role SETs ROLE into it, so granting that would make ` +
+      "RLS a no-op for every request. This is a role this installation did not create — a database " +
+      "dropped and recreated leaves one behind. Drop it (as its owner or a superuser) and let this " +
+      `script create it: DROP OWNED BY "${fleetRole}"; DROP ROLE "${fleetRole}";`,
+  );
+}
+
+// The statement that repairs the membership, which is not the same statement on every server.
+//
+// It lives in its own function because the 16-only spelling has to sit behind a version gate, and a
+// message built inline would put it outside one — printing an operator a statement their server
+// cannot parse. On 16+ the GRANT's own option is the control; on 15 and older the option does not
+// exist and the member's `rolinherit` is the whole control.
+export function fleetMembershipRepair(
+  appRole: string,
+  fleetRole: string,
+  serverVersionNum: number,
+): string {
+  let statement = `ALTER ROLE "${appRole}" NOINHERIT; GRANT "${fleetRole}" TO "${appRole}";`;
+  if (serverVersionNum >= 160000) {
+    statement = `GRANT "${fleetRole}" TO "${appRole}" WITH INHERIT FALSE, SET TRUE;`;
+  }
+  // WHO runs it is half the instruction, and it is the half an operator hits second. Roles are
+  // CLUSTER-wide while a database is not, so on a shared server the fleet role may have been
+  // created by another installation's administrator — and a CREATEROLE role holds no ADMIN on a
+  // role it did not create, so this same statement answers `permission denied to grant role` for
+  // exactly the person the message was written for (measured).
+  return (
+    `${statement} (run it as a superuser, or as the role that created "${fleetRole}"; ` +
+    `a CREATEROLE administrator holds no ADMIN on a role it did not create, and can be given one ` +
+    `with: GRANT "${fleetRole}" TO <administrator> WITH ADMIN OPTION;)`
+  );
+}
+
+// The fleet role is reached by SET ROLE, and the membership that allows that is the same catalog
+// entry that can make its policy apply PASSIVELY. Both halves are asked, and neither is inferable
+// from the DDL that was issued — but they are NOT the same severity, and treating them alike is
+// wrong in both directions:
+//
+//   USAGE true  -> the `fleet_super_admin` policy (`USING (true)`) applies to the RUNTIME role as
+//                  well, and it reads every tenant's rows on an ordinary scoped request. No error,
+//                  no plan difference, nothing in a log: measured on this schema as 400 rows across
+//                  2 tenants where the fence expects 200 across 1. Silent isolation loss, so this
+//                  REFUSES — serving is the harm.
+//   SET false   -> `asSuperAdmin` cannot switch role. This REFUSES too, and the first version of
+//                  this check warned instead, on the claim that only fleet administration breaks
+//                  and tenant traffic is untouched. Counting the call sites says otherwise:
+//                  `asSuperAdminOn` is how an API key is verified (the tenant is not known until
+//                  the key row is read, so the lookup cannot be tenant-scoped), how a Chatwoot
+//                  route is resolved, how the scheduler claims work, and how the very first admin
+//                  is created. Without it the installation starts and then fails every
+//                  authenticated request. Crash-looping with the repair on screen beats serving
+//                  500s that name nothing.
+//
+// Asked of `pg_has_role` rather than of `pg_auth_members.inherit_option` for the reason the other
+// checks in this file already give: the column is 16-only, the function is the portable spelling,
+// and pre-16 it reads the member's `rolinherit` — which on those servers IS the whole control.
+//
+// And it has to be asked of the EFFECT, because on 16+ the two disagree. `ALTER ROLE <app>
+// NOINHERIT` does not touch a membership that already exists: the grant keeps the `inherit_option`
+// recorded when it was made. Measured, on 17.10, all three combinations:
+//
+//   rolinherit=false + inherit_option=true  -> USAGE true   (isolation gone)
+//   rolinherit=false + inherit_option=false -> USAGE false
+//   rolinherit=true  + inherit_option=false -> USAGE false
+//
+// So the grant is what has to carry `INHERIT FALSE`, and re-issuing it repairs an inherited
+// membership in place (no REVOKE needed, also measured).
+//
+export function assertFleetMembership(
+  appRole: string,
+  fleetRole: string,
+  state: { can_set_role: boolean; usage: boolean },
+  repair: string,
+): void {
+  if (state.usage) {
+    throw new Error(
+      `runtime role "${appRole}" INHERITS "${fleetRole}", which makes the cross-tenant policy ` +
+        "apply to it passively — every tenant's rows would be readable on an ordinary scoped " +
+        `request, with no error to see. Repair with: ${repair}`,
+    );
+  }
+  if (!state.can_set_role) {
+    throw new Error(
+      `runtime role "${appRole}" cannot SET ROLE to "${fleetRole}". Every cross-tenant call fails ` +
+        "with `permission denied to set role`, and that is not only fleet administration: it is " +
+        "how an API key is verified, how a Chatwoot route is resolved, how the scheduler claims " +
+        `work, and how the first admin is created. Repair with: ${repair}`,
+    );
+  }
+}
+
 // The DDL that carries the password. It reads role and password from session GUCs rather than from
 // a string we build, so the password is never spliced into SQL we assemble or log. The templates
 // are our own constants with no quotes to escape; only %I/%L are filled, by Postgres itself.
@@ -167,6 +310,433 @@ const ELEVATED_ATTRIBUTES = [
 
 function message(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+// A `fleet_super_admin` policy in this database naming SOMEONE ELSE's fleet role is what a restore
+// or a clone under a different name leaves behind, and the refusal it used to get was not the whole
+// answer.
+//
+// Measured: dump a database and restore it under a new name on the same cluster, and the copied
+// policies still say `TO <source fleet role>` while the copied grants still give that role every
+// table. Its members are unaffected, because a role membership is CLUSTER-wide and survives being
+// copied around, so the source installation's runtime role connects to the restored database
+// (PUBLIC holds CONNECT by default), enters that role, and reads all of it: 0 of 30 rows without
+// the `SET ROLE`, 30 of 30 with it. `src/lib/db-guard.ts` refuses to serve such a database, and
+// that refusal stops OUR process and nothing else — the door it names stays open behind it.
+//
+// So the privileges are taken away here, and the boot still refuses afterwards: the policies name a
+// role this database did not derive, which only re-running the migration rewrites.
+//
+// What is deliberately NOT touched is the foreign role's cluster-wide MEMBERSHIP. That role belongs
+// to a source installation which is, in the ordinary case, running perfectly well on its own
+// database; revoking its membership from here would break it. Privileges are per-database and are
+// exactly the right blast radius. Only names matching the derivation's own prefix are considered at
+// all, so an operator role that happens to appear in a policy is never a candidate.
+async function revokeForeignFleetAccess(client: Client, fleetRole: string) {
+  const foreignRoles = async () =>
+    (
+      await client.query<{
+        rolname: string;
+        quoted: string;
+        privileges: number;
+      }>(
+        `SELECT DISTINCT r.rolname, quote_ident(r.rolname) AS quoted,
+                (SELECT count(*)::int
+                   FROM pg_class c2
+                   JOIN pg_namespace n2 ON n2.oid = c2.relnamespace
+                   CROSS JOIN LATERAL aclexplode(c2.relacl) a
+                  WHERE n2.nspname = 'public' AND a.grantee = r.oid)
+              + (SELECT count(*)::int
+                   FROM pg_namespace n3
+                   CROSS JOIN LATERAL aclexplode(n3.nspacl) a
+                  WHERE n3.nspname = 'public' AND a.grantee = r.oid) AS privileges
+           FROM pg_policy p
+           JOIN pg_class c ON c.oid = p.polrelid
+           JOIN pg_namespace n ON n.oid = c.relnamespace
+           CROSS JOIN LATERAL unnest(p.polroles) AS pr(oid)
+           JOIN pg_roles r ON r.oid = pr.oid
+          WHERE n.nspname = 'public' AND p.polname = 'fleet_super_admin'
+            AND r.rolname <> $1 AND r.rolname LIKE 'fazerai\\_fleet\\_%'`,
+        [fleetRole],
+      )
+    ).rows;
+
+  const foreign = await foreignRoles();
+  if (foreign.length === 0) return;
+
+  for (const { rolname, quoted } of foreign) {
+    // Spelled out rather than assembled from a shared tail, so the statement in this file is the
+    // statement the SQL twin carries and `tests/scripts/db-bootstrap-twins.test.ts` can hold the two
+    // to each other by text.
+    for (const what of [
+      "REVOKE ALL ON ALL TABLES IN SCHEMA public FROM %I",
+      "REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM %I",
+      "REVOKE ALL ON SCHEMA public FROM %I",
+    ]) {
+      try {
+        // Built by the server for the same reason the membership revoke is: the name comes out of
+        // the catalog, and a catch here reading a syntax error as a permission problem would leave
+        // the access in place while reporting that it tried.
+        const stmt = (
+          await client.query<{ stmt: string }>(
+            `SELECT format('${what}', $1::text) AS stmt`,
+            [rolname],
+          )
+        ).rows[0]?.stmt as string;
+        await client.query(stmt);
+      } catch (err) {
+        console.warn(
+          `db-bootstrap: could not run "${what}" for ${quoted} (${message(err)})`,
+        );
+      }
+    }
+  }
+
+  // Re-read, because a REVOKE by anyone who is not the GRANTOR removes nothing and reports success
+  // — the same measurement that made the membership reconcile re-read.
+  //
+  // Reported and NOT thrown, and the ordering is the whole reason. Refusing from here would undo
+  // the repair: measured on the SQL twin, which raised from the same block, and the RAISE rolled the
+  // REVOKEs back with it — the restored database read 30 of 30 again after the boot that had just
+  // closed it. Refusing is `src/lib/db-guard.ts`'s job and it already does it unconditionally, ahead
+  // of every override, on exactly this condition. So this provisions what it can and says what it
+  // found; the process still will not serve.
+  const left = (await foreignRoles()).filter((r) => r.privileges > 0);
+  const named = foreign.map((r) => r.quoted).join(", ");
+  console.warn(
+    `db-bootstrap: this database carries fleet_super_admin policies naming ${named}, and not ` +
+      `"${fleetRole}" — the shape of a database restored or cloned under a different name, whose ` +
+      "cross-tenant policies still point at the source installation's role, which could read every " +
+      "tenant here through them.",
+  );
+  console.warn(
+    left.length > 0
+      ? `db-bootstrap: ${left
+          .map((r) => r.quoted)
+          .join(
+            ", ",
+          )} still hold privileges here, which this administrator is not the grantor ` +
+          "of; clear them as their grantor or as a superuser."
+      : "db-bootstrap: revoked their privileges in this database. Their cluster-wide membership is " +
+          "deliberately untouched — it belongs to a source installation still running on its own " +
+          "database. The policies still name them, and re-running the migration is NOT the repair: " +
+          "it is recorded as applied in this copy, and `migrate resolve --rolled-back` answers " +
+          "`P3012 … not in a failed state` (measured). The boot refusal that follows prints the " +
+          "statement that rewrites them.",
+  );
+}
+
+// Provisions the role the cross-tenant path becomes (see `@/lib/tenancy/fleet-role` for why it is
+// a role at all, and the migration `20260827000000_rls_split_tenant_and_fleet_policies` for the
+// numbers). Idempotent, and every statement here is one an administrative CREATEROLE role may run.
+//
+// The role holds nothing: NOSUPERUSER, NOBYPASSRLS, NOLOGIN. What lets it across tenants is the
+// `fleet_super_admin` policy the migration writes, not an attribute — so this is not a second
+// privileged account to guard, and a table that gets RLS without that policy fails closed.
+async function provisionFleetRole(
+  client: Client,
+  role: string,
+  ident: string,
+  serverVersionNum: number,
+) {
+  // The name is resolved BY the database, because it carries the database (see
+  // `@/lib/tenancy/fleet-role` for the measurement that made it so). The expression rather than the
+  // function this repository also ships: on a first install this runs before `migrate deploy`, so
+  // the function does not exist yet. `tests/lib/rls-policy-shape.test.ts` proves the two agree.
+  const fleetRole = (
+    await client.query<{ role: string }>(`SELECT ${FLEET_ROLE_EXPR} AS role`)
+  ).rows[0]?.role as string;
+  // Interpolated rather than passed through `format('%I', …)` on every statement, and that is safe
+  // BECAUSE the derivation normalises the readable half to `[a-zA-Z0-9_]`: the name cannot carry a
+  // quote to escape. Before that normalisation it could, and did — a database name containing one
+  // produced `syntax error at or near …` on the first grant (measured).
+  const fleet = `"${fleetRole}"`;
+  await revokeForeignFleetAccess(client, fleetRole);
+  await client.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = ${FLEET_ROLE_EXPR}) THEN
+        EXECUTE format('CREATE ROLE %I NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE',
+                       ${FLEET_ROLE_EXPR});
+      END IF;
+    END $$;
+  `);
+
+  // Asked AFTER the create-if-absent above, of whatever the role actually turned out to be: on the
+  // branch that created it the answer is free, and on the branch that FOUND one it is the whole
+  // point. Same shape, and the same reason, as the runtime role's own post-condition.
+  const fleetState = (
+    await client.query<Record<string, boolean> & { reaches: string | null }>(
+      `SELECT r.rolsuper, r.rolbypassrls, r.rolcanlogin,
+              r.rolcreatedb, r.rolcreaterole, r.rolreplication,
+              ${privilegedReachSql("r.oid", undefined, OUTLIVES_SET_ROLE)} AS reaches
+         FROM pg_roles r WHERE r.rolname = $1`,
+      [fleetRole],
+    )
+  ).rows[0];
+  assertFleetRoleIsUnprivileged(fleetRole, fleetState ?? { reaches: null });
+
+  // EXECUTE on the resolver, to the RUNTIME role: `asSuperAdmin` calls it on every cross-tenant
+  // statement. Functions carry EXECUTE for PUBLIC by default, so this is a no-op on an ordinary
+  // install and the whole difference on one that revoked that — measured, the call then dies with
+  // `permission denied for function fazerai_fleet_role`. Best-effort and conditional: on a FIRST
+  // boot this runs before `migrate deploy` has created the function, and the default covers that
+  // boot until the next one makes it explicit.
+  // The DEFAULT privilege first, and it is the half that covers the FIRST boot: on a hardened
+  // install (one that revoked PUBLIC's default EXECUTE) the grant below is skipped because the
+  // function does not exist yet, `migrate deploy` then creates it carrying nothing, and the SAME
+  // boot fails in the runtime guard. ALTER DEFAULT PRIVILEGES is scoped to the role that runs it —
+  // which is the role that will create the function one step later — so it reaches forward.
+  await client.query(
+    `ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT EXECUTE ON FUNCTIONS TO ${ident}`,
+  );
+
+  const fnPresent = (
+    await client.query<{ present: boolean }>(
+      "SELECT to_regprocedure('public.fazerai_fleet_role()') IS NOT NULL AS present",
+    )
+  ).rows[0]?.present;
+  if (fnPresent) {
+    try {
+      await client.query(
+        `GRANT EXECUTE ON FUNCTION public.fazerai_fleet_role() TO ${ident}`,
+      );
+    } catch (err) {
+      console.warn(
+        `db-bootstrap: could not grant EXECUTE on public.fazerai_fleet_role() to "${role}" ` +
+          `(${message(err)}); every cross-tenant call would fail on it`,
+      );
+    }
+  }
+
+  for (const grant of [
+    `GRANT USAGE ON SCHEMA public TO ${fleet}`,
+    `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ${fleet}`,
+    `GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO ${fleet}`,
+    `ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ${fleet}`,
+    `ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO ${fleet}`,
+  ]) {
+    await client.query(grant);
+  }
+
+  // Membership on this role is RECONCILED, not merely added to, and a measurement is why. Roles are
+  // cluster-wide while databases are not, so a database dropped and recreated under the same name
+  // derives the same fleet role — and every membership the PREVIOUS installation granted survives
+  // it. Measured: after the recreate, the old installation's runtime role read all 30 rows of the
+  // new installation's data through the new policies, with nothing but a SET ROLE.
+  //
+  // The expected set is exactly two: this database's runtime role, and the administrator running
+  // this (which needs it for data migrations). Anything else is a leftover, and it is REVOKED and
+  // named — quietly leaving it is the shape the measurement above describes. Best-effort like the
+  // grants below, and for the same reason: a member this administrator holds no ADMIN over cannot
+  // be revoked here, and that is worth reporting rather than crash-looping on.
+  // `quote_ident` on the way out, so the statement the message prints is one an operator can paste:
+  // a role name may legally contain a double quote, and wrapping it here by hand produces text that
+  // reads like SQL and is not. The same reason the REVOKE below is built by the server.
+  const membersOf = async () =>
+    (
+      await client.query<{
+        rolname: string;
+        quoted: string;
+        grantor: string;
+        serving: boolean;
+      }>(
+        `SELECT DISTINCT r.rolname, quote_ident(r.rolname) AS quoted,
+                quote_ident(g.rolname) AS grantor,
+                EXISTS (SELECT 1 FROM pg_stat_activity a
+                         WHERE a.datname = current_database() AND a.usename = r.rolname) AS serving
+           FROM pg_auth_members am
+           JOIN pg_roles r ON r.oid = am.member
+           JOIN pg_roles d ON d.oid = am.roleid
+           JOIN pg_roles g ON g.oid = am.grantor
+          WHERE d.rolname = $1 AND r.rolname <> $2 AND r.rolname <> current_user`,
+        [fleetRole, role],
+      )
+    ).rows;
+  const quotedFleet = (
+    await client.query<{ q: string }>("SELECT quote_ident($1::text) AS q", [
+      fleetRole,
+    ])
+  ).rows[0]?.q as string;
+
+  // A stray is kept only where the operator DECLARED it and it is still serving — see
+  // `FLEET_ROLE_RETAINED_MEMBER_ENV` in `@/lib/tenancy/fleet-role` for the measurement that took
+  // this away from being inferred. In short: a stale installation's role, after its database was
+  // dropped and recreated under the same name, presents the same open session as a rotation's
+  // outgoing role, and `pg_stat_activity` holds nothing that separates them.
+  const retained = retainedFleetMembers(
+    process.env[FLEET_ROLE_RETAINED_MEMBER_ENV],
+  );
+  const spared = (r: { rolname: string; serving: boolean }) =>
+    r.serving && retained.has(r.rolname);
+  const all = await membersOf();
+  for (const { quoted } of all.filter(spared)) {
+    console.warn(
+      `db-bootstrap: ${quoted} holds ${quotedFleet} and was declared in ` +
+        `${FLEET_ROLE_RETAINED_MEMBER_ENV}, so its access is kept while it still has a session ` +
+        "here. The next boot after it exits clears it.",
+    );
+  }
+  // Named separately, because this is the line that explains a rotation that just lost its
+  // cross-tenant path: the role IS serving, and the only reason it is being cut is that nothing
+  // declared it.
+  for (const { quoted } of all.filter((r) => r.serving && !spared(r))) {
+    console.warn(
+      `db-bootstrap: ${quoted} holds ${quotedFleet} and has an open session here, but nothing ` +
+        `declared it, so it is being revoked. If that is a rotation's outgoing role, set ` +
+        `${FLEET_ROLE_RETAINED_MEMBER_ENV} to it for the length of the transfer.`,
+    );
+  }
+  const before = new Set(all.filter((r) => !spared(r)).map((r) => r.rolname));
+  for (const rolname of before) {
+    try {
+      // Quoted by the SERVER, not here: `rolname` comes out of the catalog and a legal role name may
+      // contain a double quote, which would make this statement invalid SQL — and the catch below
+      // would read that as a permission problem while the member kept its path to every tenant.
+      // Two round trips because `DO` takes no parameters: `format` builds it, then it is run.
+      //
+      // CASCADE, and it is required rather than defensive: a PREVIOUS ADMINISTRATOR is a stray here
+      // (a rotated `MIGRATION_DATABASE_URL` leaves one), and the membership it granted onward to the
+      // runtime role depends on it — Postgres answers `dependent privileges exist` without it. What
+      // CASCADE drops with it is exactly that onward grant, which the two GRANTs below re-make a
+      // moment later. Measured: without it, a rotation of the administrative account refuses to
+      // boot on a leftover it could have cleared.
+      const revoke = (
+        await client.query<{ stmt: string }>(
+          "SELECT format('REVOKE %I FROM %I CASCADE', $1::text, $2::text) AS stmt",
+          [fleetRole, rolname],
+        )
+      ).rows[0]?.stmt as string;
+      await client.query(revoke);
+    } catch (err) {
+      console.warn(
+        `db-bootstrap: could not revoke "${rolname}" from "${fleetRole}" (${message(err)})`,
+      );
+    }
+  }
+
+  // Re-read, because a REVOKE by someone who is not the GRANTOR removes nothing and does not say
+  // so: measured, the statement returned success and the membership was still there. Since
+  // PostgreSQL 16 a membership is one row PER GRANTOR, so the superuser's grant survives an
+  // administrator's revoke of its own. What is left is reported with the statement that clears it.
+  const after = (await membersOf()).filter((r) => !spared(r));
+  const remaining = new Set(after.map((r) => r.rolname));
+  // Said out loud, because a security reconcile that happens quietly reads as one that did not
+  // happen. Each of these could read every tenant in this database a moment ago.
+  for (const rolname of before) {
+    if (!remaining.has(rolname)) {
+      console.warn(
+        `db-bootstrap: revoked "${rolname}" from "${fleetRole}" — a membership this database did ` +
+          "not grant, which could read every tenant here through the cross-tenant policy",
+      );
+    }
+  }
+  // REFUSES, matching the SQL twin, and the asymmetry this replaces was a real hole: a membership
+  // that survives the revoke can `SET ROLE` into this database's fleet role and read every tenant
+  // in it (measured — the previous installation's runtime role read all 30 rows of the new one).
+  // That is an active breach, not a degraded feature, so it is not something a boot warns past.
+  if (after.length > 0) {
+    // By NAME, not by row: since 16 a membership is one row per grantor, so a role granted twice
+    // would otherwise be listed twice and told to revoke itself twice.
+    const remaining = [...new Set(after.map((r) => r.quoted))];
+    const names = remaining.join(", ");
+    const statements = remaining
+      .map((q) => `REVOKE ${quotedFleet} FROM ${q} CASCADE;`)
+      .join(" ");
+    const grantors = [...new Set(after.map((r) => r.grantor))].join(", ");
+    throw new Error(
+      `${names} ${remaining.length === 1 ? "is" : "are"} still a member of ${quotedFleet} and can ` +
+        "read every tenant in this database through the cross-tenant policy. This is what a " +
+        "database dropped and recreated under the same name leaves behind, and a REVOKE by anyone " +
+        `who is not the GRANTOR removes nothing while reporting success. Clear it as ${grantors} ` +
+        `or as a superuser: ${statements}`,
+    );
+  }
+
+  // Two grants, and BOTH are best-effort. Roles are CLUSTER-wide objects while databases are not,
+  // so even a per-database NAME can land on a role this administrator did not create — a database
+  // dropped and recreated under the same name is the ordinary way — and a CREATEROLE role holds no
+  // ADMIN over such a role: Postgres answers `permission denied to grant role` (measured). That is a
+  // real install, not a broken one — everything tenant-scoped works — so it is reported and
+  // survived, and the review below turns it into a message naming the exact repair.
+  const repair = fleetMembershipRepair(role, fleetRole, serverVersionNum);
+  try {
+    if (serverVersionNum >= 160000) {
+      await client.query(
+        `GRANT ${fleet} TO ${ident} WITH INHERIT FALSE, SET TRUE`,
+      );
+    } else {
+      await client.query(`ALTER ROLE ${ident} NOINHERIT`);
+      await client.query(`GRANT ${fleet} TO ${ident}`);
+    }
+  } catch (err) {
+    console.warn(
+      `db-bootstrap: could not grant "${fleetRole}" to runtime role "${role}" (${message(err)})`,
+    );
+  }
+
+  // The administrative role needs it too, and for the same reason the runtime role does: a DATA
+  // migration over a FORCE-RLS table is bound by the tenant policy like anything else, so it opens
+  // with `SET ROLE fazerai_fleet` (see docs/deploy.md and tests/prisma/migration-rls-bypass.test.ts).
+  // On a self-hosted install this role is usually a real superuser and can SET ROLE regardless; on
+  // managed Postgres it is the owner WITHOUT rolsuper, and there this grant is the whole difference
+  // between a backfill that runs and one that matches zero rows and reports success.
+  //
+  // INHERIT FALSE here as well, and it is not symmetry for its own sake: an INHERITING migration
+  // role would pass the fleet policy PASSIVELY, so a migration that forgot the bypass would work on
+  // our machines and silently no-op on an install whose role is not a superuser — which is the exact
+  // asymmetry the convention exists to remove.
+  //
+  // On 15 and older the options do not parse, and the grant still has to happen: skipping it there
+  // would leave every future data migration on a non-superuser owner failing with
+  // `permission denied to set role` — the exact contract docs/deploy.md states for that role. The
+  // member's own `rolinherit` is the control on those servers, and CURRENT_USER is the
+  // administrator: it is left alone rather than demoted, because taking INHERIT off an
+  // administrative account reaches every other membership it holds. A superuser can SET ROLE
+  // regardless, and a non-superuser owner that inherits this role gains nothing it did not already
+  // have as the table owner under FORCE RLS — the fleet policy is what it is missing.
+  try {
+    if (serverVersionNum >= 160000) {
+      await client.query(
+        `GRANT ${fleet} TO CURRENT_USER WITH INHERIT FALSE, SET TRUE`,
+      );
+    } else {
+      await client.query(`GRANT ${fleet} TO CURRENT_USER`);
+    }
+  } catch (err) {
+    console.warn(
+      `db-bootstrap: could not grant "${fleetRole}" to the administrative role ` +
+        `(${message(err)}); a future DATA migration would fail on SET ROLE`,
+    );
+  }
+
+  // `MEMBER` is not the question, and answering it is how a broken install reads as healthy: since
+  // PostgreSQL 16 a membership carries a SET option of its own, and `MEMBER` ignores it. Measured on
+  // 17.10 with `WITH INHERIT FALSE, SET FALSE` — MEMBER true, USAGE false, and `SET ROLE` answering
+  // `permission denied to set role`. That is the exact state the caught grant above leaves behind on
+  // a shared cluster where an older grant already existed, so it is not hypothetical.
+  //
+  // `SET` is 16-only as a privilege type; on older servers the option does not exist either, every
+  // membership allows SET ROLE, and `MEMBER` IS the right question there.
+  let capabilityQuery = `SELECT pg_has_role($1, $2, 'MEMBER') AS can_set_role,
+              pg_has_role($1, $2, 'USAGE')  AS usage`;
+  if (serverVersionNum >= 160000) {
+    capabilityQuery = `SELECT pg_has_role($1, $2, 'SET')   AS can_set_role,
+              pg_has_role($1, $2, 'USAGE') AS usage`;
+  }
+  const membership = (
+    await client.query<{ can_set_role: boolean; usage: boolean }>(
+      capabilityQuery,
+      [role, fleetRole],
+    )
+  ).rows[0];
+  assertFleetMembership(
+    role,
+    fleetRole,
+    membership ?? { can_set_role: false, usage: false },
+    repair,
+  );
+  return fleetRole;
 }
 
 // Makes the LangGraph checkpointer schema usable by the runtime role, which is three different
@@ -525,10 +1095,8 @@ async function main() {
         revokable: string | null;
       }>(
         `SELECT
-           (SELECT string_agg(DISTINCT quote_ident(m.rolname), ', ')
-              FROM pg_roles r
-              JOIN pg_roles m ON (m.rolsuper OR m.rolbypassrls) AND m.oid <> r.oid
-             WHERE r.rolname = $1 AND pg_has_role(r.oid, m.oid, 'USAGE')) AS reaches,
+           (SELECT ${privilegedReachSql("r.oid", FLEET_ROLE_EXPR)}
+              FROM pg_roles r WHERE r.rolname = $1) AS reaches,
            (SELECT string_agg(DISTINCT quote_ident(d.rolname), ', ')
               FROM pg_auth_members am
               JOIN pg_roles r ON r.oid = am.member
@@ -607,10 +1175,18 @@ async function main() {
       }
     }
 
+    const fleetRoleName = await provisionFleetRole(
+      client,
+      role,
+      ident,
+      s.server_version_num,
+    );
+
     await provisionCheckpointerSchema(client, role, ident);
 
     console.log(
-      `db-bootstrap: provisioned runtime role "${role}" (idempotent; ${plan}, ` +
+      `db-bootstrap: provisioned runtime role "${role}" + fleet role "${fleetRoleName}" ` +
+        `(idempotent; ${plan}, ` +
         `admin=${s.admin_superuser ? "superuser" : "non-superuser"}, server=${s.server_version_num})`,
     );
   } finally {

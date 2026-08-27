@@ -1,5 +1,5 @@
 import { Check, Copy } from "lucide-react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/client/components/Button";
 import { Input } from "@/client/components/Input";
@@ -8,8 +8,8 @@ import {
   type ModalController,
   useOnModalOpen,
 } from "@/client/components/Modal";
+import { useFieldRefusal } from "@/client/hooks/useFieldRefusal";
 import { api } from "@/client/lib/api";
-import type { ApiErrorPayload } from "@/client/lib/types";
 
 // Admin "invite user" modal. A SUPER_ADMIN picks the target tenant (pre-filled with the Users-tab
 // filter selection); a TENANT_ADMIN invites into its own tenant (no tenant field). There is no
@@ -17,6 +17,14 @@ import type { ApiErrorPayload } from "@/client/lib/types";
 const selectCls =
   "w-full rounded-lg border border-border bg-bg-tertiary px-3 py-2 text-text-primary focus:border-border-focus focus:outline-none";
 const labelCls = "mb-1 block font-medium text-sm text-text-primary";
+
+// The keys of the body this modal writes. `email` is the one that matters in practice: inviting an
+// address that already has an account answers 409 "Email already in use", and it names the field.
+const INVITE_FIELDS = ["email", "role"] as const;
+
+// The tenant picker is only drawn for a SUPER_ADMIN; everyone else invites into their own tenant and
+// the id still rides along in the body, so the server can refuse it by name with no picker to mark.
+const INVITE_SUPER_FIELDS = [...INVITE_FIELDS, "tenantId"] as const;
 
 export function InviteUserModal({
   modal,
@@ -41,9 +49,21 @@ export function InviteUserModal({
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const refusal = useFieldRefusal(
+    modal.isOpen ? (isSuperAdmin ? INVITE_SUPER_FIELDS : INVITE_FIELDS) : [],
+  );
 
   // A SUPER_ADMIN must target a tenant; block submit until one is chosen.
   const noTarget = isSuperAdmin && !tenantId;
+
+  // What the inputs hold right now, in the server's vocabulary, and what the write sends.
+  const current = {
+    email,
+    role,
+    tenantId: isSuperAdmin ? tenantId : undefined,
+  };
+  const currentRef = useRef(current);
+  currentRef.current = current;
 
   // NOTE: once the invite link is shown the work is saved, so the form is no longer dirty.
   const isDirty =
@@ -51,6 +71,8 @@ export function InviteUserModal({
     (email.trim() !== "" || role !== "AGENT" || tenantId !== defaultTenantId);
 
   useOnModalOpen(modal, () => {
+    // The component outlives the dialog, so a mark from the last session is still held here.
+    refusal.clear();
     setEmail("");
     setRole("AGENT");
     setTenantId(defaultTenantId);
@@ -62,25 +84,28 @@ export function InviteUserModal({
   const handleSubmit = async () => {
     setError("");
     setLoading(true);
+    const body = { ...current };
+    const held = (e: unknown) =>
+      refusal.capture(
+        e,
+        t("invite.failed", "Could not create the invitation"),
+        body,
+        currentRef.current,
+      ) ?? "";
     try {
-      const { data, error: apiError } = await api.api.admin.invitations.post({
-        email,
-        role,
-        tenantId: isSuperAdmin ? tenantId : undefined,
-      });
+      const { data, error: apiError } =
+        await api.api.admin.invitations.post(body);
       if (apiError) {
-        setError(
-          (apiError.value as ApiErrorPayload)?.error ||
-            t("invite.failed", "Could not create the invitation"),
-        );
+        setError(held(apiError));
         return;
       }
+      refusal.clear();
       if (data?.invite) {
         setLink(data.invite.acceptUrl);
         onInvited();
       }
-    } catch {
-      setError(t("invite.failed", "Could not create the invitation"));
+    } catch (e) {
+      setError(held(e));
     } finally {
       setLoading(false);
     }
@@ -160,6 +185,11 @@ export function InviteUserModal({
                   </option>
                 ))}
               </select>
+              {refusal.at("tenantId", current.tenantId) && (
+                <p className="mt-1 text-error text-xs">
+                  {refusal.at("tenantId", current.tenantId)}
+                </p>
+              )}
             </div>
           )}
           <div>
@@ -175,6 +205,11 @@ export function InviteUserModal({
               disabled={loading}
               placeholder={t("auth.emailPlaceholder", "you@example.com")}
             />
+            {refusal.at("email", current.email) && (
+              <p className="mt-1 text-error text-xs">
+                {refusal.at("email", current.email)}
+              </p>
+            )}
           </div>
           <div>
             <label htmlFor="invite-role" className={labelCls}>
@@ -194,6 +229,11 @@ export function InviteUserModal({
                 {t("role.tenantAdmin", "Tenant admin")}
               </option>
             </select>
+            {refusal.at("role", current.role) && (
+              <p className="mt-1 text-error text-xs">
+                {refusal.at("role", current.role)}
+              </p>
+            )}
           </div>
           <div className="flex justify-end gap-2">
             <Button

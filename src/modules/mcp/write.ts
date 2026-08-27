@@ -21,7 +21,6 @@ import {
   type ScopedDb,
   type TenantContext,
 } from "@/lib/tenancy";
-import { clipText, makeStorable } from "@/lib/text";
 import {
   type BehaviorSettingsPatch,
   mergeBehaviorSettings,
@@ -36,11 +35,13 @@ import {
   assertSettingsDebugWindow,
   assertSettingsModelFallback,
   assertSettingsTextSizes,
+  assertSettingsToolPreconditions,
   getAgent,
   listAgents,
   updateAgent,
 } from "@/modules/agents/service";
 import { BEHAVIOR_PATCH_SHAPE } from "@/modules/agents/settings-schema";
+import { truncForAudit } from "@/modules/audit/projection";
 import { type AuditEntry, recordAudit } from "@/modules/audit/service";
 import type { LoadChatwootClientDeps } from "@/modules/chatwoot/instance";
 import { readDebugModes } from "@/modules/flowlog/debug-mode";
@@ -114,54 +115,6 @@ export function diffFields(
   return out;
 }
 
-const AUDIT_STR_MAX = 4000;
-
-// Bound string sizes in the audit projection (a system prompt can be tens of KB).
-//
-// The same walker `redactSecretsDeep` is, aimed at the same kind of destination: `audit_logs.before`
-// and `.after` are `jsonb`, so an unpaired surrogate anywhere in the projection makes Postgres refuse
-// the whole write. Here the cost is worse than a lost log line — the change has already committed by
-// the time this row is written, so it lands, the tool reports a failure, and the record of who made
-// it is the only thing missing. Hence both repairs: `clipText` so the cut cannot manufacture an
-// orphan, and `makeStorable` for one that arrived with the value (or for a NUL, which the same
-// column refuses just as flatly): a projection carries some
-// arguments as the MCP client sent them (`args.name`, `args.title`, `args.content`), and that JSON
-// can spell one out.
-//
-// NOTE: KEYS are not repaired here, and that asymmetry with redactSecretsDeep is deliberate rather
-// than an omission. Every key in a projection is a field name we wrote or an argument name taken
-// from the tool's own schema; the one bag whose keys are open-ended (`agent.settings`) is read back
-// out of a jsonb column, which is the very thing that cannot hold an orphan. The keys the other
-// walker repairs come from a model's tool-call arguments and from third parties' response bodies.
-export function truncForAudit(v: unknown): unknown {
-  if (typeof v === "string") {
-    return makeStorable(
-      v.length > AUDIT_STR_MAX
-        ? `${clipText(v, AUDIT_STR_MAX)}…[truncated]`
-        : v,
-    );
-  }
-  if (Array.isArray(v)) return v.map(truncForAudit);
-  if (v && typeof v === "object") {
-    const o: Record<string, unknown> = {};
-    for (const [k, val] of Object.entries(v)) {
-      // NOTE: `defineProperty`, not assignment. `JSON.parse` yields `__proto__` as an ordinary own
-      // property, and assigning to that key invokes the legacy prototype setter instead; Prisma's
-      // serialization enumerates inherited properties, so its contents would be written as
-      // top-level fields of the audit row. Unlike the repair above, this one is not about what the
-      // column refuses: the write succeeds, carrying a field nobody wrote.
-      Object.defineProperty(o, k, {
-        value: truncForAudit(val),
-        writable: true,
-        enumerable: true,
-        configurable: true,
-      });
-    }
-    return o;
-  }
-  return v;
-}
-
 // NOTE: service-layer ZodErrors must surface as a tool result (err), never bubble raw into the
 // MCP SDK's generic exception envelope.
 function zodIssuesMessage(e: ZodError): string {
@@ -175,6 +128,10 @@ export function ctxOf(principal: VerifiedToken): TenantContext {
     tenantId: principal.tenantId,
     userId: principal.userId,
     role: principal.role,
+    // The door, carried on the context so the SERVICE can attribute the row it writes. Every tool
+    // here used to pass `actorType: "mcp"` to its own audit call one layer up; a service reached
+    // through this context would otherwise record the operator as a browser session.
+    actorType: "mcp",
   };
 }
 
@@ -366,7 +323,7 @@ export async function credentialCreate(
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.credential_create",
+      action: "credential.create",
       target: ref,
       // No secret exists yet — the audit projection carries only the reference metadata.
       before: {},
@@ -432,7 +389,7 @@ export async function promptSet(
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.prompt_set",
+      action: "agent.prompt_set",
       target,
       before: truncForAudit(beforeProj),
       after: truncForAudit({ systemPrompt: updated.systemPrompt }),
@@ -474,6 +431,32 @@ export interface AgentSettingsGetArgs {
   agent_id: string;
 }
 
+// THE READ RETURNS WHAT THE WRITE ACCEPTS, down to the field.
+//
+// `readGuardrailsConfig` gives both directions the same shape, which is right for the runtime (it
+// filters by direction at use, in activeChecks) and wrong for a CONTRACT: three of those fields do
+// nothing under `input`, and the write now refuses them. Returning them here would hand a caller a
+// document that the very next `agent_settings_set` rejects — trading a silent no-op for a 400 on
+// someone who changed nothing, which is worse.
+//
+// Projected at this boundary rather than in the reader, so the console and the runtime keep the
+// uniform shape they are built on. The pair is asserted in
+// tests/modules/agent-settings-mcp-parity.test.ts.
+function dropOutputOnlyInputFields(
+  settings: ReturnType<typeof readBehaviorSettings>,
+): ReturnType<typeof readBehaviorSettings> {
+  const { promptAdherence, answerRelevance, ...checks } =
+    settings.guardrails.input.checks;
+  const { generationPrompt, ...input } = settings.guardrails.input;
+  return {
+    ...settings,
+    guardrails: {
+      ...settings.guardrails,
+      input: { ...input, checks } as typeof settings.guardrails.input,
+    },
+  };
+}
+
 // agent_settings_get: the normalized per-agent BEHAVIOR config (debounce/stt/tts/split/
 // serviceWindow + grounding). Read-only, tenant-fenced (a foreign agent_id → "agent not found").
 // credentialRef values are vault entry NAMES, never the secrets themselves.
@@ -491,7 +474,9 @@ export async function agentSettingsGet(
 
   try {
     const agent = await getAgent(ctx, agentId, base);
-    const settings = readBehaviorSettings(agent.settings);
+    const settings = dropOutputOnlyInputFields(
+      readBehaviorSettings(agent.settings),
+    );
     // The MCP contract speaks NAMES: project the stored `vault:<id>` refs back to entry names, over
     // the same (block, field) list the write path resolves them from.
     for (const { path } of SETTINGS_CREDENTIAL_PATHS) {
@@ -571,6 +556,40 @@ export async function agentSettingsSet(
       (patch as Record<string, unknown>)[key] = value;
     }
   }
+  // NOTE: `__proto__` IS LOST IN TRANSIT, and this is the note that says so rather than a guard that
+  // pretends otherwise. It survives JSON.parse as an own property and is then dropped inside zod's
+  // loose-object rebuild, in the SDK's own argument parse, before this function is entered — so a
+  // rule or tombstone named that way never reaches the write boundary and the call answers ok.
+  //
+  // Round 9 refused an empty tool map to catch it. That was worse than the hole: a default agent
+  // returns `toolGuidance: {}` and `toolPreconditions: {}` from agent_settings_get, so echoing the
+  // config back — the documented partial-patch round trip — was refused for an unrelated edit. And
+  // it did not even close the hole, since `__proto__` alongside a real entry leaves a NON-empty map.
+  //
+  // What is left is the honest boundary, and it is narrow on purpose:
+  //   * the name is gone before any of our code runs, so it cannot be refused by name;
+  //   * the zod shapes that see the raw value (z.custom, z.preprocess) cannot be published in the
+  //     JSON Schema, and docs/mcp.md forbids a constraint the two ends read differently;
+  //   * reaching the raw request means changing registerTenantTool for all ~107 tools.
+  // The runtime is already defended (#378 keys these maps null-prototype and looks up with
+  // Object.hasOwn), `__proto__` is not the name of any tool, and a rule under it would be inert and
+  // reported by the unmatched-precondition line. tests/modules/agent-settings-mcp-parity.test.ts
+  // pins the CURRENT behaviour so a future SDK or zod change is noticed rather than assumed.
+  //
+  // AND THE DELETE HALF OF IT IS MOOT, which was measured rather than assumed. Losing a WRITE under
+  // this name costs nothing (there was never anything to name); losing a DELETE would matter, but
+  // only if such an entry could exist to begin with — a caller able to READ a rule and never remove
+  // it. It cannot:
+  //   * REST create/update parse `settings` with `z.record`, so the key is gone there too, and what
+  //     does reach assertSettingsToolPreconditions is refused as a non-native name;
+  //   * an agent IMPORT copies the bag verbatim past both (its `settings` is a record of
+  //     `z.unknown()`, so block keys are passed by reference) and carries the key all the way to the
+  //     `agent.create` call — and Prisma's own JSON rebuild drops it before Postgres. Nothing else
+  //     writes `agents.settings`; there is no raw-SQL path.
+  // So the row can never hold one, and `agent_settings_get` can never return one. Both halves are
+  // pinned: tests/modules/tool-keyed-unwritable.test.ts for zod, and the `__proto__` case in
+  // tests/modules/agent-transfer.test.ts, which asserts on the RAW jsonb — the day Prisma keeps the
+  // key, that goes red and this note is what says why it mattered.
   if (Object.keys(patch).length === 0) {
     // `filter`, not `slice`: the astral-cap sweep reads every bare `.slice(` in src/ as a possible
     // surrogate cut, and a list of keys is not worth an entry in that registry.
@@ -621,7 +640,9 @@ export async function agentSettingsSet(
       }
     }
     const current = await getAgent(ctx, agentId, base);
-    const before = readBehaviorSettings(current.settings);
+    const before = dropOutputOnlyInputFields(
+      readBehaviorSettings(current.settings),
+    );
     // On the PATCH, before the merge: mergeBehaviorSettings re-reads each touched block through its
     // typed reader, so by the time the merged bag exists an over-cap note has already been clamped
     // and there is nothing left to refuse. Before the dry run too, not only before the apply — a
@@ -630,11 +651,24 @@ export async function agentSettingsSet(
     assertSettingsTextSizes(patch, current.settings);
     assertSettingsDebugWindow(patch, current.settings);
     assertSettingsModelFallback(patch, current.settings, "merge");
+    // NOTE: On the PATCH and before the merge, for the same reason as the three above, and for one more
+    // that is specific to this block: its reader is a FILTER. A condition that does not parse is
+    // DROPPED rather than defaulted, so by the time the merged bag exists the bad entry is simply
+    // absent — there is nothing left to refuse, and the call would answer ok having replaced a
+    // working guard with nothing. Measured on this branch: `key: " "` passes the schema, and the
+    // rule the operator had was gone.
+    assertSettingsToolPreconditions(patch, current.settings);
     const nextBag = mergeBehaviorSettings(
       (current.settings ?? {}) as Record<string, unknown>,
       patch,
     );
-    const afterPreview = readBehaviorSettings(nextBag);
+    // NOTE: PROJECTED, like the read — the same question asked in a third place. A client is expected to
+    // reuse the preview's `after` (that is what a dry run is for), so a diff carrying the fields the
+    // write refuses hands back a document that the apply rejects. Fixing `agent_settings_get` alone
+    // left this one, which is the shape of miss this PR is about.
+    const afterPreview = dropOutputOnlyInputFields(
+      readBehaviorSettings(nextBag),
+    );
     const target = `agent:${agentId}`;
     // Diff only the touched blocks (normalized before → normalized after).
     const beforeProj: Record<string, unknown> = {};
@@ -656,7 +690,9 @@ export async function agentSettingsSet(
       { settings: nextBag },
       base,
     );
-    const afterApplied = readBehaviorSettings(updated.settings);
+    const afterApplied = dropOutputOnlyInputFields(
+      readBehaviorSettings(updated.settings),
+    );
     const afterAppliedProj: Record<string, unknown> = {};
     for (const key of Object.keys(patch) as (keyof BehaviorSettingsPatch)[]) {
       afterAppliedProj[key] = afterApplied[key];
@@ -664,7 +700,7 @@ export async function agentSettingsSet(
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.agent_settings_set",
+      action: "agent.settings_set",
       target,
       before: truncForAudit(beforeProj),
       after: truncForAudit(afterAppliedProj),
@@ -723,17 +759,11 @@ export async function tenantUpdate(
       });
     }
 
+    // The row is `updateTenant`'s to write, in its own transaction and under the tenant it
+    // changed, which is not necessarily this context's.
     const updated = await updateTenant(ctx, tenantId, patch, base);
     const afterProj = { name: updated.name };
     const diff = diffFields(beforeProj, afterProj);
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "mcp.tenant_update",
-      target,
-      before: truncForAudit(beforeProj),
-      after: truncForAudit(afterProj),
-    });
     return ok({ dryRun: false, applied: true, target, diff });
   } catch (e) {
     if (e instanceof AppError) return err(e.message);
@@ -843,7 +873,18 @@ export async function brandingSet(
       });
     }
 
-    const after = await updateBrandingColors(update);
+    // `updateBrandingColors` records its own fleet-level row (tenant_id NULL) inside the
+    // asSuperAdmin transaction that writes the identity.
+    const after = await updateBrandingColors(
+      {
+        tenantId: null,
+        userId: principal.userId,
+        role: "SUPER_ADMIN",
+        actorType: "mcp",
+      },
+      update,
+      base,
+    );
     const afterProj = {
       brandName: after.brandName,
       colorMode: after.colorMode,
@@ -854,19 +895,6 @@ export async function brandingSet(
       supportEmail: after.supportEmail,
       hideGithubLink: after.hideGithubLink,
     };
-    // Fleet-level audit (tenant_id NULL); the write tx runs asSuperAdmin.
-    await recordMcpAudit(
-      { tenantId: null, userId: principal.userId, role: "SUPER_ADMIN" },
-      base,
-      {
-        actorId: principal.userId,
-        actorType: "mcp",
-        action: "mcp.branding_set",
-        target,
-        before: truncForAudit(beforeProj),
-        after: truncForAudit(afterProj),
-      },
-    );
     return ok({
       dryRun: false,
       applied: true,
@@ -960,28 +988,19 @@ export async function brandingAssetSet(
     }
 
     // A Blob satisfies setBrandingAsset's structural type, so the multipart UI path and this MCP path
-    // share the exact same validation + write.
+    // share the exact same validation + write, and now the same audit row, from inside it.
     const blob = new Blob([bytes], { type: mime });
-    const after = await setBrandingAsset(kind, variant, blob);
-
-    await recordMcpAudit(
-      { tenantId: null, userId: principal.userId, role: "SUPER_ADMIN" },
-      base,
+    const after = await setBrandingAsset(
       {
-        actorId: principal.userId,
+        tenantId: null,
+        userId: principal.userId,
+        role: "SUPER_ADMIN",
         actorType: "mcp",
-        action: "mcp.branding_asset_set",
-        target,
-        // Metadata only — never the image bytes.
-        before: truncForAudit({ kind, variant, present: replacingExisting }),
-        after: truncForAudit({
-          kind,
-          variant,
-          present: after[kind][variant],
-          mime,
-          bytes: bytes.byteLength,
-        }),
       },
+      kind,
+      variant,
+      blob,
+      base,
     );
     return ok({
       dryRun: false,

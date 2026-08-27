@@ -16,6 +16,7 @@ import {
   useToast,
 } from "@/client/components";
 import { useAuth } from "@/client/contexts/AuthContext";
+import { useFieldRefusal } from "@/client/hooks/useFieldRefusal";
 import { api } from "@/client/lib/api";
 import { isValidHttpUrl } from "@/client/lib/validation";
 import {
@@ -45,6 +46,40 @@ function emptyForm() {
     enabled: true,
   };
 }
+
+type Form = ReturnType<typeof emptyForm>;
+
+// The body this modal writes, from the form it renders. ONE function, because it is also what the
+// refusal is matched against: `capture` compares the value that was SENT with the value the inputs
+// hold NOW, and two spellings of "the body" would disagree about a field nobody edited.
+function bodyOf(form: Form) {
+  const isStdio = form.transport === "stdio";
+  return {
+    name: form.name.trim(),
+    transport: form.transport,
+    url: isStdio ? null : form.url.trim() || null,
+    command: isStdio
+      ? composeStdioCommand(form.launcher, form.args.trim()) || null
+      : null,
+    credentialRef: form.credentialRef || null,
+    enabled: form.enabled,
+  };
+}
+
+// The server's own names for what this modal renders, and they are the keys of the body above — the
+// route's schema refuses by them (`refused body.name`, `refused body.transport`) and
+// `requireVaultRef` names `credentialRef`.
+//
+// `command` is declared even though no single input holds it: the launcher Select and the args Input
+// compose into it, so a refusal about the command is marked on the args field, which is the half an
+// operator can act on. See the render.
+const MCP_FIELDS = ["name", "transport", "credentialRef"] as const;
+
+// A stdio server is launched, the others are reached: the modal draws the command line for one and
+// the URL for the other, never both. Both stay in the BODY, so declaring both would put a refusal
+// about the one that is hidden onto a control that is not there.
+const MCP_STDIO_FIELDS = [...MCP_FIELDS, "command"] as const;
+const MCP_URL_FIELDS = [...MCP_FIELDS, "url"] as const;
 
 // Per-launcher args placeholder (the package + its flags; the launcher itself is the Select).
 function argsPlaceholder(launcher: string): string {
@@ -79,6 +114,11 @@ export function McpEditModal({
   const { showToast } = useToast();
   const { mcpStdioEnabled } = useAuth();
   const [form, setForm] = useState(emptyForm());
+  // The CURRENT form, readable from inside a request that started before it: the operator can type
+  // while the save is out, and a refusal about a value they have already replaced belongs in the
+  // banner rather than under a box that no longer holds it.
+  const formRef = useRef(form);
+  formRef.current = form;
   const [saving, setSaving] = useState(false);
   const [loadingForm, setLoadingForm] = useState(false);
   const [loadError, setLoadError] = useState(false);
@@ -92,6 +132,8 @@ export function McpEditModal({
   const editId = modal.payload?.id;
 
   useOnModalOpen(modal, () => {
+    // The component outlives the dialog, so a mark from the last session is still held here.
+    refusal.clear();
     setFormError(null);
     setLoadError(false);
     setMcpCredBaseUrl(null);
@@ -139,40 +181,41 @@ export function McpEditModal({
   });
 
   const isStdio = form.transport === "stdio";
+  const refusal = useFieldRefusal(
+    modal.isOpen ? (isStdio ? MCP_STDIO_FIELDS : MCP_URL_FIELDS) : [],
+  );
+  // What the inputs hold right now, in the server's vocabulary. The marks are keyed by VALUE, so this
+  // has to be the same function the save sends — an edit takes the mark off because the box stops
+  // holding what was refused.
+  const current = bodyOf(form);
 
   async function save() {
     setFormError(null);
-    const body = {
-      name: form.name.trim(),
-      transport: form.transport,
-      url: isStdio ? null : form.url.trim() || null,
-      command: isStdio
-        ? composeStdioCommand(form.launcher, form.args.trim()) || null
-        : null,
-      credentialRef: form.credentialRef || null,
-      enabled: form.enabled,
-    };
+    const body = bodyOf(form);
     setSaving(true);
+    // Measured live, and it is why this modal is wired: a second connection under a name already
+    // taken answers 409 "mcp connection name already in use", and the banner said "check the
+    // URL/command" — the wrong input, named confidently (#329).
+    const fallback = t("mcp.saveError", "Could not save.");
+    const held = (e: unknown) =>
+      refusal.capture(e, fallback, body, bodyOf(formRef.current));
     try {
       const { data, error: err } = editId
         ? await api.api.v1["mcp-connections"]({ id: editId }).patch(body)
         : await api.api.v1["mcp-connections"].post(body);
       if (err || !data) {
-        setFormError(
-          t("mcp.saveError", "Could not save (check the URL/command)."),
-        );
+        setFormError(held(err));
         return;
       }
+      refusal.clear();
       showToast(t("mcp.saved", "MCP server saved."), "success");
       modal.close();
       onSaved?.(
         { id: data.connection.id, name: data.connection.name },
         !editId,
       );
-    } catch {
-      setFormError(
-        t("mcp.saveError", "Could not save (check the URL/command)."),
-      );
+    } catch (e) {
+      setFormError(held(e));
     } finally {
       setSaving(false);
     }
@@ -245,13 +288,20 @@ export function McpEditModal({
               </span>
             </div>
           )}
-          <FormField label={t("mcp.name", "Name")} required>
+          <FormField
+            label={t("mcp.name", "Name")}
+            required
+            error={refusal.at("name", current.name)}
+          >
             <Input
               value={form.name}
               onChange={(e) => setForm({ ...form, name: e.target.value })}
             />
           </FormField>
-          <FormField label={t("mcp.transport", "Transport")}>
+          <FormField
+            label={t("mcp.transport", "Transport")}
+            error={refusal.at("transport", current.transport)}
+          >
             <Select
               value={form.transport}
               onChange={(e) =>
@@ -312,6 +362,7 @@ export function McpEditModal({
                   "mcp.argsHint",
                   "The package to run plus its flags (the launcher is selected above). The credential's token is injected as an environment variable, never written here.",
                 )}
+                error={refusal.at("command", current.command)}
               >
                 <Input
                   value={form.args}
@@ -336,7 +387,7 @@ export function McpEditModal({
               error={
                 mcpUrlInvalid && form.url.trim()
                   ? t("common.invalidUrl", "Must be a valid http(s) URL.")
-                  : null
+                  : refusal.at("url", current.url)
               }
             >
               <Input
@@ -347,7 +398,11 @@ export function McpEditModal({
               />
             </FormField>
           )}
-          <FormField label={t("mcp.credential", "Credential")} group>
+          <FormField
+            label={t("mcp.credential", "Credential")}
+            group
+            error={refusal.at("credentialRef", current.credentialRef)}
+          >
             <CredentialPicker
               value={form.credentialRef}
               onChange={(v) => setForm({ ...form, credentialRef: v })}

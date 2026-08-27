@@ -80,7 +80,7 @@ export interface GlobalBrandingDto {
   version: string;
 }
 
-interface BrandingRow {
+export interface BrandingRow {
   brandName: string | null;
   colorMode: string;
   brandColor: string | null;

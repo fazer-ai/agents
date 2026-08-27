@@ -2,6 +2,7 @@ import basePrisma from "@/api/lib/prisma";
 import { AppError } from "@/lib/errors";
 import type { TenantContext } from "@/lib/tenancy";
 import { firstUnstorableField } from "@/lib/text";
+import { truncForAudit } from "@/modules/audit/projection";
 import {
   createDocument,
   deleteDocument,
@@ -29,7 +30,6 @@ import {
   ok,
   parseMcpId,
   recordMcpAudit,
-  truncForAudit,
   type WriteDeps,
   type WriteResult,
 } from "./write";
@@ -115,7 +115,7 @@ export async function knowledgeCreate(
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.knowledge_create",
+      action: "knowledge.create",
       target,
       before: null,
       after: truncForAudit({ id: String(created.id), name: args.name }),
@@ -189,7 +189,7 @@ export async function knowledgeUpdate(
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.knowledge_update",
+      action: "knowledge.update",
       target,
       before: truncForAudit(beforeProj),
       after: truncForAudit({
@@ -229,7 +229,7 @@ export async function knowledgeDelete(
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.knowledge_delete",
+      action: "knowledge.delete",
       target,
       before: truncForAudit(beforeProj),
       after: null,
@@ -287,7 +287,7 @@ export async function knowledgeDocumentCreate(
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.knowledge_document_create",
+      action: "knowledge_document.create",
       target,
       before: null,
       after: truncForAudit({
@@ -334,7 +334,7 @@ export async function knowledgeDocumentDelete(
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.knowledge_document_delete",
+      action: "knowledge_document.delete",
       target,
       before: truncForAudit(beforeProj),
       after: null,
@@ -371,7 +371,7 @@ export async function knowledgeDocumentRetry(
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.knowledge_document_retry",
+      action: "knowledge_document.retry",
       target,
       before: truncForAudit({ status: current.status }),
       after: truncForAudit({ status: "PENDING" }),
@@ -435,7 +435,7 @@ export async function knowledgeReindex(
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.knowledge_reindex",
+      action: "knowledge.reindex",
       target,
       before: {},
       after: truncForAudit({
@@ -488,7 +488,7 @@ export async function knowledgeApprove(
       await recordMcpAudit(ctx, base, {
         actorId: principal.userId,
         actorType: "mcp",
-        action: "mcp.knowledge_approve",
+        action: "knowledge.approve",
         target,
         before: null,
         after: truncForAudit({
@@ -530,7 +530,7 @@ export async function knowledgeReject(
       await recordMcpAudit(ctx, base, {
         actorId: principal.userId,
         actorType: "mcp",
-        action: "mcp.knowledge_reject",
+        action: "knowledge.reject",
         target,
         before: null,
         after: truncForAudit({ outcome }),
@@ -598,7 +598,7 @@ export async function knowledgeEdit(
       await recordMcpAudit(ctx, base, {
         actorId: principal.userId,
         actorType: "mcp",
-        action: "mcp.knowledge_edit",
+        action: "knowledge.edit",
         target,
         before: null,
         after: truncForAudit({ outcome, title: args.title }),

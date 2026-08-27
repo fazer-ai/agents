@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
+import { ENTER_FLEET_ROLE_SQL } from "@/lib/tenancy/fleet-role";
 
 // The original `follow_up_armed_at` backfill (20260807032257) ends in a bare
 // `UPDATE "agents" SET "follow_up_armed_at" = NOW()`. `agents` carries FORCE ROW LEVEL SECURITY,
@@ -94,9 +95,19 @@ describe.skipIf(!dbUp)("follow_up_armed_at backfill under RLS", () => {
     await appDb.$disconnect();
   });
 
+  // The file's own `SET app.is_super_admin` statement is INERT against today's schema: the policy
+  // that read it was split into a role-restricted one (issue #382), and this migration only ever
+  // runs BEFORE that split, on a database whose policy still carried the OR. Re-executing it here
+  // therefore has to supply the bypass of the era it is being run in — without it both this test
+  // and its negative twin would report "armed nothing", for two different reasons, and the pair
+  // would stop discriminating.
   test("arms the agents the original backfill left behind", async () => {
     const statements = await migrationStatements();
-    await appDb.$transaction(statements.map((s) => appDb.$executeRawUnsafe(s)));
+    await appDb.$transaction(
+      [ENTER_FLEET_ROLE_SQL, ...statements].map((s) =>
+        appDb.$executeRawUnsafe(s),
+      ),
+    );
 
     const stranded = await suDb.agent.findUniqueOrThrow({
       where: { id: strandedId },

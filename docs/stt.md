@@ -67,3 +67,9 @@ Per-agent, in `agent.settings.stt` (free-form bag, validated by `readSttConfig`)
 - The in-process annotation store is per-process memory: an app restart inside the debounce window loses the overlay on upstream Chatwoot (the fork's meta write-back survives restarts). Bounded by the single-replica deploy invariant (`docs/deploy.md`). Expiry is **active**, not lazy: a rescheduled (unref'd) sweeper deletes annotations past the TTL even when no new voice note arrives, so an idle process does not keep customer speech in memory until restart; a size cap bounds bursts as a second limit.
 
 Read before touching `src/modules/stt/*`, `chatwoot/render.ts`, the message parser, or the eager-STT seam in the webhook.
+
+## Bun derives a multipart file's MIME from the filename extension
+
+In Bun's `multipart/form-data` round trip (`request.formData()`), the `File.type` the server sees comes from the **filename extension**, ignoring the `type` the browser set on the `File`/`Blob`. Measured on Bun 1.3.14: a file sent as `recording.webm` with `type: "audio/webm;codecs=opus"` arrives as `type: "video/webm"`, because the mime DB maps `.webm` to the video container even for pure audio. Also `.ogg`→`audio/ogg`, `.m4a`→`audio/x-m4a`, `.bin`→`application/octet-stream`, and no extension→`""`.
+
+This reaches every multipart endpoint (playground STT, branding image upload, RAG documents): never validate an audio or image by `file.type.startsWith("audio/")` alone — a MediaRecorder voice note would be rejected. Accept `video/webm` and normalize it to `audio/webm` before anything downstream, and on the frontend name the file with the real container extension (Chrome→webm, Firefox→ogg, Safari→m4a) so the derived mime matches. Fixed once in `src/modules/playground/service.ts`, with a NOTE in the code.

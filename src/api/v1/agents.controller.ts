@@ -4,6 +4,7 @@ import { doc, errors } from "@/api/lib/openapi";
 import { parseQueryText } from "@/api/lib/query-filters";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
 import config from "@/config";
+import { requireDbId } from "@/lib/db-id";
 import {
   AppError,
   ForbiddenError,
@@ -324,7 +325,7 @@ export const agentsController = new Elysia({
     "/:id",
     async ({ tenantContext, params }) => ({
       instance: instanceIdentity,
-      agent: await getAgent(ctxOrThrow(tenantContext), BigInt(params.id)),
+      agent: await getAgent(ctxOrThrow(tenantContext), requireDbId(params.id)),
     }),
     {
       detail: doc("Get agent", "Returns a single agent by id."),
@@ -347,7 +348,7 @@ export const agentsController = new Elysia({
       windowHours: GUARDRAIL_HEALTH_WINDOW_HOURS,
       ...(await readGuardrailHealth(
         ctxOrThrow(tenantContext),
-        BigInt(params.id),
+        requireDbId(params.id),
         guardrailHealthWindowStart(),
       )),
     }),
@@ -374,7 +375,7 @@ export const agentsController = new Elysia({
       instance: instanceIdentity,
       inboxes: await listOutOfOfficeInboxes(
         ctxOrThrow(tenantContext),
-        BigInt(params.id),
+        requireDbId(params.id),
       ),
     }),
     {
@@ -469,7 +470,7 @@ export const agentsController = new Elysia({
         instance: instanceIdentity,
         agent: await updateAgent(
           ctxOrThrow(tenantContext),
-          BigInt(params.id),
+          requireDbId(params.id),
           patch,
           undefined,
           { expectedUpdatedAt },
@@ -559,7 +560,7 @@ export const agentsController = new Elysia({
     async ({ tenantContext, params, body }) => {
       const ctx = ctxOrThrow(tenantContext);
       const b = body as { confirmName: string; password: string };
-      const agent = await getAgent(ctx, BigInt(params.id));
+      const agent = await getAgent(ctx, requireDbId(params.id));
       if (b.confirmName.trim() !== agent.name) {
         throw new AppError(
           "name confirmation does not match",
@@ -574,7 +575,7 @@ export const agentsController = new Elysia({
       ) {
         throw new AppError("Incorrect password", 403, "errors.invalidPassword");
       }
-      await deleteAgent(ctx, BigInt(params.id));
+      await deleteAgent(ctx, requireDbId(params.id));
       return { instance: instanceIdentity, success: true };
     },
     {
@@ -606,7 +607,7 @@ export const agentsController = new Elysia({
       instance: instanceIdentity,
       agent: await cloneAgent(
         ctxOrThrow(tenantContext),
-        BigInt(params.id),
+        requireDbId(params.id),
         (body as { name?: string }).name,
       ),
     }),
@@ -637,7 +638,7 @@ export const agentsController = new Elysia({
       instance: instanceIdentity,
       export: await exportAgent(
         ctxOrThrow(tenantContext),
-        BigInt(params.id),
+        requireDbId(params.id),
         undefined,
         {
           // `?components=true` bundles the full HTTP-tool / MCP / integration defs + KB metadata so
@@ -708,7 +709,7 @@ export const agentsController = new Elysia({
       instance: instanceIdentity,
       ...(await getAgentToolSelections(
         ctxOrThrow(tenantContext),
-        BigInt(params.id),
+        requireDbId(params.id),
       )),
     }),
     {
@@ -742,7 +743,7 @@ export const agentsController = new Elysia({
         instance: instanceIdentity,
         ...(await runPlaygroundTurn({
           ctx,
-          agentId: BigInt(params.id),
+          agentId: requireDbId(params.id),
           message: b.message,
           threadId: b.threadId,
           overrides: b.draft,
@@ -776,7 +777,7 @@ export const agentsController = new Elysia({
         instance: instanceIdentity,
         tools: await listPlaygroundTools({
           ctx,
-          agentId: BigInt(params.id),
+          agentId: requireDbId(params.id),
         }),
       };
     },
@@ -810,7 +811,7 @@ export const agentsController = new Elysia({
         instance: instanceIdentity,
         ...(await runPlaygroundFollowup({
           ctx,
-          agentId: BigInt(params.id),
+          agentId: requireDbId(params.id),
           threadId: b.threadId,
           context: b.context,
           overrides: b.draft,
@@ -845,7 +846,7 @@ export const agentsController = new Elysia({
         instance: instanceIdentity,
         ...(await runPlaygroundTranscribe({
           ctx,
-          agentId: BigInt(params.id),
+          agentId: requireDbId(params.id),
           file: b.file,
           overrides: parseDraft(b.draft),
         })),
@@ -896,7 +897,7 @@ export const agentsController = new Elysia({
         instance: instanceIdentity,
         ...(await runPlaygroundAudioTurn({
           ctx,
-          agentId: BigInt(params.id),
+          agentId: requireDbId(params.id),
           file: b.file,
           threadId: b.threadId,
           overrides,
@@ -966,7 +967,7 @@ export const agentsController = new Elysia({
         instance: instanceIdentity,
         ...(await runPlaygroundExtract({
           ctx,
-          agentId: BigInt(params.id),
+          agentId: requireDbId(params.id),
           file: b.file,
           overrides: parseDraft(b.draft),
         })),
@@ -1018,7 +1019,7 @@ export const agentsController = new Elysia({
         instance: instanceIdentity,
         ...(await runPlaygroundFileTurn({
           ctx,
-          agentId: BigInt(params.id),
+          agentId: requireDbId(params.id),
           file: b.file,
           threadId: b.threadId,
           overrides,
@@ -1087,14 +1088,13 @@ export const agentsController = new Elysia({
     "/:id/playground/media/:mediaId",
     async ({ tenantContext, params, set }) => {
       const ctx = ctxOrThrow(tenantContext);
-      let mediaId: bigint;
-      try {
-        mediaId = BigInt(params.mediaId);
-      } catch {
-        set.status = 404;
-        return { error: "Not Found" };
-      }
-      const blob = await getPlaygroundMedia(ctx, mediaId);
+      // NOTE: refused, not answered 404. A media id that is not an id is a malformed request, and
+      // this route used to answer it as "no such blob": the one spelling of the rule in this app
+      // that told the caller their id was fine and the row was gone. Issue #371.
+      const blob = await getPlaygroundMedia(
+        ctx,
+        requireDbId(params.mediaId, "mediaId"),
+      );
       if (!blob) {
         set.status = 404;
         return { error: "Not Found" };
@@ -1130,7 +1130,7 @@ export const agentsController = new Elysia({
       const ctx = ctxOrThrow(tenantContext);
       return {
         instance: instanceIdentity,
-        sessions: await listPlaygroundSessions(ctx, BigInt(params.id)),
+        sessions: await listPlaygroundSessions(ctx, requireDbId(params.id)),
       };
     },
     {
@@ -1155,7 +1155,7 @@ export const agentsController = new Elysia({
         instance: instanceIdentity,
         turns: await getPlaygroundSessionTurns(
           ctx,
-          BigInt(params.id),
+          requireDbId(params.id),
           params.threadId,
         ),
       };
@@ -1182,7 +1182,11 @@ export const agentsController = new Elysia({
     "/:id/playground/sessions/:threadId",
     async ({ tenantContext, params }) => {
       const ctx = ctxOrThrow(tenantContext);
-      await deletePlaygroundSession(ctx, BigInt(params.id), params.threadId);
+      await deletePlaygroundSession(
+        ctx,
+        requireDbId(params.id),
+        params.threadId,
+      );
       return { instance: instanceIdentity, ok: true };
     },
     {
@@ -1323,7 +1327,7 @@ export const agentsController = new Elysia({
         instance: instanceIdentity,
         ...(await replaceAgentToolSelections(
           ctxOrThrow(tenantContext),
-          BigInt(params.id),
+          requireDbId(params.id),
           b.grants,
           undefined,
           { expectedUpdatedAt: parseExpectedUpdatedAt(b.expectedUpdatedAt) },

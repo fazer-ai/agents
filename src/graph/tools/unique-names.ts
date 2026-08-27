@@ -1,4 +1,5 @@
 import type { StructuredToolInterface } from "@langchain/core/tools";
+import type { FlowEvent } from "@/modules/flowlog/service";
 
 // One agent, one meaning per tool name.
 //
@@ -37,4 +38,22 @@ export function dropDuplicateToolNames(tools: StructuredToolInterface[]): {
     kept.push(tool);
   }
   return { tools: kept, dropped };
+}
+
+// The flow-log line for a tool that lost its name (#389). The process log above already said it, and
+// that is the half nobody reads: the operator's report is "the agent stopped booking appointments",
+// and the answer to it has to be one line away in the Logs page, next to the turn where the tool was
+// missing. The sibling case one seam over — a precondition matching no assembled tool — has been
+// reported this way since #101; this is the same class of static misconfiguration decided at the same
+// moment, and it was the only one of the two the console could not show.
+//
+// INFO, not warn, for that sibling's reason: a duplicate stands until the operator renames something,
+// so a warn would page the alert channels once per turn for as long as it lasts.
+export function droppedToolNamesEvent(dropped: string[]): FlowEvent {
+  return {
+    stage: "tool",
+    level: "info",
+    status: "ok",
+    detail: { phase: "duplicate_name_dropped", tools: [...new Set(dropped)] },
+  };
 }

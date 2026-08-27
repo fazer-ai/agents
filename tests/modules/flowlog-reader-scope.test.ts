@@ -178,6 +178,7 @@ export function isScoped(reader: Reader, scoping: Scoping): boolean {
 }
 
 const FLOWLOG_READERS: Record<string, number> = {
+  "tests/graph/duplicate-tool-name-visible.test.ts": 1,
   "tests/graph/history-ceiling-turn.test.ts": 1,
   "tests/graph/nudge.test.ts": 3,
   "tests/graph/runtime.test.ts": 7,

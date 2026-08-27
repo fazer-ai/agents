@@ -10,6 +10,7 @@ import {
 } from "@/api/lib/query-filters";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
 import config from "@/config";
+import { requireDbId } from "@/lib/db-id";
 import { AppError, ForbiddenError } from "@/lib/errors";
 import { instanceIdentity } from "@/lib/instance";
 import type { TenantContext } from "@/lib/tenancy";
@@ -97,7 +98,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
     async ({ tenantContext, params }) => {
       const tenant = await getTenant(
         ctxOrThrow(tenantContext),
-        BigInt(params.id),
+        requireDbId(params.id),
       );
       return { instance: instanceIdentity, tenant };
     },
@@ -120,7 +121,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
     async ({ tenantContext, params, body }) => {
       const tenant = await updateTenant(
         ctxOrThrow(tenantContext),
-        BigInt(params.id),
+        requireDbId(params.id),
         body as TenantUpdate,
       );
       return { instance: instanceIdentity, tenant };
@@ -155,7 +156,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
     async ({ tenantContext, params, body }) => {
       const ctx = ctxOrThrow(tenantContext);
       const b = body as { confirmName: string; password: string };
-      const id = BigInt(params.id);
+      const id = requireDbId(params.id);
       const tenant = await getTenant(ctx, id);
       if (b.confirmName.trim() !== tenant.name) {
         throw new AppError(
@@ -321,7 +322,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
       instance: instanceIdentity,
       conversation: await getConversationDetail(
         ctxOrThrow(tenantContext),
-        BigInt(params.id),
+        requireDbId(params.id),
       ),
     }),
     {
@@ -351,7 +352,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
         instance: instanceIdentity,
         ...(await getConversationMessages(
           ctxOrThrow(tenantContext),
-          BigInt(params.id),
+          requireDbId(params.id),
           {},
           undefined,
           before,
@@ -392,7 +393,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
     async ({ tenantContext, params, query, set }) => {
       const blob = await getConversationMedia(
         ctxOrThrow(tenantContext),
-        BigInt(params.id),
+        requireDbId(params.id),
         query.url,
       );
       if (!blob) {
@@ -435,7 +436,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
     async ({ tenantContext, params, body }) => {
       await replyToConversation(
         ctxOrThrow(tenantContext),
-        BigInt(params.id),
+        requireDbId(params.id),
         body.content,
         body.private ?? false,
       );
@@ -477,7 +478,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
     async ({ tenantContext, params, body }) => {
       await handoffConversation(
         ctxOrThrow(tenantContext),
-        BigInt(params.id),
+        requireDbId(params.id),
         body.assigneeId ?? null,
       );
       return { instance: instanceIdentity, success: true };
@@ -513,7 +514,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
     async ({ tenantContext, params }) => {
       const outcome = await returnConversationToAgent(
         ctxOrThrow(tenantContext),
-        BigInt(params.id),
+        requireDbId(params.id),
       );
       // The call succeeded either way — the conversation is pending and the mirror is correct. The
       // outcome says whether the unassign happened, because "taken-over" means a human claimed it
@@ -543,7 +544,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
     async ({ tenantContext, params }) => {
       const { outcome } = await reengageConversation(
         ctxOrThrow(tenantContext),
-        BigInt(params.id),
+        requireDbId(params.id),
       );
       return { instance: instanceIdentity, outcome };
     },
@@ -570,7 +571,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
     async ({ tenantContext, params, body }) => {
       await setConversationStatus(
         ctxOrThrow(tenantContext),
-        BigInt(params.id),
+        requireDbId(params.id),
         body.status,
       );
       return { instance: instanceIdentity, success: true };

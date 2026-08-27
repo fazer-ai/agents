@@ -67,6 +67,8 @@ function renderWithProvider(
       noticeCooldownSeconds: "60",
       includeMessageText: false,
       denyMessage: "",
+      mode: "perMessage",
+      grantTtlSeconds: "86400",
       handoffEnabled: false,
       handoffTeamId: "",
       handoffTeamInstanceId: "",

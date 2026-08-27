@@ -25,6 +25,23 @@ function handlers(src: string): { name: string; body: string }[] {
 }
 
 describe("agent editor save errors", () => {
+  // `saveAgent` writes BOTH sections and the held refusal covers one of them. A successful Behavior
+  // save carries neither `name` nor `systemPrompt`, so clearing there answers a refusal nothing
+  // answered: the operator returns to General to a form that looks clean and is still refused.
+  //
+  // Source-level for the same reason as the rest of this file — the two sections are two arguments
+  // to one function, and the distinction is invisible to anything that only watches the network.
+  test("a successful save clears the holder only for the section it draws", () => {
+    const at = SRC.indexOf("refusal.clear()");
+    expect(at).toBeGreaterThan(-1);
+    // The guard on the same line, so a `clear()` added to another branch is not answered by this one.
+    expect(SRC.slice(SRC.lastIndexOf("\n", at), at)).toContain(
+      'section === "general"',
+    );
+    // And exactly one, so the assertion above is about all of them.
+    expect(SRC.split("refusal.clear()").length - 1).toBe(1);
+  });
+
   // The tools save fires two calls (grants PUT, then agent PATCH), so it checks the bag itself before
   // the first one — otherwise the grants persist and the PATCH is refused. It has to ask the same
   // question the server asks: what does this write CHANGE. Comparing against nothing would refuse a
@@ -57,9 +74,15 @@ describe("agent editor save errors", () => {
       "saveGuardrails",
       "saveTools",
     ]);
+    // The holder is often under a qualified name (`cloneRefusal`), because a page with two forms needs
+    // one per form.
+    //
+    // `refusal.capture` is the same read plus a placement: it answers the server's sentence, or null
+    // once that sentence is already rendered at the input it names (#320). A handler that routes
+    // through it has not stopped showing what the server said — it has stopped needing a toast.
     expect(
       writers
-        .filter((h) => !h.body.includes("apiErrorMessage"))
+        .filter((h) => !/apiErrorMessage|[Rr]efusal\.capture/.test(h.body))
         .map((h) => h.name),
     ).toEqual([]);
   });

@@ -458,6 +458,73 @@ function bindingIsDead(body: string, name: string): boolean {
   return false;
 }
 
+// THE TWO CHANNELS a refusal reaches the operator through on this tree, as one trigger.
+//
+// #233 swept `showToast(…, "error")` and the fence written with it keyed on that call, so a form that
+// renders the refusal INSIDE itself — an error line in the modal, a banner over the fields — was
+// invisible to this file by construction. That is where the worst measured case lived: creating a
+// second MCP connection under a name already taken answers 409 "mcp connection name already in use"
+// and the modal says "Could not save — check the URL/command", sending the operator to the wrong
+// input entirely (#329).
+//
+// The setter is recognised by NAME because that is where a React state channel declares what it
+// holds: `set` + an optional CamelCase middle + `Err`, and then the call. `settingsTextError(` is not
+// a setter and does not match — the character after `set` has to be uppercase, or `Err` itself. Nor
+// does `setUsageErrorStatus(`, and the trailing paren is what excludes it: a name that CONTINUES past
+// the error holds something else about it, and that one holds an HTTP status.
+const ERROR_CHANNEL = /showToast\(|\bset(?:[A-Z]\w*)?Err(?:or)?\(/g;
+
+// A trigger that is actually SHOWING a sentence.
+//
+// A toast declares its level in the second argument, and the trailing comma is not optional to allow
+// for: biome writes one on every multi-line call, and requiring the quote to be last silently skipped
+// every toast the formatter had wrapped — which is most of the long ones, and they are the ones with
+// a sentence worth replacing.
+//
+// An error setter declares its level in its name, so every call qualifies but two shapes.
+//
+// The same setter is how a form CLEARS the box, and `setError("")` at the top of a submit shows
+// nothing. And a BOOLEAN error state is not a sentence at all: measured on this tree, all 34 of them
+// drive a "could not load this page" boundary after a failed READ, where there is no input to attach
+// anything to and the operator's only move is to retry. A refusal reduced to a flag by a WRITE would
+// be a real gap, and it is a different question from this one — asked and answered by the form fence
+// in tests/client/field-refusal-forms.test.ts, which requires every write to hold its refusal.
+function showsASentence(trigger: string, args: string): boolean {
+  if (trigger.startsWith("showToast")) {
+    return /["']error["'],?$/.test(args.trim());
+  }
+  return !/^\s*(?:""|''|``|null|undefined|true|false|!!?\w[\w.]*)\s*$/.test(
+    args,
+  );
+}
+
+// The names in one scope that end up carrying the server's sentence — directly, or through another
+// name that does.
+//
+// A chain and not one hop, because the shape a form reaches for is two: `const held = (e) =>
+// refusal.capture(…)` and then `const toast = held(err)`, with the toast showing `toast`. Following
+// only the first hop calls that an offender while it is the rule's own implementation. The loop runs
+// to a fixed point rather than a fixed depth: the number of hops is the form's business, not this
+// scanner's.
+function readingNames(scope: string): Set<string> {
+  const names = new Set<string>();
+  for (;;) {
+    const before = names.size;
+    for (const m of scope.matchAll(/\b([A-Za-z_$][\w$]*)\s*=([^;]*)/g)) {
+      const name = m[1] as string;
+      const rhs = m[2] as string;
+      if (names.has(name)) continue;
+      if (
+        /apiErrorMessage|[Rr]efusal\./.test(rhs) ||
+        [...names].some((r) => new RegExp(`\\b${r}\\s*\\(`).test(rhs))
+      ) {
+        names.add(name);
+      }
+    }
+    if (names.size === before) return names;
+  }
+}
+
 // Every error toast in one file, each with the verdict the rules above reach about it. One walker
 // rather than two: the filter chain was copied once, and a rule added to one copy and not the other
 // is how a fence starts claiming an invariant it does not hold — which is the defect this whole file
@@ -482,13 +549,10 @@ function verdicts(
   // Structure is read off the skeleton and TEXT off the source: the braces have to be real code, and
   // the sentence being shown is exactly the part the skeleton blanks.
   const code = codeSkeleton(src);
-  for (const m of code.matchAll(/showToast\(/g)) {
+  for (const m of code.matchAll(ERROR_CHANNEL)) {
     const open = m.index + m[0].length - 1;
     const args = callArgs(src, open);
-    // The trailing comma is not optional to allow for: biome writes one on every multi-line call, and
-    // requiring the quote to be last silently skipped every toast the formatter had wrapped — which
-    // is most of the long ones, and they are the ones with a sentence worth replacing.
-    if (!/["']error["'],?$/.test(args.trim())) continue;
+    if (!showsASentence(m[0], args)) continue;
     const at: Offender = {
       file,
       line: src.slice(0, m.index).split("\n").length,
@@ -506,7 +570,19 @@ function verdicts(
     // (CredentialForm) answers a LOCALIZED sentence for 409 and the server's own for 400, which is a
     // policy, not an oversight. A fence that only knows the helper's name calls that an offender and
     // the sweep then overrides the 409 branch.
-    if (/apiErrorMessage|refusal\.|\.value\??\.error/.test(args)) {
+    //
+    // The hook is often held under a qualified name (`embRefusal`, `lfRefusal`) because a screen with two
+    // forms needs one per form, so the capital is part of the pattern rather than a typo.
+    //
+    // `ApiErrorPayload` is the same read with a CAST in the middle —
+    // `(apiError.value as ApiErrorPayload)?.error` — which the dotted spelling above does not match.
+    // Twelve copies of it, and they are reading what the server said; what they do NOT do is place it
+    // at the input, which is a different question and is asked by the form fence.
+    if (
+      /apiErrorMessage|[Rr]efusal\.|ApiErrorPayload|\.value\??\.error/.test(
+        args,
+      )
+    ) {
       const read = args.match(/apiErrorMessage\(\s*(\w+)\s*\)/);
       const scope = enclosingHandler(code, chain);
       say(
@@ -519,18 +595,23 @@ function verdicts(
       continue;
     }
 
-    // The sentence can be computed a few lines up and shown by name — `const toast =
-    // refusal.capture(…)` then `showToast(toast, "error")`. Reading only the argument list calls that
-    // handler an offender while it is the reference implementation of the rule.
-    const named = args.trim().match(/^(\w+)\s*(?:\?\?[^,]*)?,/);
-    if (named) {
-      const assigned = new RegExp(
-        `\\b${named[1]}\\b\\s*=[^;]*(?:apiErrorMessage|refusal\\.)`,
-      );
-      if (assigned.test(src.slice(chain[0] ?? 0, m.index))) {
-        say("reads");
-        continue;
-      }
+    // The sentence can be computed a few lines up and shown by NAME — `const toast =
+    // refusal.capture(…)` then `showToast(toast, "error")` — or through a small local helper the
+    // handler calls twice, `setError(held(err))`, which is the shape a form with a resolved branch
+    // and a catch branch reaches for. Reading only the argument list calls both an offender while
+    // they are the reference implementation of the rule.
+    //
+    // Every identifier in the argument list is asked, not just a leading one: `held(err) ?? ""` and
+    // `msg ?? fallback` are the same question with different punctuation, and enumerating the
+    // punctuation is how the previous version of this branch missed the helper form entirely.
+    const carriers = readingNames(src.slice(chain[0] ?? 0, m.index));
+    if (
+      [...args.matchAll(/\b[A-Za-z_$][\w$]*/g)].some((i) =>
+        carriers.has(i[0] as string),
+      )
+    ) {
+      say("reads");
+      continue;
     }
 
     // The innermost enclosing `catch`, if the toast is in one at all.
@@ -666,6 +747,12 @@ const WAIVED: Record<string, string> = {
     "Same as the Google section: the popup outcome, decided in the browser.",
   "pages/WebhooksPage.tsx :: webhooks.testFailedReason":
     "A 200 carrying the TARGET's rejection, not a refusal of ours — same class as `approvals.editGone`. `err` is null by the guard above, and the reason shown is `result.error`, which is the endpoint's own. The sweep put `apiErrorMessage(err)` here and it could only ever answer null.",
+  "pages/OAuthConsentPage.tsx :: generic":
+    'This endpoint\'s only two refusals are a bare UnauthorizedError() and a bare NotFoundError() — "Unauthorized" and "Not found". The second is the ordinary case (the pending authorization expired or was consumed elsewhere), and showing it would cost the only recovery action the person has, which the server does not know about. Same class as editor.conflictToast: the client\'s sentence is the more specific one. The sentence is `oauth.consent.genericError`, held in a local so both branches show the same one.',
+  "pages/LoginPage.tsx :: auth.googleSignInFailed":
+    "The Google button's own `onError`: the widget failed in the browser (script blocked, popup closed, a client id the origin does not allow) and nothing of ours was sent. The scanner reads it as the page's handler because a brace-less arrow inside JSX opens no block of its own.",
+  "pages/SignupPage.tsx :: auth.googleSignInFailed":
+    "Same widget, same page-level reading: the failure is the button's, decided before any request of ours exists.",
   "pages/agents/AgentEditorPage.tsx :: editor.conflictToast":
     "Gated on `status === 409`, and all three 409s these routes answer are the same `errors.agentModifiedElsewhere`. The client's sentence says the same thing plus the affordance the server cannot know about — the banner's `save again to overwrite` — so passing the server's through would make the toast WORSE.",
 };
@@ -1045,6 +1132,65 @@ describe("an error toast shows what the server said", () => {
     expect(deadReads(kept)).toEqual([]);
   });
 
+  test("a sentence computed by a local helper is a read", () => {
+    // The shape a form with two failure branches reaches for: one helper, called from the resolved
+    // branch and from the catch. Neither call site mentions the read, and the fence has to follow the
+    // name to find it — the previous version of this branch only understood a bare identifier
+    // followed by a comma, and called every one of these an offender.
+    const src = `
+      async function save() {
+        const held = (e: unknown) =>
+          refusal.capture(e, t("x", "Could not save."), sent, current) ?? "";
+        try {
+          const { error } = await api.thing.post(body);
+          if (error) {
+            setError(held(error));
+            return;
+          }
+        } catch (e) {
+          setError(held(e));
+        }
+      }
+    `;
+    expect(unreadRefusals(src)).toEqual([]);
+  });
+
+  test("a sentence carried through two names is still a read", () => {
+    // The shape the vault form reaches for: a helper that captures, and a `toast` holding what the
+    // helper answered. Following one hop stops at `toast` and calls this an offender.
+    const src = `
+      async function save() {
+        const held = (e: unknown, sent: Record<string, unknown>) =>
+          refusal.capture(e, fallback, sent, current);
+        const { error } = await api.thing.post(body);
+        if (error) {
+          const toast = held(error, body);
+          if (toast) showToast(toast, "error");
+          return;
+        }
+      }
+    `;
+    expect(unreadRefusals(src)).toEqual([]);
+  });
+
+  test("an unrelated local name does not make a fixed sentence a read", () => {
+    // The other direction of the same widening: the handler DOES read the sentence, somewhere, and
+    // then shows a fixed one anyway. Asking "is any identifier in this call assigned from a read"
+    // has to answer about the identifiers of THIS call.
+    const src = `
+      async function save() {
+        const reason = apiErrorMessage(err);
+        const { error } = await api.thing.post(body);
+        if (error) {
+          setError(t("x", "Could not save."));
+          return;
+        }
+        log(reason);
+      }
+    `;
+    expect(unreadRefusals(src)).toHaveLength(1);
+  });
+
   test("a handler that reads the sentence is not an offender", () => {
     const reads = `
       async function save() {
@@ -1112,7 +1258,7 @@ describe("an error toast shows what the server said", () => {
   // The ledger may only shrink, and its size is the anchor the tree cannot supply: appending a name
   // silences a new offender AND satisfies every other rule here.
   test("the waiver ledger is pinned to its size", () => {
-    expectWaiverLedger("WAIVED", WAIVED, 8);
+    expectWaiverLedger("WAIVED", WAIVED, 11);
   });
 
   test("every toast the scanner cannot ask about is named", () => {

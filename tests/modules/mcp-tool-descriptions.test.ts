@@ -154,7 +154,60 @@ const SETTINGS_DESC_CEILING = 2_000;
 // silent-failure shape as `includeMessageText` and the half-named `modelFallback` above. The
 // remaining 153 is the field name, the boolean, and that sentence. Headroom over 12,500 stays
 // tighter than a block, as before.
-const SETTINGS_SCHEMA_CEILING = 12_550;
+//
+// RAISED from 12,550 for issue #189, which adds `contactAuth.mode` and `contactAuth.grantTtlSeconds`
+// at 314 characters together. Re-measured on this tree at 12,864, not added to the previous figure:
+// the base moved while this branch was open, and a sum assumes nothing else did. What the two
+// `.describe()` strings buy is the pair of facts a caller cannot get by trying — that `once` stops
+// asking until the verdict EXPIRES (a caller who assumes otherwise ships a gate that has stopped
+// consulting them), and what the TTL is part of, since it looks like a harmless number.
+//
+// The figure was re-measured at the END of that issue's review loop rather than left at the one
+// taken when it opened: the two `.describe()` strings were rewritten twice while the loop ran, and
+// the number they landed on is 12,942 — eight characters under the ceiling the first measurement
+// justified, which is not headroom, it is a coin flip on the next edit. Tighter than a block, and
+// not tighter than a sentence.
+// #402 raises this the most any single change has: 12,550 → 20,900, measured at 20,443. Four blocks
+// of the settings bag reached MCP for the first time (guardrails, kanban, toolGuidance,
+// toolPreconditions), and two of them are maps keyed by the native tool catalog, so their value is
+// published once per tool name — thirteen times each.
+//
+// The figure is a RE-MEASUREMENT after review, not the branch's first one, and it moved twice more
+// before it settled. It read 20,839 while `appointmentReminders` was published too; that block
+// turned out not to be an agent-settings block at all (its reader is only ever handed the Google
+// Calendar instance's config), so it was removed rather than paid for, taking it to 20,443. Then
+// review found the text caps missing from the new blocks' descriptions — a caller cannot build a
+// valid call from tools/list without failing first — and publishing them cost 552 characters, to
+// 20,995. A later round added the guidance PRECEDENCE sentence (handoff/kanban notes live in their
+// own block and win there), taking it to 21,108, and a later one the input direction's template
+// fallback for `generated` (accepted, as the console offers it, but it never generates), taking it
+// to 21,216. A last round declared what the readers DISCARD rather than honor: every field read
+// through `readToolInstructions` (handoff.instructions, kanban.instructions, and toolGuidance's
+// value, so thirteen times over) now publishes `pattern: "\\S"`, refusing a note that trims to
+// nothing instead of accepting one the runtime never appends. That is 272 characters, to 21,488.
+// Every figure here is one measured under the tree that ships; adding deltas would have left a
+// ceiling calibrated against trees that never did.
+//
+// Paid down before it was raised, and only where it cost the caller nothing: the per-field
+// `.describe()` on the two name-keyed blocks moved to the BLOCK, since a field description inside a
+// thirteen-times-repeated value is published thirteen times. That was 22,807 → 20,839, and the text
+// a caller reads is unchanged.
+//
+// What was measured and REJECTED, so the next person does not re-derive it: `z.record(z.enum(...))`
+// publishes the value once and would have cost ~1 KB instead of 3.9 KB. It refuses an unrecognized
+// key with `Unrecognized key: "<what the caller sent>"` in the message — the caller's own string in
+// a refusal, which is the exact hazard tests/api/v1/write-body-required.test.ts exists to keep out
+// of this codebase. The thirteen copies are what buys a refusal that can only name what the SERVER
+// declared.
+//
+// MERGED, and re-measured once more on the tree that came out of it. Both sides above raised this
+// same constant from 12,550 while the other was open, so the two figures are about two trees that
+// no longer exist: summing them would write 21,880, a number measured nowhere. The tree that ships
+// is measured at 21,930. A round after it, the same declare-what-the-server-enforces rule reached
+// the precondition's own strings: `key` and `equals` are trimmed by `parseToolPrecondition` and
+// REFUSED by the write boundary, so a schema-valid call came back as an error with nothing published
+// to predict it. Two more patterns, published thirteen times each, at 22,346.
+const SETTINGS_SCHEMA_CEILING = 22_500;
 
 describe("MCP tool descriptions", () => {
   test("agent_settings_set stays under its ceiling", async () => {
@@ -270,6 +323,42 @@ describe("MCP tool descriptions", () => {
   // #103 moves the schema figure again and not the description one, for the same reason: the
   // follow-up step gains one boolean and its note, and no tool is added. Measured at 42,027 of
   // schema after the trim documented at SETTINGS_SCHEMA_CEILING, so the ceiling goes to 42,100.
+  //
+  // #189 moves the schema figure and not the description one, again for the same reason: two fields
+  // on the `contactAuth` block, no new tool. FRESH measurement of this tree — 26,764 of description
+  // and 42,419 of schema — rather than 42,100 plus the 314 those fields cost on
+  // `agent_settings_set`: the base gained tools while this branch was open, and adding deltas writes
+  // a number nobody measured. The description ceiling does not move.
+  //
+  // Re-measured at the END of that loop, for the reason at SETTINGS_SCHEMA_CEILING: 26,764 of
+  // description and 42,497 of schema, which is three characters under the ceiling the first
+  // measurement justified. Schema ceiling to 42,600.
+  // #402 moves the SCHEMA figure and not the description one, and it is the largest single move so
+  // far: measured at 49,998, so the ceiling goes to 50,500. No tool was added — four blocks of the
+  // settings bag became reachable through MCP at all, which is why the whole cost lands on schema.
+  // Re-measured on the combined tree rather than added to the previous figure, and re-measured a
+  // SECOND time after review removed `appointmentReminders` from the change (50,394 → 49,998), for
+  // the same reason: a ceiling is only worth what someone actually measured under it.
+  //
+  // Two later rounds of the same PR moved it again, and the first of them moved the NUMBER without
+  // moving this paragraph — which is the failure this whole comment exists to prevent, so it is
+  // recorded rather than quietly overwritten: the ceiling read 50,900 with nothing here saying what
+  // had been measured under it. Re-measured on the tree that ships, the figure is 51,043, and the
+  // ceiling goes to 51,300. The last increment is the blank-note refusal documented at
+  // SETTINGS_SCHEMA_CEILING; the rest predates it and is now folded into a figure someone measured.
+  //
+  // Worth stating plainly, because this test exists to make it a decision rather than a surprise:
+  // the payload is now ~50 KB of schema plus ~27 KB of description across 107 tools, published in
+  // full on every tools/list before a client knows whether any of it will be used. Nothing here is
+  // waste in itself — every block a client cannot see is a block it cannot configure — but the
+  // TOTAL is now the thing worth an issue of its own, and the answer at that size is load-on-demand
+  // schemas rather than a smaller vocabulary. Splitting one tool into several is the intuitive move
+  // and the wrong one: the per-tool envelope is then paid more times, not fewer.
+  //
+  // And re-measured after the merge of the two, for the reason above: the branch figure (51,043) and
+  // the base figure (42,497) are each about a tree the other had not landed on. The merged tree is
+  // 51,485 of schema and 26,764 of description. The precondition patterns documented at
+  // SETTINGS_SCHEMA_CEILING then took the schema to 51,901; the ceiling goes to 52,100.
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;
@@ -279,7 +368,7 @@ describe("MCP tool descriptions", () => {
       schema += t.schema.length;
     }
     expect(desc).toBeLessThanOrEqual(27_250);
-    expect(schema).toBeLessThanOrEqual(42_100);
+    expect(schema).toBeLessThanOrEqual(52_100);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

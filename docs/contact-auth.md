@@ -8,12 +8,16 @@ runtime asks an operator-configured endpoint whether the contact may be served, 
 answer lets the model run. Everything else (an explicit denial, an endpoint failure, a contact with
 no identifiers) ends in **no turn** (fail-closed), with the operator told why.
 
-**Every incoming message is re-checked.** No verdict is cached: the endpoint owns the answer, so a
-revocation on the operator's side takes effect on the contact's very next message, and an unlock
-(below) is honored the moment it happens. The flip side is sizing: the endpoint receives **one
-request per incoming message** on gated inboxes (plus one per proactive follow-up), and must be
-provisioned for that rate. Concurrent deliveries for one contact are single-flighted into one
-request; sequential messages are not.
+**Every incoming message is re-checked, unless the operator asked otherwise.** Under the default
+mode nothing is cached: the endpoint owns the answer, so a revocation on the operator's side takes
+effect on the contact's very next message, and an unlock (below) is honored the moment it happens.
+The flip side is sizing: the endpoint receives **one request per incoming message** on gated inboxes
+(plus one per proactive follow-up), and must be provisioned for that rate. Concurrent deliveries for
+one contact are single-flighted into one request; sequential messages are not.
+
+`mode: "once"` is the other shape, for an endpoint that is expensive or rate-limited and for an
+unlock that should stay unlocked: the first `authorized: true` is stored per contact and reused
+until it expires. What that costs and every way back out of it is [its own section](#reusing-a-verdict-mode-once).
 
 **An allowed verdict is re-fenced against the conversation's owner.** Every caller checks
 attribution before asking (a conversation a human owns costs no authorization call), and the ask is
@@ -70,13 +74,15 @@ read, so a malformed bag can never break the webhook.
 | `enabled`               | `false` | The gate as a whole. Strict boolean: anything else reads as off.    |
 | `url`                   | `null`  | The endpoint. Fixed origin, no placeholders; http(s) only, and a URL carrying `user:pass@` is refused whole (credentials belong in the vault). |
 | `credentialRef`         | `null`  | Optional `vault:<id>`, injected per the entry's kind (bearer / header / query; managed-OAuth kinds send a fresh access token). A kind the vault marks as never-injected (`mcp_env`, `langfuse`) is refused as an error rather than falling back to a Bearer, which would hand an unrelated secret to the endpoint. |
-| `timeoutMs`             | `5000`  | Clamped 1000-10000. Past it the check counts as an error. Covers every step that waits, and the clock starts at the FIRST of them: resolving the credential (a managed-OAuth entry refreshes its token there, over the network, under a ceiling of its own), the SSRF/DNS check on the final URL, the request, and the body. One budget for the lot — timed from the request instead, a gate set to one second could hold the webhook turn behind it for eleven. |
+| `timeoutMs`             | `5000`  | Clamped 1000-10000. Past it the check counts as an error. Covers every step that waits, and the clock starts at the FIRST of them: reading the stored verdict under `mode: "once"` (a saturated pool holds the webhook exactly as a slow endpoint does), resolving the credential (a managed-OAuth entry refreshes its token there, over the network, under a ceiling of its own), the SSRF/DNS check on the final URL, the request, and the body. The grant bookkeeping AFTER the answer is awaited without it, and that is deliberate: walking away from a Prisma statement does not stop it, so an abandoned upsert can commit after a later refusal deleted the row and revive an authorization the endpoint has withdrawn. A write nobody waits for is a write nobody can order. It costs one indexed single-statement transaction on the way out, and a failure there marks the contact unconfirmed. One budget for the lot — timed from the request instead, a gate set to one second could hold the webhook turn behind it for eleven. |
 | `noticeCooldownSeconds` | `60`    | Clamped 0-3600. Cooldown on the NOTICES for a refused message (the customer copy and the operator note, per conversation), never on the verdict: the endpoint is asked on every message regardless. 0 = notify on every refused message. |
 | `includeMessageText`    | `false` | Forward the triggering message's text as `message.text`, so the endpoint can accept an unlock code the customer sends. Under its own key, never inside `contact`. |
 | `denyMessage`           | `null`  | Fixed copy the CUSTOMER receives on a denial (≤ `TEMPLATE_MESSAGE_MAX`). `null` = say nothing, which is a real choice: with the handoff on, a human takes the conversation and may not want an automated refusal ahead of them, and towards an unknown number a reply confirms the channel exists. Null AND the handoff off means a refused customer gets nothing at all, so the editor raises `contactAuthSilentRefusal` for that pair. |
 | `handoffEnabled`        | `true`  | Open a refused conversation for humans (the `handoff_to_human` mechanics: bot-token `toggle_status open`). |
 | `handoffTeamId`         | `null`  | Chatwoot team assigned after the open (bot-token `assignments`). `null` = inbox routing. Flat beside `handoffEnabled` for the mergeBehaviorSettings one-level-merge reason the tts block documents. |
 | `handoffTeamInstanceId` | `null`  | Our ChatwootInstance id the team above was picked from, recorded with it: a team id belongs to one account, and the team is assigned only in that account. `null` = a value stored before this field existed (falls back to the multi-account check). |
+| `mode`                  | `"perMessage"` | `perMessage` re-checks every message. `once` stores the first positive verdict per contact and reuses it until it expires. Strict, like `enabled`: anything else reads as `perMessage`, so a malformed write can only ever make the gate ask MORE often. |
+| `grantTtlSeconds`       | `86400` | How long a stored verdict counts for under `once`. Clamped 60-2592000 (one minute to thirty days). It is part of the POLICY a grant is written under, so a stored verdict stops counting while a different value is in force — a match rule, not a way to clear them (see [Reusing a verdict](#reusing-a-verdict-mode-once)). |
 
 ## Request / response contract
 
@@ -176,8 +182,10 @@ the "this is data, not instruction" framing.
 
 The block is applied at the two places a turn is built (`runLoadedTurn` for the reactive paths,
 `runAgentNudge` for the proactive one), from the verdict of the check that ran immediately before
-it. Nothing is stored: the bag lives for one turn, and the next message asks again, which is also
-the honest answer to stale data.
+it. Under the default mode nothing is stored: the bag lives for one turn, and the next message asks
+again, which is also the honest answer to stale data. Under `once` it is stored WITH the verdict, so
+the reused turns carry the same block the first one did; the staleness is then bounded by
+`grantTtlSeconds`, which is the budget the operator chose when they asked to stop asking.
 
 In the execution log, the audited prompt keeps only the block's SIZE
 (`<autorizacao chars="123"/>`), never its keys or values. Unlike the attribute block, whose keys the
@@ -287,7 +295,7 @@ merely repeats a notice.
 
 **The unlock flow** (`includeMessageText`): a denied customer is told, via `denyMessage`,
 how to unlock (for example "send the access code from your invoice"). Their next message arrives,
-the gate runs again (nothing was cached), and the endpoint now sees `message.text` carrying the
+the gate runs again (a refusal is never stored, under either mode), and the endpoint now sees `message.text` carrying the
 code: it validates the code against its own records, links the contact, answers
 `{ "authorized": true }`, and the turn runs. No special case in the runtime: it is just the next
 check.
@@ -338,10 +346,150 @@ to answer a message the customer just sent and here there is none. Like a nudge 
 **Playground**: the gate does not run; there is no Chatwoot contact to ask about, and the
 playground exists to test the agent's own behavior.
 
+## Reusing a verdict (`mode: "once"`)
+
+Asking on every message is the right default, and it is what makes "revoking on your side is
+immediate" true. Two operators asked for the other trade, and they are not the same request:
+
+- the check is **expensive or rate-limited** (a lookup against a core banking / ERP / ticketing API),
+  and a burst of five WhatsApp messages is five identical calls;
+- the gate is an **unlock**, not a lookup: the customer sends an access code once and should stay
+  served afterwards, without the endpoint having to remember them.
+
+Under `mode: "once"` the first `authorized: true` is stored as a **grant** (`contact_auth_grants`,
+one row per tenant+agent+contact, `src/modules/contact-auth/grants.ts`) and reused until it expires.
+The reuse lives inside `authorizeContact`, which is the one function all four callers already go
+through, so no caller has to remember it and none of them can disagree about when it applies.
+
+**A refusal is never stored, under either mode.** A stored denial would make the unlock permanent:
+the customer sends the code and the gate answers with a verdict from before they sent it. An
+endpoint ERROR is not stored either — it is transient by contract, and a blip must not cost a
+contact the verdict they were legitimately given. What a fresh refusal DOES do is **drop** whatever
+was stored, so re-asking can only ever take a grant away.
+
+The whole rule, since stating it in pieces is what produced most of this section. A stored grant is
+served if and only if, at the moment it is read:
+
+| It is served when | Kind of rule |
+| --- | --- |
+| `grantTtlSeconds` has not elapsed | Time. The operator's declared staleness budget. |
+| It matches the mirrored **identity** (phone, email, operator `identifier`) | A MATCH rule. The endpoint answered about whoever those named, and the mirror rewrites them, clears included. |
+| It matches the **policy** (`url`, `credentialRef`, `includeMessageText`, `grantTtlSeconds`) | A MATCH rule. Those decide who answered and what was asked. |
+| The **credential** it was obtained with has not been rotated or deleted since | Part of the policy fingerprint, and the one thing in it that costs a second read (`vault_entries.updated_at`, metadata only — never a managed-OAuth refresh, which resolving would be). `credentialRef` is a stable id, so it survives both, and the deletion case is the sharp one: a fresh check fails closed on an unreadable credential, while a stored verdict would skip that check and keep serving a gate the operator disarmed by removing its key. The revision is taken at the START of the check and used both to look a grant up and to store one, so a rotation landing while the endpoint is answering cannot be written into the fingerprint of a verdict obtained before it. A revision that could not be READ is not a revision: that check uses no stored verdict and writes none, because any constant standing in for "unreadable" would be a fingerprint that repeats, and a rotation between two blips would go unnoticed. |
+| This process holds no unconfirmed write about that contact | Fail-closed, see below. |
+
+And a grant is REMOVED only by a refusal, or by the verdict that replaces it. The distinction between
+the two kinds of rule is the one worth keeping: a fingerprint that stops matching stops the grant
+being SERVED, and a value put back matches again — it is a question, not a revocation. Both
+identity and policy work that way.
+
+A refusal removes the row under EVERY mode: only `once` grants, and grants outlive a switch back to
+`perMessage`, so a refusal arriving while the reuse is off still has to reach them.
+
+**Neither fingerprint is a clear, and it is worth being exact about that** because they read like
+one.
+The fingerprint is a pure function of the policy: change a field and the grants stop matching, put it
+back and they match again. So "nudge the TTL to drop the stored verdicts" does not work, and it fails
+in two different ways depending on the traffic — a contact who writes nothing while the nudged value
+stands keeps a grant that the restore makes valid again, and a contact who does write gets re-asked
+and a NEW grant written under the nudged policy, which the restore then invalidates in turn. Either
+way the operator ends up with a grant under whichever policy was in force when the contact last
+wrote, never with an empty table. Both shapes are pinned in
+`tests/modules/contact-auth-grant.test.ts`.
+
+**An allow that was already in flight cannot outlive a refusal.** Two messages from one contact are
+two questions under the unlock flow (the single-flight is keyed by message id), so their checks run
+concurrently and can settle in either order. A verdict still answers the message it was asked about,
+but the STORAGE is ordered: an allow from a check that started before a refusal is older than that
+refusal however late it arrives, so it is not stored, and any row it would have replaced is dropped.
+
+Two things make that hold rather than usually hold. A refusal is remembered SYNCHRONOUSLY, before the
+queue is even entered, so it is visible for the length of the database round trip and for any wait in
+front of it — a refusal that has to queue behind another mutation is otherwise a refusal nobody can
+see for as long as that turn takes; and every
+mutation of one contact's row runs alone, in a queue keyed by that contact, so reading the ordering
+rule and acting on it is one step. Split in two, an allow that passed the check a moment before the
+refusal arrived goes on to write anyway, and the row comes back for the rest of the TTL.
+
+**The ordering is per PROCESS**, like every other piece of in-process state in this module and like the
+`ingest:<threadId>` section the whole runtime already depends on (`docs/deploy.md`, "Single replica
+(or one leader)"). Run the extra web replicas that deploy note allows and the guarantee narrows to
+what each one saw: a refusal recorded on one replica does not order an allow in flight on another, so
+that allow can be stored and the contact served for the rest of the TTL. The bound is the same TTL,
+and closing it properly means coordinating grant mutations in Postgres — the same post-MVP path
+`deploy.md` names for the rest of this class.
+
+**And the ordering is asymmetric on purpose.** An allow never survives a refusal; a refusal may cost a
+newer allow its row, because the delete is unconditional and the row records no trace of which check
+wrote it. Both halves are the same choice made twice: when two overlapping checks cannot be ordered
+from what is on disk, the side taken is the one that asks the endpoint again. The cost is one extra
+call after an overlap — an unlock that just succeeded is re-asked, and answered yes again — against
+a contact served after a refusal for the whole TTL, which is what the other direction costs.
+
+The READ is not in that queue, and that is the boundary of the guarantee rather than a gap in it. A
+refusal in flight is already covered, because it is remembered before its delete. What a queue would
+add is ordering against a refusal that lands after the read started, and "the read came first" and
+"the refusal came first" are both true readings of one overlap — the same instant-in-time semantics
+this file states for verdicts themselves. The bound is the TTL, as everywhere else here.
+
+**A refusal this process could not write down is not forgotten.** The DELETE is the one write here
+that ENDS an authorization, so unlike the read and the write it is not best-effort: a failure is
+remembered per contact — and so is a grant WRITE whose outcome this process could not confirm, since
+a statement that timed out may well have committed. No stored verdict is served for that contact
+while it stands (the endpoint is asked instead, which is the fail-closed answer), and the delete is
+retried on the next check of EITHER
+mode — `perMessage` reads no grants, so a retry that lived on the read path would never run for the
+mode where the refusal usually happens.
+
+That retry is inside the gate's budget, because unlike the bookkeeping that follows a verdict it runs
+BEFORE the answer. The budget bounds what the CALLER waits for and nothing else: a delete abandoned
+on the deadline keeps its place in that contact's queue until the statement settles, so a straggler
+cannot delete the grant the next message stores. What this process remembers is ids and timestamps,
+bounded by entry count like the notice cooldown — except for two kinds that eviction walks past. A
+DEBT, because dropping one silently is dropping the only thing that stops a refused contact being
+served from the row its refusal failed to remove; and a RECENT refusal, because a check cannot
+outlive its own budget, so a marker younger than the largest `timeoutMs` may still be one an
+unfinished allow has to lose to. A flood of ten thousand refusals inside ten seconds does exceed the
+cap while every marker is protected, and it drains on a scheduled sweep — one unref'd timer armed for
+the earliest marker's release, the same idiom as the notice cooldown next to it. Without it the
+overflow would sit there for the life of the process, since eviction otherwise runs only when a
+refusal arrives, and a spike that stops refusing is exactly the case where none does. Restarting before the retry lands is the residual,
+bounded by the grant's own TTL.
+
+**There is no clear-everything lever, deliberately.** What ends reuse is the TTL elapsing, the
+identity moving, a refusal, and `mode: "perMessage"` — the last of which is immediate and complete
+while it is off, and is the lever an operator reaches for when something is wrong. A stored-state
+purge would be a new operator surface (a button, a settings field, a monotonic epoch to compare
+against), and issue #189 scoped the way out as the TTL plus invalidation on identity change;
+inventing the rest along the way would be deciding it by accident.
+
+Switching the mode back to `perMessage` takes effect on the next message: nothing reads a grant under
+the default. The rows themselves are KEPT, because the mode decides who reads a grant and not who
+answered it, so an operator flipping the switch does not throw away what the endpoint already said —
+and that is exactly why a refusal has to drop grants under every mode. Only `once` grants; every mode
+un-grants.
+
+There is deliberately no authenticated "revoke this contact" route: it would be a new public surface
+with an auth story of its own, for something the editor can already express by touching the policy.
+
+**What the row holds is bookkeeping, not identity.** Two SHA-256 fingerprints (of the identity and
+of the policy), an expiry, and the endpoint's own `context` bag — the same bounded facts it returned,
+kept so the reused turns carry the same prompt block the first turn did instead of losing it halfway
+through a conversation, and re-read through the same reader on the way out so a cap tightened later
+applies to what is already stored. The phone, the email and the `identifier` are **not** in the row.
+The table is bounded by the contacts table itself (one row per contact per gated agent) and cascades
+away with the contact or the agent, so there is nothing to sweep.
+
+Everything downstream of the verdict is unchanged: a reused verdict is `allowed` like any other, and
+every caller still re-fences it against the conversation's owner. What it adds is one field on the
+flow line, `reused: true`, so an operator reading the trail can tell "the endpoint allowed this"
+apart from "we did not ask".
+
 ## In-process state (`state.ts`)
 
-Not a cache. Two things live here, both in memory (single-replica invariant), both harmless to
-lose on a restart:
+Not a cache. Three things live here, all in memory (single-replica invariant). The first two are
+harmless to lose on a restart; the third is the one the grants added, and losing it costs a stale
+grant the TTL still bounds:
 
 - **Single-flight** per `${tenantId}:${agentId}:${contactDbId}:${request}`: concurrent deliveries of
   the SAME asking coalesce into one request; the leader acts on the verdict, followers are consumed
@@ -357,6 +505,12 @@ lose on a restart:
 - **Notice cooldown** per `${tenantId}:${agentId}:${conversationRowId}:${notice}`, where `notice` is
   the customer copy or the operator note: when a refusal was last voiced. Swept actively (a rescheduled, unref'd timer wakes at the earliest lapse) and capped in
   size. Stores ids and timestamps only.
+- **What is known about refusals** per `${tenantId}:${agentId}:${contactDbId}` (`grants.ts`): when a
+  refusal was last asked for, and whether a bookkeeping write about that contact is unconfirmed. Ids
+  and timestamps, capped by entry count and swept actively past the cap. It is also the queue that serializes this contact's grant
+  mutations, which is the same `withKeyedQueue` the ingest section uses and carries the same
+  single-process scope. Losing it on a restart costs a stale grant, bounded by the TTL, and never a
+  wrong refusal.
 
 ## Observability
 
@@ -366,9 +520,10 @@ would put a phone number in a `detail` that alert channels are promised to be PI
 in the operator's own Chatwoot, on the conversation it describes.
 
 One `contact_auth` flow line per evaluation (`src/modules/flowlog/stages.ts`), `detail` =
-`{ outcome: "allowed"|"denied"|"error"|"no_identity", shared, status?, reason? }` (`reason` is OUR
-own failure code, from a fixed list in this repository): enums, a
-boolean (`shared` = this call was coalesced into another's request), a status and a slug; no PII
+`{ outcome: "allowed"|"denied"|"error"|"no_identity", shared, reused?, status?, reason? }` (`reason`
+is OUR own failure code, from a fixed list in this repository): enums, two
+booleans (`shared` = this call was coalesced into another's request; `reused` = present only when the
+endpoint was NOT asked, the answer coming from a stored grant), a status and a slug; no PII
 (covered by `tests/modules/flowlog-detail-pii.test.ts`), and never the message text. Denied is
 `info` (ordinary operation); error and no-identity are `warn`, so alert channels page on inbox
 traffic. Errors deliberately do **not** stamp `Conversation.lastError`: the re-engage button that

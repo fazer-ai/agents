@@ -5,6 +5,7 @@ import {
   resolveGraphThreadId,
   threadBelongsToTenant,
 } from "@/graph/checkpointer";
+import { MAX_DB_ID } from "@/lib/db-id";
 
 describe("graph thread keys", () => {
   test("contactInboxThreadId namespaces by tenant:instance:ci", () => {
@@ -32,5 +33,23 @@ describe("graph thread keys", () => {
       false,
     );
     expect(threadBelongsToTenant(chatwootThreadId(3n, 5n, 42), 3n)).toBe(true);
+  });
+
+  // The fence and `parseThreadId` read the same prefix, so they have to read it the same way, or a
+  // thread one of them accepts is a thread the other one drops. Both now take the bounded parse:
+  // a prefix `BigInt` would convert to the acting tenant's id by another spelling (`003`, ` 3 `)
+  // no longer passes, and neither does one past what the column holds. Fails closed, which is the
+  // whole job of a fence the checkpointer tables have instead of RLS. Issue #407.
+  test("the fence reads the prefix the way parseThreadId does", () => {
+    for (const prefix of [" 3 ", "+3", "0x3", "3.0", ""]) {
+      expect(threadBelongsToTenant(`${prefix}:5:42`, 3n)).toBe(false);
+    }
+    expect(threadBelongsToTenant(`${MAX_DB_ID + 1n}:5:42`, 3n)).toBe(false);
+    // Leading zeros are the one spelling that still passes, and deliberately so: `parseDbId` takes
+    // them, `003` IS tenant 3, and a fence that dropped it would drop a thread the reader beside it
+    // still resolves. The two agreeing is the property, not strictness for its own sake.
+    expect(threadBelongsToTenant("003:5:42", 3n)).toBe(true);
+    // The control: the canonical spelling every thread id is actually built with still passes.
+    expect(threadBelongsToTenant("3:5:42", 3n)).toBe(true);
   });
 });

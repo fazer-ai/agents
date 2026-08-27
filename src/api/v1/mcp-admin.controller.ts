@@ -3,6 +3,7 @@ import { doc, errors } from "@/api/lib/openapi";
 import { parseQueryId } from "@/api/lib/query-filters";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
 import config from "@/config";
+import { requireDbId } from "@/lib/db-id";
 import { instanceIdentity } from "@/lib/instance";
 import {
   type CreateClientInput,
@@ -208,7 +209,7 @@ export const mcpAdminController = new Elysia({
   .delete(
     "/approvals/:id",
     async ({ params }) => {
-      await deleteClientApproval(BigInt(params.id));
+      await deleteClientApproval(requireDbId(params.id));
       return { instance: instanceIdentity, success: true };
     },
     {
@@ -219,10 +220,9 @@ export const mcpAdminController = new Elysia({
       ),
       params: t.Object({
         id: t.String({
-          pattern: "^[0-9]+$",
           description: "The approval id.",
         }),
       }),
-      response: errors(401, 403, 404, 422),
+      response: errors(400, 401, 403, 404),
     },
   );

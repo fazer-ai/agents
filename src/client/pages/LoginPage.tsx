@@ -9,9 +9,9 @@ import {
   Logo,
 } from "@/client/components";
 import { useAuth } from "@/client/contexts/AuthContext";
+import { useFieldRefusal } from "@/client/hooks/useFieldRefusal";
 import { useGoogleSignIn } from "@/client/hooks/useGoogleSignIn";
 import { api } from "@/client/lib/api";
-import type { ApiErrorPayload } from "@/client/lib/types";
 import { cn } from "@/client/lib/utils";
 
 // Only honor an in-app destination (a single leading slash); reject absolute or protocol-relative
@@ -34,6 +34,11 @@ export function isServerNavigation(path: string): boolean {
   );
 }
 
+// The two keys the login body carries. A wrong password answers without naming either — deliberately,
+// since naming one would say which half was right — so what lands here in practice is the schema
+// boundary refusing a malformed address.
+const LOGIN_FIELDS = ["email", "password"] as const;
+
 // biome-ignore lint/plugin/require-page-container: auth page renders its own centered layout outside <Layout>, so <PageContainer> does not apply
 export function LoginPage() {
   const { t } = useTranslation();
@@ -41,6 +46,7 @@ export function LoginPage() {
   const [searchParams] = useSearchParams();
   const redirectTo = safeLocalPath(searchParams.get("redirect"));
   const { user, login, providers, signupEnabled } = useAuth();
+  const refusal = useFieldRefusal(LOGIN_FIELDS);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -53,6 +59,10 @@ export function LoginPage() {
   // form submit cannot both pass their guards before React commits the pending
   // state update.
   const authInFlightRef = useRef(false);
+  // What the inputs hold right now, readable from inside a request that started before it. Above the
+  // early returns below, because a hook after a conditional return is not called on every render.
+  const sentRef = useRef({ email, password });
+  sentRef.current = { email, password };
   // NOTE: Covers the already-logged-in visit and the Google callback (which only flips `user`); the
   // password path navigates from its own handler.
   const resumeServerFlow = user && isServerNavigation(redirectTo);
@@ -80,19 +90,22 @@ export function LoginPage() {
     setLoading(true);
 
     try {
-      const { data, error: apiError } = await api.api.auth.login.post({
-        email,
-        password,
-      });
+      const sent = { email, password };
+      const { data, error: apiError } = await api.api.auth.login.post(sent);
 
       if (apiError) {
         setError(
-          (apiError.value as ApiErrorPayload)?.error ||
+          refusal.capture(
+            apiError,
             t("auth.loginFailed", "Login failed"),
+            sent,
+            sentRef.current,
+          ) ?? "",
         );
         return;
       }
 
+      refusal.clear();
       if (data?.user) {
         login(data.user);
         if (isServerNavigation(redirectTo)) window.location.assign(redirectTo);
@@ -171,6 +184,8 @@ export function LoginPage() {
               required
               disabled={authPending}
               placeholder={t("auth.emailPlaceholder", "you@example.com")}
+              error={!!refusal.at("email", email)}
+              errorMessage={refusal.at("email", email) ?? undefined}
             />
           </div>
 
@@ -191,6 +206,8 @@ export function LoginPage() {
               minLength={8}
               disabled={authPending}
               placeholder="••••••••"
+              error={!!refusal.at("password", password)}
+              errorMessage={refusal.at("password", password) ?? undefined}
             />
           </div>
 

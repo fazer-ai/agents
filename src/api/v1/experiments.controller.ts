@@ -2,6 +2,7 @@ import { Elysia, t } from "elysia";
 import { doc, errors } from "@/api/lib/openapi";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
 import config from "@/config";
+import { optionalDbId, requireDbId } from "@/lib/db-id";
 import { ForbiddenError, TenantTargetRequiredError } from "@/lib/errors";
 import { instanceIdentity } from "@/lib/instance";
 import type { TenantContext } from "@/lib/tenancy";
@@ -91,7 +92,7 @@ export const experimentsController = new Elysia({
     async ({ tenantContext, params }) => ({
       instance: instanceIdentity,
       experiment: ser(
-        await getExperiment(ctxOrThrow(tenantContext), BigInt(params.id)),
+        await getExperiment(ctxOrThrow(tenantContext), requireDbId(params.id)),
       ),
     }),
     {
@@ -109,7 +110,7 @@ export const experimentsController = new Elysia({
       instance: instanceIdentity,
       results: await experimentResults(
         ctxOrThrow(tenantContext),
-        BigInt(params.id),
+        requireDbId(params.id),
       ),
     }),
     {
@@ -136,7 +137,7 @@ export const experimentsController = new Elysia({
       const created = await createExperiment({
         ctx: ctxOrThrow(tenantContext),
         name: b.name,
-        agentId: b.agentId ? BigInt(b.agentId) : undefined,
+        agentId: optionalDbId(b.agentId, "agentId") ?? undefined,
         variants: b.variants,
         enabled: b.enabled,
       });
@@ -185,14 +186,9 @@ export const experimentsController = new Elysia({
       };
       const updated = await updateExperiment({
         ctx: ctxOrThrow(tenantContext),
-        id: BigInt(params.id),
+        id: requireDbId(params.id),
         name: b.name,
-        agentId:
-          b.agentId === undefined
-            ? undefined
-            : b.agentId
-              ? BigInt(b.agentId)
-              : null,
+        agentId: optionalDbId(b.agentId, "agentId"),
         variants: b.variants,
         enabled: b.enabled,
       });
@@ -239,7 +235,7 @@ export const experimentsController = new Elysia({
   .delete(
     "/:id",
     async ({ tenantContext, params }) => {
-      await deleteExperiment(ctxOrThrow(tenantContext), BigInt(params.id));
+      await deleteExperiment(ctxOrThrow(tenantContext), requireDbId(params.id));
       return { instance: instanceIdentity, success: true };
     },
     {

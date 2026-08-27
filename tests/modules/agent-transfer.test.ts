@@ -7,8 +7,10 @@ import type { TenantContext } from "@/lib/tenancy";
 import { TOOL_INSTRUCTIONS_MAX } from "@/modules/agents/text-caps";
 import {
   type AgentExport,
+  configBusinessHoursId,
   exportAgent,
   importAgent,
+  remapConfigBusinessHoursIdToName,
 } from "@/modules/agents/transfer";
 import { documentStarter } from "@/modules/documents/starters";
 import { createDocumentTemplate } from "@/modules/documents/templates";
@@ -42,6 +44,54 @@ let agentId = 0n;
 function ctx(): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
 }
+
+// Which schedule an integration config points at, decided in one place because the export asks it
+// twice — once to BUNDLE the schedule and once to rewrite the id to a portable NAME — and the two
+// answering differently is a bundle whose config still carries a destination-invalid id.
+//
+// The padded row is the one that matters. `resolveBusinessHoursId` in the Calendar toolpack trims
+// before reading, so `" 7 "` is a WORKING configuration pointing at schedule 7; a reader here that
+// refused it would drop from the export a schedule the tool actually uses. Trimmed, then bounded.
+describe("the schedule an integration config references", () => {
+  test("a plain id, and the padded spelling the runtime already accepts", () => {
+    expect(configBusinessHoursId({ businessHoursId: "7" })).toBe(7n);
+    expect(configBusinessHoursId({ businessHoursId: " 7 " })).toBe(7n);
+    expect(configBusinessHoursId({ businessHoursId: "007" })).toBe(7n);
+  });
+
+  test("no reference at all", () => {
+    for (const config of [
+      null,
+      {},
+      { businessHoursId: "" },
+      { businessHoursId: "   " },
+      { businessHoursId: null },
+      { businessHoursId: 7 },
+    ]) {
+      expect(configBusinessHoursId(config)).toBeNull();
+    }
+  });
+
+  test("a value BigInt would convert but a bigint column would not", () => {
+    for (const raw of ["99999999999999999999", "0x7", "+7", "1e3", "-7"]) {
+      expect(configBusinessHoursId({ businessHoursId: raw })).toBeNull();
+    }
+  });
+
+  // …and the rewrite reads the SAME answer, so a padded ref leaves as a name like any other.
+  test("the id→name rewrite resolves what the bundling resolves", () => {
+    const names = new Map([["7", "Clinic hours"]]);
+    expect(
+      remapConfigBusinessHoursIdToName({ businessHoursId: " 7 " }, names),
+    ).toEqual({ businessHoursId: "Clinic hours" });
+    expect(
+      remapConfigBusinessHoursIdToName({ businessHoursId: "7" }, names),
+    ).toEqual({ businessHoursId: "Clinic hours" });
+    // An id no bundled schedule matches is left exactly as it was, config and all.
+    const untouched = { businessHoursId: "9", timeZone: "UTC" };
+    expect(remapConfigBusinessHoursIdToName(untouched, names)).toBe(untouched);
+  });
+});
 
 describe.skipIf(!dbUp)("agent export/import", () => {
   beforeAll(async () => {
@@ -245,6 +295,58 @@ describe.skipIf(!dbUp)("agent export/import", () => {
     const w = warnings.find((x) => x.code === "guidanceClipped");
     expect(w?.params?.field).toBe("handoff.instructions");
     expect(w?.params?.max).toBe(TOOL_INSTRUCTIONS_MAX);
+  });
+
+  // THE HALF THAT DECIDES WHETHER `__proto__` IS A PROBLEM AT ALL, and it is measured here because
+  // this is the only path that can carry the key that far. Import copies the settings bag verbatim
+  // on purpose (a rule on a non-native tool name has to survive a transfer), and the bundle's
+  // `settings` is a `z.record` whose values are `z.unknown()` — passed by reference, own keys intact.
+  // So the key reaches the `agent.create` call, where REST and MCP would both have lost it.
+  //
+  // It still never reaches Postgres: Prisma rebuilds the JSON value, and the rebuild drops it. That
+  // is what makes the whole question moot — `agent_settings_get` can never return an entry under this
+  // name, so there is nothing for the MCP surface's ignored tombstone to fail to delete. Nothing in
+  // src/ enforces this; the assertion below is the enforcement, and it reads the RAW jsonb rather
+  // than the Prisma-decoded row, because a value stored and not decoded would look identical there.
+  //
+  // Note the payload is parsed, not written as a literal: `__proto__:` in an object literal sets the
+  // prototype instead of creating the own key this is about. See tool-keyed-unwritable.test.ts.
+  test("an imported tool rule named `__proto__` never reaches storage (Prisma drops it)", async () => {
+    const exp = await exportAgent(ctx(), agentId, appDb);
+    const imported = {
+      ...exp,
+      agent: {
+        ...exp.agent,
+        name: "Vendedora proto",
+        settings: {
+          ...exp.agent.settings,
+          toolPreconditions: JSON.parse(
+            '{"__proto__":{"kind":"attribute","scope":"contact","key":"x"},"handoff_to_human":{"kind":"attribute","scope":"contact","key":"cpf"}}',
+          ),
+          toolGuidance: JSON.parse(
+            '{"__proto__":"nunca","constructor":"sobrevive","handoff_to_human":"peça o CPF"}',
+          ),
+        },
+      },
+    };
+    const { agent } = await importAgent(ctx(), imported, appDb);
+    const raw = await suDb.$queryRaw<Array<{ j: string }>>`
+      SELECT settings::text AS j FROM agents WHERE id = ${BigInt(agent.id)}`;
+    expect(raw[0]?.j.includes("__proto__")).toBe(false);
+    const stored = JSON.parse(raw[0]?.j ?? "{}") as Record<string, unknown>;
+    // Everything else in both blocks is stored untouched: nothing here sanitizes, and `constructor`
+    // is the control — every bit as prototype-ish, and it IS storable, because zod keeps it and both
+    // runtime maps are null-prototype.
+    const pre = stored.toolPreconditions as Record<string, unknown>;
+    const gui = stored.toolGuidance as Record<string, unknown>;
+    expect((pre.handoff_to_human as Record<string, unknown>).key).toBe("cpf");
+    expect(gui.handoff_to_human).toBe("peça o CPF");
+    // `getOwnPropertyDescriptor`, because `gui.constructor` reads the INHERITED one — which is also
+    // the reason a name like this is worth a control: it is stored as an own key and only an own-key
+    // read proves it.
+    expect(Object.getOwnPropertyDescriptor(gui, "constructor")?.value).toBe(
+      "sobrevive",
+    );
   });
 
   // The sharp end of clipping by UTF-16 unit: an emoji straddling the cutoff leaves an unpaired

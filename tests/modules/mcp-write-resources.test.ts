@@ -158,7 +158,7 @@ describe.skipIf(!dbUp)("MCP resource-write tools (DB)", () => {
       }),
     ).toBe(1);
     const audits = await suDb.auditLog.count({
-      where: { tenantId: tenantA, action: "mcp.knowledge_create" },
+      where: { tenantId: tenantA, action: "knowledge.create" },
     });
     expect(audits).toBe(1);
   });
@@ -318,7 +318,7 @@ describe.skipIf(!dbUp)("MCP resource-write tools (DB)", () => {
     expect(r.ok).toBe(true);
     expect(
       await suDb.auditLog.count({
-        where: { tenantId: tenantA, action: "mcp.experiment_create" },
+        where: { tenantId: tenantA, action: "experiment.create" },
       }),
     ).toBe(2);
   });

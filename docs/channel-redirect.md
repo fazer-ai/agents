@@ -161,3 +161,15 @@ The widget patch and the two endpoints live in the fazer.ai Chatwoot fork (not t
   through (`misconfigured` → the lead is served on WhatsApp as a fallback rather than dead-ended).
 - The `Inbox.webWidget` column and `writeWebWidgetBlob` are legacy from the removed provisioning path and
   are no longer read; `website_url` now comes back from the mint call.
+
+## Where the orphan contact comes from, and why identity cannot come from the identifier
+
+`ContactIdentifyAction` (upstream) decides by identifier: it **merges** the visitor into the contact holding the value, and **assigns** the value to the visitor when nobody holds it. That second half is what creates the `fzwa:` orphan — the value is derived from a sequential id and belongs to ONE contact, so handing it to a browser session leaves the lead with two contacts, and the second one squats the identifier every later redirect needs. PR #272 recorded that it could not reproduce how the identifier ended up on the other contact; this is that branch. Reproduced by RSpec and then live (A/B against a real Chatwoot): without the fix, 2 contacts with the visitor holding the lead's `fzwa:`; with it, 1.
+
+**The proof of identity comes from the mint, never from the identifier.** `POST /api/v1/accounts/:id/redirect_tokens` is authenticated per account: the caller names `contact_id`, the token payload stores `identified_contact_id`, and resolve merges into that contact. The token is single-use, server-side, and the widget never reads it.
+
+Three traps that apply to any future change to that endpoint:
+
+1. **`contact_id` is optional on purpose.** Without it the endpoint keeps the old contract — a pre-authenticated deep link that CREATES a new identity (a CRM handing over `crm-user-42`, say). Making the rule mandatory breaks that use.
+2. **"This browser is already somebody" is THREE fields**, the same ones `ContactIdentifyAction` merges on: `identifier`, `email`, `phone_number`. Asking only about the identifier reads a pre-chat contact as anonymous, and anonymous is the only kind that branch can consume — the customer becomes the mergee and is destroyed.
+3. **A refused write dirties the in-memory object.** A non-bang `update` that fails on uniqueness leaves the attempted value on the attribute, and `Message.create!(sender: @contact)` re-runs the validation and answers **422**, so the lead never enters the chat. `restore_attributes` closes it.

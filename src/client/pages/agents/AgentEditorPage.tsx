@@ -47,6 +47,7 @@ import { BusinessHoursForm } from "@/client/components/BusinessHoursForm";
 import type { DiscoveredMcpTool } from "@/client/components/mcp/DiscoveredMcpTools";
 import { useBreadcrumbLabel } from "@/client/contexts/BreadcrumbContext";
 import { useNavGuard } from "@/client/contexts/NavGuardContext";
+import { useFieldRefusal } from "@/client/hooks/useFieldRefusal";
 import { useTenantEvents } from "@/client/hooks/useTenantEvents";
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
@@ -341,6 +342,10 @@ function readBehaviorState(a: Agent) {
       noticeCooldownSeconds: num(ca.noticeCooldownSeconds) || "60",
       includeMessageText: ca.includeMessageText === true,
       denyMessage: str(ca.denyMessage),
+      // NOTE: The reader is strict about the mode for the same reason it is strict about the
+      // switch, so anything else reads back as the default.
+      mode: ca.mode === "once" ? "once" : "perMessage",
+      grantTtlSeconds: num(ca.grantTtlSeconds) || "86400",
       handoffEnabled:
         typeof ca.handoffEnabled === "boolean" ? ca.handoffEnabled : true,
       handoffTeamId: num(ca.handoffTeamId),
@@ -549,6 +554,14 @@ function AgentEditorSkeleton() {
 // the thing it clears will be repopulated, and answering that per field is how a discard ends up
 // stranding a value the form still needs. A different agent is a different form. `:tab` is NOT in
 // the key, so moving between tabs of the same agent keeps everything, which is what it is for.
+// The two names this page renders a control for, out of everything an agent write can be refused
+// about. The rest of the editor's values live in bags — `settings.tts.normalizeCredentialRef`,
+// `guardrails.output.templateMessage` — behind tabs, and placing a refusal on one of those means
+// also taking the operator to the tab that holds it, which is its own change (fazer-ai/agents#349;
+// the abstention is recorded in tests/client/field-refusal-fence.test.ts).
+const EDITOR_FIELDS = ["name", "systemPrompt"] as const;
+const CLONE_FIELDS = ["name"] as const;
+
 export function AgentEditorPage() {
   const { id = "" } = useParams();
   return <AgentEditor key={id} />;
@@ -592,6 +605,15 @@ function AgentEditor() {
   // Agent fields
   const [name, setName] = useState("");
   const [systemPrompt, setSystemPrompt] = useState("");
+  // Gated on the TAB, for the same reason a dialog's holder is gated on `isOpen`: `GeneralTab` is
+  // only mounted while `tab === "general"`, so a save that answers after the operator has moved on —
+  // or the "Save and export" that writes General from wherever they are — would place its mark on a
+  // control nobody is rendering. Off that tab the sentence goes to the toast.
+  const refusal = useFieldRefusal(tab === "general" ? EDITOR_FIELDS : []);
+  // What the two placeable inputs hold right now, readable from inside a save that started before
+  // them: this page's saves are long and the operator keeps typing during them.
+  const currentRef = useRef<Record<string, unknown>>({});
+  currentRef.current = { name: name.trim(), systemPrompt };
   const [enabled, setEnabled] = useState(true);
   const [agentMode, setAgentMode] = useState<"test" | "production">(
     "production",
@@ -628,6 +650,8 @@ function AgentEditor() {
     noticeCooldownSeconds: "60",
     includeMessageText: false,
     denyMessage: "",
+    mode: "perMessage",
+    grantTtlSeconds: "86400",
     handoffEnabled: true,
     handoffTeamId: "",
     handoffTeamInstanceId: "",
@@ -821,6 +845,11 @@ function AgentEditor() {
   const fillCredModal = useModalController<VaultEntry>();
   const exportModal = useModalController();
   const [cloneName, setCloneName] = useState("");
+  // The clone dialog is its own form: one input, and the route refuses a name already taken by name.
+  // Separate from the editor's holder, because the two are on screen together.
+  const cloneRefusal = useFieldRefusal(cloneModal.isOpen ? CLONE_FIELDS : []);
+  const cloneRef = useRef("");
+  cloneRef.current = cloneName;
   // The suggested name prefilled on open; the modal only warns about discarding
   // when the user actually edited it.
   const cloneNameDefaultRef = useRef("");
@@ -1169,6 +1198,17 @@ function AgentEditor() {
         // method back and forth does not lose the choice.
         includeMessageText: contactAuth.includeMessageText,
         denyMessage: contactAuth.denyMessage.trim() || null,
+        mode: contactAuth.mode === "once" ? "once" : "perMessage",
+        // NOTE: `|| 86_400` would turn a typed (or imported) ZERO into a day, which is the wrong
+        // direction for the one field here that decides how long an authorization counts: the reader
+        // clamps 0 up to the 60-second floor, so passing it through honours "as short as possible"
+        // instead of silently granting the opposite. Same shape as noticeCooldownSeconds above, and
+        // the twelve other `Number(x) || default` fields in this block keep theirs — they share the
+        // spelling, not the risk, since a zeroed debounce window or balloon size is cosmetic.
+        grantTtlSeconds:
+          contactAuth.grantTtlSeconds.trim() === ""
+            ? 86_400
+            : Number(contactAuth.grantTtlSeconds) || 0,
         handoffEnabled: contactAuth.handoffEnabled,
         handoffTeamId: Number(contactAuth.handoffTeamId) || null,
         // The account the team was picked from, saved with it. Never on its own: without a team it
@@ -2194,15 +2234,24 @@ function AgentEditor() {
       else applyBehavior(data.agent);
       markSynced(String(data.agent.updatedAt));
       bumpSync(section);
+      // Only for the section this holder DRAWS. One function writes both, and a Behavior save
+      // carries neither `name` nor `systemPrompt` — clearing there takes the standing refusal off
+      // the General tab without anything having answered it, so the operator comes back to a form
+      // that looks fine and is still refused.
+      if (section === "general") refusal.clear();
       showToast(t("editor.saved", "Agent saved."), "success");
     } catch (e) {
-      // NOTE: surface the backend's localized message when present (the prompt-size cap, the
-      // settings text caps) instead of the generic failure toast.
-      showToast(
-        apiErrorMessage(e) ||
-          t("editor.saveError", "Could not save the agent."),
-        "error",
+      // The backend's localized message, at the input it names when this page renders one. The
+      // prompt-size cap and the name are the two it can place today; a settings-bag path
+      // (`guardrails.output.templateMessage`) still answers in the toast, which is where the
+      // sentence has always gone.
+      const toast = refusal.capture(
+        e,
+        t("editor.saveError", "Could not save the agent."),
+        patch,
+        currentRef.current,
       );
+      if (toast) showToast(toast, "error");
     } finally {
       savingRef.current -= 1;
       setSavingAgent(false);
@@ -2441,17 +2490,22 @@ function AgentEditor() {
         .agents({ id })
         .clone.post({ name: cloneName.trim() || undefined });
       if (err || !data) throw err ?? new Error("no data");
+      cloneRefusal.clear();
       cloneModal.close();
       showToast(t("editor.cloned", "Agent cloned (disabled)."), "success");
       navigate(`/agents/${data.agent.id}`);
     } catch (e) {
       // The clone carries the source agent's settings verbatim, so a source written before the text
       // caps is refused by name — the generic message would leave the operator with a button that
-      // fails and no field to shorten.
-      showToast(
-        apiErrorMessage(e) || t("editor.cloneError", "Could not clone."),
-        "error",
+      // fails and no field to shorten. A refusal about the NEW NAME lands on the one input this
+      // dialog draws; one about the copied settings has no control here and stays a toast.
+      const toast = cloneRefusal.capture(
+        e,
+        t("editor.cloneError", "Could not clone."),
+        { name: cloneName.trim() || undefined },
+        { name: cloneRef.current.trim() || undefined },
       );
+      if (toast) showToast(toast, "error");
     }
   }
 
@@ -2688,6 +2742,8 @@ function AgentEditor() {
                     );
                     cloneNameDefaultRef.current = suggested;
                     setCloneName(suggested);
+                    // The component outlives the dialog, so a mark from the last session is still held here.
+                    cloneRefusal.clear();
                     cloneModal.open();
                   }}
                 >
@@ -2870,6 +2926,8 @@ function AgentEditor() {
 
             {tab === "general" && (
               <GeneralTab
+                nameError={refusal.at("name", name.trim())}
+                promptError={refusal.at("systemPrompt", systemPrompt)}
                 availability={promptAvailability}
                 name={name}
                 setName={setName}
@@ -3143,7 +3201,10 @@ function AgentEditor() {
               )}
             </div>
           )}
-          <FormField label={t("editor.cloneName", "New agent name")}>
+          <FormField
+            label={t("editor.cloneName", "New agent name")}
+            error={cloneRefusal.at("name", cloneName.trim() || undefined)}
+          >
             <Input
               value={cloneName}
               onChange={(e) => setCloneName(e.target.value)}

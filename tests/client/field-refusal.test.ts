@@ -79,7 +79,12 @@ describe("readRefusal", () => {
 });
 
 describe("placeRefusal", () => {
-  const RENDERED = ["name", "document", "guardrails.output.templateMessage"];
+  const RENDERED = [
+    "name",
+    "document",
+    "guardrails.output.templateMessage",
+    "redirectUris",
+  ];
   const FALLBACK = "Could not save.";
 
   // A form that is on screen and whose inputs still hold exactly what the request carried: the
@@ -138,6 +143,62 @@ describe("placeRefusal", () => {
       name: "a parent of a rendered path is not a rendered path either",
       refusal: { message: "too long", field: "guardrails.output" },
       want: { toast: "too long" },
+    },
+    {
+      // The schema boundary refuses an array PER ELEMENT (`refused body.redirectUris.0`), and one
+      // control renders the whole list. Without this the array inputs of the console — redirect
+      // URIs, service windows, account ids, tool grants — could never receive their own refusal.
+      name: "an element of a rendered list is that list",
+      refusal: { message: "not a URL", field: "redirectUris.0" },
+      form: {
+        mounted: true,
+        sent: { redirectUris: ["nope"] },
+        current: { redirectUris: ["nope"] },
+      },
+      want: { at: "redirectUris", message: "not a URL", value: ["nope"] },
+    },
+    {
+      // All the way INSIDE the element, because that is how the schema names it when the elements
+      // are objects: `variants.0.weight` is asserted on the API side
+      // (tests/api/v1/write-body-required.test.ts), and business hours answers `windows.0.day`.
+      // Stopping at the index means every list of objects in the console — service windows, date
+      // exceptions, tool grants — still could not receive its own refusal.
+      name: "a field inside an element of a rendered list is that list",
+      refusal: { message: "must be a weekday", field: "windows.0.day" },
+      form: {
+        mounted: true,
+        sent: { windows: [{ day: 9 }] },
+        current: { windows: [{ day: 9 }] },
+      },
+      rendered: ["windows"],
+      want: {
+        at: "windows",
+        message: "must be a weekday",
+        value: [{ day: 9 }],
+      },
+    },
+    {
+      // Nested lists too: the exceptions of a schedule each hold their own ranges.
+      name: "a list inside an element of a rendered list is still that list",
+      refusal: { message: "bad time", field: "exceptions.0.ranges.1.start" },
+      form: {
+        mounted: true,
+        sent: { exceptions: [{ ranges: [{}, { start: "x" }] }] },
+        current: { exceptions: [{ ranges: [{}, { start: "x" }] }] },
+      },
+      rendered: ["exceptions"],
+      want: {
+        at: "exceptions",
+        message: "bad time",
+        value: [{ ranges: [{}, { start: "x" }] }],
+      },
+    },
+    {
+      // And the index is the whole of the exception: a NAMED segment under a rendered list is a
+      // different value, and the form has not said it draws it.
+      name: "a named child of a rendered list is not that list",
+      refusal: { message: "not a URL", field: "redirectUris.first" },
+      want: { toast: "not a URL" },
     },
     {
       name: "a refusal about no input is a toast, in the server's words",

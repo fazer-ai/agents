@@ -3,6 +3,7 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { NUDGE_RETRY_BACKOFF_MS, NUDGE_RETRY_LIMIT } from "@/graph/nudge-retry";
+import { parseDbId } from "@/lib/db-id";
 import { withKeyedQueue } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
@@ -206,15 +207,17 @@ export function parseThreadId(
 ): { tenantId: bigint; instanceId: bigint; conversationId: number } | null {
   const parts = threadId.split(":");
   if (parts.length !== 3) return null;
-  try {
-    const tenantId = BigInt(parts[0] as string);
-    const instanceId = BigInt(parts[1] as string);
-    const conversationId = Number(parts[2]);
-    if (!Number.isInteger(conversationId)) return null;
-    return { tenantId, instanceId, conversationId };
-  } catch {
-    return null;
-  }
+  // NOTE: `parseDbId`, not a `try` around `BigInt`. A thread id is built from `String(bigint)`, so
+  // there is no lenient spelling to keep compatible with — and the `catch` this replaces saw only
+  // the segments that fail to convert. A segment past 2^63-1 converts, passes the tenant check its
+  // callers run when the FIRST segment is a real tenant, and then binds an instance id no column
+  // holds: a job handler answering with a database error. Issue #407.
+  const tenantId = parseDbId(parts[0]);
+  const instanceId = parseDbId(parts[1]);
+  const conversationId = Number(parts[2]);
+  if (tenantId === null || instanceId === null) return null;
+  if (!Number.isInteger(conversationId)) return null;
+  return { tenantId, instanceId, conversationId };
 }
 
 // Marks the untrusted-data boundary in a rendered nudge. Also a reliable signal that a persisted

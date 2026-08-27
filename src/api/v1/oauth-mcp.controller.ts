@@ -6,6 +6,7 @@ import { doc, errors, htmlResponse } from "@/api/lib/openapi";
 import basePrisma from "@/api/lib/prisma";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
 import config from "@/config";
+import { requireDbId } from "@/lib/db-id";
 import { ForbiddenError, NotFoundError } from "@/lib/errors";
 import { instanceIdentity } from "@/lib/instance";
 import {
@@ -61,7 +62,6 @@ import { vaultRefWhere } from "@/modules/vault/service";
 
 const idParams = t.Object({
   id: t.String({
-    pattern: "^\\d+$",
     description: "Vault entry id (BigInt serialized as a decimal string).",
   }),
 });
@@ -126,7 +126,7 @@ export const oauthMcpVaultController = new Elysia({
     "/:id/oauth/mcp/authorize",
     async ({ tenantContext, params }) => {
       const ctx = ctxOrThrow(tenantContext);
-      const id = BigInt(params.id);
+      const id = requireDbId(params.id);
       const { cred, baseUrl } = await loadMcpCredential(ctx, id);
       if (!baseUrl) {
         throw new NotFoundError(
@@ -215,7 +215,7 @@ export const oauthMcpVaultController = new Elysia({
         "Discovers the MCP server OAuth configuration, registers a client via DCR if needed, and builds the authorization URL and signed state to start the consent flow for an mcp_oauth vault entry.",
       ),
       params: idParams,
-      response: errors(400, 401, 403, 404, 422, 502),
+      response: errors(400, 401, 403, 404, 502),
     },
   )
   // Connection status (never returns tokens or the client secret).
@@ -223,7 +223,7 @@ export const oauthMcpVaultController = new Elysia({
     "/:id/oauth/mcp/status",
     async ({ tenantContext, params }) => {
       const ctx = ctxOrThrow(tenantContext);
-      const { cred } = await loadMcpCredential(ctx, BigInt(params.id));
+      const { cred } = await loadMcpCredential(ctx, requireDbId(params.id));
       return { instance: instanceIdentity, ...projectMcpStatus(cred) };
     },
     {
@@ -233,7 +233,7 @@ export const oauthMcpVaultController = new Elysia({
         "Returns the connection state of an mcp_oauth vault entry; never returns tokens or the client secret.",
       ),
       params: idParams,
-      response: errors(400, 401, 403, 404, 422),
+      response: errors(400, 401, 403, 404),
     },
   )
   // Disconnect: drop the tokens but keep the discovered config + registered client so a reconnect
@@ -242,7 +242,7 @@ export const oauthMcpVaultController = new Elysia({
     "/:id/oauth/mcp/disconnect",
     async ({ tenantContext, params }) => {
       const ctx = ctxOrThrow(tenantContext);
-      const id = BigInt(params.id);
+      const id = requireDbId(params.id);
       const { cred } = await loadMcpCredential(ctx, id);
       const stripped: McpOAuthCredential = {
         resource: cred.resource,
@@ -269,7 +269,7 @@ export const oauthMcpVaultController = new Elysia({
         "Drops the stored tokens for an mcp_oauth vault entry, keeping the discovered OAuth config and registered client.",
       ),
       params: idParams,
-      response: errors(400, 401, 403, 404, 422),
+      response: errors(400, 401, 403, 404),
     },
   );
 

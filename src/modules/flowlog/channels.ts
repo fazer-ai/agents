@@ -145,7 +145,7 @@ export async function createAlertChannel(
   const stages = assertStages(parsed.stages ?? []);
   const row = await runScopedOn(base, ctx, async (db) => {
     const secretRef = parsed.secretRef
-      ? await requireVaultRef(db, parsed.secretRef)
+      ? await requireVaultRef(db, parsed.secretRef, "secretRef")
       : null;
     return db.alertChannel.create({
       data: {
@@ -207,7 +207,7 @@ export async function updateAlertChannel(
   const row = await runScopedOn(base, ctx, async (db) => {
     // Canonicalized inside the tx, so the entry cannot be deleted between the check and the write.
     if (typeof data.secretRef === "string") {
-      data.secretRef = await requireVaultRef(db, data.secretRef);
+      data.secretRef = await requireVaultRef(db, data.secretRef, "secretRef");
     }
     // updateMany → count 0 for a foreign/missing id under RLS → NotFound (never a cross-tenant write).
     const res = await db.alertChannel.updateMany({ where: { id }, data });

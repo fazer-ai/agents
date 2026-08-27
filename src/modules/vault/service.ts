@@ -1,7 +1,7 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import basePrisma from "@/api/lib/prisma";
-import { parseDbId } from "@/lib/db-id";
+import { MAX_DB_ID, parseDbId } from "@/lib/db-id";
 import { AppError, ConflictError, NotFoundError } from "@/lib/errors";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { SETTINGS_CREDENTIAL_PATHS } from "@/modules/agents/credential-paths";
@@ -39,15 +39,40 @@ export function isVaultIdRef(ref: string): boolean {
   return ref.startsWith(VAULT_REF_PREFIX);
 }
 
-export function vaultRefWhere(ref: string): { id: bigint } {
-  if (ref.startsWith(VAULT_REF_PREFIX)) {
-    try {
-      return { id: BigInt(ref.slice(VAULT_REF_PREFIX.length)) };
-    } catch {
-      // malformed → fall through to a never-matching id
-    }
+// The id a STORED ref names, by the reader's rule rather than the writer's.
+//
+// The two rules are deliberately different and this is the one place that says why. `requireVaultRef`
+// refuses everything but the canonical spelling on the way IN, so a column holds one form. A reader
+// still has to resolve what is already there: refs predate that rule, and `canonicalVaultRef`
+// (src/client/lib/credentialRef.ts) states the contract every resolver keeps — `vault:0007`,
+// `vault: 7` and `vault:7` are the same entry. Reading strictly would report a working credential as
+// missing and silently switch a model or an integration off after an upgrade.
+//
+// What it does NOT tolerate is a value no `bigint` column can hold. `BigInt` is arbitrary precision,
+// so `vault:<digits past 2^63-1>` converts and reaches Postgres as a bind error — a 500 out of a
+// resolver whose contract is to answer "no such entry". Lenient about SPELLING, bounded by RANGE.
+//
+// One function because it was eight, and none of them agreed: four spelled the prefix as a literal
+// `"vault:"`, three could throw where their caller expected a null, and every one of them was
+// missing the bound. Issue #407.
+export function readVaultRefId(ref: string): bigint | null {
+  if (!ref.startsWith(VAULT_REF_PREFIX)) return null;
+  const raw = ref.slice(VAULT_REF_PREFIX.length);
+  // NOTE: `BigInt("")` is `0n`, so a bare `vault:` named row zero rather than nothing. No column
+  // ever holds that id, so nothing observable turned on it — but "a prefix with no id after it
+  // names an entry" is not a rule this file should be able to be read as having.
+  if (raw.trim() === "") return null;
+  let id: bigint;
+  try {
+    id = BigInt(raw);
+  } catch {
+    return null;
   }
-  return { id: -1n };
+  return id < 0n || id > MAX_DB_ID ? null : id;
+}
+
+export function vaultRefWhere(ref: string): { id: bigint } {
+  return { id: readVaultRefId(ref) ?? -1n };
 }
 
 // A "pending" entry holds only encryptJson({}) as a placeholder — its secret was never filled. Strict
@@ -244,12 +269,19 @@ export async function resolveVaultRefByName(
 export async function requireVaultRef(
   db: ScopedDb,
   ref: string,
-  // The server's own name for the input this ref arrived in, when the caller has one — a dotted path
-  // into a bag it owns (`settings.tts.normalizeCredentialRef`). Optional because most callers refuse
-  // a column the client already named in the patch it sent; the agent's two bags are the ones that
-  // need it, where a ref can be any of eight fields across three editor tabs and the sentence alone
-  // would leave the console guessing which input to mark. See src/api/lib/refusal.ts.
-  field?: string,
+  // The server's own name for the input this ref arrived in — a column (`credentialRef`) or a dotted
+  // path into a bag it owns (`settings.tts.normalizeCredentialRef`). See src/api/lib/refusal.ts.
+  //
+  // REQUIRED, and that is the whole guard: every caller here already holds the name, and eleven of
+  // the thirteen were still omitting it. The argument for optional was that most callers "refuse a
+  // column the client already named in the patch it sent" — but what the client SENT and what the
+  // server REFUSED are different questions, which is the premise of #231. An integrations write
+  // carries `credentialRef` and `inboundSecretRef` in one body; a tool write carries `credentialRef`
+  // among sixteen keys. A refusal with no field is unplaceable by any form, however well wired.
+  //
+  // A required parameter and not a sweep: the omission is invisible at every call site, so the type
+  // is the only reader that sees the next one. Issue #320.
+  field: string,
 ): Promise<string> {
   const malformed = () =>
     new AppError(
@@ -613,6 +645,7 @@ export async function createVaultEntry(
       throw new ConflictError(
         "vault entry name and type already in use",
         "errors.vaultNameInUse",
+        "name",
       );
     }
     const blob = encryptJson(rawValue);
@@ -634,6 +667,7 @@ export async function createVaultEntry(
         throw new ConflictError(
           "vault entry name and type already in use",
           "errors.vaultNameInUse",
+          "name",
         );
       }
       throw e;
@@ -715,6 +749,7 @@ export async function createPendingVaultEntry(
       throw new ConflictError(
         "vault entry name and type already in use",
         "errors.vaultNameInUse",
+        "name",
       );
     }
     // Placeholder blob: an empty object, never a real secret. `status` discriminates it from active.
@@ -738,6 +773,7 @@ export async function createPendingVaultEntry(
         throw new ConflictError(
           "vault entry name and type already in use",
           "errors.vaultNameInUse",
+          "name",
         );
       }
       throw e;
@@ -791,6 +827,7 @@ export async function updateVaultEntry(
         throw new ConflictError(
           "vault entry name and type already in use",
           "errors.vaultNameInUse",
+          "name",
         );
       }
       data.name = newName;
@@ -834,6 +871,7 @@ export async function updateVaultEntry(
         throw new ConflictError(
           "vault entry name and type already in use",
           "errors.vaultNameInUse",
+          "name",
         );
       }
       throw e;

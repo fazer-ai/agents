@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Client } from "pg";
 import { PrismaClient } from "@/../generated/prisma/client";
+import { ENTER_FLEET_ROLE_SQL } from "@/lib/tenancy/fleet-role";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // Runs the ACTUAL migration file against the test database. The dashboard tells the operator that N
@@ -139,20 +140,23 @@ describe.skipIf(!dbUp)("migration: conversations.resolved_by", () => {
       }
     }
 
-    test("without the bypass the backfill silently matches nothing", async () => {
+    // The file's own `SET app.is_super_admin` line is INERT against today's schema. The policy that
+    // read it was split into a role-restricted one (issue #382), and this migration only ever runs
+    // BEFORE that split, on a database whose policy still carried the OR. So re-executing it here
+    // has to supply the bypass of the era it is being run in, or the pair below stops
+    // discriminating: both halves would report "matched nothing", for two different reasons, and
+    // the guard would be green by invisibility rather than by working.
+    test("with no bypass the backfill silently matches nothing", async () => {
       await clearOrigins();
-      const withoutSet = dataHalf(sql)
-        .split("\n")
-        .filter((line) => !line.trim().startsWith("SET app.is_super_admin"))
-        .join("\n");
-      // No error, no warning: that is the whole problem.
-      await runAsApp(withoutSet);
+      // The file exactly as shipped. No error, no warning: that is the whole problem.
+      expect(dataHalf(sql)).toMatch(/^\s*SET\s+app\.is_super_admin/m);
+      await runAsApp(dataHalf(sql));
       expect(await originOf("resolved")).toBeNull();
     });
 
-    test("with the bypass, as shipped, it reaches the historical rows", async () => {
+    test("under the bypass of the era it runs in, it reaches the historical rows", async () => {
       await clearOrigins();
-      await runAsApp(dataHalf(sql));
+      await runAsApp(`${ENTER_FLEET_ROLE_SQL};\n${dataHalf(sql)}`);
       expect(await originOf("resolved")).toBe("legacy_unknown");
       expect(await originOf("open")).toBeNull();
     });

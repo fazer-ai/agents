@@ -1,5 +1,7 @@
 import { readModelFallbackConfig } from "@/graph/fallback-settings";
 import { readLimitsConfig } from "@/modules/agents/limits";
+import { readToolGuidance } from "@/modules/agents/tool-guidance";
+import { readToolPreconditions } from "@/modules/agents/tool-preconditions";
 import { readAvailabilityConfig } from "@/modules/availability/away";
 import { readChannelRedirectConfig } from "@/modules/channel-redirect/service";
 import { readAttributeContextConfig } from "@/modules/chatwoot/attributes";
@@ -13,6 +15,7 @@ import { readFollowUpConfig } from "@/modules/followups/settings";
 import { readGuardrailsConfig } from "@/modules/guardrails/settings";
 import { readHandoffConfig } from "@/modules/handoff/settings";
 import { readSendImageConfig } from "@/modules/images/settings";
+import { readKanbanConfig } from "@/modules/kanban/settings";
 import { readMemoryConfig } from "@/modules/memory/settings";
 import { readServiceWindowConfig } from "@/modules/service-window/service";
 import { readSplitConfig } from "@/modules/split/service";
@@ -65,6 +68,15 @@ export interface BehaviorSettings {
   // NOTE: All four fields null is the ordinary state and means NO fallback, not "the agent's own
   // model" the way the two sibling overrides read it (see graph/fallback-settings).
   modelFallback: ReturnType<typeof readModelFallbackConfig>;
+  // NOTE: The five below joined this surface with issue #402, and they are the reason the guard over it
+  // changed shape. Each was already written by the console and by REST; none was reachable over MCP,
+  // because the check that should have noticed compared against the list right below rather than
+  // against what the readers produce. `guardrails` is the one that was left out on purpose, and the
+  // reason was never written anywhere — which is why "decided" and "forgotten" had become the same
+  // thing from outside.
+  kanban: ReturnType<typeof readKanbanConfig>;
+  toolGuidance: ReturnType<typeof readToolGuidance>;
+  toolPreconditions: ReturnType<typeof readToolPreconditions>;
 }
 
 // The keys this surface owns inside the settings bag. Any other key (future/unknown) is preserved
@@ -89,6 +101,9 @@ export const BEHAVIOR_SETTINGS_KEYS = [
   "observability",
   "memory",
   "modelFallback",
+  "kanban",
+  "toolGuidance",
+  "toolPreconditions",
 ] as const;
 export type BehaviorSettingsKey = (typeof BEHAVIOR_SETTINGS_KEYS)[number];
 
@@ -114,6 +129,9 @@ export function readBehaviorSettings(settings: unknown): BehaviorSettings {
     observability: readObservabilityConfig(settings),
     memory: readMemoryConfig(settings),
     modelFallback: readModelFallbackConfig(settings),
+    kanban: readKanbanConfig(settings),
+    toolGuidance: readToolGuidance(settings),
+    toolPreconditions: readToolPreconditions(settings),
   };
 }
 
@@ -139,6 +157,9 @@ export interface BehaviorSettingsPatch {
   observability?: Record<string, unknown>;
   memory?: Record<string, unknown>;
   modelFallback?: Record<string, unknown>;
+  kanban?: Record<string, unknown>;
+  toolGuidance?: Record<string, unknown>;
+  toolPreconditions?: Record<string, unknown>;
 }
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
@@ -212,6 +233,54 @@ export const MERGE_MAX_DEPTH_FOR_TESTS = MERGE_MAX_DEPTH;
 // its typed reader so the persisted value is always normalized + clamped (never the raw patch).
 // Untouched keys in the bag (and untouched blocks) are preserved verbatim — the REST/UI merge
 // contract. Returns the new settings bag to persist.
+// THE BLOCKS WHOSE READER IS A FILTER, NOT A DEFAULTER — and the distinction is the whole reason
+// they are handled apart (PR #404, round 1).
+//
+// Every other block reads into DEFAULTS: an unrecognized value becomes the default, so re-reading a
+// bag and storing what came out loses nothing, because there was nothing the reader could not
+// represent. These two DROP what they do not recognize — a key outside the native catalog, a
+// condition of a kind added later, an entry an agent import copied in verbatim. Run them through the
+// same normalized write-back and "normalize" means DELETE.
+//
+// Three ways that was measured to bite, all silent, all on a guard the operator believed was there:
+// an invalid entry in the patch erased the VALID one it replaced; an update to `debounce` deleted a
+// precondition it never mentioned; and there was no way to remove one at all, since an empty object
+// deep-merged into the old value and changed nothing.
+//
+// So: merged BY KEY with whole-value replacement, `null` to remove, keys the patch does not mention
+// left byte-identical — and never written back through the reader. The write boundary is what
+// refuses a bad entry (assertSettingsToolPreconditions, run on the PATCH before this merge, like its
+// three siblings in modules/mcp/write.ts), which is also why dropping one here would be the wrong
+// place to enforce anything.
+const TOOL_KEYED_BLOCKS: ReadonlySet<string> = new Set([
+  "toolGuidance",
+  "toolPreconditions",
+]);
+
+function mergeToolKeyedBlock(
+  before: Record<string, unknown>,
+  patch: Record<string, unknown>,
+): Record<string, unknown> {
+  // NOTE: An ARRAY prior is no map at all, and enumerating it is worse than ignoring it: `Object.entries`
+  // on an array yields its INDICES, so a stored array became keys "0" and "1" and the apply then
+  // refused with `settings.toolPreconditions.0 is not a valid precondition` — a field name the
+  // operator never wrote, and no way for this surface to write over the bad block at all. An array
+  // was never valid configuration here (the reader ignores it whole), so there is nothing to
+  // preserve and the patch repairs the block.
+  const prior = Array.isArray(before) ? {} : before;
+  // NULL-PROTOTYPE, for the reason the runtime map is: a tool name is operator text, and `__proto__`
+  // assigned onto an ordinary object mutates the prototype instead of storing an entry.
+  const out = Object.create(null) as Record<string, unknown>;
+  for (const [name, value] of Object.entries(prior)) out[name] = value;
+  for (const [name, value] of Object.entries(patch)) {
+    // NOTE: `null` is the removal, and it has to be: an absent key means "leave it alone" here, so
+    // without a tombstone there is no way to delete a rule over this surface at all.
+    if (value === null) delete out[name];
+    else out[name] = value;
+  }
+  return out;
+}
+
 export function mergeBehaviorSettings(
   current: Record<string, unknown>,
   patch: BehaviorSettingsPatch,
@@ -231,36 +300,48 @@ export function mergeBehaviorSettings(
       current[key] && typeof current[key] === "object"
         ? (current[key] as Record<string, unknown>)
         : {};
-    next[key] = mergeBlock(before, sub);
+    next[key] = TOOL_KEYED_BLOCKS.has(key)
+      ? mergeToolKeyedBlock(before, sub)
+      : mergeBlock(before, sub);
   }
 
   // Re-read through the typed readers to clamp/validate, then write the normalized blocks back.
-  const normalized = readBehaviorSettings(next);
-  next.debounce = normalized.debounce;
-  next.stt = normalized.stt;
-  next.tts = normalized.tts;
-  next.vision = normalized.vision;
-  next.split = normalized.split;
-  next.serviceWindow = normalized.serviceWindow;
-  next.followUp = normalized.followUp;
-  next.handoff = normalized.handoff;
-  next.sendImage = normalized.sendImage;
-  next.limits = normalized.limits;
-  next.availability = normalized.availability;
-  next.contactAuth = normalized.contactAuth;
-  next.channelRedirect = normalized.channelRedirect;
-  next.guardrails = normalized.guardrails;
-  next.attributeContext = normalized.attributeContext;
+  //
+  // FROM THE KEY LIST, not eighteen assignments beside it. This was a line per block, and the guard
+  // over it (tests/modules/behavior-settings.test.ts) exists because `modelFallback` went in without
+  // one — the fourth block in a single change to reach one registration point and not the next. It
+  // happened again here: #402 added four blocks to the list above and the write-back kept the shape
+  // it had, so `kanban` and `appointmentReminders` merged and were never stored normalized. The
+  // guard caught it, which is the argument for deriving rather than for a more careful reviewer.
+  //
+  // The two exceptions are handled after the loop, and each is a real difference rather than an
+  // omission: see their own comments below.
+  const normalized = readBehaviorSettings(next) as unknown as Record<
+    string,
+    unknown
+  >;
+  const WRITTEN_BACK_SEPARATELY = new Set([
+    "observability",
+    "grounding",
+    ...TOOL_KEYED_BLOCKS,
+  ]);
+  for (const key of BEHAVIOR_SETTINGS_KEYS) {
+    if (WRITTEN_BACK_SEPARATELY.has(key)) continue;
+    next[key] = normalized[key];
+  }
   // Through the storable projection, not the read shape: `observability.fullDetail` is DERIVED, and
   // this line is what would persist it.
-  next.observability = storableObservability(normalized.observability);
-  next.memory = normalized.memory;
-  next.modelFallback = normalized.modelFallback;
+  next.observability = storableObservability(
+    normalized.observability as ReturnType<typeof readObservabilityConfig>,
+  );
   // grounding: only persist when a valid distance is set; otherwise leave whatever was there
   // (a null maxDistance means "no grounding filter" — represent it explicitly when the patch
   // touched grounding so the operator can clear it).
   if (patch.grounding !== undefined) {
-    next.grounding = { maxDistance: normalized.grounding.maxDistance };
+    next.grounding = {
+      maxDistance: (normalized.grounding as { maxDistance: number | null })
+        .maxDistance,
+    };
   }
   return next;
 }

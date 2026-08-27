@@ -3,9 +3,19 @@ import { useTranslation } from "react-i18next";
 import { Navigate, useNavigate, useSearchParams } from "react-router";
 import { BrandFooter, Button, Input, Logo } from "@/client/components";
 import { useAuth } from "@/client/contexts/AuthContext";
+import { useFieldRefusal } from "@/client/hooks/useFieldRefusal";
 import { setActiveTenantId } from "@/client/lib/activeTenant";
 import { api } from "@/client/lib/api";
-import type { ApiErrorPayload } from "@/client/lib/types";
+
+// The keys the setup body carries. `email` is the one that refuses in practice: an address that
+// already has an account answers 400 "Email already in use" and names it.
+const SETUP_FIELDS = ["email", "password", "name", "companyName"] as const;
+
+// `token` only where enforcement is on. The box is drawn behind `setupTokenRequired`, but a token
+// captured from `?token=` is SENT either way, so the route can refuse it (the schema caps it at 256)
+// on a screen with no control for it. Declaring it there would place the sentence on nothing and
+// leave the button looking dead.
+const SETUP_FIELDS_WITH_TOKEN = [...SETUP_FIELDS, "token"] as const;
 
 // biome-ignore lint/plugin/require-page-container: auth page renders its own centered layout outside <Layout>, so <PageContainer> does not apply
 export function SetupPage() {
@@ -21,6 +31,20 @@ export function SetupPage() {
   const [token, setToken] = useState(() => searchParams.get("token") ?? "");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const refusal = useFieldRefusal(
+    setupTokenRequired ? SETUP_FIELDS_WITH_TOKEN : SETUP_FIELDS,
+  );
+  // What the inputs hold right now, in the server's vocabulary, and what the write sends. Above the
+  // early return below, because a hook after a conditional return is not called on every render.
+  const current = {
+    email,
+    password,
+    name: name.trim() || undefined,
+    companyName: company.trim() || undefined,
+    token: token || undefined,
+  };
+  const currentRef = useRef(current);
+  currentRef.current = current;
   const inFlightRef = useRef(false);
 
   // NOTE: Drop the token from the URL once captured so it does not linger in
@@ -50,13 +74,8 @@ export function SetupPage() {
     setLoading(true);
 
     try {
-      const { data, error: apiError } = await api.api.auth.setup.post({
-        email,
-        password,
-        name: name.trim() || undefined,
-        companyName: company.trim() || undefined,
-        token: token || undefined,
-      });
+      const sent = { ...current };
+      const { data, error: apiError } = await api.api.auth.setup.post(sent);
 
       if (apiError) {
         // NOTE: 409 means setup was already completed (another replica, a
@@ -71,12 +90,17 @@ export function SetupPage() {
           return;
         }
         setError(
-          (apiError.value as ApiErrorPayload)?.error ||
+          refusal.capture(
+            apiError,
             t("setup.failed", "Setup failed"),
+            sent,
+            currentRef.current,
+          ) ?? "",
         );
         return;
       }
 
+      refusal.clear();
       if (data?.user) {
         // NOTE: Seed the active-tenant selector synchronously from the just-created tenant BEFORE
         // login()/navigate, so the SUPER_ADMIN's first dashboard paint targets a real tenant
@@ -138,6 +162,10 @@ export function SetupPage() {
               onChange={(e) => setCompany(e.target.value)}
               disabled={loading}
               placeholder={t("setup.companyPlaceholder", "Your company")}
+              error={!!refusal.at("companyName", current.companyName)}
+              errorMessage={
+                refusal.at("companyName", current.companyName) ?? undefined
+              }
               helperText={t(
                 "setup.companyHint",
                 "Names your workspace. You can change it later.",
@@ -160,6 +188,8 @@ export function SetupPage() {
               required
               disabled={loading}
               placeholder={t("auth.emailPlaceholder", "you@example.com")}
+              error={!!refusal.at("email", current.email)}
+              errorMessage={refusal.at("email", current.email) ?? undefined}
             />
           </div>
 
@@ -177,6 +207,8 @@ export function SetupPage() {
               onChange={(e) => setName(e.target.value)}
               disabled={loading}
               placeholder={t("setup.namePlaceholder", "Optional")}
+              error={!!refusal.at("name", current.name)}
+              errorMessage={refusal.at("name", current.name) ?? undefined}
             />
           </div>
 
@@ -197,6 +229,10 @@ export function SetupPage() {
               minLength={8}
               disabled={loading}
               placeholder="••••••••"
+              error={!!refusal.at("password", current.password)}
+              errorMessage={
+                refusal.at("password", current.password) ?? undefined
+              }
               helperText={t(
                 "auth.passwordMinLength",
                 "Must be at least 8 characters",
@@ -240,6 +276,8 @@ export function SetupPage() {
                 onChange={(e) => setToken(e.target.value)}
                 required
                 disabled={loading}
+                error={!!refusal.at("token", current.token)}
+                errorMessage={refusal.at("token", current.token) ?? undefined}
                 helperText={t(
                   "setup.tokenHint",
                   "Printed in the server log on first start.",

@@ -112,6 +112,7 @@ model Tenant {
   chatwootWebhookDeliveries     ChatwootWebhookDelivery[]
   inboxes                       Inbox[]
   contacts                      Contact[]
+  contactAuthGrants             ContactAuthGrant[]
   conversations                 Conversation[]
   agentThreads                  AgentThread[]
   attendanceSummaries           AttendanceSummary[]
@@ -441,12 +442,61 @@ model Contact {
   createdAt          DateTime  @default(now()) @map("created_at")
   updatedAt          DateTime  @updatedAt @map("updated_at")
 
-  tenant        Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  instance      ChatwootInstance @relation(fields: [chatwootInstanceId], references: [id], onDelete: Cascade)
+  tenant        Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  instance      ChatwootInstance   @relation(fields: [chatwootInstanceId], references: [id], onDelete: Cascade)
   conversations Conversation[]
+  authGrants    ContactAuthGrant[]
 
   @@unique([tenantId, chatwootInstanceId, chatwootContactId])
   @@map("contacts")
+}
+
+// A positive contact-authorization verdict the operator's endpoint gave, kept so the next message
+// does not have to ask for it again (issue #189). Written ONLY under `contactAuth.mode = "once"`,
+// and only for `authorized: true` — a denial is never stored, because a gate the customer can unlock
+// by sending a code must not be made permanent by the message that refused them.
+//
+// One row per (tenant, agent, contact): two agents may point at different endpoints with different
+// credentials, so a verdict one of them was given says nothing about the other. The table is
+// therefore bounded by the contacts table itself, and cascades away with the contact or the agent.
+//
+// NOTHING HERE IDENTIFIES ANYONE. The two hashes are what make a grant expire on its own terms:
+//
+//   identity_hash  the mirrored phone/email/identifier the endpoint answered ABOUT. The mirror
+//                  rewrites those (docs/contact-auth.md), and a contact whose phone changed is not
+//                  necessarily the person the verdict was about.
+//   policy_hash    the endpoint, the credential, the unlock opt-in and the TTL: who answered, what
+//                  was asked, and for how long it counts. Any change to those invalidates every
+//                  stored grant, which doubles as the operator's lever for dropping them.
+//
+// `context` is the endpoint's own bag of facts about the contact (issue #190), stored so the reused
+// turns carry the same block the first one did rather than losing it halfway through a conversation.
+// It is bounded at write time (20 keys, 2000 chars) and re-read through the same reader on the way
+// out, so a cap tightened later applies to what is already stored.
+model ContactAuthGrant {
+  id           BigInt   @id @default(autoincrement())
+  tenantId     BigInt   @map("tenant_id")
+  agentId      BigInt   @map("agent_id")
+  contactId    BigInt   @map("contact_id")
+  identityHash String   @map("identity_hash")
+  policyHash   String   @map("policy_hash")
+  context      Json?
+  expiresAt    DateTime @map("expires_at")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  agent   Agent   @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  contact Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, agentId, contactId])
+  // Postgres does not index a foreign key on its own, and both of these are ON DELETE CASCADE: a
+  // deleted agent, and the contact cleanup that runs when a Chatwoot deployment is disconnected,
+  // probe this table by `agent_id` and by `contact_id`. The unique above starts with `tenant_id`, so
+  // it serves neither, and the cascade would fall back to a sequential scan per deleted row.
+  @@index([agentId])
+  @@index([contactId])
+  @@map("contact_auth_grants")
 }
 
 model Conversation {
@@ -747,9 +797,10 @@ model Agent {
   createdAt           DateTime  @default(now()) @map("created_at")
   updatedAt           DateTime  @updatedAt @map("updated_at")
 
-  tenant         Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  toolSelections AgentToolSelection[]
-  chatwootBots   ChatwootAgentBot[]
+  tenant            Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  toolSelections    AgentToolSelection[]
+  chatwootBots      ChatwootAgentBot[]
+  contactAuthGrants ContactAuthGrant[]
 
   @@index([tenantId])
   @@map("agents")

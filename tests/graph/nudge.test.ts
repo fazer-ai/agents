@@ -30,6 +30,7 @@ import {
 } from "@/graph/nudge";
 import { claimIngestWrite, releaseIngestWrite } from "@/graph/thread-claim";
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "@/graph/thread-state";
+import { MAX_DB_ID } from "@/lib/db-id";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { selectClosedPrefix } from "@/modules/memory/cut";
 import { withJobHandler } from "@/tests/utils/job-registry";
@@ -116,6 +117,31 @@ describe("parseThreadId", () => {
     expect(parseThreadId("nope")).toBeNull();
     expect(parseThreadId("1:2")).toBeNull();
     expect(parseThreadId("a:b:c")).toBeNull();
+  });
+
+  // The half a `try` around `BigInt` could not see: each of these CONVERTS. Every caller of this
+  // function checks the first segment against the job's own tenant and then puts the SECOND into a
+  // query, so a thread id whose tenant is real and whose instance is past 2^63-1 passed the fence
+  // and reached Postgres as a bind error. A thread id is built from `String(bigint)`, so there is
+  // no lenient spelling to keep working here. Issue #407.
+  test("rejects a segment BigInt would convert but a bigint column would not", () => {
+    const past = (MAX_DB_ID + 1n).toString();
+    expect(parseThreadId(`12:${past}:900`)).toBeNull();
+    expect(parseThreadId(`${past}:3:900`)).toBeNull();
+    for (const raw of ["0x11", " 3 ", "+3", "1e3", "-3", ""]) {
+      expect(parseThreadId(`12:${raw}:900`)).toBeNull();
+      expect(parseThreadId(`${raw}:3:900`)).toBeNull();
+    }
+  });
+
+  // The control: the largest id a column holds is still an id, so the bound is a bound and not an
+  // off-by-one that drops the last real row.
+  test("the largest id the column holds still parses", () => {
+    expect(parseThreadId(`${MAX_DB_ID}:${MAX_DB_ID}:900`)).toEqual({
+      tenantId: MAX_DB_ID,
+      instanceId: MAX_DB_ID,
+      conversationId: 900,
+    });
   });
 });
 

@@ -7,7 +7,7 @@ import {
   Pencil,
   X,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router";
 import {
@@ -19,6 +19,7 @@ import {
   Textarea,
   useToast,
 } from "@/client/components";
+import { useFieldRefusal } from "@/client/hooks/useFieldRefusal";
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
 import { approvalEditPatch } from "@/client/lib/approvalEdit";
@@ -33,6 +34,9 @@ type Approval = NonNullable<ApprovalsData>["approvals"][number];
 // to be a top-level page). Reports the pending count up so the Components → Knowledge tab can show a
 // badge. Renders nothing once the queue is empty (the badge disappears too), so a clean knowledge
 // base has no clutter.
+// The two keys the edit patch carries, spelled the way the route refuses them.
+const APPROVAL_FIELDS = ["title", "content"] as const;
+
 export function KnowledgeApprovals({
   onCountChange,
 }: {
@@ -53,6 +57,14 @@ export function KnowledgeApprovals({
   // editors invite approving the card the reviewer was not reading.
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState({ title: "", content: "" });
+  // Gated on the editor being open, because that is what the two inputs are gated on: they are drawn
+  // inside `editingId === a.id`, and a list that names them while it is null claims a control that
+  // is not there. Not a reachable failure today — Cancel is disabled while the PATCH is out, so the
+  // editor cannot close under its own save — but the claim is what the rest of this reads.
+  const refusal = useFieldRefusal(editingId ? APPROVAL_FIELDS : []);
+  // The CURRENT draft, readable from inside a request that started before it.
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
 
   useEffect(() => {
     let active = true;
@@ -112,6 +124,10 @@ export function KnowledgeApprovals({
   }
 
   function startEdit(a: Approval) {
+    // Per editing SESSION, like a dialog's own reset: the mark expires by value, so reopening the
+    // same item — or another one whose title happens to match — would show the last request's
+    // server sentence before anything has been sent.
+    refusal.clear();
     setEditingId(a.id);
     setDraft({
       title: a.proposedTitle ?? "",
@@ -133,13 +149,19 @@ export function KnowledgeApprovals({
         .approvals({ id: a.id })
         .patch(patch);
       if (err) {
-        showToast(
-          apiErrorMessage(err) ||
-            t("approvals.editError", "Could not save the edit."),
-          "error",
+        const toast = refusal.capture(
+          err,
+          t("approvals.editError", "Could not save the edit."),
+          { ...patch },
+          {
+            title: draftRef.current.title.trim(),
+            content: draftRef.current.content.trim(),
+          },
         );
+        if (toast) showToast(toast, "error");
         return;
       }
+      refusal.clear();
       // The endpoint reports a lost race INSIDE a 200: another reviewer approved or rejected this
       // item while the editor was open, so the revision was never stored. Checking only `error`
       // would leave the card claiming EDITED over text that no longer exists in the queue.
@@ -225,7 +247,10 @@ export function KnowledgeApprovals({
                 {/* Disabled while the save is in flight: `saveEdit` captured the draft when it was
                     clicked, so anything typed after that would be dropped by the response that
                     closes the editor. */}
-                <FormField label={t("approvals.editTitle", "Title")}>
+                <FormField
+                  label={t("approvals.editTitle", "Title")}
+                  error={refusal.at("title", draft.title.trim())}
+                >
                   <Input
                     value={draft.title}
                     disabled={busyId === a.id}
@@ -240,6 +265,7 @@ export function KnowledgeApprovals({
                     "approvals.editContentHint",
                     "This text is stored in the knowledge base exactly as written. Make it a standalone statement, with no caveats about checking it.",
                   )}
+                  error={refusal.at("content", draft.content.trim())}
                 >
                   <Textarea
                     rows={6}

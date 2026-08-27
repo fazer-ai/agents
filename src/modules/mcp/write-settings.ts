@@ -3,6 +3,7 @@ import basePrisma from "@/api/lib/prisma";
 import { AppError } from "@/lib/errors";
 import { parseInput } from "@/lib/parse-input";
 import { revokeApiKey } from "@/modules/api-keys/service";
+import { truncForAudit } from "@/modules/audit/projection";
 import {
   createBusinessHours,
   deleteBusinessHours,
@@ -37,7 +38,6 @@ import {
   parseMcpId,
   recordMcpAudit,
   resolveSecretRef,
-  truncForAudit,
   type WriteDeps,
   type WriteResult,
 } from "./write";
@@ -123,7 +123,7 @@ export async function experimentCreate(
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.experiment_create",
+      action: "experiment.create",
       target,
       before: null,
       after: truncForAudit({ id: String(created.id), name: args.name }),
@@ -204,7 +204,7 @@ export async function experimentUpdate(
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.experiment_update",
+      action: "experiment.update",
       target,
       before: truncForAudit(beforeProj),
       after: truncForAudit({
@@ -245,7 +245,7 @@ export async function experimentDelete(
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.experiment_delete",
+      action: "experiment.delete",
       target,
       before: truncForAudit(beforeProj),
       after: null,
@@ -311,14 +311,6 @@ export async function businessHoursCreate(
       base,
     );
     const target = `business_hours:${created.id}`;
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "mcp.business_hours_create",
-      target,
-      before: null,
-      after: truncForAudit({ id: created.id, name: created.name }),
-    });
     return ok({ dryRun: false, applied: true, target, businessHours: created });
   } catch (e) {
     return failOf(e);
@@ -380,19 +372,6 @@ export async function businessHoursUpdate(
       });
     }
     const updated = await updateBusinessHours(ctx, id, patch, base);
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "mcp.business_hours_update",
-      target,
-      before: truncForAudit(beforeProj),
-      after: truncForAudit({
-        name: updated.name,
-        timezone: updated.timezone,
-        windows: updated.windows,
-        exceptions: updated.exceptions,
-      }),
-    });
     return ok({ dryRun: false, applied: true, target, businessHours: updated });
   } catch (e) {
     return failOf(e);
@@ -422,14 +401,6 @@ export async function businessHoursDelete(
       });
     }
     await deleteBusinessHours(ctx, id, base);
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "mcp.business_hours_delete",
-      target,
-      before: truncForAudit(beforeProj),
-      after: null,
-    });
     return ok({ dryRun: false, applied: true, target });
   } catch (e) {
     return failOf(e);
@@ -521,7 +492,6 @@ export async function tenantSettingsUpdate(
         },
       });
     }
-    const before = await getTenantSettings(ctx, base);
     if (args.embedding !== undefined) {
       await updateEmbeddingSettings(ctx, { credentialRef: embeddingRef }, base);
     }
@@ -538,36 +508,8 @@ export async function tenantSettingsUpdate(
       );
     }
     const after = await getTenantSettings(ctx, base);
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "mcp.tenant_settings_update",
-      target,
-      before: truncForAudit({
-        embedding: {
-          credentialRef: before.embedding.credentialRef,
-          model: before.embedding.model,
-        },
-        langfuse: {
-          enabled: before.langfuse.enabled,
-          sendContent: before.langfuse.sendContent,
-          debug: before.langfuse.debug,
-          credentialRef: before.langfuse.credentialRef,
-        },
-      }),
-      after: truncForAudit({
-        embedding: {
-          credentialRef: after.embedding.credentialRef,
-          model: after.embedding.model,
-        },
-        langfuse: {
-          enabled: after.langfuse.enabled,
-          sendContent: after.langfuse.sendContent,
-          debug: after.langfuse.debug,
-          credentialRef: after.langfuse.credentialRef,
-        },
-      }),
-    });
+    // NOTE: each block writer above records its own row, so a call touching both leaves TWO where
+    // this tool used to leave one summarizing both. Same shape the console has always produced.
     // Project stored vault:<id> refs back to NAMES for the response (never a secret value).
     const embName = after.embedding.credentialRef
       ? await vaultNameByRef(ctx, after.embedding.credentialRef, base)
@@ -669,16 +611,17 @@ export async function langfuseConnect(
       { enabled, credentialRef: ref, sendContent: args.send_content },
       base,
     );
+    // NOTE: narrowed to the VAULT write, which is the half `updateLangfuse` cannot record. Two
+    // writes, two rows, not one write recorded twice; this one goes when the vault family moves (#399).
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
-      action: "mcp.langfuse_connect",
-      target: "tenant_settings:langfuse",
+      action: "langfuse.connect",
+      target: `vault:${name}`,
       before: null,
       after: truncForAudit({
         credentialName: name,
         baseUrl: args.base_url,
-        enabled: settings.enabled,
       }),
     });
     const lfName = settings.credentialRef
@@ -718,14 +661,6 @@ export async function apiKeyRevoke(
       });
     }
     await revokeApiKey(ctx, id, base);
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "mcp.api_key_revoke",
-      target,
-      before: null,
-      after: truncForAudit({ revoked: true }),
-    });
     return ok({ dryRun: false, applied: true, target });
   } catch (e) {
     return failOf(e);

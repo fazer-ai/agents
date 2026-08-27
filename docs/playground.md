@@ -63,3 +63,11 @@ The request is never aborted by the client (no `AbortController` on the playgrou
 The `agent_playground` **read** tool (`mcp:read`, `src/modules/mcp/server.ts`) mirrors the REST endpoint so an AI agent can drive the playground: `{ agent_id, message, thread_id? } → { reply, threadId, trace, sources }`, principal-bound + tenant-fenced (a `null`-tenant SUPER_ADMIN token must target a tenant). It is deliberately **read**, not `mcp:write` — but its tool description warns that the agent's HTTP/integration tools still execute for real, so it is a live test, not a pure simulation.
 
 Read before touching `src/modules/playground/*`, `src/graph/trace.ts`, `src/lib/redact.ts`, the playground endpoint / `agent_playground` MCP tool, or `loadAgentConfig`'s `ignoreDisabled` path.
+
+## The playground does not become a public surface
+
+Public no-login share links were proposed as a community PR (#132, 1623 lines, CI green) and **closed without merge** in 2026-08-19. The refusal is architectural, not about polish — the code was good (token stored only as a hash, RLS in the migration, atomic quota claim).
+
+The playground is deliberately the place where the protections are off, and that is only sound because the sole reach was an authenticated tenant admin. Three premises carry it, and public access breaks all three: `ignoreDisabled: true` (a disabled agent answers, so the off switch stops turning it off), the toolset is the PRODUCTION one with vault credentials (HTTP/MCP/toolpacks really run, only the native conversation tools are simulated, and `toolMocks` is unreachable from outside), and the thread fence is per tenant+agent, not per visitor. Exposing it means undoing all three in the module core, which is a different playground, not a feature on top of this one.
+
+The use case behind the request already has an answer: `Agent.mode = "test"` keeps an agent silent in any conversation until someone sends `/teste` in that thread (`src/modules/agents/test-mode.ts`; new agents are born in test), so the agent can hang off any channel, production inbox included, without answering third parties, and `/reset` clears the contact's memory. The channel redirect is **not** the alternative to cite — it is a different thing.

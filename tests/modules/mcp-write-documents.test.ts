@@ -200,7 +200,7 @@ describe.skipIf(!dbUp)("MCP document writes", () => {
     const templates = await listDocumentTemplates(ctx(), appDb);
     expect(templates).toHaveLength(1);
     const audit = await suDb.auditLog.findMany({
-      where: { tenantId, action: "mcp.document_template_create" },
+      where: { tenantId, action: "document_template.create" },
       select: { target: true },
     });
     expect(audit).toHaveLength(1);

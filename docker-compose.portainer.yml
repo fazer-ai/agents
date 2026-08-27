@@ -88,6 +88,14 @@ services:
       # find a chain shorter than the count and fall back to the Caddy socket — one bucket again. To
       # key on the real client behind a CDN, give the caddy service `trusted_proxies` for the CDN's
       # ranges first, then raise this to 2.
+      # NOTE: the outgoing runtime role during a DATABASE_URL rotation, declared for the length of
+      # the overlap. Bootstrap reconciles fleet-role membership down to this database's runtime role
+      # and the administrator, so without this the outgoing role loses its cross-tenant path mid-
+      # drain and every asSuperAdmin call in the container still serving on it — API-key
+      # verification included — starts reading zero rows. Not inferred from an open session: a
+      # stale installation whose database was recreated under the same name presents exactly the
+      # same session (measured). Comma-separated; clear it once the old container is gone.
+      - FLEET_ROLE_RETAIN_MEMBER=${FLEET_ROLE_RETAIN_MEMBER:-}
       - TRUST_PROXY=true
       - TRUSTED_PROXY_HOPS=${TRUSTED_PROXY_HOPS:-1}
       # NOTE: rate-limit ceilings, per client address. The first two are runaway guards, generous on

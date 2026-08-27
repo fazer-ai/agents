@@ -3,16 +3,9 @@ import { createTenant } from "@/api/v1/tenants.admin.service";
 import { getTenant, listTenants } from "@/api/v1/tenants.service";
 import { AppError } from "@/lib/errors";
 import type { TenantContext } from "@/lib/tenancy";
+import { parseMcpId } from "@/modules/mcp/write";
 import { hasScope, type VerifiedToken } from "./oauth/tokens";
-import {
-  ctxOf,
-  err,
-  ok,
-  recordMcpAudit,
-  truncForAudit,
-  type WriteDeps,
-  type WriteResult,
-} from "./write";
+import { ctxOf, err, ok, type WriteDeps, type WriteResult } from "./write";
 
 // MCP fleet/admin write tools: provision and read tenants ACROSS the fleet. Unlike the
 // per-tenant tools these are NOT tenant-fenced — they require mcp:admin (only SUPER_ADMIN tokens
@@ -56,12 +49,10 @@ export async function tenantGet(
   const base = deps.base ?? basePrisma;
   const ctx = adminGate(principal);
   if ("ok" in ctx) return ctx;
-  let id: bigint;
-  try {
-    id = BigInt(args.tenant_id);
-  } catch {
-    return err("invalid tenant_id");
-  }
+  // NOTE: the same parser every other MCP surface uses. A `try`/`catch` around `BigInt` catches
+  // the spelling half and misses the range half, which is the half that reaches the database.
+  const id = parseMcpId(args.tenant_id, "tenant_id");
+  if (typeof id !== "bigint") return id;
   try {
     return ok({ tenant: await getTenant(ctx, id, base) });
   } catch (e) {
@@ -91,23 +82,8 @@ export async function tenantCreate(
       { name: args.name, slug: args.slug },
       base,
     );
-    // Fleet-level audit (tenant_id NULL); the write tx runs asSuperAdmin.
-    await recordMcpAudit(
-      { tenantId: null, userId: principal.userId, role: "SUPER_ADMIN" },
-      base,
-      {
-        actorId: principal.userId,
-        actorType: "mcp",
-        action: "mcp.tenant_create",
-        target: `tenant:${created.id}`,
-        before: null,
-        after: truncForAudit({
-          id: created.id,
-          name: created.name,
-          slug: created.slug,
-        }),
-      },
-    );
+    // `createTenant` records its own fleet-level row (tenant_id NULL), inside the asSuperAdmin
+    // transaction that provisions the tenant.
     return ok({ dryRun: false, applied: true, tenant: created });
   } catch (e) {
     return failOf(e);

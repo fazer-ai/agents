@@ -39,6 +39,10 @@ interface ModelState {
 interface GeneralTabProps {
   name: string;
   setName: (v: string) => void;
+  // The server's refusal about one of these two, when it named it. Null the rest of the time — the
+  // page decides where a refusal goes, this tab only renders what it is handed.
+  nameError?: string | null;
+  promptError?: string | null;
   systemPrompt: string;
   setSystemPrompt: (v: string) => void;
   enabled: boolean;
@@ -70,6 +74,8 @@ interface GeneralTabProps {
 
 export function GeneralTab({
   name,
+  nameError,
+  promptError,
   setName,
   systemPrompt,
   setSystemPrompt,
@@ -119,6 +125,7 @@ export function GeneralTab({
             label={t("editor.name", "Name")}
             required
             className="min-w-0 flex-1"
+            error={nameError}
           >
             <Input value={name} onChange={(e) => setName(e.target.value)} />
           </FormField>
@@ -168,6 +175,9 @@ export function GeneralTab({
             agentFallback={name}
             onExpand={() => promptModal.open()}
           />
+          {promptError && (
+            <p className="mt-1 text-error text-xs">{promptError}</p>
+          )}
         </FormField>
       </Card>
 

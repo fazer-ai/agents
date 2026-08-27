@@ -1,6 +1,7 @@
 import { Elysia, t } from "elysia";
 import { doc, errors } from "@/api/lib/openapi";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
+import { requireDbId } from "@/lib/db-id";
 import { ForbiddenError, TenantTargetRequiredError } from "@/lib/errors";
 import { instanceIdentity } from "@/lib/instance";
 import type { TenantContext } from "@/lib/tenancy";
@@ -156,7 +157,7 @@ export const integrationsAdminController = new Elysia({
         instance: instanceIdentity,
         integration: await getIntegrationInstance(
           ctxOrThrow(tenantContext),
-          BigInt(params.id),
+          requireDbId(params.id),
         ),
       };
     },
@@ -245,7 +246,7 @@ export const integrationsAdminController = new Elysia({
       instance: instanceIdentity,
       integration: await updateIntegrationInstance(
         ctxOrThrow(tenantContext),
-        BigInt(params.id),
+        requireDbId(params.id),
         body as {
           name?: string;
           enabled?: boolean;
@@ -312,7 +313,7 @@ export const integrationsAdminController = new Elysia({
       instance: instanceIdentity,
       ...(await rotateIntegrationRouteToken(
         ctxOrThrow(tenantContext),
-        BigInt(params.id),
+        requireDbId(params.id),
       )),
     }),
     {
@@ -335,7 +336,7 @@ export const integrationsAdminController = new Elysia({
     async ({ tenantContext, params }) => {
       await deleteIntegrationInstance(
         ctxOrThrow(tenantContext),
-        BigInt(params.id),
+        requireDbId(params.id),
       );
       return { instance: instanceIdentity, success: true };
     },

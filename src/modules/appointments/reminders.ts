@@ -241,7 +241,10 @@ export async function appointmentBooked(
         args.tenantId,
         args.provider ?? GOOGLE_CALENDAR_PROVIDER,
         args.eventId,
-        args.base,
+        args.base ?? basePrisma,
+        // A re-statement: the arm right below replaces the payload of every offset that survives,
+        // taking the tombstone with it, so the token is the only mark that outlives it.
+        true,
       );
       if (args.reminders) {
         remindersArmed = await enqueueAppointmentReminders(
@@ -304,7 +307,8 @@ export async function cancelAppointment(
   provider: string = GOOGLE_CALENDAR_PROVIDER,
 ): Promise<void> {
   await cancelAppointmentRecord(tenantId, eventId, base, provider);
-  await retireReminderJobs(tenantId, provider, eventId, base);
+  // No arm follows a cancel, so the tombstone stands alone and the in-flight run keeps its token.
+  await retireReminderJobs(tenantId, provider, eventId, base, false);
 }
 
 // The JOBS half of the cancel above, on its own because re-arming needs it without the record half.
@@ -321,7 +325,11 @@ async function retireReminderJobs(
   tenantId: bigint,
   provider: string,
   eventId: string,
-  base: PrismaClient = basePrisma,
+  base: PrismaClient,
+  // Whether an arm follows and may REPLACE the payload of the offsets that survive. Required rather
+  // than defaulted: the two callers want opposite answers, and a default is how the next caller gets
+  // the wrong one silently. See the note on the token bump below.
+  armFollows: boolean,
 ): Promise<void> {
   await cancelPendingJobsByPrefix(
     tenantId,
@@ -335,6 +343,22 @@ async function retireReminderJobs(
   // re-arm replaces the payload wholesale (enqueueJob's upsert is authoritative), clearing the stamp
   // on the offsets that survive. One atomic jsonb merge, never read-modify-write: a concurrent
   // re-arm's payload is stamped or replaced whole, so a stale snapshot can never clobber it.
+  //
+  // THE CLAIM TOKEN MOVES ONLY WHEN AN ARM FOLLOWS, and the asymmetry is the point.
+  //
+  // `isRetired` asks two questions: is there a tombstone, and did the claim token move. A re-arm
+  // ANSWERS THE FIRST ONE AWAY — enqueueJob's upsert replaces the payload, so a row already CLAIMED
+  // by a running handler comes back with no stamp and its original token, and that handler goes on to
+  // send a reminder built from its claim-time payload, announcing the start the re-statement just
+  // replaced. Only the token survives that rewrite, which is the same reasoning cancelJobsByKey
+  // spells out for /reset ("two marks, because neither survives alone").
+  //
+  // On a CANCEL nothing follows, so the tombstone stands on its own and moving the token would only
+  // fence the in-flight run's own bookkeeping: `rescheduleJob` CASes on the token the claim handed
+  // out, and issue #281 chose to let a run that could not author carry its retry counter forward, by
+  // MERGING it rather than replacing the payload. That choice is still right where no arm can erase
+  // the mark it merges into, and this parameter is what keeps the two callers from having to share
+  // one answer.
   await runScopedOn(base, sysCtx(tenantId), async (db) => {
     // LIKE needs its own escaping (Google recurrence ids carry `_`).
     const likePrefix = `${reminderPrefix(provider, eventId).replace(
@@ -344,7 +368,9 @@ async function retireReminderJobs(
     const stamp = JSON.stringify({ cancelledAt: new Date().toISOString() });
     await db.$executeRaw`
       UPDATE scheduler_jobs
-         SET payload = payload || ${stamp}::jsonb, updated_at = now()
+         SET payload = payload || ${stamp}::jsonb,
+             claim_seq = claim_seq + ${armFollows ? 1 : 0},
+             updated_at = now()
        WHERE tenant_id = ${tenantId}
          AND kind = 'APPOINTMENT_REMINDER'
          AND dedupe_key LIKE ${likePrefix}`;

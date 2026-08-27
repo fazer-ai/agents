@@ -10,6 +10,7 @@ import {
   cancelAppointment,
   hasLiveAppointment,
 } from "@/modules/appointments/reminders";
+import { type ClaimedJob, jobRetired } from "@/modules/scheduler/service";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // DB-backed mirror of issue #22: the appointment identity block must reach the system prompt after
@@ -699,6 +700,71 @@ describe.skipIf(!dbUp)("per-turn appointment context (issue #22)", () => {
     // reminder is still armed for it.
     expect(await pending()).toBe(1);
     expect(await hasLiveAppointment(tenantId, threadOf(117), appDb)).toBe(true);
+  });
+
+  // (#352, round 10) The retire has to survive the re-arm that FOLLOWS it. `isRetired` asks two
+  // questions — is there a tombstone, and did the claim token move — and the re-arm answers the first
+  // one away: enqueueJob's upsert replaces the payload wholesale, so a row a handler had already
+  // CLAIMED comes back with no stamp. Without the token moving too, that handler goes on to send a
+  // reminder built from its claim-time payload, announcing the start the re-statement just replaced.
+  // The very defect the retire exists to prevent, through the in-flight door instead of a leftover
+  // PENDING row.
+  test("(#352) a re-statement retires the reminder a handler is already running", async () => {
+    await seedConversation(119);
+    const book = (hoursOut: number) =>
+      appointmentBooked({
+        tenantId,
+        threadId: threadOf(119),
+        provider: "feegow",
+        eventId: "inflight",
+        calendarId: null,
+        credentialRef: null,
+        startISO: inHours(hoursOut),
+        summary: null,
+        calendarLabel: null,
+        reminders: { offsetsHours: [24], askConfirmationOnLast: false },
+        base: appDb,
+      });
+    const readRow = () =>
+      runScopedOn(appDb, sysCtx(), (db) =>
+        db.schedulerJob.findFirstOrThrow({
+          where: {
+            tenantId,
+            kind: "APPOINTMENT_REMINDER",
+            dedupeKey: "reminder:feegow/inflight:24",
+          },
+          select: { id: true, claimSeq: true, payload: true, status: true },
+        }),
+      );
+
+    await book(48);
+    // A worker picks it up: this is the snapshot the running handler holds.
+    const before = await readRow();
+    await runScopedOn(appDb, sysCtx(), (db) =>
+      db.schedulerJob.update({
+        where: { id: before.id },
+        data: { status: "CLAIMED" },
+      }),
+    );
+    const claimed: ClaimedJob = {
+      id: before.id,
+      tenantId,
+      kind: "APPOINTMENT_REMINDER",
+      payload: before.payload as Record<string, unknown>,
+      attempts: 0,
+      claimSeq: before.claimSeq,
+    };
+
+    // The customer moves the appointment while that handler is mid-run. 36h out keeps the 24h offset
+    // alive, so the row is re-armed rather than left retired — which is what clears the tombstone.
+    await book(36);
+    const after = await readRow();
+    expect(
+      (after.payload as { cancelledAt?: unknown } | null)?.cancelledAt,
+    ).toBeUndefined();
+
+    // Neither signal is the tombstone, so the token is the one that has to have moved.
+    expect(await jobRetired(claimed, appDb)).toBe(true);
   });
 
   // (#352, round 5) "primary" is a real Google calendar. A booking that lives in the operator's own

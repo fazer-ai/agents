@@ -80,39 +80,86 @@ export function blankNonCode(src: string): string {
       if (out[i] !== "\n") out[i] = " ";
     }
   };
-  let quote: string | null = null;
-  let quoteAt = -1;
-  for (let i = 0; i < src.length; i++) {
+  // One frame per template literal being walked. `depth < 0` means the walk is in the template's
+  // TEXT (blank it); `depth >= 0` means it is inside a `${…}` hole, which is code and stays. The
+  // frame is a stack because a hole can hold another template. Treating a backtick as an ordinary
+  // quote blanked the holes with the text, and `` `${BigInt(body.id)}` `` went unseen.
+  const frames: { chunk: number; depth: number }[] = [];
+  let i = 0;
+  while (i < src.length) {
+    const top = frames.at(-1);
     const c = src[i] as string;
-    if (quote) {
+    if (top && top.depth < 0) {
       if (c === "\\") {
+        i += 2;
+        continue;
+      }
+      if (c === "$" && src[i + 1] === "{") {
+        blank(top.chunk, i);
+        top.depth = 0;
+        i += 2;
+        continue;
+      }
+      if (c === "`") {
+        blank(top.chunk, i);
+        frames.pop();
         i++;
         continue;
       }
-      if (c === quote) {
-        blank(quoteAt + 1, i);
-        quote = null;
-      }
+      i++;
       continue;
     }
     if (c === "/" && src[i + 1] === "*") {
       const close = src.indexOf("*/", i + 2);
       const to = close === -1 ? src.length : close + 2;
       blank(i, to);
-      i = to - 1;
+      i = to;
       continue;
     }
     if (c === "/" && src[i + 1] === "/") {
       let to = src.indexOf("\n", i);
       if (to === -1) to = src.length;
       blank(i, to);
-      i = to - 1;
+      i = to;
       continue;
     }
-    if (c === '"' || c === "'" || c === "`") {
-      quote = c;
-      quoteAt = i;
+    if (c === '"' || c === "'") {
+      let j = i + 1;
+      while (j < src.length) {
+        if (src[j] === "\\") {
+          j += 2;
+          continue;
+        }
+        if (src[j] === c) break;
+        j++;
+      }
+      blank(i + 1, Math.min(j, src.length));
+      i = Math.min(j + 1, src.length);
+      continue;
     }
+    if (c === "`") {
+      frames.push({ chunk: i + 1, depth: -1 });
+      i++;
+      continue;
+    }
+    if (top) {
+      if (c === "{") {
+        top.depth++;
+        i++;
+        continue;
+      }
+      if (c === "}") {
+        if (top.depth === 0) {
+          top.depth = -1;
+          top.chunk = i + 1;
+        } else {
+          top.depth--;
+        }
+        i++;
+        continue;
+      }
+    }
+    i++;
   }
   return out.join("");
 }
@@ -273,6 +320,25 @@ describe("a caller's id is parsed, never cast", () => {
   // that if the extractor reports both rather than deduplicating them here.
   test("the same spelling twice is reported twice", () => {
     expect(bigIntArgs("BigInt(raw)\nBigInt(raw)")).toEqual(["raw", "raw"]);
+  });
+
+  // A `${…}` hole is code, not text. Blanking it with the template's text hid a cast written inside
+  // one — the argument is caller-controlled either way, and the backtick around it is incidental.
+  test("a cast inside a template interpolation is still a cast", () => {
+    expect(
+      bigIntArgs("const key = `t:${BigInt(body.id)}:${BigInt(q.n)}`;"),
+    ).toEqual(["body.id", "q.n"]);
+    // Nested one deep, and the surrounding TEXT still counts as text: `BigInt(` written in the
+    // literal part is not a call — before the hole and after the last one alike, which is the
+    // chunk a walk that only blanks on the way IN forgets.
+    expect(
+      bigIntArgs("`a BigInt(x) b ${ `${BigInt(raw)}` } c BigInt(z) d`"),
+    ).toEqual(["raw"]);
+    // A brace inside the hole is the hole's, not its terminator. Miscounting it ends the hole at
+    // the object's `}` and reads the rest of the line as text, which swallows the call after it.
+    expect(bigIntArgs("`${ fn({ a: 1 }) + BigInt(body.id) }`")).toEqual([
+      "body.id",
+    ]);
   });
 
   test("it leaves literals, prose and quoted code alone", () => {

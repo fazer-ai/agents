@@ -200,7 +200,22 @@ export async function recoverStrandedDelivery(
   // from the arming site: the row is only readable now, and a job armed against an older build's row
   // could have been armed before this predicate existed.
   if (!isRecoverableStrand(row)) return "unrecoverable";
-  if (row.attempts >= MAX_RECOVERY_ATTEMPTS) return "unrecoverable";
+  // GIVEN UP ON, and said out loud, because this is the one refusal that ends a recovery which was
+  // really trying. The others are verdicts about the row (no ids, too old, already taken); this one
+  // is the end of a ladder — most often a turn that kept throwing, which round 12 routes to
+  // `unreachable` so the job backs off. That backoff does NOT reach the scheduler's dead-letter
+  // line, because this cap is the lower of the two and fires first, so the job completes and the
+  // scheduler has nothing left to report. The record an operator gets is this line plus the row,
+  // which stays DEAD on the page the sweep already opened for it.
+  if (row.attempts >= MAX_RECOVERY_ATTEMPTS) {
+    logger.warn(
+      "chatwoot recovery: %s has spent its %d attempts and is given up on (conversation %s); the row stays DEAD",
+      row.deliveryId,
+      MAX_RECOVERY_ATTEMPTS,
+      row.conversationId ?? "unknown",
+    );
+    return "unrecoverable";
+  }
 
   // Too late to be a recovery. Asked before any network, on the row's own receipt.
   const now = params.now ?? new Date();
@@ -484,25 +499,44 @@ async function runRecovery(params: {
     );
     return "unreachable";
   }
-  // The local row for THAT inbox, which is where the bound agent and the name live. Re-read only
-  // when the live answer is not the one the mirror already gave, so the ordinary recovery pays for
-  // no extra query.
-  const inbox =
-    conv.inbox?.chatwootInboxId === routeInboxId
-      ? conv.inbox
-      : await runScopedOn(base, sysCtx(params.tenantId), (db) =>
-          db.inbox.findUnique({
-            where: {
-              tenantId_chatwootInstanceId_chatwootInboxId: {
-                tenantId: params.tenantId,
-                chatwootInstanceId: instanceId,
-                chatwootInboxId: routeInboxId,
-              },
-            },
-            select: { chatwootInboxId: true, name: true, agentId: true },
-          }),
-        );
+  // The local row for THAT inbox, which is where the bound agent, its mode and the name live.
+  //
+  // ALWAYS RE-READ, never the snapshot loaded with the conversation, even when the route id matches
+  // what the mirror already said. The id matching does not make the BINDING the same: an operator
+  // can rebind the very same inbox to a different agent while the two REST reads are running, and
+  // the snapshot would then hand this recovery the old persona's bot while the delivery path
+  // resolves the new one — the ownership gate reads that as another party and consumes the message
+  // without replying. The saving it replaces was one scoped query on a path that already makes two
+  // REST calls.
+  //
+  // The agent's MODE comes back with it, in the same scoped transaction rather than a query beside
+  // it: whether a control command is ACTIVE at all is that mode, and the binding and the mode have
+  // to answer about the same moment or the refusal below is decided against an agent this replay
+  // would never have reached. `Inbox` carries the agent as a bare column, so it is two statements,
+  // and one transaction is what makes them one reading.
+  const route = await runScopedOn(base, sysCtx(params.tenantId), async (db) => {
+    const found = await db.inbox.findUnique({
+      where: {
+        tenantId_chatwootInstanceId_chatwootInboxId: {
+          tenantId: params.tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootInboxId: routeInboxId,
+        },
+      },
+      select: { chatwootInboxId: true, name: true, agentId: true },
+    });
+    const agent =
+      found?.agentId == null
+        ? null
+        : await db.agent.findUnique({
+            where: { id: found.agentId },
+            select: { mode: true },
+          });
+    return { inbox: found, mode: agent?.mode ?? null };
+  });
+  const inbox = route.inbox;
   const agentId = inbox?.agentId ?? null;
+  const agentMode = route.mode;
 
   // RE-READ rather than carried from the load at the top. `contactInboxId` is one of the fields a
   // webhook arriving during the two REST reads and the reconcile can move (./mirror.ts writes it on
@@ -614,7 +648,14 @@ async function runRecovery(params: {
   //
   // NOT a general answer to replayed effects, and the rest of that is stated at the head of this
   // file: an agent turn can call side-effecting tools, and a recovery re-runs it at least once.
-  if (controlCommand(normalized) !== null) {
+  //
+  // A COMMAND ONLY WHERE ONE IS ACTIVE, which is a TEST-mode agent and nowhere else. `/reset` typed
+  // at a production agent is not a command at all: ./webhook.ts decides that with
+  // `commandMode === "test"` and hands the text to the turn like any other, so the customer gets a
+  // reply. Refusing it here would make the recovery answer a question the delivery path does not ask
+  // and leave that customer with nothing — the one divergence from "run the delivery path again"
+  // that costs a reply rather than saving an effect.
+  if (agentMode === "test" && controlCommand(normalized) !== null) {
     logger.info(
       "chatwoot recovery: %s carries a control command; not replayed (conversation %d)",
       row.deliveryId,

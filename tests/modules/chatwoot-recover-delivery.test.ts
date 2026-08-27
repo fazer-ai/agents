@@ -73,6 +73,7 @@ const SENT_AT = Math.floor(Date.now() / 1000) - 3600;
 
 let tenantId = 0n;
 let agentDbId = 0n;
+let secondAgentDbId = 0n;
 let instanceId = 0n;
 let inboxDbId = 0n;
 let deliverySeq = 0;
@@ -384,6 +385,31 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
         chatwootInstanceId: instanceId,
         chatwootInboxId: UNBOUND_INBOX,
         name: "Sem agente",
+      },
+    });
+    // A SECOND persona, complete with its own Chatwoot bot: what an operator rebinds an inbox TO.
+    // It has a bot of its own so a rebind is only that — swapping which persona answers — rather
+    // than also hitting the persona-less refusal, which is a different case with its own tests.
+    const second = await suDb.agent.create({
+      data: {
+        tenantId,
+        name: "Segunda persona",
+        systemPrompt: "Você é prestativa.",
+        modelConfig: { provider: "openai", model: "gpt-4o-mini" },
+        settings: { debounce: { enabled: false } },
+      },
+    });
+    secondAgentDbId = second.id;
+    await suDb.chatwootAgentBot.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        agentId: second.id,
+        chatwootAgentBotId: AGENT_BOT_ID + 1,
+        accessToken: encryptJson("BOT2"),
+        webhookSecret: encryptJson("S2"),
+        webhookRouteTokenHash: `rec-route2-${process.pid}`,
+        name: "Segunda persona",
       },
     });
   });
@@ -1078,6 +1104,53 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
         })
       ).contactInboxId,
     ).toBe(moved);
+  });
+
+  test("an inbox REBOUND mid-recovery answers as the persona it is bound to now", async () => {
+    // The route id does not move here — the same inbox, the same number — so a recovery that reused
+    // the binding loaded with the conversation would see nothing to re-read. What moved is which
+    // AGENT that inbox points at, and with it which persona's bot answers. Handing the delivery path
+    // the old persona's bot while it resolves the new one is what makes the ownership gate read the
+    // new bot as another party and consume the message without replying.
+    //
+    // Asserted on the closing line's agent, which is the recovery's own record of who it decided
+    // answered, and on the reply actually going out.
+    const convId = 8963;
+    const messageId = 9464;
+    const conv = await seedConversation(convId);
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const stub = stubChatwoot({
+      page: pageWith([{ id: messageId, content: "oi" }]),
+      onAnchoredRead: async () => {
+        await suDb.inbox.update({
+          where: { id: inboxDbId },
+          data: { agentId: secondAgentDbId },
+        });
+      },
+    });
+
+    try {
+      expect(
+        await recoverStrandedDelivery({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          deps: depsWith(stub),
+        }),
+      ).toBe("recovered");
+      expect(stub.sent).toEqual([[convId, REPLY]]);
+      const closing = await deliveryLines(conv.id);
+      expect(closing.length).toBe(1);
+      expect(closing[0]?.agentId).toBe(secondAgentDbId);
+    } finally {
+      await suDb.inbox.update({
+        where: { id: inboxDbId },
+        data: { agentId: agentDbId },
+      });
+    }
   });
 
   test("a mirror that never learned the inbox rebuilds it from the live message", async () => {
@@ -1813,7 +1886,26 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     expect(block).toContain('return "unreachable"');
   });
 
-  test("a control command is never replayed", async () => {
+  // Flips the bound agent to test mode for one case, which is the only mode a control command is
+  // ACTIVE in. The fixture agent is `production` like a real one, so a test that wants a command has
+  // to say so — and the pair below is why: the same text is a command in one mode and ordinary
+  // customer text in the other.
+  async function asTestModeAgent<T>(run: () => Promise<T>): Promise<T> {
+    await suDb.agent.update({
+      where: { id: agentDbId },
+      data: { mode: "test" },
+    });
+    try {
+      return await run();
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentDbId },
+        data: { mode: "production" },
+      });
+    }
+  }
+
+  test("a control command is never replayed, where one is ACTIVE", async () => {
     // The premise of re-running the delivery path is that the path did not complete — not that it
     // did nothing. `/reset` performs its deletion BEFORE the tail settles the row, so a process that
     // died in that window leaves a DEAD row whose replay deletes the memory the conversation has
@@ -1831,18 +1923,56 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     });
     const turns = { built: 0 };
 
-    const outcome = await recoverStrandedDelivery({
-      tenantId,
-      deliveryRowId: rowId,
-      base: appDb,
-      deps: depsWith(stub, turns),
-    });
+    const outcome = await asTestModeAgent(() =>
+      recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: depsWith(stub, turns),
+      }),
+    );
 
     expect(outcome).toBe("unrecoverable");
     expect(turns.built).toBe(0);
     expect(stub.sent).toEqual([]);
     // Left DEAD, which is the operator-facing record that lets them retype it.
     expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 0 });
+  });
+
+  test("the same text at a PRODUCTION agent is a customer message, and is answered", async () => {
+    // Whether a control command exists at all is the agent's MODE, decided in ./webhook.ts with
+    // `commandMode === "test"`. At a production agent `/reset` is not a command: the delivery path
+    // hands it to the turn like any other text and the customer gets a reply. A recovery that
+    // refused it would be answering a question the delivery path does not ask, and the cost would
+    // fall on the customer rather than on a destructive effect — the one divergence from "run the
+    // delivery path again" that LOSES a reply instead of saving one.
+    //
+    // The fixture agent is production, so this case needs no setup; its neighbour above is the one
+    // that has to arrange for a command to exist.
+    const convId = 8962;
+    const messageId = 9463;
+    await seedConversation(convId);
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const stub = stubChatwoot({
+      page: pageWith([{ id: messageId, content: "/reset" }]),
+    });
+
+    expect(
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: depsWith(stub),
+      }),
+    ).toBe("recovered");
+    expect(stub.sent).toEqual([[convId, REPLY]]);
+    expect(await ledger(rowId)).toEqual({
+      status: "PROCESSED",
+      attempts: 1,
+    });
   });
 
   test("a message that merely mentions a command is still recovered", async () => {

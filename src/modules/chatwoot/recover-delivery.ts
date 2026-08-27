@@ -536,6 +536,17 @@ async function runRecovery(params: {
   // and it is the message's OWN inbox — which is what `Message#webhook_data` builds the body's
   // `inbox` from, so this reproduces the wire rather than approximating it. The mirror stays as a
   // second reading for an account that renders no such scalar.
+  //
+  // NOT A HISTORICAL ROUTE, and a review round read it as one: the message's inbox looks older than
+  // the conversation's, so a conversation transferred between inboxes after the strand would be
+  // answered on the inbox it left. MEASURED at the fork, and that transfer does not exist.
+  // `Conversation#inbox_id` is `not null`, set once by `ConversationBuilder` from the contact inbox,
+  // and NOTHING in `app/`, `enterprise/` or `lib/` ever updates it — the `clone_inbox` rake task
+  // creates new conversations on the destination rather than moving any. What Chatwoot does transfer
+  // is the ASSIGNEE, agent or team, which is a different column and a gate this module already runs.
+  // So the two readings cannot describe different inboxes for one conversation: a message belongs to
+  // the conversation's inbox by construction. What CAN differ is one of them being absent, which is
+  // exactly what the fallback answers and what the mirror repair below is for.
   const routeInboxId =
     typeof message.inbox_id === "number"
       ? message.inbox_id

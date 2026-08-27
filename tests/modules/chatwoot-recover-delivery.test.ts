@@ -2812,7 +2812,7 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
         import.meta.url,
       ),
     ).text();
-    const mark = src.indexOf("markTurnInFlight(handoffKey);");
+    const mark = src.indexOf("markTurnReserved(handoffKey);");
     expect(mark).toBeGreaterThan(-1);
     // The LAST refusal before the mark, not the first: the fence asks in three steps and the middle
     // one awaits, so anchoring on the first would measure the wrong stretch and pass while the gap

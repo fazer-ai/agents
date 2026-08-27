@@ -3,9 +3,9 @@ import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { chatwootThreadId, resolveGraphThreadId } from "@/graph/checkpointer";
 import {
-  clearTurnInFlight,
+  clearTurnReserved,
   isTurnInFlight,
-  markTurnInFlight,
+  markTurnReserved,
 } from "@/graph/inflight";
 import type { RuntimeDeps } from "@/graph/runtime";
 import { turnOwnsThread } from "@/graph/thread-claim";
@@ -1084,9 +1084,16 @@ async function runRecovery(params: {
   // The window is not narrow. Between here and the turn's claim sit the mirror write, the ownership
   // gates, the contact-authorization call and the spend ceiling, and the last two reach the network.
   //
-  // `markTurnInFlight` COUNTS rather than sets (../../graph/inflight.ts), so the turn taking the same
-  // graph key a moment later is an increment and not a conflict, and each is balanced by its own
-  // clear.
+  // Taken as RESERVATIONS rather than as invokes, and the difference is one reader. Every writer
+  // asks `isTurnInFlight`, which counts both, so the reset, the append and the compaction all see
+  // this stretch. `markTurnOwning` asks `isTurnRunning`, which does not — it is deciding whether
+  // ANOTHER invoke was already reading the thread, and the answer defers the attendance divider and
+  // the marker. Counted as an invoke, this hold answered that question about the caller itself:
+  // MEASURED, a recovery that starts a NEW conversation on a contact thread that already had one ran
+  // the model against the previous attendance with no divider between them, and left the marker on
+  // the old conversation. Both maps COUNT rather than set (../../graph/inflight.ts), so the turn
+  // taking the same graph key a moment later is an increment and not a conflict, and each hold is
+  // balanced by its own clear.
   //
   // THE BOUND, stated rather than implied: both marks live in a Map in THIS process, and the durable
   // claim that crosses replicas is not taken until `runAgentTurn` takes it. A `/reset` served by a
@@ -1097,8 +1104,8 @@ async function runRecovery(params: {
   // rather than extending its reach. Left as issue #203's remaining edge, on the same grounds the
   // nudge paragraph above states: docs/deploy.md §4 declares one replica, and every reader that this
   // hold has to reach lives in it.
-  markTurnInFlight(handoffKey);
-  markTurnInFlight(graphKey);
+  markTurnReserved(handoffKey);
+  markTurnReserved(graphKey);
   try {
     outcome = await processChatwootDelivery({
       tenantId: params.tenantId,
@@ -1143,8 +1150,8 @@ async function runRecovery(params: {
     // Both, in the same place, for the reason the mark states: an unbalanced one makes every reader
     // of that key defer on this conversation until the process restarts, and for the graph key that
     // reader is the reset command, which would refuse for good.
-    clearTurnInFlight(handoffKey);
-    clearTurnInFlight(graphKey);
+    clearTurnReserved(handoffKey);
+    clearTurnReserved(graphKey);
   }
   // "skipped" means the claim matched nothing: another recovery took the row between the read above
   // and the CAS. The winner is running it, so this pass has nothing left to do and nothing to retry.

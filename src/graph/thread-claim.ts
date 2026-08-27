@@ -4,6 +4,7 @@ import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import {
   clearTurnInFlight,
   isTurnInFlight,
+  isTurnRunning,
   markTurnInFlight,
 } from "./inflight";
 
@@ -212,7 +213,12 @@ export async function markTurnOwning(
   // Asked BEFORE this turn marks itself, or the answer is about this turn. The Map half still counts:
   // an invoke in THIS process may hold a key that has no row to hold (./inflight.ts), so a claim that
   // only reported what the row knew would report less than the registry it replaces.
-  const alreadyHere = isTurnInFlight(owner.graphThreadId);
+  //
+  // INVOKES only, not reservations. A reservation is a turn that has not started — the stretch a
+  // delivery recovery holds until it reaches this call — and counting it here answers "another
+  // invoke is reading" about the caller itself, which defers the attendance divider and the marker
+  // for the very turn taking the claim (./inflight.ts states the measurement).
+  const alreadyHere = isTurnRunning(owner.graphThreadId);
   markTurnInFlight(owner.graphThreadId);
   // WHAT THE WAIT IS MEASURED AGAINST. Not a fixed span from the moment this call started: the
   // append renews its own lease while it is alive, so a legitimate slow append would blow a fixed

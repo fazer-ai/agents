@@ -3,6 +3,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { contactInboxThreadId } from "@/graph/checkpointer";
+import { clearTurnReserved, markTurnReserved } from "@/graph/inflight";
 import {
   claimIngestWrite,
   clearTurnOwning,
@@ -363,6 +364,34 @@ describe.skipIf(!dbUp)("the durable turn claim on a thread", () => {
     expect(second.heldBefore).toBe(true);
     await clearTurnOwning(o, appDb, second);
     await clearTurnOwning(o, appDb, first);
+  });
+
+  // A RESERVATION is not an occupancy, and the difference decides an attendance boundary. A delivery
+  // recovery holds the graph key from its own fence to the handoff, so the invoke that then takes
+  // this claim is the reserving caller itself: counted as another invoke, `heldBefore` comes back
+  // true, and `claimAttendanceBoundary` reads that as somebody else mid-read and defers the divider
+  // AND the marker for the very turn that asked. Every WRITER still has to see the hold, which is
+  // the half asserted first here — the reset is the reader the recovery took it for.
+  test("a reservation holds the thread against writers without reading as another invoke", async () => {
+    const o = owner();
+    markTurnReserved(o.graphThreadId);
+    try {
+      expect(
+        await runScopedOn(appDb, sysCtx(tenantId), (db) =>
+          threadBusyForResetOn(db, o),
+        ),
+      ).toBe(true);
+      const hold = await markTurnOwning(o, appDb);
+      expect(hold.heldBefore).toBe(false);
+      await clearTurnOwning(o, appDb, hold);
+    } finally {
+      clearTurnReserved(o.graphThreadId);
+    }
+    expect(
+      await runScopedOn(appDb, sysCtx(tenantId), (db) =>
+        threadBusyForResetOn(db, o),
+      ),
+    ).toBe(false);
   });
 
   // The write lease renews too. It is the same property the turn lease has, and the append is the

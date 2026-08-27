@@ -124,19 +124,31 @@ export function assertRuntimeRoleIsUnprivileged(
 // keeps that membership by design), every request can reach a privileged role right now, with RLS a
 // no-op and nothing in a log. LOGIN counts for the same reason it is refused on the runtime role —
 // a role nothing should connect as should not be connectable.
+// The attribute list is every one `CREATE ROLE` can carry that outlives a SET ROLE, not just the two
+// that defeat RLS: the runtime role ACQUIRES all of them the moment it enters this role, so
+// CREATEDB, CREATEROLE and REPLICATION are cluster-level privileges handed to every request path.
+// LOGIN counts for its own reason — a role nothing should connect as should not be connectable.
+export const FLEET_ROLE_FORBIDDEN_ATTRIBUTES = [
+  ["rolsuper", "SUPERUSER"],
+  ["rolbypassrls", "BYPASSRLS"],
+  ["rolcanlogin", "LOGIN"],
+  ["rolcreatedb", "CREATEDB"],
+  ["rolcreaterole", "CREATEROLE"],
+  ["rolreplication", "REPLICATION"],
+] as const;
+
 export function assertFleetRoleIsUnprivileged(
   fleetRole: string,
-  state: {
-    rolsuper: boolean;
-    rolbypassrls: boolean;
-    rolcanlogin: boolean;
+  state: Partial<
+    Record<(typeof FLEET_ROLE_FORBIDDEN_ATTRIBUTES)[number][0], boolean>
+  > & {
     reaches: string | null;
   },
 ) {
   const reasons: string[] = [];
-  if (state.rolsuper) reasons.push("SUPERUSER");
-  if (state.rolbypassrls) reasons.push("BYPASSRLS");
-  if (state.rolcanlogin) reasons.push("LOGIN");
+  for (const [field, word] of FLEET_ROLE_FORBIDDEN_ATTRIBUTES) {
+    if (state[field]) reasons.push(word);
+  }
   if (state.reaches !== null) {
     reasons.push(`inherits a privileged role (${state.reaches})`);
   }
@@ -331,13 +343,9 @@ async function provisionFleetRole(
   // branch that created it the answer is free, and on the branch that FOUND one it is the whole
   // point. Same shape, and the same reason, as the runtime role's own post-condition.
   const fleetState = (
-    await client.query<{
-      rolsuper: boolean;
-      rolbypassrls: boolean;
-      rolcanlogin: boolean;
-      reaches: string | null;
-    }>(
+    await client.query<Record<string, boolean> & { reaches: string | null }>(
       `SELECT r.rolsuper, r.rolbypassrls, r.rolcanlogin,
+              r.rolcreatedb, r.rolcreaterole, r.rolreplication,
               (SELECT string_agg(DISTINCT quote_ident(m.rolname), ', ')
                  FROM pg_roles m
                 WHERE (m.rolsuper OR m.rolbypassrls) AND m.oid <> r.oid
@@ -346,15 +354,7 @@ async function provisionFleetRole(
       [fleetRole],
     )
   ).rows[0];
-  assertFleetRoleIsUnprivileged(
-    fleetRole,
-    fleetState ?? {
-      rolsuper: false,
-      rolbypassrls: false,
-      rolcanlogin: false,
-      reaches: null,
-    },
-  );
+  assertFleetRoleIsUnprivileged(fleetRole, fleetState ?? { reaches: null });
 
   // EXECUTE on the resolver, to the RUNTIME role: `asSuperAdmin` calls it on every cross-tenant
   // statement. Functions carry EXECUTE for PUBLIC by default, so this is a no-op on an ordinary
@@ -362,6 +362,15 @@ async function provisionFleetRole(
   // `permission denied for function fazerai_fleet_role`. Best-effort and conditional: on a FIRST
   // boot this runs before `migrate deploy` has created the function, and the default covers that
   // boot until the next one makes it explicit.
+  // The DEFAULT privilege first, and it is the half that covers the FIRST boot: on a hardened
+  // install (one that revoked PUBLIC's default EXECUTE) the grant below is skipped because the
+  // function does not exist yet, `migrate deploy` then creates it carrying nothing, and the SAME
+  // boot fails in the runtime guard. ALTER DEFAULT PRIVILEGES is scoped to the role that runs it —
+  // which is the role that will create the function one step later — so it reaches forward.
+  await client.query(
+    `ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT EXECUTE ON FUNCTIONS TO ${ident}`,
+  );
+
   const fnPresent = (
     await client.query<{ present: boolean }>(
       "SELECT to_regprocedure('public.fazerai_fleet_role()') IS NOT NULL AS present",

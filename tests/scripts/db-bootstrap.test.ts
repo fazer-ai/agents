@@ -5,6 +5,7 @@ import {
   assertFleetMembership,
   assertFleetRoleIsUnprivileged,
   assertRuntimeRoleIsUnprivileged,
+  FLEET_ROLE_FORBIDDEN_ATTRIBUTES,
   fleetMembershipRepair,
   parseAppRole,
   planRoleProvisioning,
@@ -327,12 +328,7 @@ describe("planRoleProvisioning", () => {
   // existing one — a database dropped and recreated leaves it behind — nothing had asked whether it
   // is the harmless NOLOGIN role this design describes.
   describe("assertFleetRoleIsUnprivileged", () => {
-    const ok = {
-      rolsuper: false,
-      rolbypassrls: false,
-      rolcanlogin: false,
-      reaches: null,
-    };
+    const ok = { reaches: null };
 
     test("the role this design creates passes", () => {
       expect(() =>
@@ -340,13 +336,19 @@ describe("planRoleProvisioning", () => {
       ).not.toThrow();
     });
 
-    // Each attribute on its own, because a check written as one boolean would pass three of these.
+    // Each attribute on its own, because a check written as one boolean would pass five of these —
+    // and the list is every attribute that OUTLIVES a SET ROLE, not just the two that defeat RLS:
+    // the runtime role acquires CREATEDB, CREATEROLE and REPLICATION the moment it enters this role.
     test("every way of being privileged is refused, and named", () => {
-      for (const [field, word] of [
-        ["rolsuper", "SUPERUSER"],
-        ["rolbypassrls", "BYPASSRLS"],
-        ["rolcanlogin", "LOGIN"],
-      ] as const) {
+      expect(FLEET_ROLE_FORBIDDEN_ATTRIBUTES.map(([, w]) => w)).toEqual([
+        "SUPERUSER",
+        "BYPASSRLS",
+        "LOGIN",
+        "CREATEDB",
+        "CREATEROLE",
+        "REPLICATION",
+      ]);
+      for (const [field, word] of FLEET_ROLE_FORBIDDEN_ATTRIBUTES) {
         const boom = () =>
           assertFleetRoleIsUnprivileged("fleet_role", { ...ok, [field]: true });
         expect(boom).toThrow(/already exists and is privileged/);

@@ -45,6 +45,16 @@ const INVARIANTS: Array<{
     sql: /INHERITS/,
   },
   {
+    // The half that covers the FIRST boot: the grant below is skipped there because the migration
+    // has not created the function yet, and on an install that revoked PUBLIC's default the
+    // function would then carry nothing. ALTER DEFAULT PRIVILEGES is scoped to the role that runs
+    // it — the same role that creates the function one step later — so it reaches forward.
+    // Measured on a database with the default revoked: EXECUTE is true after the first boot.
+    what: "sets a DEFAULT privilege so the resolver is executable when it is created",
+    ts: /ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT EXECUTE ON FUNCTIONS TO \$\{ident\}/,
+    sql: /ALTER DEFAULT PRIVILEGES IN SCHEMA public'\s*\n?\s*' GRANT EXECUTE ON FUNCTIONS TO %I/,
+  },
+  {
     // Functions carry EXECUTE for PUBLIC by default, so this is a no-op on an ordinary install and
     // the whole difference on one that revoked it — asSuperAdmin calls the resolver every time.
     what: "grants EXECUTE on the resolver to the runtime role",
@@ -65,6 +75,12 @@ const INVARIANTS: Array<{
     what: "refuses a pre-existing fleet role that is privileged",
     ts: /already exists and is privileged/,
     sql: /already exists and is privileged/,
+  },
+  {
+    // Every attribute that outlives a SET ROLE, not just the two that defeat RLS.
+    what: "refuses CREATEDB, CREATEROLE and REPLICATION as well",
+    ts: /"CREATEDB"[\s\S]{0,120}"CREATEROLE"[\s\S]{0,120}"REPLICATION"/,
+    sql: /'CREATEDB'[\s\S]{0,200}'CREATEROLE'[\s\S]{0,200}'REPLICATION'/,
   },
   {
     // PL/pgSQL's RAISE knows only `%`, so an identifier it prints has to be quoted in the ARGUMENT.

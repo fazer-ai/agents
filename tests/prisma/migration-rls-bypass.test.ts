@@ -113,6 +113,38 @@ export function hasBypass(sql: string, migrationName: string): boolean {
     : FLEET_ENTRY_RE.test(stripped);
 }
 
+// The tables a file brackets with NO FORCE. Asked as a SET, because the old-era GUC was a
+// file-level switch and this one is not: a migration that writes A and B and brackets only A passes
+// any "does the file contain a bypass" question while B's UPDATE silently reaches zero rows.
+export function bracketedTables(sql: string): Set<string> {
+  const stripped = sql.replace(/^\s*--.*$/gm, "");
+  return new Set(
+    [
+      ...stripped.matchAll(
+        /ALTER\s+TABLE\s+"?(\w+)"?\s+NO\s+FORCE\s+ROW\s+LEVEL\s+SECURITY/gi,
+      ),
+    ].map((m) => (m[1] as string).toLowerCase()),
+  );
+}
+
+// Written FORCE-RLS tables this file does not bracket. Empty is the only acceptable answer from the
+// split onward; before it, the GUC covered the whole file and the question does not apply.
+export function unbracketedWrites(
+  sql: string,
+  forcedTables: Set<string>,
+  migrationName: string,
+): string[] {
+  if (migrationName < POLICY_SPLIT_MIGRATION) return [];
+  const bracketed = bracketedTables(sql);
+  return [
+    ...new Set(
+      tablesWrittenBy(sql)
+        .filter((t) => forcedTables.has(t))
+        .map((t) => t.toLowerCase()),
+    ),
+  ].filter((t) => !bracketed.has(t));
+}
+
 describe.skipIf(!dbUp)("every data migration sets the RLS bypass", () => {
   test("no migration writes to a FORCE-RLS table without it", async () => {
     const dir = "prisma/migrations";
@@ -123,8 +155,15 @@ describe.skipIf(!dbUp)("every data migration sets the RLS bypass", () => {
       const name = entry.split("/")[0] ?? entry;
       if (GRANDFATHERED.has(name)) continue;
       const sql = await Bun.file(`${dir}/${entry}`).text();
-      if (needsBypass(sql, forced) && !hasBypass(sql, name))
+      if (needsBypass(sql, forced) && !hasBypass(sql, name)) {
         offenders.push(name);
+      }
+      // And per WRITTEN table, from the split onward: the old-era GUC was a file-level switch and
+      // this one is not. A file that writes A and B and brackets only A answers every file-level
+      // question correctly while B's UPDATE silently reaches zero rows.
+      for (const t of unbracketedWrites(sql, forced, name)) {
+        offenders.push(`${name} (writes ${t} without bracketing it)`);
+      }
     }
     expect(offenders).toEqual([]);
   });
@@ -170,6 +209,18 @@ describe.skipIf(!dbUp)("every data migration sets the RLS bypass", () => {
     ).toBe(false);
     // And whatever a file lifts it must restore, asked per table.
     expect(liftsWithoutRestoring(role)).toEqual([]);
+    // Per WRITTEN table too: bracketing one of two is a file that passes every file-level question
+    // while the second UPDATE reaches nothing.
+    expect(unbracketedWrites(role, forced, after)).toEqual([]);
+    const second = [...forced][1];
+    if (second) {
+      const two = `ALTER TABLE "${table}" NO FORCE ROW LEVEL SECURITY;\n${bare}\nUPDATE "${second}" SET x = 1;\nALTER TABLE "${table}" FORCE ROW LEVEL SECURITY;`;
+      expect(unbracketedWrites(two, forced, after)).toEqual([
+        second.toLowerCase(),
+      ]);
+      // And the question does not apply before the split, where the switch was file-level.
+      expect(unbracketedWrites(two, forced, before)).toEqual([]);
+    }
     expect(
       liftsWithoutRestoring(
         `ALTER TABLE "${table}" NO FORCE ROW LEVEL SECURITY;\n${bare}`,

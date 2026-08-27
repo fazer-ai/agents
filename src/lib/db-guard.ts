@@ -186,10 +186,13 @@ export async function assertRuntimeRoleIsNotSuperuser(
   };
   const fn = await fleetFunctionAccess(db);
   if (fn.present && !fn.executable) {
+    // Named, never `CURRENT_USER`: the operator runs this as the function's owner or through the
+    // migration connection, where CURRENT_USER is the administrator — so the statement would grant
+    // EXECUTE to the wrong role and leave the boot exactly as broken.
     throw new FleetRoleUnreachableError(
-      "current_user",
+      row.rolname,
       FLEET_ROLE_FN,
-      `GRANT EXECUTE ON FUNCTION ${FLEET_ROLE_FN} TO CURRENT_USER;`,
+      `GRANT EXECUTE ON FUNCTION ${FLEET_ROLE_FN} TO "${row.rolname}";`,
     );
   }
   const fleet: FleetRow = fn.present

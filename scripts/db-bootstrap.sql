@@ -129,10 +129,16 @@ BEGIN
   -- absent, so on the branch that FINDS an existing role -- a database dropped and recreated leaves
   -- one behind -- nothing else asks whether it is the harmless NOLOGIN role this design describes.
   -- The runtime role SETs ROLE into it, so a privileged one makes RLS a no-op for every request.
+  -- Every attribute that outlives a SET ROLE, not just the two that defeat RLS: the runtime role
+  -- ACQUIRES all of them the moment it enters this role, so CREATEDB, CREATEROLE and REPLICATION are
+  -- cluster-level privileges handed to every request path.
   SELECT string_agg(w, ', ') INTO v_priv FROM (
     SELECT 'SUPERUSER' AS w FROM pg_roles WHERE rolname = v_fleet AND rolsuper
     UNION ALL SELECT 'BYPASSRLS' FROM pg_roles WHERE rolname = v_fleet AND rolbypassrls
     UNION ALL SELECT 'LOGIN' FROM pg_roles WHERE rolname = v_fleet AND rolcanlogin
+    UNION ALL SELECT 'CREATEDB' FROM pg_roles WHERE rolname = v_fleet AND rolcreatedb
+    UNION ALL SELECT 'CREATEROLE' FROM pg_roles WHERE rolname = v_fleet AND rolcreaterole
+    UNION ALL SELECT 'REPLICATION' FROM pg_roles WHERE rolname = v_fleet AND rolreplication
     UNION ALL SELECT 'inherits a privileged role'
                 FROM pg_roles r
                WHERE r.rolname = v_fleet
@@ -156,6 +162,12 @@ BEGIN
   -- install and the whole difference on one that revoked that (measured: the call dies with
   -- `permission denied for function fazerai_fleet_role`). Conditional, because on a FIRST run this
   -- script executes before the migration that creates the function.
+  -- The DEFAULT privilege first, and it is the half that covers the FIRST run: on a hardened install
+  -- the grant below is skipped because the function does not exist yet, the migration then creates
+  -- it carrying nothing, and the same boot fails in the runtime guard. ALTER DEFAULT PRIVILEGES is
+  -- scoped to the role that runs it, which is the role that creates the function one step later.
+  EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA public'
+                 ' GRANT EXECUTE ON FUNCTIONS TO %I', v_role);
   IF to_regprocedure('public.fazerai_fleet_role()') IS NOT NULL THEN
     EXECUTE format('GRANT EXECUTE ON FUNCTION public.fazerai_fleet_role() TO %I', v_role);
   END IF;

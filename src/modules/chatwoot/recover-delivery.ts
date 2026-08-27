@@ -11,6 +11,7 @@ import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 import { agentBotChatwootId, loadChatwootClient } from "./instance";
 import {
   controlCommand,
+  isNewIncomingMessage,
   normalizeChatwootEvent,
   parseLiveConversation,
 } from "./normalize";
@@ -198,7 +199,8 @@ export async function recoverStrandedDelivery(
   if (row.attempts >= MAX_RECOVERY_ATTEMPTS) return "unrecoverable";
 
   // Too late to be a recovery. Asked before any network, on the row's own receipt.
-  const age = (params.now ?? new Date()).getTime() - row.receivedAt.getTime();
+  const now = params.now ?? new Date();
+  const age = now.getTime() - row.receivedAt.getTime();
   if (age > MAX_RECOVERY_AGE_MS) return "unrecoverable";
 
   const instanceId = row.chatwootInstanceId;
@@ -224,6 +226,7 @@ export async function recoverStrandedDelivery(
       instanceId,
       conversationId,
       messageId,
+      now,
     });
   } finally {
     recovering.delete(threadId);
@@ -244,6 +247,7 @@ async function runRecovery(params: {
   instanceId: bigint;
   conversationId: number;
   messageId: number;
+  now: Date;
 }): Promise<RecoveryOutcome> {
   const { base, row, instanceId, conversationId, messageId } = params;
 
@@ -413,6 +417,37 @@ async function runRecovery(params: {
   // cheaper than a throw nobody catches.
   if (!normalized) return "unrecoverable";
 
+  // THE AGE, ASKED AGAIN ON THE CUSTOMER'S OWN CLOCK. The check at the top is on `receivedAt`, which
+  // is when THIS application inserted the ledger row — not when the customer wrote. A webhook
+  // delayed by a Chatwoot retry or an outage on our side inserts late, so a message hours older than
+  // the ceiling can pass that first check. The REST read is what finally supplies the true instant,
+  // and it is asked BEFORE the claim so a refusal spends no attempt.
+  const sentAt =
+    typeof message.created_at === "number" ? message.created_at : null;
+  if (
+    sentAt !== null &&
+    params.now.getTime() - sentAt * 1000 > MAX_RECOVERY_AGE_MS
+  ) {
+    return "unrecoverable";
+  }
+
+  // STILL AN INBOUND MESSAGE, or the read was degraded. The ledger row is the proof it ever was one:
+  // `inboundMessageId` is written for nothing else. So a rebuild that comes out as anything but a
+  // new incoming message describes a REST response that lost something — a missing `message_type`
+  // normalizes to "other" — and handing that to the delivery path is the quiet failure this whole
+  // issue is about: no turn runs, the row is marked PROCESSED, a closing line says the loss ended,
+  // and the customer is still waiting. `unreachable` rather than `unrecoverable` for the same reason
+  // an untrusted conversation snapshot is: the account answered with something unusable, which the
+  // next attempt may not.
+  if (!isNewIncomingMessage(normalized)) {
+    logger.warn(
+      "chatwoot recovery: %s rebuilt as a %s message, not a new incoming one; the REST read is degraded",
+      row.deliveryId,
+      normalized.message?.messageType ?? "unknown",
+    );
+    return "unreachable";
+  }
+
   // A CONTROL COMMAND IS NOT REPLAYED, and this is the one place a recovery refuses work it could
   // technically do.
   //
@@ -456,16 +491,45 @@ async function runRecovery(params: {
     return "deferred";
   }
 
-  const outcome = await processChatwootDelivery({
-    tenantId: params.tenantId,
-    instanceId,
-    deliveryRowId: row.id,
-    agentBotId,
-    normalized,
-    claimFrom: "DEAD",
-    base,
-    deps: params.deps,
-  });
+  // THE ROW IS PUT BACK IF THE DELIVERY PATH THROWS, and the reason is that the claim has already
+  // happened by then. `processChatwootDelivery` catches its own turn, media and mirror failures, but
+  // a scoped query that cannot reach the database escapes — and it escapes AFTER the CAS, leaving
+  // the row on PROCESSING with nothing holding it. The next attempt reads that and answers
+  // `superseded`, completing the job; the row then waits for the sweep to declare it stranded all
+  // over again, which is thirty minutes it may not have against the age ceiling.
+  //
+  // Restoring is safe because this pass OWNS the row: it won the CAS, and the write is guarded on
+  // the state it left it in, so a late tx2 that got through is never overwritten. `unreachable`
+  // rather than a rethrow, so the scheduler's own backoff runs and the retry finds a DEAD row it can
+  // claim.
+  let outcome: Awaited<ReturnType<typeof processChatwootDelivery>>;
+  try {
+    outcome = await processChatwootDelivery({
+      tenantId: params.tenantId,
+      instanceId,
+      deliveryRowId: row.id,
+      agentBotId,
+      normalized,
+      claimFrom: "DEAD",
+      base,
+      deps: params.deps,
+    });
+  } catch (e) {
+    const restored = await runScopedOn(base, sysCtx(params.tenantId), (db) =>
+      db.chatwootWebhookDelivery.updateMany({
+        where: { id: row.id, status: "PROCESSING" },
+        data: { status: "DEAD" },
+      }),
+    ).catch(() => ({ count: 0 }));
+    logger.error(
+      "chatwoot recovery: the delivery path threw on %s (conversation %d); row put back to DEAD: %s — %s",
+      row.deliveryId,
+      conversationId,
+      restored.count === 1 ? "yes" : "no, it had moved",
+      e instanceof Error ? e.message : String(e),
+    );
+    return "unreachable";
+  }
   // "skipped" means the claim matched nothing: another recovery took the row between the read above
   // and the CAS. The winner is running it, so this pass has nothing left to do and nothing to retry.
   if (outcome !== "processed") return "superseded";

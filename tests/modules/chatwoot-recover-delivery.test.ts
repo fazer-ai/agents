@@ -59,9 +59,10 @@ const suDb = su as PrismaClient;
 const CHATWOOT_INBOX_ID = 71;
 const AGENT_BOT_ID = 11;
 const REPLY = "Desculpe a demora, estou aqui!";
-// When the customer wrote, in epoch seconds. Deliberately a fixed instant well in the past of any
-// test run, so a `lastInboundAt` stamped from the recovery's own clock cannot pass for it.
-const SENT_AT = 1_780_000_000;
+// When the customer wrote, in epoch seconds. An hour ago rather than a fixed literal: it has to be
+// inside `MAX_RECOVERY_AGE_MS` for the recovery to run at all, and far enough from `now` that a
+// `lastInboundAt` stamped from the recovery's own clock cannot pass for it.
+const SENT_AT = Math.floor(Date.now() / 1000) - 3600;
 
 let tenantId = 0n;
 let agentDbId = 0n;
@@ -233,6 +234,8 @@ async function seedDeadDelivery(over: {
   inboundMessageId?: number | null;
   attempts?: number;
   status?: "DEAD" | "PROCESSING" | "PROCESSED";
+  // How long ago THIS application inserted the row, which is not when the customer wrote.
+  receivedAgoMs?: number;
 }): Promise<bigint> {
   deliverySeq += 1;
   const row = await suDb.chatwootWebhookDelivery.create({
@@ -242,7 +245,7 @@ async function seedDeadDelivery(over: {
       deliveryId: `rec-${process.pid}-${deliverySeq}`,
       event: "message_created",
       status: over.status ?? "DEAD",
-      receivedAt: new Date(Date.now() - 60 * 60 * 1000),
+      receivedAt: new Date(Date.now() - (over.receivedAgoMs ?? 60 * 60 * 1000)),
       claimedAt: new Date(Date.now() - 60 * 60 * 1000),
       attempts: over.attempts ?? 0,
       conversationId: over.conversationId,
@@ -839,6 +842,117 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
       select: { redirectOriginDisplayId: true },
     });
     expect(row.redirectOriginDisplayId).toBe(992);
+  });
+
+  test("a message older than the ceiling is refused on ITS clock, not on the row's", async () => {
+    // `receivedAt` is when THIS application inserted the ledger row, not when the customer wrote. A
+    // webhook delayed by a Chatwoot retry or an outage inserts late, so a message hours past the
+    // ceiling can pass a check made on the row alone — and then the free-form reply crosses the
+    // WhatsApp window, is rejected, is caught by the delivery path, and the row is still closed as
+    // recovered.
+    const convId = 8934;
+    const messageId = 9437;
+    await seedConversation(convId);
+    // Inserted a minute ago: the row's own clock says this is fresh.
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+      receivedAgoMs: 60_000,
+    });
+    const stub = stubChatwoot({
+      page: pageWith([
+        {
+          id: messageId,
+          content: "oi",
+          // The customer wrote it a day ago.
+          createdAt: Math.floor(Date.now() / 1000) - 24 * 3600,
+        },
+      ]),
+    });
+
+    const outcome = await recoverStrandedDelivery({
+      tenantId,
+      deliveryRowId: rowId,
+      base: appDb,
+      deps: depsWith(stub),
+    });
+
+    expect(outcome).toBe("unrecoverable");
+    expect(stub.sent).toEqual([]);
+    // Refused BEFORE the claim, so the row keeps its budget and stays in the worklist.
+    expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 0 });
+  });
+
+  test("a rebuilt event that is no longer an inbound message fails closed", async () => {
+    // The ledger row is the proof it ever was one: `inboundMessageId` is written for nothing else.
+    // So a rebuild that comes out as anything else describes a degraded REST read — a missing
+    // `message_type` normalizes to "other" — and handing that to the delivery path is the exact
+    // quiet failure this issue is about: no turn runs, the row is marked PROCESSED, a closing line
+    // says the loss ended, and the customer is still waiting.
+    const convId = 8935;
+    const messageId = 9438;
+    const conv = await seedConversation(convId);
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const stub = stubChatwoot({
+      page: {
+        payload: [
+          {
+            id: messageId,
+            content: "oi",
+            // No `message_type` at all, which is what a truncated or older REST response looks like.
+            private: false,
+            created_at: SENT_AT,
+            sender: { id: 77, name: "Cliente", type: "contact" },
+            attachments: [],
+          },
+        ],
+      },
+    });
+
+    const outcome = await recoverStrandedDelivery({
+      tenantId,
+      deliveryRowId: rowId,
+      base: appDb,
+      deps: depsWith(stub),
+    });
+
+    expect(outcome).toBe("unreachable");
+    expect(stub.sent).toEqual([]);
+    // Not claimed, so nothing was spent and no closing line says the loss ended.
+    expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 0 });
+    expect(await deliveryLines(conv.id, 200)).toHaveLength(0);
+  });
+
+  test("a delivery path that throws puts the row back where it found it", async () => {
+    // The claim has already happened by then: a throw escaping `processChatwootDelivery` leaves the
+    // row on PROCESSING with nothing holding it, the next attempt reads that as somebody else's and
+    // completes the job over it, and the row waits for the sweep to declare it stranded all over
+    // again — thirty minutes it may not have against the age ceiling.
+    //
+    // NOT reachable behaviourally, and that was MEASURED rather than assumed: the path catches its
+    // turn, its media pass, its mirror write and its client build — a stub that throws on each was
+    // tried and every one came back `processed`. What escapes is a scoped query that cannot reach
+    // the database (a pool timeout, a deadlock), and forcing that means faking the client out from
+    // under `runScopedOn`, which proves nothing about the shipped code. Asserted where it is
+    // written, the same way tests/modules/delivery-sweep.test.ts asserts its own unreachable branch.
+    const src = await Bun.file(
+      new URL(
+        "../../src/modules/chatwoot/recover-delivery.ts",
+        import.meta.url,
+      ),
+    ).text();
+    const tail = src.slice(
+      src.indexOf("    outcome = await processChatwootDelivery("),
+    );
+    const block = tail.slice(0, tail.indexOf("\n  const closed"));
+    // Guarded on the state this pass left it in, so a late tx2 that got through is never overwritten.
+    expect(block).toContain('where: { id: row.id, status: "PROCESSING" }');
+    expect(block).toContain('data: { status: "DEAD" }');
+    // `unreachable`, so the scheduler backs off and the retry finds a row it can claim.
+    expect(block).toContain('return "unreachable"');
   });
 
   test("a control command is never replayed", async () => {

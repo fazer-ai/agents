@@ -17,6 +17,7 @@ import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
 import { clearContactAuthState } from "@/modules/contact-auth/state";
 import { settleFlowEvents } from "@/modules/flowlog/scheduled";
+import { clearSpendCeilingFlights } from "@/modules/spend-ceiling/notice";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { clearFlowLog } from "../utils/flowlog";
 
@@ -142,11 +143,16 @@ async function deliverCustomerMessage(params: {
   makeClient: (cfg: { botToken: string }) => Promise<ChatwootClient>;
   // Absent means the strongest assertion this file can make: a turn that runs at all fails the test.
   allowModel?: boolean;
+  // The Chatwoot message id, when the caller needs TWO deliveries of ONE message: that is the shape
+  // Chatwoot produces on its own, dispatching an incoming message to the conversation's assigned
+  // agent bot and to the inbox's. The delivery row stays unique either way, because its id is the
+  // sequence and not the message.
+  messageId?: number;
 }): Promise<void> {
   seq += 1;
   const n = normalizeChatwootEvent({
     event: "message_created",
-    id: 8000 + seq,
+    id: params.messageId ?? 8000 + seq,
     content: "oi, preciso de ajuda",
     message_type: "incoming",
     private: false,
@@ -347,6 +353,53 @@ describe.skipIf(!dbUp)("the spend ceiling (webhook e2e)", () => {
     expect(await ceilingRows(9411)).toHaveLength(1);
   });
 
+  // ONE REFUSED MESSAGE, ONE LINE, and the count of refusals is the number an operator reads off the
+  // Logs page. Chatwoot fans an incoming message to the conversation's assigned agent bot AND to the
+  // inbox's, so the two deliveries arrive under two ids at the same moment and neither knows about
+  // the other.
+  test("one message fanned out to two routes is refused once on the record", async () => {
+    await setCeiling({
+      enabled: true,
+      monthlyInboxTokens: 100,
+      overCeilingMessage: OVER_COPY,
+    });
+    await spend("inbox", 500);
+    await seedConversation(9412);
+    const warmUp = stubChatwoot();
+    // One delivery first, and it is not decoration: the mirror UPSERTS the contact, and two
+    // concurrent inserts of a contact that does not exist yet race to a unique violation that has
+    // nothing to do with this gate. Measured as a 2-in-5 flake before this line existed. With the
+    // row already there both deliveries take the update path, and what is left racing is the thing
+    // under test.
+    await deliverCustomerMessage({
+      convId: 9412,
+      makeClient: warmUp.makeClient,
+      messageId: 8799,
+    });
+    // ...so the counts below belong to the fan-out and not to the warm-up.
+    await clearFlowLog(suDb, { tenantId });
+    clearContactAuthState();
+    clearSpendCeilingFlights();
+
+    const s = stubChatwoot();
+    await Promise.all([
+      deliverCustomerMessage({
+        convId: 9412,
+        makeClient: s.makeClient,
+        messageId: 8800,
+      }),
+      deliverCustomerMessage({
+        convId: 9412,
+        makeClient: s.makeClient,
+        messageId: 8800,
+      }),
+    ]);
+    expect(await ceilingRows(9412)).toHaveLength(1);
+    // ...and the customer hears it once, which is the sequence's own single flight rather than this
+    // key. Both are asserted because they are two different fences over one fan-out.
+    expect(s.publicOn(9412).map((m) => m.content)).toEqual([OVER_COPY]);
+  });
+
   test("the refusal is on the record, at error level", async () => {
     await setCeiling({
       enabled: true,
@@ -425,6 +478,11 @@ describe.skipIf(!dbUp)("the spend ceiling (webhook e2e)", () => {
     expect(s.statusToggles.filter(([c]) => c === 9405).length).toBeGreaterThan(
       0,
     );
+    // TWO lines, though, because these are two DIFFERENT customers left unanswered and the count of
+    // refusals is what an operator reads off the Logs page. The copy's window quiets the SENTENCE,
+    // never the record — and the de-duplication that keeps one fanned-out message to one line has to
+    // carry the message id, or it would swallow this second one too.
+    expect(await ceilingRows(9405)).toHaveLength(2);
   });
 
   // A ceiling switched off is the state every existing install is in, and it must cost nothing and

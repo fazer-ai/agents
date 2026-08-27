@@ -195,12 +195,20 @@ the identity because the warning is a statement about a month, and six hours is 
 between the last message of one month and the first of the next: a window that outlived the rollover
 would suppress the first warning of a month whose ledger reads zero.
 
-**The `over` line has a window only where the refusal is retried.** For a customer message it has
-none, because each message is its own refusal and each is a customer left unanswered. A scheduled
-nudge is not: it comes back every fifteen minutes for two hours (`nudge-retry.ts`) against a wall
-that is temporary by construction, so one follow-up that cannot go out paged the alert channels
-eight times and fifty pending jobs paged them four hundred. `runAgentNudge` therefore announces under
-a per-conversation occasion window sized to that ladder. **Guardrails deliberately do
+**The `over` line is one per refused OCCASION**, and the caller names the occasion because only it
+knows what one is. Two kinds of repetition made "one per refused customer message" false on their
+own, and neither is traffic:
+
+- **The same message, asked twice.** Chatwoot fans an incoming message to the conversation's
+  assigned agent bot *and* to the inbox's, so two deliveries run concurrently under two ids and
+  neither knows about the other. The webhook gate therefore keys its announcement by the Chatwoot
+  message id. Two *different* messages stay two lines, because each is a customer left unanswered
+  and the count of refusals is what an operator reads off the Logs page.
+- **The same occasion, asked eight times.** `over-ceiling` is a repairable nudge refusal, so the
+  caller reschedules it every fifteen minutes for two hours (`nudge-retry.ts`) against a wall that is
+  temporary by construction: one follow-up that could not go out paged the alert channels eight
+  times, and fifty pending jobs paged them four hundred. `runAgentNudge` keys by the conversation and
+  sizes the window to that ladder. **Guardrails deliberately do
 not**: on the output direction the reply is already written and paid for, so refusing there posts it
 unscreened or drops a reply the customer is waiting for, and a ceiling that switched moderation off
 would let a budget decide a safety question. Memory compaction is out for a sharper reason: skipping

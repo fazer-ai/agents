@@ -215,17 +215,32 @@ export function spendCeilingWarnKey(
 // CLAIMING IS THE DECISION, which is why this is not a predicate: asking twice would consume the
 // window twice, and a caller that asked before deciding would silence the line it was about to
 // write. So it returns the event, or null, having already spent the window it needed.
-// A refusal the CALLER RETRIES, and the span its ladder covers. The `over` line is one per refused
-// OCCASION rather than one per attempt, and for the webhook those are the same thing: an occasion is
-// a customer message, asked once. A scheduled nudge is not — it comes back every fifteen minutes for
-// two hours against a wall that is temporary by construction, so one follow-up that cannot go out
-// paged the alert channels eight times, and a tenant holding fifty pending jobs paged them four
-// hundred. Same reasoning as the warning's own window, applied where the repetition comes from the
-// ladder instead of from the traffic.
-export interface RetriedOccasion {
+// WHAT THE REFUSAL IS ABOUT, so the `over` line is one per refused OCCASION rather than one per ask.
+// The docs promise one line per refused customer message, and the two ways that promise broke are
+// both repetition the traffic does not explain:
+//
+//   - the same MESSAGE asked twice. Chatwoot fans one incoming message to the conversation's
+//     assigned agent bot AND to the inbox's, which is two deliveries with two ids running
+//     concurrently, so one refused customer produced two rows and two alert deliveries.
+//   - the same OCCASION asked eight times. `over-ceiling` is a repairable nudge refusal, so the
+//     caller reschedules it every fifteen minutes for two hours against a wall that is temporary by
+//     construction; a tenant holding fifty pending jobs paged the channels four hundred times about
+//     one unchanging fact.
+//
+// The caller names the occasion because only it knows what one is: a message id for a delivery, the
+// conversation for a scheduled job whose ladder spans two hours. Same reasoning as the warning's own
+// window, with the subject moved from the month to the thing being refused.
+export interface SpendCeilingOccasion {
   key: string;
   windowMs: number;
 }
+
+// Long enough to outlast the fan-out of one message, which is two deliveries racing in the same
+// second. The size barely matters and a fixed one is deliberate: the key already carries the message
+// id, so this can never suppress a line about a different message, and reading it off
+// `noticeCooldownSeconds` would let an operator who set that to 0 switch the de-duplication off
+// without knowing they had.
+export const SPEND_CEILING_MESSAGE_WINDOW_MS = 60_000;
 
 export function spendCeilingOverKey(
   tenantId: bigint,
@@ -239,7 +254,7 @@ export function spendCeilingAnnouncement(
   result: SpendVerdict & { evaluatedAt?: Date },
   source: UsageSource,
   tenantId: bigint,
-  occasion?: RetriedOccasion,
+  occasion?: SpendCeilingOccasion,
 ): FlowEvent | null {
   if (result.state === "allowed") return null;
   // The verdict's own instant, so the window this claims belongs to the month the figures describe.
@@ -274,7 +289,7 @@ export function announceSpendCeiling(
   result: SpendVerdict & { evaluatedAt?: Date },
   source: UsageSource,
   tenantId: bigint,
-  occasion?: RetriedOccasion,
+  occasion?: SpendCeilingOccasion,
 ): void {
   // NOTE: the claim is spent only when there is somewhere to write, so a caller with no flow
   // context does not silently consume another caller's window.

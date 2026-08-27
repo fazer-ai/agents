@@ -100,6 +100,7 @@ import {
 import { announceSpendCeilingOnConversation } from "@/modules/spend-ceiling/notice";
 import {
   announceSpendCeiling,
+  SPEND_CEILING_MESSAGE_WINDOW_MS,
   spendCeilingVerdict,
 } from "@/modules/spend-ceiling/service";
 import {
@@ -2567,6 +2568,19 @@ async function maybeConsumeCommandOrGate(params: {
       ceiling,
       "inbox",
       tenantId,
+      // ONE REFUSED MESSAGE, ONE LINE, which is what this gate promises and could not keep on its
+      // own. Chatwoot fans an incoming message to the conversation's assigned agent bot AND to the
+      // inbox's, and the two deliveries run concurrently under two ids, so an unkeyed announcement
+      // put two `over` rows and two alert bumps on the Logs page for one customer. The sequence
+      // below is already single-flighted per conversation; this is the same fan-out reaching the
+      // line thirty lines above it. Keyed by the message the delivery carries, so nothing about a
+      // DIFFERENT message can be swallowed with it.
+      n.message?.id == null
+        ? undefined
+        : {
+            key: `message:${n.message.id}`,
+            windowMs: SPEND_CEILING_MESSAGE_WINDOW_MS,
+          },
     );
     if (ceiling.state === "over") {
       await announceSpendCeilingOnConversation({

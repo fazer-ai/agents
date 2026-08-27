@@ -1,5 +1,6 @@
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import { z } from "zod";
+import { DEFAULT_TIMEZONE } from "@/graph/time";
 import { failableTool, toolFailure } from "@/graph/tools/failure";
 import {
   isExpectedResult,
@@ -8,6 +9,7 @@ import {
 import { AppError } from "@/lib/errors";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { clipText } from "@/lib/text";
+import { zonedWallClock } from "@/modules/integrations/toolpacks/calendar-slots";
 import {
   type ExtractedAppointment,
   extractAppointment,
@@ -80,6 +82,10 @@ export interface HttpToolDeps {
   // Conversation/contact context for {{placeholder}} interpolation in fixed fields, headers, the URL
   // and a raw body (e.g. {{conversation_id}}, {{contact_name}}). NEVER a secret.
   context?: Record<string, string>;
+  // The agent's own IANA timezone, and the ONLY thing that can say what an offset-less start from a
+  // declared response means: `14:00` is two in the afternoon where the operator is. Absent in the
+  // playground, which registers no appointments anyway. See WallClockResolver.
+  timezone?: string;
   // The same two closures the toolpack layer gets, for a tool whose definition DECLARES that its
   // response describes an appointment (issue #352). Bound to the tenant + this conversation's thread
   // in prepare.ts; absent on the playground, where a tool that books is best-effort like every other
@@ -339,7 +345,29 @@ async function registerDeclaredAppointment(
     );
     return;
   }
-  const got = extractAppointment(decl, body);
+  // The wall clock resolver, bound to this turn's timezone. Returns the SAME wall clock carrying an
+  // explicit offset, so every later reader agrees on the instant while the string the reminder reads
+  // aloud keeps the time the operator's system stated. Null for a wall clock that does not exist in
+  // the zone (a DST gap), which the extractor reports as an unresolved path.
+  const tz = deps.timezone ?? DEFAULT_TIMEZONE;
+  const resolveWallClock = (wall: string): string | null => {
+    const local = wall.replace(" ", "T");
+    // `zonedWallClock`, not `zonedWallClockToInstant`: the second is single-pass and resolves a
+    // skipped hour to a best-effort instant, which is the guess this reader must not make. The first
+    // does the round trip and REPORTS whether the wall clock exists, which is exactly the question
+    // and the reason its own header says the two callers want opposite things with the answer.
+    const { ms, exists } = zonedWallClock(local, tz);
+    if (!exists || !Number.isFinite(ms)) return null;
+    const asUtc = Date.parse(`${local}Z`);
+    if (!Number.isFinite(asUtc)) return null;
+    const offsetMin = Math.round((asUtc - ms) / 60_000);
+    const sign = offsetMin < 0 ? "-" : "+";
+    const abs = Math.abs(offsetMin);
+    const hh = String(Math.floor(abs / 60)).padStart(2, "0");
+    const mm = String(abs % 60).padStart(2, "0");
+    return `${local}${sign}${hh}:${mm}`;
+  };
+  const got = extractAppointment(decl, body, resolveWallClock);
   if (!got.ok) {
     report(
       "appointment_declaration",

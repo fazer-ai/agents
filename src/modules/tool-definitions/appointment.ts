@@ -109,7 +109,16 @@ export function readPath(body: unknown, path: string): string | undefined {
       ? /^\d+$/.test(seg)
         ? cur[Number(seg)]
         : undefined
-      : (cur as Record<string, unknown>)[seg];
+      : // OWN properties only. Nothing on Object.prototype is a scalar today, so no prototype path
+        // actually resolves — measured, and the reviewer's `constructor.name` returns undefined
+        // because the intermediate is a function and the guard above already refuses one. The check
+        // is here for the divergence rather than the exploit: `sampleLeaves` offers what
+        // `Object.keys` yields, which is own properties, so without this the two readers of the same
+        // question disagree about what a path may address, and that disagreement is exactly what the
+        // picker exists to remove.
+        Object.hasOwn(cur as object, seg)
+        ? (cur as Record<string, unknown>)[seg]
+        : undefined;
   }
   return readScalar(cur);
 }
@@ -246,6 +255,24 @@ export interface ExtractedAppointment {
   askConfirmationOnLast?: boolean;
 }
 
+// A wall clock with no offset, which is what a great many booking APIs answer with: `14:00` means
+// two in the afternoon WHERE THE OPERATOR IS, and there is nothing in the string that says where
+// that is. Everything downstream reads the start through `parseStartMs`, which treats an offset-less
+// datetime as UTC — deliberately, and correctly, for a value that already went through here. Left
+// unresolved, a booking at 14:00 in a -03:00 tenant arms its reminders for 11:00 and shows the
+// customer 14:00, and nothing anywhere reports it.
+//
+// Resolved by the CALLER, not here, because the answer is the agent's own timezone and this reader
+// has no business knowing it — the same boundary the Calendar path already draws ("one parse, at the
+// boundary", calendar-slots.ts). The resolver returns the SAME wall clock with an explicit offset
+// (never the instant re-rendered into another zone: the string is what the reminder says out loud),
+// or null for a wall clock that does not exist in that zone at all, which is a DST gap and cannot be
+// an appointment.
+const OFFSETLESS_DATETIME =
+  /^\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/;
+
+export type WallClockResolver = (wall: string) => string | null;
+
 export type ExtractResult =
   | { ok: true; value: ExtractedAppointment }
   // The paths that did not resolve, NAMED. The tool itself succeeded for the model — the booking is
@@ -256,6 +283,10 @@ export type ExtractResult =
 export function extractAppointment(
   decl: AppointmentDeclaration,
   body: unknown,
+  // Required, with no default: the two things a caller could mean here are "resolve in the agent's
+  // zone" and "this value is already unambiguous", and a default is how the next caller inherits the
+  // wrong one in silence. See WallClockResolver.
+  resolveWallClock: WallClockResolver,
 ): ExtractResult {
   const missing: string[] = [];
   const externalId = readBounded(body, decl.idPath, MAX_EXTERNAL_ID_CHARS);
@@ -264,6 +295,11 @@ export function extractAppointment(
   if (decl.action === "book" && decl.startPath) {
     startISO = readBounded(body, decl.startPath, MAX_START_CHARS);
     if (startISO === undefined) missing.push(decl.startPath);
+    else if (OFFSETLESS_DATETIME.test(startISO)) {
+      const resolved = resolveWallClock(startISO);
+      if (resolved === null) missing.push(decl.startPath);
+      else startISO = resolved;
+    }
   }
   if (missing.length > 0) return { ok: false, missing };
   if (externalId === undefined) return { ok: false, missing: [decl.idPath] };

@@ -38,6 +38,11 @@ function straddling(cap: number): string {
 // Each entry names a cap, and runs the REAL function that applies it. The padding is swept a few
 // units either side of the cap so an entry stays honest when the cut is not exactly at `cap` (an
 // ellipsis suffix, a `max - 1`, an inner cap one unit wider than the outer one).
+// Every start in this file already carries an offset, so there is nothing for the resolver to
+// decide: it says "this value is already unambiguous". The resolution itself is exercised where
+// the timezone actually lives (tests/graph/tools-http-appointment.test.ts).
+const KEEP = (wall: string) => wall;
+
 const CAPS: {
   name: string;
   cap: number;
@@ -69,11 +74,15 @@ const CAPS: {
         startPath: "start",
         summaryPath: "title",
       });
-      const r = extractAppointment(decl as never, {
-        id: "ap_1",
-        start: "2026-09-02T14:00:00-03:00",
-        title: s,
-      });
+      const r = extractAppointment(
+        decl as never,
+        {
+          id: "ap_1",
+          start: "2026-09-02T14:00:00-03:00",
+          title: s,
+        },
+        KEEP,
+      );
       return r.ok ? (r.value.summary ?? "") : "";
     },
   },

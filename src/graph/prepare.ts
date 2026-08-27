@@ -1172,6 +1172,10 @@ export async function buildToolset(
           : {}),
         ...cfg.httpToolContext,
       },
+      // The zone an offset-less start from a declared response is read in. Same value the documents
+      // tool gets, and for the same reason: two readers of the operator's own wall clock must not
+      // disagree by three hours.
+      timezone: cfg.timezone,
       // The same two closures the toolpacks get, for a tool whose DEFINITION declares that its
       // response describes an appointment (issue #352). Wired identically: undefined on the
       // playground, where nothing is recorded, and the declaration then simply does nothing.

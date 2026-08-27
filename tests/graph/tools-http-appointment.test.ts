@@ -46,7 +46,12 @@ interface Booked {
   reminders: { offsetsHours: number[]; askConfirmationOnLast: boolean } | null;
 }
 
-function harness(over: Partial<HttpToolDef>, status: number, body: string) {
+function harness(
+  over: Partial<HttpToolDef>,
+  status: number,
+  body: string,
+  timezone?: string,
+) {
   const booked: Booked[] = [];
   const cancelled: Array<{
     id: string;
@@ -58,6 +63,7 @@ function harness(over: Partial<HttpToolDef>, status: number, body: string) {
   const tool = buildHttpTool(def(over), {
     resolveCredential: async () => null,
     fetchImpl: stubFetch(status, body),
+    timezone,
     appointmentBooked: async (a) => {
       booked.push(a as unknown as Booked);
     },
@@ -285,5 +291,67 @@ describe("an HTTP tool that declares a booking", () => {
     });
     const out = (await tool.invoke({})) as unknown as string;
     expect(String(out)).toContain("HTTP 200");
+  });
+});
+
+// (#352, round 12) A great many booking APIs answer with a bare local timestamp. `14:00` is two in
+// the afternoon WHERE THE OPERATOR IS, and everything downstream reads the start through
+// `parseStartMs`, which treats an offset-less datetime as UTC — right for a value that already came
+// through here, three hours wrong for one that did not. The customer would be shown 14:00 and
+// reminded for 11:00, with nothing anywhere reporting it.
+describe("an offset-less start is read in the agent's own zone", () => {
+  const bodyAt = (start: string) =>
+    JSON.stringify({ data: { id: "ap_1", start, title: "Consulta" } });
+
+  test("the wall clock is kept and the offset is made explicit", async () => {
+    const { tool, booked, errors } = harness(
+      { appointment: BOOK },
+      200,
+      bodyAt("2026-09-02T14:00:00"),
+      "America/Sao_Paulo",
+    );
+    await tool.invoke({});
+    expect(errors).toEqual([]);
+    // The STRING keeps 14:00, because it is what the reminder says out loud; only the offset is added.
+    expect(booked[0]?.startISO).toBe("2026-09-02T14:00:00-03:00");
+    // And it is the right instant: 17:00 UTC, not 14:00 UTC.
+    expect(Date.parse(booked[0]?.startISO ?? "")).toBe(
+      Date.parse("2026-09-02T17:00:00Z"),
+    );
+  });
+
+  test("a zone with a different offset resolves differently, on the same input", async () => {
+    const { tool, booked } = harness(
+      { appointment: BOOK },
+      200,
+      bodyAt("2026-09-02T14:00:00"),
+      "Europe/Lisbon",
+    );
+    await tool.invoke({});
+    expect(booked[0]?.startISO).toBe("2026-09-02T14:00:00+01:00");
+  });
+
+  test("a start that already says where it is passes through untouched", async () => {
+    const { tool, booked } = harness(
+      { appointment: BOOK },
+      200,
+      bodyAt("2026-09-02T14:00:00-05:00"),
+      "America/Sao_Paulo",
+    );
+    await tool.invoke({});
+    expect(booked[0]?.startISO).toBe("2026-09-02T14:00:00-05:00");
+  });
+
+  test("a wall clock the zone skipped is reported, not guessed", async () => {
+    // 2026-09-06 is the DST spring-forward in Santiago: 00:30 does not exist that day.
+    const { tool, booked, errors } = harness(
+      { appointment: BOOK },
+      200,
+      bodyAt("2026-09-06T00:30:00"),
+      "America/Santiago",
+    );
+    await tool.invoke({});
+    expect(booked).toEqual([]);
+    expect(errors[0]?.message).toContain("data.start");
   });
 });

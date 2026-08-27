@@ -134,6 +134,11 @@ describe("readAppointmentDeclaration", () => {
   }
 });
 
+// Every start in this file already carries an offset, so there is nothing for the resolver to
+// decide: it says "this value is already unambiguous". The resolution itself is exercised where
+// the timezone actually lives (tests/graph/tools-http-appointment.test.ts).
+const KEEP = (wall: string) => wall;
+
 describe("readPath", () => {
   const BODY = {
     data: { id: "ap_1", start: "2026-09-02T14:00:00-03:00", n: 42, title: "" },
@@ -182,6 +187,45 @@ describe("readPath", () => {
 // path aimed at the wrong key passes every check and reads nothing, silently. The offer is only
 // trustworthy if it can never include a leaf the reader would then refuse, so these assert exactly
 // that agreement, in both directions.
+// (#352, round 12) A path addresses the RESPONSE, and `sampleLeaves` already says so by walking
+// `Object.keys` — own properties. `readPath` walked the prototype chain, so the two readers of the
+// same question disagreed about what a path may address, and this PR's whole argument for the picker
+// is that they must not.
+//
+// The disagreement is not reachable from a real body: JSON.parse only ever produces plain objects,
+// and nothing on Object.prototype is a scalar (measured: its one non-function own property is
+// `__proto__`, an accessor returning an object), so the reviewer's `constructor.name` returns
+// undefined because the intermediate is a function and the walk already refuses one. What is pinned
+// here is the CONTRACT, on the only input that can express it.
+describe("a path addresses the response, not JavaScript", () => {
+  test("readPath does not walk the prototype chain", () => {
+    const body = Object.create({ inherited: "from the prototype" }) as Record<
+      string,
+      unknown
+    >;
+    body.own = "from the response";
+    expect(readPath(body, "own")).toBe("from the response");
+    expect(readPath(body, "inherited")).toBeUndefined();
+    // The whole subtree, not just the leaf: an inherited object is not a place a path may pass through.
+    const nested = Object.create({ deep: { id: "x" } }) as Record<
+      string,
+      unknown
+    >;
+    expect(readPath(nested, "deep.id")).toBeUndefined();
+  });
+
+  test("and neither does the picker, which is the agreement that matters", () => {
+    const body = Object.create({ inherited: "from the prototype" }) as Record<
+      string,
+      unknown
+    >;
+    body.own = "from the response";
+    expect(sampleLeaves(body)).toEqual([
+      { path: "own", value: "from the response" },
+    ]);
+  });
+});
+
 describe("sampleLeaves", () => {
   test("walks objects and arrays, in document order, with array positions as segments", () => {
     expect(
@@ -301,21 +345,33 @@ describe("extractAppointment bounds what it persists", () => {
     // Not clipped: a clipped id is a different booking, and the cancel tool would never find this
     // one. It also could not key the unique index it goes into — a btree entry tops out near 2704
     // bytes, so the write would throw and the appointment would silently never be recorded.
-    const r = extractAppointment(decl, {
-      data: { id: "x".repeat(201), start, title: "Consulta" },
-    });
+    const r = extractAppointment(
+      decl,
+      {
+        data: { id: "x".repeat(201), start, title: "Consulta" },
+      },
+      KEEP,
+    );
     expect(r).toEqual({ ok: false, missing: ["data.id"] });
     // The boundary is inclusive, and the control: one char shorter goes through untouched.
-    const ok = extractAppointment(decl, {
-      data: { id: "x".repeat(200), start, title: "Consulta" },
-    });
+    const ok = extractAppointment(
+      decl,
+      {
+        data: { id: "x".repeat(200), start, title: "Consulta" },
+      },
+      KEEP,
+    );
     expect(ok.ok && ok.value.externalId).toBe("x".repeat(200));
   });
 
   test("an oversized start is refused too: nothing that long is an instant", () => {
-    const r = extractAppointment(decl, {
-      data: { id: "ap_1", start: "2".repeat(101), title: "Consulta" },
-    });
+    const r = extractAppointment(
+      decl,
+      {
+        data: { id: "ap_1", start: "2".repeat(101), title: "Consulta" },
+      },
+      KEEP,
+    );
     expect(r).toEqual({ ok: false, missing: ["data.start"] });
   });
 
@@ -327,21 +383,33 @@ describe("extractAppointment bounds what it persists", () => {
     // Repairing would be the worse answer HERE specifically: dropping the NUL mints an id that no
     // longer matches what the operator's cancel tool will answer with, so the booking could never be
     // retired. A refusal names the path and the operator points somewhere else.
-    const r = extractAppointment(decl, {
-      data: { id: "ap\u00001", start, title: "Consulta" },
-    });
+    const r = extractAppointment(
+      decl,
+      {
+        data: { id: "ap\u00001", start, title: "Consulta" },
+      },
+      KEEP,
+    );
     expect(r).toEqual({ ok: false, missing: ["data.id"] });
     // Half a character is refused the same way, and it is the half that survives JSON.parse.
-    const lone = extractAppointment(decl, {
-      data: { id: JSON.parse('"ap\\ud800"'), start, title: "Consulta" },
-    });
+    const lone = extractAppointment(
+      decl,
+      {
+        data: { id: JSON.parse('"ap\\ud800"'), start, title: "Consulta" },
+      },
+      KEEP,
+    );
     expect(lone).toEqual({ ok: false, missing: ["data.id"] });
   });
 
   test("an unstoreable start is refused too", () => {
-    const r = extractAppointment(decl, {
-      data: { id: "ap_1", start: `${start}\u0000`, title: "Consulta" },
-    });
+    const r = extractAppointment(
+      decl,
+      {
+        data: { id: "ap_1", start: `${start}\u0000`, title: "Consulta" },
+      },
+      KEEP,
+    );
     expect(r).toEqual({ ok: false, missing: ["data.start"] });
   });
 
@@ -349,13 +417,17 @@ describe("extractAppointment bounds what it persists", () => {
     // The opposite answer, for the same reason as the length: refusing the whole registration over a
     // broken title would trade the follow-up pause for a nicer sentence, and the summary only ever
     // reaches the model.
-    const r = extractAppointment(decl, {
-      data: {
-        id: "ap_1",
-        start,
-        title: JSON.parse('"Cons\\u0000ulta \\ud800"'),
+    const r = extractAppointment(
+      decl,
+      {
+        data: {
+          id: "ap_1",
+          start,
+          title: JSON.parse('"Cons\\u0000ulta \\ud800"'),
+        },
       },
-    });
+      KEEP,
+    );
     expect(r.ok).toBe(true);
     expect(r.ok && r.value.summary).toBe("Consulta \ufffd");
     expect(r.ok && r.value.externalId).toBe("ap_1");
@@ -366,9 +438,13 @@ describe("extractAppointment bounds what it persists", () => {
     // better, so losing the tail costs nothing — while refusing would trade the follow-up pause for
     // a nicer sentence. Unclipped it is the worse of the two, since nothing downstream errors and it
     // is re-rendered into every later turn.
-    const r = extractAppointment(decl, {
-      data: { id: "ap_1", start, title: "T".repeat(500) },
-    });
+    const r = extractAppointment(
+      decl,
+      {
+        data: { id: "ap_1", start, title: "T".repeat(500) },
+      },
+      KEEP,
+    );
     expect(r.ok).toBe(true);
     expect(r.ok && r.value.summary).toBe("T".repeat(200));
     expect(r.ok && r.value.externalId).toBe("ap_1");
@@ -384,13 +460,17 @@ describe("extractAppointment", () => {
   }) as AppointmentDeclaration;
 
   test("a body that answers every path", () => {
-    const r = extractAppointment(decl, {
-      data: {
-        id: "ap_1",
-        start: "2026-09-02T14:00:00-03:00",
-        title: "Consulta",
+    const r = extractAppointment(
+      decl,
+      {
+        data: {
+          id: "ap_1",
+          start: "2026-09-02T14:00:00-03:00",
+          title: "Consulta",
+        },
       },
-    });
+      KEEP,
+    );
     expect(r).toEqual({
       ok: true,
       value: {
@@ -404,14 +484,18 @@ describe("extractAppointment", () => {
   });
 
   test("the missing paths are NAMED, because the operator has to know which one to fix", () => {
-    const r = extractAppointment(decl, { data: { title: "Consulta" } });
+    const r = extractAppointment(decl, { data: { title: "Consulta" } }, KEEP);
     expect(r).toEqual({ ok: false, missing: ["data.id", "data.start"] });
   });
 
   test("a summary that does not resolve does not sink the registration", () => {
-    const r = extractAppointment(decl, {
-      data: { id: "ap_2", start: "2026-09-02T14:00:00-03:00" },
-    });
+    const r = extractAppointment(
+      decl,
+      {
+        data: { id: "ap_2", start: "2026-09-02T14:00:00-03:00" },
+      },
+      KEEP,
+    );
     expect(r.ok).toBe(true);
     expect(r.ok && r.value.summary).toBeUndefined();
     expect(r.ok && r.value.externalId).toBe("ap_2");
@@ -422,11 +506,11 @@ describe("extractAppointment", () => {
       action: "cancel",
       idPath: "id",
     }) as AppointmentDeclaration;
-    expect(extractAppointment(cancel, { id: "ap_1" })).toEqual({
+    expect(extractAppointment(cancel, { id: "ap_1" }, KEEP)).toEqual({
       ok: true,
       value: { action: "cancel", provider: "declared", externalId: "ap_1" },
     });
-    expect(extractAppointment(cancel, {})).toEqual({
+    expect(extractAppointment(cancel, {}, KEEP)).toEqual({
       ok: false,
       missing: ["id"],
     });

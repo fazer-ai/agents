@@ -434,6 +434,8 @@ export interface HttpToolBuildDeps {
   // their response describes an appointment (issue #352). Named individually rather than spread from
   // HttpToolDeps so that adding a dep to the runtime does not silently widen what this layer
   // forwards.
+  // The agent zone an offset-less start is read in, same reason as the rest of this block.
+  timezone?: HttpToolDeps["timezone"];
   appointmentBooked?: HttpToolDeps["appointmentBooked"];
   cancelAppointment?: HttpToolDeps["cancelAppointment"];
   onSideEffectError?: HttpToolDeps["onSideEffectError"];

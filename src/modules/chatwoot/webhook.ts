@@ -670,6 +670,15 @@ export interface ProcessChatwootParams {
   // recovery taking back a row the sweep gave up on (issue #295); see the CAS for why it is one
   // statement and not two.
   claimFrom?: "PENDING" | "DEAD";
+  // Told when the turn THREW, and told to nobody who does not ask. The return union is a contract
+  // with every caller (`"processed" | "skipped"`), and widening it would silently change what the
+  // live delivery reads; this is opt-in, so only the caller for whom the distinction exists pays for
+  // it. The distinction is the recovery's (#295): for a live delivery the row really is processed —
+  // a failed turn is surfaced on the conversation and announced in Chatwoot, and there is no retry
+  // to arm — while a recovery exists to ANSWER, so closing the loss on a turn that answered nobody
+  // is the lie the whole subsystem is built against. Fired inside the catch, before any of the
+  // reporting, so it says "the turn failed" and nothing about what happened next.
+  onTurnFailure?: (err: unknown) => void;
   base?: PrismaClient;
   // Injectable runtime deps (tests): fake model/client/checkpointer + the contact-auth fetch.
   deps?: RuntimeDeps;
@@ -3702,6 +3711,7 @@ export async function processChatwootDelivery(
             });
           }
         } catch (err) {
+          params.onTurnFailure?.(err);
           logger.error(
             "chatwoot agent turn failed (conv=%s): %s",
             convLabel,

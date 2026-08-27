@@ -415,11 +415,38 @@ async function runRecovery(params: {
   }
   const newest = maxIncomingId(recent, messageId);
   if (newest > messageId) {
+    // WHICH of the two cases this is, said out loud, because they read the same from the row and an
+    // operator does different things about them.
+    //
+    //   the newer message has a delivery of its own that is NOT dead — the ordinary case, and the
+    //   premise this refusal rests on: that delivery ran or is running, and it carries the reply.
+    //
+    //   the newer message's row is DEAD TOO — one process death stranded a BURST. Nothing has
+    //   answered anything yet; the newest row's own recovery will answer the conversation, and this
+    //   older message's TEXT is never handed to a model, because a direct turn carries its own
+    //   trigger text and nothing back-fills the channel. This row stays DEAD and stays on the
+    //   operator's page, which is the whole signal they get that a customer said something nobody
+    //   read. Measured, not inferred, and tracked separately: recovering a burst together is the
+    //   flush's job and re-implementing it here is what the head of this file refuses to do.
+    const covering = await runScopedOn(base, sysCtx(params.tenantId), (db) =>
+      db.chatwootWebhookDelivery.findFirst({
+        where: {
+          tenantId: params.tenantId,
+          chatwootInstanceId: instanceId,
+          conversationId,
+          inboundMessageId: newest,
+        },
+        select: { status: true },
+      }),
+    );
     logger.info(
-      "chatwoot recovery: %s is behind message %d on conversation %d; not answered",
+      "chatwoot recovery: %s is behind message %d on conversation %d; not answered (%s)",
       row.deliveryId,
       newest,
       conversationId,
+      covering?.status === "DEAD"
+        ? "that message is stranded too, so this one is part of a burst its own recovery answers"
+        : `that message's delivery is ${covering?.status ?? "not in the ledger"}`,
     );
     return "unrecoverable";
   }
@@ -699,6 +726,19 @@ async function runRecovery(params: {
     return "unrecoverable";
   }
   let outcome: Awaited<ReturnType<typeof processChatwootDelivery>>;
+  // A TURN THAT THREW IS NOT AN ANSWER, and the delivery path cannot say so in its return value:
+  // `"processed"` is about the ROW, and for a live delivery it is the honest word — the failure is
+  // recorded on the conversation and announced inside Chatwoot, and there is no retry to arm. A
+  // recovery exists to answer, so the same word there would close the loss on a customer nobody
+  // replied to and take the row out of the worklist. MEASURED before this: with the model throwing,
+  // the recovery returned `recovered`, the row went `PROCESSED`, and nothing was sent.
+  //
+  // Asked for explicitly (`onTurnFailure`) rather than read back off the world afterwards. The two
+  // readings available here — the conversation's recorded error, the absence of an outgoing message
+  // — both answer about a MOMENT rather than about this turn: an error recorded by a previous
+  // failure is still there, and an operator can post a reply of their own between the throw and any
+  // read this side could make.
+  let turnThrew = false;
   try {
     outcome = await processChatwootDelivery({
       tenantId: params.tenantId,
@@ -707,6 +747,9 @@ async function runRecovery(params: {
       agentBotId,
       normalized,
       claimFrom: "DEAD",
+      onTurnFailure: () => {
+        turnThrew = true;
+      },
       base,
       deps: params.deps,
     });
@@ -729,6 +772,28 @@ async function runRecovery(params: {
   // "skipped" means the claim matched nothing: another recovery took the row between the read above
   // and the CAS. The winner is running it, so this pass has nothing left to do and nothing to retry.
   if (outcome !== "processed") return "superseded";
+
+  // The row goes BACK to DEAD, which is the same repair the throw above makes and for the same
+  // reason: it left the worklist at the claim, and the customer is still owed a reply. The attempt
+  // stays spent — the claim stamped it — so `MAX_RECOVERY_ATTEMPTS` bounds the retrying without
+  // anything else counting. `unreachable`, so the job backs off and eventually dead-letters: a model
+  // or provider that keeps throwing is a condition an operator has to see, exactly like an account
+  // that cannot be reached. No closing line, because nothing closed.
+  if (turnThrew) {
+    const restored = await runScopedOn(base, sysCtx(params.tenantId), (db) =>
+      db.chatwootWebhookDelivery.updateMany({
+        where: { id: row.id, status: "PROCESSED" },
+        data: { status: "DEAD" },
+      }),
+    ).catch(() => ({ count: 0 }));
+    logger.warn(
+      "chatwoot recovery: the turn threw on %s (conversation %d), so the loss is NOT closed; row put back to DEAD: %s",
+      row.deliveryId,
+      conversationId,
+      restored.count === 1 ? "yes" : "no, it had moved",
+    );
+    return "unreachable";
+  }
 
   // THE LINE THAT CLOSES THE LOSS, and it has to be written HERE rather than left to
   // `retireCoveredDeliveries`. That function writes its correction only for rows it moves out of

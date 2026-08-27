@@ -869,6 +869,110 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 0 });
   });
 
+  test("a turn that THREW does not close the loss, and the row goes back to DEAD", async () => {
+    // The failure this whole subsystem is built against, reached from inside the recovery itself.
+    // `processChatwootDelivery` catches its own turn failure and still settles the row: for a live
+    // delivery that is honest — the failure is recorded on the conversation and announced in
+    // Chatwoot, and there is no retry to arm — but a recovery exists to ANSWER. MEASURED before the
+    // fix: the model threw, nothing was sent, and the recovery still returned `recovered` with the
+    // row on `PROCESSED`, so the customer was dropped from the worklist unanswered.
+    //
+    // The attempt stays SPENT, because the claim stamped it: the budget is what bounds the retrying,
+    // and a failure that cost nothing would retry until the age ceiling instead.
+    const convId = 8958;
+    const messageId = 9458;
+    const conv = await seedConversation(convId);
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const stub = stubChatwoot({
+      page: pageWith([{ id: messageId, content: "oi" }]),
+    });
+
+    expect(
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        deps: {
+          ...depsWith(stub),
+          makeModel: () => {
+            throw new Error("provider 500");
+          },
+        },
+      }),
+    ).toBe("unreachable");
+
+    expect(stub.sent).toEqual([]);
+    // Back in the worklist, with the attempt counted.
+    expect(await ledger(rowId)).toEqual({ status: "DEAD", attempts: 1 });
+    // And no closing line: the page an operator already received stays open, which is the whole
+    // point of putting the row back. Keyed by the mirror's ROW id, which is what the writer files
+    // against — the Chatwoot number would match nothing and pass without reading anything.
+    expect(await deliveryLines(conv.id)).toEqual([]);
+  });
+
+  test("a BURST stranded together is answered once, and the older row stays on the page", async () => {
+    // One process death can strand two customer messages on one conversation, which is two DEAD
+    // rows. What this pins is the whole outcome, because the reviewer's question was whether the
+    // older row is closed on a premise about a delivery that also died.
+    //
+    // It is not. The newest row's recovery answers the conversation — ONE reply, not two — and the
+    // older row stays DEAD with no attempt spent and no closing line, so the page the operator
+    // already received about it stays open. What is lost is the older message's TEXT: a direct turn
+    // carries its own trigger text and nothing back-fills the channel from Chatwoot, so the model
+    // answers the second question and never reads the first. That bound is the delivery path's, not
+    // this module's, and gathering a burst is the flush's job — re-implementing it here is what the
+    // head of this file refuses to do.
+    const convId = 8959;
+    const older = 9459;
+    const newer = 9460;
+    const conv = await seedConversation(convId);
+    const rowOlder = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: older,
+    });
+    const rowNewer = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: newer,
+    });
+    const stub = stubChatwoot({
+      page: pageWith([
+        { id: older, content: "quanto custa?" },
+        { id: newer, content: "e vocês atendem no sábado?" },
+      ]),
+    });
+
+    expect(
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowOlder,
+        base: appDb,
+        deps: depsWith(stub),
+      }),
+    ).toBe("unrecoverable");
+    expect(
+      await recoverStrandedDelivery({
+        tenantId,
+        deliveryRowId: rowNewer,
+        base: appDb,
+        deps: depsWith(stub),
+      }),
+    ).toBe("recovered");
+
+    // ONE reply. Two would be the harm the newest-message check exists for.
+    expect(stub.sent).toEqual([[convId, REPLY]]);
+    expect(await ledger(rowOlder)).toEqual({ status: "DEAD", attempts: 0 });
+    expect(await ledger(rowNewer)).toEqual({
+      status: "PROCESSED",
+      attempts: 1,
+    });
+    // Exactly one closing line, for the row that actually closed.
+    const lines = await deliveryLines(conv.id);
+    expect(lines.length).toBe(1);
+  });
+
   test("a mirror that never learned the inbox rebuilds it from the live message", async () => {
     // The route is the one thing the rebuilt body cannot get wrong quietly. `Conversation.inboxId`
     // is nullable and the mirror writes it null for any event that named no inbox (`upsertInbox`

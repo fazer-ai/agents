@@ -1,5 +1,6 @@
 import { modelConfigSchema } from "@/graph/model-config";
 import { readBehaviorSettings } from "@/modules/agents/behavior-settings";
+import { VAULT_REF_PREFIX } from "@/modules/vault/service";
 
 // Which of the three agent actions a write to `updateAgent` is, and what its row carries.
 //
@@ -123,9 +124,14 @@ function carriesCredential(v: unknown): boolean {
   // the column with the space still on it. An anchored test on the raw string then says no.
   if (typeof v !== "string") return false;
   const url = v.trim();
-  const httpish = /^https?:\/\//i.test(url);
+  // The RAW spelling only answers for a string that will not parse. `new URL` normalizes
+  // `https:llm.example/v1?api_key=…` and `https:/llm.example/v1?api_key=…` to protocol `https:`,
+  // and `modelConfigSchema` accepts both, so a test anchored on `//` in the text called them
+  // non-endpoints and copied the query straight into the row.
+  const looksHttp = /^https?:\/\//i.test(url);
   try {
     const u = new URL(url);
+    const httpish = u.protocol === "http:" || u.protocol === "https:";
     // USERINFO is asked of any scheme, and the query and the fragment only of `http(s)`. The split
     // is measured, not stylistic. `z.string().url()` accepts `ftp://user:pw@host`, so restricting
     // the whole rule to `http(s)` let that one through; and userinfo costs nothing to widen because
@@ -135,7 +141,7 @@ function carriesCredential(v: unknown): boolean {
     if (u.username !== "" || u.password !== "") return true;
     return httpish && (u.search !== "" || u.hash !== "");
   } catch {
-    if (!httpish) return false;
+    if (!looksHttp) return false;
     // Shaped like an endpoint and not parseable as one: it cannot be shown to carry no credential.
     return true;
   }
@@ -150,6 +156,19 @@ function carriesCredential(v: unknown): boolean {
 // `guardrails.baseURL`, `memory.compaction.baseURL`, `modelFallback.baseURL` — eight, plus
 // `modelConfig.baseURL`. A guard written on one of the nine is a guard on none of the other eight,
 // and the tenth arrives with the next block.
+// A credential reference that is not a REFERENCE.
+//
+// `docs/mcp.md` says every `credentialRef` is a `vault:<id>` and "never the secret itself", but the
+// schema types it as a non-empty string and `collectCredentialRefWrites` validates only the refs a
+// write CHANGES — so a legacy agent can carry a raw key there, resubmit it unchanged alongside some
+// other edit, and have it copied into both halves of a permanent row. Nine keys carry one
+// (`modelConfig` plus the eight `SETTINGS_CREDENTIAL_PATHS`, one of them spelled
+// `normalizeCredentialRef`), which is why this asks about the NAME rather than repeating the list.
+function isUnvouchableCredRef(key: string, v: unknown): boolean {
+  if (!/credentialRef$/i.test(key)) return false;
+  return typeof v === "string" && !v.startsWith(VAULT_REF_PREFIX);
+}
+
 function dropUnvouchableUrls(v: unknown): unknown {
   // The ROOT is a position too. An audited scalar can BE the endpoint — a `name` or a
   // `systemPrompt` that is nothing but a URL — and a walk that only inspects object values and array
@@ -162,7 +181,7 @@ function dropUnvouchableUrls(v: unknown): unknown {
   if (v === null || typeof v !== "object") return v;
   const out: Record<string, unknown> = {};
   for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
-    if (carriesCredential(val)) continue;
+    if (carriesCredential(val) || isUnvouchableCredRef(k, val)) continue;
     // Plain assignment, and the asymmetry with `residue` below is measured rather than an
     // oversight: this walks a CANONICAL value, whose keys are the readers' and the schema's, so
     // none of them can be `__proto__`. A `setOwn` here survived a mutation battery for that reason.

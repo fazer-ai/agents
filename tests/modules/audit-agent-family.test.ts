@@ -250,6 +250,7 @@ describe.skipIf(!dbUp)("the agent family records its own changes", () => {
         "agent_tool_selections",
         "agents",
         "business_hours",
+        "vault_entries",
       ]) {
         await su.$executeRawUnsafe(
           `DELETE FROM ${table} WHERE tenant_id = ${tenantId}`,
@@ -1238,6 +1239,102 @@ describe.skipIf(!dbUp)("the agent family records its own changes", () => {
       | Record<string, unknown>
       | undefined;
     expect(after?.systemPrompt).toBe(prose);
+  });
+
+  test("the PARSED protocol decides, not the spelling in the text", async () => {
+    // `new URL` normalizes `https:llm.example/v1?api_key=…` to protocol `https:` and the model-config
+    // validator accepts it, so a test anchored on `//` in the raw text called it a non-endpoint.
+    const agent = await seedAgent({
+      modelConfig: {
+        provider: "openai-compatible",
+        model: "m",
+        baseURL: "https:llm.example.com/v1?api_key=hunter2",
+      },
+    });
+    await clearAudit();
+
+    await updateAgent(
+      ctx(),
+      BigInt(agent.id),
+      {
+        modelConfig: {
+          provider: "openai-compatible",
+          model: "m",
+          baseURL: "https:/llm.example.com/v1?api_key=rotated",
+        },
+      },
+      appDb,
+    );
+
+    const got = await rows();
+    expect(got.length).toBe(1);
+    const dump = JSON.stringify([got[0]?.before, got[0]?.after]);
+    expect(dump).not.toContain("hunter2");
+    expect(dump).not.toContain("rotated");
+  });
+
+  test("a credentialRef that is not a vault reference is not vouched for", async () => {
+    // `docs/mcp.md` says every one is a `vault:<id>` and never the secret, but the schema types it
+    // as a non-empty string and only CHANGED refs are validated — so a legacy agent can resubmit a
+    // raw key alongside an unrelated edit and have it copied into a permanent row.
+    // Seeded through SQL: the write boundary refuses a raw ref outright (`requireVaultRef`), which
+    // is precisely why the only agents carrying one are legacy. The edit below changes the MODEL and
+    // resubmits the ref untouched, and `collectCredentialRefWrites` validates only refs a write
+    // CHANGES — so the raw one goes through and reaches the projection.
+    const agent = await seedAgent({ settings: { stt: { enabled: true } } });
+    await su?.$executeRawUnsafe(
+      `UPDATE agents SET settings = '{"stt":{"enabled":true,"credentialRef":"sk-legacy-raw-key"}}'::jsonb WHERE id = ${agent.id}`,
+    );
+    await clearAudit();
+
+    await updateAgent(
+      ctx(),
+      BigInt(agent.id),
+      {
+        settings: {
+          stt: {
+            enabled: true,
+            credentialRef: "sk-legacy-raw-key",
+            model: "whisper-1",
+          },
+        },
+      },
+      appDb,
+    );
+
+    const got = await rows();
+    expect(got.length).toBe(1);
+    expect(JSON.stringify([got[0]?.before, got[0]?.after])).not.toContain(
+      "sk-legacy-raw-key",
+    );
+  });
+
+  test("a proper vault reference is recorded, because that is what a reference is for", async () => {
+    const mk = async (name: string) =>
+      (
+        await su?.vaultEntry.create({
+          data: { tenantId, name, secret: "placeholder", kind: "openai" },
+          select: { id: true },
+        })
+      )?.id;
+    const one = await mk(`k1-${process.pid}`);
+    const two = await mk(`k2-${process.pid}`);
+    const agent = await seedAgent({
+      settings: { stt: { enabled: true, credentialRef: `vault:${one}` } },
+    });
+    await clearAudit();
+
+    await updateAgent(
+      ctx(),
+      BigInt(agent.id),
+      { settings: { stt: { enabled: true, credentialRef: `vault:${two}` } } },
+      appDb,
+    );
+
+    const after = (await rows())[0]?.after as Record<string, unknown>;
+    expect((after.stt as Record<string, unknown>).credentialRef).toBe(
+      `vault:${two}`,
+    );
   });
 
   test("a base URL with no credential in it is recorded as itself", async () => {

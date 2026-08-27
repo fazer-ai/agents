@@ -73,6 +73,43 @@ const NOT_A_CALLERS_ID: Record<string, string> = {
 // original source at these offsets. Collapsing a string to nothing made `slice("vault:".length)`
 // and `slice("other:".length)` the same waiver key, so one entry would silently cover a call it was
 // never argued for. Measured on CI, where the ninth vault-ref copy came back as `ref.slice("".length)`.
+// Whether the `/` at `at` opens a regex literal rather than being division. Decided by the last
+// significant character before it, which is how every hand-written JS scanner tells the two apart:
+// after a value (identifier, literal, `)`, `]`) a slash divides; after an operator, a punctuator or
+// a keyword it opens a pattern.
+export function startsRegex(src: string, at: number): boolean {
+  let i = at - 1;
+  while (i >= 0 && /\s/.test(src[i] as string)) i--;
+  if (i < 0) return true;
+  const prev = src[i] as string;
+  if (/[)\]}]/.test(prev)) return false;
+  if (/[A-Za-z0-9_$]/.test(prev)) {
+    let j = i;
+    while (j >= 0 && /[A-Za-z0-9_$]/.test(src[j] as string)) j--;
+    const word = src.slice(j + 1, i + 1);
+    return KEYWORDS_BEFORE_REGEX.has(word);
+  }
+  return true;
+}
+
+// The keywords a regex literal can follow. `in` and `of` are here for `x in /re/.source`-shaped
+// expressions; the set is small because everything else that can precede a pattern is punctuation.
+const KEYWORDS_BEFORE_REGEX = new Set([
+  "return",
+  "typeof",
+  "instanceof",
+  "case",
+  "in",
+  "of",
+  "new",
+  "delete",
+  "void",
+  "do",
+  "else",
+  "yield",
+  "await",
+]);
+
 export function blankNonCode(src: string): string {
   const out = src.split("");
   const blank = (from: number, to: number) => {
@@ -131,6 +168,29 @@ export function blankNonCode(src: string): string {
           continue;
         }
         if (src[j] === c) break;
+        j++;
+      }
+      blank(i + 1, Math.min(j, src.length));
+      i = Math.min(j + 1, src.length);
+      continue;
+    }
+    // A regex literal, whose body is not code and whose slashes are not comment openers. Skipping
+    // it matters in both directions: `/https?:\/\//` read as a line comment blanked the rest of
+    // the line, hiding a cast written after it, and `/BigInt\(params\./` read as code would be
+    // reported as a call that was never made.
+    if (c === "/" && startsRegex(src, i)) {
+      let j = i + 1;
+      let inClass = false;
+      while (j < src.length) {
+        const d = src[j] as string;
+        if (d === "\\") {
+          j += 2;
+          continue;
+        }
+        if (d === "\n") break;
+        if (d === "[") inClass = true;
+        else if (d === "]") inClass = false;
+        else if (d === "/" && !inClass) break;
         j++;
       }
       blank(i + 1, Math.min(j, src.length));
@@ -339,6 +399,32 @@ describe("a caller's id is parsed, never cast", () => {
     expect(bigIntArgs("`${ fn({ a: 1 }) + BigInt(body.id) }`")).toEqual([
       "body.id",
     ]);
+  });
+
+  // A regex literal is neither code nor a comment opener, and getting it wrong hides calls in both
+  // directions: `\\/\\/` inside a pattern read as `//` blanked the rest of the line, and a pattern
+  // that spells the forbidden call would be reported as a call nobody wrote.
+  test("a regex literal is skipped, and does not swallow the line after it", () => {
+    expect(
+      bigIntArgs("const re = /https?:\\/\\//; const id = BigInt(body.id);"),
+    ).toEqual(["body.id"]);
+    // Both spellings of the call inside a pattern: escaped, as a sweep for it would write, and
+    // unescaped, where the parens are a capture group and the text reads exactly like a call.
+    expect(bigIntArgs("const OFFENDING = /BigInt\\(params\\.id\\)/;")).toEqual(
+      [],
+    );
+    expect(bigIntArgs("const g = /BigInt(params.id)/;")).toEqual([]);
+    // A character class can hold an unescaped slash, so the scan has to leave the class before it
+    // takes one for the closing delimiter.
+    expect(bigIntArgs("const re = /[/x]+/; BigInt(q.n);")).toEqual(["q.n"]);
+  });
+
+  // …and division is not a regex. Reading `a / b` as one would swallow everything to the next
+  // slash, which is how a scanner that guesses goes blind on ordinary arithmetic.
+  test("division is left alone", () => {
+    expect(bigIntArgs("const n = a / b; BigInt(c);")).toEqual(["c"]);
+    expect(bigIntArgs("const n = fn(x) / 2; BigInt(d);")).toEqual(["d"]);
+    expect(bigIntArgs("const n = arr[0] / 2; BigInt(e);")).toEqual(["e"]);
   });
 
   test("it leaves literals, prose and quoted code alone", () => {

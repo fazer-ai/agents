@@ -261,10 +261,17 @@ function mergeToolKeyedBlock(
   before: Record<string, unknown>,
   patch: Record<string, unknown>,
 ): Record<string, unknown> {
+  // NOTE: An ARRAY prior is no map at all, and enumerating it is worse than ignoring it: `Object.entries`
+  // on an array yields its INDICES, so a stored array became keys "0" and "1" and the apply then
+  // refused with `settings.toolPreconditions.0 is not a valid precondition` — a field name the
+  // operator never wrote, and no way for this surface to write over the bad block at all. An array
+  // was never valid configuration here (the reader ignores it whole), so there is nothing to
+  // preserve and the patch repairs the block.
+  const prior = Array.isArray(before) ? {} : before;
   // NULL-PROTOTYPE, for the reason the runtime map is: a tool name is operator text, and `__proto__`
   // assigned onto an ordinary object mutates the prototype instead of storing an entry.
   const out = Object.create(null) as Record<string, unknown>;
-  for (const [name, value] of Object.entries(before)) out[name] = value;
+  for (const [name, value] of Object.entries(prior)) out[name] = value;
   for (const [name, value] of Object.entries(patch)) {
     // NOTE: `null` is the removal, and it has to be: an absent key means "leave it alone" here, so
     // without a tombstone there is no way to delete a rule over this surface at all.

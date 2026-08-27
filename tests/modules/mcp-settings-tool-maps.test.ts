@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { mergeBehaviorSettings } from "@/modules/agents/behavior-settings";
+import { invalidToolPreconditions } from "@/modules/agents/tool-preconditions";
 
 // ROUND 1 OF PR #404. The five blocks reached MCP, and two of them broke a rule the other eighteen
 // cannot break, because of a difference in their READERS.
@@ -109,5 +110,49 @@ describe("a tool-keyed block survives the merge", () => {
     expect((merged as Record<string, unknown>).toolGuidance).toEqual(
       stored.toolGuidance,
     );
+  });
+});
+
+// ROUND 3 OF PR #404. A stored block that is an ARRAY — legacy, or written around the API — reached
+// the by-key merge, and `Object.entries` on an array yields its INDICES. The merge produced keys
+// "0" and "1", the dry run passed because only the patch is validated, and the apply then failed
+// with `settings.toolPreconditions.0 is not a valid precondition`: a refusal naming a field the
+// operator never wrote, and no way for MCP to repair the block.
+describe("a stored block of the wrong SHAPE does not become keys", () => {
+  const VALID = {
+    kind: "attribute",
+    scope: "conversation",
+    key: "article_url",
+  } as const;
+
+  test("an array prior is treated as no map at all, not enumerated", () => {
+    const merged = mergeBehaviorSettings(
+      { toolPreconditions: [{ kind: "attribute" }] } as never,
+      { toolPreconditions: { handoff_to_human: VALID } } as never,
+    );
+    expect(
+      (merged as Record<string, Record<string, unknown>>).toolPreconditions,
+    ).toEqual({ handoff_to_human: VALID });
+  });
+
+  test("so the patch REPAIRS the block instead of being blocked by it", () => {
+    // The point is not tidiness: an array was never valid configuration (the reader ignores it
+    // whole), so the only question is whether MCP can write over it. Before this it could not —
+    // every apply refused on names the merge had invented.
+    const merged = mergeBehaviorSettings(
+      { toolPreconditions: ["nonsense"] } as never,
+      { toolPreconditions: { handoff_to_human: VALID } } as never,
+    );
+    expect(invalidToolPreconditions(merged)).toEqual([]);
+  });
+
+  test("the same for toolGuidance", () => {
+    const merged = mergeBehaviorSettings(
+      { toolGuidance: ["nonsense"] } as never,
+      { toolGuidance: { handoff_to_human: "note" } } as never,
+    );
+    expect(
+      (merged as Record<string, Record<string, unknown>>).toolGuidance,
+    ).toEqual({ handoff_to_human: "note" });
   });
 });

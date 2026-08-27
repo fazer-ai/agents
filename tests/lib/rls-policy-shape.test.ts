@@ -345,6 +345,48 @@ describe.skipIf(!dbUp)("RLS policy shape", () => {
     expect(afterRollback[0]?.u).toBe(sessionUser as string);
   });
 
+  // WHY the fence asks for exactly one role, and not merely that the fleet role is among them. A
+  // policy is a list, and `USING (true)` applies to every role on it — so one extra name is not a
+  // cosmetic drift, it is every tenant handed to that name with no `SET ROLE` involved at all. The
+  // runtime check in `src/lib/db-guard.ts` asked containment until this was measured.
+  test("one extra role on the fleet policy hands it every tenant", async () => {
+    const appRole = (
+      (await appDb.$queryRaw`SELECT current_user AS u`) as Array<{ u: string }>
+    )[0]?.u as string;
+    const readsWithNoScope = async () =>
+      (
+        (await appDb.$queryRawUnsafe(
+          `SELECT count(*)::int AS n FROM ${PROBE_TABLE}`,
+        )) as Array<{ n: number }>
+      )[0]?.n as number;
+
+    // The shipped shape first, as the control: the runtime role is subject to the tenant policy and
+    // no scope is set, so it sees nothing.
+    expect(await readsWithNoScope()).toBe(0);
+
+    await su.$executeRawUnsafe(
+      `DROP POLICY fleet_super_admin ON ${PROBE_TABLE}`,
+    );
+    await su.$executeRawUnsafe(
+      `CREATE POLICY fleet_super_admin ON ${PROBE_TABLE} TO "${fleetRole}", "${appRole}"
+         USING (true) WITH CHECK (true)`,
+    );
+    try {
+      // Every row, from the ordinary runtime connection, with no scope and no SET ROLE.
+      expect(await readsWithNoScope()).toBe(3200);
+    } finally {
+      await su.$executeRawUnsafe(
+        `DROP POLICY fleet_super_admin ON ${PROBE_TABLE}`,
+      );
+      await su.$executeRawUnsafe(
+        `DO $do$ BEGIN EXECUTE format(
+           'CREATE POLICY fleet_super_admin ON ${PROBE_TABLE} TO %I USING (true) WITH CHECK (true)',
+           public.fazerai_fleet_role()); END $do$`,
+      );
+    }
+    expect(await readsWithNoScope()).toBe(0);
+  });
+
   // The fence. The plan test above proves ONE table; this one is what makes the next table born
   // with the old shape fail, and what would have caught the whole defect: the `is_super_admin`
   // branch is not a property of a table, it is a property of every policy in the schema.

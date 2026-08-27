@@ -358,6 +358,52 @@ describe.skipIf(!dbUp)(
       expect(err?.message).toContain("fleet_super_admin on u");
     });
 
+    // Containment is not the question, EXACTNESS is: a policy is a role LIST, and `USING (true)`
+    // applies to every name on it. `tests/lib/rls-policy-shape.test.ts` measures what that costs —
+    // an ordinary runtime connection reading all 3200 rows with no scope and no `SET ROLE`. Here
+    // the question is only whether the guard sees it, which it did not while it asked `= ANY`.
+    //
+    // Built-in roles on both sides, so this needs no role DDL: see the beforeAll for why that
+    // matters in this file.
+    test("an EXTRA role on an otherwise correct policy is refused too", async () => {
+      await onProbeRaw(`
+        DROP POLICY fleet_super_admin ON t;
+        DROP POLICY fleet_super_admin ON u;
+        CREATE POLICY fleet_super_admin ON t TO pg_monitor USING (true);
+        CREATE POLICY fleet_super_admin ON u TO pg_monitor, pg_read_all_stats USING (true);`);
+      const err = await assertRuntimeRoleIsNotSuperuser(probe as PrismaClient, {
+        allow: true,
+      }).then(
+        () => null,
+        (e: unknown) => e as Error,
+      );
+      expect(err).toBeInstanceOf(FleetPolicyMismatchError);
+      // Only the one carrying the extra name: a check that flagged both would pass this assertion
+      // by flagging everything, which is the failure mode on the other side of exactness.
+      expect(err?.message).toContain("fleet_super_admin on u");
+      expect(err?.message).not.toContain("fleet_super_admin on t");
+    });
+
+    // `TO PUBLIC, <fleet>` was already caught before this change, and by a different mechanism:
+    // PostgreSQL collapses that list to the single OID 0, which is no role's, so the old
+    // containment check missed the fleet role and fired. Kept as its own arm because the two now
+    // pass for the same reason and a future simplification could lose one of them.
+    test("PUBLIC alongside the fleet role is refused, however it is spelled", async () => {
+      await onProbeRaw(`
+        DROP POLICY fleet_super_admin ON t;
+        DROP POLICY fleet_super_admin ON u;
+        CREATE POLICY fleet_super_admin ON t TO pg_monitor USING (true);
+        CREATE POLICY fleet_super_admin ON u TO PUBLIC, pg_monitor USING (true);`);
+      const err = await assertRuntimeRoleIsNotSuperuser(probe as PrismaClient, {
+        allow: true,
+      }).then(
+        () => null,
+        (e: unknown) => e as Error,
+      );
+      expect(err).toBeInstanceOf(FleetPolicyMismatchError);
+      expect(err?.message).toContain("fleet_super_admin on u");
+    });
+
     // The repair is run VERBATIM out of the message the guard produced, which is the only way to
     // know it is runnable at all. The previous spelling of this message named a rename that could
     // never work in the order this fires: bootstrap runs before the guard and has already created

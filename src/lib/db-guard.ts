@@ -65,8 +65,10 @@ export class FleetRoleUnreachableError extends RuntimeIsolationError {
 export class FleetPolicyMismatchError extends RuntimeIsolationError {
   constructor(resolved: string, offenders: string) {
     super(
-      `the fleet policies in this database do not name "${resolved}", which is the role this ` +
-        `database resolves to: ${offenders}. Every cross-tenant read would match no policy and ` +
+      `the fleet policies in this database do not name "${resolved}" and only it, which is the ` +
+        `role this database resolves to: ${offenders}. A policy naming any OTHER role gives that ` +
+        "role every tenant here through `USING (true)`, with no `SET ROLE` needed. One naming " +
+        "neither is the restore case: every cross-tenant read would match no policy and " +
         "answer zero rows, with no error. This is what a database restored under a different name " +
         "looks like — and refusing here is only half of it, because those policies grant the SOURCE " +
         "installation's role every tenant in this database and this refusal stops only this " +
@@ -218,8 +220,14 @@ export async function assertRuntimeRoleIsNotSuperuser(
             JOIN pg_namespace n ON n.oid = c.relnamespace
            WHERE n.nspname = 'public'
              AND p.polname = 'fleet_super_admin'
+             -- EXACTLY this role, not "among the roles". Containment let a hand-edited
+             -- TO <someone>, <fleet> through, and USING (true) then applies to that someone:
+             -- measured, an ordinary runtime role read every tenant with no SET ROLE at all
+             -- (3 of 3, against 0 of 3 for the singleton). TO PUBLIC, <fleet> was already
+             -- caught, but by accident of representation rather than by this predicate --
+             -- Postgres collapses that list to the single OID 0, which is no role's.
              AND (to_regrole(f.fleet_role) IS NULL
-                  OR NOT (to_regrole(f.fleet_role)::oid = ANY (p.polroles)))
+                  OR p.polroles <> ARRAY[to_regrole(f.fleet_role)::oid])
         ) AS misnamed_fleet_policies
       FROM (SELECT ${FLEET_ROLE_FN} AS fleet_role) f
     `)

@@ -264,3 +264,65 @@ export function editorRefusalFields(view: EditorControlsShown): {
   ];
   return { drawn, owned };
 }
+
+// WHAT A WRITE CARRIED, by the server's names, read from the patch it is about to send.
+//
+// Not from what the editor is DRAWING, which is what the first version of this did and what
+// conflated two different questions. `drawn` is about whether a MARK CAN BE READ; `sent` is about
+// what the REQUEST PUT ON THE WIRE, and the two disagree by construction: `buildSettings()`
+// serializes the whole settings bag, including the blocks whose controls are switched off, and
+// `saveGuardrails` sends `{...syncedSettings, guardrails}` whether or not the switch is on.
+//
+// A field the patch carries and this map omits gets no staleness check at all -- `placeRefusal` reads
+// `Object.hasOwn(sent, field)` and, finding nothing, marks the box without comparing, which puts the
+// server's sentence under a value the operator changed while the request was out. And the same
+// omission makes a later successful save fail to clear that mark, because the clear asks this map
+// too. One reading, taken from the thing that was actually sent.
+export function sentFromPatch(
+  patch: Record<string, unknown>,
+  owned: readonly string[],
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const field of owned) {
+    const found = readPatchPath(patch, field);
+    if (found.present) out[field] = found.value;
+  }
+  return out;
+}
+
+// The value a refused name has inside a patch, and whether the patch carries it at all.
+//
+// Both spellings land in the same bag: `settings.tts.credentialRef` names the agent row and
+// `guardrails.customPolicy` names the settings bag, and the only names that live OUTSIDE `settings`
+// are the row's own columns. Absence is answered separately from an undefined value, because
+// "the write did not mention this" and "the write sent nothing here" are different facts and only
+// the first one means there is nothing to compare against.
+function readPatchPath(
+  patch: Record<string, unknown>,
+  field: string,
+): { present: boolean; value: unknown } {
+  const column = field === "name" || field === "systemPrompt";
+  const root = column
+    ? patch
+    : field.startsWith("modelConfig.")
+      ? patch.modelConfig
+      : patch.settings;
+  const path = column
+    ? [field]
+    : field
+        .replace(/^settings\./, "")
+        .replace(/^modelConfig\./, "")
+        // `followUp.steps[2].instructions` is the server's spelling; the index is a step of the walk.
+        .replace(/\[(\d+)\]/g, ".$1")
+        .split(".");
+  let node: unknown = root;
+  for (let i = 0; i < path.length; i++) {
+    const step = path[i] as string;
+    if (!node || typeof node !== "object")
+      return { present: false, value: undefined };
+    const bag = node as Record<string, unknown>;
+    if (!Object.hasOwn(bag, step)) return { present: false, value: undefined };
+    node = bag[step];
+  }
+  return { present: true, value: node };
+}

@@ -4,6 +4,7 @@ import {
   editorRefusalFields,
   editorTargetFor,
   followUpStepField,
+  sentFromPatch,
 } from "@/client/lib/editorRefusal";
 import { NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
 import { SETTINGS_CREDENTIAL_PATHS } from "@/modules/agents/credential-paths";
@@ -295,5 +296,74 @@ describe("the write boundary the declaration rests on", () => {
     expect(
       collectOversizedTextChanges(next, stored).map((o) => o.path),
     ).toEqual(["vision.extractionPrompt"]);
+  });
+});
+
+// WHAT A WRITE CARRIED, read from the request rather than from what is on screen.
+//
+// `sent` decides two things — whether `placeRefusal` compares the refused value against the box, and
+// whether a successful save clears the mark — and both go wrong quietly when it under-reports. The
+// first version built it from what the tab was DRAWING, and the editor sends more than it draws:
+// `buildSettings()` serializes the whole bag, `saveGuardrails` resends the guardrails block whether
+// or not the switch is on.
+describe("sentFromPatch", () => {
+  const OWNED = editorRefusalFields(view()).owned;
+
+  test("a settings block carried by a switched-off section still counts as sent", () => {
+    // The case the visibility-derived version missed: guardrails off, the block still on the wire.
+    // Without it the refusal is marked with no staleness comparison at all, so the server's sentence
+    // lands under whatever the operator typed while the request was out.
+    const sent = sentFromPatch(
+      { settings: { guardrails: { customPolicy: "over the cap" } } },
+      OWNED,
+    );
+    expect(Object.hasOwn(sent, "guardrails.customPolicy")).toBe(true);
+    expect(sent["guardrails.customPolicy"]).toBe("over the cap");
+  });
+
+  test("both spellings resolve into the same bag", () => {
+    const sent = sentFromPatch(
+      {
+        name: "ACME",
+        modelConfig: { credentialRef: "vault:1" },
+        settings: { tts: { credentialRef: "vault:2" } },
+      },
+      OWNED,
+    );
+    expect(sent.name).toBe("ACME");
+    expect(sent["modelConfig.credentialRef"]).toBe("vault:1");
+    expect(sent["settings.tts.credentialRef"]).toBe("vault:2");
+  });
+
+  test("a follow-up step is read by its index", () => {
+    const sent = sentFromPatch(
+      { settings: { followUp: { steps: [{ instructions: "a" }, {}] } } },
+      OWNED,
+    );
+    expect(sent[followUpStepField(0)]).toBe("a");
+    expect(Object.hasOwn(sent, followUpStepField(1))).toBe(false);
+  });
+
+  test("a name the patch does not mention is absent, not undefined", () => {
+    // The distinction is the whole point: `placeRefusal` reads `Object.hasOwn` to decide whether
+    // there is anything to compare, so a key present with `undefined` would claim the write carried
+    // a value it never sent.
+    const sent = sentFromPatch({ name: "ACME" }, OWNED);
+    expect(Object.hasOwn(sent, "settings.tts.credentialRef")).toBe(false);
+    expect(Object.hasOwn(sent, "name")).toBe(true);
+  });
+
+  test("a value explicitly sent as null is carried", () => {
+    // `buildSettings` writes `credentialRef: null` to clear one, and that IS what the write sent.
+    const sent = sentFromPatch(
+      { settings: { stt: { credentialRef: null } } },
+      OWNED,
+    );
+    expect(Object.hasOwn(sent, "settings.stt.credentialRef")).toBe(true);
+    expect(sent["settings.stt.credentialRef"]).toBeNull();
+  });
+
+  test("a grant-only request carries nothing", () => {
+    expect(sentFromPatch({}, OWNED)).toEqual({});
   });
 });

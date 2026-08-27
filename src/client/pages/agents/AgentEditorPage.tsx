@@ -58,6 +58,7 @@ import {
   editorRefusalFields,
   editorTargetFor,
   followUpStepField,
+  sentFromPatch,
 } from "@/client/lib/editorRefusal";
 import { readRefusal } from "@/client/lib/fieldRefusal";
 import { formatRelativeTime, slugify } from "@/client/lib/utils";
@@ -926,16 +927,16 @@ function AgentEditor() {
       ]),
     ),
   };
-  // The values THIS write carried, by the server's names, snapshotted before the request goes out.
+  // What THIS write carried, by the server's names, read from the patch it is about to send.
   //
-  // Scoped to the section being written rather than taken whole: a General save does not carry the
-  // guardrails policy, and claiming it did would put the staleness check on a value the request never
-  // mentioned. `drawn` for that section is exactly the set each save handler builds its patch from.
-  function sentFor(section: string): Record<string, unknown> {
-    // The section's OWN controls, asked with its switches as they stand: a save carries the values it
-    // draws, and a field behind an off switch was not in the request.
-    const { drawn } = editorRefusalFields({ ...refusalView, tab: section });
-    return Object.fromEntries(drawn.map((f) => [f, currentRef.current[f]]));
+  // From the patch and not from what the tab is drawing, which is what the first version did: those
+  // are different questions and they disagree by construction. `buildSettings()` serializes the whole
+  // bag including blocks whose controls are switched off, and `saveGuardrails` resends the guardrails
+  // block whether or not the switch is on -- so a visibility-derived list under-reports the write,
+  // and a field it omits gets marked without a staleness comparison and never cleared by the save
+  // that answered it. See sentFromPatch.
+  function sentFor(patch: Record<string, unknown>): Record<string, unknown> {
+    return sentFromPatch(patch, refusalFields.owned);
   }
 
   // Every save on this page answers a refusal the same way, so the decision is written once.
@@ -2418,7 +2419,7 @@ function AgentEditor() {
     setSavingAgent(true);
     // Snapshotted BEFORE the request, never after: the staleness check compares what went out
     // with what the boxes hold when the answer lands, and `currentRef` is live.
-    const sent = sentFor(section);
+    const sent = sentFor(patch);
     try {
       const expected = expectedFor(force);
       const { data, error: err } = await api.api.v1.agents({ id }).patch({
@@ -2497,7 +2498,7 @@ function AgentEditor() {
   async function saveTools(force = false) {
     savingRef.current += 1;
     setSavingGrants(true);
-    const sent = sentFor("tools");
+    let sent: Record<string, unknown> = {};
     try {
       // Everything the PATCH will send, built BEFORE the grants PUT so the whole bag can be checked
       // against the write boundary's own rule first. None of it depends on the PUT's result.
@@ -2534,6 +2535,9 @@ function AgentEditor() {
         toolGuidance: toolGuidanceJson,
         toolPreconditions: toolPreconditionsJson,
       };
+      // Before either request: the grants PUT goes out first and the PATCH after it, and both can
+      // answer a refusal about this bag.
+      sent = sentFor({ settings: toolsSettings });
       // The WHOLE bag, not just this tab's fields: the PATCH resends every block, so text typed on
       // another tab would refuse it just the same — after the grants had already been written.
       //
@@ -2658,15 +2662,17 @@ function AgentEditor() {
   async function saveGuardrails(force = false) {
     savingRef.current += 1;
     setSavingGuardrails(true);
-    const sent = sentFor("guardrails");
+    let sent: Record<string, unknown> = {};
     try {
       const expected = expectedFor(force);
       const syncedSettings = (syncedAgentRef.current?.settings ?? {}) as Record<
         string,
         unknown
       >;
+      const patch = { settings: { ...syncedSettings, guardrails } };
+      sent = sentFor(patch);
       const { data, error: err } = await api.api.v1.agents({ id }).patch({
-        settings: { ...syncedSettings, guardrails },
+        ...patch,
         ...(expected ? { expectedUpdatedAt: expected } : {}),
       });
       if (handleConflict(err, () => void saveGuardrails(true))) return;

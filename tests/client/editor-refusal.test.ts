@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  type EditorControlsShown,
   editorRefusalFields,
   editorTargetFor,
   followUpStepField,
@@ -137,7 +138,39 @@ describe("editorTargetFor", () => {
   });
 });
 
+// Every switch ON, so `drawn` is the tab's full set unless a test turns one off.
+function view(over: Partial<EditorControlsShown> = {}): EditorControlsShown {
+  return {
+    tab: "behavior",
+    awayEnabled: true,
+    sttEnabled: true,
+    ttsOn: true,
+    ttsNormalize: true,
+    visionEnabled: true,
+    contactAuthEnabled: true,
+    memoryCompactionEnabled: true,
+    modelFallbackChosen: true,
+    guardrailsEnabled: true,
+    followUpEnabled: true,
+    followUpSteps: 2,
+    ...over,
+  };
+}
+
 describe("editorRefusalFields", () => {
+  test("every credential the server can refuse is owned by the editor", () => {
+    // The direction the first version of this file did not check, and it cost a real gap:
+    // `settings.modelFallback.credentialRef` reached SETTINGS_CREDENTIAL_PATHS without reaching the
+    // editor's own list, so the server could refuse a field this page neither marked nor announced.
+    // Asserted against the SERVER's list, which is the one that grows.
+    const { owned } = editorRefusalFields(view());
+    for (const p of SETTINGS_CREDENTIAL_PATHS) {
+      const field = `settings.${p.path.join(".")}`;
+      expect(owned, `${field} is refusable and unowned`).toContain(field);
+    }
+    expect(owned).toContain("modelConfig.credentialRef");
+  });
+
   test("every declared name is drawn by the tab it is declared under", () => {
     // The anti-drift half: the per-tab lists and the target map are two statements about the same
     // thing, and a name that moves in one and not the other sends the operator to the wrong tab.
@@ -147,11 +180,10 @@ describe("editorRefusalFields", () => {
       "guardrails",
       "tools",
       "channelRedirect",
-    ] as const) {
-      const { drawn } = editorRefusalFields({ tab, followUpSteps: 2 });
-      for (const field of drawn) {
+    ]) {
+      for (const field of editorRefusalFields(view({ tab })).drawn) {
         expect(
-          editorTargetFor(field, { guardrailsEnabled: true })?.tab,
+          editorTargetFor(field, { guardrailsEnabled: true })?.tab as string,
           `${field} is declared on ${tab}`,
         ).toBe(tab);
       }
@@ -159,29 +191,93 @@ describe("editorRefusalFields", () => {
   });
 
   test("what a tab draws is a subset of what the editor owns", () => {
-    const { owned } = editorRefusalFields({ tab: "general", followUpSteps: 3 });
-    for (const tab of ["general", "behavior", "guardrails", "tools"] as const) {
-      for (const field of editorRefusalFields({ tab, followUpSteps: 3 })
-        .drawn) {
+    const { owned } = editorRefusalFields(view({ tab: "general" }));
+    for (const tab of ["general", "behavior", "guardrails", "tools"]) {
+      for (const field of editorRefusalFields(view({ tab })).drawn) {
         expect(owned, `${field} is drawn but not owned`).toContain(field);
       }
     }
   });
 
+  test("a control behind an off switch is owned and NOT drawn", () => {
+    // The case the tab-only declaration got wrong, and it is not about when the refusal arrives: the
+    // operator can turn Vision off while its credential refusal is standing. The mark is then held on
+    // a control that is no longer in the DOM, and only `drawn` saying so gets the sentence back on
+    // screen.
+    const off = editorRefusalFields(view({ visionEnabled: false }));
+    expect(off.owned).toContain("settings.vision.credentialRef");
+    expect(off.owned).toContain("vision.extractionPrompt");
+    expect(off.drawn).not.toContain("settings.vision.credentialRef");
+    expect(off.drawn).not.toContain("vision.extractionPrompt");
+
+    const on = editorRefusalFields(view());
+    expect(on.drawn).toContain("settings.vision.credentialRef");
+    expect(on.drawn).toContain("vision.extractionPrompt");
+  });
+
+  test("each switch answers for its own controls and nobody else's", () => {
+    // A table rather than one case, because the failure this guards is a wire crossed between two
+    // switches — a field that disappears when the wrong section is turned off is exactly as silent as
+    // one that never disappears.
+    const cases: Array<[Partial<EditorControlsShown>, string[]]> = [
+      [{ awayEnabled: false }, ["availability.awayMessage"]],
+      [{ sttEnabled: false }, ["settings.stt.credentialRef"]],
+      [{ ttsOn: false }, ["settings.tts.credentialRef"]],
+      [{ ttsNormalize: false }, ["settings.tts.normalizeCredentialRef"]],
+      [
+        { contactAuthEnabled: false },
+        ["settings.contactAuth.credentialRef", "contactAuth.denyMessage"],
+      ],
+      [
+        { memoryCompactionEnabled: false },
+        ["settings.memory.compaction.credentialRef"],
+      ],
+      [
+        { modelFallbackChosen: false },
+        ["settings.modelFallback.credentialRef"],
+      ],
+      [
+        { followUpEnabled: false },
+        [followUpStepField(0), followUpStepField(1)],
+      ],
+    ];
+    for (const [off, gone] of cases) {
+      const drawn = editorRefusalFields(view(off)).drawn;
+      const full = editorRefusalFields(view()).drawn;
+      expect(
+        full.filter((f) => !drawn.includes(f)).sort(),
+        JSON.stringify(off),
+      ).toEqual([...gone].sort());
+    }
+  });
+
+  test("guardrails off takes its whole tab's controls with it", () => {
+    // GuardrailsTab draws gr-input/gr-output/gr-policy AND the credential picker only while the
+    // switch is on; gr-model is the section that survives, and it holds the switch.
+    const off = editorRefusalFields(
+      view({ tab: "guardrails", guardrailsEnabled: false }),
+    );
+    expect(off.drawn).toEqual([]);
+    expect(
+      editorRefusalFields(view({ tab: "guardrails" })).drawn.length,
+    ).toBeGreaterThan(0);
+  });
+
   test("the follow-up notes stop where the editor's step list does", () => {
     // A mark on a step that does not exist is a name nothing renders, which is the silence this
     // whole mechanism is against.
-    const { drawn } = editorRefusalFields({
-      tab: "behavior",
-      followUpSteps: 2,
-    });
+    const { drawn } = editorRefusalFields(view({ followUpSteps: 2 }));
     expect(drawn).toContain(followUpStepField(0));
     expect(drawn).toContain(followUpStepField(1));
     expect(drawn).not.toContain(followUpStepField(2));
   });
+
+  test("a tab the editor writes nothing on declares nothing", () => {
+    expect(editorRefusalFields(view({ tab: "playground" })).drawn).toEqual([]);
+  });
 });
 
-describe("the write boundary the tab-gated declaration rests on", () => {
+describe("the write boundary the declaration rests on", () => {
   // The per-tab lists do not carry the switches inside a section (vision off hides the extraction
   // prompt; the gate off hides the deny message). That is exact only because the server refuses text
   // a write INTRODUCES or CHANGES and nothing else — change one of these and its control was on

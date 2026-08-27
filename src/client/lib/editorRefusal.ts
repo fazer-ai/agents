@@ -123,83 +123,144 @@ export function editorTargetFor(
   return target;
 }
 
-// The names the editor declares, by the tab that draws them.
+// WHICH SWITCH HAS TO BE ON for a control to be in the DOM.
 //
-// TAB-GATED, and only tab-gated, which is a decision rather than an omission. Several of these
-// controls sit behind a switch inside their own section — the vision prompt appears with vision on,
-// the deny message with the authorization gate on — so a list that answered "drawn right now" to the
-// letter would carry a dozen booleans out of three component files and into this one, and every
-// drift between them would reappear as the silence the mechanism exists to prevent.
+// The first version of this file declared per TAB and argued that the switches could not matter: both
+// producers refuse only what a write introduces or changes, so a value behind an off switch cannot be
+// refused, because changing it needs the control. The argument is sound about the moment the refusal
+// ARRIVES and says nothing about afterwards -- the operator can turn Vision off while its credential
+// refusal is standing, and then the mark is held on a control that is no longer drawn, with no banner
+// because the field's tab is still the open one. Silence, which is the one outcome barred here.
 //
-// What makes the tab the right granularity is a property of the WRITE BOUNDARY, not a tolerance:
-// both producers refuse only the text or the ref a write INTRODUCES or CHANGES
-// (`collectOversizedTextChanges`, `collectCredentialRefWrites`, and both say so in their own
-// comments, with the reason). Changing one of these values requires its control, and its control
-// requires the switch. So a refusal naming a field whose switch is off cannot arrive from this
-// editor, and the declaration is exact for every refusal that can. `tests/client/editor-refusal.
-// test.ts` pins that invariant, because it is the thing this simplification rests on.
-const TAB_FIELDS: Readonly<Record<EditorTab, readonly string[]>> = {
-  general: ["name", "systemPrompt", "modelConfig.credentialRef"],
-  behavior: [
-    "settings.stt.credentialRef",
-    "settings.tts.credentialRef",
-    "settings.tts.normalizeCredentialRef",
-    "settings.vision.credentialRef",
-    "settings.contactAuth.credentialRef",
-    "settings.memory.compaction.credentialRef",
-    "availability.awayMessage",
-    "contactAuth.denyMessage",
-    "vision.extractionPrompt",
-  ],
-  guardrails: [
-    "settings.guardrails.credentialRef",
-    "guardrails.customPolicy",
-    "guardrails.input.templateMessage",
-    "guardrails.output.templateMessage",
-    "guardrails.output.generationPrompt",
-  ],
-  tools: [
-    "handoff.instructions",
-    "kanban.instructions",
-    "toolGuidance.set_custom_attribute",
-    "toolGuidance.assign_label",
-    "toolGuidance.update_kanban_task",
-  ],
-  // The redirect tab writes its own block through its own save and declares nothing here yet; the
-  // knowledge and playground tabs draw no value the server refuses by name.
-  channelRedirect: [],
+// So the question is asked per control, and the answer is a name the caller reads off its own state.
+export interface EditorControlsShown {
+  // Any of the editor's tabs, not only the five that write an agent: the page also draws Channels,
+  // Knowledge, Playground and Experiments, and each of those answers with an empty list.
+  tab: string;
+  awayEnabled: boolean;
+  sttEnabled: boolean;
+  // TTS has no boolean: any mode other than "never" means audio replies are on.
+  ttsOn: boolean;
+  ttsNormalize: boolean;
+  visionEnabled: boolean;
+  contactAuthEnabled: boolean;
+  memoryCompactionEnabled: boolean;
+  // The fallback's credential picker appears once a provider is chosen, not behind a switch.
+  modelFallbackChosen: boolean;
+  guardrailsEnabled: boolean;
+  followUpEnabled: boolean;
+  // How many follow-up steps the Proactive section is showing. The note of a step that does not
+  // exist is a name nothing can render, so the list stops where the editor's does.
+  followUpSteps: number;
+}
+
+type SwitchName = Exclude<keyof EditorControlsShown, "tab" | "followUpSteps">;
+
+// The switch each credential picker sits behind, by the path the server refuses it under.
+//
+// Keyed by path and looked up rather than listed alongside, so a credential added to
+// `SETTINGS_CREDENTIAL_PATHS` next week is OWNED by construction -- that is the half that cannot be
+// allowed to drift, and it already did: `settings.modelFallback.credentialRef` reached that list
+// without reaching this file, so the server could refuse a field the editor neither marked nor
+// announced. A path with no entry here is treated as NOT drawn, which costs a banner beside a
+// visible control at worst; the reverse default costs silence.
+const CREDENTIAL_SWITCH: Readonly<Record<string, SwitchName>> = {
+  "stt.credentialRef": "sttEnabled",
+  "tts.credentialRef": "ttsOn",
+  "tts.normalizeCredentialRef": "ttsNormalize",
+  "vision.credentialRef": "visionEnabled",
+  "contactAuth.credentialRef": "contactAuthEnabled",
+  "memory.compaction.credentialRef": "memoryCompactionEnabled",
+  "modelFallback.credentialRef": "modelFallbackChosen",
+  "guardrails.credentialRef": "guardrailsEnabled",
 };
 
+interface OwnedField {
+  field: string;
+  tab: EditorTab;
+  // Absent means the control is drawn whenever its tab is open.
+  needs?: SwitchName;
+}
+
+const OWNED_FIELDS: readonly OwnedField[] = [
+  { field: "name", tab: "general" },
+  { field: "systemPrompt", tab: "general" },
+  { field: "modelConfig.credentialRef", tab: "general" },
+  ...SETTINGS_CREDENTIAL_PATHS.map((p) => {
+    const joined = p.path.join(".");
+    const needs = CREDENTIAL_SWITCH[joined];
+    return {
+      field: `${SETTINGS_PREFIX}${joined}`,
+      tab: p.tab as EditorTab,
+      ...(needs ? { needs } : {}),
+    };
+  }),
+  { field: "availability.awayMessage", tab: "behavior", needs: "awayEnabled" },
+  {
+    field: "contactAuth.denyMessage",
+    tab: "behavior",
+    needs: "contactAuthEnabled",
+  },
+  {
+    field: "vision.extractionPrompt",
+    tab: "behavior",
+    needs: "visionEnabled",
+  },
+  {
+    field: "guardrails.customPolicy",
+    tab: "guardrails",
+    needs: "guardrailsEnabled",
+  },
+  {
+    field: "guardrails.input.templateMessage",
+    tab: "guardrails",
+    needs: "guardrailsEnabled",
+  },
+  {
+    field: "guardrails.output.templateMessage",
+    tab: "guardrails",
+    needs: "guardrailsEnabled",
+  },
+  {
+    field: "guardrails.output.generationPrompt",
+    tab: "guardrails",
+    needs: "guardrailsEnabled",
+  },
+  // The native-tool notes carry no switch of their own: the row is drawn from the catalog, and a note
+  // for a tool nobody granted holds the stored text either way.
+  { field: "handoff.instructions", tab: "tools" },
+  { field: "kanban.instructions", tab: "tools" },
+  { field: "toolGuidance.set_custom_attribute", tab: "tools" },
+  { field: "toolGuidance.assign_label", tab: "tools" },
+  { field: "toolGuidance.update_kanban_task", tab: "tools" },
+];
+
 // One follow-up step's note, by the name the server spells it with. Brackets and not dots, because
-// that is what `collectOversizedTextChanges` reports and the wire carries it verbatim — the numeric
+// that is what `collectOversizedTextChanges` reports and the wire carries it verbatim -- the numeric
 // segment rule in placeRefusal reads `steps.0`, which this is not.
 export function followUpStepField(index: number): string {
   return `followUp.steps[${index}].instructions`;
 }
 
-// What the editor draws now, and everything it can mark. `drawn` is a subset of `owned`, always: the
-// second is the first over every tab, which is what lets a refusal about another tab's control be
-// held until the operator gets there.
-export function editorRefusalFields(view: {
-  // Any of the editor's tabs, not only the five that write an agent: the page also draws Channels,
-  // Knowledge, Playground and Experiments, and each of those answers with an empty list. Typed wide
-  // on purpose — narrowing it would make the caller decide which tabs count, which is this module's
-  // question and not the page's.
-  tab: string;
-  // How many follow-up steps the Proactive section is showing. The note of a step that does not
-  // exist is a name nothing can render, so the list stops where the editor's does.
-  followUpSteps: number;
-}): { drawn: readonly string[]; owned: readonly string[] } {
+// What the editor is DRAWING right now, and everything it can mark.
+//
+// `drawn` is what decides whether a mark is readable, so it answers per control and not per tab.
+// `owned` is every name across every tab, which is what lets a refusal about a control the operator
+// cannot see right now be HELD until they can. drawn is a subset of owned, always.
+export function editorRefusalFields(view: EditorControlsShown): {
+  drawn: readonly string[];
+  owned: readonly string[];
+} {
   const steps = Array.from(
     { length: Math.max(0, view.followUpSteps) },
     (_, i) => followUpStepField(i),
   );
-  const forTab = (tab: string): string[] => [
-    ...(TAB_FIELDS[tab as EditorTab] ?? []),
-    ...(tab === "behavior" ? steps : []),
+  const owned = [...OWNED_FIELDS.map((f) => f.field), ...steps];
+  const drawn = [
+    ...OWNED_FIELDS.filter(
+      (f) => f.tab === view.tab && (!f.needs || view[f.needs]),
+    ).map((f) => f.field),
+    ...(view.tab === "behavior" && view.followUpEnabled ? steps : []),
   ];
-  return {
-    drawn: forTab(view.tab),
-    owned: Object.keys(TAB_FIELDS).flatMap(forTab),
-  };
+  return { drawn, owned };
 }

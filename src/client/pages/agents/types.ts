@@ -73,6 +73,7 @@ export interface BehaviorRefusals {
   contactAuthCredential: string | null;
   contactAuthDenyMessage: string | null;
   memoryCredential: string | null;
+  modelFallbackCredential: string | null;
   awayMessage: string | null;
   // By index, because the server refuses a follow-up note as `followUp.steps[2].instructions` and the
   // step it names is the one that has to carry the mark.

@@ -2835,6 +2835,7 @@ export function BehaviorTab({
             {!!modelFallback.provider && (
               <div className="flex flex-col gap-3">
                 <FormField
+                  error={refusals.modelFallbackCredential}
                   label={t("editor.credential", "API key")}
                   description={t(
                     "editor.modelFallbackCredentialHint",

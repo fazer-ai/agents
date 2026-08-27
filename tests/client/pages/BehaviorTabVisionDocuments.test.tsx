@@ -42,6 +42,7 @@ function renderWithProvider(
       contactAuthCredential: null,
       contactAuthDenyMessage: null,
       memoryCredential: null,
+      modelFallbackCredential: null,
       awayMessage: null,
       followUpSteps: [],
     },

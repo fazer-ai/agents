@@ -31,38 +31,59 @@ describe("agent editor save errors", () => {
   //
   // Source-level for the same reason as the rest of this file — the two sections are two arguments
   // to one function, and the distinction is invisible to anything that only watches the network.
-  test("a successful save clears the holder only for the section it wrote", () => {
-    // Since #349 the holder covers every tab, so the question got wider without changing: the clear
-    // is scoped by asking WHERE the standing mark lives and comparing that with the section this save
-    // wrote. One call site, inside the one function that asks.
+  test("a successful save clears only what the request carried", () => {
+    // Since #349 the holder covers every tab, so the question got wider. Scoping it by TAB is not
+    // enough and the gap is real: `saveGrants` writes the grant set alone and shares the Tools tab
+    // with the handoff, kanban and tool-guidance notes, so a grant-only PUT would clear a refusal
+    // about a note it never mentioned. The snapshot the write went out with is the list of what it
+    // can answer for.
     expect(SRC.split("refusal.clear()").length - 1).toBe(1);
     const start = SRC.indexOf("function clearRefusalFor");
     expect(start).toBeGreaterThan(-1);
     const body = SRC.slice(start, SRC.indexOf("\n  }", start));
     expect(body).toContain("refusal.clear()");
-    expect(body).toContain("editorTargetFor");
-    expect(body).toContain("=== section");
+    expect(body).toContain("Object.hasOwn(sent, held)");
+    // Never by tab or by target: both read the FIELD rather than the request.
+    expect(body).not.toContain("editorTargetFor");
 
-    // And every success path goes through it rather than clearing on its own, which is what the
-    // previous version of this rule could not say: it could only speak for the single call site it
-    // found. A save that writes a section and clears nothing leaves a refusal standing that the
-    // server has stopped making.
-    // Call sites only: the declaration reads `clearRefusalFor(section: string)` and would otherwise
-    // count itself as a caller that clears every section.
+    // And every success path goes through it. The grant-only save answers for nothing and says so
+    // with an empty snapshot rather than by skipping the call, so a reader can tell "carried nothing"
+    // from "forgot to clear".
     const cleared = [
       ...SRC.matchAll(/(?<!function )clearRefusalFor\((.+?)\)/g),
-    ].map((m) => (m[1] as string).replace(/"/g, ""));
-    expect(cleared.sort()).toEqual(["guardrails", "section", "tools", "tools"]);
+    ].map((m) => (m[1] as string).trim());
+    expect(cleared.sort()).toEqual(["sent", "sent", "sent", "{}"]);
   });
 
-  // The tools save fires two calls (grants PUT, then agent PATCH), so it checks the bag itself before
-  // the first one — otherwise the grants persist and the PATCH is refused. It has to ask the same
-  // question the server asks: what does this write CHANGE. Comparing against nothing would refuse a
-  // save over text stored before the caps, which is the state the server deliberately lets through.
-  //
-  // Source-level for the same reason as the rest of this file; the rule itself is covered by
-  // agents-text-caps.test.ts, what is left here is the wiring.
-  // THE SECOND CHANNEL, WHEN THE CONTROL IS ON ANOTHER TAB.
+  test("what a save carried is snapshotted before the request goes out", () => {
+    // `currentRef` is LIVE. Building the sent map in the catch compares the boxes with themselves,
+    // the staleness check can never fire, and a refusal about a value the operator has already
+    // changed gets marked on the new one — which is the exact thing `placeRefusal` refuses to do.
+    for (const fn of [
+      "saveAgent",
+      "saveGrants",
+      "saveTools",
+      "saveGuardrails",
+    ]) {
+      const start = SRC.indexOf(`async function ${fn}(`);
+      expect(start, fn).toBeGreaterThan(-1);
+      const body = SRC.slice(start, SRC.indexOf("\n  }", start));
+      const snapshot = body.indexOf("sentFor(");
+      const answers = body.indexOf("answerRefusal(");
+      if (snapshot === -1) {
+        // Only the grant-only save may carry nothing, and then it must say so literally.
+        expect(body, fn).toContain("clearRefusalFor({})");
+        continue;
+      }
+      expect(snapshot, `${fn} snapshots after answering`).toBeLessThan(answers);
+      // Before the request, not merely before the catch.
+      expect(snapshot, `${fn} snapshots after its request`).toBeLessThan(
+        body.indexOf("await "),
+      );
+    }
+  });
+
+  // THE SECOND CHANNEL, WHEN THE CONTROL IS NOT ON SCREEN.
   //
   // `placeRefusal` hands back a sentence beside the mark for a value this editor owns and is not
   // drawing, and the sentence has to reach the operator or the save fails into silence. A toast is
@@ -72,35 +93,48 @@ describe("agent editor save errors", () => {
   //
   // Source-level because mounting this page pulls auth, theme, toast and a live catalog; the mark
   // reaching a box is proved on the tab that CAN be mounted (pages/GuardrailsTab.test.tsx).
-  test("the off-screen refusal is announced, with the way to the control", () => {
-    const start = SRC.indexOf("const refusalAway =");
+  test("the banner carries every refusal nothing else on screen is holding", () => {
+    const start = SRC.indexOf("const bannerMessage =");
     expect(start).toBeGreaterThan(-1);
     const decl = SRC.slice(start, SRC.indexOf(";", start));
-    // Derived from the holder and from the OPEN TAB, which is what keeps the two channels from ever
-    // saying the same thing at the same time: arriving at the tab takes the banner away and leaves
-    // the mark, and answering the refusal takes both.
+    // Two sources, and the difference between them is the whole rule: a mark this render is DRAWING
+    // says it itself, one it is not drawing is announced, and a sentence with no mark at all has
+    // nowhere else to go.
     expect(decl).toContain("heldMessage");
-    expect(decl).toContain("heldTarget.tab !== tab");
-    // Never stored. A copy in state is a second source of truth that outlives what it describes.
-    expect(SRC).not.toContain("setRefusalAway");
-    // And it is rendered with the jump, not just the sentence.
-    const banner = SRC.slice(SRC.indexOf("{refusalAway && ("));
+    expect(decl).toContain("heldDrawn");
+    expect(decl).toContain("standingRefusal");
+    // `heldDrawn` asks the drawn list, never the tab: a section switched off after the refusal landed
+    // takes the control away without changing which tab it is on.
+    const drawnDecl = SRC.slice(
+      SRC.indexOf("const heldDrawn ="),
+      SRC.indexOf(";", SRC.indexOf("const heldDrawn =")),
+    );
+    expect(drawnDecl).toContain("refusalFields.drawn");
+    expect(drawnDecl).not.toContain("tab ===");
+    // And it is rendered with the jump when there is one to offer.
+    const banner = SRC.slice(SRC.indexOf("{bannerMessage && ("));
     const body = banner.slice(0, banner.indexOf("\n            )}"));
-    expect(body).toContain("refusalAway.message");
-    expect(body).toContain("goToEditorTarget(refusalAway.target)");
+    expect(body).toContain("{bannerMessage}");
+    expect(body).toContain("goToEditorTarget(bannerTarget)");
   });
 
-  test("a toast fires only for a refusal this editor draws no control for", () => {
-    // The other half of the exclusivity: a 403, a conflict or a transport failure names no input of
-    // this page's, and for those the toast is still the only channel there is. Toasting a refusal the
-    // banner is already showing is the duplicate the mechanism exists to avoid.
+  test("nothing the holder hands back is dropped", () => {
+    // The first version routed on `editorTargetFor(named)` — whether the refused NAME has a place in
+    // this editor — and swallowed the sentence when it did. That reads the field instead of what the
+    // hook did with it, and the two come apart: a mapped name can still fail to be placed (the value
+    // was edited during the request, the follow-up step no longer exists), and then the sentence went
+    // nowhere and no mark existed to render it. A save that fails in silence.
     const start = SRC.indexOf("function answerRefusal");
     expect(start).toBeGreaterThan(-1);
     const body = SRC.slice(start, SRC.indexOf("\n  }", start));
-    expect(body).toContain("editorTargetFor");
-    expect(body).toContain('if (!placeable) showToast(left, "error");');
-    // Exactly one, so the assertion above speaks for the whole function.
-    expect(body.split("showToast(").length - 1).toBe(1);
+    expect(body).toContain("setStandingRefusal");
+    expect(body).toContain("refusal.capture(");
+    // No branch at all: whatever comes back is kept, and the render decides the container.
+    expect(body).not.toContain("editorTargetFor");
+    expect(body).not.toContain("if (");
+    // This page does not toast a save refusal any more — the banner is the one container, and it
+    // stays put while the input is still refused.
+    expect(body).not.toContain("showToast");
   });
 
   test("the tools preflight compares against the stored bag, re-read when forced", () => {

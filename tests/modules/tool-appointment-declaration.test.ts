@@ -136,6 +136,11 @@ describe("readAppointmentDeclaration", () => {
 describe("readPath", () => {
   const BODY = {
     data: { id: "ap_1", start: "2026-09-02T14:00:00-03:00", n: 42, title: "" },
+    // What a 64-bit id looks like AFTER JSON.parse: the digits are already gone by the time any of
+    // this runs, which is exactly why it cannot be coerced into an id.
+    big: JSON.parse('{"id": 9007199254740993}'),
+    huge: { id: 1e21 },
+    safe: { id: 9007199254740991 },
     items: [{ id: "first" }, { id: "second" }],
     nested: { deep: { value: "x" } },
     nul: null,
@@ -155,6 +160,14 @@ describe("readPath", () => {
     ["an object at the end", "data", undefined],
     ["an array at the end", "items", undefined],
     ["a non-numeric index into an array", "items.id", undefined],
+    // (#352, round 6) An integer past 2^53 reaches here ALREADY rounded. Coercing it would mint an
+    // id the operator's system never issued, one digit off the real booking and therefore able to
+    // land on the one beside it: a later cancel would then retire another customer's appointment.
+    // Reported as unresolved instead, so the operator is told to point at the string id.
+    ["an id past 2^53 was already rounded", "big.id", undefined],
+    ["and so was one in exponent range", "huge.id", undefined],
+    // The control, and the boundary itself: the largest integer JSON.parse still round-trips.
+    ["the largest exact integer still reads", "safe.id", "9007199254740991"],
   ];
 
   for (const [label, path, expected] of CASES) {

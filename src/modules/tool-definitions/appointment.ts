@@ -111,7 +111,15 @@ export function readPath(body: unknown, path: string): string | undefined {
       : (cur as Record<string, unknown>)[seg];
   }
   if (typeof cur === "string") return cur || undefined;
-  if (typeof cur === "number" && Number.isFinite(cur)) return String(cur);
+  if (typeof cur === "number" && Number.isFinite(cur)) {
+    // A number past 2^53 was ALREADY rounded, by JSON.parse, before this function was called: a
+    // 64-bit booking id like 9007199254740993 arrives here as ...992, and String() would mint an id
+    // the operator's system never issued — one that can land on the booking NEXT to it, so a later
+    // cancel retires the wrong customer's appointment. The digits are unrecoverable at this point,
+    // so the path is reported as unresolved instead, which is the channel that tells the operator to
+    // point at the string id an API returning ids that large almost always returns beside it.
+    return Math.abs(cur) > Number.MAX_SAFE_INTEGER ? undefined : String(cur);
+  }
   return undefined;
 }
 

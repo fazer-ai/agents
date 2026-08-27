@@ -2144,6 +2144,7 @@
     "appointmentNone": "Neither — it is not about appointments",
     "appointmentOffsets": "Remind the customer this many hours before",
     "appointmentOffsetsHint": "Comma-separated, e.g. 24, 1 (up to five, between 1 and 8760 hours). Leave empty and no reminder is sent — the booking still holds follow-ups and still reaches the AI. Use it only when your own system does not already remind them.",
+    "appointmentOffsetsInvalid": "Up to five values, each between 1 and 8760 hours.",
     "appointmentPathInvalid": "Dot-separated keys, with a number for a list position: data.items.0.id",
     "appointmentProvider": "Booking system",
     "appointmentProviderHint": "Only needed if you have more than one booking system: an id is unique only within the system that issued it. Use the same name on the tool that books and the tool that cancels, or the cancellation will not find the appointment.",

@@ -2152,6 +2152,7 @@
     "appointmentNone": "Nenhum dos dois: não é sobre agendamento",
     "appointmentOffsets": "Lembrar o cliente estas horas antes",
     "appointmentOffsetsHint": "Separadas por vírgula, ex. 24, 1 (até cinco, entre 1 e 8760 horas). Deixe vazio e nenhum lembrete é enviado: o agendamento continua segurando o follow-up e continua chegando na IA. Use só quando o seu próprio sistema já não lembra o cliente.",
+    "appointmentOffsetsInvalid": "No máximo cinco valores, cada um entre 1 e 8760 horas.",
     "appointmentPathInvalid": "Chaves separadas por ponto, e um número para posição de lista: data.items.0.id",
     "appointmentProvider": "Sistema de agendamento",
     "appointmentProviderHint": "Só é necessário se você tem mais de um sistema de agendamento: um id só é único dentro do sistema que o emitiu. Use o mesmo nome na ferramenta que marca e na que cancela, senão o cancelamento não encontra o agendamento.",

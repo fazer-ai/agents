@@ -426,6 +426,29 @@ function appointmentForm(raw: unknown) {
 
 // The flat fields back into the declaration the API takes, or null for "this tool has nothing to do
 // with appointments" — which is what an empty action means and what every tool means today.
+// The offsets field, read the ONE way, by the form's gate and by what it submits alike. Null means
+// the text names something that would not survive the trip: a token that is not a number, one
+// outside the server's own [1, 8760], or more than the five the server keeps. The empty field is an
+// ordinary answer, not an error — it is how an operator whose system already reminds says so.
+//
+// Refusing rather than filtering, because filtering here is INVISIBLE: `24h` and `0` were simply
+// dropped, the tool saved, the field went on showing them, and no reminder was ever armed. Same rule
+// as the path and provider gates below, and it is the rule the field's own hint already states.
+export function readOffsetsField(raw: string): number[] | null {
+  const tokens = raw.split(/[,\s]+/).filter((t) => t !== "");
+  if (tokens.length === 0) return [];
+  if (tokens.length > 5) return null;
+  const out: number[] = [];
+  for (const token of tokens) {
+    const n = Number(token);
+    // Fractions pass: the server rounds them (normalizeOffsets), so 2.7 IS honoured, as 3. What
+    // cannot be honoured is a value that is not a number at all, or one the clamp would move.
+    if (!Number.isFinite(n) || n < 1 || n > 8760) return null;
+    out.push(n);
+  }
+  return out;
+}
+
 function appointmentPayload(form: {
   apptAction: "" | "book" | "cancel";
   apptProvider: string;
@@ -436,10 +459,7 @@ function appointmentPayload(form: {
   apptAskConfirm: boolean;
 }): Record<string, unknown> | null {
   if (!form.apptAction) return null;
-  const offsets = form.apptOffsets
-    .split(/[,\s]+/)
-    .map((x) => Number(x))
-    .filter((n) => Number.isFinite(n) && n > 0);
+  const offsets = readOffsetsField(form.apptOffsets) ?? [];
   const provider = form.apptProvider.trim()
     ? { provider: form.apptProvider.trim() }
     : {};
@@ -867,6 +887,8 @@ export function ToolEditModal({
     apptOn &&
     form.apptProvider.trim() !== "" &&
     readProviderSlug(form.apptProvider) === null;
+  const apptOffsetsInvalid =
+    form.apptAction === "book" && readOffsetsField(form.apptOffsets) === null;
   const ackInvalid = form.ackEnabled && !form.ackMessage.trim();
   const valid =
     !loadingForm &&
@@ -879,6 +901,7 @@ export function ToolEditModal({
     !apptStartPathInvalid &&
     !apptSummaryPathInvalid &&
     !apptProviderInvalid &&
+    !apptOffsetsInvalid &&
     !ackInvalid;
   // NOTE: baseline is captured on open (create defaults / loaded tool); null while never opened or
   // while the edit fetch is in flight.
@@ -1438,6 +1461,15 @@ export function ToolEditModal({
                           setForm({ ...form, apptOffsets: e.target.value })
                         }
                         placeholder="24, 1"
+                        error={apptOffsetsInvalid}
+                        errorMessage={
+                          apptOffsetsInvalid
+                            ? t(
+                                "tools.appointmentOffsetsInvalid",
+                                "Up to five values, each between 1 and 8760 hours.",
+                              )
+                            : undefined
+                        }
                       />
                     </FormField>
                     {form.apptOffsets.trim() !== "" && (

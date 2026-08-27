@@ -189,6 +189,54 @@ test("a book declaration cannot be saved until its paths are usable", async () =
   });
 });
 
+// (#352, round 6) The reminder offsets were the one field still FILTERING instead of refusing: `24h`
+// and `0` were dropped on the way out, the tool saved, the field went on showing them, and the
+// customer was never reminded. Same question as the paths and the provider above, so the same
+// answer.
+test("offsets the runtime would not honour hold the save", async () => {
+  await openForm();
+  fireEvent.change(actionSelect(), { target: { value: "book" } });
+  fireEvent.change(inputFor(/onde está o id|where the id is/i), {
+    target: { value: "data.id" },
+  });
+  fireEvent.change(inputFor(/horário de início|start time/i), {
+    target: { value: "data.start" },
+  });
+  await waitFor(() => expect(saveDisabled()).toBe(false));
+
+  const offsets = inputFor(/quantas horas antes|this many hours before/i);
+  // Not a number at all: silently dropped before, so the tool saved with no reminder armed.
+  fireEvent.change(offsets, { target: { value: "24h" } });
+  await waitFor(() => expect(saveDisabled()).toBe(true));
+  // Below the server's own floor, and the same disappearance.
+  fireEvent.change(offsets, { target: { value: "0" } });
+  await waitFor(() => expect(saveDisabled()).toBe(true));
+  // Above its ceiling, which the server would CLAMP — also a value the field would go on misstating.
+  fireEvent.change(offsets, { target: { value: "99999" } });
+  await waitFor(() => expect(saveDisabled()).toBe(true));
+  // More than the five the server keeps.
+  fireEvent.change(offsets, { target: { value: "48, 24, 12, 6, 3, 1" } });
+  await waitFor(() => expect(saveDisabled()).toBe(true));
+
+  // Empty is an ordinary answer: an operator whose own system already reminds says so this way.
+  fireEvent.change(offsets, { target: { value: "" } });
+  await waitFor(() => expect(saveDisabled()).toBe(false));
+
+  // And a valid list releases it and is what gets submitted, in the order the reader gives.
+  fireEvent.change(offsets, { target: { value: "24, 1" } });
+  await waitFor(() => expect(saveDisabled()).toBe(false));
+  clickSave();
+  await waitFor(() => expect(posted.length).toBe(1));
+  expect(posted[0]?.appointment).toEqual({
+    action: "book",
+    idPath: "data.id",
+    startPath: "data.start",
+    reminderOffsetsHours: [24, 1],
+    // Off unless the operator turned it on: the switch only appears once the field is nonempty.
+    askConfirmationOnLast: false,
+  });
+});
+
 test("a provider that is not a slug holds the save too", async () => {
   await openForm();
   fireEvent.change(actionSelect(), { target: { value: "cancel" } });

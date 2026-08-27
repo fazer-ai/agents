@@ -61,6 +61,7 @@ import {
   createPendingVaultEntry,
   formatVaultRef,
   isVaultIdRef,
+  readVaultRefId,
   resolveVaultRefByName,
   VAULT_REF_PREFIX,
 } from "@/modules/vault/service";
@@ -785,11 +786,9 @@ export async function exportAgent(
     if (exportIdRefs.length > 0) {
       const ids: bigint[] = [];
       for (const r of exportIdRefs) {
-        try {
-          ids.push(BigInt(r.slice(VAULT_REF_PREFIX.length)));
-        } catch {
-          // malformed id-ref → skipped (translates to unset)
-        }
+        // malformed, or past what a bigint column holds → skipped (translates to unset)
+        const id = readVaultRefId(r);
+        if (id !== null) ids.push(id);
       }
       const vrows = await db.vaultEntry.findMany({
         where: { id: { in: ids } },

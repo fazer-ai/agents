@@ -4,7 +4,7 @@ import { AppError, NotFoundError } from "@/lib/errors";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { ensureFreshGoogleAccessToken } from "@/modules/vault/google-oauth";
-import { tryResolveVaultEntry } from "@/modules/vault/service";
+import { readVaultRefId, tryResolveVaultEntry } from "@/modules/vault/service";
 
 // Lists the folders a connected google_oauth credential can see, so the Drive integration modal lets
 // the operator SEARCH and PICK a folder to scope file search to (instead of pasting an opaque folder
@@ -87,9 +87,7 @@ export async function listCredentialDriveFolders(
       "errors.googleCredentialNotConnected",
     );
   }
-  const entryId = credentialRef.startsWith("vault:")
-    ? BigInt(credentialRef.slice("vault:".length))
-    : null;
+  const entryId = readVaultRefId(credentialRef);
   if (entryId === null) {
     throw new AppError(
       "Invalid credential reference.",

@@ -25,6 +25,7 @@ import {
 } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 import { ensureFreshGoogleAccessToken } from "@/modules/vault/google-oauth";
+import { readVaultRefId } from "@/modules/vault/service";
 
 // Deterministic appointment reminders (n8n v3 parity, no Google polling). When the agent books an
 // appointment, the Calendar toolpack calls enqueueAppointmentReminders → one APPOINTMENT_REMINDER
@@ -408,9 +409,7 @@ async function fetchEventStatus(
   eventId: string,
   base: PrismaClient,
 ): Promise<EventStatus | undefined> {
-  const entryId = credentialRef.startsWith("vault:")
-    ? BigInt(credentialRef.slice("vault:".length))
-    : null;
+  const entryId = readVaultRefId(credentialRef);
   if (entryId === null) return undefined;
   let token: string;
   try {

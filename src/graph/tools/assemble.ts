@@ -7,8 +7,8 @@ import type { IntegrationSelection } from "@/modules/integrations/toolpacks";
 import { isManagedOAuthKind } from "@/modules/vault/secret-types";
 import {
   formatVaultRef,
+  readVaultRefId,
   tryResolveVaultEntry,
-  VAULT_REF_PREFIX,
 } from "@/modules/vault/service";
 import type { DocumentSelection } from "./documents";
 import { buildHttpTool, type HttpToolDef } from "./http";
@@ -322,13 +322,9 @@ export async function loadToolSelections(
     // the map by the ref string so the lookup matches what is stored on the tool.
     const ids: bigint[] = [];
     for (const r of refs) {
-      if (r.startsWith(VAULT_REF_PREFIX)) {
-        try {
-          ids.push(BigInt(r.slice(VAULT_REF_PREFIX.length)));
-        } catch {
-          // malformed id-ref → no kind (auto-injection simply off for it)
-        }
-      }
+      // malformed, or past what a bigint column holds → no kind (auto-injection off for it)
+      const id = readVaultRefId(r);
+      if (id !== null) ids.push(id);
     }
     const entries =
       ids.length > 0

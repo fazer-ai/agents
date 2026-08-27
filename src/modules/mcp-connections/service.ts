@@ -17,7 +17,11 @@ import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { ensureFreshGoogleAccessToken } from "@/modules/vault/google-oauth";
 import { ensureFreshMcpAccessToken } from "@/modules/vault/mcp-oauth";
 import { isManagedOAuthKind } from "@/modules/vault/secret-types";
-import { requireVaultRef, tryResolveVaultEntry } from "@/modules/vault/service";
+import {
+  readVaultRefId,
+  requireVaultRef,
+  tryResolveVaultEntry,
+} from "@/modules/vault/service";
 
 // MCP server connections (per-tenant). The connection is the transport + endpoint + a vault
 // credential reference; the per-agent allowlist of discovered tools lives in AgentToolSelection
@@ -431,9 +435,7 @@ export async function discoverMcpTools(
   // connecting, so Discover authenticates the same way a live agent turn does.
   let secret = sel.secret;
   if (isManagedOAuthKind(sel.kind) && sel.credentialRef) {
-    const id2 = sel.credentialRef.startsWith("vault:")
-      ? BigInt(sel.credentialRef.slice("vault:".length))
-      : null;
+    const id2 = readVaultRefId(sel.credentialRef);
     if (id2 !== null) {
       secret =
         sel.kind === "mcp_oauth"

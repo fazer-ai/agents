@@ -1,6 +1,7 @@
 import { PostgresSaver } from "@langchain/langgraph-checkpoint-postgres";
 import { Pool } from "pg";
 import config from "@/config";
+import { parseDbId } from "@/lib/db-id";
 
 // LangGraph checkpointer: a PostgresSaver in the dedicated `langgraph` schema (created by
 // scripts/db-bootstrap.sql, owned by the non-superuser runtime role). The thread_id prefix
@@ -92,11 +93,8 @@ export function threadBelongsToTenant(
   threadId: string,
   tenantId: bigint,
 ): boolean {
-  const prefix = threadId.split(":")[0];
-  if (!prefix) return false;
-  try {
-    return BigInt(prefix) === tenantId;
-  } catch {
-    return false;
-  }
+  // The same parse `parseThreadId` uses, so the fence and the reader cannot disagree about which
+  // tenant a thread belongs to. Failing closed on a segment neither can read is the whole job.
+  const prefix = parseDbId(threadId.split(":")[0]);
+  return prefix !== null && prefix === tenantId;
 }

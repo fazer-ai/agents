@@ -4,7 +4,7 @@ import { AppError, NotFoundError } from "@/lib/errors";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { ensureFreshGoogleAccessToken } from "@/modules/vault/google-oauth";
-import { tryResolveVaultEntry } from "@/modules/vault/service";
+import { readVaultRefId, tryResolveVaultEntry } from "@/modules/vault/service";
 
 // Lists the calendars a connected google_oauth credential can see, so the integration modal lets the
 // operator PICK which agendas the agent may operate on (instead of typing opaque calendar ids) and
@@ -88,9 +88,7 @@ export async function listCredentialCalendars(
       "errors.googleCredentialNotConnected",
     );
   }
-  const entryId = credentialRef.startsWith("vault:")
-    ? BigInt(credentialRef.slice("vault:".length))
-    : null;
+  const entryId = readVaultRefId(credentialRef);
   if (entryId === null) {
     throw new AppError(
       "Invalid credential reference.",

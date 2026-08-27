@@ -216,6 +216,22 @@ of asking the operator's endpoint about an identity that is not theirs. Per fiel
 snapshot that happens to carry an unrelated cleared field must not ride that in to rewrite the rest
 of what it holds.
 
+**A delivery recovery asks about the identity the mirror holds, and cannot refresh it.** The body a
+stranded delivery is rebuilt from (issue #295) states no `meta.sender`, deliberately: it carries the
+stranded message's own clock, and an identity positioned under that clock meets the tie rule above
+and CLEARS the field instead of updating it (measured, on a contact positioned at the same second by
+a sibling of its burst). So the field rule applies as written — a payload that does not carry the
+field leaves what is stored — and the gate asks about whatever the last event that DID carry identity
+wrote. Where that is behind, the direction of the error is not uniform. An identity ADDED since (an
+anonymous widget contact that identified itself afterwards) leaves the mirror holding nothing, and
+the gate answers `no_identity`: no turn, which is the closed side. The one case a recovery answers
+where a live delivery would not is an identity REPLACED, with the old value authorized and the new
+one not, on a strand where the stranded message is itself the event that carried the change and
+nothing since has carried identity. Closing that means deciding on the live contact the recovery
+already reads, without writing it — and that is not free: the REST and webhook renderings of a
+contact are known to differ in shape, so a comparison that is wrong about formatting would refuse
+every recovery for that contact and say nothing. Recorded rather than closed.
+
 **On upgrade**, the watermarks are seeded from the newest event that touched each contact and the
 identity is KEPT. Seeding is what stops a Chatwoot retry already in flight, whose snapshot predates
 what is stored, from being accepted against a null position. What it does not settle is whether the

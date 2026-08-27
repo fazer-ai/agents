@@ -659,6 +659,37 @@ async function runRecovery(params: {
   const agentId = inbox?.agentId ?? null;
   const agentMode = route.mode;
 
+  // WHICH BOT answers, derived rather than stored, and the derivation is the more correct of the
+  // two. The ledger does not record the route a delivery arrived on, and adding a column would
+  // answer the wrong question: Chatwoot fans one message to up to two bot routes (`agent_bots_for`:
+  // the conversation's assignee bot and the inbox's, each with its own delivery id — MEASURED), so
+  // "the route it came from" is not "who should answer it now". The inbox's agent's bot is, and if
+  // the conversation has since moved to a different bot the ownership gate closes on that fact,
+  // which is the right outcome rather than a missed one.
+  //
+  // Asked of `agentBotChatwootId`, which is the repo's existing answer to it: it reads the unique
+  // (tenant, instance, agent) row and deliberately does NOT decrypt the token, which a caller that
+  // merely wants to know WHICH bot cannot survive doing. A second reader here would be the same
+  // question in one more place, which is the defect this repo keeps paying for.
+  //
+  // Asked HERE, ABOVE the mirror re-read below, and the position is the point rather than an
+  // ordering taste. Two separate things need it. Nothing may await between the fence answering
+  // "free" and the mark that holds it, or a nudge starting inside that await is exactly what
+  // neither the check nor the hold sees — this query used to sit in that gap. And the re-read below
+  // is the ONE reading that the body and the fence's graph key both come from, which it only is
+  // while nothing between it and the fence can move the pairing: this query was that await, one
+  // query wide, and a webhook landing inside it left the fence naming the thread the contact HAD.
+  //
+  // It costs the refusals between here and the fence one local query each, next to the two REST
+  // reads they already pay. The refusal it FEEDS does not move up with it: that one stays below the
+  // body and still above the fence, so a route with no persona keeps answering `unrecoverable`
+  // instead of `deferred` on a conversation that is also busy — the better of the two, since
+  // retrying never finds a persona that an operator has not bound.
+  const agentBotId =
+    agentId === null
+      ? null
+      : await agentBotChatwootId(params.tenantId, instanceId, agentId, base);
+
   // THE MIRROR LEARNS THE ROUTE, and this is a repair rather than a convenience. Rebuilding the body
   // from the live message answers `runAgentTurn`, which resolves the agent from the inbox the EVENT
   // carries — and nothing else in the delivery path reads it from there. `maybeConsumeCommandOrGate`
@@ -699,7 +730,9 @@ async function runRecovery(params: {
   // pairing is not inert, because the mirror write it drives can put that pairing back.
   //
   // One read for both, taken here because nothing between this line and the fence awaits anything
-  // that could move it again.
+  // that could move it again — a property of where the route's bot query sits rather than an
+  // accident. That query used to sit between the two, and a webhook landing inside it left the body
+  // and the fence naming the thread the contact HAD; it is asked above this read for that reason.
   //
   // The REDIRECT PAIRING comes back on the same reading, and it is a second consumer that makes it
   // matter rather than the mirror. The mirror does order this one: the body states the pairing WITH
@@ -931,29 +964,6 @@ async function runRecovery(params: {
     conversationId,
     contactInboxId,
   );
-  // WHICH BOT answers, derived rather than stored, and the derivation is the more correct of the
-  // two. The ledger does not record the route a delivery arrived on, and adding a column would
-  // answer the wrong question: Chatwoot fans one message to up to two bot routes (`agent_bots_for`:
-  // the conversation's assignee bot and the inbox's, each with its own delivery id — MEASURED), so
-  // "the route it came from" is not "who should answer it now". The inbox's agent's bot is, and if
-  // the conversation has since moved to a different bot the ownership gate closes on that fact,
-  // which is the right outcome rather than a missed one.
-  //
-  // Asked of `agentBotChatwootId`, which is the repo's existing answer to it: it reads the unique
-  // (tenant, instance, agent) row and deliberately does NOT decrypt the token, which a caller that
-  // merely wants to know WHICH bot cannot survive doing. A second reader here would be the same
-  // question in one more place, which is the defect this repo keeps paying for.
-  //
-  // Asked ABOVE THE FENCE, which costs a deferred pass one query and is the point: nothing may await
-  // between the fence answering "free" and the mark that holds it, or a nudge starting inside that
-  // await is exactly the thing neither the check nor the hold sees. This query used to sit in that
-  // gap. The refusal below moves up with it, so a route with no persona answers `unrecoverable`
-  // instead of `deferred` on a conversation that is also busy — the better of the two, since
-  // retrying never finds a persona that an operator has not bound.
-  const agentBotId =
-    agentId === null
-      ? null
-      : await agentBotChatwootId(params.tenantId, instanceId, agentId, base);
   // A ROUTE THAT NAMES AN AGENT WITH NO BOT IDENTITY IS NOT A RECOVERY, and this is the one place
   // where passing a null onward is worse than refusing. `heldByAnotherParty` compares ids, so with
   // `ourAgentBotId` null it cannot: the gate goes LOOSE and a conversation another AgentBot holds
@@ -1077,6 +1087,16 @@ async function runRecovery(params: {
   // `markTurnInFlight` COUNTS rather than sets (../../graph/inflight.ts), so the turn taking the same
   // graph key a moment later is an increment and not a conflict, and each is balanced by its own
   // clear.
+  //
+  // THE BOUND, stated rather than implied: both marks live in a Map in THIS process, and the durable
+  // claim that crosses replicas is not taken until `runAgentTurn` takes it. A `/reset` served by a
+  // different web replica reads neither, so it clears the memory and this turn restores it — the
+  // same loss described above, on the topology where the fence cannot see it. Closing that means
+  // taking the durable claim (`markTurnOwning`) here, and that is not a wider version of this hold:
+  // it WAITS on an append's lease and on the reset's row lock, so it changes what the fence MEANS
+  // rather than extending its reach. Left as issue #203's remaining edge, on the same grounds the
+  // nudge paragraph above states: docs/deploy.md §4 declares one replica, and every reader that this
+  // hold has to reach lives in it.
   markTurnInFlight(handoffKey);
   markTurnInFlight(graphKey);
   try {

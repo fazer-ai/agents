@@ -2838,6 +2838,41 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     expect(src.slice(durable, mark)).toContain("isTurnInFlight(handoffKey)");
   });
 
+  test("the pairing the body carries and the pairing the fence asks about are one reading", async () => {
+    // The mirror is re-read once, and TWO things are built from that reading: the body handed to the
+    // delivery path, and the graph key the fence asks about. ONE reading is what makes them the same
+    // pairing, and it is only one reading while nothing between it and the fence can move it.
+    // MEASURED as a real gap: `agentBotChatwootId` used to sit between the two, one scoped query
+    // wide, and a webhook landing inside it (./mirror.ts writes `contactInboxId` on an unversioned
+    // event) left the body and the fence naming the thread the contact HAD.
+    //
+    // Structural for the same reason as the test above: what is asserted IS the absence of a
+    // suspension point, and reproducing it behaviourally means injecting the await it forbids.
+    const src = await Bun.file(
+      new URL(
+        "../../src/modules/chatwoot/recover-delivery.ts",
+        import.meta.url,
+      ),
+    ).text();
+    const read = src.indexOf(
+      "const contactInboxId = mirrorNow?.contactInboxId ?? null;",
+    );
+    expect(read).toBeGreaterThan(-1);
+    // The FIRST of the fence's three steps: the middle one awaits `turnOwnsThread` by design, so an
+    // anchor past it would measure a stretch that is allowed to suspend.
+    const fence = src.indexOf(
+      "if (isTurnInFlight(handoffKey) || isTurnInFlight(graphKey)) {",
+      read,
+    );
+    expect(fence).toBeGreaterThan(-1);
+    const code = src
+      .slice(read, fence)
+      .split("\n")
+      .filter((l) => !l.trimStart().startsWith("//"))
+      .join("\n");
+    expect(code).not.toContain("await ");
+  });
+
   test("the turn's failure is reported by the turn, never by the block around it", async () => {
     // `onDirectTurn` is how this module learns whether anybody was answered, and `{ kind: "error" }`
     // is the one reading that costs a SECOND TURN: the row goes back to DEAD, the scheduler runs the

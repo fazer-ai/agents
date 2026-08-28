@@ -22,7 +22,7 @@ import {
 import { listThreadTurnNotes } from "@/modules/playground/turn-notes";
 import { transcribePlaygroundAudio } from "@/modules/stt/service";
 import { extractPlaygroundFile } from "@/modules/vision/service";
-import { codeOnly } from "@/tests/utils/source-text";
+import { withoutComments } from "@/tests/utils/source-text";
 
 // The playground was the one console surface that took the caller's tenant selector and handed it to
 // the database as an internally-trusted id, so the gate #223 put at `runScopedOn` never applied to
@@ -325,6 +325,16 @@ describe("no playground module builds a tenant context of its own", () => {
 
   test("the predicate catches the shape that was there", () => {
     expect(buildsATenantContext(OFFENDER)).toBe(true);
+    // …AND through the reader the sweep actually uses. Calling the predicate on raw text cannot see
+    // an adoption that strips the literal it matches on, which is how `codeOnly` silenced this sweep
+    // for a round (#424).
+    expect(buildsATenantContext(withoutComments(OFFENDER))).toBe(true);
+    // The prose the strip is there for: a comment naming the shape is not one.
+    expect(
+      buildsATenantContext(
+        withoutComments('// never write role: "TENANT_ADMIN" here\n'),
+      ),
+    ).toBe(false);
     expect(
       buildsATenantContext(
         "await runScopedOn(base, ctx, (db) => db.x.findMany())",
@@ -338,8 +348,11 @@ describe("no playground module builds a tenant context of its own", () => {
     for await (const rel of new Glob("**/*.ts").scan(
       "src/modules/playground",
     )) {
-      // Through the scan, so prose naming the shape is not counted as one (#424).
-      const src = codeOnly(
+      // `withoutComments`, not `codeOnly`: the predicate matches ON a literal (`role: "TENANT_ADMIN"`),
+      // so blanking string contents hides the offender instead of the prose. Adopting the wrong one
+      // here silenced the sweep, and its own control could not see that — it calls the predicate on
+      // unstripped text (found by review).
+      const src = withoutComments(
         await Bun.file(`src/modules/playground/${rel}`).text(),
       );
       if (buildsATenantContext(src)) offenders.push(rel);

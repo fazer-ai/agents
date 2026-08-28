@@ -5,7 +5,6 @@
 import { describe, expect, test } from "bun:test";
 import { Glob } from "bun";
 import { expectWaiverLedger } from "@/tests/utils/ledger";
-import { codeOnly } from "@/tests/utils/source-text";
 
 // Every `BigInt` in the tree whose argument is not a literal, and the reason each one is allowed.
 //
@@ -288,8 +287,11 @@ export function unwaived(
 async function sources(): Promise<Map<string, string>> {
   const files = new Map<string, string>();
   for await (const file of new Glob("src/**/*.{ts,tsx}").scan(".")) {
-    // Through the scan, so a comment naming a `BigInt(` is not counted as one (#424).
-    files.set(file, codeOnly(await Bun.file(file).text()));
+    // RAW on purpose. `bigIntArgs` runs its own `blankNonCode` for the detection and then takes the
+    // argument's TEXT as the ledger key, so pre-stripping rewrites the keys: `BigInt(ref.slice(
+    // "vault:".length))` becomes an argument full of spaces and the waiver stops matching. The one
+    // sweep in this family that must not be handed stripped source (found by review).
+    files.set(file, await Bun.file(file).text());
   }
   return files;
 }

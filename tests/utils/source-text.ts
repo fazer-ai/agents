@@ -160,6 +160,13 @@ function scan(source: string, { strings }: Options): Scanned {
         i = to;
         continue;
       }
+      // A `/` right after a `<` closes a JSX tag; it never opens a regex. Removing the JSX mode left
+      // `<` not ending a value, so `</Foo>` entered the regex branch and swallowed the rest of its
+      // line — including a real call site, with nothing left open to notice (found by review).
+      if (c === "/" && !endsValue && before(i, 2).trimEnd().endsWith("<")) {
+        i++;
+        continue;
+      }
       if (c === "/" && !endsValue) {
         // The DELIMITERS stay and the body goes, exactly like a string: `/sanitizeErrorMessage\(/` is
         // a pattern that names a call, not a call, and a sweep counting calls was counting it (found

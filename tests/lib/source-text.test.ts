@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { bigIntArgs } from "@/tests/lib/caller-id-spelling.test";
 import {
   codeOnly,
   countInSrc,
@@ -111,6 +112,20 @@ describe("the scan removes prose and keeps code", () => {
     ],
     // A `{` written where a VALUE was expected is an object, so the `}` that closes it ends a value
     // and the `/` after it divides. This used to be a documented gap; the scan tracks it now.
+    //
+    // A `</…>` IS NOT A REGEX. Removing the JSX mode left `<` not ending a value, so the slash in a
+    // closing tag opened a regex and swallowed the rest of its line — a real call site gone, with
+    // nothing left open to notice. Two characters of rule, and it is what makes the removal safe:
+    // what stays uncovered is JSX TEXT, which produces a phantom rather than a swallowed site.
+    // Found by review.
+    [
+      "a cut after a JSX closing tag",
+      "const x = <Foo></Foo>;\nconst a = s.slice(0, 10);\n",
+    ],
+    [
+      "a cut after a closing tag on the same line",
+      "const x = <Foo></Foo>; const a = s.slice(0, 10);\n",
+    ],
     [
       "a cut after a division on an object literal",
       "const ratio = <any>{} / 2;\nconst a = s.slice(0, 10);\n",
@@ -488,7 +503,14 @@ describe("every Glob sweep over src/ counts through the scan", () => {
       // THE IMPORT, NOT THE NAME. `refusal-callsites.test.ts` defines a LOCAL function called
       // `codeOnly` — a different thing that happens to share a word — and a name-matching fence read
       // that as adoption and let it through. A fence measures the spelling it was given, always.
-      if (!/from "@\/tests\/utils\/source-text"/.test(code)) {
+      // ONE EXEMPTION, AND IT IS A PROVED ONE. `caller-id-spelling` blanks non-code itself and then
+      // takes the argument's TEXT as its ledger key, so handing it stripped source rewrites the keys
+      // — `BigInt(ref.slice("vault:".length))` becomes an argument full of spaces and every waiver
+      // stops matching. It must read raw, and this fence would otherwise be satisfied by deleting the
+      // adoption from any file. So the exemption is not a name on a list: the test below drives that
+      // file's own predicate with prose and requires it to count zero.
+      const provesItself = /\bblankNonCode\b/.test(code);
+      if (!/from "@\/tests\/utils\/source-text"/.test(code) && !provesItself) {
         offenders.push(path);
       }
     }
@@ -498,6 +520,20 @@ describe("every Glob sweep over src/ counts through the scan", () => {
     // Review named a fourth it could not see; widening it to the second spelling surfaced five more.
     // A fence that names a spelling measures the spelling, never the rule.
     expect(sweeps.length).toBeGreaterThanOrEqual(9);
+  });
+});
+
+// The proof behind the one exemption above. A waiver that says "this file handles it" and is never
+// exercised is the waiver this whole PR is about; this one is executed.
+describe("the exempt sweep really does ignore prose", () => {
+  test("caller-id-spelling counts no BigInt written in a comment", () => {
+    expect(bigIntArgs("const id = BigInt(raw);\n")).toEqual(["raw"]);
+    expect(bigIntArgs("// never write BigInt(raw) here\n")).toEqual([]);
+    expect(bigIntArgs('const s = "BigInt(raw)";\n')).toEqual([]);
+    // …and the literal inside a real argument survives, which is why it reads raw source.
+    expect(
+      bigIntArgs('const id = BigInt(ref.slice("vault:".length));\n'),
+    ).toEqual(['ref.slice("vault:".length)']);
   });
 });
 

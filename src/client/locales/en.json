@@ -219,8 +219,51 @@
     "signupFailed": "Signup failed"
   },
   "branding": {
+    "advancedHint": "Set each token explicitly, per theme. Empty fields fall back to the default theme.",
+    "brandColor": "Brand color",
+    "brandNameHint": "Shown in the browser tab title and the auth-page footer. Leave empty to use the default (fazer.ai agents).",
+    "brandNameLabel": "Brand name",
+    "colors": "Colors",
+    "cropApply": "Apply",
+    "cropFaviconTitle": "Adjust favicon",
+    "cropHint": "Drag to select the area to keep.",
+    "cropLogoTitle": "Adjust logo",
+    "empty": "None",
+    "faviconHint": "Shown in the browser tab. PNG, SVG or ICO recommended.",
+    "faviconTitle": "Favicon",
+    "field": {
+      "accent": "Accent",
+      "accentForeground": "Accent foreground",
+      "accentHover": "Accent (hover)",
+      "accentMuted": "Accent (muted)",
+      "accentSoft": "Accent (soft)",
+      "primary": "Primary"
+    },
+    "hideGithubLabel": "Hide the GitHub link",
+    "linksHint": "The external links at the bottom of the sidebar. Leave a field empty to use the default.",
+    "linksTitle": "Footer links",
+    "logoHint": "Shown in the header, sidebar and auth pages. PNG, JPEG, WEBP or SVG.",
+    "logoTitle": "Logo",
+    "modeAdvanced": "Advanced",
+    "modeSimple": "Simple",
+    "previewButton": "Button",
+    "remove": "Remove",
+    "replace": "Replace",
+    "save": "Save",
+    "saved": "Branding saved.",
+    "saveError": "Could not save branding.",
+    "simpleHint": "Pick one brand color; hover, contrast and soft tints are derived automatically for each theme.",
+    "siteUrlHint": "Absolute http(s) URL; the link label becomes its hostname.",
+    "siteUrlLabel": "Website URL",
     "subtitle": "Customize the app's global appearance (name, colors, logo, favicon).",
-    "title": "Branding"
+    "supportEmailHint": "Shown in the \"Need help?\" support dialog.",
+    "supportEmailLabel": "Support e-mail",
+    "themeDark": "Dark",
+    "themeLight": "Light",
+    "title": "Branding",
+    "upload": "Upload",
+    "uploadError": "Could not upload the image.",
+    "useDefault": "Use default"
   },
   "channels": {
     "account": "Account {{id}}",
@@ -417,7 +460,8 @@
       "noReply": "The AI produced no reply.",
       "notAuthorized": "The authorization endpoint did not clear this contact, so the AI did not reply.",
       "overCeiling": "This month's token ceiling has been reached, so the AI did not reply. Raise it in Settings or wait for the next month.",
-      "posted": "The AI replied."
+      "posted": "The AI replied.",
+      "postedPartial": "The AI replied, but part of the answer did not reach the customer."
     },
     "reminders": {
       "before": "{{n}}h before",
@@ -2071,17 +2115,30 @@
     "title": "Contact support"
   },
   "tenant": {
+    "adminEmail": "First admin email (optional)",
+    "adminEmailHint": "If set, an invitation link for the tenant admin is generated.",
     "create": "Create tenant",
+    "createFailed": "Could not create the tenant",
     "deepLinkUnavailable": "This link points at a tenant you cannot open. Nothing was switched.",
     "deepLinkUnverified": "Could not check this link",
     "deepLinkUnverifiedHelp": "This link opens a different tenant, and the list of tenants you can open could not be read. Nothing was switched.",
+    "delete": "Delete tenant",
+    "deleteBackup": "Recommended: export any data you need before continuing.",
+    "deleteConfirm": "Type {{name}} to confirm",
+    "deleted": "Tenant deleted.",
+    "deleteError": "Could not delete the tenant. Check your password and try again.",
+    "deleteWarning": "This permanently deletes the tenant and ALL its data: users, agents, conversations, integrations, credentials and analytics. It cannot be undone.",
     "demo": "Demo",
+    "edit": "Edit tenant",
     "label": "Tenant",
     "name": "Name",
     "none": "No tenants yet.",
     "select": "Select tenant",
     "slug": "Slug",
-    "switcher": "Switch tenant"
+    "slugHint": "Lowercase letters, numbers and hyphens.",
+    "slugInvalid": "Use lowercase letters, numbers and single hyphens (no leading/trailing hyphen).",
+    "switcher": "Switch tenant",
+    "updateFailed": "Could not update the tenant"
   },
   "testMode": {
     "badge": {

@@ -3507,6 +3507,15 @@ describe.skipIf(!dbUp)("debounce", () => {
       expect(sent).toEqual([]);
       // The retry that a throw would arm is what would send that picture again.
       expect(await watermarkOf(923)).toBe(7);
+      // AND THE THIRD SHAPE OF A PARTIAL DELIVERY (issue #429), which this branch used to report as
+      // plain `posted`: the customer holds the picture and none of the words. "Not a failed turn"
+      // and "nothing to tell the operator" are different facts, and reporting it as a clean post
+      // makes the flush CLEAR whatever badge the conversation was carrying.
+      const conv = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: 923 },
+        select: { lastError: true },
+      });
+      expect(conv.lastError).toContain("incompleta");
     });
 
     test("a burst retired after the image still counts as answered", async () => {

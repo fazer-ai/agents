@@ -1497,6 +1497,18 @@ export function ConversationDetailPage() {
           t("conversation.reengage.posted", "The AI replied."),
           "success",
         );
+      } else if (data.outcome === "posted-partial") {
+        // NOT the `noReply` fallback it used to land in (issue #429). Part of the answer IS with the
+        // customer, and telling the operator nothing was sent invites them to re-engage again — which
+        // re-runs the turn and sends that part a second time. Warning, not success: the reply came
+        // out short and the conversation carries the badge saying so.
+        showToast(
+          t(
+            "conversation.reengage.postedPartial",
+            "The AI replied, but part of the answer did not reach the customer.",
+          ),
+          "warning",
+        );
       } else if (data.outcome === "gate-closed") {
         showToast(
           t(

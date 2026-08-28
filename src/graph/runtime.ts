@@ -1529,7 +1529,29 @@ export async function runLoadedTurn(
     // command landing in the text send leaves a customer holding part of the answer. "stale" would
     // hand the burst back to the next flush, which sends that attachment again.
     if (delivered === "stale" || delivered.delivered === 0) {
-      return attachments.sent ? "posted" : refuse("stale");
+      if (!attachments.sent) return refuse("stale");
+      // The attachment IS the answer the customer got, and this is the third shape of a partial
+      // delivery rather than a fourth kind of success: a text send that failed outright leaves them
+      // holding the file and none of the words, which is exactly what the badge exists to say.
+      //
+      // `stale` is deliberately NOT partial. Nothing was attempted after the fence, by decision, and
+      // reporting the operator's own /reset as an incomplete delivery puts `lastError` back on the
+      // conversation they had just cleared — the rule `deliverReply` states for the same case.
+      // `attachmentFailed` is still asked on that path, because a file that failed BEFORE the fence
+      // failed on its own.
+      const postedOnFiles = postedOutcomeFor({
+        replyPartial: delivered !== "stale" && delivered.failed,
+        attachmentFailed: attachments.failed,
+      });
+      if (postedOnFiles === "posted-partial") {
+        await notePartialDelivery({
+          tenantId,
+          instanceId,
+          conversationId,
+          base,
+        });
+      }
+      return postedOnFiles;
     }
     deliveredBalloons = delivered.delivered;
     // AN ATTENDANCE THE CUSTOMER DID NOT FULLY RECEIVE DOES NOT CLOSE, and this branch owes the

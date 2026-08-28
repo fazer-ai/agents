@@ -219,8 +219,51 @@
     "signupFailed": "Falha ao cadastrar"
   },
   "branding": {
+    "advancedHint": "Defina cada token explicitamente, por tema. Campos vazios usam o tema padrão.",
+    "brandColor": "Cor de marca",
+    "brandNameHint": "Aparece no título da aba do navegador e no rodapé das telas de acesso. Deixe vazio para usar o padrão (fazer.ai agents).",
+    "brandNameLabel": "Nome da marca",
+    "colors": "Cores",
+    "cropApply": "Aplicar",
+    "cropFaviconTitle": "Ajustar favicon",
+    "cropHint": "Arraste para selecionar a área a manter.",
+    "cropLogoTitle": "Ajustar logo",
+    "empty": "Nenhum",
+    "faviconHint": "Exibido na aba do navegador. PNG, SVG ou ICO recomendados.",
+    "faviconTitle": "Favicon",
+    "field": {
+      "accent": "Destaque",
+      "accentForeground": "Texto sobre destaque",
+      "accentHover": "Destaque (hover)",
+      "accentMuted": "Destaque (suave)",
+      "accentSoft": "Destaque (leve)",
+      "primary": "Primária"
+    },
+    "hideGithubLabel": "Ocultar o link do GitHub",
+    "linksHint": "Os links externos na parte de baixo da barra lateral. Deixe um campo vazio para usar o padrão.",
+    "linksTitle": "Links do rodapé",
+    "logoHint": "Exibido no cabeçalho, na barra lateral e nas telas de acesso. PNG, JPEG, WEBP ou SVG.",
+    "logoTitle": "Logo",
+    "modeAdvanced": "Avançado",
+    "modeSimple": "Simples",
+    "previewButton": "Botão",
+    "remove": "Remover",
+    "replace": "Substituir",
+    "save": "Salvar",
+    "saved": "Identidade visual salva.",
+    "saveError": "Não foi possível salvar a identidade visual.",
+    "simpleHint": "Escolha uma cor de marca; hover, contraste e tons suaves são derivados automaticamente para cada tema.",
+    "siteUrlHint": "URL http(s) absoluta; o rótulo do link vira o domínio dela.",
+    "siteUrlLabel": "URL do site",
     "subtitle": "Personalize a aparência global do app (nome, cores, logo, favicon).",
-    "title": "Identidade visual"
+    "supportEmailHint": "Aparece no diálogo de suporte \"Precisa de ajuda?\".",
+    "supportEmailLabel": "E-mail de suporte",
+    "themeDark": "Escuro",
+    "themeLight": "Claro",
+    "title": "Identidade visual",
+    "upload": "Enviar",
+    "uploadError": "Não foi possível enviar a imagem.",
+    "useDefault": "Usar padrão"
   },
   "channels": {
     "account": "Conta {{id}}",
@@ -418,7 +461,8 @@
       "noReply": "A IA não gerou resposta.",
       "notAuthorized": "O endpoint de autorização não liberou este contato, então a IA não respondeu.",
       "overCeiling": "O teto de tokens deste mês foi atingido, então a IA não respondeu. Aumente o limite nas Configurações ou aguarde o próximo mês.",
-      "posted": "A IA respondeu."
+      "posted": "A IA respondeu.",
+      "postedPartial": "A IA respondeu, mas parte da resposta não chegou ao cliente."
     },
     "reminders": {
       "before": "{{n}}h antes",
@@ -2079,17 +2123,30 @@
     "title": "Contatar suporte"
   },
   "tenant": {
+    "adminEmail": "Email do primeiro admin (opcional)",
+    "adminEmailHint": "Se preenchido, um link de convite para o admin do tenant é gerado.",
     "create": "Criar tenant",
+    "createFailed": "Não foi possível criar o tenant",
     "deepLinkUnavailable": "Este link aponta para um tenant que você não pode abrir. Nada foi trocado.",
     "deepLinkUnverified": "Não foi possível conferir este link",
     "deepLinkUnverifiedHelp": "Este link abre outro tenant, e não foi possível ler a lista de tenants que você pode abrir. Nada foi trocado.",
+    "delete": "Excluir tenant",
+    "deleteBackup": "Recomendado: exporte os dados que precisar antes de continuar.",
+    "deleteConfirm": "Digite {{name}} para confirmar",
+    "deleted": "Tenant excluído.",
+    "deleteError": "Não foi possível excluir o tenant. Verifique sua senha e tente novamente.",
+    "deleteWarning": "Isto apaga permanentemente o tenant e TODOS os seus dados: usuários, agentes, conversas, integrações, credenciais e analytics. Não pode ser desfeito.",
     "demo": "Demo",
+    "edit": "Editar tenant",
     "label": "Tenant",
     "name": "Nome",
     "none": "Nenhum tenant ainda.",
     "select": "Selecionar tenant",
     "slug": "Slug",
-    "switcher": "Trocar de tenant"
+    "slugHint": "Letras minúsculas, números e hífens.",
+    "slugInvalid": "Use letras minúsculas, números e hífens simples (sem hífen no início ou fim).",
+    "switcher": "Trocar de tenant",
+    "updateFailed": "Não foi possível atualizar o tenant"
   },
   "testMode": {
     "badge": {

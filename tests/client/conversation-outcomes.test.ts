@@ -42,6 +42,27 @@ describe("conversation actions report their outcome", () => {
     });
   }
 
+  // AN OUTCOME THAT IS NEITHER A SUCCESS NOR A SILENCE (issue #429). `posted-partial` says the
+  // customer got part of the answer, and the handler's chain ends in an `else` that says "The AI
+  // produced no reply" — so a new outcome lands there by default and tells the operator the exact
+  // opposite of what happened. Worse than a wrong word: it invites them to re-engage again, which
+  // re-runs the turn and sends the part they already have a second time.
+  //
+  // Asserted as PRESENCE of the arm rather than absence from the fallback, for the reason the test
+  // below states about the offer: "does not reach the else" is not the same fact as "has its own
+  // branch", and only the second one survives someone reordering the chain.
+  test("a partial reply gets its own arm instead of the no-reply fallback", () => {
+    const body = handlerBody("reengage");
+    const arm = body.indexOf('"posted-partial"');
+    expect(arm).toBeGreaterThan(-1);
+    // Its own branch, and BEFORE the fallback — the chain is ordered, so an arm added after the
+    // final `else` is unreachable.
+    const fallback = body.indexOf("reengage.noReply");
+    expect(fallback).toBeGreaterThan(arm);
+    // And it says something about the partial delivery rather than reusing the success string.
+    expect(body.slice(arm, fallback)).toContain("reengage.postedPartial");
+  });
+
   // The half a toast cannot fix. "Respond now" makes the agent post into the conversation, so
   // offering it after a takeover invites the operator to talk over the person who just claimed it.
   //

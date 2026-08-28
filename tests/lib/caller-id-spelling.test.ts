@@ -5,6 +5,7 @@
 import { describe, expect, test } from "bun:test";
 import { Glob } from "bun";
 import { expectWaiverLedger } from "@/tests/utils/ledger";
+import { codeOnly } from "@/tests/utils/source-text";
 
 // Every `BigInt` in the tree whose argument is not a literal, and the reason each one is allowed.
 //
@@ -287,7 +288,8 @@ export function unwaived(
 async function sources(): Promise<Map<string, string>> {
   const files = new Map<string, string>();
   for await (const file of new Glob("src/**/*.{ts,tsx}").scan(".")) {
-    files.set(file, await Bun.file(file).text());
+    // Through the scan, so a comment naming a `BigInt(` is not counted as one (#424).
+    files.set(file, codeOnly(await Bun.file(file).text()));
   }
   return files;
 }

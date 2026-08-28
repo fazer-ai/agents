@@ -28,34 +28,6 @@ describe("the scan removes prose and keeps code", () => {
       "template around an interpolation",
       `const a = \`s.slice(0, 1) \${x}\`;\n`,
     ],
-    // JSX TEXT IS A LITERAL, and nothing else in this file would treat it as one. Found by review.
-    ["JSX text", "<p>s.slice(0, 1)</p>\n"],
-    ["JSX text in a nested element", "<div>\n  <b>s.slice(0, 1)</b>\n</div>\n"],
-    [
-      "a comment inside a JSX tag",
-      "<iframe\n  // s.slice(0, 1)\n  src={x}\n/>\n",
-    ],
-    // Text that OPENS ON A PARENTHESIS, which is what a type argument list is recognised by. Without
-    // the third signal in `typeArgumentList` this reads as a generic and the text counts as code.
-    ["JSX text starting with a parenthesis", "<div>(s.slice(0, 1))</div>\n"],
-    // After a keyword that OPENS AN EXPRESSION. `default` and `throw` were read as ordinary
-    // identifiers, so the `<` after them was a comparison and the JSX text counted as code. Found by
-    // review; the row is the keyword list being exercised rather than asserted.
-    [
-      "JSX text after `export default`",
-      "export default <p>s.slice(0, 1)</p>;\n",
-    ],
-    ["JSX text after `throw`", "throw <p>s.slice(0, 1)</p>;\n"],
-    // A component name may begin with `_` or `$`, which the first character class did not admit.
-    ["JSX text in an underscore component", "<_Foo>s.slice(0, 1)</_Foo>\n"],
-    ["JSX text in a dollar component", "<$Foo>s.slice(0, 1)</$Foo>\n"],
-    ["JSX text after an attribute", '<Foo a="x">(s.slice(0, 1))</Foo>\n'],
-    // A `>` inside an attribute value must not close the tag early, which is what skipping the string
-    // (rather than refusing on it) buys in both directions.
-    [
-      "JSX text after an attribute holding a >",
-      '<div title="a > b">s.slice(0, 1)</div>\n',
-    ],
   ];
   for (const [name, source] of REMOVED) {
     test(`${name} is not a cut`, () => {
@@ -499,23 +471,33 @@ describe("every Glob sweep over src/ counts through the scan", () => {
       // fence caught itself on that the first time it ran — `codeOnly` blanked the `"src"` it was
       // matching on and the sweep list came back empty, which reads exactly like a clean tree.
       const code = withoutComments(await Bun.file(path).text());
-      if (!/\.scan\(\s*"src"/.test(code)) continue;
+      // TWO SPELLINGS, and the second is why this is a pattern rather than a string. `scan("src")`
+      // puts the directory in the call; `new Glob("src/**/*.ts").scan(".")` puts it in the GLOB and
+      // walks from the repo root. Review found `provider-boundary-sweep.test.ts` written the second
+      // way and therefore invisible to the first draft of this fence — a fence that named one
+      // spelling and reported a clean tree.
+      const globsSrc =
+        /\.scan\(\s*"src/.test(code) || /Glob\(\s*["'`]src\//.test(code);
+      if (!globsSrc) continue;
       // Globbing `src/` is not enough to be one of these: `agent-settings-mcp-parity` walks the same
       // tree to IMPORT each module and probe it with a Proxy, and never reads a character of source.
-      // Flagging it was this fence's first result, and it is the shape a fence that accuses everything
-      // takes on the way to being waived into silence.
+      // Flagging it was this fence's first result, and it is the shape a fence that accuses
+      // everything takes on the way to being waived into silence.
       if (!/Bun\.file\([^)]*\)[\s\S]{0,20}\.text\(\)/.test(code)) continue;
       sweeps.push(path);
-      // Either it counts through `countInSrc`, or it strips what it read itself. A sweep that imports
-      // the module and does not use it on the text it globbed is the case this cannot see, and the
-      // whole-file read below is what would be left to catch it.
-      if (!/\bcountInSrc\b|\bcodeOnly\b|\bwithoutComments\b/.test(code)) {
+      // THE IMPORT, NOT THE NAME. `refusal-callsites.test.ts` defines a LOCAL function called
+      // `codeOnly` — a different thing that happens to share a word — and a name-matching fence read
+      // that as adoption and let it through. A fence measures the spelling it was given, always.
+      if (!/from "@\/tests\/utils\/source-text"/.test(code)) {
         offenders.push(path);
       }
     }
     expect(offenders).toEqual([]);
-    // …and the fence is looking at something. Two today: this file and `write-body-required`.
-    expect(sweeps.length).toBeGreaterThanOrEqual(2);
+    // …and the fence is looking at something. NINE today, and the count is the finding: the first
+    // draft of this fence recognised one spelling of the glob and saw three of them.
+    // Review named a fourth it could not see; widening it to the second spelling surfaced five more.
+    // A fence that names a spelling measures the spelling, never the rule.
+    expect(sweeps.length).toBeGreaterThanOrEqual(9);
   });
 });
 

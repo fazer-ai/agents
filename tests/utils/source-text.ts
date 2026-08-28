@@ -11,6 +11,20 @@
 // invariant, and nothing obliging the third — so the strip lives here, and `countInSrc` exists so the
 // raw-text spelling is not the convenient one.
 //
+// JSX TEXT IS NOT HANDLED, AND THAT IS A MEASURED DECISION RATHER THAN AN OMISSION.
+//
+// An earlier version of this file recognised JSX elements so their text would not be counted as code.
+// It was correct about the fixture and bought nothing real: with the whole JSX mode removed, all three
+// ledgers in this repo count byte-identically and the whole-tree probe below still reports zero files
+// ending inside a literal. What it cost was five rounds of review — recognising an element needs a
+// dry run, a memo, tag-depth balancing, closing-name matching, multi-line attribute strings — every
+// one of them a mechanism justified by a hypothesis rather than by a number.
+//
+// So the scan removes what is unambiguous (comments, string and template bodies, regex bodies) and
+// leaves `<` alone. The failure that leaves is the cheap one and it is bounded: JSX text spelling a
+// swept shape would count as code, which is a phantom entry — visible, red, and fixable — rather than
+// a swallowed site. Nothing in `src/` does it today; the ledgers are the check.
+//
 // OFFSETS AND LINE NUMBERS SURVIVE. Every removed character becomes a space and every newline is
 // kept, so `source.slice(0, m.index)` still names the same position and `.split("\n").length` still
 // names the same line. A sweep can strip and keep reporting where it found things.
@@ -51,18 +65,22 @@ const KEYWORD_BEFORE_VALUE =
 function scan(source: string, { strings }: Options): Scanned {
   const out = source.split("");
   let open: Scanned["open"] = null;
-  // A JSX element is recognised by CLOSING, not by opening (see `jsx`), so the scan has to be able to
-  // try one and take it back. While `applying` is false nothing is written and nothing is reported.
-  let applying = true;
-  // The dry run is memoised by start index, and that is not an optimisation. Without it the cost is
-  // exponential in the JSX/`{…}` alternation depth, because each level probes and then replays, and
-  // the replay probes again: measured on a synthetic nest, 386 characters took 72 ms and each further
-  // level doubled it. A mutation that broke tag depth turned the same shape into a battery that ran
-  // for nine minutes without finishing, which is how this was found. Safe because the answer depends
-  // only on the index and the source, and the source never changes.
-  const elementEnd = new Map<number, number | null>();
+  // BOTH OF THESE READ `out`, NEVER `source`, AND THE BUG THAT TAUGHT IT IS THIS FILE'S OWN SUBJECT.
+  // Written against the raw text, the member-access check matched the full stop ending a comment's
+  // last sentence — `…(RFC 4180).` two lines above a `return /[",\n\r]/` turned that regex into a
+  // division and opened a string on the quote inside it. Prose read as code, in the module whose
+  // whole purpose is to stop exactly that. `out` has the comment already blanked, so it cannot.
+  const before = (at: number, n: number) =>
+    out.slice(Math.max(0, at - n), at).join("");
+  // Whether the token just before `at` is a `.`, making what follows a property name rather than a
+  // keyword: `obj.default / 2` divides.
+  const afterDot = (at: number) => /\.\s*$/.test(before(at, 8));
+  // Whether nothing but a statement terminator precedes `at`, making a `{` there a block.
+  const atStatementStart = (at: number) => {
+    const b = before(at, 64).replace(/\s+$/, "");
+    return b === "" || b.endsWith(";") || b.endsWith("}");
+  };
   const blank = (from: number, to: number) => {
-    if (!applying) return;
     for (let i = from; i < to; i++) if (out[i] !== "\n") out[i] = " ";
   };
 
@@ -108,122 +126,6 @@ function scan(source: string, { strings }: Options): Scanned {
     if (strings) blank(start, source.length);
     open = "template";
     return source.length;
-  }
-
-  // From the `<` of an opening element; returns the index just past it, or `null` when what follows is
-  // not a well-formed element.
-  //
-  // RECOGNISED BY CLOSING, NOT BY OPENING, and that is what replaced a detector that tried to rule out
-  // generics from the left. Ruling out is unbounded — review found four separate shapes it got wrong
-  // in one round (`<Foo<string> …/>`, `<T extends { id: string }>(`, `<_Foo>`, and plain `<T>(x: T)` in
-  // a `.ts` file) — while requiring a `</tag>` or `/>` answers all of them at once and needs no list:
-  // a type parameter list simply never closes as an element. The failure it leaves is the cheap one
-  // (JSX text counted as code) instead of the expensive one (the rest of the file swallowed).
-  //
-  // JSX TEXT IS A LITERAL and nothing else here would treat it as one: `<p>s.slice(0, 1)</p>` is a
-  // phantom cut to every sweep, and the apostrophe in `<p>Don't retry</p>` opens a string that runs on.
-  function jsx(from: number): number | null {
-    if (!applying) {
-      const seen = elementEnd.get(from);
-      if (seen !== undefined) return seen;
-    }
-    const end = scanElement(from);
-    if (!applying) elementEnd.set(from, end);
-    return end;
-  }
-
-  function scanElement(from: number): number | null {
-    let i = from + 1;
-    if (!/[A-Za-z_$>]/.test(source[i] ?? "")) return null;
-    // The NAME, so the closing tag can be required to match it. Without that, any `</…>` further down
-    // closed the element — including one written inside a comment, which made `const id = <T>(x: T)`
-    // in a `.ts` file swallow every line up to a `// … </x> …` and take a real call site out of a
-    // ledger, silently and with nothing left open (found by review).
-    let n = i;
-    while (n < source.length && /[A-Za-z0-9_$.:-]/.test(source[n] as string))
-      n++;
-    const name = source.slice(i, n);
-    let selfClosing = false;
-    // The tag. `<` and `>` are balanced so a type argument (`<Foo<string> …/>`) does not end it early;
-    // attribute values are literals, `{…}` in one is code. Starts at 1: the `<` this was entered on
-    // counts, and starting at 0 made the closing `>` of a plain `<Foo>` read as one too many.
-    let depth = 1;
-    while (i < source.length) {
-      const c = source[i];
-      if (c === "/" && source[i + 1] === "/") {
-        const nl = source.indexOf("\n", i);
-        const to = nl === -1 ? source.length : nl;
-        blank(i, to);
-        i = to;
-        continue;
-      }
-      if (c === "/" && source[i + 1] === "*") {
-        const end = source.indexOf("*/", i + 2);
-        const to = end === -1 ? source.length : end + 2;
-        blank(i, to);
-        i = to;
-        continue;
-      }
-      if (c === '"' || c === "'") {
-        i = quoted(i);
-        continue;
-      }
-      if (c === "{") {
-        i = code(i + 1, "brace") + 1;
-        continue;
-      }
-      if (c === "<") {
-        depth++;
-        i++;
-        continue;
-      }
-      if (c === "/" && source[i + 1] === ">" && depth === 1) {
-        selfClosing = true;
-        i += 2;
-        break;
-      }
-      if (c === ">") {
-        depth--;
-        i++;
-        if (depth === 0) break;
-        continue;
-      }
-      i++;
-    }
-    // NOTE: no `if (!closed) return null` here. The tag loop only exits without closing by running out
-    // of source, and the children loop below then finds no `</` and returns null anyway — a mutation
-    // run showed the explicit check could not be made to matter.
-    if (selfClosing) return i;
-    // The children.
-    let start = i;
-    while (i < source.length) {
-      const c = source[i];
-      if (c === "{") {
-        if (strings) blank(start, i);
-        i = code(i + 1, "brace") + 1;
-        start = i;
-        continue;
-      }
-      if (c === "<") {
-        if (strings) blank(start, i);
-        if (source[i + 1] === "/") {
-          const gt = source.indexOf(">", i);
-          if (gt === -1) return null;
-          return source.slice(i + 2, gt).trim() === name ? gt + 1 : null;
-        }
-        const child = jsx(i);
-        // A child that is not an element makes the parent not one either. Both this and the `null` on
-        // a missing `>` below survive the mutation battery: the only inputs that reach them are
-        // syntactically invalid source, where every variant is already harmless. Kept as the
-        // conservative answer rather than deleted, and the gap is written down rather than implied.
-        if (child === null) return null;
-        i = child;
-        start = i;
-        continue;
-      }
-      i++;
-    }
-    return null;
   }
 
   // Consumes code from `from`. With `stop === "brace"` it is inside a `${…}` or a JSX `{…}` and
@@ -294,26 +196,19 @@ function scan(source: string, { strings }: Options): Scanned {
         endsValue = true;
         continue;
       }
-      if (c === "<" && !endsValue && /[A-Za-z_$>]/.test(d ?? "")) {
-        // Tried without writing anything, then replayed for real. The dry run is what lets the scan
-        // recognise an element by its closing tag without having to undo a half-consumed one.
-        const wasApplying = applying;
-        const wasOpen = open;
-        applying = false;
-        const end = jsx(i);
-        applying = wasApplying;
-        open = wasOpen;
-        if (end !== null) {
-          jsx(i);
-          i = end;
-          endsValue = true;
-          continue;
-        }
-      }
       if (/[A-Za-z_$]/.test(c)) {
         let j = i;
         while (j < source.length && /[A-Za-z0-9_$]/.test(source[j] as string))
           j++;
+        // AFTER A DOT IT IS A PROPERTY NAME, not a keyword: `obj.default / 2` divides, and reading
+        // `default` as expression-opening there made the `/` a regex and hid the rest of the line
+        // (found by review). `endsValue` is already true from the dot's own operand, so keeping the
+        // state is exactly right.
+        if (afterDot(i)) {
+          endsValue = true;
+          i = j;
+          continue;
+        }
         // A keyword cannot end a value, and that is what lets `return /re/` and `case "x"` through.
         endsValue = !KEYWORD_BEFORE_VALUE.test(source.slice(i, j));
         i = j;
@@ -352,7 +247,10 @@ function scan(source: string, { strings }: Options): Scanned {
       }
       if (c === "{") {
         if (stop === "brace") depth++;
-        braces.push(!endsValue);
+        // A `{` where a VALUE was expected is an object, EXCEPT at a statement boundary, where no
+        // value was expected either because nothing precedes it. `endsValue` alone called `{}` on a
+        // fresh statement an object, so the regex after it read as a division (found by review).
+        braces.push(!endsValue && !atStatementStart(i));
         endsValue = false;
         i++;
         continue;

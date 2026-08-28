@@ -22,6 +22,7 @@ import {
 import { listThreadTurnNotes } from "@/modules/playground/turn-notes";
 import { transcribePlaygroundAudio } from "@/modules/stt/service";
 import { extractPlaygroundFile } from "@/modules/vision/service";
+import { codeOnly } from "@/tests/utils/source-text";
 
 // The playground was the one console surface that took the caller's tenant selector and handed it to
 // the database as an internally-trusted id, so the gate #223 put at `runScopedOn` never applied to
@@ -337,7 +338,10 @@ describe("no playground module builds a tenant context of its own", () => {
     for await (const rel of new Glob("**/*.ts").scan(
       "src/modules/playground",
     )) {
-      const src = await Bun.file(`src/modules/playground/${rel}`).text();
+      // Through the scan, so prose naming the shape is not counted as one (#424).
+      const src = codeOnly(
+        await Bun.file(`src/modules/playground/${rel}`).text(),
+      );
       if (buildsATenantContext(src)) offenders.push(rel);
     }
     expect(offenders).toEqual([]);

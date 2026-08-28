@@ -28,6 +28,7 @@ import {
   retryDocument,
   updateDocument,
 } from "@/modules/rag/documents";
+
 import {
   approveApprovalItem,
   createKnowledgeBase,
@@ -42,6 +43,7 @@ import {
   searchKnowledge,
   updateKnowledgeBase,
 } from "@/modules/rag/service";
+import { codeOnly, withoutComments } from "@/tests/utils/source-text";
 
 // #268 fixed the playground and said the playground was the one console surface that handed a
 // module a bare tenant id. It was four more: knowledge/RAG, experiments, integrations and
@@ -410,7 +412,8 @@ describe("no REST controller hands a module a bare tenant id", () => {
     const { Glob } = await import("bun");
     const offenders: string[] = [];
     for await (const rel of new Glob("**/*.ts").scan("src/api")) {
-      const src = await Bun.file(`src/api/${rel}`).text();
+      // Through the scan, so prose naming the shape is not counted as one (#424).
+      const src = codeOnly(await Bun.file(`src/api/${rel}`).text());
       if (handsOutABareTenantId(src)) offenders.push(rel);
     }
     expect(offenders).toEqual([]);
@@ -521,7 +524,9 @@ async function sweepRoutes(): Promise<
   }> = [];
   for await (const rel of new Glob("**/*.controller.ts").scan("src/api")) {
     const file = `src/api/${rel}`;
-    const source = await Bun.file(file).text();
+    // `withoutComments`, not `codeOnly`: the patterns below READ string literals (the route path, the
+    // declared status), so blanking their contents would blind the sweep rather than sharpen it.
+    const source = withoutComments(await Bun.file(file).text());
     const prefix = /new Elysia\(\{[^}]*prefix:\s*"([^"]+)"/.exec(source)?.[1];
     if (!prefix) continue;
     for (const block of routeBlocks(source)) {

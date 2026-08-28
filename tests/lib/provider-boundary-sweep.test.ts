@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { codeOnly } from "@/tests/utils/source-text";
 
 // THE GUARD AGAINST THE TENTH CALL SITE.
 //
@@ -59,7 +60,9 @@ async function candidates(): Promise<string[]> {
   const { Glob } = await import("bun");
   const found: string[] = [];
   for await (const file of new Glob("src/**/*.ts").scan(".")) {
-    if (isCandidate(await Bun.file(file).text())) found.push(file);
+    // Through the scan, so a comment naming `await fetch(` does not make a file a provider boundary
+    // (#424). Measured: same six files with and without, which is what makes it safe to adopt.
+    if (isCandidate(codeOnly(await Bun.file(file).text()))) found.push(file);
   }
   return found.sort();
 }
@@ -89,7 +92,7 @@ describe("every provider boundary answers for the other end's text", () => {
   test("each answer is the one the file actually gives", async () => {
     const offenders: string[] = [];
     for (const [file, discharge] of Object.entries(BOUNDARIES)) {
-      const src = await Bun.file(file).text();
+      const src = codeOnly(await Bun.file(file).text());
       if (discharge === "throughProvider") {
         // Per ENTRY POINT, not per file. Checking the file only asks whether the wrapper appears
         // somewhere in it, and a module with two exported calls satisfies that with one of them

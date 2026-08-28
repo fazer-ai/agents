@@ -5,6 +5,7 @@ import { MemorySaver } from "@langchain/langgraph";
 import type { ResolvedModelConfig } from "@/graph/models";
 import { buildModelAndGraph, buildSpeechNormalizer } from "@/graph/prepare";
 import { TTS_DEFAULTS } from "@/modules/tts/settings";
+import { codeOnly } from "@/tests/utils/source-text";
 import { makeConfig } from "../utils/agent-config";
 
 describe("buildModelAndGraph — effective baseURL resolution", () => {
@@ -324,7 +325,10 @@ describe("prepare — a draft cannot widen what is recorded", () => {
       new URL("../../", import.meta.url).pathname,
     )) {
       if (f.endsWith("modules/flowlog/settings.ts")) continue; // the definition
-      const src = await Bun.file(new URL(`../../${f}`, import.meta.url)).text();
+      // Through the scan, so a comment naming the reader is not counted as a call to it (#424).
+      const src = codeOnly(
+        await Bun.file(new URL(`../../${f}`, import.meta.url)).text(),
+      );
       if (src.includes("readObservabilityConfig(")) found.push(f);
     }
     // The turn's own read, the settings DTO, the shared derivation, and the console's form pair.

@@ -19,6 +19,7 @@ import {
 } from "@/modules/memory/compact";
 import { runCompactionTick } from "@/modules/memory/worker";
 import { getDeadLetterHandler, runClaimed } from "@/modules/scheduler/worker";
+import { codeOnly } from "@/tests/utils/source-text";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRows } from "../utils/flowlog";
 
@@ -619,7 +620,8 @@ test("every reaper announces the rows it dead-letters", async () => {
   const { Glob } = await import("bun");
   const offenders: string[] = [];
   for await (const file of new Glob("src/**/*.ts").scan(".")) {
-    const src = await Bun.file(file).text();
+    // Through the scan, so prose naming the shape is not counted as one (#424).
+    const src = codeOnly(await Bun.file(file).text());
     // The definition itself, not a call site.
     if (file.endsWith("scheduler/service.ts")) continue;
     if (!/\breapStaleJobs\b/.test(src)) continue;

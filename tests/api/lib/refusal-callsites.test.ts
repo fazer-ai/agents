@@ -4,6 +4,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import { expectWaiverLedger } from "@/tests/utils/ledger";
+import { codeOnly as sourceCodeOnly } from "@/tests/utils/source-text";
 
 // THE GUARD AGAINST THE NEXT REFUSAL THAT KNOWS A FIELD AND DOES NOT SAY SO.
 //
@@ -194,7 +195,10 @@ async function sources(): Promise<Map<string, string>> {
   const { Glob } = await import("bun");
   const files = new Map<string, string>();
   for await (const file of new Glob("src/**/*.{ts,tsx}").scan(".")) {
-    files.set(file, await Bun.file(file).text());
+    // Through the shared scan, so prose naming a refusal is not swept as one (#424). The local
+    // `codeOnly` below is a DIFFERENT thing that happens to share the word: it extracts the code of
+    // one ARGUMENT, keeping `${…}` holes that live inside a string. This is the file read.
+    files.set(file, sourceCodeOnly(await Bun.file(file).text()));
   }
   return files;
 }

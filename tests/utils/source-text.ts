@@ -18,7 +18,10 @@
 type Scanned = {
   text: string;
   // What was still open when the file ended. A misread `/` or `<` announces itself here.
-  open: "string" | "template" | "block-comment" | "jsx" | null;
+  // NOTE: there is no "jsx" here. An element is recognised by closing, so one that never closes is
+  // simply not an element and the `<` stays an ordinary character — the state stopped existing when
+  // that model replaced the one that decided on the opening tag.
+  open: "string" | "template" | "block-comment" | null;
 };
 
 type Options = {
@@ -45,64 +48,21 @@ type Options = {
 const KEYWORD_BEFORE_VALUE =
   /^(?:return|typeof|instanceof|in|of|new|delete|void|case|do|else|yield|await|throw|default|export|extends|as|satisfies)$/;
 
-// `<K extends keyof C>(k: K) => …` sits in exactly the position a JSX element does, and TypeScript
-// itself cannot always tell them apart — which is why the `<T,>` spelling exists at all. Three signals:
-//
-//   1. it closes on `>(`, which a JSX element followed by anything else does not;
-//   2. it holds no backtick or `{` — a tag with an expression attribute does, a type argument list
-//      effectively never does;
-//   3. it declares a parameter — ` extends ` or a trailing `,`, the two spellings TypeScript accepts
-//      in a `.tsx` file.
-//
-// The third was added after review: on 1 and 2 alone, `<div>(x)</div>` reads as a type argument list,
-// because the `>` that closes the tag is followed by the text's own parenthesis.
-//
-// NOTE: 3 turns out to decide every case in this tree on its own — a mutation run that dropped the
-// `>(` requirement broke nothing. It stays because it is the specific signal and 3 is the textual
-// one: a tag whose last attribute ends in a bare comma would satisfy 3 and is caught only by 1. That
-// is a hypothesis about code nobody has written, so it is written down as one rather than claimed as
-// a necessity the mutation run refuted.
-//
-// UNBOUNDED ON PURPOSE. An earlier version stopped after 200 characters so a stray `<` could not walk
-// the file; measured over `src/`, the whole scan takes 80 ms with that bound and 77 ms without, so the
-// bound was buying nothing and a mechanism with no measured behaviour behind it is debt.
-//
-// QUOTES ARE SKIPPED, NOT REFUSED, and that is the third round's finding. Refusing them recognised
-// `<div title="a > b">` correctly by accident and broke `<T extends "a" | "b",>(x: T) => …`, which is
-// an ordinary generic carrying a string-literal type. Skipping the string answers both: the `>` inside
-// it stops counting toward the depth, and the type parameters around it are still read.
-function typeArgumentList(source: string, from: number): boolean {
-  let depth = 0;
-  for (let j = from; j < source.length; j++) {
-    const ch = source[j] as string;
-    if (ch === '"' || ch === "'") {
-      const q = ch;
-      j++;
-      while (j < source.length && source[j] !== q && source[j] !== "\n") {
-        j += source[j] === "\\" ? 2 : 1;
-      }
-      continue;
-    }
-    if (ch === "`" || ch === "{") return false;
-    if (ch === "<") depth++;
-    else if (ch === ">") {
-      depth--;
-      if (depth === 0) {
-        let k = j + 1;
-        while (k < source.length && /\s/.test(source[k] as string)) k++;
-        if (source[k] !== "(") return false;
-        const inner = source.slice(from + 1, j);
-        return / extends /.test(inner) || /,\s*$/.test(inner);
-      }
-    }
-  }
-  return false;
-}
-
 function scan(source: string, { strings }: Options): Scanned {
   const out = source.split("");
   let open: Scanned["open"] = null;
+  // A JSX element is recognised by CLOSING, not by opening (see `jsx`), so the scan has to be able to
+  // try one and take it back. While `applying` is false nothing is written and nothing is reported.
+  let applying = true;
+  // The dry run is memoised by start index, and that is not an optimisation. Without it the cost is
+  // exponential in the JSX/`{…}` alternation depth, because each level probes and then replays, and
+  // the replay probes again: measured on a synthetic nest, 386 characters took 72 ms and each further
+  // level doubled it. A mutation that broke tag depth turned the same shape into a battery that ran
+  // for nine minutes without finishing, which is how this was found. Safe because the answer depends
+  // only on the index and the source, and the source never changes.
+  const elementEnd = new Map<number, number | null>();
   const blank = (from: number, to: number) => {
+    if (!applying) return;
     for (let i = from; i < to; i++) if (out[i] !== "\n") out[i] = " ";
   };
 
@@ -150,18 +110,38 @@ function scan(source: string, { strings }: Options): Scanned {
     return source.length;
   }
 
-  // From the `<` of an opening element; returns the index just past the element. JSX TEXT IS A
-  // LITERAL and nothing else in this file would treat it as one: `<p>s.slice(0, 1)</p>` is a phantom
-  // cut to every sweep here, and an ordinary `<p>Don't retry</p>` opens a string on the apostrophe
-  // that runs on until the next quote, swallowing whatever code is in between.
-  function jsx(from: number): number {
+  // From the `<` of an opening element; returns the index just past it, or `null` when what follows is
+  // not a well-formed element.
+  //
+  // RECOGNISED BY CLOSING, NOT BY OPENING, and that is what replaced a detector that tried to rule out
+  // generics from the left. Ruling out is unbounded — review found four separate shapes it got wrong
+  // in one round (`<Foo<string> …/>`, `<T extends { id: string }>(`, `<_Foo>`, and plain `<T>(x: T)` in
+  // a `.ts` file) — while requiring a `</tag>` or `/>` answers all of them at once and needs no list:
+  // a type parameter list simply never closes as an element. The failure it leaves is the cheap one
+  // (JSX text counted as code) instead of the expensive one (the rest of the file swallowed).
+  //
+  // JSX TEXT IS A LITERAL and nothing else here would treat it as one: `<p>s.slice(0, 1)</p>` is a
+  // phantom cut to every sweep, and the apostrophe in `<p>Don't retry</p>` opens a string that runs on.
+  function jsx(from: number): number | null {
+    if (!applying) {
+      const seen = elementEnd.get(from);
+      if (seen !== undefined) return seen;
+    }
+    const end = scanElement(from);
+    if (!applying) elementEnd.set(from, end);
+    return end;
+  }
+
+  function scanElement(from: number): number | null {
     let i = from + 1;
+    if (!/[A-Za-z_$>]/.test(source[i] ?? "")) return null;
     let selfClosing = false;
-    // The tag: attribute values are literals, `{…}` in an attribute is code.
+    // The tag. `<` and `>` are balanced so a type argument (`<Foo<string> …/>`) does not end it early;
+    // attribute values are literals, `{…}` in one is code. Starts at 1: the `<` this was entered on
+    // counts, and starting at 0 made the closing `>` of a plain `<Foo>` read as one too many.
+    let depth = 1;
     while (i < source.length) {
       const c = source[i];
-      // A comment inside the tag is ordinary JS and this file is full of them. Missed on the first
-      // pass, and the apostrophe in `// the tabs' own border` opened a string that ran on.
       if (c === "/" && source[i + 1] === "/") {
         const nl = source.indexOf("\n", i);
         const to = nl === -1 ? source.length : nl;
@@ -184,17 +164,27 @@ function scan(source: string, { strings }: Options): Scanned {
         i = code(i + 1, "brace") + 1;
         continue;
       }
-      if (c === "/" && source[i + 1] === ">") {
+      if (c === "<") {
+        depth++;
+        i++;
+        continue;
+      }
+      if (c === "/" && source[i + 1] === ">" && depth === 1) {
         selfClosing = true;
         i += 2;
         break;
       }
       if (c === ">") {
+        depth--;
         i++;
-        break;
+        if (depth === 0) break;
+        continue;
       }
       i++;
     }
+    // NOTE: no `if (!closed) return null` here. The tag loop only exits without closing by running out
+    // of source, and the children loop below then finds no `</` and returns null anyway — a mutation
+    // run showed the explicit check could not be made to matter.
     if (selfClosing) return i;
     // The children.
     let start = i;
@@ -210,17 +200,21 @@ function scan(source: string, { strings }: Options): Scanned {
         if (strings) blank(start, i);
         if (source[i + 1] === "/") {
           const gt = source.indexOf(">", i);
-          return gt === -1 ? source.length : gt + 1;
+          return gt === -1 ? null : gt + 1;
         }
-        i = jsx(i);
+        const child = jsx(i);
+        // A child that is not an element makes the parent not one either. Both this and the `null` on
+        // a missing `>` below survive the mutation battery: the only inputs that reach them are
+        // syntactically invalid source, where every variant is already harmless. Kept as the
+        // conservative answer rather than deleted, and the gap is written down rather than implied.
+        if (child === null) return null;
+        i = child;
         start = i;
         continue;
       }
       i++;
     }
-    if (strings) blank(start, source.length);
-    open = "jsx";
-    return source.length;
+    return null;
   }
 
   // Consumes code from `from`. With `stop === "brace"` it is inside a `${…}` or a JSX `{…}` and
@@ -250,8 +244,9 @@ function scan(source: string, { strings }: Options): Scanned {
         continue;
       }
       if (c === "/" && !endsValue) {
-        // Consumed and never blanked: a regex is code. Skipping it is what keeps the quotes inside it
-        // from being read as the start of a string.
+        // The DELIMITERS stay and the body goes, exactly like a string: `/sanitizeErrorMessage\(/` is
+        // a pattern that names a call, not a call, and a sweep counting calls was counting it (found
+        // by review). Skipping it is also what keeps a quote inside it from opening a string.
         let j = i + 1;
         let inClass = false;
         while (j < source.length) {
@@ -269,6 +264,7 @@ function scan(source: string, { strings }: Options): Scanned {
           }
           j++;
         }
+        if (strings) blank(i + 1, j - 1);
         i = j;
         endsValue = true;
         continue;
@@ -283,15 +279,21 @@ function scan(source: string, { strings }: Options): Scanned {
         endsValue = true;
         continue;
       }
-      if (
-        c === "<" &&
-        !endsValue &&
-        /[A-Za-z>]/.test(d ?? "") &&
-        !typeArgumentList(source, i)
-      ) {
-        i = jsx(i);
-        endsValue = true;
-        continue;
+      if (c === "<" && !endsValue && /[A-Za-z_$>]/.test(d ?? "")) {
+        // Tried without writing anything, then replayed for real. The dry run is what lets the scan
+        // recognise an element by its closing tag without having to undo a half-consumed one.
+        const wasApplying = applying;
+        const wasOpen = open;
+        applying = false;
+        const end = jsx(i);
+        applying = wasApplying;
+        open = wasOpen;
+        if (end !== null) {
+          jsx(i);
+          i = end;
+          endsValue = true;
+          continue;
+        }
       }
       if (/[A-Za-z_$]/.test(c)) {
         let j = i;
@@ -315,6 +317,16 @@ function scan(source: string, { strings }: Options): Scanned {
         // Whitespace is not a token, so it cannot change what the last one was. Letting it through to
         // the reset below was the first version's bug: `"a" / 2` recovered `endsValue` on the quote
         // and lost it again on the space, which is every real occurrence of the shape.
+        i++;
+        continue;
+      }
+      if (c === "!") {
+        // A postfix non-null assertion leaves the value it was applied to, so `value! / 2` divides.
+        // Falling through to the reset below made that `/` a regex opener (found by review).
+        //
+        // NOTE: no `d !== "="` guard, and a mutation run is why. In `a !== /re/` the `=` that follows
+        // resets the state on its own, so excluding the comparison here changed nothing — it only
+        // read as though it were load-bearing.
         i++;
         continue;
       }

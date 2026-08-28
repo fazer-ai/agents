@@ -46,6 +46,9 @@ describe("the scan removes prose and keeps code", () => {
       "export default <p>s.slice(0, 1)</p>;\n",
     ],
     ["JSX text after `throw`", "throw <p>s.slice(0, 1)</p>;\n"],
+    // A component name may begin with `_` or `$`, which the first character class did not admit.
+    ["JSX text in an underscore component", "<_Foo>s.slice(0, 1)</_Foo>\n"],
+    ["JSX text in a dollar component", "<$Foo>s.slice(0, 1)</$Foo>\n"],
     ["JSX text after an attribute", '<Foo a="x">(s.slice(0, 1))</Foo>\n'],
     // A `>` inside an attribute value must not close the tag early, which is what skipping the string
     // (rather than refusing on it) buys in both directions.
@@ -108,6 +111,37 @@ describe("the scan removes prose and keeps code", () => {
     // A generic carrying a STRING-LITERAL type. The first version of the generic detector refused any
     // type list holding a quote, which recognised `<div title="a > b">` correctly by accident and
     // swallowed this one.
+    // THE FOUR SHAPES ONE ROUND OF REVIEW FOUND IN A DETECTOR THAT RULED GENERICS OUT FROM THE LEFT.
+    // None of them closes as an element, which is the whole reason the scan now asks for a `</tag>` or
+    // a `/>` instead of trying to enumerate what a type parameter list can look like.
+    [
+      "a cut after a generic with a structural constraint",
+      "const f = <T extends { id: string }>(x: T) => x;\nconst a = s.slice(0, 10);\n",
+    ],
+    [
+      "a cut after a plain generic arrow in a .ts file",
+      "const id = <T>(x: T) => x;\nconst a = s.slice(0, 10);\n",
+    ],
+    [
+      "a cut after a generic with a function-type constraint",
+      "const g = <T extends (x: number) => string>(f: T) => f;\nconst a = s.slice(0, 10);\n",
+    ],
+    // …and the shape that DOES close as an element while carrying a type argument.
+    // A `<` that does not close as an element is not an element, so the code after it is untouched —
+    // which is the direction this model deliberately errs in.
+    [
+      "a cut after an unclosed tag that is therefore not one",
+      "f(<div class=\nconst a = s.slice(0, 10);\n",
+    ],
+    [
+      "a cut after a JSX element with a type argument",
+      'const el = <Foo<string> label="x" />;\nconst a = s.slice(0, 10);\n',
+    ],
+    // A postfix non-null assertion leaves the value it applied to, so the `/` after it divides.
+    [
+      "a cut after a division on a non-null assertion",
+      "const r = value! / 2;\nconst a = s.slice(0, 10);\n",
+    ],
     [
       "a cut after a generic with a string-literal type",
       'const f = <T extends "a" | "b",>(x: T) => x;\nconst a = s.slice(0, 10);\n',
@@ -153,6 +187,27 @@ describe("the scan removes prose and keeps code", () => {
   // The distinction the two exports exist for, and the reason this is not one function with a flag
   // nobody would pass: `refused-turn-callsites` matches ON a string literal, so stripping contents
   // there would blind the sweep rather than sharpen it.
+  // A REGEX BODY IS A PATTERN THAT NAMES A CALL, NOT A CALL, and it needs its own row because the
+  // table above measures one spelling: a regex naming a cut writes it escaped (`\\.slice\\(`), which
+  // is not what a sweep for cuts matches. The sweep it DOES fool is the one whose shape survives
+  // escaping — `sanitizeErrorMessage\(` — and that is a real ledger in this repo. Found by review.
+  test("a regex body naming a call is not a call", () => {
+    // The unescaped `(` is a capture group, which is how a pattern comes to spell a call site exactly.
+    const guard = /sanitizeErrorMessage\(/g;
+    const source = "const re = /sanitizeErrorMessage(Deep)?/;\n";
+    expect((source.match(guard) ?? []).length).toBe(1);
+    expect((codeOnly(source).match(guard) ?? []).length).toBe(0);
+    // …and the delimiters stay, so the regex is still a regex to anything reading structure.
+    expect(codeOnly(source)).toMatch(/^const re = \/ +\/;$/m);
+  });
+
+  test("a regex body naming a column is not a column", () => {
+    const column = /\b(?:lastError|errorMessage)\s*:/g;
+    const source = "const re = /lastError: (.+)/;\n";
+    expect((source.match(column) ?? []).length).toBe(1);
+    expect((codeOnly(source).match(column) ?? []).length).toBe(0);
+  });
+
   // What `codeOnly` keeps of a literal, and it is not nothing: the quotes. An emptied literal is still
   // a literal, so a pattern that requires an argument does not stop matching because the argument
   // turned out to be prose.
@@ -176,6 +231,17 @@ describe("the scan removes prose and keeps code", () => {
     ["an increment", "const r = i++ / 2; // s.slice(0, 1)\n"],
     ["a number", "const r = 2 / 2; // s.slice(0, 1)\n"],
     ["a regex", "const r = /x/ / 2; // s.slice(0, 1)\n"],
+    ["a non-null assertion", "const r = value! / 2; // s.slice(0, 1)\n"],
+    // The `!` of `!==` is the OTHER one: an inequality is followed by a value, so a `/` after it opens
+    // a regex. Treating every `!` as postfix would read that regex as a division and run on.
+    [
+      "nothing, after `!==` (the regex still opens)",
+      'if (a !== /x"/.test(b)) f(); // s.slice(0, 1)\n',
+    ],
+    [
+      "a less-than between identifiers",
+      "if (a<b && c) f(); // s.slice(0, 1)\n",
+    ],
     ["an identifier", "const r = n / 2; // s.slice(0, 1)\n"],
   ];
   for (const [what, source] of DIVIDED) {
@@ -190,6 +256,30 @@ describe("the scan removes prose and keeps code", () => {
     expect(withoutComments(source)).toContain('refuse("stale")');
     expect(withoutComments(source)).not.toContain("would replay");
     expect(codeOnly(source)).not.toContain("stale");
+  });
+});
+
+// THE DRY RUN IS MEMOISED, AND THAT IS A CORRECTNESS PROPERTY OF THE SUITE, NOT A SPEED ONE.
+//
+// Recognising an element by its closing tag means probing and then replaying, and the replay probes
+// again one level down — so a `<div>{cond && <div>{…}}</div>` nest doubles per level. Measured before
+// the memo: 386 characters took 72 ms, and a mutation to tag depth turned the same shape into a
+// mutation battery that ran nine minutes without finishing. Nothing in `src/` nests that deep today,
+// which is exactly why this is pinned rather than left to be rediscovered.
+describe("nested JSX does not cost exponentially", () => {
+  const nest = (n: number): string =>
+    n === 0 ? "<b>x</b>" : `<div>{cond && ${nest(n - 1)}}</div>`;
+  test("depth 18 costs about what depth 10 does", () => {
+    const time = (src: string) => {
+      const t0 = Bun.nanoseconds();
+      codeOnly(src);
+      return (Bun.nanoseconds() - t0) / 1e6;
+    };
+    time(nest(10));
+    // A floor of 50 ms rather than a ratio: the numbers here are fractions of a millisecond, where a
+    // ratio measures scheduler noise. What this refuses is the exponential, which was 72 ms at this
+    // depth and grows by 2x per level.
+    expect(time(nest(18))).toBeLessThan(50);
   });
 });
 
@@ -225,11 +315,10 @@ describe("the scan is positionally transparent", () => {
 describe("an unterminated literal is reported rather than swallowed", () => {
   // The self-check, and it needs its own positive control: a scan that never opens anything reports
   // `null` for a healthy tree AND for a broken one.
-  const OPEN: ["string" | "template" | "block-comment" | "jsx", string][] = [
+  const OPEN: ["string" | "template" | "block-comment", string][] = [
     ["string", 'const a = "oops;\nconst b = s.slice(0, 10);\n'],
     ["template", "const a = `oops;\nconst b = 1;\n"],
     ["block-comment", "/* oops\nconst b = 1;\n"],
-    ["jsx", "<div>never closed\n"],
   ];
   for (const [expected, source] of OPEN) {
     test(`an open ${expected} is named`, () => {
@@ -242,6 +331,14 @@ describe("an unterminated literal is reported rather than swallowed", () => {
   test("an unclosed interpolation is reported as an open template", () => {
     expect(unterminatedLiteral("const a = `x${y")).toBe("template");
   });
+  // An element that never closes is not an element, so nothing is left open and the `<` stays an
+  // ordinary character. This is the model change made visible: the old scan reported an open JSX
+  // state here, and the state no longer exists.
+  test("an unclosed element leaves nothing open, because it is not an element", () => {
+    expect(unterminatedLiteral("<div>never closed\n")).toBeNull();
+    expect(codeOnly("<div>s.slice(0, 1)\n")).toContain("s.slice");
+  });
+
   test("a healthy file reports nothing", () => {
     expect(unterminatedLiteral('const a = "ok";\n')).toBeNull();
   });

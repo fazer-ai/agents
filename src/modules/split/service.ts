@@ -237,6 +237,21 @@ export async function deliverReply(
       // typing pause (at least `minDelayMs`) instead of adding latency ahead of the first balloon.
       const boundaryRead = readBoundary(client, conversationId);
       let boundary: number | null = null;
+      // THE ONE PLACE A DELIVERY IS RECORDED, because there are four ways to learn of one — a send
+      // that returned, a rejected send the read-back found, and the same two for the consolidated
+      // retry — and each is also a new boundary. Two of them used to count without moving it, which
+      // left a stale value answering the next read: with chunks `A / B / B`, the middle `B` landing
+      // under a rejection made the FINAL `B` match it and report as delivered when it never was.
+      //
+      // NOTE: on the two retry call sites the advance has no reader — the retry is the last act of
+      // the loop and `break` follows it — and the mutation that drops the id there kills no test,
+      // measured. They pass it anyway because the value here is that "delivered" has ONE spelling:
+      // a confirmer that has to remember the boundary separately is the confirmer that forgets, and
+      // this loop has already grown two of them.
+      const noteDelivered = (id: number | null): void => {
+        delivered += 1;
+        if (id !== null && (boundary === null || id > boundary)) boundary = id;
+      };
       try {
         for (const [i, chunk] of chunks.entries()) {
           await client
@@ -247,12 +262,9 @@ export async function deliverReply(
           if (await calledOff()) break;
           try {
             const res = await client.sendMessage(conversationId, chunk);
-            delivered += 1;
             // Past the balloon just written, so a reply containing the same text twice cannot have
             // its first occurrence answer for its second.
-            const id = createdMessageId(res);
-            if (id !== null && (boundary === null || id > boundary))
-              boundary = id;
+            noteDelivered(createdMessageId(res));
           } catch (e) {
             reportFailedSend(flow, conversationId, e);
             // A REJECTED SEND DOES NOT MEAN AN UNDELIVERED ONE. The request has a 15s deadline
@@ -267,13 +279,14 @@ export async function deliverReply(
             // in its own transaction. So this asks the only party that knows: it READS the
             // conversation back and looks for the chunk. Costly, and only on a path that is already
             // the exception.
-            const landed = await chunkAlreadyLanded(
+            const landedId = await findLandedMessage(
               client,
               conversationId,
               chunk,
               boundary,
             );
-            if (landed) delivered += 1;
+            const landed = landedId !== null;
+            if (landed) noteDelivered(landedId);
             // ASKED AGAIN, and after the reconciliation rather than before it. The failed request
             // burned up to 15 seconds and the read above is more I/O, so the answer taken before
             // the first send is about a moment that is long gone — and the rule this file follows
@@ -295,8 +308,11 @@ export async function deliverReply(
               );
             if (!owed) break;
             try {
-              await client.sendMessage(conversationId, owed);
-              delivered += 1;
+              noteDelivered(
+                createdMessageId(
+                  await client.sendMessage(conversationId, owed),
+                ),
+              );
             } catch (retryErr) {
               reportFailedSend(flow, conversationId, retryErr);
               // THE SAME QUESTION, asked of the same party. This send has the deadline the first one
@@ -305,10 +321,14 @@ export async function deliverReply(
               // and posts a second copy of a reply the customer already has. The reconciliation is
               // not a property of the first attempt; it belongs to every send that can be rejected
               // after being accepted.
-              if (
-                await chunkAlreadyLanded(client, conversationId, owed, boundary)
-              ) {
-                delivered += 1;
+              const retryLandedId = await findLandedMessage(
+                client,
+                conversationId,
+                owed,
+                boundary,
+              );
+              if (retryLandedId !== null) {
+                noteDelivered(retryLandedId);
               } else {
                 failed = true;
               }
@@ -340,31 +360,39 @@ export async function deliverReply(
 // genuinely did not land as delivered, drop it from what is still owed, and truncate the reply while
 // the turn reports `posted` — silent, which is the one outcome this whole change exists to avoid.
 // `after` is the id of the last message known to predate this send, so only a NEWER occurrence can
-// be this send's.
+// be this send's. It returns the id it MATCHED rather than a bit, because that id is itself the next
+// boundary: a confirmation that does not move the boundary leaves the same stale value to answer the
+// next question, and the next question is usually about the same text.
 //
 // Fails CLOSED for the resend: an unreadable conversation, or an unknown boundary, answers "not
 // landed". The two ways to be wrong are not symmetric — a false "landed" leaves the customer
 // permanently missing part of the answer with nothing to notice it, while a false "not landed"
 // costs one duplicated balloon that both they and the operator can see.
-async function chunkAlreadyLanded(
+async function findLandedMessage(
   client: ChatwootClient,
   conversationId: number,
   chunk: string,
   after: number | null,
-): Promise<boolean> {
+): Promise<number | null> {
   // No boundary, no identity: without one, an older twin of this text would answer for it. Reached
   // only when BOTH sources failed — the pre-send read, and the id of a successful send — which means
   // the very first balloon is the one that failed.
-  if (after === null) return false;
+  if (after === null) return null;
   try {
     const raw = await client.getMessages(conversationId);
     const wanted = chunk.trim();
-    return parseChatwootMessages(raw).some(
-      (m) =>
+    // The NEWEST match, for the same reason `after` exists at all: with repeated text there can be
+    // more than one past the boundary, and the newest is the only one this send could be.
+    return parseChatwootMessages(raw).reduce<number | null>(
+      (best, m) =>
         m.id > after &&
         m.messageType === "outgoing" &&
         m.private !== true &&
-        m.content.trim() === wanted,
+        m.content.trim() === wanted &&
+        (best === null || m.id > best)
+          ? m.id
+          : best,
+      null,
     );
   } catch (e) {
     logger.warn(
@@ -372,7 +400,7 @@ async function chunkAlreadyLanded(
       String(conversationId),
       e instanceof Error ? e.message : String(e),
     );
-    return false;
+    return null;
   }
 }
 

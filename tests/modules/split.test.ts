@@ -429,6 +429,78 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
     expect(out).toEqual({ delivered: 2, failed: false });
   });
 
+  // A CONFIRMATION IS ALSO A BOUNDARY, and this is the case that proves it: `A / B / B`, where the
+  // middle B lands under a rejection and the final B then genuinely does not land. With the boundary
+  // left at A, the second read-back sees the middle B sitting past it and reports the final chunk as
+  // delivered — a silently truncated reply, arriving through the very mechanism added to prevent one.
+  test("a chunk confirmed by read-back moves the boundary past itself", async () => {
+    const rec = { sent: [] as string[], typing: [] as boolean[] };
+    const out = await deliverReply(
+      failingStub(rec, (_c, n) => n >= 2, {
+        // Send 2 (the middle B) is accepted despite being reported as failed; send 3 (the
+        // consolidated retry, which is the final B) is rejected and never lands.
+        storeOnFailure: (n) => n === 2,
+      }),
+      1,
+      "Certo!\n\nJá te retorno.\n\nJá te retorno.",
+      { ...SPLIT_DEFAULTS, enabled: true },
+      noSleep,
+    );
+    // Two landed: "Certo!" by send, the middle "Já te retorno." by read-back. The third never did,
+    // and must be reported as missing rather than matched against its own twin.
+    expect(out).toEqual({ delivered: 2, failed: true });
+  });
+
+  // TWO messages past the boundary carrying the same text, which the boundary alone cannot rule out:
+  // it advances past what WE write, and a human writing from the console mid-reply is not us. Taking
+  // the oldest match then leaves the newer one — the human's — available to answer for a later
+  // balloon that never landed, reporting a truncated reply as complete.
+  test("with two identical messages past the boundary, the newest is this send's", async () => {
+    const sent: string[] = [];
+    let n = 0;
+    let nextId = 100;
+    const stored: Array<{ id: number; content: string }> = [
+      { id: nextId++, content: "antigo" },
+    ];
+    const client = {
+      sendMessage: async (_c: number, content: string) => {
+        n += 1;
+        const id = nextId++;
+        if (n === 2) {
+          // Our balloon lands and the response is lost...
+          stored.push({ id, content });
+          // ...and an operator types the very same words from the console right after it.
+          stored.push({ id: nextId++, content });
+          throw new Error("chatwoot 502");
+        }
+        if (n === 3) throw new Error("chatwoot 502");
+        sent.push(content);
+        stored.push({ id, content });
+        return { id };
+      },
+      getMessages: async () => ({
+        payload: stored.map((m) => ({
+          id: m.id,
+          content: m.content,
+          message_type: 1,
+          private: false,
+        })),
+      }),
+      toggleTyping: async () => ({}),
+    } as unknown as ChatwootClient;
+
+    const out = await deliverReply(
+      client,
+      1,
+      "Olá!\n\nComo vai?\n\nComo vai?",
+      { ...SPLIT_DEFAULTS, enabled: true },
+      noSleep,
+    );
+    // Balloon 1 sent, balloon 2 confirmed by read-back, balloon 3 genuinely lost — and the human's
+    // copy must not be mistaken for it.
+    expect(out).toEqual({ delivered: 2, failed: true });
+  });
+
   // The consolidated retry is a send like any other: it carries the same 15s deadline, so a
   // rejection is just as ambiguous. Reporting `failed` with nothing else delivered is what makes
   // the caller throw, which runs the whole turn again and posts a second copy of a reply the

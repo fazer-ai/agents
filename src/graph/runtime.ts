@@ -44,7 +44,7 @@ import {
 } from "@/modules/guardrails/gate";
 import type { ImageFetchDeps } from "@/modules/images/fetch";
 import { armCompaction } from "@/modules/memory/compact";
-import { deliverReply } from "@/modules/split/service";
+import { deliverReply, type ReplyDelivery } from "@/modules/split/service";
 import { synthesizeReply } from "@/modules/tts/service";
 import { shouldReplyWithAudio } from "@/modules/tts/settings";
 import {
@@ -681,12 +681,14 @@ export async function runLoadedTurn(
 
   // One piece of customer-facing text, delivered the way this agent delivers text: as audio when the
   // modality calls for it, otherwise split into typing-paced balloons. Returns how many balloons
-  // landed (1 for audio). TTS is best-effort — a synthesis failure falls back to text and never
-  // drops the message.
+  // landed (1 for audio) AND whether part of the reply is missing — `deliverReply` no longer reports
+  // a partial send by throwing (issue #429), so the two have to travel together for the callers
+  // below to keep deciding what a total failure means. TTS is best-effort — a synthesis failure
+  // falls back to text and never drops the message.
   const deliverText = async (
     text: string,
     voiceReply: boolean | null,
-  ): Promise<number | "stale"> => {
+  ): Promise<ReplyDelivery | "stale"> => {
     const wantAudio = shouldReplyWithAudio(
       loaded.ttsConfig.mode,
       params.userSentAudio ?? false,
@@ -736,7 +738,7 @@ export async function runLoadedTurn(
             threadId,
             text.length,
           );
-          return 1;
+          return { delivered: 1, failed: false };
         }
       } catch (e) {
         logger.warn(
@@ -759,11 +761,12 @@ export async function runLoadedTurn(
       writeCalledOff,
     );
     logger.info(
-      "chatwoot agent replied: conv=%s thread=%s len=%d balloons=%d",
+      "chatwoot agent replied: conv=%s thread=%s len=%d balloons=%d partial=%s",
       String(conversationId),
       threadId,
       text.length,
-      balloons,
+      balloons.delivered,
+      String(balloons.failed),
     );
     return balloons;
   };
@@ -824,8 +827,12 @@ export async function runLoadedTurn(
       // later gate can catch — it leaves before them. A run called off during the model call reaches
       // exactly here, so this is where it stops. The transfer itself stays done: the tool ran, the
       // conversation is the human queue's, and withholding the sentence is the part still ours.
-      if (delivered === "stale" || delivered === 0) return;
-      deliveredBalloons = delivered;
+      //
+      // NOTE: a partial send is not raised here, unlike the reply path below. This whole delivery is
+      // best-effort by design (the catch around it says why), so a missing half of the goodbye must
+      // not become a turn error on a conversation that was answered and correctly handed over.
+      if (delivered === "stale" || delivered.delivered === 0) return;
+      deliveredBalloons = delivered.delivered;
     } catch (e) {
       // Best-effort, the semantics the line had while the tool sent it. The transfer succeeded, so
       // branding the turn as errored would stamp lastError and announce "a human has to take over"
@@ -1424,6 +1431,30 @@ export async function runLoadedTurn(
       return attachments.sent ? "posted" : refuse("stale");
 
     const delivered = await deliverText(reply, recheck.voiceReply);
+    // NOTHING LANDED AND A SEND FAILED: a failed turn, and the ONE shape of partial delivery that
+    // still throws (issue #429). Nothing reached the customer, so there is nothing a retry could
+    // duplicate — which is exactly what makes the throw safe here and unsafe one balloon later. The
+    // throw is also the only way the operator hears about it: the callers record a turn error
+    // (private note, lastError, alert) on a throw and on nothing else, and the recovery reads it to
+    // decide the row is still owed an answer.
+    //
+    // Same rule as the attachment-only branch above, and stated the same way there: delivered
+    // nothing AND failed is a failure; delivered nothing without failing is not.
+    //
+    // NOTE: ...unless an ATTACHMENT already went out. Then the customer holds part of the answer,
+    // and a re-run would send that attachment a second time — the same reason the branch below
+    // reports "posted" rather than standing down.
+    if (
+      delivered !== "stale" &&
+      delivered.failed &&
+      delivered.delivered === 0
+    ) {
+      if (!attachments.sent) {
+        throw new Error(
+          "envio da resposta: nenhum balão foi entregue ao cliente",
+        );
+      }
+    }
     // Zero is the split loop standing down on its FIRST balloon: nothing reached the customer, so
     // this is a stale turn and not a delivered one. Treating every number as posted would advance
     // the handled watermark over a burst nobody answered, and the next flush starts after it.
@@ -1432,10 +1463,10 @@ export async function runLoadedTurn(
     // and the third place it has to be written: the images were delivered before this line ran, so a
     // command landing in the text send leaves a customer holding part of the answer. "stale" would
     // hand the burst back to the next flush, which sends that attachment again.
-    if (delivered === "stale" || delivered === 0) {
+    if (delivered === "stale" || delivered.delivered === 0) {
       return attachments.sent ? "posted" : refuse("stale");
     }
-    deliveredBalloons = delivered;
+    deliveredBalloons = delivered.delivered;
     // Same rule as the branch above: the reply is out, the resolve is a separate write.
     if (await writeCalledOff()) return "posted";
     await applyDeferredResolve(client, conversationId, turnState, flow, {

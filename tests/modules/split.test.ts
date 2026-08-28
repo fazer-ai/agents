@@ -5,6 +5,7 @@ import {
   readSplitConfig,
   SPLIT_DEFAULTS,
   splitReply,
+  splitReplyParts,
   typingDelayMs,
 } from "@/modules/split/service";
 
@@ -54,6 +55,56 @@ describe("splitReply", () => {
   });
 });
 
+// THE TEXT DELIVERED IS THE TEXT THE MODEL WROTE. Splitting discards the separators, and two places
+// put the text back together — the overflow merge here, and the consolidated retry in `deliverReply`.
+// Rejoining with a fixed "\n\n" turns a paragraph the model wrote as ONE into two, which is a silent
+// edit of the agent's own words in the direction the customer reads.
+describe("splitReplyParts: rejoining does not invent paragraph breaks", () => {
+  // 50, not 80: at 80 the paragraph yields two chunks and the SECOND comes from the trailing
+  // push, so the mid-loop push never produces a chunk whose separator is asserted — a mutation
+  // there survived. Three chunks in one paragraph exercises both pushes.
+  const sentenceSplit = { ...SPLIT_DEFAULTS, maxChars: 50 };
+  const oneParagraph =
+    "Primeira frase bem longa aqui para forçar o corte. Segunda frase do mesmo parágrafo. Terceira frase ainda no mesmo parágrafo.\n\nOutro parágrafo.";
+
+  test("a sentence boundary rejoins with a space, a paragraph break with a break", () => {
+    const { chunks, seps } = splitReplyParts(oneParagraph, sentenceSplit);
+    expect(chunks.length).toBe(4);
+    // Nothing precedes the first; two sentence boundaries inside paragraph 1; then paragraph 2.
+    expect(seps).toEqual(["", " ", " ", "\n\n"]);
+  });
+
+  test("the parts rejoin into exactly what the model wrote", () => {
+    const { chunks, seps } = splitReplyParts(oneParagraph, sentenceSplit);
+    const rejoined = chunks.reduce(
+      (a, c, k) => (k === 0 ? c : a + seps[k] + c),
+      "",
+    );
+    expect(rejoined).toBe(oneParagraph);
+  });
+
+  // The pre-existing half of the same defect, reachable with no failure at all: the overflow merge
+  // runs on every reply with more balloons than maxChunks.
+  test("the overflow merge does not break a paragraph the model wrote whole", () => {
+    const out = splitReply(
+      "Frase um bem comprida para forçar o corte. Frase dois igualmente comprida aqui. Frase tres tambem comprida.",
+      { ...SPLIT_DEFAULTS, maxChars: 60, maxChunks: 2 },
+    );
+    expect(out).toEqual([
+      "Frase um bem comprida para forçar o corte.",
+      "Frase dois igualmente comprida aqui. Frase tres tambem comprida.",
+    ]);
+  });
+
+  test("real paragraphs still merge as paragraphs", () => {
+    const out = splitReply("a\n\nb\n\nc\n\nd", {
+      ...SPLIT_DEFAULTS,
+      maxChunks: 2,
+    });
+    expect(out).toEqual(["a", "b\n\nc\n\nd"]);
+  });
+});
+
 describe("typingDelayMs", () => {
   test("scales with word count and clamps", () => {
     expect(typingDelayMs("uma", cfg)).toBe(cfg.minDelayMs); // tiny → floor
@@ -86,7 +137,7 @@ describe("deliverReply", () => {
       { ...SPLIT_DEFAULTS, enabled: false },
       noSleep,
     );
-    expect(n).toBe(1);
+    expect(n.delivered).toBe(1);
     expect(rec.sent).toEqual(["oi\n\ntudo bem?"]);
     expect(rec.typing).toEqual([]);
   });
@@ -100,7 +151,7 @@ describe("deliverReply", () => {
       { ...SPLIT_DEFAULTS, enabled: true },
       noSleep,
     );
-    expect(n).toBe(2);
+    expect(n.delivered).toBe(2);
     expect(rec.sent).toEqual(["Olá!", "Como vai?"]);
     // typing on before each balloon + a final off
     expect(rec.typing).toEqual([true, true, false]);
@@ -127,7 +178,178 @@ describe("deliverReply", () => {
         return off;
       },
     );
-    expect(n).toBe(1);
+    expect(n.delivered).toBe(1);
     expect(rec.sent).toEqual(["Olá!"]);
+  });
+});
+
+// ── Partial delivery (issue #429) ────────────────────────────────────────────
+//
+// A split reply is N sends with a typing pause between them, so a transient Chatwoot failure has N-1
+// windows to land INSIDE the reply — and the window is as wide as the reply is long, because
+// `typingDelayMs` is deliberately proportional to the chunk. What that leaves is not a failed send:
+// it is a customer holding the first half of an answer.
+//
+// The unit of delivery is the REPLY, not the balloon, and the asymmetry is what a failure costs:
+//
+//   nothing landed  A real turn failure. Reported as `failed` with `delivered: 0` so the caller
+//                   throws, the operator is told, and the recovery (#295) re-runs the turn — safe
+//                   precisely because the customer received nothing to duplicate.
+//   something landed  Never a throw. Throwing discards `delivered` (the count that exists to say
+//                   what the customer received) and hands the whole reply back to the recovery,
+//                   which re-runs the turn and sends the balloons that already landed a second time.
+//
+// The remainder is retried ONCE, consolidated into a single send, which is the same rule read from
+// the customer's side: they get the whole answer instead of a truncated one, and no balloon that
+// already arrived is sent again. Per-chunk durable state would be the alternative and buys nothing
+// here — the chunks are still in memory in this very process.
+describe("deliverReply: a balloon that fails mid-reply", () => {
+  function failingStub(
+    rec: { sent: string[]; typing: boolean[] },
+    failOn: (content: string, n: number) => boolean,
+  ) {
+    let n = 0;
+    return {
+      sendMessage: async (_c: number, content: string) => {
+        n += 1;
+        if (failOn(content, n)) throw new Error("chatwoot 502");
+        rec.sent.push(content);
+        return {};
+      },
+      toggleTyping: async (_c: number, on: boolean) => {
+        rec.typing.push(on);
+        return {};
+      },
+    } as unknown as ChatwootClient;
+  }
+  const noSleep = async () => {};
+  const three = "Olá!\n\nComo vai?\n\nPosso ajudar?";
+
+  test("does not throw when a balloon already landed, and reports what did", async () => {
+    const rec = { sent: [] as string[], typing: [] as boolean[] };
+    const out = await deliverReply(
+      failingStub(rec, (_c, n) => n === 2),
+      1,
+      three,
+      { ...SPLIT_DEFAULTS, enabled: true },
+      noSleep,
+    );
+    // The whole answer reached the customer: balloon 1, then the remainder consolidated.
+    expect(out.delivered).toBe(2);
+    expect(out.failed).toBe(false);
+    expect(rec.sent).toEqual(["Olá!", "Como vai?\n\nPosso ajudar?"]);
+  });
+
+  // The delivery-side half: the remainder rejoins with the separators the text actually had, so a
+  // failure inside a single long paragraph does not hand the customer two paragraphs.
+  test("the consolidated retry does not invent a paragraph break", async () => {
+    const rec = { sent: [] as string[], typing: [] as boolean[] };
+    const oneParagraph =
+      "Primeira frase bem longa aqui para forçar o corte. Segunda frase do mesmo parágrafo. Terceira frase ainda no mesmo parágrafo.";
+    const out = await deliverReply(
+      failingStub(rec, (_c, n) => n === 2),
+      1,
+      oneParagraph,
+      // 50 puts three chunks in the paragraph, so the retry JOINS two of them. At 80 the remainder
+      // is a single chunk and the join has nothing to join — a mutation of it survived.
+      { ...SPLIT_DEFAULTS, enabled: true, maxChars: 50 },
+      noSleep,
+    );
+    expect(out.failed).toBe(false);
+    expect(rec.sent).toHaveLength(2);
+    // Two sends, and putting them back together gives the paragraph the model wrote.
+    expect(rec.sent.join(" ")).toBe(oneParagraph);
+    for (const s of rec.sent) expect(s).not.toContain("\n\n");
+  });
+
+  test("never re-sends a balloon the customer already has", async () => {
+    const rec = { sent: [] as string[], typing: [] as boolean[] };
+    const out = await deliverReply(
+      failingStub(rec, (_c, n) => n === 3),
+      1,
+      three,
+      { ...SPLIT_DEFAULTS, enabled: true },
+      noSleep,
+    );
+    expect(out.delivered).toBe(3);
+    expect(rec.sent).toEqual(["Olá!", "Como vai?", "Posso ajudar?"]);
+    // The first two are in the conversation exactly once each.
+    expect(rec.sent.filter((s) => s === "Olá!")).toHaveLength(1);
+    expect(rec.sent.filter((s) => s === "Como vai?")).toHaveLength(1);
+  });
+
+  test("the remainder is retried ONCE: a second failure stops, it does not walk the rest", async () => {
+    const rec = { sent: [] as string[], typing: [] as boolean[] };
+    const out = await deliverReply(
+      failingStub(rec, (_c, n) => n >= 2),
+      1,
+      three,
+      { ...SPLIT_DEFAULTS, enabled: true },
+      noSleep,
+    );
+    expect(out.delivered).toBe(1);
+    expect(out.failed).toBe(true);
+    expect(rec.sent).toEqual(["Olá!"]);
+  });
+
+  test("nothing landed → failed with delivered 0, for the caller to throw on", async () => {
+    const rec = { sent: [] as string[], typing: [] as boolean[] };
+    const out = await deliverReply(
+      failingStub(rec, () => true),
+      1,
+      three,
+      { ...SPLIT_DEFAULTS, enabled: true },
+      noSleep,
+    );
+    expect(out.delivered).toBe(0);
+    expect(out.failed).toBe(true);
+    expect(rec.sent).toEqual([]);
+  });
+
+  test("the typing indicator is cleared even when every send fails", async () => {
+    const rec = { sent: [] as string[], typing: [] as boolean[] };
+    await deliverReply(
+      failingStub(rec, () => true),
+      1,
+      three,
+      { ...SPLIT_DEFAULTS, enabled: true },
+      noSleep,
+    );
+    // Left on, the customer watches an agent "type" a reply that is never coming.
+    expect(rec.typing.at(-1)).toBe(false);
+  });
+
+  test("split disabled: the single send failing is a failed delivery, not a throw", async () => {
+    const rec = { sent: [] as string[], typing: [] as boolean[] };
+    const out = await deliverReply(
+      failingStub(rec, () => true),
+      1,
+      three,
+      { ...SPLIT_DEFAULTS, enabled: false },
+      noSleep,
+    );
+    expect(out).toEqual({ delivered: 0, failed: true });
+  });
+
+  // `calledOff` is the operator clearing the conversation, not a failure — the same distinction
+  // `deliverPendingAttachments` draws between a revocation and a failed send. Reported as a failure,
+  // a /reset landing mid-split would put `lastError` back on the conversation it had just cleared.
+  test("a called-off run is not a failure", async () => {
+    const rec = { sent: [] as string[], typing: [] as boolean[] };
+    let wanted = true;
+    const out = await deliverReply(
+      failingStub(rec, () => false),
+      1,
+      three,
+      { ...SPLIT_DEFAULTS, enabled: true },
+      noSleep,
+      undefined,
+      async () => {
+        const off = !wanted;
+        wanted = false;
+        return off;
+      },
+    );
+    expect(out).toEqual({ delivered: 1, failed: false });
   });
 });

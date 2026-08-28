@@ -1732,6 +1732,182 @@ describe.skipIf(!dbUp)("debounce", () => {
     }
   });
 
+  // ── A balloon that fails mid-reply (issue #429) ────────────────────────────
+  //
+  // The flush is where the duplication the split can cause is actually reachable, and it is not the
+  // path the issue named: there IS no Chatwoot webhook retry (the receiver acks <5s and processes
+  // detached, so Chatwoot is handed a 200 and never re-sends). What retries is the WORKER — a throw
+  // here bubbles out of `flushDebounceJob` with the watermark unadvanced, so the next attempt
+  // coalesces the same burst and answers it again. A reply that threw on its second balloon would
+  // therefore put the first balloon in the conversation twice, and run every side-effecting tool the
+  // turn chose a second time.
+  //
+  // Which is why what already landed decides: the turn reports, the watermark moves, and no retry is
+  // armed. Written against the flush rather than as a unit test because the unit cannot see the
+  // watermark, and the watermark is the whole mechanism.
+  function makeFailingStub(opts: {
+    pages: unknown[];
+    sent: Array<[number, string]>;
+    calls: { getMessages: number };
+    failOn: (n: number) => boolean;
+  }) {
+    let i = 0;
+    let n = 0;
+    const client = {
+      getMessages: async () => {
+        const pg = opts.pages[Math.min(i, opts.pages.length - 1)] ?? {
+          payload: [],
+        };
+        i += 1;
+        opts.calls.getMessages += 1;
+        return pg;
+      },
+      sendMessage: async (conversationId: number, content: string) => {
+        n += 1;
+        if (opts.failOn(n)) throw new Error("chatwoot 502");
+        opts.sent.push([conversationId, content]);
+        return {};
+      },
+      toggleTyping: async () => ({}),
+    } as unknown as ChatwootClient;
+    return async () => client;
+  }
+
+  async function withSplitEnabled<T>(fn: () => Promise<T>): Promise<T> {
+    const before = await suDb.agent.findUniqueOrThrow({
+      where: { id: agentDbId },
+      select: { settings: true },
+    });
+    await suDb.agent.update({
+      where: { id: agentDbId },
+      data: {
+        settings: { ...(before.settings as object), split: { enabled: true } },
+      },
+    });
+    try {
+      return await fn();
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentDbId },
+        data: { settings: before.settings as object },
+      });
+    }
+  }
+
+  test("a balloon that fails mid-reply does not re-answer the burst", async () => {
+    await withSplitEnabled(async () => {
+      await seedConversation(920);
+      const sent: Array<[number, string]> = [];
+      const out = await flushDebounceJob({
+        job: jobFor(920, { lastMessageId: 7 }),
+        base: appDb,
+        deps: {
+          makeModel: () =>
+            new FakeListChatModel({
+              responses: ["Olá!\n\nComo vai?\n\nPosso ajudar?"],
+            }) as unknown as BaseChatModel,
+          makeClient: makeFailingStub({
+            pages: [page([{ id: 7, content: "oi" }])],
+            sent,
+            calls: { getMessages: 0 },
+            // The SECOND balloon, with the first already in the conversation.
+            failOn: (n) => n === 2,
+          }),
+          checkpointer: new MemorySaver(),
+          sleep: async () => {},
+        },
+      });
+
+      // Did not throw: the worker arms no retry, so nothing re-sends what landed.
+      expect(out).toEqual({ outcome: "done" });
+      // And the customer has the whole answer, the remainder consolidated into one send. The first
+      // balloon appears exactly once — the assertion the duplication would break.
+      expect(sent).toEqual([
+        [920, "Olá!"],
+        [920, "Como vai?\n\nPosso ajudar?"],
+      ]);
+      // The watermark moved, which is the mechanical half of "no retry re-answers this burst": left
+      // where it was, the next attempt would coalesce the same message again.
+      expect(await watermarkOf(920)).toBe(7);
+    });
+  });
+
+  // THE CASE THE WHOLE DECISION TURNS ON, and the one a passing consolidated retry hides: a balloon
+  // landed AND the remainder's retry failed too, so the customer holds a truncated answer. Throwing
+  // here reads as "the turn failed" and is the worst available answer — the worker retries with the
+  // watermark unadvanced, the burst is coalesced again, and the balloon the customer already has is
+  // sent a second time along with a whole second run of the turn's tools. What landed decides, even
+  // when what did not land is the rest of the sentence.
+  test("a balloon landed and the remainder failed: still not a re-answer", async () => {
+    await withSplitEnabled(async () => {
+      await seedConversation(922);
+      const sent: Array<[number, string]> = [];
+      const out = await flushDebounceJob({
+        job: jobFor(922, { lastMessageId: 7 }),
+        base: appDb,
+        deps: {
+          makeModel: () =>
+            new FakeListChatModel({
+              responses: ["Olá!\n\nComo vai?\n\nPosso ajudar?"],
+            }) as unknown as BaseChatModel,
+          makeClient: makeFailingStub({
+            pages: [page([{ id: 7, content: "oi" }])],
+            sent,
+            calls: { getMessages: 0 },
+            // The second balloon AND the consolidated retry of the remainder.
+            failOn: (n) => n >= 2,
+          }),
+          checkpointer: new MemorySaver(),
+          sleep: async () => {},
+        },
+      });
+
+      expect(out).toEqual({ outcome: "done" });
+      // Half an answer, delivered once. Half an answer delivered TWICE is what the throw would buy.
+      expect(sent).toEqual([[922, "Olá!"]]);
+      expect(await watermarkOf(922)).toBe(7);
+    });
+  });
+
+  // The other side of the asymmetry, and the reason the first test is not simply "never throw".
+  // Nothing reached the customer, so there is nothing a retry could duplicate — and the throw is the
+  // only way the operator hears about it at all: `lastError` is written on a throw and on nothing
+  // else. Swallowed, this would be a customer waiting on an agent that reported success.
+  test("a reply where NO balloon landed is a failed turn, and says so", async () => {
+    await withSplitEnabled(async () => {
+      await seedConversation(921);
+      const sent: Array<[number, string]> = [];
+      const run = flushDebounceJob({
+        job: jobFor(921, { lastMessageId: 7 }),
+        base: appDb,
+        deps: {
+          makeModel: () =>
+            new FakeListChatModel({
+              responses: ["Olá!\n\nComo vai?"],
+            }) as unknown as BaseChatModel,
+          makeClient: makeFailingStub({
+            pages: [page([{ id: 7, content: "oi" }])],
+            sent,
+            calls: { getMessages: 0 },
+            failOn: () => true,
+          }),
+          checkpointer: new MemorySaver(),
+          sleep: async () => {},
+        },
+      });
+      // Awaited: `expect(...).rejects` returns a promise, and an un-awaited one passes whatever the
+      // call actually did — the exact shape of green that proves nothing.
+      await expect(run).rejects.toThrow();
+
+      expect(sent).toEqual([]);
+      const conv = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: 921 },
+        select: { lastError: true },
+      });
+      expect(conv.lastError).not.toBeNull();
+    });
+  });
+
   test("a human assignee closes the gate before any Chatwoot fetch", async () => {
     await seedConversation(802, { assigneeType: "User" });
     const sent: Array<[number, string]> = [];
@@ -3033,6 +3209,53 @@ describe.skipIf(!dbUp)("debounce", () => {
         where: { id: agentDbId },
         data: { settings: previousSettings as object },
       });
+    });
+
+    // The image is delivered BEFORE the text (a reply must not swallow the attachment), so a text
+    // send that fails after it leaves the customer holding part of the answer even though no balloon
+    // landed — which is what makes `delivered: 0` alone the wrong thing to throw on (issue #429).
+    // A throw here re-runs the turn and posts that picture a second time. Same rule the attachment-
+    // only branch above already keeps, and this is the third site it has to be written at.
+    test("a text send that fails after an image is not a failed turn", async () => {
+      await seedConversation(923);
+      const sent: Array<[number, string]> = [];
+      const attachments: string[] = [];
+      const client = {
+        getMessages: async () => page([{ id: 7, content: "manda a foto" }]),
+        sendFileAttachment: async (
+          _c: number,
+          _b: ArrayBuffer,
+          name: string,
+        ) => {
+          attachments.push(name);
+          return {};
+        },
+        sendMessage: async () => {
+          throw new Error("chatwoot 502");
+        },
+        toggleTyping: async () => ({}),
+      } as unknown as ChatwootClient;
+
+      const out = await flushDebounceJob({
+        job: jobFor(923, { lastMessageId: 7 }),
+        base: appDb,
+        deps: {
+          makeModel: () =>
+            new SendImageThenReplyModel(
+              "É essa aqui!",
+              IMG_URL,
+            ) as unknown as BaseChatModel,
+          makeClient: async () => client,
+          checkpointer: new MemorySaver(),
+          imageDeps,
+        },
+      });
+
+      expect(out).toEqual({ outcome: "done" });
+      expect(attachments).toHaveLength(1);
+      expect(sent).toEqual([]);
+      // The retry that a throw would arm is what would send that picture again.
+      expect(await watermarkOf(923)).toBe(7);
     });
 
     test("a burst retired after the image still counts as answered", async () => {

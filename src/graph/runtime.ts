@@ -4,6 +4,7 @@ import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
+import { mayCloseConversation } from "@/graph/close-intent";
 import { withKeyedQueue } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { overlayMediaAnnotations } from "@/modules/chatwoot/annotations";
@@ -1403,10 +1404,17 @@ export async function runLoadedTurn(
       // of its own, and by here something may already have reached the customer — the outcome still
       // has to describe that.
       //
-      // AND SKIPPED ON A PARTIAL BATCH, for the reason spelled out at the reply site below: the
-      // customer holds some of what the turn owed them, so a `resolved` conversation tells the
-      // operator this attendance is finished when the agent knows it is not.
-      if (!failed && !(await writeCalledOff())) {
+      // AND SKIPPED ON A PARTIAL BATCH: the customer holds some of what the turn owed them, so a
+      // `resolved` conversation tells the operator this attendance is finished when the agent knows
+      // it is not. The rule itself lives in ./close-intent.ts, asked the same way at all three
+      // sites — it was answered differently at each until a review round found them one by one.
+      if (
+        mayCloseConversation({
+          replyPartial: false,
+          attachmentFailed: failed,
+        }) &&
+        !(await writeCalledOff())
+      ) {
         await applyDeferredResolve(client, conversationId, turnState, flow, {
           tenantId,
           instanceId,
@@ -1471,21 +1479,22 @@ export async function runLoadedTurn(
       return attachments.sent ? "posted" : refuse("stale");
     }
     deliveredBalloons = delivered.delivered;
-    // A PARTIAL REPLY DOES NOT CLOSE THE CONVERSATION, and this is a rule the old code kept by
-    // accident: a send that failed mid-reply used to THROW, and a throw discards the deferred intent
-    // (see the invariant on `applyDeferredResolve`). Reporting instead of throwing is what this
-    // change is for, and it woke that path up — so the rule has to be written down rather than left
-    // to the control flow.
+    // AN ATTENDANCE THE CUSTOMER DID NOT FULLY RECEIVE DOES NOT CLOSE, and this branch owes the
+    // answer for BOTH halves of what the turn promised: the text AND the files that went out ahead
+    // of it. Asking only about the text is how a reply that landed while a promised photo did not
+    // still closed the conversation.
     //
-    // What it costs to get wrong: the model called `resolve_conversation` believing it had answered,
-    // the customer has the first balloon and not the rest, and `resolved` is what tells the operator
-    // there is nothing left to do here. The reply is still `posted` for retry bookkeeping — the
-    // customer HAS part of it, and re-running the turn would send that part twice — so the two
-    // questions genuinely differ and cannot share one answer.
-    //
-    // The flow line from the failed send (`stage: "split"`, `outcome: "send_failed"`) is what tells
-    // the operator why the conversation stayed open.
-    if (delivered.failed) return "posted";
+    // The reply is still `posted` for retry bookkeeping — the customer HAS part of it, and re-running
+    // would send that part twice — so the two questions genuinely differ. The flow lines from the
+    // failed sends are what tell the operator why the conversation stayed open.
+    if (
+      !mayCloseConversation({
+        replyPartial: delivered.failed,
+        attachmentFailed: attachments.failed,
+      })
+    ) {
+      return "posted";
+    }
     // Same rule as the branch above: the reply is out, the resolve is a separate write.
     if (await writeCalledOff()) return "posted";
     await applyDeferredResolve(client, conversationId, turnState, flow, {

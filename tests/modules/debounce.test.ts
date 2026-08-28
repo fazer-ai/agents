@@ -3270,6 +3270,78 @@ describe.skipIf(!dbUp)("debounce", () => {
     // landed — which is what makes `delivered: 0` alone the wrong thing to throw on (issue #429).
     // A throw here re-runs the turn and posts that picture a second time. Same rule the attachment-
     // only branch above already keeps, and this is the third site it has to be written at.
+    // THE THIRD LEG, and the one the table exists for: the text lands but a promised file does not.
+    // Asking only about the reply here is how a conversation closed with the customer holding the
+    // words and not the photo they were about. The decision is `mayCloseConversation`, which this
+    // proves the call site actually consults (the table proves the rule; adoption is a second test).
+    test("an attachment that failed keeps the conversation open even when the text lands", async () => {
+      await seedConversation(926);
+      const sent: Array<[number, string]> = [];
+      const toggles: Array<[number, string]> = [];
+      const client = {
+        getMessages: async () =>
+          page([{ id: 7, content: "manda a foto e encerra" }]),
+        sendFileAttachment: async () => {
+          throw new Error("chatwoot 502");
+        },
+        sendMessage: async (conversationId: number, content: string) => {
+          sent.push([conversationId, content]);
+          return { id: 900 };
+        },
+        toggleStatus: async (conversationId: number, status: string) => {
+          toggles.push([conversationId, status]);
+          return {};
+        },
+        toggleTyping: async () => ({}),
+      } as unknown as ChatwootClient;
+
+      const model = {
+        invoke: async () => new AIMessage("Aqui está!"),
+        bindTools: (_t: unknown) => {
+          let n = 0;
+          return {
+            invoke: async () => {
+              n += 1;
+              return n === 1
+                ? new AIMessage({
+                    content: "",
+                    tool_calls: [
+                      {
+                        name: "send_image",
+                        args: { url: IMG_URL },
+                        id: "call_img",
+                      },
+                      {
+                        name: "resolve_conversation",
+                        args: {},
+                        id: "call_resolve",
+                      },
+                    ],
+                  })
+                : new AIMessage("Aqui está!");
+            },
+          };
+        },
+      };
+
+      const out = await flushDebounceJob({
+        job: jobFor(926, { lastMessageId: 7 }),
+        base: appDb,
+        deps: {
+          makeModel: () => model as unknown as BaseChatModel,
+          makeClient: async () => client,
+          checkpointer: new MemorySaver(),
+          imageDeps,
+        },
+      });
+
+      expect(out).toEqual({ outcome: "done" });
+      // The words arrived...
+      expect(sent).toEqual([[926, "Aqui está!"]]);
+      // ...the picture they are about did not, so the attendance is not finished.
+      expect(toggles).toEqual([]);
+    });
+
     // THE SAME RULE ON THE ATTACHMENT-ONLY BRANCH, and this half predates #429: a batch where one
     // file lands and another fails already reached `applyDeferredResolve`, because `failed` was read
     // for the throw and not for the close. The customer holds one of the two pictures the agent

@@ -253,6 +253,9 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
       // The read-back itself fails.
       readFails?: boolean;
       // What the conversation ALREADY holds, from before this reply. Ids below the boundary.
+      // Defaults to the customer message the agent is replying to: a conversation a turn answers is
+      // never empty, and an empty one now reads as "no boundary" (unknown), which would send these
+      // tests down the cannot-prove-delivery path instead of the one they mean to exercise.
       history?: string[];
       calls?: { getMessages: number };
     } = {},
@@ -261,7 +264,7 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
     let nextId = 100;
     // What Chatwoot HOLDS, which is not the same as what the client believes it sent.
     const stored: Array<{ id: number; content: string }> = (
-      opts.history ?? []
+      opts.history ?? ["oi"]
     ).map((content) => ({ id: nextId++, content }));
     return {
       sendMessage: async (_c: number, content: string) => {
@@ -591,6 +594,52 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
     expect(rec.sent).toEqual(["Olá!", "Como vai?\n\nPosso ajudar?"]);
     expect(out.failed).toBe(false);
   });
+
+  // A READ THAT SUCCEEDS AND SAYS NOTHING is unknown, not "boundary zero". `{}`, a transiently
+  // empty page and an unparseable body all reduce to the same empty list, and calling that `0`
+  // states a boundary every message in history sits above — so an older twin of the first balloon
+  // would answer for it and be dropped from what is owed, with the reply reported complete.
+  test.each([
+    ["an empty page", { payload: [] }],
+    ["a response with no payload", {}],
+    ["a null body", null],
+  ])(
+    "a boundary read returning %s resends rather than matching history",
+    async (_label, body) => {
+      const rec = { sent: [] as string[], typing: [] as boolean[] };
+      let n = 0;
+      const client = {
+        sendMessage: async (_c: number, content: string) => {
+          n += 1;
+          if (n === 1) throw new Error("chatwoot 502");
+          rec.sent.push(content);
+          return { id: 900 + n };
+        },
+        // The pre-send read says nothing; the post-failure read shows an OLD identical message.
+        getMessages: async () =>
+          n === 0
+            ? body
+            : {
+                payload: [
+                  { id: 1, content: "Olá!", message_type: 1, private: false },
+                ],
+              },
+        toggleTyping: async () => ({}),
+      } as unknown as ChatwootClient;
+
+      const out = await deliverReply(
+        client,
+        1,
+        three,
+        { ...SPLIT_DEFAULTS, enabled: true },
+        noSleep,
+      );
+      // The whole reply is still owed: id 1 is history, and without a boundary nothing proves
+      // otherwise.
+      expect(rec.sent).toEqual(["Olá!\n\nComo vai?\n\nPosso ajudar?"]);
+      expect(out).toEqual({ delivered: 1, failed: false });
+    },
+  );
 
   // NO BOUNDARY AT ALL, which needs both of its sources to fail at once: the pre-send read AND the
   // id of a successful send (the first balloon is the one that failed, so there is none). Only then

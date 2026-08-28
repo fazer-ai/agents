@@ -431,6 +431,14 @@ async function readBoundary(
     const rows = parseChatwootMessages(
       await client.getMessages(conversationId, undefined, timeoutMs),
     );
+    // NO ROWS IS UNKNOWN, NOT ZERO, and the two are a whole defect apart. A successful-but-useless
+    // response ({}, a transiently empty page, a body that did not parse) all reduce to the same
+    // empty list, and folding that to `0` states a boundary that every message in history sits
+    // above — so the first balloon failing would match some older twin of itself and be dropped
+    // from what is still owed, with the reply reported complete. Unknown never collapses into
+    // known: this is the same "cannot prove delivery" the catch below returns, reached by a
+    // different road.
+    if (rows.length === 0) return null;
     return rows.reduce((max, m) => (m.id > max ? m.id : max), 0);
   } catch {
     // Silent: the caller degrades to "cannot prove delivery", which is the safe direction, and a

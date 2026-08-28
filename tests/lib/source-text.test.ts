@@ -28,6 +28,23 @@ describe("the scan removes prose and keeps code", () => {
       "template around an interpolation",
       `const a = \`s.slice(0, 1) \${x}\`;\n`,
     ],
+    // JSX TEXT IS A LITERAL, and nothing else in this file would treat it as one. Found by review.
+    ["JSX text", "<p>s.slice(0, 1)</p>\n"],
+    ["JSX text in a nested element", "<div>\n  <b>s.slice(0, 1)</b>\n</div>\n"],
+    [
+      "a comment inside a JSX tag",
+      "<iframe\n  // s.slice(0, 1)\n  src={x}\n/>\n",
+    ],
+    // Text that OPENS ON A PARENTHESIS, which is what a type argument list is recognised by. Without
+    // the third signal in `typeArgumentList` this reads as a generic and the text counts as code.
+    ["JSX text starting with a parenthesis", "<div>(s.slice(0, 1))</div>\n"],
+    ["JSX text after an attribute", '<Foo a="x">(s.slice(0, 1))</Foo>\n'],
+    // A `>` inside an attribute value must not close the tag early, which is what skipping the string
+    // (rather than refusing on it) buys in both directions.
+    [
+      "JSX text after an attribute holding a >",
+      '<div title="a > b">s.slice(0, 1)</div>\n',
+    ],
   ];
   for (const [name, source] of REMOVED) {
     test(`${name} is not a cut`, () => {
@@ -38,6 +55,59 @@ describe("the scan removes prose and keeps code", () => {
 
   const KEPT: [string, string][] = [
     ["a head cut", "const a = s.slice(0, 10);\n"],
+    // THE OTHER HALF OF THE `/` DECISION, and the expensive half: a division misread as a regex
+    // opener swallows to the end of the line, taking a trailing comment back OUT of view and counting
+    // it as code. Every one of these ends in a value whose last character is not a word character,
+    // which is why the scan tracks the token and not the character. Found by review.
+    [
+      "a cut after a division on a string",
+      'const r = "a" / 2;\nconst a = s.slice(0, 10);\n',
+    ],
+    [
+      "a cut after a division on a template",
+      "const r = `a` / 2;\nconst a = s.slice(0, 10);\n",
+    ],
+    [
+      "a cut after a division on a call",
+      "const r = f() / 2;\nconst a = s.slice(0, 10);\n",
+    ],
+    [
+      "a cut after a division on an increment",
+      "const r = i++ / 2;\nconst a = s.slice(0, 10);\n",
+    ],
+    // The apostrophe in ordinary JSX prose used to open a string that ran to the next quote,
+    // swallowing whatever code sat in between.
+    [
+      "a cut after an apostrophe in JSX text",
+      "<p>Don't retry</p>\nconst a = s.slice(0, 10);\n",
+    ],
+    [
+      "a cut after an apostrophe in a JSX tag comment",
+      "<b\n  // the tabs' border\n/>\nconst a = s.slice(0, 10);\n",
+    ],
+    // `<K extends …>(` occupies the same syntactic position as a JSX element, and TypeScript itself
+    // cannot always tell them apart — hence the `<T,>` spelling. Reading one as JSX swallows the rest.
+    [
+      "a cut after a generic arrow",
+      "const set = <K extends keyof C>(k: K) => k;\nconst a = s.slice(0, 10);\n",
+    ],
+    // The other spelling TypeScript accepts in a `.tsx` file, and the reason the trailing comma is a
+    // signal rather than a curiosity.
+    [
+      "a cut after a comma-disambiguated generic",
+      "const id = <T,>(x: T) => x;\nconst a = s.slice(0, 10);\n",
+    ],
+    // A generic carrying a STRING-LITERAL type. The first version of the generic detector refused any
+    // type list holding a quote, which recognised `<div title="a > b">` correctly by accident and
+    // swallowed this one.
+    [
+      "a cut after a generic with a string-literal type",
+      'const f = <T extends "a" | "b",>(x: T) => x;\nconst a = s.slice(0, 10);\n',
+    ],
+    [
+      "a cut after a multi-line type argument",
+      "type A = z.infer<\n  z.ZodObject<typeof S>\n>;\nconst a = s.slice(0, 10);\n",
+    ],
     ["a cut inside an interpolation", `const a = \`x\${s.slice(0, 10)}y\`;\n`],
     ["a cut after a line comment", "// prose\nconst a = s.slice(0, 10);\n"],
     [
@@ -85,6 +155,27 @@ describe("the scan removes prose and keeps code", () => {
     expect(codeOnly("f();")).toBe("f();");
   });
 
+  // ON THE SAME LINE, and that is the whole point of this table rather than the KEPT rows above. A
+  // regex the scan opens by mistake runs to the end of the LINE, so a cut on the NEXT line survives
+  // either way and proves nothing — a mutation run showed every "cut after a division" row passing
+  // with the bug restored. What the misread actually swallows is the rest of its own line, so the
+  // trailing comment is the only thing that makes it observable.
+  const DIVIDED: [string, string][] = [
+    ["a string", 'const r = "a" / 2; // s.slice(0, 1)\n'],
+    ["a template", "const r = `a` / 2; // s.slice(0, 1)\n"],
+    ["a call", "const r = f() / 2; // s.slice(0, 1)\n"],
+    ["an index", "const r = a[0] / 2; // s.slice(0, 1)\n"],
+    ["an increment", "const r = i++ / 2; // s.slice(0, 1)\n"],
+    ["a number", "const r = 2 / 2; // s.slice(0, 1)\n"],
+    ["a regex", "const r = /x/ / 2; // s.slice(0, 1)\n"],
+    ["an identifier", "const r = n / 2; // s.slice(0, 1)\n"],
+  ];
+  for (const [what, source] of DIVIDED) {
+    test(`a comment after a division on ${what} is still removed`, () => {
+      expect(codeOnly(source)).not.toContain("s.slice");
+    });
+  }
+
   test("withoutComments keeps a literal the pattern reads", () => {
     const source =
       '// returning "stale" would replay\nreturn refuse("stale");\n';
@@ -126,10 +217,11 @@ describe("the scan is positionally transparent", () => {
 describe("an unterminated literal is reported rather than swallowed", () => {
   // The self-check, and it needs its own positive control: a scan that never opens anything reports
   // `null` for a healthy tree AND for a broken one.
-  const OPEN: ["string" | "template" | "block-comment", string][] = [
+  const OPEN: ["string" | "template" | "block-comment" | "jsx", string][] = [
     ["string", 'const a = "oops;\nconst b = s.slice(0, 10);\n'],
     ["template", "const a = `oops;\nconst b = 1;\n"],
     ["block-comment", "/* oops\nconst b = 1;\n"],
+    ["jsx", "<div>never closed\n"],
   ];
   for (const [expected, source] of OPEN) {
     test(`an open ${expected} is named`, () => {
@@ -163,18 +255,20 @@ describe("an unterminated literal is reported rather than swallowed", () => {
   });
 });
 
-// THE ONE SHAPE THE HEURISTIC GETS WRONG, MEASURED RATHER THAN REASONED ABOUT.
+// THE TWO SHAPES THE HEURISTIC GETS WRONG, MEASURED RATHER THAN REASONED ABOUT.
 //
-// `if (x) /re/.test(y)` puts a regex after a `)`, and a `)` ends a value, so the scan divides instead.
-// Nothing in `src/` is written that way and this says so out loud: the day one is, this goes red and
-// whoever wrote it learns the rule from the failure rather than from a swallowed count.
-describe("the regex heuristic's known miss is not in the tree", () => {
-  test("no `/` follows a closing parenthesis except to end a regex", async () => {
+// A `)` ends a value and a `}` reads as the end of a block, so `if (x) /re/.test(y)` and `({}) / 2`
+// are each decided the wrong way. Telling either apart needs a real parser; both are absent from
+// `src/` and this says so out loud, so the day one is written the failure teaches the rule instead of
+// a count quietly changing.
+describe("the heuristic's known misses are not in the tree", () => {
+  test("no `/` follows a closing bracket except to end a regex", async () => {
     const { Glob } = await import("bun");
     const suspects: string[] = [];
     for await (const rel of new Glob("**/*.{ts,tsx}").scan("src")) {
       const code = codeOnly(await Bun.file(`src/${rel}`).text());
-      for (const m of code.matchAll(/\)\s*\/(?![\s/*=])/g)) {
+      // `=>` is excluded because a JSX self-close `} />` puts a `/` right after a brace.
+      for (const m of code.matchAll(/[)}]\s*\/(?![\s/*=>])/g)) {
         // A regex the scan consumed keeps its own text, so its closing `/` and flags are still there.
         // What would NOT be there is a regex the scan misread — that one opened a literal instead.
         const after = code.slice((m.index ?? 0) + 1);

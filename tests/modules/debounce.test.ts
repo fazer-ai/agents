@@ -1886,14 +1886,42 @@ describe.skipIf(!dbUp)("debounce", () => {
   });
 
   // THE CASE THE WHOLE DECISION TURNS ON, and the one a passing consolidated retry hides: a balloon
-  // landed AND the remainder's retry failed too, so the customer holds a truncated answer. Throwing
-  // here reads as "the turn failed" and is the worst available answer — the worker retries with the
-  // watermark unadvanced, the burst is coalesced again, and the balloon the customer already has is
-  // sent a second time along with a whole second run of the turn's tools. What landed decides, even
-  // when what did not land is the rest of the sentence.
-  test("a balloon landed and the remainder failed: still not a re-answer", async () => {
+  // landed AND the remainder's retry failed too, so the customer holds a truncated answer that
+  // nothing is going to complete.
+  //
+  // "Nothing is going to complete it" is MEASURED, and it is the opposite of what this file claimed
+  // first. A throw here buys no re-answer to fear: `shouldPost` claims the burst with a monotonic
+  // CAS (`lastHandledMessageId < toMessageId`) immediately before the first balloon, so the
+  // watermark is already 7 when the second send fails, and a worker retry coalesces nothing and
+  // posts nothing. Measured against a real Chatwoot on BOTH retry paths — the flush here, and the
+  // delivery recovery, whose second pass ran the whole turn and came back "superseded".
+  //
+  // What the throw did buy was the OPERATOR: `lastError` is written on a throw and on nothing else,
+  // and the flush clears it on "posted". So reporting this as plain "posted" erases the only
+  // conversation-level sign that a customer is sitting on one of three balloons — measured live,
+  // where the fixed code came back `lastError: (none)` on exactly this input while the unfixed code
+  // showed the 502. Hence the separate word and the badge the turn writes itself.
+  test("a balloon landed and the remainder failed: reported, and the operator is told", async () => {
     await withSplitEnabled(async () => {
       await seedConversation(922);
+      // The burst's own delivery died mid-processing and the sweep already reported it, which is
+      // what makes the settlement WORD observable (same device as the capped-message test above).
+      // Half an answer IS an answer for this question: the customer heard back on this message, so
+      // calling it merely `consumed` would tell the loss list nothing ever replied here.
+      const strand = await suDb.chatwootWebhookDelivery.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          deliveryId: `flush-partial-${process.pid}`,
+          event: "message_created",
+          status: "DEAD",
+          receivedAt: new Date(Date.now() - 60_000),
+          claimedAt: new Date(Date.now() - 60_000),
+          conversationId: 922,
+          inboundMessageId: 7,
+        },
+        select: { id: true },
+      });
       const sent: Array<[number, string]> = [];
       const out = await flushDebounceJob({
         job: jobFor(922, { lastMessageId: 7 }),
@@ -1916,9 +1944,25 @@ describe.skipIf(!dbUp)("debounce", () => {
       });
 
       expect(out).toEqual({ outcome: "done" });
-      // Half an answer, delivered once. Half an answer delivered TWICE is what the throw would buy.
+      // Half an answer, delivered once — the consolidated retry does not re-send what landed.
       expect(sent).toEqual([[922, "Olá!"]]);
+      // Already claimed before the first balloon, which is why no throw could have re-answered it.
       expect(await watermarkOf(922)).toBe(7);
+      // THE ASSERTION THE DECISION RESTS ON. The flush clears `lastError` on "posted"; a partial
+      // delivery must leave the conversation carrying one instead, or the customer's missing half is
+      // invisible everywhere an operator looks.
+      const conv = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: 922 },
+        select: { lastError: true, lastErrorAt: true },
+      });
+      expect(conv.lastError).not.toBeNull();
+      expect(conv.lastError).toContain("incompleta");
+      expect(conv.lastErrorAt).not.toBeNull();
+      expect((await correctionLine(922)).detail).toMatchObject({
+        outcome: "answered_late",
+      });
+      await suDb.chatwootWebhookDelivery.delete({ where: { id: strand.id } });
+      await clearFlowLog(suDb, { tenantId });
     });
   });
 

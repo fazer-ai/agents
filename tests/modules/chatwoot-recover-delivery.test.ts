@@ -131,6 +131,9 @@ function stubChatwoot(opts: {
   // test puts a message into the window between them.
   recentAfterFirst?: unknown;
   throwOnRead?: boolean;
+  // The Nth send and every one after it are rejected — a Chatwoot that accepts the first balloon of a
+  // split reply and refuses the rest, which is the shape issue #429 is about.
+  failSendFrom?: number;
   conv?: {
     status?: string;
     assigneeType?: string | null;
@@ -142,6 +145,7 @@ function stubChatwoot(opts: {
   const notes: Array<[number, string]> = [];
   const asked: Array<[number, number | undefined]> = [];
   let unanchored = 0;
+  let sends = 0;
   const c = opts.conv ?? {};
   const client = {
     getConversation: async (conversationId: number) => {
@@ -176,6 +180,10 @@ function stubChatwoot(opts: {
       return opts.page ?? { payload: [] };
     },
     sendMessage: async (conversationId: number, content: string) => {
+      sends += 1;
+      if (opts.failSendFrom !== undefined && sends >= opts.failSendFrom) {
+        throw new Error("chatwoot 502");
+      }
       sent.push([conversationId, content]);
       return {};
     },
@@ -503,6 +511,59 @@ describe.skipIf(!dbUp)("recovering a delivery the sweep gave up on", () => {
     // reached the conversation nothing was going to answer.
     expect(stub.sent).toEqual([[convId, REPLY]]);
     expect(await ledger(rowId)).toEqual({ status: "PROCESSED", attempts: 1 });
+  });
+
+  // A RECOVERY THAT DELIVERED HALF AN ANSWER IS STILL A SETTLED ROW (issue #429).
+  //
+  // The row's whole purpose is "is this customer still owed a reply?", and after the first balloon
+  // lands the answer is no longer a clean yes — but putting it back on the worklist is measurably
+  // worse than settling it. Measured against a real Chatwoot: the second pass runs the whole turn,
+  // `shouldPost` finds the handled watermark already past this message (the first pass claimed it
+  // with a monotonic CAS immediately before the first balloon), and the turn comes back
+  // "superseded" having posted nothing. Left out of TURN_SETTLED the sweep spends all three
+  // attempts — three model calls — to reach that same silence, and gives up on the row anyway.
+  //
+  // So the customer's missing half is reported where an operator can act on it, and the row is
+  // closed. The assertion that matters is the pair: PROCESSED, and a badge on the conversation.
+  test("a reply that arrived in half settles the row and leaves a badge", async () => {
+    const convId = 8996;
+    const messageId = 9496;
+    await seedConversation(convId);
+    const rowId = await seedDeadDelivery({
+      conversationId: convId,
+      inboundMessageId: messageId,
+    });
+    const stub = stubChatwoot({
+      page: pageWith([{ id: messageId, content: "oi, alguém aí?" }]),
+      // The second balloon AND the consolidated retry of the remainder.
+      failSendFrom: 2,
+    });
+
+    const outcome = await recoverStrandedDelivery({
+      tenantId,
+      deliveryRowId: rowId,
+      base: appDb,
+      deps: {
+        makeClient: stub.makeClient,
+        makeModel: () =>
+          new FakeListChatModel({
+            responses: ["Olá!\n\nJá te respondo.\n\nUm instante."],
+          }),
+        checkpointer: new MemorySaver(),
+        sleep: async () => {},
+      },
+    });
+
+    expect(outcome).toBe("recovered");
+    // What actually reached the customer: the first balloon, once.
+    expect(stub.sent).toEqual([[convId, "Olá!"]]);
+    expect(await ledger(rowId)).toEqual({ status: "PROCESSED", attempts: 1 });
+    // And the half that did not, said where an operator sees it.
+    const conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { lastError: true },
+    });
+    expect(conv.lastError).toContain("incompleta");
   });
 
   test("a conversation the mirror still calls resolved is answered anyway", async () => {

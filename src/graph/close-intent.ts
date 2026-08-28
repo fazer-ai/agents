@@ -28,3 +28,20 @@ export interface DeliveryOutcome {
 export function mayCloseConversation(o: DeliveryOutcome): boolean {
   return !o.replyPartial && !o.attachmentFailed;
 }
+
+// The SECOND consequence of the same two bits, and derived from the first rather than restated so
+// the two can never drift: an attendance the customer did not fully receive does not close, AND it
+// is not the outcome that clears the operator's error badge.
+//
+// Both are "posted" for retry bookkeeping — the customer HAS part of it, and re-running would send
+// that part twice. What separates them is what the callers may do next, and the live exercise is
+// what made the distinction load-bearing: the turn's own `shouldPost` claims the burst with a
+// monotonic CAS immediately before the first balloon, so a partial delivery is never re-answered by
+// anyone. Nothing will complete this reply. Reported as plain "posted" it also CLEARS `lastError`,
+// which leaves a customer holding half an answer on a conversation whose badge says the last turn
+// went fine — measured against a real Chatwoot, and the reason this outcome exists.
+export type PostedOutcome = "posted" | "posted-partial";
+
+export function postedOutcomeFor(o: DeliveryOutcome): PostedOutcome {
+  return mayCloseConversation(o) ? "posted" : "posted-partial";
+}

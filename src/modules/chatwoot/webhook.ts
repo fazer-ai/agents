@@ -3742,9 +3742,13 @@ export async function processChatwootDelivery(
           // incoming message HAS an id. It answers the compiler, not the runtime, which is why
           // removing it kills no test — a survivor that is a narrowing rather than a rule.
           if (n.message?.id != null) {
+            // `posted-partial` answers too: part of the reply IS with the customer, and calling
+            // that "consumed" would tell the stranded-delivery sweep nothing ever replied here.
             await settleDelivery(
               n.message.id,
-              outcome === "posted" ? "answered" : "consumed",
+              outcome === "posted" || outcome === "posted-partial"
+                ? "answered"
+                : "consumed",
             );
           }
           // NOTE: The turn had nowhere to go: no agent is bound to this inbox (issue #318). One line

@@ -345,7 +345,12 @@ export async function coalesceAndRunTurn(
         // "posted" is the only outcome that reached the customer. Every other one here consumed the
         // burst deliberately — an empty reply, a guardrail going silent, a human taking over
         // mid-turn — and calling those answered would be the lie the parameter exists to prevent.
-        settlement: outcome === "posted" ? "answered" : "consumed",
+        // `posted-partial` counts as answered for the same reason: part of the reply reached the
+        // customer, so the burst was not merely consumed.
+        settlement:
+          outcome === "posted" || outcome === "posted-partial"
+            ? "answered"
+            : "consumed",
         messageIds: pending.map((m) => m.id),
         base,
       });

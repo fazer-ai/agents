@@ -1814,7 +1814,11 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         imageDeps,
       },
     });
-    expect(outcome).toBe("posted");
+    // `posted-partial`, not plain `posted` (issue #429): the handoff line answered, so this is not a
+    // failed turn — but the customer was promised a photo that never arrived, and the word that
+    // clears the operator's badge is reserved for a delivery that arrived whole. Same two bits as
+    // the resolve decision, which this branch already refused for the same reason.
+    expect(outcome).toBe("posted-partial");
   });
 
   test("taken over mid-turn discards the resolve intent", async () => {
@@ -2705,7 +2709,11 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
           documentsStorageDir: dir,
         },
       });
-      expect(outcome).toBe("posted");
+      // `posted-partial` (issue #429), and the same reasoning the flow line below states: a lookup
+      // that could not be made is not the operator withdrawing the file. The customer holds the text
+      // and not the document they were promised, so the turn does not get the word that clears the
+      // badge — the badge is the second place they can find out why the file never arrived.
+      expect(outcome).toBe("posted-partial");
       expect(calls).toEqual([["sendMessage", 945, "Segue o orçamento!"]]);
       // And the trail says so. A lookup that could not be made is not the operator revoking
       // anything: logging it as an intentional skip makes the one place they would look to find out

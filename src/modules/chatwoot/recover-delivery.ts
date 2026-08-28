@@ -192,7 +192,20 @@ export interface RecoverStrandedDeliveryParams {
 //                   legitimately answer differently, while here a re-run reproduces the same refusal
 //                   and the row on the worklist would ask an operator to investigate a decision
 //                   their own configuration made.
-const TURN_SETTLED = new Set(["posted", "taken-over", "blocked"]);
+//   `posted-partial` — part of the reply reached the customer and the rest did not (issue #429).
+//                   Settled, and the live exercise is why: the turn's own `shouldPost` advanced the
+//                   handled watermark with a monotonic CAS immediately before the first balloon, so
+//                   a second recovery pass runs the whole turn, comes back `superseded` and posts
+//                   nothing. Left out of this set the row goes back to DEAD and the sweep spends its
+//                   three attempts — three model calls — to reach that same silence. The customer's
+//                   missing half is reported on the conversation instead, where an operator can act
+//                   on it (`notePartialDelivery`).
+const TURN_SETTLED = new Set([
+  "posted",
+  "posted-partial",
+  "taken-over",
+  "blocked",
+]);
 
 export async function recoverStrandedDelivery(
   params: RecoverStrandedDeliveryParams,

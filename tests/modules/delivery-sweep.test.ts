@@ -1144,6 +1144,119 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     await suDb.schedulerJob.deleteMany({ where: { tenantId } });
   });
 
+  // THE SAME QUESTION AT THE DIRECT PATH'S OWN SITE (issue #429). The flush has its own version of
+  // this test; the two settle their rows from separate lines, and the invariant is one — half an
+  // answer IS an answer for the loss list. Reported as merely `consumed`, a customer who HAS the
+  // first balloon reads as a customer nothing ever replied to.
+  //
+  // The other half of the pair is the badge: the direct path clears `lastError` on "posted", so the
+  // partial outcome has to survive all the way out of `runAgentTurn` for the conversation to keep
+  // the only operator-visible sign that the reply came out short.
+  test("a reply that arrived in half settles as ANSWERED, and leaves a badge", async () => {
+    const convId = 8877;
+    const messageId = 9722;
+    await seedConversation(convId);
+    await suDb.agent.update({
+      where: { id: agentDbId },
+      data: { settings: { debounce: { enabled: false } } },
+    });
+    const reported = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `direct-partial-${process.pid}`,
+        event: "message_created",
+        status: "DEAD",
+        processedAt: new Date(Date.now() - 60_000),
+        receivedAt: new Date(Date.now() - 120_000),
+        conversationId: convId,
+        inboundMessageId: messageId,
+      },
+      select: { id: true },
+    });
+
+    const sent: Array<[number, string]> = [];
+    let sends = 0;
+    const client = {
+      getMessages: async () => ({ payload: [] }),
+      sendMessage: async (conversationId: number, content: string) => {
+        sends += 1;
+        // The second balloon AND the consolidated retry of the remainder.
+        if (sends >= 2) throw new Error("chatwoot 502");
+        sent.push([conversationId, content]);
+        return {};
+      },
+      toggleTyping: async () => ({}),
+    } as unknown as ChatwootClient;
+
+    const n = normalizeChatwootEvent({
+      event: "message_created",
+      id: messageId,
+      private: false,
+      content: "oi",
+      message_type: "incoming",
+      sender: { id: 77, name: "Cliente", type: null },
+      conversation: {
+        id: convId,
+        inbox_id: CHATWOOT_INBOX_ID,
+        status: "pending",
+        contact_inbox: { id: 61_000 + convId },
+        meta: { sender: { id: 77, name: "Cliente" } },
+        channel: "Channel::Api",
+        last_activity_at: Math.floor(Date.now() / 1000),
+        updated_at: Math.floor(Date.now() / 1000),
+      },
+    });
+    if (!n) throw new Error("payload did not normalize");
+    const own = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `direct-partial-own-${process.pid}`,
+        event: "message_created",
+        status: "PENDING",
+        conversationId: convId,
+        inboundMessageId: messageId,
+      },
+      select: { id: true },
+    });
+    await processChatwootDelivery({
+      tenantId,
+      instanceId,
+      deliveryRowId: own.id,
+      agentBotId: AGENT_BOT_ID,
+      normalized: n,
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new FakeListChatModel({
+            responses: ["Olá!\n\nJá te respondo.\n\nUm instante."],
+          }) as BaseChatModel,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+        sleep: async () => {},
+      },
+    });
+
+    expect(sent).toEqual([[convId, "Olá!"]]);
+    expect(await correctionOutcome(convId)).toBe("answered_late");
+    const conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { lastError: true },
+    });
+    expect(conv.lastError).toContain("incompleta");
+
+    await suDb.agent.update({
+      where: { id: agentDbId },
+      data: { settings: {} },
+    });
+    await suDb.chatwootWebhookDelivery.deleteMany({
+      where: { id: { in: [own.id, reported.id] } },
+    });
+    await clearFlowLog(suDb, { tenantId });
+    await suDb.schedulerJob.deleteMany({ where: { tenantId } });
+  });
+
   test("a message_updated settles nothing: it is our own write-back coming around", async () => {
     // An incoming `message_updated` is usually the media write-back we just made, and `runAgentTurn`
     // no-ops on it — nobody answered anything. But it carries the SAME message id, and the ledger row

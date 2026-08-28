@@ -350,6 +350,32 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
     expect(rec.sent.filter((s) => s === "Como vai?")).toHaveLength(1);
   });
 
+  // OVERLAPPING IS NOT THE SAME AS BEING FREE. `getMessages` carries a 10s deadline of its own and
+  // the default pause is 800ms, so an unbounded read would hold every SUCCESSFUL reply for up to
+  // nine extra seconds — latency paid on the path that does not fail, to prepare for the one that
+  // does. The read is handed the pause as its budget.
+  test("the pre-send read is bounded by the typing pause, not by the client default", async () => {
+    const rec = { sent: [] as string[], typing: [] as boolean[] };
+    const timeouts: Array<number | undefined> = [];
+    const client = {
+      sendMessage: async (_c: number, content: string) => {
+        rec.sent.push(content);
+        return { id: 1 };
+      },
+      getMessages: async (_c: number, _o: unknown, timeoutMs?: number) => {
+        timeouts.push(timeoutMs);
+        return { payload: [] };
+      },
+      toggleTyping: async () => ({}),
+    } as unknown as ChatwootClient;
+
+    const cfgSlow = { ...SPLIT_DEFAULTS, enabled: true, minDelayMs: 1234 };
+    await deliverReply(client, 1, three, cfgSlow, noSleep);
+    // The budget is the pause the first balloon would wait anyway — never the client's own default.
+    expect(timeouts).toEqual([typingDelayMs("Olá!", cfgSlow)]);
+    expect(timeouts[0]).toBe(1234);
+  });
+
   // A REJECTED SEND IS NOT AN UNDELIVERED ONE. The request has a 15s deadline, so a timeout — or a
   // response body that could not be read — rejects here with the message already written on the far
   // side. Retrying blindly would be this PR's own defect one layer down, and likelier: an overloaded

@@ -234,8 +234,10 @@ export async function deliverReply(
       let failed = false;
       // What "newer than this send" means, established BEFORE anything is sent and advanced past
       // every message we create. Started here and awaited inside the loop so it overlaps the first
-      // typing pause (at least `minDelayMs`) instead of adding latency ahead of the first balloon.
-      const boundaryRead = readBoundary(client, conversationId);
+      // typing pause, and BOUNDED by that same pause so it can never extend it.
+      const firstPause =
+        chunks.length > 0 ? typingDelayMs(chunks[0] as string, cfg) : 0;
+      const boundaryRead = readBoundary(client, conversationId, firstPause);
       let boundary: number | null = null;
       // THE ONE PLACE A DELIVERY IS RECORDED, because there are four ways to learn of one — a send
       // that returned, a rejected send the read-back found, and the same two for the consolidated
@@ -411,16 +413,23 @@ async function findLandedMessage(
 }
 
 // The newest message id in the conversation, or null when it cannot be read. Read BEFORE the first
-// send so a failure has something to measure "newer than" against, and paid for in parallel with the
-// first typing pause, which is at least `minDelayMs` — so it costs no added latency on the path that
-// does not fail.
+// send so a failure has something to measure "newer than" against, and overlapped with the first
+// typing pause so the reply does not wait on it.
+//
+// BOUNDED BY THAT PAUSE, because overlapping is not the same as being free. `getMessages` carries a
+// 10s deadline of its own and the default pause is 800ms, so a slow Chatwoot would hold every
+// SUCCESSFUL reply for up to nine extra seconds — paying latency on the path that does not fail, to
+// prepare for the one that does. The pause is the budget: whatever has not arrived by then is
+// abandoned and the caller degrades to "cannot prove delivery", which resends. Same safe direction
+// an unreadable conversation already takes.
 async function readBoundary(
   client: ChatwootClient,
   conversationId: number,
+  timeoutMs: number,
 ): Promise<number | null> {
   try {
     const rows = parseChatwootMessages(
-      await client.getMessages(conversationId),
+      await client.getMessages(conversationId, undefined, timeoutMs),
     );
     return rows.reduce((max, m) => (m.id > max ? m.id : max), 0);
   } catch {

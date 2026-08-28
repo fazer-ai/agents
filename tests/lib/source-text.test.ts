@@ -38,6 +38,14 @@ describe("the scan removes prose and keeps code", () => {
     // Text that OPENS ON A PARENTHESIS, which is what a type argument list is recognised by. Without
     // the third signal in `typeArgumentList` this reads as a generic and the text counts as code.
     ["JSX text starting with a parenthesis", "<div>(s.slice(0, 1))</div>\n"],
+    // After a keyword that OPENS AN EXPRESSION. `default` and `throw` were read as ordinary
+    // identifiers, so the `<` after them was a comparison and the JSX text counted as code. Found by
+    // review; the row is the keyword list being exercised rather than asserted.
+    [
+      "JSX text after `export default`",
+      "export default <p>s.slice(0, 1)</p>;\n",
+    ],
+    ["JSX text after `throw`", "throw <p>s.slice(0, 1)</p>;\n"],
     ["JSX text after an attribute", '<Foo a="x">(s.slice(0, 1))</Foo>\n'],
     // A `>` inside an attribute value must not close the tag early, which is what skipping the string
     // (rather than refusing on it) buys in both directions.
@@ -329,6 +337,16 @@ describe("every Glob sweep over src/ counts through the scan", () => {
 });
 
 describe("countInSrc is the shared counter", () => {
+  // A pattern without `g` cannot count, and `String.prototype.match` does not say so: it returns the
+  // first match plus its capture GROUPS, so the length is a group count wearing an occurrence count's
+  // clothes. Refused rather than repaired, because silently adding the flag would leave the caller
+  // believing a pattern that cannot count is counting. Found by review.
+  test("it refuses a pattern that cannot count", async () => {
+    expect(countInSrc(/\bexport function (clipText)\b/)).rejects.toThrow(
+      /needs a \/g pattern/,
+    );
+  });
+
   // THE ONE THAT PROVES IT SCANS AT ALL, and it exists because the obvious assertions do not. Every
   // ledger in the tree counts the same through raw text and through the scan today — that is the
   // acceptance check this change had to pass — so a `countInSrc` quietly reading raw text breaks

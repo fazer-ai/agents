@@ -39,8 +39,11 @@ type Options = {
 //
 // The token, not the character: `"a" / 2`, `` `x` / 2 ``, `i++ / 2` and `f() / 2` all end in a value
 // whose last character is not a word character.
+// Every keyword after which an EXPRESSION begins, so a `/` there opens a regex and a `<` opens a JSX
+// element. Missing one is not a stylistic gap: `export default <p>x</p>` was read as a comparison and
+// the JSX text counted as code, which is the phantom this module exists to prevent (found by review).
 const KEYWORD_BEFORE_VALUE =
-  /^(?:return|typeof|instanceof|in|of|new|delete|void|case|do|else|yield|await)$/;
+  /^(?:return|typeof|instanceof|in|of|new|delete|void|case|do|else|yield|await|throw|default|export|extends|as|satisfies)$/;
 
 // `<K extends keyof C>(k: K) => …` sits in exactly the position a JSX element does, and TypeScript
 // itself cannot always tell them apart — which is why the `<T,>` spelling exists at all. Three signals:
@@ -363,6 +366,17 @@ export function unterminatedLiteral(source: string): Scanned["open"] {
 // The one way a sweep counts a shape across `src/`, so that the raw-text spelling has to be written on
 // purpose rather than reached by copying the file next door.
 export async function countInSrc(re: RegExp): Promise<Record<string, number>> {
+  // REFUSED, not repaired, and the difference matters here. Without `g`, `String.prototype.match`
+  // returns the first match plus its capture GROUPS, so `.length` is one more than the group count
+  // and has nothing to do with how many times the shape occurs — a ledger built on it is wrong in a
+  // direction nobody would think to check. Measured: `/\bexport function (clipText)\b/` reports 2 for
+  // a file with one. Silently adding the flag would leave the caller believing a pattern that cannot
+  // count is counting (found by review).
+  if (!re.flags.includes("g")) {
+    throw new Error(
+      `countInSrc needs a /g pattern to count occurrences; ${re} would report a capture-group count instead.`,
+    );
+  }
   const { Glob } = await import("bun");
   const found: Record<string, number> = {};
   for await (const rel of new Glob("**/*.{ts,tsx}").scan("src")) {

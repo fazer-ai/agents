@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { withoutComments } from "@/tests/utils/source-text";
+import { codeOnly, withoutComments } from "@/tests/utils/source-text";
 
 // THE RULE THE ROLLBACK DEPENDS ON, AND THE ONE A PATCH CAN SILENTLY BREAK.
 //
@@ -33,9 +33,14 @@ const TURN_REFUSALS = ["stale", "superseded", "blocked", "taken-over"] as const;
 // every pre-invoke refusal into range — the exact thing the offset exists to exclude — and the floor
 // below would count a `refuse(` written in prose as a routed one (#424).
 export function refuseSection(source: string): string | null {
-  const code = withoutComments(source);
-  const at = code.indexOf("const refuse = async (");
-  return at === -1 ? null : code.slice(at);
+  // TWO VIEWS, AND THE OFFSET CROSSES BETWEEN THEM. The anchor is located in the fully stripped text,
+  // because a string or a comment that spells the closure would otherwise start the section above the
+  // real one and drag every pre-invoke refusal into range. The section itself is the comment-stripped
+  // text, because the pattern downstream READS a string literal. They line up because the scan
+  // replaces removed characters in place. (Comments alone were the first version; review pointed out
+  // a literal does it too.)
+  const at = codeOnly(source).indexOf("const refuse = async (");
+  return at === -1 ? null : withoutComments(source).slice(at);
 }
 
 export function bareRefusalsAfterTheRollback(
@@ -136,6 +141,19 @@ describe("every post-generation refusal rolls the turn back", () => {
   // The two things the section itself has to get right, and neither is visible from the predicate's
   // own cases: prose naming the closure must not move the start, and a `refuse(` written in a comment
   // must not count toward the floor below.
+  // A LITERAL does it too, which is the half the first version missed: `withoutComments` keeps string
+  // contents, so a stored snippet spelling the closure moved the start. Found by review.
+  test("the section starts past a closure spelled inside a string", () => {
+    const stored =
+      'const doc = "const refuse = async (o) => o;";\n' +
+      '  if (!(await stillWanted())) return "stale";\n' +
+      "  const refuse = async (o) => o;\n" +
+      '  if (x) return refuse("stale");\n';
+    const section = refuseSection(stored) ?? "";
+    expect(section.startsWith("const refuse = async (")).toBe(true);
+    expect(section).not.toContain("stillWanted");
+  });
+
   test("the section starts at the real closure, not at one named in prose", () => {
     const prosey =
       "// the const refuse = async ( closure lives further down\n" +

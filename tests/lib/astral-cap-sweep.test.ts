@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { DEBUG_MAX_STRING } from "@/modules/flowlog/service";
+import { countInSrc } from "@/tests/utils/source-text";
 
 // THE GUARD AGAINST THE NEXT CAP THAT CUTS A CHARACTER IN HALF.
 //
@@ -466,16 +467,12 @@ const BARE_SLICES: Record<
 
 describe("every bare cut left in src/ is accounted for", () => {
   test("the file list and the per-file counts still match", async () => {
-    const { Glob } = await import("bun");
-    const found: Record<string, number> = {};
-    for await (const rel of new Glob("**/*.{ts,tsx}").scan("src")) {
-      const src = await Bun.file(`src/${rel}`).text();
-      const n = (
-        src.match(/\.slice\(\s*(?:0\s*,|-|[A-Za-z_$][\w$.]*\.length\s*-)/g) ??
-        []
-      ).length;
-      if (n > 0) found[`src/${rel}`] = n;
-    }
+    // Through `countInSrc`, so a comment explaining a cut is not counted as one. A phantom entry here
+    // is not a chore: the fix that suggests itself is to add the file to the ledger, which arms a
+    // waiver over a file with no cut in it and silences the day it grows one (#424).
+    const found = await countInSrc(
+      /\.slice\(\s*(?:0\s*,|-|[A-Za-z_$][\w$.]*\.length\s*-)/g,
+    );
     const expected = Object.fromEntries(
       Object.entries(BARE_SLICES).map(([f, [n]]) => [f, n]),
     );

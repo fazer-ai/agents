@@ -9,6 +9,7 @@ import {
   mockUser,
   setupPrismaMock,
 } from "@/tests/utils/prisma-mock";
+import { codeOnly } from "@/tests/utils/source-text";
 
 // Issue #301. Three create routes declared the body schema their PATCH sibling uses, where every
 // field being optional is correct. A request missing a required field therefore passed the transport
@@ -275,7 +276,11 @@ describe("a refusal about a value inside the request names the whole path", () =
 // below itself, so no issue can carry a key the caller wrote. That holds for every record in src/
 // today, and it is the same hazard the transport's own refusal walks the schema to avoid
 // (api/lib/schema-refusal.ts), so it is pinned rather than left as a reading.
-export function recordConstrainsItsValues(source: string): boolean {
+// Takes RAW source and strips it itself. Leaving that to the caller is how the sweep below read a
+// comment quoting the constrained shape as a declaration of it (#424), and a predicate whose contract
+// is "give me source" cannot be handed the wrong kind of source if it does the reading.
+export function recordConstrainsItsValues(raw: string): boolean {
+  const source = codeOnly(raw);
   // Written as "read the value expression and compare it" rather than as a negative lookahead: with
   // `\s*` before the lookahead the regex backtracks over the whitespace and matches anyway, which is
   // what the control below caught the first time this was written.
@@ -300,6 +305,18 @@ describe("no zod record can put a caller's key in a refusal", () => {
         "z.record(\n    z.string(),\n    z.number(),\n  )",
       ),
     ).toBe(true);
+    // Prose naming the constrained shape is not a declaration of it, and neither is a string spelling
+    // it. Both were offenders before the predicate started stripping what it reads (#424).
+    expect(
+      recordConstrainsItsValues(
+        "// never write z.record(z.string(), z.string())",
+      ),
+    ).toBe(false);
+    expect(
+      recordConstrainsItsValues(
+        'const doc = "z.record(z.string(), z.string())";',
+      ),
+    ).toBe(false);
   });
 
   test("no file under src declares one", async () => {
@@ -322,18 +339,28 @@ describe("no zod record can put a caller's key in a refusal", () => {
 //
 // Keyed on the CALL SITE and not on the file: an exemption attached to a file adopts the next parse
 // written into it, which is the exact failure #258 measured.
+//
+// TWO VIEWS OF THE SAME LINE, and mixing them up is how this predicate breaks. The CALL is looked for
+// in the stripped source, so a comment naming `schema.parse(input)` — including one warning against
+// writing it — is not reported as one (#424). The MARKER is looked for in the raw line, because an
+// exemption is written in a comment and stripping is exactly what would take it away. They line up by
+// index because the scan replaces removed characters in place and keeps every newline.
 export function unmarkedServiceParse(source: string): string[] {
   const lines = source.split("\n");
+  const code = codeOnly(source).split("\n");
   const offenders: string[] = [];
   for (const [i, line] of lines.entries()) {
+    const statement = code[i] ?? "";
     // Keyed on `.parse(` itself and not on what precedes it: a chained schema
     // (`z.string().min(1).parse(x)`) and a multiline chain whose line begins with `.parse(` both put
     // a `)` or a line start there, and the first spelling of this predicate matched neither — so the
     // sweep reported a clean tree while the exact shape this PR converted could be written back in.
     // Found by review on PR #309.
-    if (!line.includes(".parse(")) continue;
+    if (!statement.includes(".parse(")) continue;
     if (
-      /JSON\.parse|Number\.parse|Date\.parse|\.parseAsync|safeParse/.test(line)
+      /JSON\.parse|Number\.parse|Date\.parse|\.parseAsync|safeParse/.test(
+        statement,
+      )
     ) {
       continue;
     }

@@ -4,6 +4,9 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { sanitizeErrorMessage } from "@/lib/redact";
 import { unstorableProblem } from "@/lib/text";
 import { claimDueJobs, enqueueJob, failJob } from "@/modules/scheduler/service";
+// Both ledgers below count through the shared scan, so prose that NAMES a column or the guard is not
+// counted as a use of it (#424).
+import { countInSrc } from "@/tests/utils/source-text";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // THE GUARD AGAINST THE NEXT COLUMN THAT LOSES AN ERROR MESSAGE.
@@ -385,17 +388,6 @@ const GUARD_CALLS: Record<string, number> = {
   "src/modules/scheduler/service.ts": 2,
   "src/modules/webhooks/outbound/worker.ts": 1,
 };
-
-async function countInSrc(re: RegExp): Promise<Record<string, number>> {
-  const { Glob } = await import("bun");
-  const found: Record<string, number> = {};
-  for await (const rel of new Glob("**/*.{ts,tsx}").scan("src")) {
-    const src = await Bun.file(`src/${rel}`).text();
-    const n = (src.match(re) ?? []).length;
-    if (n > 0) found[`src/${rel}`] = n;
-  }
-  return found;
-}
 
 describe("every line that names an error column is accounted for", () => {
   test("the file list and the per-file counts still match", async () => {

@@ -376,6 +376,16 @@ export async function deliverReply(
 // landed". The two ways to be wrong are not symmetric — a false "landed" leaves the customer
 // permanently missing part of the answer with nothing to notice it, while a false "not landed"
 // costs one duplicated balloon that both they and the operator can see.
+// The whole read-back, across however many pages it takes, costs what ONE `getMessages` already
+// cost: the per-request deadline is what is left of this budget, so a conversation that needs three
+// pages is not three times the wait. Beyond it the answer is unknown, which resends.
+const READBACK_BUDGET_MS = 10_000;
+// A ceiling on the pathological case rather than a real expectation. The window this reads against
+// is between a rejected POST and the very next statement, so filling one page takes ~20 inbound
+// messages in that instant; five pages is a hundred, and past that the conversation is not one this
+// reconciliation can say anything useful about.
+const READBACK_MAX_PAGES = 5;
+
 async function findLandedMessage(
   client: ChatwootClient,
   conversationId: number,
@@ -386,22 +396,61 @@ async function findLandedMessage(
   // only when BOTH sources failed — the pre-send read, and the id of a successful send — which means
   // the very first balloon is the one that failed.
   if (after === null) return null;
+  const wanted = chunk.trim();
+  const deadline = Date.now() + READBACK_BUDGET_MS;
+  let before: number | undefined;
   try {
-    const raw = await client.getMessages(conversationId);
-    const wanted = chunk.trim();
-    // The NEWEST match, for the same reason `after` exists at all: with repeated text there can be
-    // more than one past the boundary, and the newest is the only one this send could be.
-    return parseChatwootMessages(raw).reduce<number | null>(
-      (best, m) =>
-        m.id > after &&
-        m.messageType === "outgoing" &&
-        m.private !== true &&
-        m.content.trim() === wanted &&
-        (best === null || m.id > best)
-          ? m.id
-          : best,
-      null,
-    );
+    for (let page = 0; page < READBACK_MAX_PAGES; page += 1) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return null;
+      const rows = parseChatwootMessages(
+        await client.getMessages(
+          conversationId,
+          before === undefined ? undefined : { before },
+          remaining,
+        ),
+      );
+      if (rows.length === 0) return null;
+      // The NEWEST match, for the same reason `after` exists at all: with repeated text there can be
+      // more than one past the boundary, and the newest is the only one this send could be. Pages
+      // arrive newest-first, so the first page that matches holds it and nothing older can outrank
+      // it — the loop stops there.
+      const hit = rows.reduce<number | null>(
+        (best, m) =>
+          m.id > after &&
+          m.messageType === "outgoing" &&
+          m.private !== true &&
+          m.content.trim() === wanted &&
+          (best === null || m.id > best)
+            ? m.id
+            : best,
+        null,
+      );
+      if (hit !== null) return hit;
+      // AND THE PAGE HAS TO REACH BACK TO THE BOUNDARY, or its silence means nothing. `getMessages`
+      // answers with the newest ~20, so a conversation that moved more than a page between the
+      // timed-out POST and this read pushes the message we are looking for off the page — and
+      // "absent from the newest twenty" would be read as "never landed", which puts the chunk back
+      // into the consolidated retry and duplicates text the customer already has. That is the exact
+      // duplication this reconciliation exists to prevent, one page deeper.
+      //
+      // Same rule the delivery recovery already keeps at its own read (../chatwoot/recover-delivery.ts,
+      // "AND THE PAGE HAS TO REACH BACK TO THE MESSAGE"); this is the second site of it.
+      //
+      // Stopping AT the boundary bounds cost, not correctness: `m.id > after` above already makes an
+      // older message unable to match, so paging past it can only spend reads. That is why the test
+      // that fences this line counts them — a rule whose only effect is cost has no other witness.
+      const oldest = rows.reduce(
+        (min, m) => (m.id < min ? m.id : min),
+        rows[0]?.id ?? 0,
+      );
+      if (oldest <= after) return null;
+      before = oldest;
+    }
+    // Out of pages with the boundary still below: unknown, which takes the same road as an
+    // unreadable conversation. Unknown resends — a duplicated balloon the customer and the operator
+    // can both see, against a permanently missing half nobody can.
+    return null;
   } catch (e) {
     logger.warn(
       "split: could not read the conversation back after a failed send (conv=%s): %s",

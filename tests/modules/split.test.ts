@@ -258,6 +258,12 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
       // tests down the cannot-prove-delivery path instead of the one they mean to exercise.
       history?: string[];
       calls?: { getMessages: number };
+      // How many messages one `getMessages` answers with. Chatwoot pages the newest ~20; the default
+      // here is "everything", which is what every test written before pagination assumed.
+      pageSize?: number;
+      // Messages that arrive right after a send is stored — the conversation moving on while the
+      // client is still deciding what happened to its own request.
+      noiseOnFailure?: number;
     } = {},
   ) {
     let n = 0;
@@ -272,6 +278,9 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
         const id = nextId++;
         if (failOn(content, n)) {
           if (opts.storeOnFailure?.(n)) stored.push({ id, content });
+          for (let k = 0; k < (opts.noiseOnFailure ?? 0); k += 1) {
+            stored.push({ id: nextId++, content: `ruído ${k}` });
+          }
           throw new Error("chatwoot 502");
         }
         rec.sent.push(content);
@@ -279,11 +288,18 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
         // Chatwoot answers a create with the row it made; the boundary reads the id off it.
         return { id };
       },
-      getMessages: async () => {
+      getMessages: async (_c: number, o?: { before?: number }) => {
         if (opts.calls) opts.calls.getMessages += 1;
         if (opts.readFails) throw new Error("chatwoot 500");
+        // Anchored and paged the way the REST endpoint is: `before` excludes the anchor and the
+        // answer is the newest `pageSize` of what remains.
+        const upTo =
+          o?.before === undefined
+            ? stored
+            : stored.filter((m) => m.id < (o.before as number));
+        const rows = upTo.slice(-(opts.pageSize ?? upTo.length));
         return {
-          payload: stored.map((m) => ({
+          payload: rows.map((m) => ({
             id: m.id,
             content: m.content,
             message_type: 1,
@@ -313,6 +329,62 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
     expect(out.delivered).toBe(2);
     expect(out.failed).toBe(false);
     expect(rec.sent).toEqual(["Olá!", "Como vai?\n\nPosso ajudar?"]);
+  });
+
+  // THE READ-BACK HAS TO REACH THE BOUNDARY, or its silence is not an answer.
+  //
+  // Chatwoot answers `GET /messages` with the newest ~20. A POST that timed out AFTER committing,
+  // on a conversation that then moved more than a page, leaves the balloon we are looking for off
+  // that page — and "absent from the newest twenty" read as "never landed" puts the chunk straight
+  // back into the consolidated retry. That is this module's own duplication, one page deeper, and
+  // it is the failure mode the whole reconciliation exists to prevent.
+  //
+  // 25 messages arrive between the commit and the read, against a page of 20, so the landed
+  // "Como vai?" is only reachable by paging backward past the boundary.
+  test("the read-back pages back to the boundary before calling a send missing", async () => {
+    const rec = { sent: [] as string[], typing: [] as boolean[] };
+    const calls = { getMessages: 0 };
+    const out = await deliverReply(
+      failingStub(rec, (_c, n) => n === 2, {
+        storeOnFailure: (n) => n === 2,
+        noiseOnFailure: 25,
+        pageSize: 20,
+        calls,
+      }),
+      1,
+      three,
+      { ...SPLIT_DEFAULTS, enabled: true },
+      noSleep,
+    );
+    // The customer holds balloon 1, the balloon whose response was lost, and the remainder — each
+    // exactly once. Re-sending "Como vai?" here is the defect: it is already in the conversation.
+    expect(rec.sent).toEqual(["Olá!", "Posso ajudar?"]);
+    expect(out.failed).toBe(false);
+    expect(out.delivered).toBe(3);
+    // The boundary read, then exactly two pages: the newest twenty (all noise) and the one holding
+    // the landed balloon. Counted because stopping AT the boundary is a COST rule and has no other
+    // witness — `m.id > after` already makes an older message unable to match, so a loop that kept
+    // paging would answer the same and only spend reads.
+    expect(calls.getMessages).toBe(3);
+  });
+
+  // The other side of that rule, so the pagination cannot be "always page until something matches":
+  // a send that genuinely did NOT land still has to be re-sent, and the page it is missing from has
+  // to be one that reaches the boundary. Same 25 messages, same page size, nothing stored.
+  test("a send that truly failed is still re-sent after paging back", async () => {
+    const rec = { sent: [] as string[], typing: [] as boolean[] };
+    const out = await deliverReply(
+      failingStub(rec, (_c, n) => n === 2, {
+        noiseOnFailure: 25,
+        pageSize: 20,
+      }),
+      1,
+      three,
+      { ...SPLIT_DEFAULTS, enabled: true },
+      noSleep,
+    );
+    expect(rec.sent).toEqual(["Olá!", "Como vai?\n\nPosso ajudar?"]);
+    expect(out.failed).toBe(false);
   });
 
   // The delivery-side half: the remainder rejoins with the separators the text actually had, so a

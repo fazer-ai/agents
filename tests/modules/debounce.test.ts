@@ -1509,6 +1509,59 @@ describe.skipIf(!dbUp)("debounce", () => {
     expect(await watermarkOf(801)).toBeNull();
   });
 
+  // A PARTIAL REPLY MUST NOT CLOSE THE CONVERSATION (issue #429). The old code kept this rule by
+  // accident — a send that failed mid-reply threw, and a throw discards the deferred intent — so
+  // reporting instead of throwing is what woke the path up. The cost of getting it wrong: the model
+  // called `resolve_conversation` believing it had answered, the customer holds the first balloon
+  // and not the rest, and `resolved` is what tells the operator there is nothing left to do.
+  //
+  // The turn still reports `posted`: the customer HAS part of it, and re-running would send that
+  // part twice. The two questions differ and cannot share one answer.
+  test("a reply that failed halfway does not resolve the conversation", async () => {
+    await withSplitEnabled(async () => {
+      await seedConversation(924);
+      const sent: Array<[number, string]> = [];
+      const toggles: Array<[number, string]> = [];
+      let n = 0;
+      const client = {
+        getMessages: async () =>
+          page([{ id: 7, content: "pode encerrar depois de responder" }]),
+        sendMessage: async (conversationId: number, content: string) => {
+          n += 1;
+          // Balloon 1 lands; balloon 2 and the consolidated retry do not.
+          if (n >= 2) throw new Error("chatwoot 502");
+          sent.push([conversationId, content]);
+          return { id: 500 + n };
+        },
+        toggleStatus: async (conversationId: number, status: string) => {
+          toggles.push([conversationId, status]);
+          return {};
+        },
+        toggleTyping: async () => ({}),
+      } as unknown as ChatwootClient;
+
+      const out = await flushDebounceJob({
+        job: jobFor(924, { lastMessageId: 7 }),
+        base: appDb,
+        deps: {
+          makeModel: () =>
+            new ResolveThenReplyModel(
+              "Certo!\n\nJá encerro por aqui.",
+            ) as unknown as BaseChatModel,
+          makeClient: async () => client,
+          checkpointer: new MemorySaver(),
+          sleep: async () => {},
+        },
+      });
+
+      expect(out).toEqual({ outcome: "done" });
+      // The customer got the first balloon and nothing else...
+      expect(sent).toEqual([[924, "Certo!"]]);
+      // ...so the conversation stays open. This is the assertion the throw used to make for us.
+      expect(toggles).toEqual([]);
+    });
+  });
+
   test("superseded mid-turn discards the resolve intent (no toggle, watermark untouched)", async () => {
     await seedConversation(810);
     const sent: Array<[number, string]> = [];
@@ -3170,6 +3223,7 @@ describe.skipIf(!dbUp)("debounce", () => {
   // that already read `images.sent`, and the third place it has to hold.
   describe("with a turn that sends an image before its reply", () => {
     const IMG_URL = "https://cdn.loja.com.br/produtos/camiseta.png";
+    const IMG_URL2 = "https://cdn.loja.com.br/produtos/calca.png";
     const imageDeps = {
       fetchImpl: (async () =>
         new Response(
@@ -3216,6 +3270,87 @@ describe.skipIf(!dbUp)("debounce", () => {
     // landed — which is what makes `delivered: 0` alone the wrong thing to throw on (issue #429).
     // A throw here re-runs the turn and posts that picture a second time. Same rule the attachment-
     // only branch above already keeps, and this is the third site it has to be written at.
+    // THE SAME RULE ON THE ATTACHMENT-ONLY BRANCH, and this half predates #429: a batch where one
+    // file lands and another fails already reached `applyDeferredResolve`, because `failed` was read
+    // for the throw and not for the close. The customer holds one of the two pictures the agent
+    // promised, and `resolved` says the attendance is finished.
+    test("a batch where one attachment failed does not resolve the conversation", async () => {
+      await seedConversation(925);
+      const attachments: string[] = [];
+      const toggles: Array<[number, string]> = [];
+      const client = {
+        getMessages: async () => page([{ id: 7, content: "manda as fotos" }]),
+        sendFileAttachment: async (
+          _c: number,
+          _b: ArrayBuffer,
+          name: string,
+        ) => {
+          // The first picture lands, the second does not.
+          if (attachments.length >= 1) throw new Error("chatwoot 502");
+          attachments.push(name);
+          return {};
+        },
+        sendMessage: async () => ({}),
+        toggleStatus: async (conversationId: number, status: string) => {
+          toggles.push([conversationId, status]);
+          return {};
+        },
+        toggleTyping: async () => ({}),
+      } as unknown as ChatwootClient;
+
+      // Two pictures and a close, in one response, with no final text: the attachment-only branch.
+      const model = {
+        invoke: async () => new AIMessage(""),
+        bindTools: (_t: unknown) => {
+          let n = 0;
+          return {
+            invoke: async () => {
+              n += 1;
+              return n === 1
+                ? new AIMessage({
+                    content: "",
+                    tool_calls: [
+                      {
+                        name: "send_image",
+                        args: { url: IMG_URL },
+                        id: "call_img_1",
+                      },
+                      {
+                        name: "send_image",
+                        args: { url: IMG_URL2 },
+                        id: "call_img_2",
+                      },
+                      {
+                        name: "resolve_conversation",
+                        args: {},
+                        id: "call_resolve",
+                      },
+                    ],
+                  })
+                : new AIMessage("");
+            },
+          };
+        },
+      };
+
+      const out = await flushDebounceJob({
+        job: jobFor(925, { lastMessageId: 7 }),
+        base: appDb,
+        deps: {
+          makeModel: () => model as unknown as BaseChatModel,
+          makeClient: async () => client,
+          checkpointer: new MemorySaver(),
+          imageDeps,
+        },
+      });
+
+      expect(out).toEqual({ outcome: "done" });
+      // One picture reached the customer, so the turn is not a failure...
+      expect(attachments).toHaveLength(1);
+      // ...and the conversation stays open, because the other one did not.
+      expect(toggles).toEqual([]);
+    });
+
     test("a text send that fails after an image is not a failed turn", async () => {
       await seedConversation(923);
       const sent: Array<[number, string]> = [];

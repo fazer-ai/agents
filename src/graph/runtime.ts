@@ -1402,7 +1402,11 @@ export async function runLoadedTurn(
       // Skipped, not returned on: closing a conversation the operator has just cleared is a write
       // of its own, and by here something may already have reached the customer — the outcome still
       // has to describe that.
-      if (!(await writeCalledOff())) {
+      //
+      // AND SKIPPED ON A PARTIAL BATCH, for the reason spelled out at the reply site below: the
+      // customer holds some of what the turn owed them, so a `resolved` conversation tells the
+      // operator this attendance is finished when the agent knows it is not.
+      if (!failed && !(await writeCalledOff())) {
         await applyDeferredResolve(client, conversationId, turnState, flow, {
           tenantId,
           instanceId,
@@ -1467,6 +1471,21 @@ export async function runLoadedTurn(
       return attachments.sent ? "posted" : refuse("stale");
     }
     deliveredBalloons = delivered.delivered;
+    // A PARTIAL REPLY DOES NOT CLOSE THE CONVERSATION, and this is a rule the old code kept by
+    // accident: a send that failed mid-reply used to THROW, and a throw discards the deferred intent
+    // (see the invariant on `applyDeferredResolve`). Reporting instead of throwing is what this
+    // change is for, and it woke that path up — so the rule has to be written down rather than left
+    // to the control flow.
+    //
+    // What it costs to get wrong: the model called `resolve_conversation` believing it had answered,
+    // the customer has the first balloon and not the rest, and `resolved` is what tells the operator
+    // there is nothing left to do here. The reply is still `posted` for retry bookkeeping — the
+    // customer HAS part of it, and re-running the turn would send that part twice — so the two
+    // questions genuinely differ and cannot share one answer.
+    //
+    // The flow line from the failed send (`stage: "split"`, `outcome: "send_failed"`) is what tells
+    // the operator why the conversation stayed open.
+    if (delivered.failed) return "posted";
     // Same rule as the branch above: the reply is out, the resolve is a separate write.
     if (await writeCalledOff()) return "posted";
     await applyDeferredResolve(client, conversationId, turnState, flow, {

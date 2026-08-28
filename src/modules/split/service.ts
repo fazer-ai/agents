@@ -329,7 +329,13 @@ export async function deliverReply(
               );
               if (retryLandedId !== null) {
                 noteDelivered(retryLandedId);
-              } else {
+                // ASKED ONE LAST TIME, and for the third stretch of I/O in this catch: the retry
+                // itself and its read-back. The rule is the same one the ask above follows
+                // (../../graph/nudge.ts) and the LAST stretch is the one that was missing — with
+                // nothing delivered, `failed` is what makes the caller throw, and a throw after a
+                // `/reset` puts `lastError` back on the conversation the operator had just cleared.
+                // Standing down is not a failure, here as everywhere else in this loop.
+              } else if (!(await calledOff())) {
                 failed = true;
               }
             }

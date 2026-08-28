@@ -429,6 +429,32 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
     expect(out).toEqual({ delivered: 2, failed: false });
   });
 
+  // THE LAST STRETCH OF I/O, which the earlier recheck does not cover: the consolidated retry and
+  // its own read-back. With nothing delivered, `failed` is what makes the caller throw, and a throw
+  // after a /reset puts `lastError` back on the conversation the operator had just cleared.
+  test("a run called off during the consolidated retry is not a failure", async () => {
+    const rec = { sent: [] as string[], typing: [] as boolean[] };
+    let asks = 0;
+    const out = await deliverReply(
+      // Everything fails and nothing lands, so the retry's reconciliation finds nothing either.
+      failingStub(rec, () => true),
+      1,
+      three,
+      { ...SPLIT_DEFAULTS, enabled: true },
+      noSleep,
+      undefined,
+      async () => {
+        asks += 1;
+        // Live through the first balloon and through the post-failure recheck; the command commits
+        // while the consolidated retry is in flight.
+        return asks > 2;
+      },
+    );
+    expect(rec.sent).toEqual([]);
+    // Nothing delivered, and standing down is NOT a failure — so the caller does not throw.
+    expect(out).toEqual({ delivered: 0, failed: false });
+  });
+
   // A CONFIRMATION IS ALSO A BOUNDARY, and this is the case that proves it: `A / B / B`, where the
   // middle B lands under a rejection and the final B then genuinely does not land. With the boundary
   // left at A, the second read-back sees the middle B sitting past it and reports the final chunk as

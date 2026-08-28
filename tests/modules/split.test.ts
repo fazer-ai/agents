@@ -239,6 +239,10 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
   // path now asks it whether the rejected chunk landed. A stub without `getMessages` would send
   // every test in this block through the reconciliation's catch instead of through the
   // reconciliation, and they would pass without ever exercising it.
+  // Personifies a Chatwoot that STORES what it accepted, ASSIGNS ids, and can be read back — the
+  // three properties the failure path depends on. A stub returning `{}` from `sendMessage` leaves
+  // the boundary unable to advance, and one without `getMessages` sends every test here through the
+  // reconciliation's catch: both are green for the wrong reason.
   function failingStub(
     rec: { sent: string[]; typing: boolean[] },
     failOn: (content: string, n: number) => boolean,
@@ -248,30 +252,37 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
       storeOnFailure?: (n: number) => boolean;
       // The read-back itself fails.
       readFails?: boolean;
+      // What the conversation ALREADY holds, from before this reply. Ids below the boundary.
+      history?: string[];
       calls?: { getMessages: number };
     } = {},
   ) {
     let n = 0;
+    let nextId = 100;
     // What Chatwoot HOLDS, which is not the same as what the client believes it sent.
-    const stored: string[] = [];
+    const stored: Array<{ id: number; content: string }> = (
+      opts.history ?? []
+    ).map((content) => ({ id: nextId++, content }));
     return {
       sendMessage: async (_c: number, content: string) => {
         n += 1;
+        const id = nextId++;
         if (failOn(content, n)) {
-          if (opts.storeOnFailure?.(n)) stored.push(content);
+          if (opts.storeOnFailure?.(n)) stored.push({ id, content });
           throw new Error("chatwoot 502");
         }
         rec.sent.push(content);
-        stored.push(content);
-        return {};
+        stored.push({ id, content });
+        // Chatwoot answers a create with the row it made; the boundary reads the id off it.
+        return { id };
       },
       getMessages: async () => {
         if (opts.calls) opts.calls.getMessages += 1;
         if (opts.readFails) throw new Error("chatwoot 500");
         return {
-          payload: stored.map((content, i) => ({
-            id: i + 1,
-            content,
+          payload: stored.map((m) => ({
+            id: m.id,
+            content: m.content,
             message_type: 1,
             private: false,
           })),
@@ -358,7 +369,8 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
       { ...SPLIT_DEFAULTS, enabled: true },
       noSleep,
     );
-    expect(calls.getMessages).toBe(1);
+    // Two reads: the boundary before the first send, and the reconciliation after the failure.
+    expect(calls.getMessages).toBe(2);
     // Balloon 2 is NOT in the retry — the customer has it already. Only balloon 3 is owed.
     expect(rec.sent).toEqual(["Olá!", "Posso ajudar?"]);
     // And it still counts: two landed by send, one by the far side accepting it.
@@ -375,9 +387,66 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
       { ...SPLIT_DEFAULTS, enabled: true },
       noSleep,
     );
-    expect(calls.getMessages).toBe(1);
+    expect(calls.getMessages).toBe(2);
     expect(rec.sent).toEqual(["Olá!", "Como vai?\n\nPosso ajudar?"]);
     expect(out).toEqual({ delivered: 2, failed: false });
+  });
+
+  // CONTENT IS NOT AN IDENTITY, and a conversation legitimately holds the same words twice. Matching
+  // any occurrence reports a chunk that genuinely did not land as delivered, drops it from what is
+  // owed, and truncates the reply while the turn reports `posted` — silently, which is the outcome
+  // this whole change exists to avoid. The boundary is what makes the match mean "this send".
+  test("an identical OLDER message does not answer for a send that failed", async () => {
+    const rec = { sent: [] as string[], typing: [] as boolean[] };
+    const out = await deliverReply(
+      failingStub(rec, (_c, n) => n === 1, {
+        // The customer was greeted with the same words in an earlier reply.
+        history: ["Olá!"],
+      }),
+      1,
+      three,
+      { ...SPLIT_DEFAULTS, enabled: true },
+      noSleep,
+    );
+    // The whole reply is still owed: the old "Olá!" predates the boundary and proves nothing.
+    expect(rec.sent).toEqual(["Olá!\n\nComo vai?\n\nPosso ajudar?"]);
+    expect(out).toEqual({ delivered: 1, failed: false });
+  });
+
+  // The same hazard from inside one reply: two balloons with identical text. The boundary advances
+  // past each message we create, so the first cannot answer for the second.
+  test("an identical EARLIER balloon of this same reply does not answer for a later one", async () => {
+    const rec = { sent: [] as string[], typing: [] as boolean[] };
+    const out = await deliverReply(
+      failingStub(rec, (_c, n) => n === 2),
+      1,
+      "Certo!\n\nCerto!\n\nJá te retorno.",
+      { ...SPLIT_DEFAULTS, enabled: true },
+      noSleep,
+    );
+    // Balloon 1 landed; balloon 2 is identical to it and did NOT land, so it is still owed.
+    expect(rec.sent).toEqual(["Certo!", "Certo!\n\nJá te retorno."]);
+    expect(out).toEqual({ delivered: 2, failed: false });
+  });
+
+  // The consolidated retry is a send like any other: it carries the same 15s deadline, so a
+  // rejection is just as ambiguous. Reporting `failed` with nothing else delivered is what makes
+  // the caller throw, which runs the whole turn again and posts a second copy of a reply the
+  // customer already has.
+  test("the consolidated retry reconciles too, instead of declaring failure", async () => {
+    const rec = { sent: [] as string[], typing: [] as boolean[] };
+    const out = await deliverReply(
+      // Every send is reported as failed, and the SECOND one (the consolidated retry) is
+      // nonetheless accepted by Chatwoot.
+      failingStub(rec, () => true, { storeOnFailure: (n) => n === 2 }),
+      1,
+      three,
+      { ...SPLIT_DEFAULTS, enabled: true },
+      noSleep,
+    );
+    // The reply is with the customer, so this is not a failed turn — and the caller must not throw.
+    expect(out.failed).toBe(false);
+    expect(out.delivered).toBe(1);
   });
 
   // Fails CLOSED for the resend. The two ways to be wrong are not symmetric: a false "landed"
@@ -397,6 +466,33 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
     );
     expect(rec.sent).toEqual(["Olá!", "Como vai?\n\nPosso ajudar?"]);
     expect(out.failed).toBe(false);
+  });
+
+  // NO BOUNDARY AT ALL, which needs both of its sources to fail at once: the pre-send read AND the
+  // id of a successful send (the first balloon is the one that failed, so there is none). Only then
+  // is `after` null — which is why the case above, where balloon 1 landed, never reaches this rule:
+  // its id had already established the boundary despite the read failing.
+  //
+  // Without a boundary the reconciliation cannot tell this send's message from an older twin, so it
+  // must not claim delivery. Fails closed: resend.
+  test("no boundary at all still resends rather than assuming delivery", async () => {
+    const rec = { sent: [] as string[], typing: [] as boolean[] };
+    const out = await deliverReply(
+      failingStub(rec, (_c, n) => n === 1, {
+        // The first send lands on the far side and is reported as failed to us...
+        storeOnFailure: (n) => n === 1,
+        // ...and the conversation cannot be read, before or after.
+        readFails: true,
+      }),
+      1,
+      three,
+      { ...SPLIT_DEFAULTS, enabled: true },
+      noSleep,
+    );
+    // The duplicate is the accepted cost: visible to the customer and the operator, where the other
+    // error (claiming delivery) is a silently truncated reply.
+    expect(rec.sent).toEqual(["Olá!\n\nComo vai?\n\nPosso ajudar?"]);
+    expect(out).toEqual({ delivered: 1, failed: false });
   });
 
   // The failed request burned up to 15s and the read-back is more I/O, so the fence answered before

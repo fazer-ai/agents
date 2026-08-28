@@ -135,6 +135,14 @@ function scan(source: string, { strings }: Options): Scanned {
   function scanElement(from: number): number | null {
     let i = from + 1;
     if (!/[A-Za-z_$>]/.test(source[i] ?? "")) return null;
+    // The NAME, so the closing tag can be required to match it. Without that, any `</…>` further down
+    // closed the element — including one written inside a comment, which made `const id = <T>(x: T)`
+    // in a `.ts` file swallow every line up to a `// … </x> …` and take a real call site out of a
+    // ledger, silently and with nothing left open (found by review).
+    let n = i;
+    while (n < source.length && /[A-Za-z0-9_$.:-]/.test(source[n] as string))
+      n++;
+    const name = source.slice(i, n);
     let selfClosing = false;
     // The tag. `<` and `>` are balanced so a type argument (`<Foo<string> …/>`) does not end it early;
     // attribute values are literals, `{…}` in one is code. Starts at 1: the `<` this was entered on
@@ -200,7 +208,8 @@ function scan(source: string, { strings }: Options): Scanned {
         if (strings) blank(start, i);
         if (source[i + 1] === "/") {
           const gt = source.indexOf(">", i);
-          return gt === -1 ? null : gt + 1;
+          if (gt === -1) return null;
+          return source.slice(i + 2, gt).trim() === name ? gt + 1 : null;
         }
         const child = jsx(i);
         // A child that is not an element makes the parent not one either. Both this and the `null` on
@@ -224,6 +233,12 @@ function scan(source: string, { strings }: Options): Scanned {
     let i = from;
     let depth = 0;
     let endsValue = false;
+    // Whether each open `{` began an OBJECT (a value) or a BLOCK. A `{` written where a value was
+    // expected is an object, and the `}` that closes it therefore ends a value: `<any>{} / 2` divides,
+    // while `if (x) { } …` does not. This replaces a documented gap — `}` used to read as a block
+    // always, so that division opened a regex and swallowed the rest of the line together with a real
+    // call site (found by review).
+    const braces: boolean[] = [];
     while (i < source.length) {
       const c = source[i] as string;
       const d = source[i + 1];
@@ -335,16 +350,22 @@ function scan(source: string, { strings }: Options): Scanned {
         i += 2;
         continue;
       }
-      if (stop === "brace") {
-        if (c === "{") depth++;
-        else if (c === "}") {
+      if (c === "{") {
+        if (stop === "brace") depth++;
+        braces.push(!endsValue);
+        endsValue = false;
+        i++;
+        continue;
+      }
+      if (c === "}") {
+        if (stop === "brace") {
           if (depth === 0) return i;
           depth--;
         }
+        endsValue = braces.pop() ?? false;
+        i++;
+        continue;
       }
-      // NOTE: `}` reads as the end of a BLOCK, never of an object literal, so `({}) / 2` is misread
-      // as a regex. Telling the two apart needs a real parser, and a block is the overwhelmingly
-      // common case; the whole-tree probe beside this file is what says the tree has no instance.
       endsValue = c === ")" || c === "]";
       i++;
     }

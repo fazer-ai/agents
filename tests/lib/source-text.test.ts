@@ -129,6 +129,20 @@ describe("the scan removes prose and keeps code", () => {
     // …and the shape that DOES close as an element while carrying a type argument.
     // A `<` that does not close as an element is not an element, so the code after it is untouched —
     // which is the direction this model deliberately errs in.
+    // A `</…>` WRITTEN IN A COMMENT does not close anything, because the closing tag has to name the
+    // element that opened. Without that, `const id = <T>(x: T)` in a `.ts` file swallowed every line
+    // up to a comment mentioning `</x>` — taking a real call site out of a ledger with nothing left
+    // open to notice. Found by review.
+    [
+      "a cut before a comment naming some other closing tag",
+      "const id = <T>(x: T) => x;\nconst a = s.slice(0, 10);\n// closes the </x> element\n",
+    ],
+    // A `{` written where a VALUE was expected is an object, so the `}` that closes it ends a value
+    // and the `/` after it divides. This used to be a documented gap; the scan tracks it now.
+    [
+      "a cut after a division on an object literal",
+      "const ratio = <any>{} / 2;\nconst a = s.slice(0, 10);\n",
+    ],
     [
       "a cut after an unclosed tag that is therefore not one",
       "f(<div class=\nconst a = s.slice(0, 10);\n",
@@ -191,6 +205,19 @@ describe("the scan removes prose and keeps code", () => {
   // table above measures one spelling: a regex naming a cut writes it escaped (`\\.slice\\(`), which
   // is not what a sweep for cuts matches. The sweep it DOES fool is the one whose shape survives
   // escaping — `sanitizeErrorMessage\(` — and that is a real ledger in this repo. Found by review.
+  // The other side of the object-vs-block rule, and the one a naive "`}` ends a value" would break: a
+  // `{` written where a value was NOT expected is a block, so the `/` after it still opens a regex.
+  test("a block's closing brace does not end a value", () => {
+    // Measured through the QUOTE, not through a comment: a comment is removed either way, because
+    // that branch runs before the `/` decision, so a comment-based fixture cannot tell block from
+    // object. What separates them is whether the regex on the next line is READ as one, and a regex
+    // holding a quote says so — as a division it opens a string and eats the rest of its line.
+    const block =
+      'if (x) { f(); }\n/["]/.test(y);\nsanitizeErrorMessage(err);\n';
+    expect(unterminatedLiteral(block)).toBeNull();
+    expect(codeOnly(block)).toContain("sanitizeErrorMessage");
+  });
+
   test("a regex body naming a call is not a call", () => {
     // The unescaped `(` is a capture group, which is how a pattern comes to spell a call site exactly.
     const guard = /sanitizeErrorMessage\(/g;
@@ -232,6 +259,8 @@ describe("the scan removes prose and keeps code", () => {
     ["a number", "const r = 2 / 2; // s.slice(0, 1)\n"],
     ["a regex", "const r = /x/ / 2; // s.slice(0, 1)\n"],
     ["a non-null assertion", "const r = value! / 2; // s.slice(0, 1)\n"],
+    ["an object literal", "const r = {} / 2; // s.slice(0, 1)\n"],
+    ["a type-asserted object", "const r = <any>{} / 2; // s.slice(0, 1)\n"],
     // The `!` of `!==` is the OTHER one: an inequality is followed by a value, so a `/` after it opens
     // a regex. Treating every `!` as postfix would read that regex as a division and run on.
     [
@@ -360,31 +389,88 @@ describe("an unterminated literal is reported rather than swallowed", () => {
   });
 });
 
-// THE TWO SHAPES THE HEURISTIC GETS WRONG, MEASURED RATHER THAN REASONED ABOUT.
+// THE SHAPE THE HEURISTIC STILL GETS WRONG, MEASURED RATHER THAN REASONED ABOUT.
 //
-// A `)` ends a value and a `}` reads as the end of a block, so `if (x) /re/.test(y)` and `({}) / 2`
-// are each decided the wrong way. Telling either apart needs a real parser; both are absent from
-// `src/` and this says so out loud, so the day one is written the failure teaches the rule instead of
-// a count quietly changing.
-describe("the heuristic's known misses are not in the tree", () => {
-  test("no `/` follows a closing bracket except to end a regex", async () => {
+// A `)` ends a value, so `if (x) /re/.test(y)` is read as a division. Telling that apart needs a real
+// parser; it is absent from `src/` and this says so out loud, so the day one is written the failure
+// teaches the rule instead of a count quietly changing.
+//
+// THE SUSPECT IS SOUGHT IN `withoutComments`, NOT IN `codeOnly`, AND THAT IS THE POINT. Review found
+// the first version of this probe scanning the stripped output — where a misread `/` has ALREADY
+// blanked its line, so the very shape being hunted is the one thing guaranteed not to be there. A
+// probe that reads its own subject's corpse reports a clean tree no matter what. The `}` case this
+// used to cover is gone from the list because the scan now tracks object-vs-block rather than
+// documenting the gap.
+// The predicate, extracted so it can be shown an offender. A sweep that finds nothing passes whether
+// or not it is looking at anything, and this one had a sharper version of that problem: review found
+// the first draft scanning `codeOnly` output, where a misread `/` has ALREADY blanked its line — so
+// the very shape being hunted was the one thing guaranteed not to be there.
+export function slashesAfterAParenthesis(source: string): string[] {
+  // Comments out (a `)` before a `/` in prose is not code), literals kept, and crucially the scan's
+  // own `/` decisions NOT applied — a probe that reads its own subject's output is reading the corpse
+  // of the thing it is hunting.
+  //
+  // NOTE: a mutation run cannot currently tell this apart from `codeOnly`, and the note is here
+  // instead of a row because that is a fact about today's tree rather than about the rule. A `/`
+  // after `)` is read as a division and therefore never blanked, so both inputs agree. The case that
+  // did diverge was `}`, which the scan no longer gets wrong; the ordering stays because the next
+  // shape to be misread would hide from a probe written the other way.
+  const code = withoutComments(source);
+  const found: string[] = [];
+  for (const m of code.matchAll(/\)\s*\/(?![\s/*=>])/g)) {
+    // A regex the scan read correctly ends with its own `/` and flags; that is not the miss.
+    const after = code.slice((m.index ?? 0) + 1);
+    if (!/^\s*\/[gimsuyd]*[\s,;)\].]/.test(after)) {
+      found.push(code.slice(m.index, (m.index ?? 0) + 40));
+    }
+  }
+  return found;
+}
+
+describe("the heuristic's known miss is not in the tree", () => {
+  // The control, first: the predicate sees the shape when it is there. Without this the sweep below
+  // is an assertion that nothing was looked at.
+  test("the predicate flags a regex written after a parenthesis", () => {
+    expect(slashesAfterAParenthesis('if (x) /["]/.test(y);\n')).toHaveLength(1);
+    expect(slashesAfterAParenthesis("const r = f() / 2;\n")).toEqual([]);
+    // …and it is not fooled by prose, which is the whole subject of this file.
+    expect(slashesAfterAParenthesis('// if (x) /["]/.test(y)\n')).toEqual([]);
+  });
+
+  test("no `/` follows a closing parenthesis except to end a regex", async () => {
     const { Glob } = await import("bun");
     const suspects: string[] = [];
+    let scanned = 0;
     for await (const rel of new Glob("**/*.{ts,tsx}").scan("src")) {
-      const code = codeOnly(await Bun.file(`src/${rel}`).text());
-      // `=>` is excluded because a JSX self-close `} />` puts a `/` right after a brace.
-      for (const m of code.matchAll(/[)}]\s*\/(?![\s/*=>])/g)) {
-        // A regex the scan consumed keeps its own text, so its closing `/` and flags are still there.
-        // What would NOT be there is a regex the scan misread — that one opened a literal instead.
-        const after = code.slice((m.index ?? 0) + 1);
-        if (!/^\s*\/[gimsuyd]*[\s,;)\].]/.test(after)) {
-          suspects.push(
-            `src/${rel}: ${code.slice(m.index, (m.index ?? 0) + 40)}`,
-          );
-        }
+      scanned++;
+      for (const hit of slashesAfterAParenthesis(
+        await Bun.file(`src/${rel}`).text(),
+      )) {
+        suspects.push(`src/${rel}: ${hit}`);
       }
     }
     expect(suspects).toEqual([]);
+    expect(scanned).toBeGreaterThan(500);
+  });
+
+  // The positive control the sweep cannot give itself, and it narrows the gap rather than just
+  // confirming it. A regex misread as a division is usually harmless — the scan keeps reading the
+  // line as code and the comment on it is still removed, because the comment branch runs first. It
+  // only does damage when the regex CARRIES A QUOTE, and that case is caught by the whole-tree probe,
+  // which reports the string it leaves open.
+  test("the miss is harmless unless the regex carries a quote", () => {
+    const plain = "if (x) /re/.test(y); // s.slice(0, 1)\n";
+    expect(codeOnly(plain)).not.toContain("s.slice");
+    expect(unterminatedLiteral(plain)).toBeNull();
+
+    // A quote inside the misread regex opens a string, which costs the REST OF THAT LINE — a string
+    // stops at the newline, so the damage never reaches the next one.
+    const quoted =
+      'if (x) /["]/.test(y); sanitizeErrorMessage(err);\nconst a = 1;\n';
+    expect(codeOnly(quoted)).not.toContain("sanitizeErrorMessage");
+    expect(codeOnly(quoted)).toContain("const a = 1;");
+    // …and it does not get to hide: this is what `no file under src/ ends inside a literal` reads.
+    expect(unterminatedLiteral(quoted)).toBe("string");
   });
 });
 

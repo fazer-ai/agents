@@ -1,5 +1,6 @@
 import logger from "@/api/lib/logger";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
+import { parseChatwootMessages } from "@/modules/chatwoot/messages";
 import {
   emitFlowEvent,
   type FlowContext,
@@ -71,8 +72,10 @@ export function readSplitConfig(settings: unknown): SplitConfig {
 // direction the customer reads.
 export interface ReplyParts {
   chunks: string[];
-  // `seps[i]` is what preceded `chunks[i]`; `seps[0]` is always "". A paragraph break is "\n\n";
-  // a sentence boundary inside one paragraph is " ", which is what `\s+` consumed when splitting.
+  // `seps[i]` is the EXACT whitespace that preceded `chunks[i]` in the original; `seps[0]` is "".
+  // Captured rather than classified: a category ("paragraph break" → "\n\n", "sentence" → " ")
+  // restores a plausible delimiter and not the real one, so `"Intro.\n- item"` comes back as
+  // `"Intro. - item"` and a Markdown list is flattened into a sentence.
   seps: string[];
 }
 
@@ -81,39 +84,48 @@ export interface ReplyParts {
 export function splitReplyParts(text: string, cfg: SplitConfig): ReplyParts {
   const trimmed = text.trim();
   if (!trimmed) return { chunks: [], seps: [] };
-  const paragraphs = trimmed
-    .split(/\n{2,}/)
-    .map((p) => p.trim())
-    .filter(Boolean);
+  // Both splits use a CAPTURING group, so the delimiters come back interleaved with the pieces and
+  // the original can be reassembled exactly. Without the capture the whitespace is consumed and
+  // gone, and every rejoin downstream is a guess about what the model wrote.
+  const paraParts = trimmed.split(/(\n{2,})/);
   const chunks: string[] = [];
   const seps: string[] = [];
   const push = (chunk: string, sep: string): void => {
     seps.push(chunks.length === 0 ? "" : sep);
     chunks.push(chunk);
   };
-  for (const p of paragraphs) {
+  for (let pi = 0; pi < paraParts.length; pi += 2) {
+    const p = (paraParts[pi] ?? "").trim();
+    // What separated this paragraph from the previous one — the run of newlines the model typed,
+    // which is not always exactly two.
+    const paraSep = pi === 0 ? "" : (paraParts[pi - 1] ?? "\n\n");
+    if (!p) continue;
     if (p.length <= cfg.maxChars) {
-      push(p, "\n\n");
+      push(p, paraSep);
       continue;
     }
     // Over-long paragraph → accumulate sentences up to maxChars. Everything this loop emits after
-    // its first chunk continues the SAME paragraph, so it rejoins with a space, not a break.
+    // its first chunk continues the SAME paragraph, so it rejoins with the whitespace that stood
+    // between those two sentences — a space, a newline before a list item, whatever it was.
+    const sentParts = p.split(/((?<=[.!?…])\s+)/);
     let buf = "";
-    let opensParagraph = true;
-    for (const sentence of p.split(/(?<=[.!?…])\s+/)) {
-      const next = buf ? `${buf} ${sentence}` : sentence;
+    let pendingSep = paraSep;
+    let bufSep = paraSep;
+    for (let si = 0; si < sentParts.length; si += 2) {
+      const sentence = sentParts[si] ?? "";
+      const before = si === 0 ? "" : (sentParts[si - 1] ?? " ");
+      const next = buf ? `${buf}${before}${sentence}` : sentence;
       if (next.length > cfg.maxChars && buf) {
-        push(buf, opensParagraph ? "\n\n" : " ");
-        opensParagraph = false;
+        push(buf, bufSep);
+        // The whitespace that stood between the chunk just emitted and the one starting now.
+        bufSep = before;
         buf = sentence;
       } else {
         buf = next;
       }
+      pendingSep = bufSep;
     }
-    if (buf) {
-      push(buf, opensParagraph ? "\n\n" : " ");
-      opensParagraph = false;
-    }
+    if (buf) push(buf, pendingSep);
   }
   if (chunks.length === 0) return { chunks: [trimmed], seps: [""] };
   if (chunks.length <= cfg.maxChunks) return { chunks, seps };
@@ -232,20 +244,46 @@ export async function deliverReply(
             delivered += 1;
           } catch (e) {
             reportFailedSend(flow, conversationId, e);
+            // A REJECTED SEND DOES NOT MEAN AN UNDELIVERED ONE. The request has a 15s deadline
+            // (`AbortSignal.timeout` in ../chatwoot/client.ts), and a timeout — or a response whose
+            // body could not be read — rejects here with the message already written on the far
+            // side. Retrying that blindly is the duplication this whole change exists to prevent,
+            // just moved one layer down and made likelier: an overloaded Chatwoot is exactly when
+            // both the timeout and the retry happen.
+            //
+            // The type of the error cannot settle it either. A 502 comes from a proxy that may or
+            // may not have forwarded the request, and a 500 is Chatwoot failing at an unknown point
+            // in its own transaction. So this asks the only party that knows: it READS the
+            // conversation back and looks for the chunk. Costly, and only on a path that is already
+            // the exception.
+            const landed = await chunkAlreadyLanded(
+              client,
+              conversationId,
+              chunk,
+            );
+            if (landed) delivered += 1;
+            // ASKED AGAIN, and after the reconciliation rather than before it. The failed request
+            // burned up to 15 seconds and the read above is more I/O, so the answer taken before
+            // the first send is about a moment that is long gone — and the rule this file follows
+            // (../../graph/nudge.ts) is one ask per stretch of I/O preceding a write, with no I/O
+            // between the ask and the write it guards. A `/reset` landing in that stretch is the
+            // operator clearing the conversation, so what follows is a stand-down and NOT a failure:
+            // reported as one it would put `lastError` back on what they just cleared.
+            if (await calledOff()) break;
             // Everything still owed, as ONE message. Not a re-walk of the remaining balloons: a
             // second pass would give the same transient failure the same N windows to land in, and
             // the pacing that makes a reply read as human is worth less than the reply arriving
-            // whole. `chunks[i]` is included because it is precisely what did not land.
-            try {
-              await client.sendMessage(
-                conversationId,
-                chunks
-                  .slice(i)
-                  .reduce(
-                    (acc, c, k) => (k === 0 ? c : acc + seps[i + k] + c),
-                    "",
-                  ),
+            // whole. The chunk that failed is included only when the read did not find it.
+            const from = landed ? i + 1 : i;
+            const owed = chunks
+              .slice(from)
+              .reduce(
+                (acc, c, k) => (k === 0 ? c : acc + seps[from + k] + c),
+                "",
               );
+            if (!owed) break;
+            try {
+              await client.sendMessage(conversationId, owed);
               delivered += 1;
             } catch (retryErr) {
               reportFailedSend(flow, conversationId, retryErr);
@@ -263,6 +301,42 @@ export async function deliverReply(
       return { delivered, failed };
     },
   );
+}
+
+// DID THE CHUNK REACH THE CUSTOMER, asked of Chatwoot rather than inferred from the error.
+//
+// Reading the conversation back is the only thing that separates "the POST never landed" from "the
+// POST landed and the response did not come back", and those two need opposite handling: one owes
+// the customer a resend, the other owes them silence. Compares CONTENT, because the send that
+// failed never returned an id to compare.
+//
+// Fails CLOSED for the resend, i.e. an unreadable conversation answers "not landed". The two ways
+// to be wrong are not symmetric: a false "landed" leaves the customer permanently missing a piece
+// of the answer, with nothing to notice it, while a false "not landed" costs one duplicated balloon
+// that both the customer and the operator can see. Visible over silent, which is the rule the
+// delivery path already follows.
+async function chunkAlreadyLanded(
+  client: ChatwootClient,
+  conversationId: number,
+  chunk: string,
+): Promise<boolean> {
+  try {
+    const raw = await client.getMessages(conversationId);
+    const wanted = chunk.trim();
+    return parseChatwootMessages(raw).some(
+      (m) =>
+        m.messageType === "outgoing" &&
+        m.private !== true &&
+        m.content.trim() === wanted,
+    );
+  } catch (e) {
+    logger.warn(
+      "split: could not read the conversation back after a failed send (conv=%s): %s",
+      String(conversationId),
+      e instanceof Error ? e.message : String(e),
+    );
+    return false;
+  }
 }
 
 // A send that did not get through, on the one path that no longer reports it by throwing. Warn and

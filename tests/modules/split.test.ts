@@ -96,6 +96,37 @@ describe("splitReplyParts: rejoining does not invent paragraph breaks", () => {
     ]);
   });
 
+  // The reviewer's cases: whitespace that is neither "one space" nor "exactly two newlines". A
+  // category-based restore flattens a Markdown list into a sentence and silently rewrites the
+  // agent's formatting, which the customer reads.
+  test.each([
+    [
+      "a list item after a sentence",
+      "Intro do assunto aqui para ficar longo. \n- item um\n- item dois",
+      50,
+    ],
+    [
+      "two spaces between sentences",
+      "Primeira frase aqui bem longa mesmo.  Segunda frase depois.",
+      40,
+    ],
+    [
+      "three newlines between paragraphs",
+      "Primeiro parágrafo.\n\n\nSegundo parágrafo.",
+      600,
+    ],
+  ])("rejoins %s exactly as written", (_name, text, maxChars) => {
+    const { chunks, seps } = splitReplyParts(text, {
+      ...SPLIT_DEFAULTS,
+      maxChars,
+    });
+    const rejoined = chunks.reduce(
+      (a, c, k) => (k === 0 ? c : a + seps[k] + c),
+      "",
+    );
+    expect(rejoined).toBe(text.trim());
+  });
+
   test("real paragraphs still merge as paragraphs", () => {
     const out = splitReply("a\n\nb\n\nc\n\nd", {
       ...SPLIT_DEFAULTS,
@@ -204,17 +235,47 @@ describe("deliverReply", () => {
 // already arrived is sent again. Per-chunk durable state would be the alternative and buys nothing
 // here — the chunks are still in memory in this very process.
 describe("deliverReply: a balloon that fails mid-reply", () => {
+  // Personifies a Chatwoot that STORES what it accepted and can be read back, because the failure
+  // path now asks it whether the rejected chunk landed. A stub without `getMessages` would send
+  // every test in this block through the reconciliation's catch instead of through the
+  // reconciliation, and they would pass without ever exercising it.
   function failingStub(
     rec: { sent: string[]; typing: boolean[] },
     failOn: (content: string, n: number) => boolean,
+    opts: {
+      // The far side accepted it and the response never came back: stored, but reported as a
+      // failure to us. The case the type of the error cannot distinguish.
+      storeOnFailure?: (n: number) => boolean;
+      // The read-back itself fails.
+      readFails?: boolean;
+      calls?: { getMessages: number };
+    } = {},
   ) {
     let n = 0;
+    // What Chatwoot HOLDS, which is not the same as what the client believes it sent.
+    const stored: string[] = [];
     return {
       sendMessage: async (_c: number, content: string) => {
         n += 1;
-        if (failOn(content, n)) throw new Error("chatwoot 502");
+        if (failOn(content, n)) {
+          if (opts.storeOnFailure?.(n)) stored.push(content);
+          throw new Error("chatwoot 502");
+        }
         rec.sent.push(content);
+        stored.push(content);
         return {};
+      },
+      getMessages: async () => {
+        if (opts.calls) opts.calls.getMessages += 1;
+        if (opts.readFails) throw new Error("chatwoot 500");
+        return {
+          payload: stored.map((content, i) => ({
+            id: i + 1,
+            content,
+            message_type: 1,
+            private: false,
+          })),
+        };
       },
       toggleTyping: async (_c: number, on: boolean) => {
         rec.typing.push(on);
@@ -276,6 +337,91 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
     // The first two are in the conversation exactly once each.
     expect(rec.sent.filter((s) => s === "Olá!")).toHaveLength(1);
     expect(rec.sent.filter((s) => s === "Como vai?")).toHaveLength(1);
+  });
+
+  // A REJECTED SEND IS NOT AN UNDELIVERED ONE. The request has a 15s deadline, so a timeout — or a
+  // response body that could not be read — rejects here with the message already written on the far
+  // side. Retrying blindly would be this PR's own defect one layer down, and likelier: an overloaded
+  // Chatwoot is exactly when both the timeout and the retry happen. The error's type cannot settle
+  // it (a 502 is a proxy that may or may not have forwarded), so the conversation is read back.
+  test("a send that failed but LANDED is not sent again", async () => {
+    const rec = { sent: [] as string[], typing: [] as boolean[] };
+    const calls = { getMessages: 0 };
+    const out = await deliverReply(
+      failingStub(rec, (_c, n) => n === 2, {
+        // Balloon 2 reaches Chatwoot and the response is lost.
+        storeOnFailure: (n) => n === 2,
+        calls,
+      }),
+      1,
+      three,
+      { ...SPLIT_DEFAULTS, enabled: true },
+      noSleep,
+    );
+    expect(calls.getMessages).toBe(1);
+    // Balloon 2 is NOT in the retry — the customer has it already. Only balloon 3 is owed.
+    expect(rec.sent).toEqual(["Olá!", "Posso ajudar?"]);
+    // And it still counts: two landed by send, one by the far side accepting it.
+    expect(out).toEqual({ delivered: 3, failed: false });
+  });
+
+  test("a send that failed and did NOT land is included in the retry", async () => {
+    const rec = { sent: [] as string[], typing: [] as boolean[] };
+    const calls = { getMessages: 0 };
+    const out = await deliverReply(
+      failingStub(rec, (_c, n) => n === 2, { calls }),
+      1,
+      three,
+      { ...SPLIT_DEFAULTS, enabled: true },
+      noSleep,
+    );
+    expect(calls.getMessages).toBe(1);
+    expect(rec.sent).toEqual(["Olá!", "Como vai?\n\nPosso ajudar?"]);
+    expect(out).toEqual({ delivered: 2, failed: false });
+  });
+
+  // Fails CLOSED for the resend. The two ways to be wrong are not symmetric: a false "landed"
+  // leaves the customer permanently missing part of the answer with nothing to notice it, while a
+  // false "not landed" costs one duplicated balloon that both they and the operator can see.
+  test("an unreadable conversation resends rather than assuming delivery", async () => {
+    const rec = { sent: [] as string[], typing: [] as boolean[] };
+    const out = await deliverReply(
+      failingStub(rec, (_c, n) => n === 2, {
+        storeOnFailure: () => true,
+        readFails: true,
+      }),
+      1,
+      three,
+      { ...SPLIT_DEFAULTS, enabled: true },
+      noSleep,
+    );
+    expect(rec.sent).toEqual(["Olá!", "Como vai?\n\nPosso ajudar?"]);
+    expect(out.failed).toBe(false);
+  });
+
+  // The failed request burned up to 15s and the read-back is more I/O, so the fence answered before
+  // the first send is about a moment long gone. A /reset landing in that stretch is the operator
+  // clearing the conversation: what follows is a stand-down, NOT a failure — reported as one it
+  // would put `lastError` back on what they had just cleared.
+  test("a run called off during the failed send does not post the remainder", async () => {
+    const rec = { sent: [] as string[], typing: [] as boolean[] };
+    let asks = 0;
+    const out = await deliverReply(
+      failingStub(rec, (_c, n) => n === 2),
+      1,
+      three,
+      { ...SPLIT_DEFAULTS, enabled: true },
+      noSleep,
+      undefined,
+      async () => {
+        asks += 1;
+        // Live for balloons 1 and 2; the command commits while the failed send is in flight.
+        return asks > 2;
+      },
+    );
+    // The remainder never went out, and standing down is not a failure.
+    expect(rec.sent).toEqual(["Olá!"]);
+    expect(out).toEqual({ delivered: 1, failed: false });
   });
 
   test("the remainder is retried ONCE: a second failure stops, it does not walk the rest", async () => {

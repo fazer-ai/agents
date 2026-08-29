@@ -88,6 +88,10 @@ const KEYWORD_BEFORE_VALUE =
 // the keyword, and `\b` is saying what the regex means rather than deciding anything. It stays for
 // that reason, not because a test holds it.
 const KEYWORD_BEFORE_BLOCK = /\belse\s*$/;
+// The two keywords whose body is a VALUE when they are written as an expression. `function` and
+// `class` are the whole list: an arrow's body already lands on the object side of the brace rule and
+// so already ends a value, and no other construct puts a block where a value belongs.
+const FUNCTION_OR_CLASS = /^(?:function|class)$/;
 // Enough to clear `else` plus the whitespace before the brace.
 const KEYWORD_LOOKBACK = 16;
 
@@ -206,6 +210,9 @@ function scan(source: string, { strings }: Options): Scanned {
     // always, so that division opened a regex and swallowed the rest of the line together with a real
     // call site (found by review).
     const braces: boolean[] = [];
+    // Set when a `function` or `class` keyword is read in a value position, cleared by the brace that
+    // opens its body. See both sites below.
+    let expressionBody = false;
     while (i < source.length) {
       const c = source[i] as string;
       const d = source[i + 1];
@@ -359,6 +366,24 @@ function scan(source: string, { strings }: Options): Scanned {
           i = j;
           continue;
         }
+        // A FUNCTION OR CLASS WRITTEN WHERE A VALUE WAS EXPECTED IS AN EXPRESSION, and its `}` closes
+        // a VALUE — `const r = function () {} / d` divides. The brace itself cannot tell: the token
+        // before it is the `)` of the parameter list either way, exactly as in `if (x) {`, so the
+        // difference lives back here at the keyword. Recorded now and consumed by that brace.
+        //
+        // `!atStatementStart` is the WHOLE test, and it is the whole test because a mutation run said
+        // so: a first draft also asked `!endsValue`, which came out without a red row. Nothing valid
+        // puts a value in front of these two keywords — `=`, `(`, `,`, `return` and the rest all
+        // clear the flag — so the only thing it could still reject is `if (x) function f() {}`, which
+        // TypeScript does not accept. Found by review: with the body read as a plain block, the `/`
+        // after it opened a regex and, when a second slash closed it later on the line, blanked the
+        // real call in between.
+        if (
+          FUNCTION_OR_CLASS.test(source.slice(i, j)) &&
+          !atStatementStart(i)
+        ) {
+          expressionBody = true;
+        }
         // A keyword cannot end a value, and that is what lets `return /re/` and `case "x"` through.
         endsValue = !KEYWORD_BEFORE_VALUE.test(source.slice(i, j));
         i = j;
@@ -400,11 +425,16 @@ function scan(source: string, { strings }: Options): Scanned {
         // A `{` where a VALUE was expected is an object, EXCEPT at a statement boundary, where no
         // value was expected either because nothing precedes it. `endsValue` alone called `{}` on a
         // fresh statement an object, so the regex after it read as a division (found by review).
-        braces.push(
-          !endsValue &&
-            !atStatementStart(i) &&
-            !KEYWORD_BEFORE_BLOCK.test(before(i, KEYWORD_LOOKBACK)),
-        );
+        // The pending flag is consumed by the first brace in BLOCK position, and CLEARED there so it
+        // cannot arrive at the next function in the file. A destructured parameter cannot eat it:
+        // `function ({ a }) {}` pushes that first `{` where a value was expected, so it is an object
+        // and the body is still to come.
+        const block =
+          endsValue ||
+          atStatementStart(i) ||
+          KEYWORD_BEFORE_BLOCK.test(before(i, KEYWORD_LOOKBACK));
+        braces.push(!block || expressionBody);
+        if (block) expressionBody = false;
         endsValue = false;
         i++;
         continue;

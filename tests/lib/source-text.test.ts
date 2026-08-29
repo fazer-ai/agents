@@ -199,6 +199,47 @@ describe("the scan removes prose and keeps code", () => {
       "a cut after a division on a function expression",
       "const r = function () {} / d; const a = s.slice(0, 10);\n",
     ],
+    // WITH A SECOND SLASH CLOSING THE LINE, which is what makes the misread cost anything now — the
+    // row above passes on the back-out alone. A function or class written where a VALUE was expected
+    // is an expression and its `}` closes a value; read as a plain block it opened a regex here that
+    // ate the cut between the two slashes. Found by review.
+    [
+      "a cut between two divisions after a function expression",
+      "const r = function () {} / d || s.slice(0, 10) / c;\n",
+    ],
+    [
+      "a cut between two divisions after a class expression",
+      "const r = class {} / d || s.slice(0, 10) / c;\n",
+    ],
+    // The other side, and the reason `atStatementStart` is the whole test: a DECLARATION is not a
+    // value, so the brace after it stays a block and the `/` that follows still opens a regex.
+    // Measured THROUGH THAT SLASH — a first version put the division further down the line, where the
+    // identifiers before it set `endsValue` anyway and the row passed with the rule inverted.
+    [
+      "a cut after a regex following a function declaration",
+      'function f() {} /["]/.test(y); const a = s.slice(0, 10);\n',
+    ],
+    [
+      "a cut after a regex following a class declaration",
+      'class F {} /["]/.test(y); const a = s.slice(0, 10);\n',
+    ],
+    // The flag is consumed by the brace in BLOCK position, never by a destructured parameter, and it
+    // does not leak into a nested declaration.
+    [
+      "a cut after a function expression with a destructured parameter",
+      "const r = function ({ a }) {} / d || s.slice(0, 10) / c;\n",
+    ],
+    [
+      "a cut after a function expression holding a declaration",
+      "const r = function () { function g() {} } / d || s.slice(0, 10) / c;\n",
+    ],
+    // …and the flag is CLEARED by the brace that consumes it, so it cannot arrive at the next
+    // function in the file. The declaration here would inherit the expression's body reading and its
+    // `}` would start ending a value, turning the regex two tokens later into a division.
+    [
+      "a cut after a declaration following a function expression",
+      'const r = function () {}; function g() {} /["]/.test(y); const a = s.slice(0, 10);\n',
+    ],
     // A URL WRITTEN BARE IN JSX TEXT, whose `//` is not a comment. Every other position puts a URL
     // inside a string or template, which the branches above consume first; JSX text has no branch, by
     // the omission this file argues for at the top. The cut here is the real interpolation that the

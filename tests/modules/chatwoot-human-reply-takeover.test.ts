@@ -779,11 +779,17 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     expect((await takeoverRows(conv, 200)).length).toBe(0);
   });
 
-  // THE OTHER SIDE OF WRITING THE ROW FIRST. The claim is taken locally and then Chatwoot refuses
-  // the open, so the row says `open` over a conversation the platform never handed to anybody —
-  // and every reader above would stay quiet on it with nothing to correct them. Giving the claim
-  // back is what keeps a failed takeover from being worse than no takeover.
-  test("a failed open gives the claim back instead of silencing the agent", async () => {
+  // THE OTHER SIDE OF WRITING THE ROW FIRST, and the compensation that must NOT exist. The claim is
+  // taken locally and then the open fails, so the row says `open` over a conversation Chatwoot may
+  // never have moved. Handing the claim back there looks like the fix and is the defect: a failed
+  // call is an UNKNOWN outcome, not a refusal — Chatwoot commits the transition and the response is
+  // lost — and rolling back on the unknown puts the agent straight back to answering over the person
+  // it just handed the conversation to.
+  //
+  // So the claim stands, and what resolves it is the path that already exists: the next customer
+  // message carries the reopen exception, so a conversation Chatwoot really did leave `pending`
+  // comes back to the agent on its own.
+  test("a failed open keeps the claim, and the next message is what settles it", async () => {
     const conv = 8512;
     await deliver(conv, { ...customerSays("oi") });
     failingToggles.add(conv);
@@ -792,15 +798,16 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     } finally {
       failingToggles.delete(conv);
     }
-    expect((await convRow(conv))?.status).toBe("pending");
-    expect(liveStatus.get(conv) ?? "pending").toBe("pending");
+    // Silent, on a takeover that was never confirmed — the direction a fence has to fail in.
+    expect((await convRow(conv))?.status).toBe("open");
+    // ...and not reported as one, because nothing established that a person was handed anything.
     expect((await takeoverRows(conv, 200)).length).toBe(0);
-    // And the agent is still the one answering, which is the claim this test is really about: the
-    // status alone could be read as "nothing happened", and what has to hold is that the next
-    // customer message still drives a turn.
+    // And it does not stay stuck: Chatwoot never left `pending`, so the next customer message says
+    // so and the agent answers again.
     const before = turnsRan;
     await deliver(conv, { ...customerSays("continua aí?") });
     expect(turnsRan).toBe(before + 1);
+    expect((await convRow(conv))?.status).toBe("pending");
   });
 
   // AFTER the claim, nothing here writes status again. The claim is taken before the toggle goes

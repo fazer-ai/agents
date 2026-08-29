@@ -1179,12 +1179,18 @@ async function conversationOwnershipNow(p: {
   ourAgentBotId: number | null;
   base: PrismaClient;
 }): Promise<
-  // `statusAt` rides along on the OWNED answer because a caller that acts on this reading has to be
-  // able to write CONDITIONALLY on it, and a second read to fetch the version would answer about a
-  // different moment — the same rule `describeClosedGate` states from its own side. It is the row's
-  // status version (`chatwoot_status_at`), so a write carrying it back replaces only the state this
-  // answer was about.
-  | { ours: true; statusAt: number | null }
+  // The OWNED answer carries the row it was read off, because a caller that acts on this reading has
+  // to be able to write CONDITIONALLY on it, and a second read to fetch those columns would answer
+  // about a different moment — the same rule `describeClosedGate` states from its own side. All
+  // three: `statusAt` is the status version (`chatwoot_status_at`), and the assignee comes along
+  // beside it because status and assignee are ordered INDEPENDENTLY (state-order.ts keeps a mark per
+  // axis), so the status version says nothing about who holds the conversation.
+  | {
+      ours: true;
+      statusAt: number | null;
+      assigneeType: string | null;
+      assigneeId: number | null;
+    }
   | { ours: false; closed: GateCloseDetail | null }
 > {
   const conv = await runScopedOn(p.base, sysCtx(p.tenantId), (db) =>
@@ -1218,7 +1224,12 @@ async function conversationOwnershipNow(p: {
     { ourAgentBotId: p.ourAgentBotId },
   );
   return ours
-    ? { ours: true, statusAt: conv?.chatwootStatusAt ?? null }
+    ? {
+        ours: true,
+        statusAt: conv?.chatwootStatusAt ?? null,
+        assigneeType: conv?.assigneeType ?? null,
+        assigneeId: conv?.assigneeId ?? null,
+      }
     : {
         ours: false,
         closed: describeClosedGate({
@@ -4141,8 +4152,6 @@ export async function processChatwootDelivery(
       // is the row still the one all of that was true of. The first is ownership, the second is
       // ordering, and the third is the compare-and-swap that carries them into the write. `pending`
       // alone answers none of them — a hand-back writes `pending` too.
-      let claimedAt: number | null = null;
-      let claimed = false;
       const opened = await openForHumanQueue({
         gate: `human reply (${humanReplyBy})`,
         conversationId,
@@ -4167,7 +4176,6 @@ export async function processChatwootDelivery(
             base,
           });
           if (!now.ours) return false;
-          claimedAt = now.statusAt;
           // AND IS THIS DECISION STILL THE MOST RECENT ONE? Ownership alone cannot answer that,
           // because the state that would overrule us is `pending` and bot-owned too: a hand-back
           // ("Return to AI", conversations/service.ts) puts the conversation back exactly there. So
@@ -4188,11 +4196,16 @@ export async function processChatwootDelivery(
           // version is what lets a conversation event that really is newer still outrank this write
           // when it lands; the reconcile below is what earns it one.
           //
-          // `chatwootStatusAt` in the predicate is what makes this a compare-and-swap rather than a
-          // check-then-act: the read above and this write are two statements, and another replica
-          // can commit between them. No test in this process can open that window — there is nothing
-          // to await between the two — so the mutation that drops this line survives the suite. It
-          // stays because the window is real, not because a test asks for it.
+          // The three observed columns in the predicate are what make this a compare-and-swap
+          // rather than a check-then-act: the read above and this write are two statements, and
+          // another replica can commit between them. The assignee is in there for its own reason —
+          // status and assignee carry SEPARATE ordering marks, so an assignment that lands in this
+          // window leaves the conversation `pending` at the same `chatwoot_status_at` while it is no
+          // longer the bot's, and a status-and-version predicate would open it anyway.
+          //
+          // No test in this process can pry that window open — there is nothing to await between the
+          // two statements — so the mutations that drop these terms survive the suite. They stay
+          // because the window is real, not because a test asks for them.
           const { count } = await runScopedOn(
             base,
             sysCtx(params.tenantId),
@@ -4203,7 +4216,9 @@ export async function processChatwootDelivery(
                   chatwootInstanceId: params.instanceId,
                   chatwootConversationId: conversationId,
                   status: "pending",
-                  chatwootStatusAt: claimedAt,
+                  chatwootStatusAt: now.statusAt,
+                  assigneeType: now.assigneeType,
+                  assigneeId: now.assigneeId,
                 },
                 data: { status: "open" },
               }),
@@ -4211,40 +4226,23 @@ export async function processChatwootDelivery(
           // A LOST CAS IS A CLOSED FENCE, reported by the shared unit exactly like an ownership
           // refusal, because that is what it is: something newer than the state this delivery
           // decided on now holds the row.
-          claimed = count > 0;
-          return claimed;
+          return count > 0;
         },
         client,
       });
-      // THE TOGGLE FAILED AFTER WE HAD ALREADY SILENCED OURSELVES. The row says `open`, Chatwoot
-      // still says `pending`, and left alone that disagreement is durable in the wrong direction:
-      // every reader above stays quiet on a conversation the platform never handed to anybody, and
-      // nothing corrects it until the next customer message, which only reopens it because a
-      // brand-new incoming message carries the reopen exception (state-order.ts). So the claim is
-      // given back under the same version it was taken with — anything that moved the row since is
-      // newer than this decision and stands.
-      if (!opened && claimed) {
-        try {
-          await runScopedOn(base, sysCtx(params.tenantId), (db) =>
-            db.conversation.updateMany({
-              where: {
-                tenantId: params.tenantId,
-                chatwootInstanceId: params.instanceId,
-                chatwootConversationId: conversationId,
-                status: "open",
-                chatwootStatusAt: claimedAt,
-              },
-              data: { status: "pending" },
-            }),
-          );
-        } catch (err) {
-          logger.warn(
-            "chatwoot: releasing the takeover claim after a failed open (conv=%s): %s",
-            convLabel,
-            errMsg(err),
-          );
-        }
-      }
+      // AND A FAILED OPEN KEEPS THE CLAIM. The tempting compensation is to hand it back — the row
+      // says `open` while Chatwoot may still say `pending`, and nobody was handed anything — but a
+      // failed call is an UNKNOWN outcome, not a refusal: Chatwoot commits the transition and then
+      // the response times out, is lost in a proxy, or fails to parse, and there is nothing in the
+      // error that tells that apart from a request the server never applied. Rolling back on the
+      // unknown puts the agent back to speaking into a conversation the platform HAS handed over,
+      // which is the defect this whole block exists to prevent, reintroduced by the recovery.
+      //
+      // So the claim stands and the agent stays quiet, which is the direction a fence must fail in.
+      // The disagreement is not durable either: the next customer message carries the reopen
+      // exception (state-order.ts), so a conversation Chatwoot really did leave `pending` comes back
+      // to the agent on its own, and one Chatwoot really did open stays open.
+      //
       // Refused by the fence, or the write failed: both are already reported by the shared unit, and
       // neither is a takeover — so nothing below runs. NOT a `return`: the delivery still has its
       // memory ingestion to arm and its row to mark processed.

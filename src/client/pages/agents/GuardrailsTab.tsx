@@ -154,24 +154,20 @@ export function GuardrailsTab({
                         "Adherence to the agent's instructions",
                       )}
                     />
-                    <div className="flex flex-col gap-1">
-                      <SwitchField
-                        checked={d.checks.answerRelevance}
-                        onCheckedChange={(v) =>
-                          setCheck(dir, "answerRelevance", v)
-                        }
-                        label={t(
-                          "editor.guardrails.checkRelevance",
-                          "The reply answers what the customer asked",
-                        )}
-                      />
-                      <p className="text-text-muted text-xs">
-                        {t(
-                          "editor.guardrails.checkRelevanceHint",
-                          "Sends the customer's message to the guardrails agent so it can compare. Off by default: after a short message like “sim”, a correct answer can look like an answer to another question, and the action above would replace it.",
-                        )}
-                      </p>
-                    </div>
+                    <SwitchField
+                      checked={d.checks.answerRelevance}
+                      onCheckedChange={(v) =>
+                        setCheck(dir, "answerRelevance", v)
+                      }
+                      label={t(
+                        "editor.guardrails.checkRelevance",
+                        "The reply answers what the customer asked",
+                      )}
+                      help={t(
+                        "editor.guardrails.checkRelevanceHelp",
+                        "This check determines whether the agent's reply addresses the customer's message.\n\nIf it fails, the configured action always uses the prepared message. The model does not write a replacement reply.\n\nIt is off by default because short messages such as “yes” can cause false failures. When another check is active, each reply makes two separately billed model requests.",
+                      )}
+                    />
                   </>
                 )}
               </div>
@@ -213,8 +209,8 @@ export function GuardrailsTab({
                     ? undefined
                     : dir === "input"
                       ? t(
-                          "editor.guardrails.templateInboundHint",
-                          "On the customer's message this is ALWAYS what gets sent. There is nothing to rewrite here, because the text under review is the customer's own message, so the guardrails agent is never asked to compose a reply. When it was, the customer could dictate that reply: a message telling it to state a price and a partnership produced exactly that, word for word, in every one of 16 runs.",
+                          "editor.guardrails.templateInboundHelp",
+                          "On customer messages, this text is ALWAYS what gets sent.\n\nThere is no reply to rewrite: the text under review is the customer's own message.\n\nThis was measured: a message telling it to state a price and a partnership produced exactly that, word for word, in all 16 runs.",
                         )
                       : t(
                           "editor.guardrails.templateFallbackHint",

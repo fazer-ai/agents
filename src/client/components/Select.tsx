@@ -1,6 +1,7 @@
 import { ChevronDown } from "lucide-react";
 import { forwardRef } from "react";
 import { cn } from "@/client/lib/utils";
+import { mergeDescribedBy, useFormField } from "./FormFieldContext";
 
 type SelectProps = React.SelectHTMLAttributes<HTMLSelectElement> & {
   error?: boolean;
@@ -12,11 +13,18 @@ type SelectProps = React.SelectHTMLAttributes<HTMLSelectElement> & {
 // still owns the popover.
 export const Select = forwardRef<HTMLSelectElement, SelectProps>(
   ({ className, wrapperClassName, error, children, ...props }, ref) => {
+    // The id of the message the surrounding <FormField> renders, so this control can point
+    // `aria-describedby` at it.
+    const field = useFormField();
     return (
       <div className={cn("relative w-full", wrapperClassName)}>
         <select
           ref={ref}
-          aria-invalid={error || undefined}
+          aria-describedby={mergeDescribedBy(
+            field.describedById,
+            props["aria-describedby"],
+          )}
+          aria-invalid={error || field.invalid || undefined}
           className={cn(
             "w-full appearance-none rounded-lg border border-border bg-bg-tertiary py-2 pr-9 pl-3 text-sm text-text-primary focus:border-border-focus focus:outline-none disabled:opacity-60",
             { "border-error": !!error },

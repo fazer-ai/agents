@@ -24,6 +24,7 @@ export { FormField } from "./FormField";
 export { GlobalApiToasts } from "./GlobalApiToasts";
 export { GoogleSignInButton } from "./GoogleSignInButton";
 export { Header } from "./Header";
+export { HelpPopover } from "./HelpPopover";
 export { HighlightedTemplateField } from "./HighlightedTemplateField";
 export { InboxRow, type InboxRowStatus } from "./InboxRow";
 export { Input } from "./Input";
@@ -45,6 +46,7 @@ export {
 export { ModelPicker } from "./ModelPicker";
 export { OutOfHoursBadge } from "./OutOfHoursBadge";
 export { PageContainer } from "./PageContainer";
+export { Popover } from "./Popover";
 export { type ProFeature, ProGate } from "./ProGate";
 export { ProtectedRoute } from "./ProtectedRoute";
 export { type AgentRef, AgentReferences } from "./ResourceReferences";

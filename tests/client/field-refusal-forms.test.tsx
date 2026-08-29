@@ -115,7 +115,10 @@ async function fillAndSave(name: string, url: string) {
 // state this whole sweep is replacing.
 function fieldShowing(text: string): HTMLElement | null {
   for (const node of screen.queryAllByText(text)) {
-    const field = node.closest("label, [role='group']");
+    // The field is the message's PARENT, not its `closest("label")`: a <FormField> renders the
+    // message as the label's sibling, because the accessible-name algorithm walks the whole label
+    // subtree and a refusal in there renames the field instead of describing it.
+    const field = node.closest("[role='group']") ?? node.parentElement;
     const control = field?.querySelector("input, select, textarea");
     if (control) return control as HTMLElement;
   }

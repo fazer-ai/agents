@@ -1,7 +1,7 @@
 import type { LucideIcon } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Card } from "@/client/components";
+import { Card, HelpPopover } from "@/client/components";
 import { cn } from "@/client/lib/utils";
 
 // Shared building blocks for the heavy editor tabs (item 9): a titled <Section> card with an anchor
@@ -20,6 +20,9 @@ export interface SectionProps {
   icon: LucideIcon;
   title: string;
   description?: string;
+  // Why this block exists and when it applies, behind the `?` next to the title. The rule that
+  // sorts this from `description` is in docs/ui.md → "Where help goes".
+  help?: ReactNode;
   children: ReactNode;
   className?: string;
 }
@@ -32,17 +35,36 @@ export function Section({
   icon: Icon,
   title,
   description,
+  help,
   children,
   className,
 }: SectionProps) {
   return (
     <Card id={id} className={cn("flex scroll-mt-4 flex-col gap-4", className)}>
-      <div className="flex items-start gap-2.5">
-        <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-bg-tertiary text-accent">
+      {/* The icon is 28px and one line of the title is 20px, so how they align depends on whether
+          there is a second line. With a description the text column is the taller of the two and
+          the icon rides its FIRST line (`items-start` + the nudge). Without one, the shape most
+          sections took once their prose moved behind the `?`, the same rule leaves the title
+          sitting 6px above the icon's centre, so the two are centred against each other instead. */}
+      <div
+        className={cn(
+          "flex gap-2.5",
+          description ? "items-start" : "items-center",
+        )}
+      >
+        <span
+          className={cn(
+            "flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-bg-tertiary text-accent",
+            description && "mt-0.5",
+          )}
+        >
           <Icon className="h-4 w-4" aria-hidden="true" />
         </span>
         <div className="min-w-0">
-          <h3 className="font-medium text-sm text-text-primary">{title}</h3>
+          <h3 className="flex items-center gap-1.5 font-medium text-sm text-text-primary">
+            {title}
+            {help ? <HelpPopover content={help} label={title} /> : null}
+          </h3>
           {description && (
             <p className="text-text-muted text-xs">{description}</p>
           )}

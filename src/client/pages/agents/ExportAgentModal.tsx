@@ -2,6 +2,7 @@ import { useId, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Button,
+  HelpPopover,
   Modal,
   type ModalController,
   Switch,
@@ -90,7 +91,7 @@ export function ExportAgentModal({
     >
       <div className="flex flex-col gap-4">
         <div className="flex items-start justify-between gap-3">
-          <div className="flex flex-col">
+          <div className="flex items-center gap-1.5">
             <label
               htmlFor={switchId}
               data-clickable="true"
@@ -98,12 +99,16 @@ export function ExportAgentModal({
             >
               {t("editor.exportIncludeComponents", "Include full components")}
             </label>
-            <span className="text-text-muted text-xs">
-              {t(
-                "editor.exportIncludeComponentsHint",
-                "Bundle the full HTTP tools, MCP servers and integrations this agent uses (knowledge bases are included as metadata: their settings, not their documents; see the next option). Credentials are never included in the file; they stay referenced by name. With this off, the export only references components by name.",
+            <HelpPopover
+              content={t(
+                "editor.exportIncludeComponentsHelp",
+                "This option controls whether the file contains copies of the components used by the agent.\n\nWhen on, it includes HTTP tools, MCP servers, integrations, and knowledge base settings. When off, it stores only their names.\n\nAPI keys are never included, and documents depend on the next option.",
               )}
-            </span>
+              label={t(
+                "editor.exportIncludeComponents",
+                "Include full components",
+              )}
+            />
           </div>
           <Switch
             id={switchId}
@@ -115,7 +120,7 @@ export function ExportAgentModal({
           />
         </div>
         <div className="flex items-start justify-between gap-3">
-          <div className="flex flex-col">
+          <div className="flex items-center gap-1.5">
             <label
               htmlFor={documentsSwitchId}
               data-clickable="true"
@@ -126,12 +131,16 @@ export function ExportAgentModal({
                 "Include knowledge base documents",
               )}
             </label>
-            <span className="text-text-muted text-xs">
-              {t(
-                "editor.exportIncludeDocumentsHint",
-                "Bundle the full text of every document in this agent's knowledge bases so the import can re-index them. The file will then contain that text, so treat it as sensitive. Off by default; requires full components.",
+            <HelpPopover
+              content={t(
+                "editor.exportIncludeDocumentsHelp",
+                "This option adds the full text of knowledge base documents to the file.\n\nThis lets the import make those documents searchable by the agent again.\n\nThe file will contain that information and must be treated as sensitive. This option is off by default and requires the components option.",
               )}
-            </span>
+              label={t(
+                "editor.exportIncludeDocuments",
+                "Include knowledge base documents",
+              )}
+            />
           </div>
           <Switch
             id={documentsSwitchId}

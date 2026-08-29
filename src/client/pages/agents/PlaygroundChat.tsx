@@ -187,48 +187,34 @@ export function PlaygroundChat({
                 checked={chat.guardrails && capabilities.guardrails}
                 onCheckedChange={chat.setGuardrails}
                 disabled={!capabilities.guardrails}
-                label={
-                  capabilities.guardrails ? (
-                    <span className="inline-flex items-center gap-1">
-                      {t("playground.guardrails", "Run guardrails")}
-                      <Tooltip
-                        content={t(
-                          "playground.guardrailsHint",
-                          "Screens the message and the reply exactly as the inbox does, so you read what the customer would receive. Costs one extra model call per direction, plus one more when answer relevance runs alongside another reply check.",
-                        )}
-                      />
-                    </span>
-                  ) : (
-                    <span className="inline-flex items-center gap-1">
-                      {t("playground.guardrails", "Run guardrails")}
-                      <Tooltip
-                        content={t(
-                          "playground.guardrailsUnavailable",
-                          "Guardrails are off or have no credential. Configure them in the Guardrails tab to screen playground turns.",
-                        )}
-                      />
-                    </span>
-                  )
+                label={t("playground.guardrails", "Run guardrails")}
+                // Two different things to say about the same switch: what turning it on costs, or
+                // why it cannot be turned on at all. Both behind the same `?`, which a Tooltip
+                // could not be: a Radix tooltip has no route in on touch (Popover.tsx).
+                help={
+                  capabilities.guardrails
+                    ? t(
+                        "playground.guardrailsHelp",
+                        "This option applies the same checks in the Playground as in real conversations.\n\nYou test the result a customer would get when talking to the agent.\n\nThis increases cost: one extra analysis for the message and another for the reply. Relevance adds one more when it runs with another reply check.",
+                      )
+                    : t(
+                        "playground.guardrailsUnavailable",
+                        "Guardrails are off or have no credential. Configure them in the Guardrails tab to screen playground turns.",
+                      )
                 }
               />
               <SwitchField
                 checked={chat.forceAudio && capabilities.audioReply}
                 onCheckedChange={chat.setForceAudio}
                 disabled={!capabilities.audioReply}
-                label={
-                  capabilities.audioReply ? (
-                    t("playground.replyWithAudio", "Reply with audio")
-                  ) : (
-                    <span className="inline-flex items-center gap-1">
-                      {t("playground.replyWithAudio", "Reply with audio")}
-                      <Tooltip
-                        content={t(
-                          "playground.audioReplyUnavailable",
-                          "Text-to-speech is not configured. Set a provider and API key in the Behavior tab to reply with audio.",
-                        )}
-                      />
-                    </span>
-                  )
+                label={t("playground.replyWithAudio", "Reply with audio")}
+                help={
+                  capabilities.audioReply
+                    ? undefined
+                    : t(
+                        "playground.audioReplyUnavailable",
+                        "Text-to-speech is not configured. Set a provider and API key in the Behavior tab to reply with audio.",
+                      )
                 }
               />
               <Tooltip

@@ -1488,7 +1488,7 @@ export function ToolGrantsEditor({
               group
               description={t(
                 "editor.kanbanInstructionsHint",
-                "Optional. Explains your funnel and when to move a card between steps. The AI already sees the current step, the available steps, and the card data; this adds your rules. Appended to the kanban tool description.",
+                "Optional: describe your funnel and rules for moving the card; the AI already receives its steps and card data.",
               )}
             >
               <Textarea
@@ -1519,7 +1519,7 @@ export function ToolGrantsEditor({
               group
               description={t(
                 "editor.updateKanbanInstructionsHint",
-                "Optional. Explains when and how the agent should edit the card's title, description, priority or dates. The AI already sees the current card values; this adds your rules. Appended to the tool description.",
+                "Optional. Say when and how the agent should change the card's title, description, priority, or dates.",
               )}
             >
               <Textarea
@@ -1552,7 +1552,7 @@ export function ToolGrantsEditor({
               group
               description={t(
                 "editor.attrInstructionsHint",
-                "Optional. Explains which attribute to set on the conversation, the contact, or the kanban card, and when. The AI already sees the defined attributes; this adds your rules. Appended to the tool description.",
+                "Optional. Say which conversation, contact, or kanban card attribute the agent should set, and when.",
               )}
             >
               <Textarea

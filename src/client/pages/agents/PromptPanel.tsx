@@ -1,7 +1,7 @@
-import { Info, Lightbulb, Maximize2 } from "lucide-react";
+import { Lightbulb, Maximize2 } from "lucide-react";
 import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Markdown, Tooltip } from "@/client/components";
+import { HelpPopover, Markdown } from "@/client/components";
 import {
   rehypeHighlightVars,
   wrapPreviewVar,
@@ -234,22 +234,17 @@ export function PromptPanel({
                 "editor.promptVarsHint",
                 "Insert a variable (dates also accept a :format suffix):",
               )}
-              <Tooltip
+              {/* The same `?` as every other piece of help in the console, and not the Info icon
+                  this used to carry: the affordance is learned once, so a second glyph for the same
+                  job is a second thing to learn. It was also a <Tooltip>, which no phone can open
+                  (Popover.tsx). The box drops to `text-xs`: its default size is set for prose, and
+                  this content is a two-column reference table that wants to stay dense. */}
+              <HelpPopover
                 content={<FormatHelpTooltipContent />}
+                label={t("editor.formatHelpAria", "Date and time format")}
                 align="start"
-                contentClassName="max-w-sm"
-              >
-                <button
-                  type="button"
-                  aria-label={t(
-                    "editor.formatHelpAria",
-                    "Date and time format help",
-                  )}
-                  className="inline-flex text-text-muted hover:text-text-primary"
-                >
-                  <Info className="h-3.5 w-3.5" aria-hidden="true" />
-                </button>
-              </Tooltip>
+                contentClassName="text-xs"
+              />
             </span>
             <div className="flex flex-wrap gap-1.5">
               {[

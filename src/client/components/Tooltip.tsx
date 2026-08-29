@@ -4,8 +4,7 @@ import { cn } from "@/client/lib/utils";
 
 interface TooltipBaseProps {
   // A plain string (rendered with whitespace-pre-wrap so `\n` works) or rich JSX for structured
-  // tooltips (headers, chips, distinct callout blocks). The fallback `?` trigger only derives an
-  // aria-label from `content` when it is a string.
+  // tooltips (headers, chips, distinct callout blocks).
   content: ReactNode;
   side?: "top" | "right" | "bottom" | "left";
   align?: "start" | "center" | "end";
@@ -16,12 +15,19 @@ interface TooltipBaseProps {
 }
 
 // NOTE: when `asChild` is true (default), children is passed directly as the
-// trigger via Radix Slot, which requires a single ReactElement — when absent,
-// the internal fallback button is used. When `asChild` is false, children is
-// wrapped by Radix Trigger, so any ReactNode is fine. The discriminated union
-// below surfaces that constraint at the type level instead of at runtime.
+// trigger via Radix Slot, which requires a single ReactElement. When `asChild`
+// is false, children is wrapped by Radix Trigger, so any ReactNode is fine. The
+// discriminated union below surfaces that constraint at the type level instead
+// of at runtime.
+//
+// CHILDREN IS REQUIRED, and used to be optional: a `<Tooltip content=… />` with
+// nothing inside rendered its own `?` button. That made a tooltip look exactly
+// like the help affordance while being a different thing — and one that no
+// phone can open, since a Radix tooltip has no touch route in (Popover.tsx).
+// Help behind a `?` is `HelpPopover`; a tooltip LABELS something that is already
+// on screen, so it always has a child to label.
 type TooltipProps =
-  | (TooltipBaseProps & { asChild?: true; children?: ReactElement })
+  | (TooltipBaseProps & { asChild?: true; children: ReactElement })
   | (TooltipBaseProps & { asChild: false; children: ReactNode });
 
 // NOTE: when asChild=true (default), Radix Slot clones `children` and merges
@@ -40,21 +46,10 @@ export function Tooltip({
   asChild = true,
   contentClassName,
 }: TooltipProps) {
-  const trigger = children ?? (
-    <button
-      type="button"
-      className="inline-flex h-4 w-4 cursor-help items-center justify-center rounded-full border border-border bg-transparent p-0 font-medium text-[10px] text-text-muted"
-      aria-label={typeof content === "string" ? content : undefined}
-    >
-      {/* biome-ignore lint/style/noJsxLiterals: decorative glyph, accessible name comes from aria-label */}
-      ?
-    </button>
-  );
-
   return (
     <TooltipPrimitive.Root>
-      <TooltipPrimitive.Trigger asChild={asChild || !children}>
-        {trigger}
+      <TooltipPrimitive.Trigger asChild={asChild}>
+        {children}
       </TooltipPrimitive.Trigger>
       <TooltipPrimitive.Portal>
         <TooltipPrimitive.Content

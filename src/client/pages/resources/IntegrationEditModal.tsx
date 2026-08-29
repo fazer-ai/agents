@@ -220,7 +220,7 @@ function ReminderConfigEditor({
       <p className="text-text-muted text-xs">
         {t(
           "integrations.config.remindersHint",
-          "When the agent books an appointment on this calendar, send reminder messages before it. Reminders are scheduled deterministically and re-armed if the appointment is rescheduled or cancelled.",
+          "Reminder messages before an appointment the agent books here. They follow a reschedule and are cancelled with it.",
         )}
       </p>
       <SwitchField
@@ -1694,7 +1694,7 @@ export function IntegrationEditModal({
                       <p className="text-text-muted text-xs">
                         {t(
                           "integrations.config.noFoldersScopeHint",
-                          "No folders found. If you connected the account with the 'Drive (app files)' scope, it only sees files this app itself created, so reconnect the credential with 'Drive (read-only)' or 'Drive (full access)' to list your existing folders.",
+                          'No folders found. Accounts connected with "Drive (app files)" only see files created by this app; reconnect with "Drive (read-only)" or "Drive (full access)".',
                         )}
                       </p>
                     ) : null}
@@ -1785,7 +1785,7 @@ export function IntegrationEditModal({
                 <p className="text-text-muted text-xs">
                   {t(
                     "integrations.webhook.explain",
-                    "When a charge is paid, Asaas calls this webhook and the agent is woken on the exact conversation that generated the charge. It then decides whether to message the customer (and may use its tools). You paste the webhook URL into the Asaas panel after saving.",
+                    "After saving, paste the URL into Asaas; when a charge is paid, the agent resumes its conversation and decides whether to reply.",
                   )}
                 </p>
                 {/* The URL only exists once the instance does, so it shows on edit, never create. */}

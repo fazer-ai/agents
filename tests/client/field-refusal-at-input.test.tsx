@@ -100,7 +100,10 @@ function save() {
 // holding a happy-dom element serializes a cyclic tree and hangs the runner.
 function shownInsideFieldOf(field: string, message: string): number {
   const control = inputFor(field);
-  const box = control.closest("label") ?? control.parentElement;
+  // The FIELD, which is one level above the <label>. A <FormField> renders its message as the
+  // label's SIBLING, not inside it: the accessible-name algorithm walks the whole label subtree, so
+  // a refusal rendered in there stops describing the field and starts renaming it.
+  const box = control.closest("label")?.parentElement ?? control.parentElement;
   return Array.from(box?.querySelectorAll("*") ?? []).filter(
     (el) => el.textContent === message && el.children.length === 0,
   ).length;

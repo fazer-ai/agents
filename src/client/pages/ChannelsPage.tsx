@@ -638,7 +638,7 @@ export function ChannelsPage() {
       title: t("channels.disconnectInstance", "Disconnect instance"),
       warning: t(
         "channels.teardownWarning",
-        "This permanently deletes the local mirror of this Chatwoot: every conversation, contact, inbox and the dashboard analytics for this instance. It cannot be undone. The data in Chatwoot itself is not touched.",
+        "This permanently deletes all conversations, contacts, inboxes, and dashboard data for this Chatwoot from fazer.ai. Nothing is deleted from Chatwoot.",
       ),
       backupNote: t(
         "channels.teardownBackup",
@@ -686,7 +686,7 @@ export function ChannelsPage() {
       title: t("channels.removeAccountTitle", "Remove account"),
       warning: t(
         "channels.removeAccountWarning",
-        "This permanently deletes this account's local mirror: its conversations, inboxes, bots and analytics. It cannot be undone, and frees the account to be connected by another tenant. The data in Chatwoot itself is not touched.",
+        "This permanently deletes this account's conversations, inboxes, bots, and dashboard data from fazer.ai. The account can then be connected elsewhere. Nothing is deleted from Chatwoot.",
       ),
       backupNote: t(
         "channels.teardownBackup",
@@ -807,7 +807,7 @@ export function ChannelsPage() {
       title: t("channels.removeInboxTitle", "Remove inbox mirror"),
       message: t(
         "channels.removeInboxWarning",
-        "This removes the local copy of an inbox that was deleted in Chatwoot. Past conversations are kept and stop naming an inbox; past usage and log lines are kept. It cannot be undone, and only works once the inbox is gone from Chatwoot.",
+        "This removes an inbox from fazer.ai after it has been deleted in Chatwoot. Past conversations remain but no longer show the inbox; usage data and Logs also remain. It only works after deletion in Chatwoot and cannot be undone.",
       ),
       danger: true,
       confirmLabel: t("channels.removeInboxAction", "Remove mirror"),

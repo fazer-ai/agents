@@ -44,6 +44,83 @@ Reference wiring: `pages/resources/documents/CompanyProfileCard.tsx`.
 
 Refusals rendered into **local error state** rather than a toast are a third population, unswept and unfenced: issue #329.
 
+## Where help goes
+
+Sibling to the section above, and the same kind of rule: that one decides where a message about
+what went **wrong** lands, this one decides where an **explanation** lands. Both turn on the same
+question, will the operator actually read this, and both are rules rather than preferences, so a
+new field does not need a fresh discussion (issue #411).
+
+**Three outcomes, and a test that picks one.** Two outcomes are not enough: the best pattern in the
+app already uses the third, and without a name for it the next capped field gets a 200-character
+sentence instead.
+
+| | outcome | the test |
+|---|---|---|
+| 1 | **inline**, under the control (`description`) | *Can they act correctly without reading it?* No → inline. |
+| 2 | **on the control, revealed by state** | *Can the app tell that this now applies?* Yes → the app says it, at that moment. |
+| 3 | **behind the affordance** (`help`, the `?`) | *Is it read once and then remembered?* Yes → behind the `?`. |
+
+Outcome 1 is what no state can reveal: a format example, a cross-field dependency, a statement of
+the default. Outcome 3 is why the thing exists, when it applies, what it costs: a **decision**, and
+a decision is made once.
+
+Outcome 2 is the one that gets forgotten, and the worked example is already shipped. Six settings
+fields carry a text cap (`modules/agents/text-caps.ts`; exceeding one is a refused save, so by the
+outcome-1 test a cap is the strongest possible candidate for permanent prose) and **no hint in either locale
+declares one of those caps**. (`2000` does turn up twice, as a token floor and a log-truncation
+limit; neither is the cap of a capped field.) `Textarea` declares the cap itself: a counter from
+80% of it (`COUNTER_FROM`) and the consequence sentence only past it. The case with the highest cost
+of going unread, solved with zero standing prose.
+
+**Length is a symptom, not the rule.** A long string is a prompt to re-run the test, never the
+verdict, and the threshold is applied **per key in the source language**, not per locale. The
+catalogue is bilingual and pt-BR runs about 6% longer, so a length rule applied per file puts the
+same field inline in one language and behind a `?` in the other, which is worse than either answer.
+Measured on the current tree: 2252 en keys / 2260 pt-BR, of which 45 and 49 are ≥200 characters.
+
+**Two constraints the mechanism imposes.**
+
+- `FormField` renders `error` and `subtext` in the **same slot, exclusively** (`{error ? error :
+  subtext}`). A constraint that lives only in the inline text therefore disappears at the exact
+  moment it is violated: the refusal replaces the sentence that would have explained it. That is an
+  argument for outcome 2 independent of screen real estate, and it is why `Textarea`'s counter is
+  right to sit outside that slot: it survives its own error.
+- The `?` is `HelpPopover`, a **Popover and never a Tooltip**. A Radix tooltip cannot be opened by
+  touch at all: three handlers close every route in, measured in the note on `Popover.tsx`, and the
+  console has a mobile drawer. `Tooltip` stays for what it is good at, a one-line label on a control
+  whose icon is not self-evident, and its `children` is now **required** for that reason: it used to
+  render its own `?` when given none, which is how a tooltip came to be used as a help affordance in
+  the first place. The template it came from still does (`bunfire`, `HomePage.tsx`).
+- `HelpPopover` takes a `label`, and every surface that has one passes it (`FormField` its label,
+  `Section` its title, `KpiCard` its caption, `SwitchField` its label). Without it every trigger on
+  a page is announced identically, so a screen-reader user tabbing a form of twelve fields hears
+  the same three words twelve times. The name is **composed** (`"Show help: History ceiling"`) and
+  not interpolated, because an accessible name that depends on `t` interpolating breaks under the
+  `react-i18next` stub nine client test files install and leak.
+
+**The awkward cases, answered.**
+
+| case | outcome | why |
+|---|---|---|
+| a footgun (`google_calendar` is reserved) | 2 | only actionable when somebody types it, and a refusal naming it then reaches an operator that a permanent sentence never would |
+| a cross-field dependency ("same value on the tool that cancels") | 1 | the one kind of help the field can never reveal, because the fact lives on another screen |
+| a statement of the default ("empty, no reminder is sent") | 1 | and cheap: `editor.contactAuthDenyMessageHint` does it in 86 characters, right at the catalogue median |
+| a destructive action's consequence (`editor.deleteWarning`, `channels.removeInboxWarning`) | 1 | it is read at the moment it matters and nowhere else; a confirm dialog IS the state-revealed moment |
+| a detected misconfiguration (`editor.configIssue*`) | 2, already | the app found the condition and is saying it. Not a `?` candidate: what these need is shorter prose, not another home |
+
+**This is about help, not about forms.** A KPI whose methodology takes five sentences, a section
+whose purpose is not obvious from its heading, a diagnostic that only parses for somebody who knows
+the subsystem: all outcome 3, and `HelpPopover` goes **next to the caption or heading**, not under
+it. `dashboard.kpi.firstResponseNote` is the finding that forced this to be said out loud: 574
+characters of Chatwoot methodology set loose in the middle of the panel, under no field at all.
+
+**The shape of an outcome-3 text**, because the `?` is not a licence for the wall of prose it just
+took off the page. Three short paragraphs: **what it is**, **what it does**, **the caveat**. They
+are separated by a blank line in the catalogue and `Popover` splits on blank lines to render them,
+so no markup goes into a translation file, where a translator cannot see it and a lint rule cannot
+check it. `editor.limitsMaxHistoryTokensHelp` is the reference.
+
 ## i18n gotchas
 
 - `t("key", "Default")` everywhere; `bun i18n:extract` auto-adds keys to `en.json` AND `pt-BR.json` (copying the English default into pt-BR — **new pt-BR keys must then be translated**). Run `bun check` (which runs the extractor) after adding strings.

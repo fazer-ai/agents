@@ -6,6 +6,7 @@ import {
   Button,
   CredentialPicker,
   FormField,
+  HelpPopover,
   HighlightedTemplateField,
   Input,
   Modal,
@@ -1092,7 +1093,7 @@ export function ToolEditModal({
             group
             description={t(
               "tools.aiFieldsHint",
-              "The inputs the AI fills in. Give each a clear description, then reference it as {{name}} in the URL, query, headers or body (use Insert variable). Everything else (a constant or a {{context}} value) goes straight into those fields.",
+              "Describe each AI input and insert {{name}} where it goes; put constants and {{context}} directly in the field.",
             )}
           >
             <AiFieldsPanel
@@ -1380,9 +1381,9 @@ export function ToolEditModal({
               "tools.expectedStatuses",
               "Statuses that mean 'no result'",
             )}
-            description={t(
-              "tools.expectedStatusesHint",
-              "Comma-separated, e.g. 404. Use it when this API answers with an error status for an ordinary answer — a lookup that returns 404 for 'no record'. Those responses stop counting as integration failures, so they no longer raise alerts. The AI reads the same reply either way. Leave empty and every non-2xx is treated as a failure.",
+            help={t(
+              "tools.expectedStatusesHelp",
+              'These codes identify ordinary responses that arrive with an error status, such as 404 for "not found."\n\nAdding them stops those responses from counting as failures or raising alerts. The AI receives the same response either way.\n\nIf the field is empty, every status outside 200 to 299 counts as a failure.',
             )}
             error={refusal.at("expectedStatuses", current.expectedStatuses)}
           >
@@ -1401,9 +1402,9 @@ export function ToolEditModal({
                 "tools.appointment",
                 "This tool books or cancels an appointment",
               )}
-              description={t(
-                "tools.appointmentHint",
-                "Tell the platform when this tool's answer is about a commitment, so it can hold follow-ups while the booking stands and remind ahead of it. Say where the booking's id and start time are in the response: dot-separated keys, a number for an array position, e.g. data.items.0.id. The id has to be the same one your cancellation tool answers with.",
+              help={t(
+                "tools.appointmentHelp",
+                "This option identifies when the tool creates or cancels an appointment.\n\nThe platform pauses follow-up messages while the appointment is active and sends the configured reminders.\n\nEnter the response paths for the ID and start time, using dots between levels and numbers for list positions, such as data.items.0.id. The cancellation tool must return the same ID.",
               )}
             >
               <Select
@@ -1502,7 +1503,7 @@ export function ToolEditModal({
                   label={t("tools.appointmentProvider", "Booking system")}
                   description={t(
                     "tools.appointmentProviderHint",
-                    "Only needed if you have more than one booking system: an id is unique only within the system that issued it. Use the same name on the tool that books and the tool that cancels, or the cancellation will not find the appointment.",
+                    "Only for multiple booking systems: use the same name on the tools that book and cancel.",
                   )}
                 >
                   <Input
@@ -1615,7 +1616,7 @@ export function ToolEditModal({
                       )}
                       description={t(
                         "tools.appointmentOffsetsHint",
-                        "Comma-separated, e.g. 24, 1 (up to five, between 1 and 8760 hours). Leave empty and no reminder is sent — the booking still holds follow-ups and still reaches the AI. Use it only when your own system does not already remind them.",
+                        "Enter up to five lead times from 1 to 8760 hours, separated by commas, such as 24, 1; empty disables reminders only.",
                       )}
                     >
                       <Input
@@ -1664,7 +1665,7 @@ export function ToolEditModal({
 
           <div className="flex flex-col gap-3 rounded-md border border-border p-3">
             <div className="flex items-center justify-between gap-3">
-              <div className="flex flex-col">
+              <div className="flex items-center gap-1.5">
                 <label
                   htmlFor={ackId}
                   data-clickable="true"
@@ -1672,12 +1673,13 @@ export function ToolEditModal({
                 >
                   {t("tools.ack", "Send a holding message")}
                 </label>
-                <span className="text-text-muted text-xs">
-                  {t(
-                    "tools.ackHint",
-                    "When on, the AI must write a short holding message before this (slow) tool runs — and the tool won't run until it does. The example below only sets the tone; it is never sent as-is.",
+                <HelpPopover
+                  content={t(
+                    "tools.ackHelp",
+                    "This option makes the agent notify the customer before starting a slow tool.\n\nThe tool starts only after the agent sends this message.\n\nThe example below sets the tone, but is never sent unchanged.",
                   )}
-                </span>
+                  label={t("tools.ack", "Send a holding message")}
+                />
               </div>
               <Switch
                 id={ackId}

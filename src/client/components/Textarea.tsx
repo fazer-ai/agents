@@ -1,6 +1,7 @@
 import { forwardRef, useId } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/client/lib/utils";
+import { mergeDescribedBy, useFormField } from "./FormFieldContext";
 
 type TextareaProps = React.TextareaHTMLAttributes<HTMLTextAreaElement> & {
   error?: boolean;
@@ -26,6 +27,7 @@ const COUNTER_FROM = 0.8;
 export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
   ({ className, error, errorMessage, helperText, rows = 5, ...props }, ref) => {
     const { t } = useTranslation();
+    const field = useFormField();
     const max = typeof props.maxLength === "number" ? props.maxLength : null;
     // Raw length: the same thing the browser enforces `maxLength` against, and the same thing the
     // write boundary refuses on (see modules/agents/text-caps.ts). Measuring the trimmed value put
@@ -44,7 +46,10 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
           ref={ref}
           rows={rows}
           aria-invalid={hasError || undefined}
-          aria-describedby={hasDescription ? descriptionId : undefined}
+          aria-describedby={mergeDescribedBy(
+            field.describedById,
+            hasDescription ? descriptionId : undefined,
+          )}
           className={cn(
             // overflow-x-hidden: the textarea always wraps (pre-wrap + break-word), so it never needs a
             // horizontal scrollbar — pinning it off kills the spurious x-scrollbar track/flash.

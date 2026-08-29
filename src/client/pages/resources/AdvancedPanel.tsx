@@ -6,6 +6,7 @@ import {
   CredentialPicker,
   DataBoundary,
   FormField,
+  HelpPopover,
   Switch,
   useToast,
 } from "@/client/components";
@@ -268,7 +269,7 @@ export function AdvancedPanel() {
             />
           </FormField>
           <div className="flex items-center justify-between rounded-lg border border-border px-3 py-2">
-            <div className="flex flex-col gap-0.5 pr-4">
+            <div className="flex items-center gap-1.5 pr-4">
               <label
                 htmlFor={sendContentId}
                 data-clickable="true"
@@ -279,12 +280,16 @@ export function AdvancedPanel() {
                   "Send conversation content",
                 )}
               </label>
-              <span className="text-text-muted text-xs">
-                {t(
-                  "advanced.observability.sendContentHint",
-                  "When off, conversation text is masked before sending; turn structure, tool calls, latencies, tokens and costs still appear in traces. Enable only if you accept sending conversation content to Langfuse.",
+              <HelpPopover
+                content={t(
+                  "advanced.observability.sendContentHelp",
+                  "This option controls whether message text is included in the Logs sent to Langfuse.\n\nWhen on, Langfuse receives the full conversation content.\n\nWhen off, the text is hidden before sending. Logs still show conversation structure, tool use, response times, processed volume, and costs.",
                 )}
-              </span>
+                label={t(
+                  "advanced.observability.sendContent",
+                  "Send conversation content",
+                )}
+              />
             </div>
             <Switch
               id={sendContentId}
@@ -293,7 +298,7 @@ export function AdvancedPanel() {
             />
           </div>
           <div className="flex items-center justify-between rounded-lg border border-border px-3 py-2">
-            <div className="flex flex-col gap-0.5 pr-4">
+            <div className="flex items-center gap-1.5 pr-4">
               <label
                 htmlFor={debugId}
                 data-clickable="true"
@@ -301,12 +306,16 @@ export function AdvancedPanel() {
               >
                 {t("advanced.observability.debug", "Debug mode (tool schemas)")}
               </label>
-              <span className="text-text-muted text-xs">
-                {t(
-                  "advanced.observability.debugHint",
-                  "Sends the full schema of every available tool with each trace. Tool names always appear; enable this only while debugging tool exposure. Recommended off, since the full schemas bloat Langfuse.",
+              <HelpPopover
+                content={t(
+                  "advanced.observability.debugHelp",
+                  "This mode includes the full definition of every available tool in Logs.\n\nUse it to check which tools the agent received and how they were described.\n\nTool names already appear when this mode is off. Full definitions increase Langfuse data volume, so turn it off after debugging.",
                 )}
-              </span>
+                label={t(
+                  "advanced.observability.debug",
+                  "Debug mode (tool schemas)",
+                )}
+              />
             </div>
             <Switch
               id={debugId}

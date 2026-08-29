@@ -2,6 +2,7 @@ import { Eye, EyeOff } from "lucide-react";
 import { forwardRef, useId, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/client/lib/utils";
+import { mergeDescribedBy, useFormField } from "./FormFieldContext";
 
 type BaseInputProps = Omit<
   React.InputHTMLAttributes<HTMLInputElement>,
@@ -41,6 +42,9 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
     ref,
   ) => {
     const { t } = useTranslation();
+    // The id of the message the surrounding <FormField> renders, so this control can point
+    // `aria-describedby` at it. Without this the field's own description is announced nowhere.
+    const field = useFormField();
     const hasError = error || !!errorMessage;
     const descriptionId = useId();
     const hasDescription = !!errorMessage || !!helperText;
@@ -58,7 +62,12 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
                 : autoComplete
             }
             aria-invalid={hasError || undefined}
-            aria-describedby={hasDescription ? descriptionId : undefined}
+            // BOTH ids, not one: the field describes the control in general and this control
+            // describes its own state. Replacing either is how a validation message goes unread.
+            aria-describedby={mergeDescribedBy(
+              field.describedById,
+              hasDescription ? descriptionId : undefined,
+            )}
             className={cn(
               "w-full rounded-lg border border-border bg-bg-tertiary px-4 py-2 text-text-primary placeholder-text-placeholder focus:border-border-focus focus:outline-none disabled:opacity-60",
               { "border-error": hasError, "pr-10": !!showPasswordToggle },

@@ -11,12 +11,20 @@ import {
   TrendingUp,
   TriangleAlert,
 } from "lucide-react";
-import { lazy, Suspense, useCallback, useEffect, useState } from "react";
+import {
+  lazy,
+  type ReactNode,
+  Suspense,
+  useCallback,
+  useEffect,
+  useState,
+} from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router";
 import {
   Card,
   DataBoundary,
+  HelpPopover,
   PageContainer,
   Skeleton,
 } from "@/client/components";
@@ -67,12 +75,17 @@ function KpiCard({
   primary,
   secondary,
   accent,
+  help,
 }: {
   icon: typeof Coins;
   label: string;
   primary: string;
   secondary: string;
   accent?: boolean;
+  // How the number is measured, for the operator who wants to trust it. Behind the `?` and not
+  // under the card: methodology is read once, and this panel is scanned every day (docs/ui.md →
+  // Where help goes).
+  help?: ReactNode;
 }) {
   return (
     <Card className="flex flex-col gap-2">
@@ -82,6 +95,7 @@ function KpiCard({
           aria-hidden="true"
         />
         {label}
+        {help ? <HelpPopover content={help} label={label} /> : null}
       </div>
       <p className="font-semibold text-2xl text-text-primary tabular-nums">
         {primary}
@@ -737,13 +751,11 @@ export function DashboardPage() {
                           "no data for this period yet",
                         )
                   }
-                />
-                <p className="text-text-tertiary text-xs sm:col-span-2">
-                  {t(
-                    "dashboard.kpi.firstResponseNote",
-                    "How long the team took to answer, as Chatwoot itself measures it: from the conversation's creation to its first reply from a person. The agent's own answers are not counted here, they are in the funnel above. On a conversation the business opened, the opening message counts as the reply, which is what this number means on the Chatwoot dashboard too. A conversation joins this count the next time Chatwoot sends an event for it, so one already closed before this version may never appear, and an empty period means there is nothing to read rather than that nobody answered.",
+                  help={t(
+                    "dashboard.kpi.firstResponseHelp",
+                    "Measures the time from conversation creation to the first reply from a person. Agent replies appear in the funnel above, not here.\n\nIf the business started the conversation, its opening message counts as the first reply, just as it does in the Chatwoot dashboard.\n\nOlder conversations only appear after Chatwoot sends another event for them. An empty period means there is no data.",
                   )}
-                </p>
+                />
               </div>
             </section>
 

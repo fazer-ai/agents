@@ -1880,8 +1880,8 @@ function AgentEditor() {
   // t('editor.configIssue.guardrails', 'Guardrails are on but have no API key set, so messages go out unscreened.')
   // t('editor.configIssuePending.guardrails', 'The guardrails credential is referenced but not filled in yet, so messages go out unscreened.')
   // t('editor.configIssueUnresolved.guardrails', 'The guardrails credential no longer exists, so messages go out unscreened.')
-  // t('editor.configIssueGuardrailsFailing', 'Guardrails are on, but {{failures}} of their checks could not run in the last {{hours}} hours (the most recent {{when}}). Analysis is fail-open, so a check that could not run caught nothing and held nothing back. Check the model, the endpoint and the key.')
-  // t('editor.configIssueGuardrailsFailingCause', 'Guardrails are on, but {{failures}} of their checks could not run in the last {{hours}} hours (the most recent {{when}}). Analysis is fail-open, so a check that could not run caught nothing and held nothing back. The last one said: {{error}}')
+  // t('editor.configIssueGuardrailsFailing', "Guardrails are on, but {{failures}} of the Checks could not run in the last {{hours}} hours (the most recent {{when}}). A check that could not run caught nothing and held nothing back. Check “Guardrails model”, “Base URL” and “API key”.")
+  // t('editor.configIssueGuardrailsFailingCause', "Guardrails are on, but {{failures}} of the Checks could not run in the last {{hours}} hours (the most recent {{when}}). A check that could not run caught nothing and held nothing back. The last one said: {{error}}")
   // t('editor.configIssuePending.model', 'The model credential is referenced but not filled in yet.')
   // t('editor.configIssuePending.stt', 'The transcription credential is referenced but not filled in yet.')
   // t('editor.configIssuePending.tts', 'The audio-reply credential is referenced but not filled in yet.')
@@ -2094,12 +2094,12 @@ function AgentEditor() {
       return params.error
         ? t(
             "editor.configIssueGuardrailsFailingCause",
-            "Guardrails are on, but {{failures}} of their checks could not run in the last {{hours}} hours (the most recent {{when}}). Analysis is fail-open, so a check that could not run caught nothing and held nothing back. The last one said: {{error}}",
+            "Guardrails are on, but {{failures}} of the Checks could not run in the last {{hours}} hours (the most recent {{when}}). A check that could not run caught nothing and held nothing back. The last one said: {{error}}",
             params,
           )
         : t(
             "editor.configIssueGuardrailsFailing",
-            "Guardrails are on, but {{failures}} of their checks could not run in the last {{hours}} hours (the most recent {{when}}). Analysis is fail-open, so a check that could not run caught nothing and held nothing back. Check the model, the endpoint and the key.",
+            "Guardrails are on, but {{failures}} of the Checks could not run in the last {{hours}} hours (the most recent {{when}}). A check that could not run caught nothing and held nothing back. Check “Guardrails model”, “Base URL” and “API key”.",
             params,
           );
     }
@@ -2111,12 +2111,12 @@ function AgentEditor() {
       return issue.key === "outOfHoursBoth"
         ? t(
             "editor.configIssueOutOfHoursBoth",
-            "Chatwoot already replies out of hours on {{inboxes}}, and this agent's out-of-hours message is on as well, so the customer gets both. The two schedules are set in different products and Chatwoot's has no dates in it, so on a holiday they will disagree too.",
+            "Chatwoot and this agent both send out-of-hours messages on {{inboxes}}, so the customer receives both. Their schedules are configured separately, and Chatwoot's has no dates; they also conflict on holidays.",
             { inboxes },
           )
         : t(
             "editor.configIssueOutOfHoursChatwoot",
-            "Chatwoot replies out of hours on {{inboxes}}, and this agent does not read that schedule: it answers whenever its own says it is open. The customer can be told the business is closed and served in the same breath.",
+            "Chatwoot sends an out-of-hours message on {{inboxes}}, but this agent follows only its own schedule. The customer can be told the business is closed and receive service moments later.",
             { inboxes },
           );
     }
@@ -3023,7 +3023,7 @@ function AgentEditor() {
       title: t("editor.deleteTitle", "Delete agent"),
       warning: t(
         "editor.deleteWarning",
-        'This permanently deletes "{{name}}" (its prompt, tool grants and behavior settings) and detaches every inbox bound to it. It cannot be undone. The shared building blocks (tools, knowledge bases, integrations) are not touched.',
+        'This permanently deletes "{{name}}", including its Agent instructions, tool permissions, and behavior settings. Every inbox is detached. Shared tools, knowledge bases, and integrations remain.',
         { name: confirmName },
       ),
       confirmPhrase: confirmName,

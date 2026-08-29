@@ -71,6 +71,9 @@ const liveHolder = new Map<number, number>();
 // client resolves the base URL's host. It is the window a person can claim, resolve or reassign the
 // conversation in, and the only place a test can stand in it.
 let whileBuildingClient: (() => Promise<void>) | null = null;
+// Work that runs while the toggle is in flight, which is the OTHER window: the fence has already
+// answered, the write to Chatwoot is on the wire, and a conversation event can commit here.
+let whileToggling: (() => Promise<void>) | null = null;
 const posted: { url: string; body: unknown }[] = [];
 const realFetch = globalThis.fetch;
 
@@ -81,6 +84,7 @@ const stubFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   const toggle = url.match(/\/conversations\/(\d+)\/toggle_status/);
   if (toggle && body && typeof body === "object" && "status" in body) {
     liveStatus.set(Number(toggle[1]), String(body.status));
+    await whileToggling?.();
   }
   // The live read the takeover reconciles from, answered the way the REST show does: the current
   // status, the bot still holding it, and an `updated_at` — the field the toggle response itself
@@ -705,6 +709,35 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     await deliver(conv, { ...composerReply("aqui é a Ana") }, ZAPI_INBOX_ID);
     expect(toggles(conv).length).toBe(1);
     expect(liveStatus.get(conv)).toBe("open");
+  });
+
+  // The window the CAS on the fallback write closes. The fence answered `pending`, the toggle is on
+  // the wire, and a conversation event commits in between — an operator resolving, a hand-back. An
+  // unconditional write would put `open` over that newer state and leave the newer ordering mark
+  // in place, where nothing later corrects it.
+  test("a state that moved while the toggle was in flight is not overwritten", async () => {
+    const conv = 8500;
+    await deliver(conv, { ...customerSays("oi") });
+    const row = await convRow(conv);
+    whileToggling = async () => {
+      await suDb.conversation.update({
+        where: { id: row?.id },
+        data: { status: "resolved" },
+      });
+    };
+    // With the live read failing, the fallback write is the ONLY thing that touches the row, which is
+    // what isolates the CAS: a reconcile that succeeded would settle the question either way and the
+    // test would prove nothing about it. That pairing is not contrived — a slow or broken Chatwoot is
+    // exactly when the fallback is load-bearing.
+    failingReads.add(conv);
+    try {
+      await deliver(conv, { ...deviceReply("já te respondo") });
+    } finally {
+      whileToggling = null;
+      failingReads.delete(conv);
+    }
+    expect(toggles(conv).length).toBe(1);
+    expect((await convRow(conv))?.status).toBe("resolved");
   });
 
   test("the switch turns it off, and nothing else changes", async () => {

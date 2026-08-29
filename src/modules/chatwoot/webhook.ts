@@ -4152,6 +4152,14 @@ export async function processChatwootDelivery(
         // UNVERSIONED, and only the field the action changed — the same fallback the console takes
         // when its live read cannot be ordered (mirrorConsoleWrite, issue #77). It claims no version,
         // so a conversation event that really is newer still outranks it when it lands.
+        //
+        // AND CONDITIONAL ON `pending`, which is a CAS and not decoration. The fence answered before
+        // the toggle, and the toggle is a network round trip — so a conversation event committed in
+        // that window (an operator resolving, a hand-back) can have moved this row already, and an
+        // unconditional write would replace that newer state with `open` while leaving the newer
+        // ordering mark in place, where nothing later can correct it. `pending` is the only state
+        // this decision was ever based on, so it is the only one this write may replace: anything
+        // else matches nothing and the newer value stands.
         try {
           await runScopedOn(base, sysCtx(params.tenantId), (db) =>
             db.conversation.updateMany({
@@ -4159,6 +4167,7 @@ export async function processChatwootDelivery(
                 tenantId: params.tenantId,
                 chatwootInstanceId: params.instanceId,
                 chatwootConversationId: conversationId,
+                status: "pending",
               },
               data: { status: "open" },
             }),

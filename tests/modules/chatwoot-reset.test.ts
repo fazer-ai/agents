@@ -2566,18 +2566,24 @@ describe.skipIf(!dbUp)(
     // ownership answers `none`: the irreversible half (taking the conversation off a human) is the
     // one that must not fire on a guess.
     test("an ownership read that fails does not strand the command", async () => {
+      let fenceReads = 0;
       const blind = appDb.$extends({
         query: {
           conversation: {
             findUnique({ args, query }) {
               const sel = (args.select ?? {}) as Record<string, unknown>;
-              // The fence's own read, identified by the three columns it asks for.
+              // The fence's own read, identified by the exact projection it asks for. Matched
+              // whole rather than as a subset: the config load reads the same row with more
+              // columns, and breaking that one would end the command before it reaches what this
+              // test is about.
               if (
-                Object.keys(sel).length === 3 &&
+                Object.keys(sel).length === 4 &&
                 sel.assigneeType === true &&
                 sel.assigneeId === true &&
-                sel.status === true
+                sel.status === true &&
+                sel.chatwootStatusAt === true
               ) {
+                fenceReads += 1;
                 return Promise.reject(new Error("connection reset"));
               }
               return query(args);
@@ -2593,6 +2599,9 @@ describe.skipIf(!dbUp)(
         base: blind,
       });
 
+      // Guards the guard: a fence that stopped selecting these columns would make this test pass by
+      // injecting nothing at all.
+      expect(fenceReads).toBeGreaterThan(0);
       // The command still reports what it did — including the sentence about the hand-back, whose
       // own ownership read is the second place this could have thrown after the cleanup.
       expect(ackCalls(cw.calls).length).toBeGreaterThan(0);
@@ -2664,17 +2673,20 @@ describe.skipIf(!dbUp)(
         where: { id: agentId },
         data: { enabled: false },
       });
+      let fenceReads = 0;
       const blind = appDb.$extends({
         query: {
           conversation: {
             findUnique({ args, query }) {
               const sel = (args.select ?? {}) as Record<string, unknown>;
               if (
-                Object.keys(sel).length === 3 &&
+                Object.keys(sel).length === 4 &&
                 sel.assigneeType === true &&
                 sel.assigneeId === true &&
-                sel.status === true
+                sel.status === true &&
+                sel.chatwootStatusAt === true
               ) {
+                fenceReads += 1;
                 return Promise.reject(new Error("connection reset"));
               }
               return query(args);
@@ -2691,6 +2703,7 @@ describe.skipIf(!dbUp)(
           base: blind,
         });
 
+        expect(fenceReads).toBeGreaterThan(0);
         expect(ackCalls(cw.calls).length).toBeGreaterThan(0);
         expect(
           cw.calls.filter((c) =>

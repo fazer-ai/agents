@@ -1178,7 +1178,15 @@ async function conversationOwnershipNow(p: {
   conversationId: number;
   ourAgentBotId: number | null;
   base: PrismaClient;
-}): Promise<{ ours: true } | { ours: false; closed: GateCloseDetail | null }> {
+}): Promise<
+  // `statusAt` rides along on the OWNED answer because a caller that acts on this reading has to be
+  // able to write CONDITIONALLY on it, and a second read to fetch the version would answer about a
+  // different moment — the same rule `describeClosedGate` states from its own side. It is the row's
+  // status version (`chatwoot_status_at`), so a write carrying it back replaces only the state this
+  // answer was about.
+  | { ours: true; statusAt: number | null }
+  | { ours: false; closed: GateCloseDetail | null }
+> {
   const conv = await runScopedOn(p.base, sysCtx(p.tenantId), (db) =>
     db.conversation.findUnique({
       where: {
@@ -1190,7 +1198,12 @@ async function conversationOwnershipNow(p: {
       },
       // assigneeId is part of the question, not decoration: without it shouldBotHandle cannot tell
       // OUR bot from another one, and a conversation handed to a different bot reads as ours.
-      select: { assigneeType: true, assigneeId: true, status: true },
+      select: {
+        assigneeType: true,
+        assigneeId: true,
+        status: true,
+        chatwootStatusAt: true,
+      },
     }),
   );
   if (p.ourAgentBotId === null && conv?.assigneeType === "AgentBot") {
@@ -1205,7 +1218,7 @@ async function conversationOwnershipNow(p: {
     { ourAgentBotId: p.ourAgentBotId },
   );
   return ours
-    ? { ours: true }
+    ? { ours: true, statusAt: conv?.chatwootStatusAt ?? null }
     : {
         ours: false,
         closed: describeClosedGate({
@@ -4060,11 +4073,13 @@ export async function processChatwootDelivery(
   // then drives a full turn, with the agent speaking into a thread a colleague is already holding.
   //
   // `act` is the FIRST half of the fence and not the whole of it. It says the bot still owned the
-  // conversation when this event was mirrored; the second half is asked again immediately before the
-  // write, by the shared unit, because everything between the two is time a person can claim, resolve
-  // or reassign the conversation in — and one of the steps is a network round trip, since building
-  // the client resolves the base URL's host. Without the re-check an unconditional toggle would
-  // overwrite a resolve somebody had just done with `open`.
+  // conversation when this event was mirrored; the second half is a versioned compare-and-swap on the
+  // mirrored row, asked and applied as one statement by the shared unit's fence, because everything
+  // between the two is time a person can claim, resolve or reassign the conversation in — and one of
+  // the steps is a network round trip, since building the client resolves the base URL's host.
+  // Without the re-check an unconditional toggle would overwrite a resolve somebody had just done
+  // with `open`; without the version it would overwrite a hand-back, which writes `pending` and so
+  // looks exactly like the state this decision was made about.
   //
   // Not idempotent by bookkeeping but by the gate: a re-delivered webhook finds the conversation no
   // longer `pending`, `act` is false, and nothing is written or logged a second time.
@@ -4108,60 +4123,107 @@ export async function processChatwootDelivery(
           botToken: bot?.accessToken,
           makeClient: params.deps?.makeClient,
         }));
+      // THE FENCE AND THE LOCAL HANDOVER ARE ONE WRITE, and that ordering is the decision here.
+      // Everything that decides whether the agent may still speak reads `shouldBotHandle` off THIS
+      // ROW and never off Chatwoot: the runtime's recheck after the model call, the debounce flush
+      // before its turn, the follow-up ladder's eligibility, the nudge's own checks. The row is what
+      // silences them, so until it moves they all still answer "the bot owns this".
+      //
+      // Writing it after the toggle left that window open for the toggle's own duration, plus the
+      // DNS resolution that building the client costs. A turn already running when the person
+      // replied reaches its recheck inside that window, reads `pending`, and posts on top of them —
+      // the very bug this block exists to prevent, surviving as a narrower one. So the row moves at
+      // the instant the fence answers, in one statement, with nothing that waits on a network
+      // between the two.
+      //
+      // Three questions, asked of one read so none of them can answer about a different moment: is
+      // the conversation still the bot's, is this decision still the most recent one about it, and
+      // is the row still the one all of that was true of. The first is ownership, the second is
+      // ordering, and the third is the compare-and-swap that carries them into the write. `pending`
+      // alone answers none of them — a hand-back writes `pending` too.
+      let claimedAt: number | null = null;
+      let claimed = false;
       const opened = await openForHumanQueue({
         gate: `human reply (${humanReplyBy})`,
         conversationId,
-        stillOurs: async () =>
-          (
-            await conversationOwnershipNow({
-              tenantId: params.tenantId,
-              instanceId: params.instanceId,
-              conversationId,
-              // THE ROUTE's bot, which is the identity `act` asked about, and asking a different
-              // one here turns the re-check into a second, stricter gate. Measured: Chatwoot fans a
-              // message to the conversation's assigned bot AND the inbox's, so on a conversation
-              // held by another persona's bot the assigned-bot delivery passes `act` and this fence
-              // — asked about the inbox persona — would reject it, while the inbox-bot delivery
-              // never passes `act` at all. Neither takes over, and the conversation a person just
-              // answered stays `pending`.
-              //
-              // The TOKEN below stays the inbox persona's, and the two are not in conflict because
-              // they answer different questions: the fence asks whether THIS DELIVERY may still act,
-              // and the token asks who we are on this instance. The write is a conversation's state,
-              // not a persona's utterance.
-              ourAgentBotId: params.agentBotId,
-              base,
-            })
-          ).ours,
+        stillOurs: async () => {
+          const now = await conversationOwnershipNow({
+            tenantId: params.tenantId,
+            instanceId: params.instanceId,
+            conversationId,
+            // THE ROUTE's bot, which is the identity `act` asked about, and asking a different
+            // one here turns the re-check into a second, stricter gate. Measured: Chatwoot fans a
+            // message to the conversation's assigned bot AND the inbox's, so on a conversation
+            // held by another persona's bot the assigned-bot delivery passes `act` and this fence
+            // — asked about the inbox persona — would reject it, while the inbox-bot delivery
+            // never passes `act` at all. Neither takes over, and the conversation a person just
+            // answered stays `pending`.
+            //
+            // The TOKEN below stays the inbox persona's, and the two are not in conflict because
+            // they answer different questions: the fence asks whether THIS DELIVERY may still act,
+            // and the token asks who we are on this instance. The write is a conversation's state,
+            // not a persona's utterance.
+            ourAgentBotId: params.agentBotId,
+            base,
+          });
+          if (!now.ours) return false;
+          claimedAt = now.statusAt;
+          // AND IS THIS DECISION STILL THE MOST RECENT ONE? Ownership alone cannot answer that,
+          // because the state that would overrule us is `pending` and bot-owned too: a hand-back
+          // ("Return to AI", conversations/service.ts) puts the conversation back exactly there. So
+          // the two `pending`s are told apart the way every other out-of-order question in this
+          // module is — by version, with the rule state-order.ts states: a row stamped AHEAD of the
+          // payload that drove this decision is a later answer about the same conversation, and a
+          // later answer wins. Without it the operator who just asked for the agent back watches the
+          // request undone by a reply they had already sent.
+          if (
+            now.statusAt !== null &&
+            n.conversationUpdatedAt != null &&
+            n.conversationUpdatedAt < now.statusAt
+          ) {
+            return false;
+          }
+          // UNVERSIONED, and only the field the action changed — the same fallback the console
+          // takes when its live read cannot be ordered (mirrorConsoleWrite, issue #77). Claiming no
+          // version is what lets a conversation event that really is newer still outrank this write
+          // when it lands; the reconcile below is what earns it one.
+          //
+          // `chatwootStatusAt` in the predicate is what makes this a compare-and-swap rather than a
+          // check-then-act: the read above and this write are two statements, and another replica
+          // can commit between them. No test in this process can open that window — there is nothing
+          // to await between the two — so the mutation that drops this line survives the suite. It
+          // stays because the window is real, not because a test asks for it.
+          const { count } = await runScopedOn(
+            base,
+            sysCtx(params.tenantId),
+            (db) =>
+              db.conversation.updateMany({
+                where: {
+                  tenantId: params.tenantId,
+                  chatwootInstanceId: params.instanceId,
+                  chatwootConversationId: conversationId,
+                  status: "pending",
+                  chatwootStatusAt: claimedAt,
+                },
+                data: { status: "open" },
+              }),
+          );
+          // A LOST CAS IS A CLOSED FENCE, reported by the shared unit exactly like an ownership
+          // refusal, because that is what it is: something newer than the state this delivery
+          // decided on now holds the row.
+          claimed = count > 0;
+          return claimed;
+        },
         client,
       });
-      // Refused by the fence, or the write failed: both are already reported by the shared unit, and
-      // neither is a takeover — so nothing below runs. NOT a `return`: the delivery still has its
-      // memory ingestion to arm and its row to mark processed.
-      if (opened) {
-        // THE MIRROR, IMMEDIATELY, before anything that can wait. Two readers of that row decide
-        // whether to speak: the runtime's ownership recheck after the model call (../../graph/runtime)
-        // and the debounce flush before its turn, and both read the MIRROR rather than Chatwoot. A
-        // turn that was already running when the person replied reaches its recheck in this window,
-        // reads `pending`, and posts on top of them — which is the bug this whole block exists to
-        // prevent, surviving as a narrower one.
-        //
-        // So the row is written the moment the toggle returns, and the versioned reconcile below is
-        // an improvement on it rather than the thing that closes it. Without this the window is the
-        // GET's own duration, and on a read that fails or comes back unversioned it lasts until
-        // Chatwoot's own conversation_updated is delivered.
-        //
-        // UNVERSIONED, and only the field the action changed — the same fallback the console takes
-        // when its live read cannot be ordered (mirrorConsoleWrite, issue #77). It claims no version,
-        // so a conversation event that really is newer still outranks it when it lands.
-        //
-        // AND CONDITIONAL ON `pending`, which is a CAS and not decoration. The fence answered before
-        // the toggle, and the toggle is a network round trip — so a conversation event committed in
-        // that window (an operator resolving, a hand-back) can have moved this row already, and an
-        // unconditional write would replace that newer state with `open` while leaving the newer
-        // ordering mark in place, where nothing later can correct it. `pending` is the only state
-        // this decision was ever based on, so it is the only one this write may replace: anything
-        // else matches nothing and the newer value stands.
+      // THE TOGGLE FAILED AFTER WE HAD ALREADY SILENCED OURSELVES. The row says `open`, Chatwoot
+      // still says `pending`, and left alone that disagreement is durable in the wrong direction:
+      // every reader above stays quiet on a conversation the platform never handed to anybody, and
+      // nothing corrects it until the next customer message, which only reopens it because a
+      // brand-new incoming message carries the reopen exception (state-order.ts). So the claim is
+      // given back under the same version it was taken with — anything that moved the row since is
+      // newer than this decision and stands.
+      if (!opened && claimed) {
         try {
           await runScopedOn(base, sysCtx(params.tenantId), (db) =>
             db.conversation.updateMany({
@@ -4169,18 +4231,24 @@ export async function processChatwootDelivery(
                 tenantId: params.tenantId,
                 chatwootInstanceId: params.instanceId,
                 chatwootConversationId: conversationId,
-                status: "pending",
+                status: "open",
+                chatwootStatusAt: claimedAt,
               },
-              data: { status: "open" },
+              data: { status: "pending" },
             }),
           );
         } catch (err) {
           logger.warn(
-            "chatwoot: marking the takeover on the mirrored row failed (conv=%s): %s",
+            "chatwoot: releasing the takeover claim after a failed open (conv=%s): %s",
             convLabel,
             errMsg(err),
           );
         }
+      }
+      // Refused by the fence, or the write failed: both are already reported by the shared unit, and
+      // neither is a takeover — so nothing below runs. NOT a `return`: the delivery still has its
+      // memory ingestion to arm and its row to mark processed.
+      if (opened) {
         // AND THEN FROM A LIVE READ, which is what claims a version for it — the toggle endpoint
         // renders a status blob and no `updated_at`, so there is none to write from the call itself
         // (mirrorConsoleWrite, issue #77).

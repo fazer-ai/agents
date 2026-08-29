@@ -65,6 +65,9 @@ const liveStatus = new Map<number, string>();
 const unversionedReads = new Set<number>();
 // Conversations whose REST show fails outright, which is a slow or broken Chatwoot.
 const failingReads = new Set<number>();
+// Conversations whose toggle_status fails, which is the half of a broken Chatwoot that matters after
+// the row has already been claimed locally.
+const failingToggles = new Set<number>();
 // Who holds each conversation in the stub's Chatwoot, when it is not our own bot.
 const liveHolder = new Map<number, number>();
 // Work that runs while the client is being built, which is where the real round trip is: building a
@@ -83,6 +86,10 @@ const stubFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   posted.push({ url, body });
   const toggle = url.match(/\/conversations\/(\d+)\/toggle_status/);
   if (toggle && body && typeof body === "object" && "status" in body) {
+    // Refused BEFORE the status moves, which is what a Chatwoot that never applied the change looks
+    // like. Failing after would leave the stub agreeing with a call that threw.
+    if (failingToggles.has(Number(toggle[1])))
+      return new Response("nope", { status: 502 });
     liveStatus.set(Number(toggle[1]), String(body.status));
     await whileToggling?.();
   }
@@ -336,7 +343,12 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
   async function convRow(convId: number) {
     return suDb.conversation.findFirst({
       where: { tenantId, chatwootConversationId: convId },
-      select: { id: true, status: true, lastHandledMessageId: true },
+      select: {
+        id: true,
+        status: true,
+        lastHandledMessageId: true,
+        chatwootStatusAt: true,
+      },
     });
   }
 
@@ -711,10 +723,94 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     expect(liveStatus.get(conv)).toBe("open");
   });
 
-  // The window the CAS on the fallback write closes. The fence answered `pending`, the toggle is on
-  // the wire, and a conversation event commits in between — an operator resolving, a hand-back. An
-  // unconditional write would put `open` over that newer state and leave the newer ordering mark
-  // in place, where nothing later corrects it.
+  // WHEN the row is silenced, which is the whole ordering decision. Every reader that decides
+  // whether the agent may speak — the runtime's recheck after the model call, the debounce flush,
+  // the follow-up ladder, the nudge — asks `shouldBotHandle` of THIS ROW and never of Chatwoot. A
+  // turn that was already running when the person replied reaches its recheck somewhere inside this
+  // delivery, so the row has to have moved before anything that waits on a network, not after.
+  //
+  // Read from inside the toggle because that is the window: with the write after the round trip, a
+  // reader standing here still sees `pending` and answers.
+  test("the mirrored row is already open while the toggle is in flight", async () => {
+    const conv = 8510;
+    await deliver(conv, { ...customerSays("oi") });
+    let seen: string | null | undefined;
+    whileToggling = async () => {
+      seen = (await convRow(conv))?.status;
+    };
+    try {
+      await deliver(conv, { ...deviceReply("já te respondo") });
+    } finally {
+      whileToggling = null;
+    }
+    expect(seen).toBe("open");
+  });
+
+  // WHY THE CAS IS ON THE VERSION AND NOT ON `pending`. A hand-back — the console's "Return to AI",
+  // the REST endpoint, the MCP tool — writes `pending` too, so a status-only predicate matches the
+  // state that just REPLACED the one this delivery decided on, and silently undoes the operator who
+  // asked for the agent back. The version is the only thing that tells the two `pending`s apart.
+  //
+  // Committed while the client is built, which is where a hand-back can actually land: it is the
+  // round trip between the payload that decided `act` and the write that acts on it.
+  test("a hand-back committed while the client is built is not undone", async () => {
+    const conv = 8511;
+    await deliver(conv, { ...customerSays("oi") });
+    const row = await convRow(conv);
+    whileBuildingClient = async () => {
+      await suDb.conversation.update({
+        where: { id: row?.id },
+        // What `mirrorConsoleWrite` leaves behind on a versioned reconcile: still `pending`, and
+        // stamped ahead of everything this delivery saw.
+        data: {
+          status: "pending",
+          chatwootStatusAt: (row?.chatwootStatusAt ?? 0) + 1000,
+        },
+      });
+    };
+    try {
+      await deliver(conv, { ...deviceReply("já te respondo") });
+    } finally {
+      whileBuildingClient = null;
+    }
+    expect(toggles(conv).length).toBe(0);
+    expect((await convRow(conv))?.status).toBe("pending");
+    expect(liveStatus.get(conv) ?? "pending").toBe("pending");
+    expect((await takeoverRows(conv, 200)).length).toBe(0);
+  });
+
+  // THE OTHER SIDE OF WRITING THE ROW FIRST. The claim is taken locally and then Chatwoot refuses
+  // the open, so the row says `open` over a conversation the platform never handed to anybody —
+  // and every reader above would stay quiet on it with nothing to correct them. Giving the claim
+  // back is what keeps a failed takeover from being worse than no takeover.
+  test("a failed open gives the claim back instead of silencing the agent", async () => {
+    const conv = 8512;
+    await deliver(conv, { ...customerSays("oi") });
+    failingToggles.add(conv);
+    try {
+      await deliver(conv, { ...deviceReply("já te respondo") });
+    } finally {
+      failingToggles.delete(conv);
+    }
+    expect((await convRow(conv))?.status).toBe("pending");
+    expect(liveStatus.get(conv) ?? "pending").toBe("pending");
+    expect((await takeoverRows(conv, 200)).length).toBe(0);
+    // And the agent is still the one answering, which is the claim this test is really about: the
+    // status alone could be read as "nothing happened", and what has to hold is that the next
+    // customer message still drives a turn.
+    const before = turnsRan;
+    await deliver(conv, { ...customerSays("continua aí?") });
+    expect(turnsRan).toBe(before + 1);
+  });
+
+  // AFTER the claim, nothing here writes status again. The claim is taken before the toggle goes
+  // out, so a conversation event that commits while it is on the wire — an operator resolving, a
+  // hand-back — is the LAST word on the row, and it has to survive the rest of this delivery.
+  //
+  // With the live read failing, the claim is the only thing that touched the row, which is what
+  // isolates the question: a reconcile that succeeded would settle it either way and prove nothing
+  // about the path in between. That pairing is not contrived — a slow or broken Chatwoot is exactly
+  // when it is load-bearing.
   test("a state that moved while the toggle was in flight is not overwritten", async () => {
     const conv = 8500;
     await deliver(conv, { ...customerSays("oi") });
@@ -725,10 +821,6 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
         data: { status: "resolved" },
       });
     };
-    // With the live read failing, the fallback write is the ONLY thing that touches the row, which is
-    // what isolates the CAS: a reconcile that succeeded would settle the question either way and the
-    // test would prove nothing about it. That pairing is not contrived — a slow or broken Chatwoot is
-    // exactly when the fallback is load-bearing.
     failingReads.add(conv);
     try {
       await deliver(conv, { ...deviceReply("já te respondo") });

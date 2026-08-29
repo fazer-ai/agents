@@ -8,7 +8,7 @@ import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { AppError, NotFoundError } from "@/lib/errors";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
-import { requireVaultRef } from "@/modules/vault/service";
+import { readableVaultRef, requireVaultRef } from "@/modules/vault/service";
 import { isUsableHeaderName } from "@/modules/webhooks/inbound/auth";
 import {
   generateRouteToken,
@@ -233,9 +233,12 @@ function toInstanceDto(r: {
     name: r.name,
     enabled: r.enabled,
     config: (r.config ?? {}) as Record<string, unknown>,
-    credentialRef: r.credentialRef,
+    // Both refs only where they NAME an entry — see the note on `readableVaultRef`. This module
+    // predates `requireVaultRef` by two months (#126, dc6c467a), so either column can hold a value
+    // no resolver ever matched, and this DTO is what `integration_list` returns over `mcp:read`.
+    credentialRef: readableVaultRef(r.credentialRef),
     inboundAuthStrategy: r.inboundAuthStrategy,
-    inboundSecretRef: r.inboundSecretRef,
+    inboundSecretRef: readableVaultRef(r.inboundSecretRef),
     ...(() => {
       const { token, status } = readRouteToken(r.routeToken);
       return { routeToken: token, routeTokenStatus: status };

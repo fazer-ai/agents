@@ -82,7 +82,14 @@ import {
 // write reads (mcp:read scope + a tenant target). Each tool projects a tenant-scoped service and
 // serializes bigints to strings (JSON.stringify throws on a bigint). Secret-bearing fields are
 // never returned: services redact them (Chatwoot adminToken → hasAdminToken, alert URL → urlMasked,
-// API key → prefix), and credentialRef values are projected back to vault entry NAMES, never values.
+// API key → prefix).
+//
+// A ref-bearing field comes back in one of TWO vocabularies. The settings reads translate to a vault
+// entry NAME here (`vaultNameByRef`); the entity reads hand back the service DTO, which carries the
+// stable `vault:<id>` the column holds. This comment claimed NAMES for all of them and was true of
+// the two it could see — the entity DTOs were passing the COLUMN through, and until #126 that column
+// took any string, so a secret typed into it reached every `mcp:read` client (issue #438). The
+// services redact through `readableVaultRef` now: a stored value that names no entry reads as null.
 
 const sid = (v: bigint): string => v.toString();
 const sidn = (v: bigint | null): string | null =>

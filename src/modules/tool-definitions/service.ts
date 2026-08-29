@@ -6,7 +6,7 @@ import { AppError, ConflictError, NotFoundError } from "@/lib/errors";
 import { parseInput } from "@/lib/parse-input";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { readAppointmentDeclaration } from "@/modules/tool-definitions/appointment";
-import { requireVaultRef } from "@/modules/vault/service";
+import { readableVaultRef, requireVaultRef } from "@/modules/vault/service";
 import { unsupportedBodyShape } from "./body-shape";
 import { normalizeToolShapes } from "./normalize";
 
@@ -100,7 +100,12 @@ function toDto(r: {
     outputSchema: (r.outputSchema ?? {}) as Record<string, unknown>,
     query: (r.query ?? {}) as Record<string, unknown>,
     body: (r.body ?? {}) as Record<string, unknown>,
-    credentialRef: r.credentialRef,
+    // The stored value only where it NAMES an entry. `requireVaultRef` has guarded both writers
+    // since #126 (dc6c467a), and this module predates that by two months: a row written before it
+    // holds whatever the caller sent, most plausibly a secret VALUE from someone who read the field
+    // name as "the secret". This DTO goes out over REST and over `mcp:read`, a scope narrower than
+    // the console's, so the read is seen by more people than the write ever was (issue #438).
+    credentialRef: readableVaultRef(r.credentialRef),
     enabled: r.enabled,
     expectedStatuses: r.expectedStatuses,
     ackEnabled: r.ackEnabled,

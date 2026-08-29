@@ -18,6 +18,7 @@ import { ensureFreshGoogleAccessToken } from "@/modules/vault/google-oauth";
 import { ensureFreshMcpAccessToken } from "@/modules/vault/mcp-oauth";
 import { isManagedOAuthKind } from "@/modules/vault/secret-types";
 import {
+  readableVaultRef,
   readVaultRefId,
   requireVaultRef,
   tryResolveVaultEntry,
@@ -65,7 +66,16 @@ function toDto(r: {
   createdAt: Date;
   updatedAt: Date;
 }): McpConnectionDto {
-  return { ...r, id: String(r.id) };
+  // The spread is what made this the easiest of the four to miss: `credentialRef` reached the
+  // reader because nobody named it. It is handed out only where it NAMES an entry — `requireVaultRef`
+  // has guarded both writers since #126 (dc6c467a) and this module predates that, so a row can hold
+  // a value no resolver ever matched, and `mcp_connection_list` returns this DTO under a scope
+  // narrower than the console's (issue #438).
+  return {
+    ...r,
+    id: String(r.id),
+    credentialRef: readableVaultRef(r.credentialRef),
+  };
 }
 
 export const mcpConnectionCreateSchema = z

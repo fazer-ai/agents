@@ -440,6 +440,11 @@ function AlertChannelModal({
 // omits an untouched picker rather than erasing it), and a ref stored before #126 may name nothing,
 // which the read hides. `alert-worker.ts` is the authority: `if (a.secretRef && a.type === "webhook")`,
 // and inside it a ref that resolves to no row leaves `secret` null.
+//
+// The three are what a ROW can answer. A fourth case is real and this cannot see it: a well-formed
+// ref whose vault entry was deleted or is still `pending` resolves to null in that same worker, so
+// "Signed" is wrong for it too. Reading it means asking the vault rather than the row, which is a
+// different mechanism and not one a per-row projection can grow.
 function signingLabel(
   ch: { type: string; hasSecret: boolean; secretRef: string | null },
   t: (k: string, d: string) => string,

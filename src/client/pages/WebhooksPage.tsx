@@ -234,7 +234,11 @@ export function WebhooksPage() {
                       The third sentence says CONFIGURED, never "signed": such a ref resolves to no
                       row (`vaultRefWhere` sends it to id -1), so `outboundHeaders` gets a null secret
                       and the delivery goes out unsigned. The operator needs both halves — the setting
-                      is there, and it is not doing anything. */}
+                      is there, and it is not doing anything.
+
+                      Three is what the ROW can answer. A ref whose vault entry was deleted or is
+                      still `pending` resolves to null in the worker just the same, and this still
+                      names it: seeing that needs the vault, not the row. */}
                   {sub.secretRef
                     ? t("webhooks.signedWith", "Signed with: {{ref}}", {
                         ref: sub.secretRef,

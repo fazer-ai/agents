@@ -4098,7 +4098,19 @@ export async function processChatwootDelivery(
               tenantId: params.tenantId,
               instanceId: params.instanceId,
               conversationId,
-              ourAgentBotId: bot?.chatwootAgentBotId ?? null,
+              // THE ROUTE's bot, which is the identity `act` asked about, and asking a different
+              // one here turns the re-check into a second, stricter gate. Measured: Chatwoot fans a
+              // message to the conversation's assigned bot AND the inbox's, so on a conversation
+              // held by another persona's bot the assigned-bot delivery passes `act` and this fence
+              // — asked about the inbox persona — would reject it, while the inbox-bot delivery
+              // never passes `act` at all. Neither takes over, and the conversation a person just
+              // answered stays `pending`.
+              //
+              // The TOKEN below stays the inbox persona's, and the two are not in conflict because
+              // they answer different questions: the fence asks whether THIS DELIVERY may still act,
+              // and the token asks who we are on this instance. The write is a conversation's state,
+              // not a persona's utterance.
+              ourAgentBotId: params.agentBotId,
               base,
             })
           ).ours,

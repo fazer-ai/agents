@@ -62,6 +62,8 @@ const liveStatus = new Map<number, string>();
 // Conversations whose REST show comes back without `updated_at`, which is what a Chatwoot too old to
 // render one looks like.
 const unversionedReads = new Set<number>();
+// Who holds each conversation in the stub's Chatwoot, when it is not our own bot.
+const liveHolder = new Map<number, number>();
 // Work that runs while the client is being built, which is where the real round trip is: building a
 // client resolves the base URL's host. It is the window a person can claim, resolve or reassign the
 // conversation in, and the only place a test can stand in it.
@@ -89,7 +91,7 @@ const stubFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       status: liveStatus.get(id) ?? "pending",
       meta: {
         assignee_type: "AgentBot",
-        assignee: { id: OUR_BOT, name: "Atendente" },
+        assignee: { id: liveHolder.get(id) ?? OUR_BOT, name: "Atendente" },
       },
       last_activity_at: stamp,
       // A FLOAT of unix seconds, which is what the REST show renders (`updated_at.to_f`) and what
@@ -218,7 +220,7 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
   // reason (state-order.ts). Driving them from two independent clocks makes `updated_at` outrun
   // `last_activity_at` by whole seconds, which no real burst does, and the reopen is then refused for
   // a reason the source never produces.
-  function conversation(convId: number, inboxId = INBOX_ID) {
+  function conversation(convId: number, inboxId = INBOX_ID, holder = OUR_BOT) {
     stamp += 1;
     return {
       id: convId,
@@ -227,7 +229,7 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
       contact_inbox: { id: 74_000 + convId },
       meta: {
         assignee_type: "AgentBot",
-        assignee: { id: OUR_BOT, name: "Atendente" },
+        assignee: { id: holder, name: "Atendente" },
         sender: { id: 77, name: "Cliente" },
       },
       channel: "Channel::Whatsapp",
@@ -246,6 +248,10 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     convId: number,
     over: Record<string, unknown>,
     inboxId = INBOX_ID,
+    // The route this delivery arrived on, and who holds the conversation. They differ exactly when
+    // Chatwoot fans one message to the conversation's assigned bot AND the inbox's.
+    route: number | null = OUR_BOT,
+    holder = OUR_BOT,
   ): Promise<"processed" | "skipped"> {
     deliverySeq += 1;
     messageSeq += 1;
@@ -255,7 +261,7 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
       id: messageSeq,
       private: false,
       ...over,
-      conversation: conversation(convId, inboxId),
+      conversation: conversation(convId, inboxId, holder),
     });
     if (!n) throw new Error("payload did not normalize");
     const delivery = await suDb.chatwootWebhookDelivery.create({
@@ -272,7 +278,7 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
       tenantId,
       instanceId,
       deliveryRowId: delivery.id,
-      agentBotId: OUR_BOT,
+      agentBotId: route,
       normalized: n,
       deps,
       onDirectTurn: () => {
@@ -589,16 +595,55 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     expect((await takeoverRows(conv, 200)).length).toBe(0);
   });
 
-  // "We own this" is false when there is no "we". An agent with no Agent Bot row on this instance has
-  // an empty bot token, so the toggle would go out unauthenticated and come back 401 (issue #79) —
-  // but the fence has to be right on its own terms rather than right because a lookup two layers down
-  // happens to fail too.
+  // An agent with no Agent Bot row on this instance cannot speak here at all: every call it makes
+  // goes out with an empty token (issue #79). Nothing is written, and the delivery still completes.
   test("an inbox whose agent has no bot on this instance takes nothing over", async () => {
     const conv = 8480;
     await deliver(conv, { ...customerSays("oi") }, ORPHAN_INBOX_ID);
     await deliver(conv, { ...deviceReply("já te respondo") }, ORPHAN_INBOX_ID);
     expect(toggles(conv).length).toBe(0);
     expect(liveStatus.get(conv) ?? "pending").toBe("pending");
+  });
+
+  // "We own this" is false when there is no "we". A delivery whose own route bot is unknown cannot
+  // narrow "an AgentBot owns this" to "we own this", so the fence refuses rather than reading every
+  // bot as ours.
+  test("a delivery with no route bot takes nothing over", async () => {
+    const conv = 8481;
+    await deliver(conv, { ...customerSays("oi") }, INBOX_ID, null);
+    await deliver(conv, { ...deviceReply("já te respondo") }, INBOX_ID, null);
+    expect(toggles(conv).length).toBe(0);
+    expect(liveStatus.get(conv) ?? "pending").toBe("pending");
+  });
+
+  // CROSS-ROUTE. Chatwoot fans one message to the conversation's assigned bot AND the inbox's, which
+  // is two deliveries with two route ids. On a conversation held by ANOTHER persona's bot, only the
+  // assigned-bot delivery passes `act` — so the fence has to ask about that same bot, or the
+  // re-check becomes a second gate and NEITHER delivery takes over: the conversation a person just
+  // answered stays `pending` and bot-owned.
+  test("a conversation held by another persona's bot is taken over exactly once", async () => {
+    const conv = 8490;
+    const OTHER_BOT = 99;
+    liveHolder.set(conv, OTHER_BOT);
+    try {
+      await deliver(
+        conv,
+        { ...customerSays("oi") },
+        INBOX_ID,
+        OTHER_BOT,
+        OTHER_BOT,
+      );
+      const reply = deviceReply("já te respondo");
+      // The inbox's own route: `act` is false for it, because the conversation is not its bot's.
+      await deliver(conv, { ...reply }, INBOX_ID, OUR_BOT, OTHER_BOT);
+      expect(toggles(conv).length).toBe(0);
+      // The assigned bot's route, which is the one that would have answered.
+      await deliver(conv, { ...reply }, INBOX_ID, OTHER_BOT, OTHER_BOT);
+      expect(toggles(conv).length).toBe(1);
+      expect(liveStatus.get(conv)).toBe("open");
+    } finally {
+      liveHolder.delete(conv);
+    }
   });
 
   test("the switch turns it off, and nothing else changes", async () => {

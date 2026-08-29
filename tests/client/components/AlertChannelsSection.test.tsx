@@ -142,12 +142,13 @@ describe("AlertChannelsSection", () => {
     expect(String(body?.name)).toBe("Ops webhook");
   });
 
-  test("a ref the column accepted before #126 is not sent back", async () => {
+  test("a configured secret the read cannot show is still not cleared", async () => {
     // `alert_channels.secret_ref` took any string up to 128 chars until #126 guarded both writers, so
-    // rows hold `vault: 7`, `vault:0007` and bare names. Every reader in the system resolves those;
-    // `requireVaultRef` refuses them. Handing one back on an unrelated rename would turn a working
-    // channel into a form the operator cannot save.
-    channels = [channel({ secretRef: "vault: 7" })];
+    // a row can hold text that names no vault entry. The read refuses to hand that out — it would
+    // publish whatever was typed there — so this pair reaches the modal: `hasSecret` true with no ref
+    // to show. Echoing the blank picker back is exactly the erasure this PR is about, and the
+    // omission is what makes the unshowable case safe rather than merely invisible.
+    channels = [channel({ hasSecret: true, secretRef: null })];
     await openEditor();
     const body = await save();
     expect(Object.hasOwn(body ?? {}, "secretRef")).toBe(false);

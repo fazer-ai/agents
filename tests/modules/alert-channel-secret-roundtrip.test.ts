@@ -136,6 +136,11 @@ describe.skipIf(!dbUp)(
       );
     }
 
+    const clearChannelAudit = async () =>
+      await (su as PrismaClient).$executeRawUnsafe(
+        `DELETE FROM audit_logs WHERE tenant_id = ${tenantId}`,
+      );
+
     const listed = async (id: bigint) =>
       (await listAlertChannels(ctx(), appDb)).find((c) => c.id === String(id));
 
@@ -261,42 +266,126 @@ describe.skipIf(!dbUp)(
       ).toBe(true);
     });
 
-    test("a ref the column accepted before #126 is refused on the way back in", async () => {
-      // Why the console omits the key instead of echoing it. Both writers of this column started
-      // canonicalizing in #126; before that the schema was `z.string().min(1).max(128)` and the value
-      // went in verbatim, so live rows hold `vault: 7`, `vault:0007` and bare names. Every READER in
-      // the system resolves those on purpose (`canonicalVaultRef`), and `requireVaultRef` refuses them,
-      // because a column takes one spelling. Echoing the stored value back would turn a rename into a
-      // form the operator cannot save.
+    test("a legacy ref that still names an entry comes back canonical", async () => {
+      // `alert_channels.secret_ref` was guarded on both writers in one commit (#126); before it the
+      // schema was `z.string().min(1).max(128)` and the value went in verbatim, so rows hold `vault: 7`
+      // and `vault:0007`. Every resolver in the system reads those (`readVaultRefId` parses the id with
+      // BigInt); `requireVaultRef` refuses them, because a column takes one spelling. The read therefore
+      // hands back the spelling that can go back IN, not the one that is stored.
       const created = await seedSigned("legacy");
       await (su as PrismaClient).$executeRawUnsafe(
         `UPDATE alert_channels SET secret_ref = 'vault: ${secretId}' WHERE id = ${created.id}`,
       );
       const before = await listed(BigInt(created.id));
-      expect(before?.secretRef).toBe(`vault: ${secretId}`);
+      expect(before?.secretRef).toBe(`vault:${secretId}`);
 
-      let refused = "";
-      try {
-        await updateAlertChannel(
-          ctx(),
-          BigInt(created.id),
-          fullBodySave(before as AlertChannelDto, { name: "legacy renamed" }),
-          appDb,
-        );
-      } catch (e) {
-        refused = (e as { translationKey?: string }).translationKey ?? "";
-      }
-      expect(refused).toBe("errors.invalidVaultRef");
-
-      // …and the shape the console actually sends goes through, secret intact.
-      const { secretRef: _omitted, ...withoutSecret } = fullBodySave(
-        before as AlertChannelDto,
-        { name: "legacy renamed" },
+      await updateAlertChannel(
+        ctx(),
+        BigInt(created.id),
+        fullBodySave(before as AlertChannelDto, { name: "legacy renamed" }),
+        appDb,
       );
-      await updateAlertChannel(ctx(), BigInt(created.id), withoutSecret, appDb);
       const after = await listed(BigInt(created.id));
       expect(after?.name).toBe("legacy renamed");
-      expect(after?.secretRef).toBe(`vault: ${secretId}`);
+      expect(after?.secretRef).toBe(`vault:${secretId}`);
+    });
+
+    test("a legacy value that names nothing is never handed out, and omitting is what saves it", async () => {
+      // The other half, and the one the console's omission exists for. That same unguarded window
+      // accepted a BARE NAME, or any text at all — an API caller who read the field name as "the
+      // secret" and typed one in. Such a value cannot be projected: an audit row and a REST read are
+      // seen by every tenant admin, and `alert_channel_list` by any principal with `mcp:read`.
+      const created = await seedSigned("opaque");
+      await (su as PrismaClient).$executeRawUnsafe(
+        `UPDATE alert_channels SET secret_ref = 'alert-hmac' WHERE id = ${created.id}`,
+      );
+      const before = await listed(BigInt(created.id));
+      expect(before?.secretRef).toBe(null);
+      // …and the channel is still reported as configured, which it is. The two fields answer different
+      // questions and this is the row where that stops being a redundancy.
+      expect(before?.hasSecret).toBe(true);
+
+      // A whole-body client now echoes the projected null, which CLEARS it. That is the shape the
+      // console used to send and the reason it now omits the key instead.
+      await updateAlertChannel(
+        ctx(),
+        BigInt(created.id),
+        fullBodySave(before as AlertChannelDto, { name: "echoed" }),
+        appDb,
+      );
+      expect((await listed(BigInt(created.id)))?.hasSecret).toBe(false);
+
+      // The console's own shape, on a fresh row: the key is absent, so nothing can be lost.
+      const kept = await seedSigned("opaque kept");
+      await (su as PrismaClient).$executeRawUnsafe(
+        `UPDATE alert_channels SET secret_ref = 'alert-hmac' WHERE id = ${kept.id}`,
+      );
+      const listedKept = await listed(BigInt(kept.id));
+      const { secretRef: _omitted, ...withoutSecret } = fullBodySave(
+        listedKept as AlertChannelDto,
+        { name: "kept renamed" },
+      );
+      await updateAlertChannel(ctx(), BigInt(kept.id), withoutSecret, appDb);
+      const after = await listed(BigInt(kept.id));
+      expect(after?.name).toBe("kept renamed");
+      expect(after?.hasSecret).toBe(true);
+    });
+
+    test("no reader of a channel ever emits the raw column", async () => {
+      // The promise `docs/logs.md` and the MCP tool description both make, checked against every
+      // projection this service has rather than against the one the finding named: the DTO, and the
+      // audit row that is append-only and cannot be corrected later.
+      const created = await seedSigned("never-emitted");
+      const planted = "s3cr3t-hmac-value";
+      await (su as PrismaClient).$executeRawUnsafe(
+        `UPDATE alert_channels SET secret_ref = '${planted}' WHERE id = ${created.id}`,
+      );
+      await clearChannelAudit();
+      await updateAlertChannel(
+        ctx(),
+        BigInt(created.id),
+        { name: "renamed" },
+        appDb,
+      );
+
+      const dto = JSON.stringify(await listAlertChannels(ctx(), appDb));
+      expect(dto.includes(planted)).toBe(false);
+      const trail = JSON.stringify(
+        await (su as PrismaClient).auditLog.findMany({ where: { tenantId } }),
+        (_k, v) => (typeof v === "bigint" ? String(v) : v),
+      );
+      expect(trail.includes(planted)).toBe(false);
+      // …and the row still says the secret was there, so the redaction did not buy silence.
+      expect(trail.includes('"secretRefOpaque":true')).toBe(true);
+    });
+
+    test("clearing a secret the row cannot name still writes a row", async () => {
+      // What the marker is FOR. Redacted, an opaque legacy value reads as null on both sides of a
+      // clear, `projectionMoved` sees nothing, and the one save that removed a signing secret leaves
+      // no trace — the same silence `hasSecret` had before #397 put the ref on the projection.
+      const created = await seedSigned("opaque cleared");
+      await (su as PrismaClient).$executeRawUnsafe(
+        `UPDATE alert_channels SET secret_ref = 'alert-hmac' WHERE id = ${created.id}`,
+      );
+      await clearChannelAudit();
+      await updateAlertChannel(
+        ctx(),
+        BigInt(created.id),
+        { secretRef: null },
+        appDb,
+      );
+      const rows = await (su as PrismaClient).auditLog.findMany({
+        where: { tenantId, action: "alert_channel.update" },
+      });
+      expect(rows.length).toBe(1);
+      expect(rows[0]?.before).toMatchObject({
+        secretRef: null,
+        secretRefOpaque: true,
+      });
+      expect(rows[0]?.after).toMatchObject({
+        secretRef: null,
+        secretRefOpaque: false,
+      });
     });
 
     test("the sibling family answers the same round trip the same way", async () => {
@@ -331,6 +420,20 @@ describe.skipIf(!dbUp)(
         (s) => s.id === created.id,
       );
       expect(after?.secretRef).toBe(`vault:${secretId}`);
+
+      // …and the same column, with the same history, on the family this fix cites as the norm. Both
+      // `secretRef` columns were guarded on all their writers in the SAME commit and both projections
+      // predate it, so citing the sibling as correct while it echoed the raw column would have made
+      // the citation false.
+      const planted = "s3cr3t-sub-value";
+      await (su as PrismaClient).$executeRawUnsafe(
+        `UPDATE webhook_subscriptions SET secret_ref = '${planted}' WHERE id = ${created.id}`,
+      );
+      const opaque = (await listWebhookSubscriptions(ctx(), appDb)).find(
+        (x) => x.id === created.id,
+      );
+      expect(opaque?.secretRef).toBe(null);
+      expect(JSON.stringify(opaque).includes(planted)).toBe(false);
     });
   },
 );

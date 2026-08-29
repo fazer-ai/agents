@@ -7,7 +7,7 @@ import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { redactEndpoint } from "@/modules/audit/projection";
 import { auditMutation, projectionMoved } from "@/modules/audit/service";
-import { requireVaultRef } from "@/modules/vault/service";
+import { readableVaultRef, requireVaultRef } from "@/modules/vault/service";
 import { isOutboundEvent, type OutboundEvent } from "./events";
 import { syncTenantHeartbeat } from "./heartbeat";
 
@@ -52,7 +52,9 @@ function toDto(row: {
   return {
     id: row.id.toString(),
     url: row.url,
-    secretRef: row.secretRef,
+    // Through the vault's own reader, never verbatim: this column predates #126 and can hold
+    // arbitrary text. See `readableVaultRef`.
+    secretRef: readableVaultRef(row.secretRef),
     // The stored set is the closed union by construction (validated on write); cast for the DTO.
     events: row.events as OutboundEvent[],
     enabled: row.enabled,

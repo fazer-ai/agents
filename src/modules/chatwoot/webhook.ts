@@ -1145,6 +1145,129 @@ export function contactAuthNoteText(
   return `⚠️ A verificação de autorização do contato falhou (${cause}). O agente não respondeu automaticamente; a próxima mensagem tenta novamente.`;
 }
 
+// WHETHER THE BOT STILL OWNS THIS CONVERSATION, read fresh from the mirror.
+//
+// One speller, because two callers ask it and they must agree: the gate's own fence
+// (maybeConsumeCommandOrGate) and the human-reply takeover at the tail of handleDelivery. A second
+// copy is how one of them comes to be missing a clause — this one has two that are not obvious.
+//
+// No resolvable persona means nothing can speak here, and "an AgentBot owns this" cannot be narrowed
+// to "the sender owns this" without an id to compare against. shouldBotHandle answers the loose
+// attribution question when the id is missing (its other callers depend on that), so the strict half
+// is decided here, where the absence is known.
+//
+// NOTE: no test distinguishes that line today, and that is not an oversight: a persona that failed to
+// resolve also leaves the client with an empty bot token, which never reaches the network. The line
+// is here because the fence's answer must be right on its own terms — "we own this" is false when
+// there is no "we" — rather than right because a lookup two layers down happens to fail too.
+async function conversationOwnershipNow(p: {
+  tenantId: bigint;
+  instanceId: bigint;
+  conversationId: number;
+  ourAgentBotId: number | null;
+  base: PrismaClient;
+}): Promise<{ ours: true } | { ours: false; closed: GateCloseDetail | null }> {
+  const conv = await runScopedOn(p.base, sysCtx(p.tenantId), (db) =>
+    db.conversation.findUnique({
+      where: {
+        tenantId_chatwootInstanceId_chatwootConversationId: {
+          tenantId: p.tenantId,
+          chatwootInstanceId: p.instanceId,
+          chatwootConversationId: p.conversationId,
+        },
+      },
+      // assigneeId is part of the question, not decoration: without it shouldBotHandle cannot tell
+      // OUR bot from another one, and a conversation handed to a different bot reads as ours.
+      select: { assigneeType: true, assigneeId: true, status: true },
+    }),
+  );
+  if (p.ourAgentBotId === null && conv?.assigneeType === "AgentBot") {
+    return { ours: false, closed: null };
+  }
+  const ours = shouldBotHandle(
+    {
+      assigneeType: conv?.assigneeType ?? null,
+      assigneeId: conv?.assigneeId ?? null,
+      status: conv?.status ?? null,
+    },
+    { ourAgentBotId: p.ourAgentBotId },
+  );
+  return ours
+    ? { ours: true }
+    : {
+        ours: false,
+        closed: describeClosedGate({
+          assigneeType: conv?.assigneeType ?? null,
+          status: conv?.status ?? null,
+        }),
+      };
+}
+
+// OPENING A CONVERSATION FOR THE HUMAN QUEUE, for every path that ends the bot's attendance on one:
+// the gates that refuse a turn before it runs, and a person answering the customer (issue #430).
+//
+// Status `open` is what ends the bot's attribution, so this IS the handoff; the optional team
+// assignment only routes it, and a routing miss must never undo the open. Shared rather than written
+// per caller (issue #146): the fence below is the part that is easy to leave out, and a second copy
+// of it would be the copy that forgets.
+//
+// The fence: deciding to hand over can take time — a gate waits on somebody else's endpoint, and
+// building the client resolves DNS — and a human can claim, resolve or reassign the conversation
+// while it does. Without the re-check the copy was correctly withheld and the conversation was
+// reopened and re-routed anyway, pulling a human's conversation back out of their hands by a gate
+// that had already decided to stay quiet.
+//
+// THE CLIENT IS BUILT FIRST, and the fence answered after it, which is the whole point of the order.
+// `assertSafeOutboundUrl` resolves the base URL's host, so constructing the client is a network round
+// trip; asking first and building second puts that trip BETWEEN the answer and the write it guards,
+// which is the window the fence exists to close. Nothing is written while the client is built, so
+// moving it ahead costs nothing.
+async function openForHumanQueue(p: {
+  // Names the caller in every line this writes; it is what an operator reads to know which path
+  // handed the conversation over.
+  gate: string;
+  conversationId: number;
+  stillOurs: () => Promise<boolean>;
+  client: () => Promise<ChatwootClient>;
+  teamId?: number | null;
+  teamUsable?: (id: number) => Promise<boolean>;
+}): Promise<boolean> {
+  const teamId = p.teamId ?? null;
+  try {
+    const client = await p.client();
+    if (!(await p.stillOurs())) {
+      logger.info(
+        "chatwoot: %s handoff skipped (conv=%s) — the conversation is no longer the bot's",
+        p.gate,
+        String(p.conversationId),
+      );
+      return false;
+    }
+    await client.toggleStatus(p.conversationId, "open");
+    if (teamId !== null && (await (p.teamUsable?.(teamId) ?? true))) {
+      try {
+        await client.assignTeam(p.conversationId, teamId);
+      } catch (err) {
+        logger.warn(
+          "chatwoot: %s team assignment failed (conv=%s): %s",
+          p.gate,
+          String(p.conversationId),
+          errMsg(err),
+        );
+      }
+    }
+    return true;
+  } catch (err) {
+    logger.warn(
+      "chatwoot: %s handoff failed (conv=%s): %s",
+      p.gate,
+      String(p.conversationId),
+      errMsg(err),
+    );
+    return false;
+  }
+}
+
 // Test-mode gate + the /teste and /reset commands (item 1 + 2). Runs at the TOP of the actionable
 // branch, before eager STT / debounce / the agent turn. Returns true when the delivery is consumed
 // here — a command was handled, or a "test" agent must stay silent because this conversation hasn't
@@ -1352,52 +1475,14 @@ async function maybeConsumeCommandOrGate(params: {
   // writes a line skips it rather than guessing.
   const ownershipNow = async (): Promise<
     { ours: true } | { ours: false; closed: GateCloseDetail | null }
-  > => {
-    const conv = await runScopedOn(base, sysCtx(tenantId), (db) =>
-      db.conversation.findUnique({
-        where: {
-          tenantId_chatwootInstanceId_chatwootConversationId: {
-            tenantId,
-            chatwootInstanceId: instanceId,
-            chatwootConversationId: conversationId,
-          },
-        },
-        // assigneeId is part of the question, not decoration: without it shouldBotHandle cannot tell
-        // OUR bot from another one, and a conversation handed to a different bot reads as ours.
-        select: { assigneeType: true, assigneeId: true, status: true },
-      }),
-    );
-    // No resolvable persona means nothing can speak here, and "an AgentBot owns this" cannot be
-    // narrowed to "the sender owns this" without an id to compare against. shouldBotHandle answers the
-    // loose attribution question when the id is missing (its other callers depend on that), so the
-    // strict half is decided here, where the absence is known.
-    //
-    // NOTE: no test distinguishes this line today, and that is not an oversight: a persona that failed
-    // to resolve also leaves the client with an empty bot token, which never reaches the network. The
-    // line is here because the fence's answer must be right on its own terms — "we own this" is false
-    // when there is no "we" — rather than right because a lookup two layers down happens to fail too.
-    const ourBotId = (await persona())?.chatwootAgentBotId ?? null;
-    if (ourBotId === null && conv?.assigneeType === "AgentBot") {
-      return { ours: false, closed: null };
-    }
-    const ours = shouldBotHandle(
-      {
-        assigneeType: conv?.assigneeType ?? null,
-        assigneeId: conv?.assigneeId ?? null,
-        status: conv?.status ?? null,
-      },
-      { ourAgentBotId: ourBotId },
-    );
-    return ours
-      ? { ours: true }
-      : {
-          ours: false,
-          closed: describeClosedGate({
-            assigneeType: conv?.assigneeType ?? null,
-            status: conv?.status ?? null,
-          }),
-        };
-  };
+  > =>
+    conversationOwnershipNow({
+      tenantId,
+      instanceId,
+      conversationId,
+      ourAgentBotId: (await persona())?.chatwootAgentBotId ?? null,
+      base,
+    });
   const stillOurs = async (): Promise<boolean> => (await ownershipNow()).ours;
 
   // Why the agent would not answer in this conversation right now. Two independent reasons, and the
@@ -1592,56 +1677,21 @@ async function maybeConsumeCommandOrGate(params: {
     }
   };
 
-  // OPENING A CONVERSATION FOR THE HUMAN QUEUE, for every gate that refuses a turn before it runs.
-  //
-  // Status `open` is what ends the bot's attribution, so this IS the handoff; the optional team
-  // assignment only routes it, and a routing miss must never undo the open. Shared rather than
-  // written per gate (issue #146): the fence below is the part that is easy to leave out, and a
-  // second copy of it would be the copy that forgets.
-  //
-  // The fence: a gate can take time to decide (contact-auth waits on somebody else's endpoint), and
-  // a human can claim the conversation while it does. Without the re-check the copy was correctly
-  // withheld and the conversation was reopened and re-routed anyway, pulling a human's conversation
-  // back out of their hands by a gate that had already decided to stay quiet.
-  const openConversationForHumans = async (
+  // The shared unit above, bound to this gate's conversation, persona and fence. Kept as a local
+  // three-argument call so the sites below read the way they always did.
+  const openConversationForHumans = (
     gate: string,
     teamId: number | null,
     teamUsable?: (id: number) => Promise<boolean>,
-  ): Promise<boolean> => {
-    try {
-      if (!(await stillOurs())) {
-        logger.info(
-          "chatwoot: %s handoff skipped (conv=%s) — the conversation is no longer the bot's",
-          gate,
-          String(conversationId),
-        );
-        return false;
-      }
-      const client = await personaClient();
-      await client.toggleStatus(conversationId, "open");
-      if (teamId !== null && (await (teamUsable?.(teamId) ?? true))) {
-        try {
-          await client.assignTeam(conversationId, teamId);
-        } catch (err) {
-          logger.warn(
-            "chatwoot: %s team assignment failed (conv=%s): %s",
-            gate,
-            String(conversationId),
-            errMsg(err),
-          );
-        }
-      }
-      return true;
-    } catch (err) {
-      logger.warn(
-        "chatwoot: %s handoff failed (conv=%s): %s",
-        gate,
-        String(conversationId),
-        errMsg(err),
-      );
-      return false;
-    }
-  };
+  ): Promise<boolean> =>
+    openForHumanQueue({
+      gate,
+      conversationId,
+      stillOurs,
+      client: personaClient,
+      teamId,
+      teamUsable,
+    });
 
   // ── Redirect cross-link: on the widget conversation's first inbound after the merge, link it to its
   //    WhatsApp sibling — propagate that side's /teste activation + post cross-link private notes, once.
@@ -3992,12 +4042,12 @@ export async function processChatwootDelivery(
   // `mark_pending_conversation_as_open_for_human_response` never fires. The next customer message
   // then drives a full turn, with the agent speaking into a thread a colleague is already holding.
   //
-  // `act` IS the fence here, and that is a deliberate difference from `openConversationForHumans`,
-  // which re-reads ownership before its write. That fence exists because a gate can WAIT on somebody
-  // else's endpoint and a human can claim the conversation while it does; here the answer was
-  // computed a few statements ago, off the mirror as it stands after this very event, with no
-  // network in between. A re-read would be a second copy of the question with nothing to separate
-  // the two answers.
+  // `act` is the FIRST half of the fence and not the whole of it. It says the bot still owned the
+  // conversation when this event was mirrored; the second half is asked again immediately before the
+  // write, by the shared unit, because everything between the two is time a person can claim, resolve
+  // or reassign the conversation in — and one of the steps is a network round trip, since building
+  // the client resolves the base URL's host. Without the re-check an unconditional toggle would
+  // overwrite a resolve somebody had just done with `open`.
   //
   // Not idempotent by bookkeeping but by the gate: a re-delivered webhook finds the conversation no
   // longer `pending`, `act` is false, and nothing is written or logged a second time.
@@ -4020,87 +4070,113 @@ export async function processChatwootDelivery(
   ) {
     const conversationId = n.conversationId;
     try {
+      // Resolved ONCE and handed to both halves: the token the client speaks with, and the id the
+      // ownership question compares against. They are the same lookup for the reason the gate's own
+      // persona resolution states — a fence that answers about one identity while the client posts as
+      // another is not a fence.
       const bot = await loadAgentBot(
         params.tenantId,
         params.instanceId,
         rt.agentId,
         base,
       );
-      const client = await loadChatwootClient(
-        params.tenantId,
-        params.instanceId,
-        {
+      // Memoized, because two things need it and building it resolves the base URL's host. A second
+      // construction would be a second DNS round trip for one delivery.
+      let clientOnce: Promise<ChatwootClient> | null = null;
+      const client = (): Promise<ChatwootClient> =>
+        (clientOnce ??= loadChatwootClient(params.tenantId, params.instanceId, {
           base,
           botToken: bot?.accessToken,
           makeClient: params.deps?.makeClient,
-        },
-      );
-      await client.toggleStatus(conversationId, "open");
-      // AND THE MIRROR, from a live read, for the two reasons the console pays the same GET for
-      // (mirrorConsoleWrite, issue #77). The toggle endpoint renders a status blob and no
-      // `updated_at`, so there is no version to write from the call itself.
-      //
-      //  - RE-DELIVERY. `act` is computed off the mirror, and a message payload moves no status
-      //    (state-order.ts: only a brand-new INCOMING message carries the reopen exception), so a
-      //    second delivery of this same reply would read `pending` again, toggle again and write a
-      //    second line. Reconciled, it reads `open`, `act` is false, and the whole block is skipped.
-      //  - THE WINDOW. Until Chatwoot's own conversation_updated lands, the mirror still says
-      //    `pending`, and the runtime's ownership recheck reads that row — a customer answering
-      //    inside that window would be answered by the agent, which is the bug this exists to fix,
-      //    surviving in a narrower shape.
-      //
-      // Unversioned reads are DISCARDED rather than written blind: the reconcile is an improvement
-      // on the toggle, never a precondition for it, and a snapshot with no version cannot be ordered
-      // against the events still in flight for this conversation.
-      try {
-        const live = parseLiveConversation(
-          await client.getConversation(conversationId),
-        );
-        if (live && live.updatedAt !== null) {
-          await reconcileMirrorFromLive({
-            tenantId: params.tenantId,
-            instanceId: params.instanceId,
-            conversationId,
-            live,
-            base,
-          });
+        }));
+      const opened = await openForHumanQueue({
+        gate: `human reply (${humanReplyBy})`,
+        conversationId,
+        stillOurs: async () =>
+          (
+            await conversationOwnershipNow({
+              tenantId: params.tenantId,
+              instanceId: params.instanceId,
+              conversationId,
+              ourAgentBotId: bot?.chatwootAgentBotId ?? null,
+              base,
+            })
+          ).ours,
+        client,
+      });
+      // Refused by the fence, or the write failed: both are already reported by the shared unit, and
+      // neither is a takeover — so nothing below runs. NOT a `return`: the delivery still has its
+      // memory ingestion to arm and its row to mark processed.
+      if (opened) {
+        // AND THE MIRROR, from a live read, for the two reasons the console pays the same GET for
+        // (mirrorConsoleWrite, issue #77). The toggle endpoint renders a status blob and no
+        // `updated_at`, so there is no version to write from the call itself.
+        //
+        //  - RE-DELIVERY. `act` is computed off the mirror, and a message payload moves no status
+        //    (state-order.ts: only a brand-new INCOMING message carries the reopen exception), so a
+        //    second delivery of this same reply would read `pending` again and take over again.
+        //    Reconciled, it reads `open`, `act` is false, and the whole block is skipped.
+        //  - THE WINDOW. Until Chatwoot's own conversation_updated lands, the mirror still says
+        //    `pending`, and the runtime's ownership recheck reads that row — a customer answering
+        //    inside that window would be answered by the agent, which is the bug this exists to fix,
+        //    surviving in a narrower shape.
+        //
+        // Unversioned reads are DISCARDED rather than written blind: the reconcile is an improvement
+        // on the toggle, never a precondition for it, and a snapshot with no version cannot be
+        // ordered against the events still in flight for this conversation.
+        try {
+          const live = parseLiveConversation(
+            await (await client()).getConversation(conversationId),
+          );
+          if (live && live.updatedAt !== null) {
+            await reconcileMirrorFromLive({
+              tenantId: params.tenantId,
+              instanceId: params.instanceId,
+              conversationId,
+              live,
+              base,
+            });
+          }
+        } catch (err) {
+          logger.warn(
+            "chatwoot: reconciling the mirror after the takeover failed (conv=%s): %s",
+            convLabel,
+            errMsg(err),
+          );
         }
-      } catch (err) {
-        logger.warn(
-          "chatwoot: reconciling the mirror after the takeover failed (conv=%s): %s",
+        logger.info(
+          "chatwoot: a person answered the customer (%s) — conversation opened for the human queue (conv=%s)",
+          humanReplyBy,
           convLabel,
-          errMsg(err),
         );
-      }
-      logger.info(
-        "chatwoot: a person answered the customer (%s) — conversation opened for the human queue (conv=%s)",
-        humanReplyBy,
-        convLabel,
-      );
-      // The operator's trail, at the moment it happened. Without it the agent simply stops answering
-      // and the only line anywhere is on the NEXT customer message, where the gate reports
-      // `ownership_lost` — true about the status and wrong about the cause. The word and the reason
-      // both live in ./gate-close.ts, which is the one speller of this vocabulary.
-      if (mirror.conversationRowId !== null) {
-        emitFlowEvent(
-          {
-            tenantId: params.tenantId,
-            turnId: crypto.randomUUID(),
-            source: "inbox",
-            conversationId: mirror.conversationRowId,
-            agentId: rt.agentId,
-            base,
-          },
-          {
-            stage: "handoff",
-            status: "ok",
-            detail: describeHumanTakeover(humanReplyBy),
-          },
-        );
+        // The operator's trail, at the moment it happened. Without it the agent simply stops
+        // answering and the only line anywhere is on the NEXT customer message, where the gate
+        // reports `ownership_lost` — true about the status and wrong about the cause. The word and
+        // the reason both live in ./gate-close.ts, the one speller of this vocabulary.
+        if (mirror.conversationRowId !== null) {
+          emitFlowEvent(
+            {
+              tenantId: params.tenantId,
+              turnId: crypto.randomUUID(),
+              source: "inbox",
+              conversationId: mirror.conversationRowId,
+              agentId: rt.agentId,
+              base,
+            },
+            {
+              stage: "handoff",
+              status: "ok",
+              detail: describeHumanTakeover(humanReplyBy),
+            },
+          );
+        }
       }
     } catch (err) {
+      // Only the persona lookup can reach here: the open and the reconcile report their own. Left
+      // best-effort for the same reason they are — a takeover that could not be written must not
+      // strand the delivery that carried the reply.
       logger.warn(
-        "chatwoot: opening the conversation for the human queue failed (conv=%s): %s",
+        "chatwoot: the human-reply takeover could not run (conv=%s): %s",
         convLabel,
         errMsg(err),
       );

@@ -48,6 +48,7 @@ const appDb = app as PrismaClient;
 const suDb = su as PrismaClient;
 
 const INBOX_ID = 74;
+const ORPHAN_INBOX_ID = 75;
 const OUR_BOT = 14;
 let tenantId = 0n;
 let instanceId = 0n;
@@ -61,6 +62,10 @@ const liveStatus = new Map<number, string>();
 // Conversations whose REST show comes back without `updated_at`, which is what a Chatwoot too old to
 // render one looks like.
 const unversionedReads = new Set<number>();
+// Work that runs while the client is being built, which is where the real round trip is: building a
+// client resolves the base URL's host. It is the window a person can claim, resolve or reassign the
+// conversation in, and the only place a test can stand in it.
+let whileBuildingClient: (() => Promise<void>) | null = null;
 const posted: { url: string; body: unknown }[] = [];
 const realFetch = globalThis.fetch;
 
@@ -103,11 +108,13 @@ const stubFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
 // host does not resolve) and the socket. Everything the assertion reads — the path, the verb, the
 // body — is built by the code that ships.
 const deps = {
-  makeClient: (config: Parameters<typeof createChatwootClient>[0]) =>
-    createChatwootClient(config, {
+  makeClient: async (config: Parameters<typeof createChatwootClient>[0]) => {
+    await whileBuildingClient?.();
+    return createChatwootClient(config, {
       assertSafe: async (url: string) => new URL(url),
       fetchImpl: stubFetch,
-    }),
+    });
+  },
 };
 
 describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
@@ -155,6 +162,27 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
         agentId: agent.id,
       },
     });
+    // An inbox whose agent was never bound to an Agent Bot on this instance. It is a real shape (a
+    // persona bound to an inbox before its bot row exists) and the one where "we own this" has no
+    // "we" to be true about.
+    const orphan = await suDb.agent.create({
+      data: {
+        tenantId,
+        name: "Sem bot",
+        systemPrompt: "x",
+        modelConfig: { provider: "openai", model: "gpt-5.4-mini" },
+        settings: { debounce: { enabled: false } },
+      },
+    });
+    await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: ORPHAN_INBOX_ID,
+        name: "WhatsApp sem bot",
+        agentId: orphan.id,
+      },
+    });
   });
 
   afterAll(async () => {
@@ -190,11 +218,11 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
   // reason (state-order.ts). Driving them from two independent clocks makes `updated_at` outrun
   // `last_activity_at` by whole seconds, which no real burst does, and the reopen is then refused for
   // a reason the source never produces.
-  function conversation(convId: number) {
+  function conversation(convId: number, inboxId = INBOX_ID) {
     stamp += 1;
     return {
       id: convId,
-      inbox_id: INBOX_ID,
+      inbox_id: inboxId,
       status: liveStatus.get(convId) ?? "pending",
       contact_inbox: { id: 74_000 + convId },
       meta: {
@@ -217,6 +245,7 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
   async function deliver(
     convId: number,
     over: Record<string, unknown>,
+    inboxId = INBOX_ID,
   ): Promise<"processed" | "skipped"> {
     deliverySeq += 1;
     messageSeq += 1;
@@ -226,7 +255,7 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
       id: messageSeq,
       private: false,
       ...over,
-      conversation: conversation(convId),
+      conversation: conversation(convId, inboxId),
     });
     if (!n) throw new Error("payload did not normalize");
     const delivery = await suDb.chatwootWebhookDelivery.create({
@@ -531,6 +560,45 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     } finally {
       unversionedReads.delete(conv);
     }
+  });
+
+  // THE FENCE, and the reason it cannot be `act` alone. `act` says the bot owned the conversation
+  // when this event was mirrored; between that answer and the write there is a network round trip,
+  // because building the client resolves the base URL's host. A person resolving the conversation in
+  // that window must not have it dragged back to `open`.
+  //
+  // The hook runs exactly where that trip is, which is the only honest place to stand: asserting
+  // this by mutating the row before the delivery would test a different gate (`act` itself).
+  test("a conversation claimed while the client is built is not dragged back open", async () => {
+    const conv = 8470;
+    await deliver(conv, { ...customerSays("oi") });
+    const row = await convRow(conv);
+    whileBuildingClient = async () => {
+      await suDb.conversation.update({
+        where: { id: row?.id },
+        data: { status: "resolved" },
+      });
+    };
+    try {
+      await deliver(conv, { ...deviceReply("já te respondo") });
+    } finally {
+      whileBuildingClient = null;
+    }
+    expect(toggles(conv).length).toBe(0);
+    expect(liveStatus.get(conv) ?? "pending").toBe("pending");
+    expect((await takeoverRows(conv, 200)).length).toBe(0);
+  });
+
+  // "We own this" is false when there is no "we". An agent with no Agent Bot row on this instance has
+  // an empty bot token, so the toggle would go out unauthenticated and come back 401 (issue #79) —
+  // but the fence has to be right on its own terms rather than right because a lookup two layers down
+  // happens to fail too.
+  test("an inbox whose agent has no bot on this instance takes nothing over", async () => {
+    const conv = 8480;
+    await deliver(conv, { ...customerSays("oi") }, ORPHAN_INBOX_ID);
+    await deliver(conv, { ...deviceReply("já te respondo") }, ORPHAN_INBOX_ID);
+    expect(toggles(conv).length).toBe(0);
+    expect(liveStatus.get(conv) ?? "pending").toBe("pending");
   });
 
   test("the switch turns it off, and nothing else changes", async () => {

@@ -64,6 +64,14 @@ export interface NormalizedChatwootMessage {
   // True when this message is an emoji reaction (content_attributes.is_reaction). `content` is the
   // emoji and `inReplyTo` points at the reacted-to message. Rendered as a context marker for the agent.
   isReaction?: boolean;
+  // content_attributes.external_sender_name. The fork writes the literal "WhatsApp" on every OUTGOING
+  // message that came back FROM the WhatsApp session rather than out of Chatwoot — all four session
+  // paths do it (baileys, zapi, the session inbound writer, the reaction store). It is the only field
+  // in the payload that separates an attendant replying on the paired phone from the other three
+  // shapes of sender-less outgoing message Chatwoot itself produces (see isDeviceAttendantMessage).
+  externalSenderName?: string | null;
+  // content_attributes.imported. Set by the history importer on a backfilled row.
+  imported?: boolean;
   // Filled by the eager STT pass (NOT from the payload): the audio transcription, used by the direct
   // (no-debounce) path. The debounce flush instead reads it back from the attachment meta on re-fetch.
   transcribedText?: string | null;

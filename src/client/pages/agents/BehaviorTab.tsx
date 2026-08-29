@@ -16,6 +16,7 @@ import {
   ScrollText,
   ShieldCheck,
   Trash2,
+  UserRoundCheck,
   Volume2,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -215,6 +216,12 @@ export interface SendImageState {
   allowedHosts: string;
 }
 
+// NOTE: Mirrors agent.settings.takeover / readTakeoverConfig. Its own block rather than a field on
+// `handoff`, because the Tools tab REPLACES that one wholesale on every save.
+export interface TakeoverState {
+  onHumanReply: boolean;
+}
+
 // NOTE: Which Chatwoot custom attributes the agent sees the CURRENT VALUES of (one key list per
 // scope). Mirrors agent.settings.attributeContext / readAttributeContextConfig.
 interface AttributeContextState {
@@ -308,6 +315,8 @@ interface BehaviorTabProps {
   setLimits: React.Dispatch<React.SetStateAction<LimitsState>>;
   sendImage: SendImageState;
   setSendImage: React.Dispatch<React.SetStateAction<SendImageState>>;
+  takeover: TakeoverState;
+  setTakeover: React.Dispatch<React.SetStateAction<TakeoverState>>;
   attributeContext: AttributeContextState;
   setAttributeContext: React.Dispatch<
     React.SetStateAction<AttributeContextState>
@@ -1028,6 +1037,8 @@ export function BehaviorTab({
   setLimits,
   sendImage,
   setSendImage,
+  takeover,
+  setTakeover,
   attributeContext,
   setAttributeContext,
   serviceWindow,
@@ -1319,6 +1330,11 @@ export function BehaviorTab({
       id: "contactAuth",
       icon: ShieldCheck,
       label: t("editor.contactAuth", "Contact authorization"),
+    },
+    {
+      id: "takeover",
+      icon: UserRoundCheck,
+      label: t("editor.takeover", "When a person answers"),
     },
     {
       id: "limits",
@@ -2563,6 +2579,25 @@ export function BehaviorTab({
                 )}
               </>
             )}
+          </Section>
+
+          <Section
+            id="takeover"
+            icon={UserRoundCheck}
+            title={t("editor.takeover", "When a person answers")}
+            description={t(
+              "editor.takeoverHint",
+              "A colleague replying to the customer in a conversation the agent is handling, from the Chatwoot composer or from the phone paired to this WhatsApp number, moves the conversation to the human queue and the agent stops answering it. Chatwoot does not do this on its own: without this, the conversation stays with the agent and it answers over the person on the next customer message. To hand the conversation back, send /reset in the conversation or use the button on the Conversations page.",
+            )}
+          >
+            <SwitchField
+              checked={takeover.onHumanReply}
+              onCheckedChange={(v) => setTakeover({ onHumanReply: v })}
+              label={t(
+                "editor.takeoverOnHumanReply",
+                "Stop answering when a person replies to the customer",
+              )}
+            />
           </Section>
 
           <Section

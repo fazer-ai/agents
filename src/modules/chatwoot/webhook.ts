@@ -54,6 +54,7 @@ import {
 import { retireCoveredDeliveries } from "@/modules/chatwoot/delivery-sweep";
 import {
   describeClosedGate,
+  describeHumanTakeover,
   type GateCloseDetail,
 } from "@/modules/chatwoot/gate-close";
 import type { AuthContext } from "@/modules/contact-auth/check";
@@ -93,6 +94,7 @@ import {
 import { emitCommandDropped } from "@/modules/flowlog/command";
 import { emitFlowEvent } from "@/modules/flowlog/service";
 import { emitUnroutedMessage } from "@/modules/flowlog/unrouted";
+import { readTakeoverConfig } from "@/modules/handoff/settings";
 import { armCompaction } from "@/modules/memory/compact";
 import { clearContactMemory } from "@/modules/memory/reset";
 import { readMemoryConfig } from "@/modules/memory/settings";
@@ -135,8 +137,9 @@ import {
   heldByAnotherParty,
   incomingRenderable,
   isIncomingMessage,
-  isNewHumanAgentMessage,
+  isNewHumanReplyToCustomer,
   isNewIncomingMessage,
+  newHumanReplyRoute,
   normalizeChatwootEvent,
   parseLiveConversation,
   shouldBotHandle,
@@ -942,12 +945,14 @@ async function ingestUnhandledMessage(args: {
   //    the bot did not write it. On the most ordinary shape of a real deployment — the agent
   //    qualifies a lead, a human takes over, the human closes the sale — this is the entire business
   //    half of the attendance, and without it the memory of that attendance is a conversation in
-  //    which only the customer spoke (issue #187).
+  //    which only the customer spoke (issue #187). BOTH routes a person can answer by: the Chatwoot
+  //    composer, and the phone paired to the number the inbox is connected to (issue #430) — the
+  //    second was the half #187 could not see, because the fork stores a device reply sender-less.
   const incomingUnhandled =
     isNewIncomingMessage(n) && ((act && consumed) || !act);
   const role: IngestRole | null = incomingUnhandled
     ? "customer"
-    : isNewHumanAgentMessage(n)
+    : isNewHumanReplyToCustomer(n)
       ? "human_agent"
       : null;
   if (role === null) return;
@@ -2979,9 +2984,10 @@ export async function processChatwootDelivery(
   const isNewIncoming = isNewIncomingMessage(n);
   const hasLateMedia = hasPendingInboundMediaUpdate(n);
 
-  // A human agent's reply is folded into the contact's memory too (ingestUnhandledMessage), and the
-  // inbox's agent is what says whether to ingest at all.
-  const isNewHumanAgent = isNewHumanAgentMessage(n);
+  // A human agent's reply is folded into the contact's memory too (ingestUnhandledMessage), and it
+  // ends the agent's attendance on the conversation (the takeover below). The inbox's agent is what
+  // says whether to do either. BOTH routes a person can answer by — see isDeviceAttendantMessage.
+  const isNewHumanReply = isNewHumanReplyToCustomer(n);
 
   // Resolve the bound agent for a new message (from either side) or a late-media update. The latter
   // never drives a turn.
@@ -2991,10 +2997,14 @@ export async function processChatwootDelivery(
   // other reader of `rt` was checked against an outgoing message and none of them moves — the
   // eager-media and test-mode gates require isNewIncoming or hasLateMedia, `commandActive` reads a
   // `command` that is null off anything but a new incoming message, and the channel-redirect
-  // follow-up arm sits inside `if (act && isNewIncoming)`. The only branch this reaches is the
-  // ingestion one at the bottom of this function.
+  // follow-up arm sits inside `if (act && isNewIncoming)`. The only branches this reaches are the
+  // takeover and the ingestion, both at the bottom of this function.
+  //
+  // Issue #430 widened the predicate itself, not this condition: the class of event is the same one
+  // (`message_created`, outgoing, a person wrote it), reached by a second route. The sweep above was
+  // re-run against it and the answer did not change.
   const rt =
-    isNewIncoming || hasLateMedia || isNewHumanAgent
+    isNewIncoming || hasLateMedia || isNewHumanReply
       ? await inboxAgentRuntime(
           params.tenantId,
           params.instanceId,
@@ -3966,6 +3976,135 @@ export async function processChatwootDelivery(
       "consumed",
       heldByAnotherBot ? "this-delivery" : "conversation",
     );
+  }
+
+  // ── A PERSON ANSWERED THE CUSTOMER: end the agent's attendance on this conversation ──
+  //
+  // The conversation leaves `pending` for the human queue, which is the transition the platform
+  // already spells "a human is on this" — so the webhook gate (shouldBotHandle, above), the debounce
+  // flush and the follow-up ladder (followups/eligibility) all go quiet on it with no new state and
+  // no new predicate in any of them. Return is what it always was: /reset, the console, or REST.
+  //
+  // MEASURED, on a live fork, and it is the reason this exists at all: neither route moves the status
+  // by itself. A composer reply on a `pending`, bot-owned conversation leaves it `pending` with no
+  // assignee even under `enable_auto_assignment`, and so does a reply typed on the paired phone —
+  // the fork hard-returns `false` from `captain_pending_conversation?`, so Chatwoot's own
+  // `mark_pending_conversation_as_open_for_human_response` never fires. The next customer message
+  // then drives a full turn, with the agent speaking into a thread a colleague is already holding.
+  //
+  // `act` IS the fence here, and that is a deliberate difference from `openConversationForHumans`,
+  // which re-reads ownership before its write. That fence exists because a gate can WAIT on somebody
+  // else's endpoint and a human can claim the conversation while it does; here the answer was
+  // computed a few statements ago, off the mirror as it stands after this very event, with no
+  // network in between. A re-read would be a second copy of the question with nothing to separate
+  // the two answers.
+  //
+  // Not idempotent by bookkeeping but by the gate: a re-delivered webhook finds the conversation no
+  // longer `pending`, `act` is false, and nothing is written or logged a second time.
+  //
+  // Production + enabled only, matching the ingestion below. A disabled agent is not speaking over
+  // anybody, and a TEST-mode agent lives in a conversation an operator activated with /teste — an
+  // operator answering from the composer mid-test would otherwise silence the very agent they are
+  // testing, with the way back (/reset) a command they now have to know about.
+  //
+  // Best-effort in both directions: a failed toggle leaves the previous behaviour rather than
+  // stranding the delivery, and it is logged rather than swallowed.
+  const humanReplyBy = newHumanReplyRoute(n);
+  if (
+    humanReplyBy !== null &&
+    act &&
+    rt?.enabled &&
+    rt.mode === "production" &&
+    n.conversationId !== null &&
+    readTakeoverConfig(rt.settings).onHumanReply
+  ) {
+    const conversationId = n.conversationId;
+    try {
+      const bot = await loadAgentBot(
+        params.tenantId,
+        params.instanceId,
+        rt.agentId,
+        base,
+      );
+      const client = await loadChatwootClient(
+        params.tenantId,
+        params.instanceId,
+        {
+          base,
+          botToken: bot?.accessToken,
+          makeClient: params.deps?.makeClient,
+        },
+      );
+      await client.toggleStatus(conversationId, "open");
+      // AND THE MIRROR, from a live read, for the two reasons the console pays the same GET for
+      // (mirrorConsoleWrite, issue #77). The toggle endpoint renders a status blob and no
+      // `updated_at`, so there is no version to write from the call itself.
+      //
+      //  - RE-DELIVERY. `act` is computed off the mirror, and a message payload moves no status
+      //    (state-order.ts: only a brand-new INCOMING message carries the reopen exception), so a
+      //    second delivery of this same reply would read `pending` again, toggle again and write a
+      //    second line. Reconciled, it reads `open`, `act` is false, and the whole block is skipped.
+      //  - THE WINDOW. Until Chatwoot's own conversation_updated lands, the mirror still says
+      //    `pending`, and the runtime's ownership recheck reads that row — a customer answering
+      //    inside that window would be answered by the agent, which is the bug this exists to fix,
+      //    surviving in a narrower shape.
+      //
+      // Unversioned reads are DISCARDED rather than written blind: the reconcile is an improvement
+      // on the toggle, never a precondition for it, and a snapshot with no version cannot be ordered
+      // against the events still in flight for this conversation.
+      try {
+        const live = parseLiveConversation(
+          await client.getConversation(conversationId),
+        );
+        if (live && live.updatedAt !== null) {
+          await reconcileMirrorFromLive({
+            tenantId: params.tenantId,
+            instanceId: params.instanceId,
+            conversationId,
+            live,
+            base,
+          });
+        }
+      } catch (err) {
+        logger.warn(
+          "chatwoot: reconciling the mirror after the takeover failed (conv=%s): %s",
+          convLabel,
+          errMsg(err),
+        );
+      }
+      logger.info(
+        "chatwoot: a person answered the customer (%s) — conversation opened for the human queue (conv=%s)",
+        humanReplyBy,
+        convLabel,
+      );
+      // The operator's trail, at the moment it happened. Without it the agent simply stops answering
+      // and the only line anywhere is on the NEXT customer message, where the gate reports
+      // `ownership_lost` — true about the status and wrong about the cause. The word and the reason
+      // both live in ./gate-close.ts, which is the one speller of this vocabulary.
+      if (mirror.conversationRowId !== null) {
+        emitFlowEvent(
+          {
+            tenantId: params.tenantId,
+            turnId: crypto.randomUUID(),
+            source: "inbox",
+            conversationId: mirror.conversationRowId,
+            agentId: rt.agentId,
+            base,
+          },
+          {
+            stage: "handoff",
+            status: "ok",
+            detail: describeHumanTakeover(humanReplyBy),
+          },
+        );
+      }
+    } catch (err) {
+      logger.warn(
+        "chatwoot: opening the conversation for the human queue failed (conv=%s): %s",
+        convLabel,
+        errMsg(err),
+      );
+    }
   }
 
   // Continuous ingestion (production + enabled only): fold the messages no turn handled into the

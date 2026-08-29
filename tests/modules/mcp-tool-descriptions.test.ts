@@ -207,7 +207,11 @@ const SETTINGS_DESC_CEILING = 2_000;
 // the precondition's own strings: `key` and `equals` are trimmed by `parseToolPrecondition` and
 // REFUSED by the write boundary, so a schema-valid call came back as an error with nothing published
 // to predict it. Two more patterns, published thirteen times each, at 22,346.
-const SETTINGS_SCHEMA_CEILING = 22_500;
+// A round after that, a block of one boolean: `takeover.onHumanReply` (issue #430). It is a new
+// BLOCK and not a field on an existing one, which is what makes it cost more than its own sentence —
+// the thirteen-times-published patterns above are per block. Re-measured on the tree that ships:
+// 22,567.
+const SETTINGS_SCHEMA_CEILING = 22_600;
 
 describe("MCP tool descriptions", () => {
   test("agent_settings_set stays under its ceiling", async () => {
@@ -359,6 +363,10 @@ describe("MCP tool descriptions", () => {
   // the base figure (42,497) are each about a tree the other had not landed on. The merged tree is
   // 51,485 of schema and 26,764 of description. The precondition patterns documented at
   // SETTINGS_SCHEMA_CEILING then took the schema to 51,901; the ceiling goes to 52,100.
+  //
+  // And the `takeover` block of issue #430 takes it to 52,154. One boolean, 54 characters of total
+  // payload, which is the honest price of a NEW block rather than a field on an existing one — the
+  // same 33 characters this addition cost above, published once here.
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;
@@ -368,7 +376,7 @@ describe("MCP tool descriptions", () => {
       schema += t.schema.length;
     }
     expect(desc).toBeLessThanOrEqual(27_250);
-    expect(schema).toBeLessThanOrEqual(52_100);
+    expect(schema).toBeLessThanOrEqual(52_200);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

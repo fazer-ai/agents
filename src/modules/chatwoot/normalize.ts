@@ -225,6 +225,8 @@ export function normalizeChatwootEvent(
       // A reaction (WhatsApp emoji react) arrives as a message with content_attributes.is_reaction.
       // The content is the emoji; in_reply_to points at the message it reacts to.
       isReaction: ca?.is_reaction === true,
+      externalSenderName: ca ? str(ca.external_sender_name) : null,
+      imported: ca?.imported === true,
     };
   }
   if ("changed_attributes" in payload) {
@@ -477,6 +479,91 @@ export function isHumanAgentMessage(e: NormalizedChatwootEvent): boolean {
 // how the voice-note loop happened. An edit to an agent's reply is not a new thing said.
 export function isNewHumanAgentMessage(e: NormalizedChatwootEvent): boolean {
   return e.event === "message_created" && isHumanAgentMessage(e);
+}
+
+// The literal the fork writes for an outgoing message that came back FROM the WhatsApp session.
+// Named once because two predicates and a doc page compare against it, and a second spelling of a
+// magic string is how a comparison goes quietly false.
+export const SESSION_SENDER_NAME = "WhatsApp";
+
+// The SAME thing isHumanAgentMessage describes — a person, not this agent, answering the customer in
+// this conversation — reached by the other route: typed on the phone paired to the number the inbox
+// is connected to, without the CRM ever being opened.
+//
+// The fork stores that echo sender-less (`sender: incoming? ? sender : nil`, outgoing), so
+// `sender.type === "user"` cannot see it. What CAN is `content_attributes.external_sender_name`, and
+// the reason it has to be this rather than "outgoing with no sender" is MEASURED, on a live fork,
+// against the shapes Chatwoot itself produces:
+//
+//   origin                                type      sender  private  content_attributes
+//   an automation rule's send_message     outgoing  null    false    {automation_rule_id: 7}
+//   a scheduled message, author not User  outgoing  null    false    {}
+//   a CSAT survey                         outgoing  null    false    {}          (content_type input_csat)
+//   AN ATTENDANT ON THE PAIRED PHONE      outgoing  null    false    {external_created_at, external_sender_name: "WhatsApp"}
+//
+// All four reach the bot as `message_created` on a `pending`, bot-owned conversation — captured off
+// the wire, not inferred. Under a bare "outgoing and sender-less" test, an operator's automation
+// rule would read as a person taking the conversation over, and the switch below would silence the
+// agent on it permanently. Only the last row carries the marker, and every WhatsApp session path in
+// the fork writes it (baileys, zapi, the session inbound writer, the reaction store), so this reads
+// the provider the operator actually runs rather than the one the issue was reported on.
+//
+// `sender == null` stays as a second clause rather than being dropped for the marker alone: the two
+// are independent statements about the row (nobody in Chatwoot wrote it / it arrived from the
+// session), and requiring both is what keeps a future fork that stamps the marker on a
+// Chatwoot-originated row from reaching this.
+//
+// `imported` is UNREACHABLE through this event today and is kept anyway. Whatsapp::Session::SilentWrite
+// wraps the whole import run and its SyncDispatcher guard calls ActionCableListener and nothing else,
+// so AgentBotListener never fires for a backfilled row at either level of the flag — probed on the
+// fork, not assumed. It stays because the two repositories ship on different clocks and the failure
+// it fences is not proportional to its cost: one boolean read against an import quietly opening and
+// silencing an operator's entire backlog, hundreds of conversations at once, on the day they pair a
+// phone.
+export function isDeviceAttendantMessage(e: NormalizedChatwootEvent): boolean {
+  return (
+    e.message?.messageType === "outgoing" &&
+    e.message.private !== true &&
+    e.message.isReaction !== true &&
+    e.message.imported !== true &&
+    (e.message.sender ?? null) === null &&
+    e.message.externalSenderName === SESSION_SENDER_NAME
+  );
+}
+
+// A PERSON answered the customer here, by either route, and WHICH route it was. The two halves are
+// the same event to every consumer downstream — the conversation is no longer the agent's to speak
+// in, and what was said is the business half of the attendance — so they are joined once, here,
+// instead of at each of the places that ask.
+//
+// The route rather than a boolean, so the caller that acts and the line that reports why cannot
+// disagree about which one it was. The two predicates are DISJOINT by construction (one requires a
+// sender typed `user`, the other requires no sender at all), so the order they are asked in decides
+// nothing — which is why no test pins it. The flow log needs it (the operator reading "the agent stopped
+// answering here" has to know whether to look in the CRM or at somebody's phone), and it is derived
+// from the same two predicates rather than re-tested, so it cannot disagree with the gate that acted.
+export type HumanReplyRoute = "composer" | "device";
+
+export function humanReplyRoute(
+  e: NormalizedChatwootEvent,
+): HumanReplyRoute | null {
+  if (isHumanAgentMessage(e)) return "composer";
+  if (isDeviceAttendantMessage(e)) return "device";
+  return null;
+}
+
+// message_created only, for the reason isNewHumanAgentMessage gives: an update is our own write-back
+// coming back around, and an edit to a reply is not a new thing said.
+//
+// `isNewHumanReplyToCustomer` is this same question asked by a caller that does not need the route.
+export function newHumanReplyRoute(
+  e: NormalizedChatwootEvent,
+): HumanReplyRoute | null {
+  return e.event === "message_created" ? humanReplyRoute(e) : null;
+}
+
+export function isNewHumanReplyToCustomer(e: NormalizedChatwootEvent): boolean {
+  return newHumanReplyRoute(e) !== null;
 }
 
 // The control commands an operator types into the conversation to drive the agent (matched on the

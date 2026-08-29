@@ -293,6 +293,15 @@ const handoff = z.looseObject({
     ),
 });
 
+const takeover = z.looseObject({
+  onHumanReply: z
+    .boolean()
+    .optional()
+    .describe(
+      "a person answering the customer (composer or paired phone) ends the agent's attendance; default TRUE",
+    ),
+});
+
 const limits = z.looseObject({
   maxToolCalls: z
     .number()
@@ -730,6 +739,7 @@ export const BEHAVIOR_PATCH_SHAPE = {
   grounding: grounding.optional(),
   followUp: followUp.optional(),
   handoff: handoff.optional(),
+  takeover: takeover.optional(),
   limits: limits.optional(),
   availability: availability.optional(),
   contactAuth: contactAuth.optional(),

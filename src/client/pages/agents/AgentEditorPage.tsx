@@ -98,6 +98,7 @@ import {
   type MemoryState,
   type ModelFallbackState,
   type SendImageState,
+  type TakeoverState,
 } from "./BehaviorTab";
 import {
   type ChannelRedirectFormState,
@@ -419,6 +420,13 @@ function readBehaviorState(a: Agent) {
       task: attrKeys(ac.task),
     },
     sendImage: { allowedHosts: attrKeys(si.allowedHosts).join("\n") },
+    // NOTE: ON unless the stored bag says otherwise, mirroring readTakeoverConfig. A bag written
+    // before this block existed has no key and must read as on, or loading an old agent would show
+    // the switch off while the runtime has it on.
+    takeover: {
+      onHumanReply:
+        ((s.takeover ?? {}) as Record<string, unknown>).onHumanReply !== false,
+    },
     // NOTE: through the SAME reader the runtime uses, not a hand-rolled check: a bag that came from
     // REST or an import can carry the string "true", which the runtime honors — reading it stricter
     // here would show the switch off while values were being logged, and would then persist that lie
@@ -763,6 +771,9 @@ function AgentEditor() {
   );
   // NOTE: Hosts the send_image tool may fetch from. Mirrors agent.settings.sendImage
   // (modules/images/settings), edited as one host per line.
+  const [takeover, setTakeover] = useState<TakeoverState>({
+    onHumanReply: true,
+  });
   const [sendImage, setSendImage] = useState<SendImageState>({
     allowedHosts: "",
   });
@@ -1307,6 +1318,7 @@ function AgentEditor() {
     setMemory(b.memory);
     setModelFallback(b.modelFallback);
     setSendImage(b.sendImage);
+    setTakeover(b.takeover);
     setAttributeContext(b.attributeContext);
     setChannelRedirect(readChannelRedirectState(a));
     setGuardrails(readGuardrailsFormState(a.settings));
@@ -1346,6 +1358,7 @@ function AgentEditor() {
     setMemory(b.memory);
     setModelFallback(b.modelFallback);
     setSendImage(b.sendImage);
+    setTakeover(b.takeover);
     setAttributeContext(b.attributeContext);
   }, []);
 
@@ -1644,6 +1657,7 @@ function AgentEditor() {
         contact: attributeContext.contact,
         task: attributeContext.task,
       },
+      takeover: { onHumanReply: takeover.onHumanReply },
       sendImage: {
         allowedHosts: sendImage.allowedHosts
           .split("\n")
@@ -1684,6 +1698,7 @@ function AgentEditor() {
       limits,
       attributeContext,
       sendImage,
+      takeover,
       observability,
       memory,
       modelFallback,
@@ -2506,6 +2521,7 @@ function AgentEditor() {
     setMemory(b.memory);
     setModelFallback(b.modelFallback);
     setSendImage(b.sendImage);
+    setTakeover(b.takeover);
     setAttributeContext(b.attributeContext);
   };
   const revertChannelRedirect = () => {
@@ -3572,6 +3588,8 @@ function AgentEditor() {
                 setObservability={setObservability}
                 sendImage={sendImage}
                 setSendImage={setSendImage}
+                takeover={takeover}
+                setTakeover={setTakeover}
                 attributeContext={attributeContext}
                 setAttributeContext={setAttributeContext}
                 onScheduleSaved={onScheduleSaved}

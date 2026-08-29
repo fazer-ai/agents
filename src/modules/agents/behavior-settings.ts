@@ -13,7 +13,10 @@ import {
 } from "@/modules/flowlog/settings";
 import { readFollowUpConfig } from "@/modules/followups/settings";
 import { readGuardrailsConfig } from "@/modules/guardrails/settings";
-import { readHandoffConfig } from "@/modules/handoff/settings";
+import {
+  readHandoffConfig,
+  readTakeoverConfig,
+} from "@/modules/handoff/settings";
 import { readSendImageConfig } from "@/modules/images/settings";
 import { readKanbanConfig } from "@/modules/kanban/settings";
 import { readMemoryConfig } from "@/modules/memory/settings";
@@ -53,6 +56,9 @@ export interface BehaviorSettings {
   grounding: { maxDistance: number | null };
   followUp: ReturnType<typeof readFollowUpConfig>;
   handoff: ReturnType<typeof readHandoffConfig>;
+  // NOTE: The second block whose default is ON (see modules/handoff/settings for why), and it is kept
+  // apart from `handoff` above because the Tools tab REPLACES that one wholesale.
+  takeover: ReturnType<typeof readTakeoverConfig>;
   sendImage: ReturnType<typeof readSendImageConfig>;
   limits: ReturnType<typeof readLimitsConfig>;
   availability: ReturnType<typeof readAvailabilityConfig>;
@@ -91,6 +97,7 @@ export const BEHAVIOR_SETTINGS_KEYS = [
   "grounding",
   "followUp",
   "handoff",
+  "takeover",
   "sendImage",
   "limits",
   "availability",
@@ -128,6 +135,7 @@ export function readBehaviorSettings(
     grounding: readGrounding(settings),
     followUp: readFollowUpConfig(settings),
     handoff: readHandoffConfig(settings),
+    takeover: readTakeoverConfig(settings),
     sendImage: readSendImageConfig(settings),
     limits: readLimitsConfig(settings),
     availability: readAvailabilityConfig(settings),
@@ -156,6 +164,7 @@ export interface BehaviorSettingsPatch {
   grounding?: Record<string, unknown>;
   followUp?: Record<string, unknown>;
   handoff?: Record<string, unknown>;
+  takeover?: Record<string, unknown>;
   sendImage?: Record<string, unknown>;
   limits?: Record<string, unknown>;
   availability?: Record<string, unknown>;

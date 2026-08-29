@@ -185,6 +185,43 @@ export interface ResolvedVaultEntry<T = unknown> {
   name: string;
 }
 
+export type VaultEntryResolution<T> =
+  | { state: "filled"; entry: ResolvedVaultEntry<T> }
+  | { state: "pending" }
+  | { state: "not_found" };
+
+// State-aware variant for callers that need both operator-facing pending/not-found diagnostics and
+// active-entry metadata such as baseUrl. Keeping this separate avoids changing the generic
+// resolveVaultRefState value contract used by existing secret-only consumers.
+export async function resolveVaultEntryState<T = unknown>(
+  db: ScopedDb,
+  ref: string,
+): Promise<VaultEntryResolution<T>> {
+  const entry = await db.vaultEntry.findFirst({
+    where: vaultRefWhere(ref),
+    select: {
+      secret: true,
+      kind: true,
+      baseUrl: true,
+      paramName: true,
+      name: true,
+      status: true,
+    },
+  });
+  if (!entry) return { state: "not_found" };
+  if (entry.status === "pending") return { state: "pending" };
+  return {
+    state: "filled",
+    entry: {
+      secret: decryptJson<T>(entry.secret),
+      kind: entry.kind,
+      baseUrl: entry.baseUrl,
+      paramName: entry.paramName,
+      name: entry.name,
+    },
+  };
+}
+
 export async function resolveVaultEntry<T = unknown>(
   db: ScopedDb,
   ref: string,

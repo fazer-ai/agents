@@ -14,7 +14,7 @@ import { emitDeadLetter } from "@/modules/flowlog/dead-letter";
 import { cancelPendingJob, enqueueJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 import { readEmbeddingSettings } from "@/modules/tenant-settings/service";
-import { resolveVaultRefState } from "@/modules/vault/service";
+import { resolveVaultEntryState } from "@/modules/vault/service";
 import { chunkText } from "./chunk";
 import { type EmbeddingConfig, embedTexts } from "./embeddings";
 import { toVectorLiteral } from "./sql";
@@ -52,7 +52,7 @@ export async function resolveEmbeddingStatus(
   // sends them looking for a row that is not there, so it falls back to the reason a workspace that
   // never configured one gets. An ACTIVE row holding a blank secret is neither — it is `empty`, and
   // that only stays distinguishable because the state and the value came from the same query.
-  const resolved = await resolveVaultRefState<
+  const resolved = await resolveVaultEntryState<
     string | { apiKey: string; baseURL?: string }
   >(db, settings.credentialRef);
   if (resolved.state === "not_found")
@@ -63,7 +63,7 @@ export async function resolveEmbeddingStatus(
       reason: "credential_pending",
       credentialRef: settings.credentialRef,
     };
-  const raw = resolved.value;
+  const raw = resolved.entry.secret;
   const { apiKey, baseURL: secretBaseURL } =
     typeof raw === "string" || !raw
       ? { apiKey: typeof raw === "string" ? raw : "", baseURL: undefined }
@@ -76,7 +76,11 @@ export async function resolveEmbeddingStatus(
     };
   return {
     ok: true,
-    config: { model, apiKey, baseURL: settings.baseURL ?? secretBaseURL },
+    config: {
+      model,
+      apiKey,
+      baseURL: settings.baseURL ?? resolved.entry.baseUrl ?? secretBaseURL,
+    },
   };
 }
 

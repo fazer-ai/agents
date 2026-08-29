@@ -256,6 +256,32 @@ describe.skipIf(!dbUp)(
       expect((await readDoc(id, doc.id))?.status).toBe("UNINDEXED");
     });
 
+    test("an active OpenAI-compatible credential preserves its base URL for RAG", async () => {
+      const { id } = await seedTenant("embed-base-url");
+      const entry = await createVaultEntry(
+        ctx(id),
+        {
+          name: "embed-compatible",
+          value: "internal-test-value",
+          kind: "openai_compatible",
+          baseUrl: "https://embedding.internal.example/v1",
+        },
+        undefined,
+        undefined,
+        appDb,
+      );
+      await updateEmbeddingSettings(
+        ctx(id),
+        { credentialRef: entry.ref },
+        appDb,
+      );
+      const config = await runScopedOn(appDb, ctx(id), (db) =>
+        resolveEmbeddingConfig(db, id, "text-embedding-3-small"),
+      );
+      expect(config.baseURL).toBe("https://embedding.internal.example/v1");
+      expect(config.model).toBe("text-embedding-3-small");
+    });
+
     // Review finding, round 4: this shape also rides on the documents list, which any authenticated
     // role can read, while the reindex endpoint that needs the deeplink is TENANT_ADMIN. The ref is
     // still resolved here — the controller is what drops it — so the split has to stay visible.

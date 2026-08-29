@@ -6,6 +6,7 @@ import { AppError, NotFoundError } from "@/lib/errors";
 import { parseInput } from "@/lib/parse-input";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { auditMutation, projectionMoved } from "@/modules/audit/service";
 import { requireVaultRef } from "@/modules/vault/service";
 import { FLOW_LEVELS, FLOW_STAGES } from "./stages";
 
@@ -86,6 +87,51 @@ function toDto(row: {
   };
 }
 
+// What the audit row carries. Built from the ROW rather than the DTO, because two of the three
+// things worth recording here are not on the DTO at all.
+//
+// The URL is NOT on it, and `urlMasked` is. The column is an `encryptJson` blob because a Discord
+// URL embeds a bot token, and an audit row is readable by every tenant admin — the one place a
+// projection built by hand would put it back in the clear.
+//
+// `secretRef` IS on it, in full, and it is a reference rather than a secret by construction: this
+// service is the only writer of the column (measured) and it canonicalizes every value through
+// `requireVaultRef`. The DTO's `hasSecret` would not do: it is the same boolean before and after a
+// ROTATION, so the one change a signing secret can undergo would leave no row.
+function auditProjection(row: {
+  name: string;
+  type: string;
+  url: string;
+  enabled: boolean;
+  minLevel: string;
+  stages: string[];
+  secretRef: string | null;
+}) {
+  return {
+    name: row.name,
+    type: row.type,
+    urlMasked: maskUrl(row.url),
+    minLevel: row.minLevel,
+    stages: row.stages,
+    enabled: row.enabled,
+    secretRef: row.secretRef,
+  };
+}
+
+// Whether the stored destination actually moved, which the projection cannot say on its own: the
+// mask is `scheme://host/…`, so replacing a Discord webhook with a DIFFERENT one on the same host
+// leaves both sides identical while everything the channel posts to has changed. Compared on the
+// plaintext, inside the service; what reaches the row is the boolean. Comparing the ciphertext would
+// answer "moved" every time, since `encryptJson` is randomised.
+function urlMoved(before: string, after: string): boolean {
+  try {
+    return decryptJson<string>(before) !== decryptJson<string>(after);
+  } catch {
+    // A blob that will not decrypt cannot be shown to be the same one.
+    return true;
+  }
+}
+
 function assertStages(stages: string[]): string[] {
   const allowed = new Set<string>(FLOW_STAGES);
   const seen = new Set<string>();
@@ -147,7 +193,7 @@ export async function createAlertChannel(
     const secretRef = parsed.secretRef
       ? await requireVaultRef(db, parsed.secretRef, "secretRef")
       : null;
-    return db.alertChannel.create({
+    const created = await db.alertChannel.create({
       data: {
         tenantId,
         name: parsed.name,
@@ -160,6 +206,12 @@ export async function createAlertChannel(
       },
       select: SELECT,
     });
+    await auditMutation(db, ctx, {
+      action: "alert_channel.create",
+      target: `alert_channel:${created.id}`,
+      after: auditProjection(created),
+    });
+    return created;
   });
   return toDto(row);
 }
@@ -209,14 +261,40 @@ export async function updateAlertChannel(
     if (typeof data.secretRef === "string") {
       data.secretRef = await requireVaultRef(db, data.secretRef, "secretRef");
     }
+    // Read inside the transaction the write happens in, so the `before` the row carries is the
+    // state this update moved. The MCP tool read it one layer up and OUTSIDE any transaction, which
+    // is the half of the seam that could not be fixed from up there.
+    const current = await db.alertChannel.findFirst({
+      where: { id },
+      select: SELECT,
+    });
     // updateMany → count 0 for a foreign/missing id under RLS → NotFound (never a cross-tenant write).
     const res = await db.alertChannel.updateMany({ where: { id }, data });
-    if (res.count === 0)
+    if (res.count === 0 || !current)
       throw new NotFoundError(
         "alert channel not found",
         "errors.alertChannelNotFound",
       );
-    return db.alertChannel.findFirst({ where: { id }, select: SELECT });
+    const updated = await db.alertChannel.findFirst({
+      where: { id },
+      select: SELECT,
+    });
+    if (updated) {
+      const before = auditProjection(current);
+      const moved = urlMoved(current.url, updated.url);
+      const after = moved
+        ? { ...auditProjection(updated), urlReplaced: true }
+        : auditProjection(updated);
+      if (moved || projectionMoved(before, after)) {
+        await auditMutation(db, ctx, {
+          action: "alert_channel.update",
+          target: `alert_channel:${id}`,
+          before,
+          after,
+        });
+      }
+    }
+    return updated;
   });
   if (!row)
     throw new NotFoundError(
@@ -234,7 +312,20 @@ export async function deleteAlertChannel(
   // alert_deliveries.channel_id is ON DELETE CASCADE, so removing the channel drops its (PII-free)
   // delivery ledger with it.
   const count = await runScopedOn(base, ctx, async (db) => {
+    // Read before the delete: the row is what the audit records, and after `deleteMany` there is
+    // nothing left to name what was removed.
+    const current = await db.alertChannel.findFirst({
+      where: { id },
+      select: SELECT,
+    });
     const res = await db.alertChannel.deleteMany({ where: { id } });
+    if (res.count > 0 && current) {
+      await auditMutation(db, ctx, {
+        action: "alert_channel.delete",
+        target: `alert_channel:${id}`,
+        before: auditProjection(current),
+      });
+    }
     return res.count;
   });
   if (count === 0)

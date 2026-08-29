@@ -104,18 +104,6 @@ export async function webhookCreate(
       },
       base,
     );
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "webhook.create",
-      target: `webhook:${created.id}`,
-      before: null,
-      after: truncForAudit({
-        id: created.id,
-        url: created.url,
-        events: created.events,
-      }),
-    });
     return ok({ dryRun: false, applied: true, webhook: created });
   } catch (e) {
     return failOf(e);
@@ -187,18 +175,6 @@ export async function webhookUpdate(
       });
     }
     const updated = await updateWebhookSubscription(ctx, id, patch, base);
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "webhook.update",
-      target,
-      before: truncForAudit(beforeProj),
-      after: truncForAudit({
-        url: updated.url,
-        events: updated.events,
-        enabled: updated.enabled,
-      }),
-    });
     return ok({ dryRun: false, applied: true, target, webhook: updated });
   } catch (e) {
     return failOf(e);
@@ -234,14 +210,6 @@ export async function webhookDelete(
       });
     }
     await deleteWebhookSubscription(ctx, id, base);
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "webhook.delete",
-      target,
-      before: truncForAudit(beforeProj),
-      after: null,
-    });
     return ok({ dryRun: false, applied: true, target });
   } catch (e) {
     return failOf(e);
@@ -303,19 +271,7 @@ export async function webhookDeliveryRequeue(
     // `before` is the service's own LOCKED read, which is what makes the audit describe the write
     // that happened: any read this tool took first would be one the row can move away from, and
     // for a URL the SSRF guard refuses that takes a single tick.
-    const { delivery: after, before } = await requeueWebhookDelivery(
-      ctx,
-      id,
-      base,
-    );
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "webhook_delivery.requeue",
-      target,
-      before: truncForAudit(before),
-      after: truncForAudit({ status: after.status, attempts: after.attempts }),
-    });
+    const after = await requeueWebhookDelivery(ctx, id, base);
     return ok({ dryRun: false, applied: true, target, delivery: after });
   } catch (e) {
     return failOf(e);
@@ -403,19 +359,6 @@ export async function alertChannelCreate(
       },
       base,
     );
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "alert_channel.create",
-      target: `alert_channel:${created.id}`,
-      before: null,
-      after: truncForAudit({
-        id: created.id,
-        name: created.name,
-        type: created.type,
-        urlMasked: created.urlMasked,
-      }),
-    });
     return ok({ dryRun: false, applied: true, channel: created });
   } catch (e) {
     return failOf(e);
@@ -508,18 +451,6 @@ export async function alertChannelUpdate(
     }
     if (secretRotated) patch.secretRef = secretRef;
     const updated = await updateAlertChannel(ctx, id, patch, base);
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "alert_channel.update",
-      target,
-      before: truncForAudit(beforeProj),
-      after: truncForAudit({
-        urlMasked: updated.urlMasked,
-        urlRotated,
-        secretRotated,
-      }),
-    });
     return ok({ dryRun: false, applied: true, target, channel: updated });
   } catch (e) {
     return failOf(e);
@@ -555,14 +486,6 @@ export async function alertChannelDelete(
       });
     }
     await deleteAlertChannel(ctx, id, base);
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "alert_channel.delete",
-      target,
-      before: truncForAudit(beforeProj),
-      after: null,
-    });
     return ok({ dryRun: false, applied: true, target });
   } catch (e) {
     return failOf(e);

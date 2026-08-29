@@ -3,6 +3,7 @@ import basePrisma from "@/api/lib/prisma";
 import { AppError, NotFoundError } from "@/lib/errors";
 import { assertUsableCount, badQueryParam } from "@/lib/query-param";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { auditMutation } from "@/modules/audit/service";
 import { emitDeliveryRequeued } from "@/modules/flowlog/webhook";
 
 // THE DELIVERY LEDGER AS A SUPPORTED SURFACE (issue #305).
@@ -34,12 +35,6 @@ export interface WebhookDeliveryDto {
   lastError: string | null;
   createdAt: string;
   updatedAt: string;
-}
-
-export interface RequeuedDelivery {
-  delivery: WebhookDeliveryDto;
-  // What the row was when the lock was taken, i.e. what this requeue actually undid.
-  before: { status: string; attempts: number };
 }
 
 export interface ListDeliveriesOpts {
@@ -225,17 +220,17 @@ export async function getWebhookDelivery(
 // again. Refusing in the same statement that writes means no reader-then-writer gap to lose the
 // race in. PENDING is already queued, and replaying a DELIVERED event is a different promise with
 // a different consequence — re-sending data the receiver already took.
-// The pre-state travels back with the row, and it is the LOCKED read rather than a caller's own
-// earlier look. A caller that audits this mutation (the MCP tool does, and the contract in
-// docs/mcp.md requires `before`/`after` to describe the write that happened) would otherwise have
-// to read the row itself, outside the lock — and between that read and this one the row can have
+// The audit row is written HERE, from inside the lock, and that is what the trail's `before` is
+// worth. It used to be recorded by the MCP tool, which had to be handed the pre-state because its
+// own read would have been outside the lock — and between that read and this one the row can have
 // been requeued by somebody else and died again, which for an SSRF-refused URL takes one tick. The
-// `before` it recorded would then belong to the previous death.
+// `before` it recorded would then belong to the previous death. Nothing is handed back now: the
+// only caller that wanted it was the one recording the row.
 export async function requeueWebhookDelivery(
   ctx: TenantContext,
   id: bigint,
   base: PrismaClient = basePrisma,
-): Promise<RequeuedDelivery> {
+): Promise<WebhookDeliveryDto> {
   const { row, before } = await runScopedOn(base, ctx, async (db) => {
     // `FOR UPDATE`, and the lock is the design of this function rather than an optimisation. Two
     // writers reach this row: another operator requeueing it, and the WORKER finishing with it.
@@ -275,6 +270,14 @@ export async function requeueWebhookDelivery(
       data: { status: "PENDING", attempts: 0, nextAttemptAt: null },
       select: SELECT,
     });
+    await auditMutation(db, ctx, {
+      action: "webhook_delivery.requeue",
+      target: `webhook_delivery:${id}`,
+      // The LOCKED read, not the constant "DEAD" the guard above proved it to be. The two are the
+      // same value and only one of them is evidence.
+      before: { status: current.status, attempts: current.attempts },
+      after: { status: updated.status, attempts: updated.attempts },
+    });
     return {
       row: updated,
       before: { status: current.status, attempts: current.attempts },
@@ -297,7 +300,5 @@ export async function requeueWebhookDelivery(
       base,
     });
   }
-  // `before` is what the LOCKED read returned, not the constant "DEAD" the guard above proved it
-  // to be. The two are the same value and only one of them is evidence.
-  return { delivery: dto, before };
+  return dto;
 }

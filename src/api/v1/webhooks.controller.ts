@@ -348,12 +348,10 @@ export const webhooksController = new Elysia({
     "/deliveries/:id/requeue",
     async ({ tenantContext, params }) => ({
       instance: instanceIdentity,
-      delivery: (
-        await requeueWebhookDelivery(
-          ctxOrThrow(tenantContext),
-          requireDbId(params.id, "deliveryId"),
-        )
-      ).delivery,
+      delivery: await requeueWebhookDelivery(
+        ctxOrThrow(tenantContext),
+        requireDbId(params.id, "deliveryId"),
+      ),
     }),
     {
       requireRole: "TENANT_ADMIN",

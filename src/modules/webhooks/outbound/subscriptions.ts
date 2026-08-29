@@ -5,6 +5,7 @@ import { AppError, NotFoundError } from "@/lib/errors";
 import { parseInput } from "@/lib/parse-input";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { auditMutation, projectionMoved } from "@/modules/audit/service";
 import { requireVaultRef } from "@/modules/vault/service";
 import { isOutboundEvent, type OutboundEvent } from "./events";
 import { syncTenantHeartbeat } from "./heartbeat";
@@ -56,6 +57,23 @@ function toDto(row: {
     enabled: row.enabled,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
+  };
+}
+
+// What the audit row carries: the subscription as the operator sees it, minus the identifiers and
+// timestamps the row already holds in its own columns.
+//
+// `secretRef` is ON it, and it is a reference rather than a secret by construction: this service is
+// the only writer of the column (measured) and it canonicalizes every value through
+// `requireVaultRef`, so what the row names is the vault entry and never what is inside it. Recording
+// it is the point — rotating or clearing a signing secret changes what a receiver verifying HMAC
+// sees, and that is exactly the class of change a trail exists to attribute.
+function auditProjection(dto: WebhookSubscriptionDto) {
+  return {
+    url: dto.url,
+    events: dto.events,
+    enabled: dto.enabled,
+    secretRef: dto.secretRef,
   };
 }
 
@@ -121,7 +139,7 @@ export async function createWebhookSubscription(
     const secretRef = parsed.secretRef
       ? await requireVaultRef(db, parsed.secretRef, "secretRef")
       : null;
-    return db.webhookSubscription.create({
+    const created = await db.webhookSubscription.create({
       data: {
         tenantId,
         url: parsed.url,
@@ -131,6 +149,12 @@ export async function createWebhookSubscription(
       },
       select: SELECT,
     });
+    await auditMutation(db, ctx, {
+      action: "webhook.create",
+      target: `webhook:${created.id}`,
+      after: auditProjection(toDto(created)),
+    });
+    return created;
   });
   // Reconcile the per-tenant heartbeat emitter against the new subscription state.
   await syncTenantHeartbeat(tenantId, base);
@@ -180,16 +204,42 @@ export async function updateWebhookSubscription(
     if (typeof data.secretRef === "string") {
       data.secretRef = await requireVaultRef(db, data.secretRef, "secretRef");
     }
+    // Read inside the transaction the write happens in, so the `before` the row carries is the
+    // state this update moved. The MCP tool read it one layer up and OUTSIDE any transaction, which
+    // is the half of the seam that could not be fixed from up there.
+    const current = await db.webhookSubscription.findFirst({
+      where: { id },
+      select: SELECT,
+    });
     const res = await db.webhookSubscription.updateMany({
       where: { id },
       data,
     });
-    if (res.count === 0)
+    if (res.count === 0 || !current)
       throw new NotFoundError(
         "webhook subscription not found",
         "errors.webhookSubscriptionNotFound",
       );
-    return db.webhookSubscription.findFirst({ where: { id }, select: SELECT });
+    const updated = await db.webhookSubscription.findFirst({
+      where: { id },
+      select: SELECT,
+    });
+    if (updated) {
+      const before = auditProjection(toDto(current));
+      const after = auditProjection(toDto(updated));
+      // The trail records changes: a caller is free to PATCH a field to the value it already holds.
+      // Everything this projection carries is stored in the clear, so it can answer for itself —
+      // unlike the alert channel's, whose destination is a blob.
+      if (projectionMoved(before, after)) {
+        await auditMutation(db, ctx, {
+          action: "webhook.update",
+          target: `webhook:${id}`,
+          before,
+          after,
+        });
+      }
+    }
+    return updated;
   });
   if (!row)
     throw new NotFoundError(
@@ -212,10 +262,23 @@ export async function deleteWebhookSubscription(
   // the subscription. Operator-initiated, so dropping its delivery ledger is acceptable — and it is
   // now a ledger somebody may be reading (issue #305), which is why the order is written down.
   const count = await runScopedOn(base, ctx, async (db) => {
+    // Read before the delete: the row is what the audit records, and after `deleteMany` there is
+    // nothing left to name what was removed.
+    const current = await db.webhookSubscription.findFirst({
+      where: { id },
+      select: SELECT,
+    });
     await db.outboundWebhookDelivery.deleteMany({
       where: { subscriptionId: id },
     });
     const res = await db.webhookSubscription.deleteMany({ where: { id } });
+    if (res.count > 0 && current) {
+      await auditMutation(db, ctx, {
+        action: "webhook.delete",
+        target: `webhook:${id}`,
+        before: auditProjection(toDto(current)),
+      });
+    }
     return res.count;
   });
   if (count === 0)

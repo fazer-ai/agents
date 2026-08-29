@@ -103,6 +103,20 @@ export async function auditMutationOn(
   });
 }
 
+// Whether a projected change is a change at all.
+//
+// The trail records changes, and `docs/api-and-fleet.md` states that as a property of the trail
+// rather than of one family: more than one editor in this console PATCHes its whole form on every
+// save, so a row per apply would fill the trail with saves that moved nothing. It lives here because
+// the projections it compares are built to be compared — same literal, same key order on both sides.
+//
+// It answers for what the PROJECTION holds and nothing else, so a service whose projection cannot
+// show a change (a value stored encrypted, say) has to carry its own marker for it. The alert-channel
+// URL is the case, and `channels.ts` says how.
+export function projectionMoved(before: unknown, after: unknown): boolean {
+  return JSON.stringify(before) !== JSON.stringify(after);
+}
+
 export interface AuditLogItem {
   id: string;
   tenantId: string | null;

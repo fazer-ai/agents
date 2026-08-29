@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
+import { setPublisher } from "@/api/features/realtime/realtime.service";
 import { encryptJson } from "@/api/lib/crypto";
 import { createChatwootClient } from "@/modules/chatwoot/client";
 import {
@@ -847,6 +848,39 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     }
     expect(toggles(conv).length).toBe(1);
     expect((await convRow(conv))?.status).toBe("resolved");
+  });
+
+  // THE CONSOLES, which the row alone does not reach. This delivery already broadcast the mirror's
+  // post-write snapshot before the takeover ran, and that one still said `pending`, so an open
+  // Conversations page would keep naming the bot as the owner. After a successful open Chatwoot's
+  // own conversation event would correct it a moment later — after a FAILED one nothing ever does,
+  // and the claim is deliberately kept, so this is the case the announcement has to hold for.
+  test("a claim taken over a failed open is announced to the consoles", async () => {
+    const conv = 8530;
+    // The publisher is handed the SERIALIZED event, not the object — Bun's `server.publish` takes a
+    // string — so a filter written against the object shape matches nothing and the test passes on
+    // an assertion that can never fail.
+    const published: Record<string, unknown>[] = [];
+    await deliver(conv, { ...customerSays("oi") });
+    const row = await convRow(conv);
+    setPublisher((_topic, data) => {
+      published.push(JSON.parse(String(data)));
+    });
+    failingToggles.add(conv);
+    try {
+      await deliver(conv, { ...deviceReply("já te respondo") });
+    } finally {
+      failingToggles.delete(conv);
+      setPublisher(() => undefined);
+    }
+    expect(
+      published.filter(
+        (d) =>
+          d.type === "conversation" &&
+          d.conversationId === String(row?.id) &&
+          d.status === "open",
+      ).length,
+    ).toBe(1);
   });
 
   test("the switch turns it off, and nothing else changes", async () => {

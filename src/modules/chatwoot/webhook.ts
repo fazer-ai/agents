@@ -4241,7 +4241,29 @@ export async function processChatwootDelivery(
             // A LOST CAS IS A CLOSED FENCE, reported by the shared unit exactly like an ownership
             // refusal, because that is what it is: something newer than the state this delivery
             // decided on now holds the row.
-            return count > 0;
+            if (count === 0) return false;
+            // AND THE CONSOLES HEAR ABOUT IT, from the write that happened rather than from the
+            // call that may not. This delivery already broadcast the mirror's post-write snapshot
+            // upstream, and that one still said `pending` — the claim had not been taken yet — so
+            // without this every open Conversations page keeps naming the bot as the owner while
+            // the row and the gate say a person is on it. After a successful open Chatwoot's own
+            // conversation event corrects it a moment later; after a failed one nothing ever does,
+            // and a failed open deliberately keeps the claim.
+            //
+            // The assignee is the one the fence just read, not a re-read: this write moved status
+            // and nothing else, so anything else would be describing a different moment.
+            if (mirror.conversationRowId !== null) {
+              broadcastConversationEvent(params.tenantId, {
+                conversationId: String(mirror.conversationRowId),
+                status: "open",
+                assigneeId: now.assigneeId,
+                assigneeType: now.assigneeType,
+                lastEventAt: mirror.lastEventAt
+                  ? mirror.lastEventAt.toISOString()
+                  : null,
+              });
+            }
+            return true;
           },
           client,
         }));

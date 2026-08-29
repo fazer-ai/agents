@@ -62,6 +62,45 @@ type Options = {
 const KEYWORD_BEFORE_VALUE =
   /^(?:return|typeof|instanceof|in|of|new|delete|void|case|do|else|yield|await|throw|default|export|extends|as|satisfies)$/;
 
+// `else` is the one keyword whose `{` opens a BLOCK and that still reaches this check. It clears
+// `endsValue` like every expression-introducing keyword, and it leaves no terminator for
+// `atStatementStart` to read, so `if (x) {} else {}` recorded the else body as an OBJECT — and an
+// object's `}` ends a value, turning the regex on the next line into a division that never blanks its
+// body (found by review).
+//
+// THE LIST IS ONE WORD BECAUSE THE OTHER CANDIDATES ARE UNMEASURABLE, NOT BECAUSE THEY WERE
+// FORGOTTEN. A first draft read `else|try|finally|do`; a mutation run then removed `try|finally|do`
+// without turning a single test red. `try` and `finally` are absent from `KEYWORD_BEFORE_VALUE`, so
+// they leave `endsValue` true and the `&&` below short-circuits before ever asking this — dead
+// alternatives, indistinguishable from a typo. `do` does clear `endsValue`, but its body's `}` is
+// always followed by `while (…)`, so the misclassification has nowhere to surface. Adding either back
+// would be a rule no test could hold.
+//
+// NOTE: A MUTATION RUN CANNOT REMOVE THE `\b`, AND THE NOTE IS HERE INSTEAD OF A ROW. Reaching this
+// check at all requires `endsValue` to be false, and any identifier ending in those four letters —
+// `orelse` — sets it true and short-circuits. So the only token that can both reach here and match is
+// the keyword, and `\b` is saying what the regex means rather than deciding anything. It stays for
+// that reason, not because a test holds it.
+const KEYWORD_BEFORE_BLOCK = /\belse\s*$/;
+// Enough to clear `else` plus the whitespace before the brace.
+const KEYWORD_LOOKBACK = 16;
+
+// A closing JSX tag or fragment, anchored with the sticky flag so no arbitrary lookahead window has
+// to bound the component name. `lastIndex` is assigned on every call, so nothing leaks between scans.
+//
+// WHAT IS STILL AMBIGUOUS, AND WHAT CLOSES IT. `a</b>/` is a comparison against the regex `/b>/`, and
+// it is indistinguishable from a closing tag without a real parser — the scan calls it a tag and
+// blanks nothing. It needs the `<` GLUED to the `/`, which is a spelling the formatter does not
+// produce: `bun format` rewrites that line to `a < /b>/`, where the space breaks the adjacency and
+// the regex is read correctly. So the residue is held out of the tree by `bun check`, not by luck,
+// and the formatted spelling has its own row in the decision table.
+const CLOSING_TAG = /<\/\s*(?:[A-Za-z_$][\w$.:-]*\s*)?>/y;
+
+function closesTag(source: string, at: number): boolean {
+  CLOSING_TAG.lastIndex = at;
+  return CLOSING_TAG.test(source);
+}
+
 function scan(source: string, { strings }: Options): Scanned {
   const out = source.split("");
   let open: Scanned["open"] = null;
@@ -163,7 +202,12 @@ function scan(source: string, { strings }: Options): Scanned {
       // A `/` right after a `<` closes a JSX tag; it never opens a regex. Removing the JSX mode left
       // `<` not ending a value, so `</Foo>` entered the regex branch and swallowed the rest of its
       // line — including a real call site, with nothing left open to notice (found by review).
-      if (c === "/" && !endsValue && before(i, 2).trimEnd().endsWith("<")) {
+      //
+      // Matched as the WHOLE closing tag rather than by the single character before it, because
+      // `value < /sanitizeErrorMessage/` puts a letter after that `/` too, and reading it as a tag
+      // scans the pattern's body as code — inventing the call the sweep then counts (found by
+      // review, on the fix above).
+      if (c === "/" && !endsValue && closesTag(source, i - 1)) {
         i++;
         continue;
       }
@@ -257,7 +301,11 @@ function scan(source: string, { strings }: Options): Scanned {
         // A `{` where a VALUE was expected is an object, EXCEPT at a statement boundary, where no
         // value was expected either because nothing precedes it. `endsValue` alone called `{}` on a
         // fresh statement an object, so the regex after it read as a division (found by review).
-        braces.push(!endsValue && !atStatementStart(i));
+        braces.push(
+          !endsValue &&
+            !atStatementStart(i) &&
+            !KEYWORD_BEFORE_BLOCK.test(before(i, KEYWORD_LOOKBACK)),
+        );
         endsValue = false;
         i++;
         continue;

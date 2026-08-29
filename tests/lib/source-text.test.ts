@@ -138,6 +138,64 @@ describe("the scan removes prose and keeps code", () => {
       "a cut after a JSX element with a type argument",
       'const el = <Foo<string> label="x" />;\nconst a = s.slice(0, 10);\n',
     ],
+    // THE SHAPE THAT MADE THE RULE ABOVE TOO WIDE. `value < /re/` also puts a `/` after a `<`, and
+    // reading it as a closing tag scans the PATTERN'S BODY as code — a quote in there opens a string
+    // that eats the rest of the line, and a name in there is counted as the call it merely spells.
+    // So the tag is matched as a whole shape now, not by the character before the slash. Found by
+    // review, on the previous round's fix.
+    [
+      "a cut after a regex compared with `<`",
+      'const r = a < /["]/.source.length; const x = s.slice(0, 10);\n',
+    ],
+    // ON THE SAME LINE, for the reason the DIVIDED table below spells out: a misread `/` runs to the
+    // end of its own line, so a cut on the NEXT one survives either way. A mutation that dropped the
+    // fragment from the tag pattern passed a next-line version of this row.
+    [
+      "a cut after a fragment's closing tag",
+      "const x = <></>; const a = s.slice(0, 10);\n",
+    ],
+    // The tag is matched as a WHOLE SHAPE, not by the character before the slash, so a name longer
+    // than any fixed lookahead window still closes. Written long on purpose: the first fix used a
+    // bounded slice, and this row is what a reintroduced bound fails on.
+    [
+      "a cut after a closing tag whose name is long",
+      "const x = <UmNomeDeComponenteBemMaisLongoQueQualquerJanelaFixaDeLookahead></UmNomeDeComponenteBemMaisLongoQueQualquerJanelaFixaDeLookahead>;\nconst a = s.slice(0, 10);\n",
+    ],
+    // `else` clears `endsValue` like every keyword and leaves no terminator for the statement-start
+    // check to read, so the else body was recorded as an OBJECT — and the `}` of an object ends a
+    // value, turning the regex on the next line into a division that never blanks its body. Found by
+    // review; the cut here is inside that regex's line, which is what the misread would expose.
+    [
+      "a cut after an `else` block, not an object",
+      'if (x) {} else {}\n/["]/.test(y); const a = s.slice(0, 10);\n',
+    ],
+    // `try` and `finally` are right for a DIFFERENT reason: they are absent from
+    // `KEYWORD_BEFORE_VALUE`, so they leave `endsValue` true and their braces are blocks before the
+    // `else` rule is ever consulted. The row exists to hold that second path — the day one of them is
+    // added to the keyword list, this is what goes red.
+    [
+      "a cut after a `try`/`finally` block, which never needed the rule",
+      'try {} finally {}\n/["]/.test(y); const a = s.slice(0, 10);\n',
+    ],
+    // THE TWO HALVES OF `\belse\s*$`, EACH PINNED BY THE OBJECT IT WOULD TURN INTO A BLOCK. Both
+    // mutations survived a first draft of these rows, and both fail open — they call an ordinary
+    // object literal a block, so its `}` stops ending a value and the `/` after it opens a regex that
+    // eats the rest of the line. That is the swallowed-call-site failure, reintroduced by the fix for
+    // it.
+    //
+    // The fail-open direction, pinned: the rule must not reach an IDENTIFIER ending in those four
+    // letters. It does not, and the `\b` is not what stops it — `orelse` ends a value, so the check is
+    // short-circuited before the pattern is consulted. This row holds that ordering.
+    [
+      "a cut after an object held by a name ending in `else`",
+      "const orelse = {} / 2; const a = s.slice(0, 10);\n",
+    ],
+    // Without the `$`, an `else` anywhere in the lookback window matches — including one several
+    // statements above the brace being classified.
+    [
+      "a cut after an object literal written inside an `else` body",
+      "if (x) {} else { o = {} / 2; const a = s.slice(0, 10); }\n",
+    ],
     // A postfix non-null assertion leaves the value it applied to, so the `/` after it divides.
     [
       "a cut after a division on a non-null assertion",

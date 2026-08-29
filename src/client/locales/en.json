@@ -2492,6 +2492,7 @@
     "secretRefHint": "Signs each delivery (HMAC) so your endpoint can verify it. Leave blank for unsigned.",
     "secretRefOpaque": "A signing secret is configured but does not point at a credential in the vault, so it cannot be shown. Leave this alone to keep it, or pick one to replace it.",
     "signedWith": "Signed with: {{ref}}",
+    "signedUnavailable": "Signed, but its credential is not in the vault",
     "subtitle": "Send signed events to your own endpoints when things happen in this workspace.",
     "test": "Test",
     "testDelivered": "Test delivered ({{status}})",

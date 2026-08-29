@@ -2500,6 +2500,7 @@
     "secretRefHint": "Assina cada envio (HMAC) para seu endpoint poder verificar. Deixe em branco para não assinar.",
     "secretRefOpaque": "Há um segredo de assinatura configurado, mas ele não aponta para uma credencial do cofre, então não dá para mostrá-lo. Deixe como está para mantê-lo, ou escolha uma credencial para substituí-lo.",
     "signedWith": "Assinado com: {{ref}}",
+    "signedUnavailable": "Assinado, mas a credencial não está no cofre",
     "subtitle": "Envie eventos assinados para os seus próprios endpoints quando algo acontecer neste espaço de trabalho.",
     "test": "Testar",
     "testDelivered": "Teste entregue ({{status}})",

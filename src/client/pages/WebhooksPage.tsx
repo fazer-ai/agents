@@ -227,11 +227,20 @@ export function WebhooksPage() {
                   ))}
                 </div>
                 <span className="text-text-muted text-xs">
+                  {/* Three states, not two. `hasSecret` says a secret is CONFIGURED and `secretRef`
+                      says which one — and they come apart for a value stored before #126 that names no
+                      vault entry, which the read refuses to hand out. Deciding on the ref alone
+                      labelled such a subscription "Unsigned" while it was signing every delivery. */}
                   {sub.secretRef
                     ? t("webhooks.signedWith", "Signed with: {{ref}}", {
                         ref: sub.secretRef,
                       })
-                    : t("webhooks.unsigned", "Unsigned")}
+                    : sub.hasSecret
+                      ? t(
+                          "webhooks.signedUnavailable",
+                          "Signed, but its credential is not in the vault",
+                        )
+                      : t("webhooks.unsigned", "Unsigned")}
                   {" · "}
                   {t("webhooks.createdAt", "Created {{date}}", {
                     date: formatDate(sub.createdAt),

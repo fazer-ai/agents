@@ -1170,7 +1170,7 @@
     },
     "tabs": "Configurações do agente",
     "takeover": "Quando uma pessoa responde",
-    "takeoverHint": "Quando um colega responde ao cliente numa conversa que o agente está atendendo, seja pelo campo de resposta do Chatwoot ou pelo aparelho pareado a este número de WhatsApp, a conversa vai para a fila humana e o agente para de responder nela. O Chatwoot não faz isso sozinho: sem esta opção, a conversa continua com o agente e ele responde por cima da pessoa na próxima mensagem do cliente. Para devolver a conversa, envie /reset nela ou use o botão na página de Conversas.",
+    "takeoverHint": "Quando um colega responde ao cliente numa conversa que o agente está atendendo, seja pelo campo de resposta do Chatwoot ou pelo aparelho pareado a este número de WhatsApp, a conversa vai para a fila humana e o agente para de responder nela. O Chatwoot não faz isso sozinho: sem esta opção, a conversa continua com o agente e ele responde por cima da pessoa na próxima mensagem do cliente. Para devolver uma conversa, use a ação Devolver para a IA na página de Conversas.",
     "takeoverOnHumanReply": "Parar de responder quando uma pessoa responder ao cliente",
     "temperature": "Temperatura",
     "temperatureHint": "0 a 2 (opcional)",

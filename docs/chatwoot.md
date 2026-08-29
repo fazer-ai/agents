@@ -152,7 +152,7 @@ The third line is a **pair**, and passing half of it buys the first two lines on
 
 The gate above reads status and assignee, and **nothing writes them when a colleague simply answers**. Measured on a live fork: a reply typed in the Chatwoot composer leaves the conversation `pending` with no assignee even with `enable_auto_assignment` on, and so does a reply typed on the phone paired to the number the inbox is connected to. Chatwoot's own `mark_pending_conversation_as_open_for_human_response` is guarded by `captain_pending_conversation?`, which the fork hard-returns `false`. So the next customer message drives a full turn and the agent speaks into a thread a person is already holding.
 
-The receiver closes it: on a human reply it puts the conversation in the human queue (`toggle_status → open`), which is the transition the platform already spells "a human is on this", so the webhook gate, the debounce flush and the follow-up ladder all go quiet with no new state and no new predicate in any of them. Handing it back stays what it was: `/reset`, the console, or REST.
+The receiver closes it: on a human reply it puts the conversation in the human queue (`toggle_status → open`), which is the transition the platform already spells "a human is on this", so the webhook gate, the debounce flush and the follow-up ladder all go quiet with no new state and no new predicate in any of them. Handing it back stays what it was: the console's "Return to AI" button, the REST endpoint behind it, or the MCP tool. Not `/reset`, which is a command only for a **test-mode** agent and ordinary customer text for any other.
 
 **Two routes, one predicate** (`src/modules/chatwoot/normalize.ts`):
 

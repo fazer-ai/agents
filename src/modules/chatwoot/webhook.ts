@@ -4048,7 +4048,9 @@ export async function processChatwootDelivery(
   // The conversation leaves `pending` for the human queue, which is the transition the platform
   // already spells "a human is on this" — so the webhook gate (shouldBotHandle, above), the debounce
   // flush and the follow-up ladder (followups/eligibility) all go quiet on it with no new state and
-  // no new predicate in any of them. Return is what it always was: /reset, the console, or REST.
+  // no new predicate in any of them. Handing it back is what it always was: the console's "Return to
+  // AI" button, the REST endpoint behind it, or the MCP tool. NOT `/reset`, which reads as a command
+  // only for a TEST-mode agent and is ordinary customer text everywhere else.
   //
   // MEASURED, on a live fork, and it is the reason this exists at all: neither route moves the status
   // by itself. A composer reply on a `pending`, bot-owned conversation leaves it `pending` with no

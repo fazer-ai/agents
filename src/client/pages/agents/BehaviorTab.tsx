@@ -2587,7 +2587,7 @@ export function BehaviorTab({
             title={t("editor.takeover", "When a person answers")}
             description={t(
               "editor.takeoverHint",
-              "A colleague replying to the customer in a conversation the agent is handling, from the Chatwoot composer or from the phone paired to this WhatsApp number, moves the conversation to the human queue and the agent stops answering it. Chatwoot does not do this on its own: without this, the conversation stays with the agent and it answers over the person on the next customer message. To hand the conversation back, send /reset in the conversation or use the button on the Conversations page.",
+              "A colleague replying to the customer in a conversation the agent is handling, from the Chatwoot composer or from the phone paired to this WhatsApp number, moves the conversation to the human queue and the agent stops answering it. Chatwoot does not do this on its own: without this, the conversation stays with the agent and it answers over the person on the next customer message. To hand a conversation back, use the Return to AI action on the Conversations page.",
             )}
           >
             <SwitchField

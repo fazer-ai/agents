@@ -6,6 +6,7 @@ import { AppError, NotFoundError } from "@/lib/errors";
 import { parseInput } from "@/lib/parse-input";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { redactEndpoint } from "@/modules/audit/projection";
 import { auditMutation, projectionMoved } from "@/modules/audit/service";
 import { requireVaultRef } from "@/modules/vault/service";
 import { FLOW_LEVELS, FLOW_STAGES } from "./stages";
@@ -50,12 +51,13 @@ const SELECT = {
 } as const;
 
 // scheme://host/… — reveals enough to identify the channel, hides the token. Falls back to "…" if
-// the blob can't be decrypted/parsed (never throws into a list response).
+// the blob can't be decrypted/parsed (never throws into a list response). The redaction itself is
+// `redactEndpoint`, shared with the audit projection: this is the one URL in the codebase whose PATH
+// is known to carry a credential, and there is no reason for the DTO and the trail to disagree about
+// what that means.
 function maskUrl(encrypted: string): string {
   try {
-    const url = decryptJson<string>(encrypted);
-    const u = new URL(url);
-    return `${u.protocol}//${u.host}/…`;
+    return redactEndpoint(decryptJson<string>(encrypted), "origin");
   } catch {
     return "…";
   }
@@ -261,9 +263,14 @@ export async function updateAlertChannel(
     if (typeof data.secretRef === "string") {
       data.secretRef = await requireVaultRef(db, data.secretRef, "secretRef");
     }
-    // Read inside the transaction the write happens in, so the `before` the row carries is the
-    // state this update moved. The MCP tool read it one layer up and OUTSIDE any transaction, which
-    // is the half of the seam that could not be fixed from up there.
+    // LOCKED, then read, and both inside the transaction the write happens in. The MCP tool read
+    // this one layer up and outside any transaction, which is the half of the seam that could not be
+    // fixed from up there — and an unlocked read in here is only better by a margin: at READ
+    // COMMITTED two concurrent PATCHes both read state A, the first commits B, and the second's
+    // `updateMany` then blocks, wakes, writes C and files a row saying A became C. B's change is
+    // attributed to whoever wrote C. Six of the audited families already take this lock before their
+    // snapshot; this is the same statement at a seventh site.
+    await db.$queryRaw`SELECT 1 FROM "alert_channels" WHERE "id" = ${id} FOR UPDATE`;
     const current = await db.alertChannel.findFirst({
       where: { id },
       select: SELECT,
@@ -281,11 +288,12 @@ export async function updateAlertChannel(
     });
     if (updated) {
       const before = auditProjection(current);
-      const moved = urlMoved(current.url, updated.url);
-      const after = moved
-        ? { ...auditProjection(updated), urlReplaced: true }
-        : auditProjection(updated);
-      if (moved || projectionMoved(before, after)) {
+      const shown = auditProjection(updated);
+      const hidden =
+        urlMoved(current.url, updated.url) &&
+        before.urlMasked === shown.urlMasked;
+      const after = hidden ? { ...shown, urlReplaced: true } : shown;
+      if (hidden || projectionMoved(before, after)) {
         await auditMutation(db, ctx, {
           action: "alert_channel.update",
           target: `alert_channel:${id}`,
@@ -312,8 +320,11 @@ export async function deleteAlertChannel(
   // alert_deliveries.channel_id is ON DELETE CASCADE, so removing the channel drops its (PII-free)
   // delivery ledger with it.
   const count = await runScopedOn(base, ctx, async (db) => {
-    // Read before the delete: the row is what the audit records, and after `deleteMany` there is
-    // nothing left to name what was removed.
+    // Locked, then read before the delete: the row is what the audit records, and after
+    // `deleteMany` there is nothing left to name what was removed. The lock is the same one the
+    // update takes, and for the same reason — an update committing between this read and the delete
+    // would leave the row describing a channel that no longer looked like that.
+    await db.$queryRaw`SELECT 1 FROM "alert_channels" WHERE "id" = ${id} FOR UPDATE`;
     const current = await db.alertChannel.findFirst({
       where: { id },
       select: SELECT,

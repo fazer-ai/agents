@@ -53,3 +53,29 @@ export function truncForAudit(v: unknown): unknown {
   }
   return v;
 }
+
+// A URL with every part a credential can hide in removed, for a row that OUTLIVES the record it
+// describes. The live read surfaces return these URLs whole to the same tenant admins; the trail is
+// append-only, so a token pasted into one once would outlast every correction.
+//
+// The parts are the repo's own measured line rather than a guess: `carriesCredential`
+// (`src/modules/agents/audit-projection.ts`) asks about USERINFO under any scheme and about the
+// QUERY and the FRAGMENT under `http(s)`, and it deliberately stops there — a path segment was left
+// out because ordinary endpoints and operator prose put content in one. `u.host` excludes userinfo,
+// so reading the three parts off `URL` is what does the removing.
+//
+// `keep: "origin"` drops the path as well, for a URL the repo already treats as a secret at rest: an
+// alert channel's is stored encrypted precisely because a Discord webhook carries its token in the
+// PATH. A caller whose column is in the clear keeps the path, because the trail is read to tell two
+// endpoints on one host apart.
+export function redactEndpoint(url: string, keep: "origin" | "path"): string {
+  try {
+    const u = new URL(url);
+    return keep === "origin"
+      ? `${u.protocol}//${u.host}/…`
+      : `${u.protocol}//${u.host}${u.pathname}`;
+  } catch {
+    // Not parseable as a URL, so no part of it can be shown to be safe.
+    return "…";
+  }
+}

@@ -249,6 +249,95 @@ describe.skipIf(!dbUp)("the webhook and alert-channel trail", () => {
     expect(rotated?.after).toMatchObject({ secretRef: null });
   });
 
+  test("a credential in the URL does not reach the row, which outlives the subscription", async () => {
+    await clearAudit();
+    // The three places one hides, and the live read surfaces return all of them whole — those are
+    // deletable and this row is not.
+    const created = await createWebhookSubscription(
+      ctx(),
+      {
+        url: `https://user:PWSECRET@203.0.113.10/hook?token=QSECRET#f=HSECRET`,
+        events: ["conversation.created"],
+      },
+      appDb,
+    );
+    const [row] = await rows();
+    expect(row?.action).toBe("webhook.create");
+    expect(row?.after).toMatchObject({ url: "https://203.0.113.10/hook" });
+    for (const secret of ["PWSECRET", "QSECRET", "HSECRET"]) {
+      expect(textOf(row)).not.toContain(secret);
+    }
+    // The column still holds it whole: this is the trail's rule, not a change to what is stored.
+    expect(created.url).toContain("QSECRET");
+  });
+
+  test("rotating a token the row cannot show still writes a row", async () => {
+    const created = await createWebhookSubscription(
+      ctx(),
+      {
+        url: "https://203.0.113.10/hook?token=OLDSECRET",
+        events: ["conversation.created"],
+      },
+      appDb,
+    );
+    await clearAudit();
+    await updateWebhookSubscription(
+      ctx(),
+      BigInt(created.id),
+      { url: "https://203.0.113.10/hook?token=NEWSECRET" },
+      appDb,
+    );
+    const [row, ...rest] = await rows();
+    expect(rest).toEqual([]);
+    // Both sides redact to the same string, so nothing in the projection moved.
+    expect((row?.before as { url: string })?.url).toBe(
+      (row?.after as { url: string })?.url,
+    );
+    expect(row?.after).toMatchObject({ urlReplaced: true });
+    expect(textOf(row)).not.toContain("NEWSECRET");
+  });
+
+  test("a concurrent update cannot file a change it did not make", async () => {
+    // The narrow window the row lock exists for, and the same shape the delivery requeue is tested
+    // with. A first writer commits `enabled: false` while holding the row; this update takes the
+    // lock, so its snapshot is what the holder left. Without the lock its `findFirst` reads the
+    // pre-holder state, the `updateMany` then blocks and wakes, and the row it files says
+    // `enabled: true → false` — the holder's change, attributed to this writer.
+    const created = await createWebhookSubscription(
+      ctx(),
+      { url: outboundUrl("/race"), events: ["conversation.created"] },
+      appDb,
+    );
+    await clearAudit();
+    let held = false;
+    const holder = (su as PrismaClient).$transaction(
+      async (tx) => {
+        await tx.$executeRawUnsafe(
+          `UPDATE webhook_subscriptions SET enabled = false WHERE id = ${created.id}`,
+        );
+        held = true;
+        await Bun.sleep(500);
+      },
+      { timeout: 10_000 },
+    );
+    await Bun.sleep(120);
+    // The rendezvous FIRED: without this the test is a `sleep` with a better name.
+    expect(held).toBe(true);
+    await Promise.all([
+      holder,
+      updateWebhookSubscription(
+        ctx(),
+        BigInt(created.id),
+        { events: ["conversation.handoff"] },
+        appDb,
+      ),
+    ]);
+    const [row] = await rows();
+    expect(row?.action).toBe("webhook.update");
+    expect(row?.before).toMatchObject({ enabled: false });
+    expect(row?.after).toMatchObject({ enabled: false });
+  });
+
   test("a subscription save that moves nothing writes no row", async () => {
     const created = await createWebhookSubscription(
       ctx(),
@@ -287,6 +376,41 @@ describe.skipIf(!dbUp)("the webhook and alert-channel trail", () => {
     expect(row?.action).toBe("webhook.delete");
     expect(row?.target).toBe(`webhook:${created.id}`);
     expect(row?.before).toMatchObject({ url: outboundUrl("/doomed") });
+  });
+
+  test("a delete records what the last writer left, not what this caller first saw", async () => {
+    // The delete takes the same lock as the update, and for the same reason: an update committing
+    // between an unlocked snapshot and the `deleteMany` leaves the row describing a subscription
+    // that no longer looked like that when it was removed.
+    const created = await createWebhookSubscription(
+      ctx(),
+      { url: outboundUrl("/race-del"), events: ["conversation.created"] },
+      appDb,
+    );
+    await clearAudit();
+    let held = false;
+    const holder = (su as PrismaClient).$transaction(
+      async (tx) => {
+        await tx.$executeRawUnsafe(
+          `UPDATE webhook_subscriptions SET enabled = false WHERE id = ${created.id}`,
+        );
+        held = true;
+        await Bun.sleep(500);
+      },
+      { timeout: 10_000 },
+    );
+    await Bun.sleep(120);
+    expect(held).toBe(true);
+    await Promise.all([
+      holder,
+      deleteWebhookSubscription(ctx(), BigInt(created.id), appDb),
+    ]);
+    const [row] = await rows();
+    expect(row?.action).toBe("webhook.delete");
+    expect(row?.before).toMatchObject({
+      enabled: false,
+      url: outboundUrl("/race-del"),
+    });
   });
 
   test("requeueing a dead delivery records the state the requeue undid", async () => {
@@ -492,6 +616,65 @@ describe.skipIf(!dbUp)("the webhook and alert-channel trail", () => {
     expect(row?.action).toBe("alert_channel.delete");
     expect(row?.target).toBe(`alert_channel:${created.id}`);
     expect(row?.before).toMatchObject({ name: "doomed", type: "discord" });
+  });
+
+  test("a concurrent channel update cannot file a change it did not make", async () => {
+    const created = await createAlertChannel(
+      ctx(),
+      { name: "raced", type: "discord", url: outboundUrl("/race-ch") },
+      appDb,
+    );
+    await clearAudit();
+    let held = false;
+    const holder = (su as PrismaClient).$transaction(
+      async (tx) => {
+        await tx.$executeRawUnsafe(
+          `UPDATE alert_channels SET enabled = false WHERE id = ${created.id}`,
+        );
+        held = true;
+        await Bun.sleep(500);
+      },
+      { timeout: 10_000 },
+    );
+    await Bun.sleep(120);
+    expect(held).toBe(true);
+    await Promise.all([
+      holder,
+      updateAlertChannel(ctx(), BigInt(created.id), { name: "raced2" }, appDb),
+    ]);
+    const [row] = await rows();
+    expect(row?.action).toBe("alert_channel.update");
+    expect(row?.before).toMatchObject({ name: "raced", enabled: false });
+    expect(row?.after).toMatchObject({ name: "raced2", enabled: false });
+  });
+
+  test("a channel delete records what the last writer left", async () => {
+    const created = await createAlertChannel(
+      ctx(),
+      { name: "race-del", type: "discord", url: outboundUrl("/race-chdel") },
+      appDb,
+    );
+    await clearAudit();
+    let held = false;
+    const holder = (su as PrismaClient).$transaction(
+      async (tx) => {
+        await tx.$executeRawUnsafe(
+          `UPDATE alert_channels SET enabled = false WHERE id = ${created.id}`,
+        );
+        held = true;
+        await Bun.sleep(500);
+      },
+      { timeout: 10_000 },
+    );
+    await Bun.sleep(120);
+    expect(held).toBe(true);
+    await Promise.all([
+      holder,
+      deleteAlertChannel(ctx(), BigInt(created.id), appDb),
+    ]);
+    const [row] = await rows();
+    expect(row?.action).toBe("alert_channel.delete");
+    expect(row?.before).toMatchObject({ enabled: false, name: "race-del" });
   });
 
   test("a destination that will not decrypt is not reported as unchanged", async () => {

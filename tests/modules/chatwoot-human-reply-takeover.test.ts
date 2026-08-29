@@ -668,6 +668,12 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     await deliver(conv, { ...deviceReply("já te respondo") }, ORPHAN_INBOX_ID);
     expect(toggles(conv).length).toBe(0);
     expect(liveStatus.get(conv) ?? "pending").toBe("pending");
+    // THE ROW TOO, and this is the half that stops being free once the claim is written before the
+    // toggle. Learning there is no persona from `toggleStatus` throwing would leave the row `open`
+    // on a conversation Chatwoot never moved — and a failed open deliberately KEEPS the claim,
+    // because a failed call is an unknown outcome. A missing bot is not unknown, so nothing is
+    // claimed in the first place.
+    expect((await convRow(conv))?.status).toBe("pending");
   });
 
   // "We own this" is false when there is no "we". A delivery whose own route bot is unknown cannot

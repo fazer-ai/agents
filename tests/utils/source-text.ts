@@ -307,6 +307,35 @@ function scan(source: string, { strings }: Options): Scanned {
         endsValue = true;
         continue;
       }
+      // A QUOTE THAT DIRECTLY FOLLOWS A VALUE IS NOT A QUOTE, and this is the third ambiguity the one
+      // fact settles. `identifier'x'` is not TypeScript — a string literal never touches the token
+      // before it — so a `'` sitting against a word is an apostrophe in JSX prose. `<p>Don't
+      // {sanitizeErrorMessage(err)} user's choice</p>` opened a string at the first one and closed it
+      // at the second, blanking the real call in between and leaving nothing open to notice. An
+      // earlier row covered only the SINGLE apostrophe, whose string dies at the newline and so costs
+      // one line; the pair is the silent case. Found by review.
+      //
+      // TWO CONDITIONS, AND THE SECOND IS NOT REDUNDANT. `endsValue` survives whitespace by design —
+      // that was itself a fix on this PR — so it alone also rejects the string in `import x from "y"`,
+      // where `from` is an ordinary identifier. What separates the two is ADJACENCY: prose writes
+      // `Don't` with the quote against the word, and code always writes a space. Measured, not
+      // reasoned: without the adjacency test six files under `src/` lose their import specifiers.
+      //
+      // The keywords that CAN touch a quote (`case'x'`, `return'x'`) are the ones that clear
+      // `endsValue`, so they are already on the other side of this test and open their string.
+      //
+      // WHAT ADJACENCY DOES NOT REACH, WRITTEN DOWN RATHER THAN IMPLIED. A quote SEPARATED from the
+      // word — `<p>He said "hi {…} bye" now</p>` — still opens a string. Dropping the adjacency test
+      // would cover it, and then the only collisions left are the contextual keywords that are not in
+      // `KEYWORD_BEFORE_VALUE`: `from` and `import`, which precede a string with a space in every
+      // import in the tree. That is a list this repo cannot test, since nothing in `src/` writes a
+      // spaced quote in JSX prose — so the rule stops where the measurement stops. The whole-tree
+      // probe is what would catch it going wrong: the first draft of this test, without adjacency,
+      // reported six files ending inside a string.
+      if ((c === '"' || c === "'") && endsValue && /[\w$]/.test(before(i, 1))) {
+        i++;
+        continue;
+      }
       if (c === '"' || c === "'") {
         i = quoted(i);
         endsValue = true;

@@ -34,6 +34,11 @@ describe("the scan removes prose and keeps code", () => {
     // characters; what separates them is that the regex CLOSES on its line and the tag does not. Both
     // spellings are in `src/`.
     ["a regex body opening with `>`", 'x.replace(/>s.slice(0, 1)/g, "");\n'],
+    // A KEYWORD *CAN* TOUCH A QUOTE, WHICH IS WHY THE APOSTROPHE RULE ALSO ASKS `endsValue`. This is
+    // valid JavaScript that no formatter writes, so the tree cannot hold the rule and a row must: drop
+    // `endsValue` from that test and the string here is read as prose, putting its contents back in
+    // front of every sweep.
+    ["a string glued to `return`", "function f() { return's.slice(0, 1)'; }\n"],
     // THE ANCHOR OF THE URL-SCHEME RULE, PINNED BY THE COMMENT IT WOULD STOP REMOVING. The rule only
     // fires when the lookback ENDS in `http:` or `https:`; drop the `$` and a scheme name anywhere in
     // the window matches, so an ordinary comment after a label called `file` or `http` is read as a
@@ -77,6 +82,21 @@ describe("the scan removes prose and keeps code", () => {
     [
       "a cut after an apostrophe in JSX text",
       "<p>Don't retry</p>\nconst a = s.slice(0, 10);\n",
+    ],
+    // ON THE SAME LINE, AND BETWEEN TWO OF THEM, which is the case the row above gave false comfort
+    // about. A single apostrophe opens a string that dies at the newline, so it costs one line and
+    // the next-line cut survives whatever happens. A PAIR closes properly and blanks the real code
+    // between them, silently — `unterminatedLiteral` has nothing to report. Found by review.
+    [
+      "a cut between two apostrophes in JSX text",
+      "const el = <p>Don't {s.slice(0, 10)} user's choice</p>;\n",
+    ],
+    // The other side of the same rule: a quote that does NOT touch a word still opens a string, which
+    // is what every import specifier in the tree depends on. Without this the adjacency test would be
+    // `endsValue` alone, and six files under `src/` lose theirs.
+    [
+      "a cut after an import specifier",
+      'import { x } from "@/lib/x";\nconst a = s.slice(0, 10);\n',
     ],
     [
       "a cut after an apostrophe in a JSX tag comment",
@@ -519,11 +539,32 @@ export function slashesAfterAParenthesis(source: string): string[] {
   // shape to be misread would hide from a probe written the other way.
   const code = withoutComments(source);
   const found: string[] = [];
-  for (const m of code.matchAll(/\)\s*\/(?![\s/*=>])/g)) {
-    // A regex the scan read correctly ends with its own `/` and flags; that is not the miss.
-    const after = code.slice((m.index ?? 0) + 1);
-    if (!/^\s*\/[gimsuyd]*[\s,;)\].]/.test(after)) {
-      found.push(code.slice(m.index, (m.index ?? 0) + 40));
+  // WHITESPACE AFTER THE SLASH IS NOT AN EXCLUSION, and excluding it was a hole exactly where the
+  // probe is supposed to see. A regex body may begin with a space, so `if (x) / sanitizeErrorMessage/`
+  // is the miss written in the one spelling the old lookahead skipped — the scan read it as a
+  // division, left a phantom call, and the probe reported nothing. Found by review.
+  for (const m of code.matchAll(/\)\s*\/(?![/*=>])/g)) {
+    const at = m.index ?? 0;
+    // Only a reading that CLOSES on its line can cost anything: one that reaches the newline is
+    // backed out by the scan and blanks nothing.
+    //
+    // JUST "IS THERE ANOTHER SLASH", not the scan's own regex walk. A first draft tracked character
+    // classes and escapes the way `scan` does, and a mutation run removed both without turning a test
+    // red — correctly, because the answer here is a BOOLEAN. Honouring `[/]` or `\/` can only find
+    // FEWER slashes than ignoring them, and the real closer is still there in every case where one
+    // exists. The two would differ only on an unterminated regex containing `[/`, which is not valid
+    // source.
+    const slash = code.indexOf("/", at);
+    const eol = code.indexOf("\n", slash);
+    if (!code.slice(slash + 1, eol === -1 ? code.length : eol).includes("/")) {
+      continue;
+    }
+    // A regex the scan read correctly ends with its own `/` and flags; that is not the miss. The `/`
+    // sits AGAINST the `)` there — `/foo(bar)/g` — so no whitespace is allowed before it. Allowing it
+    // was what swallowed the case above: `) / ` reads as a regex end with zero flags.
+    const after = code.slice(at + 1);
+    if (!/^\/[gimsuyd]*[\s,;)\].]/.test(after)) {
+      found.push(code.slice(at, at + 40));
     }
   }
   return found;
@@ -537,6 +578,36 @@ describe("the heuristic's known miss is not in the tree", () => {
     expect(slashesAfterAParenthesis("const r = f() / 2;\n")).toEqual([]);
     // …and it is not fooled by prose, which is the whole subject of this file.
     expect(slashesAfterAParenthesis('// if (x) /["]/.test(y)\n')).toEqual([]);
+  });
+
+  // THE SPELLING THE PREDICATE USED TO SKIP. A regex body may open with a space, and the old
+  // lookahead treated whitespace as proof of a division — so the one shape the probe exists to find
+  // was the one it could not see. Found by review.
+  test("the predicate flags a regex whose body opens with a space", () => {
+    expect(
+      slashesAfterAParenthesis(
+        "if (x) / sanitizeErrorMessage(Deep)?/.test(y);\n",
+      ),
+    ).toHaveLength(1);
+  });
+
+  // A reading that never closes on its line is backed out by the scan and costs nothing, so it is not
+  // a suspect. This is what keeps the widened predicate from reporting every division in the tree.
+  test("the predicate ignores a slash that closes nothing on its line", () => {
+    expect(slashesAfterAParenthesis("const r = (a + b) / 2;\n")).toEqual([]);
+    expect(
+      slashesAfterAParenthesis("const x = f(a) / b;\nconst y = 1;\n"),
+    ).toEqual([]);
+  });
+
+  // AND THE FALSE POSITIVE IT ACCEPTS, PINNED SO IT IS NOT A SURPRISE. Two divisions on one line are
+  // indistinguishable from a regex with spaces in it without a real parser — that ambiguity IS the
+  // miss this probe documents, so it reports the shape and a person reads it. Nothing in `src/`
+  // writes it today, which is why the sweep below can still require zero.
+  test("the predicate also flags two divisions sharing a line", () => {
+    expect(
+      slashesAfterAParenthesis("const r = (a + b) / 2 + c / d;\n"),
+    ).toHaveLength(1);
   });
 
   test("no `/` follows a closing parenthesis except to end a regex", async () => {

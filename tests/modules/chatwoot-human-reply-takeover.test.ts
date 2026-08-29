@@ -883,6 +883,37 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     ).toBe(1);
   });
 
+  // A TAKEOVER IS A FACT ABOUT THE CONVERSATION, not about the agent, so the agent's own switch does
+  // not decide it. Two things go wrong when it does, and the second is the quiet one: the runtime's
+  // post-model recheck asks about OWNERSHIP and not about the switch, so a turn already running when
+  // the agent was switched off still answers over the colleague; and the conversation stays
+  // `pending`, so switching the agent back on later hands it every conversation a person picked up
+  // in the meantime.
+  test("a switched-off agent still steps off a conversation a person answered", async () => {
+    const conv = 8540;
+    await deliver(conv, { ...customerSays("oi") });
+    await suDb.agent.update({
+      where: { id: agentDbId },
+      data: { enabled: false },
+    });
+    try {
+      await deliver(conv, { ...deviceReply("já te respondo") });
+      expect(toggles(conv).length).toBe(1);
+      expect(liveStatus.get(conv)).toBe("open");
+      expect((await convRow(conv))?.status).toBe("open");
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentDbId },
+        data: { enabled: true },
+      });
+    }
+    // And the switch coming back on does not hand the conversation back: it is the person's now, and
+    // only a hand-back returns it.
+    const before = turnsRan;
+    await deliver(conv, { ...customerSays("continua aí?") });
+    expect(turnsRan).toBe(before);
+  });
+
   test("the switch turns it off, and nothing else changes", async () => {
     await suDb.agent.update({
       where: { id: agentDbId },

@@ -4095,10 +4095,18 @@ export async function processChatwootDelivery(
   // Not idempotent by bookkeeping but by the gate: a re-delivered webhook finds the conversation no
   // longer `pending`, `act` is false, and nothing is written or logged a second time.
   //
-  // Production + enabled only, matching the ingestion below. A disabled agent is not speaking over
-  // anybody, and a TEST-mode agent lives in a conversation an operator activated with /teste — an
-  // operator answering from the composer mid-test would otherwise silence the very agent they are
-  // testing, with the way back (/reset) a command they now have to know about.
+  // Production only, and NOT "enabled only", which is where this first landed. A takeover is a fact
+  // about the CONVERSATION — a person is on it — and the switch is a fact about the agent, so
+  // reading the switch here answers the wrong question. Two ways it went wrong: the post-model
+  // recheck in ../../graph/runtime rechecks OWNERSHIP and not the switch, so a turn already running
+  // when the agent was switched off still answers, over a colleague this block would have stepped
+  // aside for; and the conversation stays `pending`, so switching the agent back on hands it every
+  // conversation a person picked up while it was off, silently.
+  //
+  // A TEST-mode agent is a different case and stays excluded: it lives in a conversation an operator
+  // activated with /teste, and an operator answering from the composer mid-test would otherwise
+  // silence the very agent they are testing, with the way back (/reset) a command they now have to
+  // know about.
   //
   // Best-effort in both directions: a failed toggle leaves the previous behaviour rather than
   // stranding the delivery, and it is logged rather than swallowed.
@@ -4108,8 +4116,7 @@ export async function processChatwootDelivery(
   if (
     humanReplyBy !== null &&
     act &&
-    rt?.enabled &&
-    rt.mode === "production" &&
+    rt?.mode === "production" &&
     n.conversationId !== null &&
     readTakeoverConfig(rt.settings).onHumanReply
   ) {

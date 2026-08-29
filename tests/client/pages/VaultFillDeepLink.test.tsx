@@ -55,8 +55,13 @@ function installFetchStub() {
 
 mock.module("react-i18next", () => ({
   useTranslation: () => ({
-    t: (key: string, fallback?: string) =>
-      typeof fallback === "string" ? fallback : key,
+    t: (key: string, fallback?: string, vars?: Record<string, unknown>) => {
+      const text = typeof fallback === "string" ? fallback : key;
+      if (!vars) return text;
+      return text.replace(/\{\{(\w+)\}\}/g, (m, name) =>
+        name in vars ? String(vars[name]) : m,
+      );
+    },
     i18n: { language: "en" },
   }),
   initReactI18next: { type: "3rdParty", init: () => {} },

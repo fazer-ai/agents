@@ -41,7 +41,7 @@ const PACKAGE_MOCKS_WAIVED: Record<string, string> = {
   "api/features/auth/google.service.test.ts → jose":
     "the stub DELEGATES to the real `jwtVerify` unless a test overrides it for its own call, so the leaked function still verifies real tokens for every file downstream. Asserted there by a round trip that runs after `beforeEach`, which is what fails if the delegation or the `mockClear` is taken away.",
   "client/components/TenantDeepLink.test.tsx → react-i18next":
-    "predates this ledger. It has not bitten because every test that renders a translated component stubs `useTranslation` itself, so a leaked stub meets another stub. That is a property of today's client tests, not a guarantee.",
+    "predates this ledger, and the argument it used to carry — that a leaked stub only ever meets another stub — was measured false on 2026-08-29 (#435): a new page test renders a translated component WITHOUT stubbing, four of these stubs dropped the vars argument, and the label came out holding a literal `{{ref}}`. Green locally, red on CI, because the answer is whichever file ran last. What keeps it harmless now is the sweep below, not the coincidence: every one of these returns the fallback AND interpolates, which is this ledger's rule applied to `t` — the leak is permanent either way, so it has to carry correct behaviour.",
   "client/components/UserMenu.test.tsx → react-i18next": "same as above.",
   "client/pages/DashboardFirstResponse.test.tsx → react-i18next":
     "same as above.",
@@ -242,6 +242,106 @@ describe("every third-party module stub is argued for", () => {
       expect(
         staleWaivers(["a.test.ts → jose"], { "a.test.ts → jose": "why" }),
       ).toEqual([]);
+    });
+  });
+});
+
+// ── the stub that leaks has to SAY what the real module would ──
+//
+// The ledger above asks whether a package is stubbed. This asks the question that comes after, and
+// it is the one the outage in the header actually turned on: a leaked stub is the whole surface every
+// downstream file sees, so its BEHAVIOUR has to match. For `react-i18next` the half that gets
+// dropped is interpolation, because a stub is written for a caller whose own labels take no
+// variables, and the file that pays is a different one.
+//
+// Measured on 2026-08-29 (#435): four of the ten dropped the `vars` argument, a new page test
+// rendered a translated page without stubbing, and its label came out holding a literal `{{ref}}`.
+// Green locally, red on CI, because which stub wins is which file ran last — and the failure named
+// the assertion, not the stub.
+const I18N_STUB = /mock\.module\(\s*"react-i18next"/;
+
+export function nonInterpolatingI18nStubs(
+  files: readonly ScannedFile[],
+): string[] {
+  const out: string[] = [];
+  for (const { rel, source } of files) {
+    const at = source.search(I18N_STUB);
+    if (at < 0) continue;
+    const end = source.indexOf("\n}));", at);
+    const block = source.slice(at, end < 0 ? source.length : end);
+    // `{{` appears in one of these stubs only inside the pattern that expands it. A `t` that ignores
+    // `vars` has no reason to name the placeholder at all, which is what makes the mention readable
+    // as the behaviour rather than as a comment about it. The backslashes come off first: the
+    // pattern is written as a regex literal, so the placeholder reaches the source text as `\{\{`
+    // and a plain `includes("{{")` finds none of the stubs that DO expand it.
+    if (!block.replace(/\\/g, "").includes("{{")) out.push(rel);
+  }
+  return out.sort();
+}
+
+export function i18nStubFiles(files: readonly ScannedFile[]): string[] {
+  return files.filter(({ source }) => I18N_STUB.test(source)).map((f) => f.rel);
+}
+
+describe("a leaked `t` still interpolates", () => {
+  test("no stub of react-i18next drops its vars", async () => {
+    expect(
+      nonInterpolatingI18nStubs(await scanTree()),
+      "`mock.module` has no file scope, so this `t` is what every file that runs afterwards gets — " +
+        "including files that never asked for a stub and whose labels DO interpolate. A `t` that " +
+        "returns the fallback unexpanded renders `{{ref}}` on screen, and the file that fails is not " +
+        "this one. Expand `{{name}}` from the vars argument, the way " +
+        "tests/client/pages/LogsGroupTitle.test.tsx does.",
+    ).toEqual([]);
+  });
+
+  // The sweep is worth nothing if it stops finding the stubs it is meant to police.
+  test("and the sweep still finds them", async () => {
+    expect(i18nStubFiles(await scanTree()).length).toBeGreaterThan(0);
+  });
+
+  describe("the decision, over files it is handed", () => {
+    const scan = (source: string) =>
+      nonInterpolatingI18nStubs([{ rel: "a.test.tsx", source }]);
+
+    const stub = (body: string) =>
+      `mock.module("react-i18next", () => ({\n  useTranslation: () => ({\n${body}\n  }),\n}));\n`;
+
+    test("a stub that ignores the vars argument is reported", () => {
+      expect(scan(stub("    t: (k: string, fb?: string) => fb ?? k,"))).toEqual(
+        ["a.test.tsx"],
+      );
+    });
+
+    test("a stub that expands the placeholder is not", () => {
+      expect(
+        scan(
+          stub(
+            "    t: (k: string, fb?: string, v?: Record<string, unknown>) =>\n      (fb ?? k).replace(/\\{\\{(\\w+)\\}\\}/g, (m, n) => String(v?.[n] ?? m)),",
+          ),
+        ),
+      ).toEqual([]);
+    });
+
+    test("a file that stubs nothing is not reported", () => {
+      expect(scan("const x = 1;")).toEqual([]);
+    });
+
+    // The block ENDS at the stub's own closing line, and this is the fixture that says why: a
+    // placeholder anywhere later in the file — a fixture string, a second stub, a JSX comment — would
+    // otherwise answer for a `t` that never looks at `vars`.
+    test("a placeholder after the stub does not vouch for it", () => {
+      expect(
+        scan(
+          `${stub("    t: (k: string, fb?: string) => fb ?? k,")}\nconst label = "Signed with: {{ref}}";\n`,
+        ),
+      ).toEqual(["a.test.tsx"]);
+    });
+
+    // A stub for a DIFFERENT package is not this sweep's business, and a sweep that matched any
+    // `mock.module` would report every one of them as non-interpolating.
+    test("a stub of another package is not reported", () => {
+      expect(scan('mock.module("jose", () => stub);\n')).toEqual([]);
     });
   });
 });

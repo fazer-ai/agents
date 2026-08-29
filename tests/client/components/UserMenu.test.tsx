@@ -36,7 +36,13 @@ mock.module("@/client/contexts/ThemeContext", () => ({
 
 mock.module("react-i18next", () => ({
   useTranslation: () => ({
-    t: (_key: string, fallback?: string) => fallback ?? _key,
+    t: (key: string, fallback?: string, vars?: Record<string, unknown>) => {
+      const text = typeof fallback === "string" ? fallback : key;
+      if (!vars) return text;
+      return text.replace(/\{\{(\w+)\}\}/g, (m, name) =>
+        name in vars ? String(vars[name]) : m,
+      );
+    },
     i18n: {
       language: "en",
       changeLanguage: mockChangeLanguage,

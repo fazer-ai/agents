@@ -64,11 +64,12 @@ function toDto(row: {
 // What the audit row carries: the subscription as the operator sees it, minus the identifiers and
 // timestamps the row already holds in its own columns.
 //
-// The URL is REDACTED even though the column holds it in the clear and every read surface returns it
-// whole, because those are deletable and this row is not: an operator who pastes
-// `https://host/hook?token=…` and corrects it a minute later would otherwise have left the token in
-// an append-only row. `redactEndpoint` removes exactly the three parts a credential hides in and
-// keeps the path, which is what tells two endpoints on one host apart.
+// The URL is REDACTED to its origin even though the column holds it in the clear and every read
+// surface returns it whole, because those are deletable and this row is not: an operator who pastes
+// a Discord webhook here and corrects it a minute later would otherwise have left its token in an
+// append-only row. Where the value is STORED says nothing about whether it is a secret, and the
+// destinations these are pointed at put the credential in the path — `redactEndpoint` says the rest.
+// Identity is not lost: the row's `target` names this subscription exactly.
 //
 // `secretRef` is on it, and it is a reference rather than a secret by construction: this service is
 // the only writer of the column (measured) and it canonicalizes every value through
@@ -77,7 +78,7 @@ function toDto(row: {
 // sees, and that is exactly the class of change a trail exists to attribute.
 function auditProjection(dto: WebhookSubscriptionDto) {
   return {
-    url: redactEndpoint(dto.url, "path"),
+    urlMasked: redactEndpoint(dto.url),
     events: dto.events,
     enabled: dto.enabled,
     secretRef: dto.secretRef,
@@ -240,11 +241,12 @@ export async function updateWebhookSubscription(
     if (updated) {
       const before = auditProjection(toDto(current));
       const shown = auditProjection(toDto(updated));
-      // A destination that moved where the projection cannot show it: two URLs that differ only in
-      // userinfo, query or fragment redact to the same string, and rotating a token in one is
-      // exactly that shape. The boolean is what the row carries instead — that it changed, never
-      // what it changed to.
-      const hidden = current.url !== updated.url && before.url === shown.url;
+      // A destination that moved where the projection cannot show it: two URLs on the same host
+      // redact to the same string, and rotating the token of a Discord-shaped endpoint is exactly
+      // that shape. The boolean is what the row carries instead — that it changed, never what it
+      // changed to.
+      const hidden =
+        current.url !== updated.url && before.urlMasked === shown.urlMasked;
       const after = hidden ? { ...shown, urlReplaced: true } : shown;
       // The trail records changes: a caller is free to PATCH a field to the value it already holds.
       if (hidden || projectionMoved(before, after)) {

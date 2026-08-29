@@ -54,26 +54,29 @@ export function truncForAudit(v: unknown): unknown {
   return v;
 }
 
-// A URL with every part a credential can hide in removed, for a row that OUTLIVES the record it
-// describes. The live read surfaces return these URLs whole to the same tenant admins; the trail is
-// append-only, so a token pasted into one once would outlast every correction.
+// The only part of a URL an audit row keeps: its origin.
 //
-// The parts are the repo's own measured line rather than a guess: `carriesCredential`
-// (`src/modules/agents/audit-projection.ts`) asks about USERINFO under any scheme and about the
-// QUERY and the FRAGMENT under `http(s)`, and it deliberately stops there — a path segment was left
-// out because ordinary endpoints and operator prose put content in one. `u.host` excludes userinfo,
-// so reading the three parts off `URL` is what does the removing.
+// A row OUTLIVES the record it describes. The live read surfaces return these URLs whole to the same
+// tenant admins, but those are deletable and the trail is append-only, so a token pasted into one
+// once outlasts every correction.
 //
-// `keep: "origin"` drops the path as well, for a URL the repo already treats as a secret at rest: an
-// alert channel's is stored encrypted precisely because a Discord webhook carries its token in the
-// PATH. A caller whose column is in the clear keeps the path, because the trail is read to tell two
-// endpoints on one host apart.
-export function redactEndpoint(url: string, keep: "origin" | "path"): string {
+// EVERY other part goes, and the path goes with them. Userinfo, query and fragment are the three
+// places a credential hides in the abstract; the path is where it actually turns up, because the
+// destinations operators point these at put it there — a Discord incoming webhook is
+// `…/api/webhooks/<id>/<token>`, and Slack's is the same shape. This codebase is its own evidence:
+// an alert channel's URL is stored ENCRYPTED at rest for exactly that reason, and an outbound
+// subscription accepts the same arbitrary HTTPS destination with its column in the clear.
+//
+// So there is one answer rather than one per caller. Keeping the path for the family whose column
+// happens to be readable would be reasoning from where the value is stored to whether it is a
+// secret, and the two are unrelated. Identity is not lost by this: the row's `target` names the
+// subscription or the channel exactly, and what the origin adds is which host it was pointed at.
+export function redactEndpoint(url: string): string {
   try {
+    // `u.host` is the host and the port, and it EXCLUDES userinfo — reading it off `URL` is what
+    // does the removing.
     const u = new URL(url);
-    return keep === "origin"
-      ? `${u.protocol}//${u.host}/…`
-      : `${u.protocol}//${u.host}${u.pathname}`;
+    return `${u.protocol}//${u.host}/…`;
   } catch {
     // Not parseable as a URL, so no part of it can be shown to be safe.
     return "…";

@@ -52,12 +52,11 @@ const SELECT = {
 
 // scheme://host/… — reveals enough to identify the channel, hides the token. Falls back to "…" if
 // the blob can't be decrypted/parsed (never throws into a list response). The redaction itself is
-// `redactEndpoint`, shared with the audit projection: this is the one URL in the codebase whose PATH
-// is known to carry a credential, and there is no reason for the DTO and the trail to disagree about
-// what that means.
+// `redactEndpoint`, shared with the audit projection, so the DTO and the trail cannot disagree about
+// what a safe form of one of these URLs is.
 function maskUrl(encrypted: string): string {
   try {
-    return redactEndpoint(decryptJson<string>(encrypted), "origin");
+    return redactEndpoint(decryptJson<string>(encrypted));
   } catch {
     return "…";
   }

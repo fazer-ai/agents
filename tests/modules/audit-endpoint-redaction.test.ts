@@ -5,83 +5,75 @@ import { redactEndpoint } from "@/modules/audit/projection";
 // surfaces that return these URLs whole are not. `redactEndpoint` is what stands between an operator
 // pasting a token into an endpoint and that token being permanent.
 //
-// A table rather than a fixture per caller, because the rule is one and the callers are two: an
-// outbound webhook subscription keeps its path (the column is in the clear and the trail is read to
-// tell two endpoints on one host apart), an alert channel does not (its column is ENCRYPTED at rest
-// precisely because a Discord webhook carries its token in the PATH).
+// A table rather than a fixture per caller, because the rule is ONE and the callers are two. It was
+// briefly two rules — the alert channel keeping only its origin, the outbound subscription keeping
+// its path as well, on the reasoning that its column is in the clear. That reasoning ran from where
+// a value is stored to whether it is a secret, and those are unrelated: both families accept the
+// same arbitrary HTTPS destination, and the destinations operators point them at (Discord, Slack)
+// carry the credential in the PATH.
 
-const CASES: Array<[url: string, origin: string, path: string]> = [
-  // The three places a credential hides, one at a time, then all at once.
+const CASES: Array<[what: string, url: string, redacted: string]> = [
+  // The three places a credential hides in the abstract, one at a time, then all at once.
+  ["userinfo", "https://user:pw@example.com/hook", "https://example.com/…"],
+  ["query", "https://example.com/hook?token=abc", "https://example.com/…"],
+  ["fragment", "https://example.com/hook#token=abc", "https://example.com/…"],
   [
-    "https://user:pw@example.com/hook",
-    "https://example.com/…",
-    "https://example.com/hook",
-  ],
-  [
-    "https://example.com/hook?token=abc",
-    "https://example.com/…",
-    "https://example.com/hook",
-  ],
-  [
-    "https://example.com/hook#token=abc",
-    "https://example.com/…",
-    "https://example.com/hook",
-  ],
-  [
+    "all three",
     "https://user:pw@example.com/hook?token=abc#more=xyz",
     "https://example.com/…",
-    "https://example.com/hook",
   ],
   // A bare token as the username, with no password: userinfo is the whole of it.
   [
+    "bare userinfo",
     "https://sk-live-abc@example.com/hook",
     "https://example.com/…",
-    "https://example.com/hook",
   ],
-  // Nothing to remove: the ordinary case is returned as it was, minus the trailing nothing.
+  // And the place it actually turns up. These two are why there is no `keep the path` setting.
   [
-    "https://example.com/hook",
-    "https://example.com/…",
-    "https://example.com/hook",
-  ],
-  // The port is part of the host and is kept: it identifies the endpoint and holds no secret.
-  [
-    "https://example.com:8443/a/b",
-    "https://example.com:8443/…",
-    "https://example.com:8443/a/b",
-  ],
-  // A Discord webhook, which is why `origin` exists at all: the token IS the path.
-  [
+    "a Discord webhook",
     "https://discord.com/api/webhooks/123/TOKENHERE",
     "https://discord.com/…",
-    "https://discord.com/api/webhooks/123/TOKENHERE",
+  ],
+  [
+    "a Slack webhook",
+    "https://hooks.slack.com/services/T00/B00/TOKENHERE",
+    "https://hooks.slack.com/…",
+  ],
+  // Nothing secret in it, and the path still goes: the row's `target` is what identifies the record.
+  ["an ordinary endpoint", "https://example.com/hook", "https://example.com/…"],
+  // The port is part of the host and is kept: it identifies the endpoint and holds no secret.
+  ["a port", "https://example.com:8443/a/b", "https://example.com:8443/…"],
+  // Not `http(s)`, and the rule does not ask: userinfo is userinfo under any scheme.
+  [
+    "another scheme",
+    "ftp://u:hunter2@files.example.com/x",
+    "ftp://files.example.com/…",
   ],
 ];
 
 describe("redactEndpoint", () => {
-  for (const [url, origin, path] of CASES) {
-    test(`origin: ${url}`, () => {
-      expect(redactEndpoint(url, "origin")).toBe(origin);
-    });
-    test(`path: ${url}`, () => {
-      expect(redactEndpoint(url, "path")).toBe(path);
+  for (const [what, url, redacted] of CASES) {
+    test(`${what}: ${url}`, () => {
+      expect(redactEndpoint(url)).toBe(redacted);
     });
   }
 
-  test("a string that is not a URL yields nothing, on either setting", () => {
+  test("a string that is not a URL yields nothing", () => {
     // Not parseable, so no part of it can be shown to be safe — including the whole of it.
     for (const bad of ["", "not a url", "///", "example.com/hook"]) {
-      expect(redactEndpoint(bad, "origin")).toBe("…");
-      expect(redactEndpoint(bad, "path")).toBe("…");
+      expect(redactEndpoint(bad)).toBe("…");
     }
   });
 
   test("no case in the table leaks the secret it carries", () => {
     // The table above is read by eye; this is the assertion that does not depend on that.
-    for (const [url, origin] of CASES) {
-      for (const secret of ["pw", "abc", "xyz", "sk-live-abc"]) {
+    const SECRETS = ["pw", "abc", "xyz", "sk-live-abc", "TOKENHERE", "hunter2"];
+    for (const [what, url, redacted] of CASES) {
+      for (const secret of SECRETS) {
         if (!url.includes(secret)) continue;
-        expect(origin.includes(secret)).toBe(false);
+        expect(`${what} keeps ${secret}: ${redacted.includes(secret)}`).toBe(
+          `${what} keeps ${secret}: false`,
+        );
       }
     }
   });

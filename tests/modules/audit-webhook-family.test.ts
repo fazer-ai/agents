@@ -189,7 +189,7 @@ describe.skipIf(!dbUp)("the webhook and alert-channel trail", () => {
     // No transport said so: absent on the context means the cookie session.
     expect(row?.actorType).toBe("user");
     expect(row?.after).toMatchObject({
-      url: outboundUrl("/hook"),
+      urlMasked: "https://203.0.113.10/…",
       events: ["conversation.created"],
       enabled: true,
     });
@@ -211,13 +211,16 @@ describe.skipIf(!dbUp)("the webhook and alert-channel trail", () => {
     const [row] = await rows();
     expect(row?.action).toBe("webhook.update");
     expect(row?.target).toBe(`webhook:${created.id}`);
+    // Both URLs are on the same host, so the mask is identical on both sides and `urlReplaced` is
+    // what says the destination moved. `enabled` is the field the projection can show.
     expect(row?.before).toMatchObject({
-      url: outboundUrl("/before"),
+      urlMasked: "https://203.0.113.10/…",
       enabled: true,
     });
     expect(row?.after).toMatchObject({
-      url: outboundUrl("/after"),
+      urlMasked: "https://203.0.113.10/…",
       enabled: false,
+      urlReplaced: true,
     });
   });
 
@@ -263,7 +266,7 @@ describe.skipIf(!dbUp)("the webhook and alert-channel trail", () => {
     );
     const [row] = await rows();
     expect(row?.action).toBe("webhook.create");
-    expect(row?.after).toMatchObject({ url: "https://203.0.113.10/hook" });
+    expect(row?.after).toMatchObject({ urlMasked: "https://203.0.113.10/…" });
     for (const secret of ["PWSECRET", "QSECRET", "HSECRET"]) {
       expect(textOf(row)).not.toContain(secret);
     }
@@ -290,8 +293,8 @@ describe.skipIf(!dbUp)("the webhook and alert-channel trail", () => {
     const [row, ...rest] = await rows();
     expect(rest).toEqual([]);
     // Both sides redact to the same string, so nothing in the projection moved.
-    expect((row?.before as { url: string })?.url).toBe(
-      (row?.after as { url: string })?.url,
+    expect((row?.before as { urlMasked: string })?.urlMasked).toBe(
+      (row?.after as { urlMasked: string })?.urlMasked,
     );
     expect(row?.after).toMatchObject({ urlReplaced: true });
     expect(textOf(row)).not.toContain("NEWSECRET");
@@ -375,7 +378,7 @@ describe.skipIf(!dbUp)("the webhook and alert-channel trail", () => {
     const [row] = await rows();
     expect(row?.action).toBe("webhook.delete");
     expect(row?.target).toBe(`webhook:${created.id}`);
-    expect(row?.before).toMatchObject({ url: outboundUrl("/doomed") });
+    expect(row?.before).toMatchObject({ urlMasked: "https://203.0.113.10/…" });
   });
 
   test("a delete records what the last writer left, not what this caller first saw", async () => {
@@ -409,7 +412,7 @@ describe.skipIf(!dbUp)("the webhook and alert-channel trail", () => {
     expect(row?.action).toBe("webhook.delete");
     expect(row?.before).toMatchObject({
       enabled: false,
-      url: outboundUrl("/race-del"),
+      urlMasked: "https://203.0.113.10/…",
     });
   });
 

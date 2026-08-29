@@ -61,6 +61,13 @@ function AlertChannelModal({
   const [minLevel, setMinLevel] = useState<"warn" | "error">("error");
   const [stages, setStages] = useState<Set<string>>(new Set());
   const [secretRef, setSecretRef] = useState("");
+  // What the read handed over, verbatim. The wire needs to tell "the operator left this alone" apart
+  // from "the operator chose this", and comparing against the loaded value is the whole difference:
+  // an untouched field is OMITTED, so keeping the stored secret never depends on that stored value
+  // being re-writable. It often is not — the column accepted any string at all before #126, so rows
+  // hold `vault: 7`, `vault:0007` and bare names, every one of which `requireVaultRef` refuses on
+  // the way back in.
+  const [loadedSecretRef, setLoadedSecretRef] = useState("");
   const [enabled, setEnabled] = useState(true);
   const [error, setError] = useState("");
   const refusal = useFieldRefusal(
@@ -91,6 +98,7 @@ function AlertChannelModal({
     // null there as "clear it", so a blank field here unsigns the channel on a save that meant to
     // change the name. The URL above CAN start blank because the PATCH omits it when it is.
     setSecretRef(ch?.secretRef ?? "");
+    setLoadedSecretRef(ch?.secretRef ?? "");
     setEnabled(ch?.enabled ?? true);
     setError("");
   });
@@ -116,6 +124,11 @@ function AlertChannelModal({
     stages.size > 0 &&
     (editing ? true : url.trim().length > 0);
 
+  // `secretRef` is three-valued on the way in — absent leaves it, null clears it, a value sets it —
+  // and this is where the form picks which one it means. Unchanged since the modal opened is the
+  // ABSENT case; anything else is what the picker holds now, with an empty picker meaning null.
+  const secretRefChanged = editing ? secretRef !== loadedSecretRef : true;
+
   // What the inputs hold right now, in the server's vocabulary. `url` is omitted on an edit that
   // leaves it blank, which is how "keep the stored one" is spelled on the wire.
   const currentOf = () => {
@@ -124,9 +137,9 @@ function AlertChannelModal({
       type,
       minLevel,
       stages: allStagesChecked ? [] : [...stages],
-      secretRef: secretRef.trim() || null,
       enabled,
     };
+    if (secretRefChanged) body.secretRef = secretRef.trim() || null;
     if (!editing || url.trim()) body.url = url.trim();
     return body;
   };
@@ -156,9 +169,9 @@ function AlertChannelModal({
           type,
           minLevel,
           stages: stagesArr,
-          secretRef: ref,
           enabled,
         };
+        if (secretRefChanged) patch.secretRef = ref;
         if (url.trim()) patch.url = url.trim();
         apiError = (
           await api.api.v1["alert-channels"]({ id: editing.id }).patch(patch)

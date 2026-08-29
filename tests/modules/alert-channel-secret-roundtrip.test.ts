@@ -24,10 +24,15 @@ import { outboundUrl } from "../utils/outbound";
 // not merely uneditable: it is erased by the next save of an operator who opened the dialog to
 // rename the channel.
 //
-// The tests drive the round trip the console performs — list, build the body from what was listed,
-// PATCH — rather than asserting the DTO has a field, because the field is only worth having if it
-// survives that trip. On the base the list has no `secretRef` to hand back and the channel comes out
-// unsigned.
+// The tests drive the round trip a whole-body client performs — list, build the body from what was
+// listed, PATCH — rather than asserting the DTO has a field, because the field is only worth having
+// if it survives that trip. On the base the list has no `secretRef` to hand back and the channel
+// comes out unsigned.
+//
+// The console itself now OMITS the key when the operator did not touch the picker, which is a second
+// and stronger guarantee: it does not require the stored value to be re-writable, and before #126
+// this column accepted any string at all, so plenty of stored values are not. The last test here is
+// that fact, measured. The whole-body shape stays covered because REST callers still use it.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -62,10 +67,10 @@ const ctx = (): TenantContext => ({
   role: "TENANT_ADMIN",
 });
 
-// What `AlertChannelsSection` sends on save: every field of the form, with the credential picker's
-// value in `secretRef`. The picker holds whatever the read gave it, which is the point of the test —
-// spelled once here so the two halves cannot drift apart in the file that is measuring them.
-function consoleSaveBody(listed: AlertChannelDto, over: object = {}) {
+// A whole-body PATCH built from what the read returned — the shape any REST caller may send, and the
+// one the console sent until this round. Spelled once so the tests below cannot drift apart from each
+// other in the file that is measuring them.
+function fullBodySave(listed: AlertChannelDto, over: object = {}) {
   return {
     name: listed.name,
     type: listed.type as "discord" | "webhook",
@@ -152,7 +157,7 @@ describe.skipIf(!dbUp)(
       await updateAlertChannel(
         ctx(),
         BigInt(created.id),
-        consoleSaveBody(before, { name: "renamed" }),
+        fullBodySave(before, { name: "renamed" }),
         appDb,
       );
 
@@ -174,7 +179,7 @@ describe.skipIf(!dbUp)(
       await updateAlertChannel(
         ctx(),
         BigInt(created.id),
-        consoleSaveBody(before, { secretRef: null }),
+        fullBodySave(before, { secretRef: null }),
         appDb,
       );
 
@@ -196,7 +201,7 @@ describe.skipIf(!dbUp)(
       await updateAlertChannel(
         ctx(),
         BigInt(created.id),
-        consoleSaveBody(before, { name: "plain renamed" }),
+        fullBodySave(before, { name: "plain renamed" }),
         appDb,
       );
       const after = await listed(BigInt(created.id));
@@ -215,7 +220,7 @@ describe.skipIf(!dbUp)(
       await updateAlertChannel(
         ctx(),
         BigInt(created.id),
-        consoleSaveBody(before, { name: "dispatch renamed" }),
+        fullBodySave(before, { name: "dispatch renamed" }),
         appDb,
       );
 
@@ -254,6 +259,44 @@ describe.skipIf(!dbUp)(
       expect(
         (sent[0]?.["x-secretaria-signature"] ?? "").startsWith("sha256="),
       ).toBe(true);
+    });
+
+    test("a ref the column accepted before #126 is refused on the way back in", async () => {
+      // Why the console omits the key instead of echoing it. Both writers of this column started
+      // canonicalizing in #126; before that the schema was `z.string().min(1).max(128)` and the value
+      // went in verbatim, so live rows hold `vault: 7`, `vault:0007` and bare names. Every READER in
+      // the system resolves those on purpose (`canonicalVaultRef`), and `requireVaultRef` refuses them,
+      // because a column takes one spelling. Echoing the stored value back would turn a rename into a
+      // form the operator cannot save.
+      const created = await seedSigned("legacy");
+      await (su as PrismaClient).$executeRawUnsafe(
+        `UPDATE alert_channels SET secret_ref = 'vault: ${secretId}' WHERE id = ${created.id}`,
+      );
+      const before = await listed(BigInt(created.id));
+      expect(before?.secretRef).toBe(`vault: ${secretId}`);
+
+      let refused = "";
+      try {
+        await updateAlertChannel(
+          ctx(),
+          BigInt(created.id),
+          fullBodySave(before as AlertChannelDto, { name: "legacy renamed" }),
+          appDb,
+        );
+      } catch (e) {
+        refused = (e as { translationKey?: string }).translationKey ?? "";
+      }
+      expect(refused).toBe("errors.invalidVaultRef");
+
+      // …and the shape the console actually sends goes through, secret intact.
+      const { secretRef: _omitted, ...withoutSecret } = fullBodySave(
+        before as AlertChannelDto,
+        { name: "legacy renamed" },
+      );
+      await updateAlertChannel(ctx(), BigInt(created.id), withoutSecret, appDb);
+      const after = await listed(BigInt(created.id));
+      expect(after?.name).toBe("legacy renamed");
+      expect(after?.secretRef).toBe(`vault: ${secretId}`);
     });
 
     test("the sibling family answers the same round trip the same way", async () => {

@@ -8,15 +8,25 @@ import {
   expect,
   test,
 } from "bun:test";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { AlertChannelsSection } from "@/client/components/alerts/AlertChannelsSection";
 import { ToastProvider } from "@/client/components/Toast";
 import { invalidateVault } from "@/client/lib/vaultCache";
 
-// The edit modal sends `secretRef` on EVERY save, and the service reads a null there as "clear it".
-// So whatever the modal holds when the operator presses Save is what the channel keeps — which makes
-// the field the form loads on open the whole story. Opening a signed channel and saving it unchanged
-// is the shape under test: it is not a no-op, it unsigns the channel, and the console shows nothing.
+// `secretRef` is three-valued on the wire — absent leaves it, null clears it, a value sets it — and
+// the edit modal used to be able to spell only two of those: it sent the key on EVERY save, holding
+// whatever the picker had, and the picker was blanked on open. So opening a signed channel and
+// pressing Save was not a no-op, it unsigned the channel, and nothing on screen said so (#435).
+//
+// All three states are driven here, the clear through the picker's own menu rather than around it,
+// because "leave it" and "clear it" differ by one comparison in the component and a test that only
+// ever asserts omission is satisfied by a form that can no longer clear anything.
 //
 // NOTE: every assertion reduces to a boolean or a string BEFORE expect. A failing expectation that
 // holds a DOM node serializes a cyclic happy-dom tree and stalls the runner.
@@ -121,11 +131,50 @@ describe("AlertChannelsSection", () => {
     return patches()[0]?.body as Record<string, unknown>;
   };
 
-  test("a save that changed nothing keeps the channel signed", async () => {
+  test("a save that changed nothing does not mention the secret at all", async () => {
     await openEditor();
     const body = await save();
-    // The whole defect in one line: `null` here is the service's spelling of "clear it".
-    expect(JSON.stringify(body?.secretRef)).toBe(JSON.stringify("vault:7"));
+    // The whole defect in one line: the key was always present, and `null` is the service's spelling
+    // of "clear it". Omitted is the spelling of "leave it", and it is the one that does not depend on
+    // the stored value being re-writable.
+    expect(Object.hasOwn(body ?? {}, "secretRef")).toBe(false);
+    // …and the rest of the form is still sent, so this is an omission and not a save that gave up.
+    expect(String(body?.name)).toBe("Ops webhook");
+  });
+
+  test("a ref the column accepted before #126 is not sent back", async () => {
+    // `alert_channels.secret_ref` took any string up to 128 chars until #126 guarded both writers, so
+    // rows hold `vault: 7`, `vault:0007` and bare names. Every reader in the system resolves those;
+    // `requireVaultRef` refuses them. Handing one back on an unrelated rename would turn a working
+    // channel into a form the operator cannot save.
+    channels = [channel({ secretRef: "vault: 7" })];
+    await openEditor();
+    const body = await save();
+    expect(Object.hasOwn(body ?? {}, "secretRef")).toBe(false);
+  });
+
+  test("clearing the picker still unsigns the channel", async () => {
+    await openEditor();
+    await waitFor(() =>
+      expect(screen.queryAllByText("ops-hmac").length > 0).toBe(true),
+    );
+    // Radix opens on pointerdown, not click.
+    // The FormField group carries the same accessible name, so this asks for the BUTTON.
+    fireEvent.pointerDown(
+      screen.getByRole("button", { name: /Signing secret/ }),
+      {
+        button: 0,
+        pointerType: "mouse",
+      },
+    );
+    await waitFor(() =>
+      expect(screen.queryAllByText(/^(None|Nenhuma)$/).length > 0).toBe(true),
+    );
+    fireEvent.click(screen.getAllByText(/^(None|Nenhuma)$/)[0] as HTMLElement);
+
+    const body = await save();
+    expect(Object.hasOwn(body ?? {}, "secretRef")).toBe(true);
+    expect(JSON.stringify(body?.secretRef)).toBe(JSON.stringify(null));
   });
 
   test("the modal says WHICH credential signs, not just that one does", async () => {
@@ -137,12 +186,12 @@ describe("AlertChannelsSection", () => {
     );
   });
 
-  test("an unsigned channel still saves as unsigned", async () => {
+  test("an unsigned channel is left alone too", async () => {
     channels = [channel({ hasSecret: false, secretRef: null })];
     await openEditor();
     const body = await save();
-    // The other half of the prefill: blank has to keep meaning "no secret", so that a channel
-    // without one is not handed a stale ref from the component's last session.
-    expect(JSON.stringify(body?.secretRef)).toBe(JSON.stringify(null));
+    // The other half of the prefill: an untouched empty picker is still untouched, so it must not
+    // send a stale ref from the component's last session either.
+    expect(Object.hasOwn(body ?? {}, "secretRef")).toBe(false);
   });
 });

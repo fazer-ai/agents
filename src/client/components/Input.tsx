@@ -45,7 +45,8 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
     // The id of the message the surrounding <FormField> renders, so this control can point
     // `aria-describedby` at it. Without this the field's own description is announced nowhere.
     const field = useFormField();
-    const hasError = error || !!errorMessage;
+    // The field's `error` counts too: a FormField-level refusal has to mark the box it is about.
+    const hasError = error || !!errorMessage || !!field.invalid;
     const descriptionId = useId();
     const hasDescription = !!errorMessage || !!helperText;
     const [showPassword, setShowPassword] = useState(false);
@@ -62,6 +63,8 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
                 : autoComplete
             }
             aria-invalid={hasError || undefined}
+            aria-labelledby={props["aria-labelledby"] ?? field.labelledById}
+            required={props.required ?? field.required}
             // BOTH ids, not one: the field describes the control in general and this control
             // describes its own state. Replacing either is how a validation message goes unread.
             aria-describedby={mergeDescribedBy(

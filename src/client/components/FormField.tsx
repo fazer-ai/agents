@@ -51,11 +51,16 @@ function wireNativeControl(
   if (typeof children.type !== "string") return children;
   if (!NATIVE_CONTROLS.has(children.type)) return children;
   const own = children.props as {
+    "aria-labelledby"?: string;
     "aria-describedby"?: string;
     "aria-invalid"?: boolean | string;
     required?: boolean;
   };
   return cloneElement(children, {
+    // The TITLE alone, never the wrapping <label>: an accessible name is computed from the label's
+    // whole subtree, so the `?` beside the title would be appended to the field's name.
+
+    "aria-labelledby": own["aria-labelledby"] ?? field.labelledById,
     "aria-describedby": mergeDescribedBy(
       field.describedById,
       own["aria-describedby"],
@@ -94,7 +99,7 @@ export function FormField({
   group,
 }: FormFieldProps) {
   const subtext = description ?? hint;
-  const labelId = useId();
+  const titleId = useId();
   const messageId = useId();
   const hasMessage = !!error || !!subtext;
 
@@ -103,24 +108,22 @@ export function FormField({
       // In `group` mode the wrapper describes itself; handing the id down as well would make a
       // control inside announce the same message twice.
       describedById: hasMessage && !group ? messageId : undefined,
+      labelledById: titleId,
       required,
       invalid: !!error,
     }),
-    [group, hasMessage, messageId, required, error],
+    [group, hasMessage, messageId, titleId, required, error],
   );
 
   const title = (
-    <>
+    <span id={titleId}>
       {label}
       {required && <span className="ml-0.5 text-error">*</span>}
-    </>
+    </span>
   );
 
   const heading = (
-    <span
-      id={group ? labelId : undefined}
-      className="flex items-center gap-1.5 font-medium text-sm text-text-secondary"
-    >
+    <span className="flex items-center gap-1.5 font-medium text-sm text-text-secondary">
       {title}
       {help ? (
         <HelpPopover
@@ -146,7 +149,7 @@ export function FormField({
         // biome-ignore lint/a11y/useSemanticElements: a <fieldset>/<legend> brings UA border + legend-layout baggage unfit for this lightweight stacked field; role="group" + aria-labelledby gives the same grouping semantics.
         <div
           role="group"
-          aria-labelledby={labelId}
+          aria-labelledby={titleId}
           aria-describedby={hasMessage ? messageId : undefined}
           className={cn("flex flex-col gap-1.5", className)}
         >

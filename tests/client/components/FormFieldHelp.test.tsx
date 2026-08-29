@@ -96,4 +96,54 @@ describe("FormField help", () => {
     );
     expect(screen.getByText(/empty means no ceiling/i)).toBeTruthy();
   });
+  // Escape means dismiss, and it used to mean the opposite here. Radix reports the trigger's own
+  // click, Escape and an outside click through one `onOpenChange(false)`, and the branch that
+  // exists so a click can PIN a hover-opened box was taking all three: Escape on a box the pointer
+  // had merely hovered open pinned it and left it on screen.
+  test("Escape dismisses a popover that hover opened", () => {
+    render(
+      <FormField label="History ceiling" help="Why this field exists.">
+        <input />
+      </FormField>,
+    );
+    const trigger = screen.getByRole("button");
+    fireEvent.pointerEnter(trigger, { pointerType: "mouse" });
+    expect(screen.getByText(/why this field exists/i)).toBeTruthy();
+    fireEvent.keyDown(document.activeElement ?? document.body, {
+      key: "Escape",
+    });
+    expect(screen.queryByText(/why this field exists/i)).toBeNull();
+  });
+
+  // The `?` sits inside the <label>, and an accessible name is computed from the label's whole
+  // subtree: the trigger carries its own aria-label, so without an explicit `aria-labelledby` the
+  // input is announced as "History ceiling Show help: History ceiling". The control is pointed at
+  // the TITLE alone, which wins over the native label.
+  test("the field's name is the title, not the title plus the help trigger", () => {
+    render(
+      <FormField label="History ceiling" help="Why this field exists.">
+        <input />
+      </FormField>,
+    );
+    const input = screen.getByRole("textbox");
+    const named = document.getElementById(
+      input.getAttribute("aria-labelledby") ?? "",
+    );
+    expect(named?.textContent).toBe("History ceiling");
+    expect(named?.querySelector("[role='button']")).toBeNull();
+  });
+
+  // The context carried `required` and `invalid` from the first version and nothing read them, so
+  // a field declared required was not announced as required and a field-level refusal did not mark
+  // the box it was about. A bare native child is wired the same way through `wireNativeControl`.
+  test("required and invalid reach the control the field wraps", () => {
+    render(
+      <FormField label="History ceiling" required error="Too large.">
+        <input />
+      </FormField>,
+    );
+    const input = screen.getByRole("textbox");
+    expect(input.hasAttribute("required")).toBe(true);
+    expect(input.getAttribute("aria-invalid")).toBeTruthy();
+  });
 });

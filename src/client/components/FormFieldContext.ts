@@ -8,6 +8,13 @@ export interface FormFieldContextValue {
   // `aria-describedby` at. Merged with any `aria-describedby` the control already renders for a
   // message of its own, rather than replacing it.
   describedById?: string;
+  // The id of the element holding the field's TITLE and nothing else. A control points
+  // `aria-labelledby` at it so its name is the title, which is not what the wrapping <label> would
+  // give: the accessible name is computed from the label's whole subtree, so the `?` next to the
+  // title (a `role="button"` carrying its own aria-label) would be appended to the field's name.
+  // `aria-labelledby` wins over a native label, so the <label> keeps giving click-to-focus and
+  // stops deciding the name.
+  labelledById?: string;
   required?: boolean;
   invalid?: boolean;
 }

@@ -37,7 +37,8 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
     const over = max !== null && count !== null && count > max;
     const showCount =
       max !== null && count !== null && count >= max * COUNTER_FROM;
-    const hasError = error || !!errorMessage || over;
+    // The field's `error` counts too: a FormField-level refusal has to mark the box it is about.
+    const hasError = error || !!errorMessage || over || !!field.invalid;
     const descriptionId = useId();
     const hasDescription = !!errorMessage || !!helperText || over;
     return (
@@ -46,6 +47,8 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
           ref={ref}
           rows={rows}
           aria-invalid={hasError || undefined}
+          aria-labelledby={props["aria-labelledby"] ?? field.labelledById}
+          required={props.required ?? field.required}
           aria-describedby={mergeDescribedBy(
             field.describedById,
             hasDescription ? descriptionId : undefined,

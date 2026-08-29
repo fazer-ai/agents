@@ -77,7 +77,9 @@ of going unread, solved with zero standing prose.
 verdict, and the threshold is applied **per key in the source language**, not per locale. The
 catalogue is bilingual and pt-BR runs about 6% longer, so a length rule applied per file puts the
 same field inline in one language and behind a `?` in the other, which is worse than either answer.
-Measured on the current tree: 2252 en keys / 2260 pt-BR, of which 45 and 49 are ≥200 characters.
+Measured before this rule landed: 2252 en keys / 2260 pt-BR, of which 45 and 49 were ≥200
+characters. `tests/client/help-placement.test.ts` enforces the cap on **en alone** for that reason,
+and checks the three-paragraph shape of `*Help` in both.
 
 **Two constraints the mechanism imposes.**
 

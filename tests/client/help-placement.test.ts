@@ -13,10 +13,15 @@ import ptBR from "@/client/locales/pt-BR.json";
 
 const HINT_MAX = 200;
 
-// Applied to BOTH locales at the same number, deliberately, even though the rule is written in the
-// source language. pt-BR runs about 6% longer, so a Portuguese string that blows the cap on a
-// compliant English one is a signal the English is already at its limit — which is the report we
-// want, not a second threshold that lets each language drift on its own.
+// The SOURCE language only, which is the rule as docs/ui.md states it. Enforcing the same number
+// on pt-BR looks stricter and is a different rule: pt-BR runs about 6% longer, so a compliant
+// English hint whose natural translation crosses the line would fail CI, and the only way to make
+// it pass is to move the field's help somewhere else. That makes translation length decide UI
+// placement, which is exactly what the per-key-in-the-source rule exists to prevent.
+//
+// pt-BR is not left unguarded: it is a translation of a source that had to pass, and the paragraph
+// check below runs on both.
+const SOURCE = { en } as Record<string, unknown>;
 const LOCALES = { en, "pt-BR": ptBR } as Record<string, unknown>;
 
 function flatten(node: unknown, prefix = ""): [string, string][] {
@@ -34,7 +39,7 @@ const INLINE = /(Hint|Note|Explain)$/;
 describe("where help goes (docs/ui.md)", () => {
   test("inline field text stays a sentence", () => {
     const over: string[] = [];
-    for (const [locale, cat] of Object.entries(LOCALES)) {
+    for (const [locale, cat] of Object.entries(SOURCE)) {
       for (const [key, value] of flatten(cat)) {
         if (!INLINE.test(key)) continue;
         if (value.length <= HINT_MAX) continue;

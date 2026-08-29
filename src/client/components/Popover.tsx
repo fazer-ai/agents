@@ -88,6 +88,11 @@ export function Popover({
   // because the pointer handlers read it from inside timers, where a state value would be the one
   // captured when the timer was armed.
   const pinned = useRef(false);
+  // Whether the close now arriving came from the TRIGGER's own click. Radix reports the trigger
+  // click, Escape and an outside click through the same `onOpenChange(false)`, and only the first
+  // of those may pin: without this flag, Escape on a box the pointer merely hovered open took the
+  // pin branch and left it on screen, which is the opposite of what Escape means.
+  const fromTrigger = useRef(false);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const cancelClose = useCallback(() => {
@@ -123,17 +128,18 @@ export function Popover({
     <PopoverPrimitive.Root
       open={open}
       onOpenChange={(next) => {
-        // Radix reports the trigger's own click, Escape and an outside click through here. A click
-        // is the only one that arrives while the box is already open from a hover, and it should
-        // pin rather than toggle shut — otherwise the gesture that lets somebody READ the text is
-        // the one that takes it away.
+        const byTrigger = fromTrigger.current;
+        fromTrigger.current = false;
         if (next) {
           pinned.current = true;
           cancelClose();
           setOpen(true);
           return;
         }
-        if (!pinned.current && open) {
+        // A close from the TRIGGER, on a box that a hover had opened, is the click that pins it:
+        // otherwise the gesture that lets somebody READ the text is the one that takes it away.
+        // Every other close (Escape, outside click, a second click on the trigger) dismisses.
+        if (byTrigger && !pinned.current) {
           pinned.current = true;
           return;
         }
@@ -145,6 +151,11 @@ export function Popover({
         asChild
         onPointerEnter={openOnHover}
         onPointerLeave={closeOnLeave}
+        // Runs BEFORE Radix's own handler (it composes ours first), so the flag is set by the time
+        // `onOpenToggle` reports the close.
+        onClick={() => {
+          fromTrigger.current = true;
+        }}
       >
         {children}
       </PopoverPrimitive.Trigger>

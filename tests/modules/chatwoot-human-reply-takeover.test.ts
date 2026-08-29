@@ -90,8 +90,12 @@ const stubFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     // like. Failing after would leave the stub agreeing with a call that threw.
     if (failingToggles.has(Number(toggle[1])))
       return new Response("nope", { status: 502 });
-    liveStatus.set(Number(toggle[1]), String(body.status));
+    // The hook runs BEFORE the status moves, because that is what "in flight" means: the request is
+    // on the wire and Chatwoot has not committed it, so anything Chatwoot serializes in this window
+    // still carries the OLD status. Running it after would hand concurrent work a snapshot from the
+    // future and hide the very race it is standing in.
     await whileToggling?.();
+    liveStatus.set(Number(toggle[1]), String(body.status));
   }
   // The live read the takeover reconciles from, answered the way the REST show does: the current
   // status, the bot still holding it, and an `updated_at` — the field the toggle response itself

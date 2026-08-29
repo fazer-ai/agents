@@ -4243,6 +4243,17 @@ export async function processChatwootDelivery(
       // exception (state-order.ts), so a conversation Chatwoot really did leave `pending` comes back
       // to the agent on its own, and one Chatwoot really did open stays open.
       //
+      // THAT SAME EXCEPTION LEAVES ONE WINDOW OPEN, and it is measured rather than assumed: a
+      // customer message that arrives while the toggle is still on the wire is processed by its own
+      // detached delivery (chatwoot.controller.ts dispatches with no per-conversation
+      // serialization), carries the `pending` Chatwoot has not moved yet, and the reopen exception
+      // lets it overwrite this claim — after which its own gate reads `pending` and it can start a
+      // turn. Not closable from here: refusing `open → pending` on a message payload is the same
+      // write this block relies on to recover from a failed open, and the two cannot both hold
+      // without something that separates an unconfirmed local claim from a confirmed `open`. It is
+      // a concurrency question about two deliveries on one conversation, which is wider than this
+      // path — tracked separately.
+      //
       // Refused by the fence, or the write failed: both are already reported by the shared unit, and
       // neither is a takeover — so nothing below runs. NOT a `return`: the delivery still has its
       // memory ingestion to arm and its row to mark processed.

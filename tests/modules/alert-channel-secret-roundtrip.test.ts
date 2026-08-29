@@ -10,6 +10,7 @@ import {
   listAlertChannels,
   updateAlertChannel,
 } from "@/modules/flowlog/channels";
+import { readableVaultRef } from "@/modules/vault/service";
 import {
   createWebhookSubscription,
   listWebhookSubscriptions,
@@ -503,6 +504,54 @@ function toDto(row: Row): ThingDto {
 }
 const updateSchema = z.object({ name: z.string(), ${schema} }).strict();
 `;
+
+// What `readableVaultRef` can EMIT, which is the bound the redaction rests on. The output is never
+// the stored string: it is the prefix plus the decimal rendering of a parsed BigInt, so the widest
+// thing that can survive is an integer id. Everything an HMAC secret actually looks like reads as
+// null. Written as a table because the interesting rows are the ones that change shape on the way
+// out, and because a reviewer read this guard as a disclosure path — the rows are the answer.
+describe("what a redacted ref can carry", () => {
+  const TABLE: [string, string | null][] = [
+    ["vault:123", "vault:123"],
+    // Spellings every resolver reads and `requireVaultRef` refuses: canonicalized, so a whole-body
+    // client can send back what it was given.
+    ["vault: 123 ", "vault:123"],
+    ["vault:0123", "vault:123"],
+    ["vault:0x1F4", "vault:500"],
+    ["vault:+7", "vault:7"],
+    // Not a reference at all. Every one of these is what a raw secret looks like.
+    ["vault:123abc", null],
+    ["vault:abc", null],
+    ["vault:", null],
+    ["vault:-5", null],
+    ["hunter2", null],
+    ["a3f9c1e8b7d2c4a6", null],
+    ["sha256=deadbeef", null],
+    ["dGhpcyBpcyBhIHNlY3JldA==", null],
+    // Past what a bigint column holds, so it names no row and is not a reference either.
+    ["vault:99999999999999999999999", null],
+  ];
+
+  for (const [stored, shown] of TABLE) {
+    test(`${JSON.stringify(stored)} → ${JSON.stringify(shown)}`, () => {
+      expect(readableVaultRef(stored)).toBe(shown);
+    });
+  }
+
+  test("nothing it emits is anything but the prefix and decimal digits", () => {
+    // The bound stated over the table rather than per row: whatever comes out cannot carry a
+    // character a secret could hide in.
+    const emitted = TABLE.map(([stored]) => readableVaultRef(stored)).filter(
+      (v): v is string => v !== null,
+    );
+    expect(emitted.length > 0).toBe(true);
+    expect(emitted.every((v) => /^vault:\d+$/.test(v))).toBe(true);
+  });
+
+  test("and null is what a null column gives", () => {
+    expect(readableVaultRef(null)).toBe(null);
+  });
+});
 
 describe("three-valued write fields", () => {
   test("a field the DTO hides is reported", () => {

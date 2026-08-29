@@ -25,6 +25,7 @@ import {
 import { sendWebhookTest } from "@/modules/webhooks/outbound/test";
 import { countingBase } from "../utils/counting-base";
 import { outboundUrl } from "../utils/outbound";
+import { countInSrc } from "../utils/source-text";
 
 // The outbound-webhook and alert-channel trail, moved into the services that perform the writes
 // (issue #397, under the epic #306).
@@ -124,6 +125,36 @@ async function seedDelivery(subscriptionId: bigint): Promise<bigint> {
   });
   return row.id;
 }
+
+// ── the fence under the projection's own justification ──
+//
+// Both projections carry `secretRef` in full, on the grounds that it is a REFERENCE and never a
+// secret — and that grounds is not a property of the column, which is a plain string, but of these
+// two services being the only writers of it: both canonicalize through `requireVaultRef`. An audit
+// row is append-only and readable by every tenant admin, so a third writer that stored a raw value
+// there would put it somewhere no correction reaches, and nothing would fail.
+//
+// The count is what says so, and it runs without a database because it reads the tree.
+describe("the projections' claim about who writes these columns", () => {
+  const OWNERS: Record<string, string> = {
+    webhookSubscription: "src/modules/webhooks/outbound/subscriptions.ts",
+    alertChannel: "src/modules/flowlog/channels.ts",
+  };
+
+  for (const [model, owner] of Object.entries(OWNERS)) {
+    test(`only ${owner} writes ${model}`, async () => {
+      // Every Prisma write verb that can put a value in a column, not just the two these services
+      // happen to use: an `upsert` or an `updateManyAndReturn` added later is the same defect.
+      const found = await countInSrc(
+        new RegExp(
+          `\\b${model}\\.(create|createMany|update|updateMany|upsert)\\w*\\(`,
+          "g",
+        ),
+      );
+      expect(Object.keys(found).sort()).toEqual([owner]);
+    });
+  }
+});
 
 describe.skipIf(!dbUp)("the webhook and alert-channel trail", () => {
   beforeAll(async () => {

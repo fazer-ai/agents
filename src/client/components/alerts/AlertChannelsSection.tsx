@@ -61,13 +61,14 @@ function AlertChannelModal({
   const [minLevel, setMinLevel] = useState<"warn" | "error">("error");
   const [stages, setStages] = useState<Set<string>>(new Set());
   const [secretRef, setSecretRef] = useState("");
-  // What the read handed over, verbatim. The wire needs to tell "the operator left this alone" apart
-  // from "the operator chose this", and comparing against the loaded value is the whole difference:
-  // an untouched field is OMITTED, so keeping the stored secret never depends on that stored value
-  // being re-writable. It often is not — the column accepted any string at all before #126, so rows
-  // hold `vault: 7`, `vault:0007` and bare names, every one of which `requireVaultRef` refuses on
-  // the way back in.
-  const [loadedSecretRef, setLoadedSecretRef] = useState("");
+  // Whether the operator touched the picker at all. The wire needs to tell "left this alone" apart
+  // from "chose this", because an untouched field is OMITTED and a sent one is obeyed — and the
+  // difference cannot be read off the VALUE. A channel whose stored ref names no vault entry arrives
+  // as `hasSecret` with no ref to show (`readableVaultRef` hides it rather than publish whatever text
+  // the column held before #126), so its picker opens empty and choosing "None" moves nothing.
+  // Comparing values would call that unchanged and leave the operator unable to clear a secret the
+  // list is calling Signed.
+  const [secretTouched, setSecretTouched] = useState(false);
   const [enabled, setEnabled] = useState(true);
   const [error, setError] = useState("");
   const refusal = useFieldRefusal(
@@ -98,7 +99,7 @@ function AlertChannelModal({
     // null there as "clear it", so a blank field here unsigns the channel on a save that meant to
     // change the name. The URL above CAN start blank because the PATCH omits it when it is.
     setSecretRef(ch?.secretRef ?? "");
-    setLoadedSecretRef(ch?.secretRef ?? "");
+    setSecretTouched(false);
     setEnabled(ch?.enabled ?? true);
     setError("");
   });
@@ -127,7 +128,10 @@ function AlertChannelModal({
   // `secretRef` is three-valued on the way in — absent leaves it, null clears it, a value sets it —
   // and this is where the form picks which one it means. Unchanged since the modal opened is the
   // ABSENT case; anything else is what the picker holds now, with an empty picker meaning null.
-  const secretRefChanged = editing ? secretRef !== loadedSecretRef : true;
+  const secretRefChanged = editing ? secretTouched : true;
+  // Configured, and not showable. The list says "Signed" for this channel; without a sentence here
+  // the modal would say "None" and read as a bug worth "fixing".
+  const secretUnshowable = !!editing?.hasSecret && !secretRef && !secretTouched;
 
   // What the inputs hold right now, in the server's vocabulary. `url` is omitted on an edit that
   // leaves it blank, which is how "keep the stored one" is spelled on the wire.
@@ -373,14 +377,24 @@ function AlertChannelModal({
             label={t("alerts.secretRef", "Signing secret (optional)")}
             group
             error={refusal.at("secretRef", secretRef.trim() || null)}
-            description={t(
-              "alerts.secretRefHint",
-              "Signs each delivery (HMAC) so your endpoint can verify it. Leave blank for unsigned. Discord ignores this.",
-            )}
+            description={
+              secretUnshowable
+                ? t(
+                    "alerts.secretRefOpaque",
+                    "A signing secret is configured but does not point at a credential in the vault, so it cannot be shown. Leave this alone to keep it, or pick one to replace it.",
+                  )
+                : t(
+                    "alerts.secretRefHint",
+                    "Signs each delivery (HMAC) so your endpoint can verify it. Leave blank for unsigned. Discord ignores this.",
+                  )
+            }
           >
             <CredentialPicker
               value={secretRef}
-              onChange={setSecretRef}
+              onChange={(v) => {
+                setSecretTouched(true);
+                setSecretRef(v);
+              }}
               disabled={loading}
               ariaLabel={t("alerts.secretRef", "Signing secret (optional)")}
             />

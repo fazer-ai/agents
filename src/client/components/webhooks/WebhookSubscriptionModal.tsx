@@ -54,6 +54,11 @@ export function WebhookSubscriptionModal({
   const [url, setUrl] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [secretRef, setSecretRef] = useState("");
+  // See the same pair in `AlertChannelsSection`: an untouched picker is OMITTED from the write, so a
+  // signing secret survives a save that meant to change the url. It has to be tracked as an
+  // INTERACTION and not as a value comparison, because a subscription whose stored ref names no vault
+  // entry opens with an empty picker (`readableVaultRef` hides it) and choosing "None" moves nothing.
+  const [secretTouched, setSecretTouched] = useState(false);
   const [enabled, setEnabled] = useState(true);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -65,18 +70,26 @@ export function WebhookSubscriptionModal({
     setUrl(sub?.url ?? "");
     setSelected(new Set(sub?.events ?? []));
     setSecretRef(sub?.secretRef ?? "");
+    setSecretTouched(false);
     setEnabled(sub?.enabled ?? true);
     setError("");
   });
 
   // What the inputs hold right now, in the server's vocabulary, and what the write sends. One
   // expression, because a refusal is matched against the value that was SENT.
+  // Sent only when the operator touched the picker; see `secretTouched`. On a create there is nothing
+  // to leave alone, so the key always goes.
+  const secretRefChanged = editing ? secretTouched : true;
+  const sentSecretRef = secretRef.trim() || null;
   const current = {
     url,
     events: [...selected],
-    secretRef: secretRef.trim() || null,
     enabled,
+    ...(secretRefChanged ? { secretRef: sentSecretRef } : {}),
   };
+  // Configured, and not showable — the picker would otherwise read as "None" for a subscription that
+  // is signing every delivery.
+  const secretUnshowable = !!editing?.hasSecret && !secretRef && !secretTouched;
   const currentRef = useRef(current);
   currentRef.current = current;
 
@@ -107,7 +120,14 @@ export function WebhookSubscriptionModal({
               .subscriptions({ id: editing.id })
               .patch(body)
           ).error
-        : (await api.api.v1.webhooks.subscriptions.post(body)).error;
+        : (
+            await api.api.v1.webhooks.subscriptions.post({
+              url,
+              events: [...selected],
+              secretRef: sentSecretRef,
+              enabled,
+            })
+          ).error;
       if (apiError) {
         setError(held(apiError));
         return;
@@ -130,6 +150,8 @@ export function WebhookSubscriptionModal({
   const baseUrl = editing?.url ?? "";
   const baseEvents = new Set<string>(editing?.events ?? []);
   const baseSecretRef = editing?.secretRef ?? "";
+  // Touched-but-equal still counts as dirty: on an unshowable secret the operator's "None" is a real
+  // change that the values cannot show.
   const baseEnabled = editing?.enabled ?? true;
   const eventsEqual =
     selected.size === baseEvents.size &&
@@ -137,7 +159,8 @@ export function WebhookSubscriptionModal({
   const isDirty =
     url !== baseUrl ||
     !eventsEqual ||
-    secretRef !== baseSecretRef ||
+    (secretTouched && secretRef !== baseSecretRef) ||
+    (secretTouched && !!editing?.hasSecret && !secretRef) ||
     enabled !== baseEnabled;
 
   return (
@@ -238,15 +261,25 @@ export function WebhookSubscriptionModal({
         <FormField
           label={t("webhooks.secretRef", "Signing secret (optional)")}
           group
-          description={t(
-            "webhooks.secretRefHint",
-            "Signs each delivery (HMAC) so your endpoint can verify it. Leave blank for unsigned.",
-          )}
+          description={
+            secretUnshowable
+              ? t(
+                  "webhooks.secretRefOpaque",
+                  "A signing secret is configured but does not point at a credential in the vault, so it cannot be shown. Leave this alone to keep it, or pick one to replace it.",
+                )
+              : t(
+                  "webhooks.secretRefHint",
+                  "Signs each delivery (HMAC) so your endpoint can verify it. Leave blank for unsigned.",
+                )
+          }
           error={refusal.at("secretRef", current.secretRef)}
         >
           <CredentialPicker
             value={secretRef}
-            onChange={setSecretRef}
+            onChange={(v) => {
+              setSecretTouched(true);
+              setSecretRef(v);
+            }}
             disabled={loading}
             ariaLabel={t("webhooks.secretRef", "Signing secret (optional)")}
           />

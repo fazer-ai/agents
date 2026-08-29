@@ -491,6 +491,46 @@ describe.skipIf(!dbUp)("the webhook and alert-channel trail", () => {
     expect(textOf(row)).not.toContain(DISCORD_TOKEN);
   });
 
+  test("clearing a subscription secret the row cannot name still writes a row", async () => {
+    // `webhook_subscriptions.secret_ref` has the same history as the alert one — both writers guarded
+    // in the same commit (#126), the column unvalidated before it — so the read redacts a value that
+    // names no vault entry. Redacted, such a value reads as null on BOTH sides of a clear,
+    // `projectionMoved` sees nothing, and the one save that removed a signing secret would write no
+    // row at all. `secretRefOpaque` is what keeps that visible.
+    const created = await createWebhookSubscription(
+      ctx(),
+      {
+        url: outboundUrl("/opaque"),
+        events: ["conversation.created"],
+        secretRef: `vault:${secretId}`,
+      },
+      appDb,
+    );
+    await su?.$executeRawUnsafe(
+      `UPDATE webhook_subscriptions SET secret_ref = 'raw-hmac-value' WHERE id = ${created.id}`,
+    );
+    await clearAudit();
+    await updateWebhookSubscription(
+      ctx(),
+      BigInt(created.id),
+      { secretRef: null },
+      appDb,
+    );
+    const [row, ...rest] = await rows();
+    expect(rest.length).toBe(0);
+    expect(row?.action).toBe("webhook.update");
+    expect(row?.before).toMatchObject({
+      secretRef: null,
+      secretRefOpaque: true,
+    });
+    expect(row?.after).toMatchObject({
+      secretRef: null,
+      secretRefOpaque: false,
+    });
+    // …and the value itself never reached the append-only row.
+    expect(textOf(row)).not.toContain("raw-hmac-value");
+  });
+
   test("a save that drops the signing secret says so", async () => {
     const created = await createAlertChannel(
       ctx(),

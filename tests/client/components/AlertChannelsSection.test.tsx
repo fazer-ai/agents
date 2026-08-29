@@ -14,6 +14,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { AlertChannelsSection } from "@/client/components/alerts/AlertChannelsSection";
 import { ToastProvider } from "@/client/components/Toast";
@@ -126,7 +127,12 @@ describe("AlertChannelsSection", () => {
   };
 
   const save = async () => {
-    screen.getByRole("button", { name: /^(Save|Salvar)$/ }).click();
+    // `hidden: true` because an open Radix menu takes the rest of the dialog out of the accessibility
+    // tree, and two of these tests press Save with the credential menu still on screen — which is what
+    // an operator does.
+    screen
+      .getByRole("button", { name: /^(Save|Salvar)$/, hidden: true })
+      .click();
     await waitFor(() => expect(patches().length).toBe(1));
     return patches()[0]?.body as Record<string, unknown>;
   };
@@ -140,6 +146,47 @@ describe("AlertChannelsSection", () => {
     expect(Object.hasOwn(body ?? {}, "secretRef")).toBe(false);
     // …and the rest of the form is still sent, so this is an omission and not a save that gave up.
     expect(String(body?.name)).toBe("Ops webhook");
+  });
+
+  test("an unshowable secret can still be taken away on purpose", async () => {
+    // The trap in comparing VALUES instead of tracking the interaction. This channel arrives as
+    // `hasSecret` with no ref to show, so the picker opens empty and choosing "None" moves nothing —
+    // a value comparison calls that unchanged and the operator can never clear a secret the list is
+    // calling Signed.
+    channels = [channel({ hasSecret: true, secretRef: null })];
+    await openEditor();
+    fireEvent.pointerDown(
+      screen.getByRole("button", { name: /Signing secret/ }),
+      {
+        button: 0,
+        pointerType: "mouse",
+      },
+    );
+    // Inside the MENU, never `screen`: the trigger renders "None" as its own label when nothing is
+    // selected, so a bare text query clicks the button that opened the menu and the picker never
+    // hears an onChange — which reads exactly like the fix not working.
+    await waitFor(() =>
+      expect(screen.queryAllByRole("menu", { hidden: true }).length).toBe(1),
+    );
+    fireEvent.click(
+      within(screen.getByRole("menu", { hidden: true })).getByText(
+        /^(None|Nenhuma)$/,
+      ),
+    );
+
+    const body = await save();
+    expect(Object.hasOwn(body ?? {}, "secretRef")).toBe(true);
+    expect(JSON.stringify(body?.secretRef)).toBe(JSON.stringify(null));
+  });
+
+  test("and the modal says so instead of reading as None", async () => {
+    channels = [channel({ hasSecret: true, secretRef: null })];
+    await openEditor();
+    expect(
+      screen.queryAllByText(
+        /does not point at a credential|não aponta para uma credencial/,
+      ).length > 0,
+    ).toBe(true);
   });
 
   test("a configured secret the read cannot show is still not cleared", async () => {
@@ -168,10 +215,17 @@ describe("AlertChannelsSection", () => {
         pointerType: "mouse",
       },
     );
+    // Inside the MENU, never `screen`: the trigger renders "None" as its own label when nothing is
+    // selected, so a bare text query clicks the button that opened the menu and the picker never
+    // hears an onChange — which reads exactly like the fix not working.
     await waitFor(() =>
-      expect(screen.queryAllByText(/^(None|Nenhuma)$/).length > 0).toBe(true),
+      expect(screen.queryAllByRole("menu", { hidden: true }).length).toBe(1),
     );
-    fireEvent.click(screen.getAllByText(/^(None|Nenhuma)$/)[0] as HTMLElement);
+    fireEvent.click(
+      within(screen.getByRole("menu", { hidden: true })).getByText(
+        /^(None|Nenhuma)$/,
+      ),
+    );
 
     const body = await save();
     expect(Object.hasOwn(body ?? {}, "secretRef")).toBe(true);

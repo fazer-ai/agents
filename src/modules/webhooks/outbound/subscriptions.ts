@@ -24,6 +24,11 @@ export interface WebhookSubscriptionDto {
   id: string;
   url: string;
   secretRef: string | null;
+  // Whether a signing secret is CONFIGURED, which `secretRef` alone can no longer answer: a value
+  // this column held before #126 may name no vault entry, and `readableVaultRef` hides those rather
+  // than publish whatever text is in there. Without this the console cannot tell "unsigned" from
+  // "signed with something I may not show you", and its save would clear the second one.
+  hasSecret: boolean;
   events: OutboundEvent[];
   enabled: boolean;
   createdAt: Date;
@@ -55,6 +60,7 @@ function toDto(row: {
     // Through the vault's own reader, never verbatim: this column predates #126 and can hold
     // arbitrary text. See `readableVaultRef`.
     secretRef: readableVaultRef(row.secretRef),
+    hasSecret: row.secretRef !== null,
     // The stored set is the closed union by construction (validated on write); cast for the DTO.
     events: row.events as OutboundEvent[],
     enabled: row.enabled,
@@ -73,17 +79,22 @@ function toDto(row: {
 // destinations these are pointed at put the credential in the path — `redactEndpoint` says the rest.
 // Identity is not lost: the row's `target` names this subscription exactly.
 //
-// `secretRef` is on it, and it is a reference rather than a secret by construction: this service is
-// the only writer of the column (measured) and it canonicalizes every value through
-// `requireVaultRef`, so what the row names is the vault entry and never what is inside it. Recording
-// it is the point — rotating or clearing a signing secret changes what a receiver verifying HMAC
-// sees, and that is exactly the class of change a trail exists to attribute.
+// `secretRef` is on it, and what reaches the row is the DTO's redacted form: this service canonicalizes
+// every value it writes, but the column predates that guard (#126) and holds whatever came in before,
+// and this row is append-only. Recording it is the point — rotating or clearing a signing secret
+// changes what a receiver verifying HMAC sees, and that is exactly the class of change a trail exists
+// to attribute.
+//
+// `secretRefOpaque` is what keeps that true once the redaction exists. Without it a value the read
+// cannot show reads as null on BOTH sides of a clear, `projectionMoved` sees nothing, and the one save
+// that removed a signing secret writes no row at all.
 function auditProjection(dto: WebhookSubscriptionDto) {
   return {
     urlMasked: redactEndpoint(dto.url),
     events: dto.events,
     enabled: dto.enabled,
     secretRef: dto.secretRef,
+    secretRefOpaque: dto.hasSecret && dto.secretRef === null,
   };
 }
 

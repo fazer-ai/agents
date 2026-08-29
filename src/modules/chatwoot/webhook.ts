@@ -4252,7 +4252,7 @@ export async function processChatwootDelivery(
       // write this block relies on to recover from a failed open, and the two cannot both hold
       // without something that separates an unconfirmed local claim from a confirmed `open`. It is
       // a concurrency question about two deliveries on one conversation, which is wider than this
-      // path — tracked separately.
+      // path — issue #436.
       //
       // Refused by the fence, or the write failed: both are already reported by the shared unit, and
       // neither is a takeover — so nothing below runs. NOT a `return`: the delivery still has its

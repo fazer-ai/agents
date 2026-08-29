@@ -491,7 +491,7 @@ describe.skipIf(!dbUp)("the webhook and alert-channel trail", () => {
     expect(textOf(row)).not.toContain(DISCORD_TOKEN);
   });
 
-  test("a save that drops the signing secret says so, which is the console's own shape", async () => {
+  test("a save that drops the signing secret says so", async () => {
     const created = await createAlertChannel(
       ctx(),
       {
@@ -504,8 +504,10 @@ describe.skipIf(!dbUp)("the webhook and alert-channel trail", () => {
     );
     expect(created.hasSecret).toBe(true);
     await clearAudit();
-    // What the editor PATCHes on every save: the whole form, with `secretRef` null whenever the
-    // operator did not retype it.
+    // A DELIBERATE clear, which is the only way the console reaches this since #435: the editor
+    // PATCHes its whole form on every save, and it now loads the stored ref into the picker, so a
+    // null here means the operator emptied it. Until then a blank field was indistinguishable from
+    // an untouched one and this row was written by a save that meant to change the name.
     await updateAlertChannel(
       ctx(),
       BigInt(created.id),

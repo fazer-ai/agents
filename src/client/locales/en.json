@@ -133,7 +133,7 @@
     "saved": "Channel saved",
     "saveFailed": "Could not save the channel",
     "secretRef": "Signing secret (optional)",
-    "secretRefHint": "Signs each delivery (HMAC) so your endpoint can verify it. Discord ignores this.",
+    "secretRefHint": "Signs each delivery (HMAC) so your endpoint can verify it. Leave blank for unsigned. Discord ignores this.",
     "selectAll": "Select all",
     "signed": "Signed",
     "stages": "Stages",

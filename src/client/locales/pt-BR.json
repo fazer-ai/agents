@@ -133,7 +133,7 @@
     "saved": "Canal salvo",
     "saveFailed": "Não foi possível salvar o canal",
     "secretRef": "Segredo de assinatura (opcional)",
-    "secretRefHint": "Assina cada entrega (HMAC) para o seu endpoint poder verificar. O Discord ignora isso.",
+    "secretRefHint": "Assina cada entrega (HMAC) para o seu endpoint poder verificar. Deixe em branco para não assinar. O Discord ignora isso.",
     "selectAll": "Selecionar tudo",
     "signed": "Assinado",
     "stages": "Etapas",

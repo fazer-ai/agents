@@ -886,7 +886,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "alert_channel_list",
       {
         description:
-          "List the tenant's flow-log alert channels (id, name, type, urlMasked, minLevel, stages, enabled, hasSecret). The full URL/token is never returned (urlMasked only).",
+          "List the tenant's flow-log alert channels (id, name, type, urlMasked, minLevel, stages, enabled, hasSecret, secretRef as a vault ref). The full URL/token is never returned (urlMasked only), and the signing secret itself never leaves the vault.",
         inputSchema: {},
       },
       async (_args, eff) => writeContent(await alertChannelList(eff)),

@@ -87,7 +87,10 @@ function AlertChannelModal({
     setStages(
       new Set(ch?.stages && ch.stages.length > 0 ? ch.stages : FLOW_STAGES),
     );
-    setSecretRef("");
+    // Loaded, not blanked: the save below sends `secretRef` unconditionally and the service reads a
+    // null there as "clear it", so a blank field here unsigns the channel on a save that meant to
+    // change the name. The URL above CAN start blank because the PATCH omits it when it is.
+    setSecretRef(ch?.secretRef ?? "");
     setEnabled(ch?.enabled ?? true);
     setError("");
   });
@@ -359,7 +362,7 @@ function AlertChannelModal({
             error={refusal.at("secretRef", secretRef.trim() || null)}
             description={t(
               "alerts.secretRefHint",
-              "Signs each delivery (HMAC) so your endpoint can verify it. Discord ignores this.",
+              "Signs each delivery (HMAC) so your endpoint can verify it. Leave blank for unsigned. Discord ignores this.",
             )}
           >
             <CredentialPicker

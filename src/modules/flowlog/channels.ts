@@ -32,7 +32,20 @@ export interface AlertChannelDto {
   minLevel: string;
   stages: string[];
   // Whether an HMAC signing secret is configured (the value never leaves the vault).
+  //
+  // Derivable from `secretRef` below, and kept because it is the published v1 shape and the MCP
+  // tool's own description names it. Both are read off the same column by `toDto`, so they cannot
+  // come apart.
   hasSecret: boolean;
+  // The vault REFERENCE (`vault:<id>`) of that secret, or null. Not the secret: this service is one
+  // of the two writers of the column and canonicalizes every value through `requireVaultRef`, the
+  // same grounds on which `WebhookSubscriptionDto` returns its own.
+  //
+  // It is on the DTO because `secretRef` is three-valued on the way IN — absent leaves it, null
+  // clears it, a value sets it — and the console PATCHes its whole form on every save. A form can
+  // only spell "leave it" by sending back what the read gave it, so hiding the ref here made every
+  // save of the edit dialog unsign the channel, including one that changed only the name (#435).
+  secretRef: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -83,6 +96,7 @@ function toDto(row: {
     minLevel: row.minLevel,
     stages: row.stages,
     hasSecret: row.secretRef !== null,
+    secretRef: row.secretRef,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };

@@ -137,6 +137,51 @@ describe("AlertChannelsSection", () => {
     return patches()[0]?.body as Record<string, unknown>;
   };
 
+  // ── what the LIST says the channel does ──
+  //
+  // Three things have to line up for a delivery to carry an HMAC: type `webhook`, a secret
+  // configured, and a ref that names a vault entry. The badge reported only the middle one, and both
+  // other cases are reachable — a channel switched to Discord keeps its ref because the editor omits
+  // an untouched picker, and a ref stored before #126 may name nothing. Both read as "Signed" while
+  // the worker sent no signature.
+  const listShows = async (over: Record<string, unknown>) => {
+    channels = [channel(over)];
+    render(
+      <ToastProvider>
+        <AlertChannelsSection />
+      </ToastProvider>,
+    );
+    await waitFor(() =>
+      expect(screen.queryAllByText("Ops webhook").length > 0).toBe(true),
+    );
+    return (document.body.textContent ?? "").toString();
+  };
+
+  test("a webhook with a resolvable ref is the only thing called Signed", async () => {
+    const text = await listShows({});
+    expect(text.includes("Signed")).toBe(true);
+    expect(text.includes("not in the vault")).toBe(false);
+    expect(text.includes("ignored on this channel type")).toBe(false);
+  });
+
+  test("a Discord channel holding a stranded ref is not called Signed", async () => {
+    const text = await listShows({ type: "discord" });
+    expect(text.includes("ignored on this channel type")).toBe(true);
+    expect(/·\s*Signed\b/.test(text)).toBe(false);
+  });
+
+  test("a configured secret that names no credential is not called Signed", async () => {
+    const text = await listShows({ secretRef: null, hasSecret: true });
+    expect(text.includes("deliveries go unsigned")).toBe(true);
+    expect(/·\s*Signed\b/.test(text)).toBe(false);
+  });
+
+  test("and a channel with no secret says nothing about signing", async () => {
+    const text = await listShows({ secretRef: null, hasSecret: false });
+    expect(text.includes("Signed")).toBe(false);
+    expect(text.includes("unsigned")).toBe(false);
+  });
+
   test("a save that changed nothing does not mention the secret at all", async () => {
     await openEditor();
     const body = await save();

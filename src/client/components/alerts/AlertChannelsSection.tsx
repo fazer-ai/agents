@@ -433,6 +433,25 @@ function AlertChannelModal({
 
 // The keys of the body this form writes: the route refuses by them, and `requireVaultRef` names
 // `secretRef`. `stages` and `minLevel` are chip rows and a Select with nowhere to render a sentence.
+// What the channel DOES, never what the column holds. Three things have to line up for a delivery to
+// carry an HMAC — the type is `webhook`, a secret is configured, and its ref names a vault entry — and
+// the list used to report only the middle one. Both other cases were reachable and both read as
+// "Signed" while the worker sent nothing: a channel switched to Discord keeps its ref (the editor
+// omits an untouched picker rather than erasing it), and a ref stored before #126 may name nothing,
+// which the read hides. `alert-worker.ts` is the authority: `if (a.secretRef && a.type === "webhook")`,
+// and inside it a ref that resolves to no row leaves `secret` null.
+function signingLabel(
+  ch: { type: string; hasSecret: boolean; secretRef: string | null },
+  t: (k: string, d: string) => string,
+): string {
+  if (!ch.hasSecret) return "";
+  if (ch.type !== "webhook")
+    return ` · ${t("alerts.signedIgnored", "Signing secret ignored on this channel type")}`;
+  if (ch.secretRef === null)
+    return ` · ${t("alerts.signedUnavailable", "Signing secret set, but its credential is not in the vault: deliveries go unsigned")}`;
+  return ` · ${t("alerts.signed", "Signed")}`;
+}
+
 const ALERT_FIELDS = ["name", "type", "url"] as const;
 
 // The signing secret belongs to a webhook, and its picker is drawn only there. It can still reach the
@@ -593,7 +612,7 @@ export function AlertChannelsSection() {
                   {ch.stages.length > 0
                     ? ch.stages.map((s) => flowStageLabel(s, t)).join(", ")
                     : t("alerts.allStages", "All stages")}
-                  {ch.hasSecret ? ` · ${t("alerts.signed", "Signed")}` : ""}
+                  {signingLabel(ch, t)}
                   {" · "}
                   {t("alerts.createdAt", "Created {{date}}", {
                     date: formatDate(ch.createdAt),

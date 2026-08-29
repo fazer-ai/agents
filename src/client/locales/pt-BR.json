@@ -137,6 +137,8 @@
     "secretRefOpaque": "Há um segredo de assinatura definido, mas ele não aponta para uma credencial do cofre, então as entregas saem sem assinatura e ele não pode ser exibido. Escolha uma credencial para voltar a assinar, ou limpe o campo.",
     "selectAll": "Selecionar tudo",
     "signed": "Assinado",
+    "signedIgnored": "Segredo de assinatura ignorado neste tipo de canal",
+    "signedUnavailable": "Segredo de assinatura definido, mas a credencial não está no cofre: as entregas saem sem assinatura",
     "stages": "Etapas",
     "subtitle": "Receba avisos no Discord ou no seu próprio endpoint quando uma etapa do agente gerar aviso ou falha.",
     "title": "Canais de alerta",

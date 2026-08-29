@@ -2,7 +2,7 @@
 
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import * as TooltipPrimitive from "@radix-ui/react-tooltip";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { ToastProvider } from "@/client/components";
 import { WebhooksPage } from "@/client/pages/WebhooksPage";
@@ -21,7 +21,12 @@ import { WebhooksPage } from "@/client/pages/WebhooksPage";
 function subscription(over: Record<string, unknown> = {}) {
   return {
     id: "5",
-    url: "https://ops.example.com/hook",
+    // Distinct from every other fixture in the suite. `screen` is document-wide and `bun test` runs
+    // many files in one worker, so a URL shared with `WebhookSubscriptionModal.test.tsx` let this
+    // file's first wait resolve against THAT file's DOM — green locally, red in CI, and pointing at
+    // the assertion after the wait rather than at the wait. The queries below are scoped to this
+    // render's own container for the same reason; the shared name is the belt.
+    url: "https://ops.example.com/page-label",
     secretRef: "vault:7",
     hasSecret: true,
     events: ["conversation.created"],
@@ -58,8 +63,10 @@ describe("the webhooks list's signing label", () => {
     globalThis.fetch = realFetch;
   });
 
+  let root: HTMLElement;
+
   const show = async () => {
-    render(
+    const { container } = render(
       // The event badges are tooltips, so the provider is part of the page's real mount.
       <MemoryRouter>
         <TooltipPrimitive.Provider>
@@ -69,14 +76,16 @@ describe("the webhooks list's signing label", () => {
         </TooltipPrimitive.Provider>
       </MemoryRouter>,
     );
+    root = container;
     await waitFor(() =>
       expect(
-        screen.queryAllByText("https://ops.example.com/hook").length > 0,
+        within(container).queryAllByText("https://ops.example.com/page-label")
+          .length > 0,
       ).toBe(true),
     );
   };
 
-  const says = (re: RegExp) => screen.queryAllByText(re).length > 0;
+  const says = (re: RegExp) => within(root).queryAllByText(re).length > 0;
 
   test("names the credential when there is one to name", async () => {
     subs = [subscription()];

@@ -4178,6 +4178,44 @@ export async function processChatwootDelivery(
           gate: `human reply (${humanReplyBy})`,
           conversationId,
           stillOurs: async () => {
+            // CHATWOOT FIRST, because the mirror can be BEHIND it and the act guarded here is a
+            // write to Chatwoot. An attendant who answers and then immediately resolves or hands
+            // the conversation back does both before this detached delivery runs; the resolve's own
+            // webhook is still in flight, so the row still says `pending` and the toggle would
+            // reopen the conversation the operator just closed. The same shape /reset guards with
+            // `refreshFromLive` before its own irreversible half.
+            //
+            // A GATE ONLY, deliberately not a reconcile. Writing this read onto the row would stamp
+            // it with a version newer than the message that decided this takeover, and the ordering
+            // check below — which exists to let a hand-back's `pending` outrank ours — would then
+            // refuse every takeover there is.
+            //
+            // An UNREADABLE answer does not block: silence is not evidence that somebody took the
+            // conversation, and the mirror fence below is the reading this path had before.
+            const live = parseLiveConversation(
+              await (await client())
+                .getConversation(conversationId)
+                .catch(() => null),
+            );
+            if (
+              live !== null &&
+              !shouldBotHandle(
+                {
+                  assigneeType: live.assigneeType,
+                  assigneeId: live.assigneeId,
+                  status: live.status,
+                },
+                { ourAgentBotId: params.agentBotId },
+              )
+            ) {
+              logger.info(
+                "chatwoot: %s handoff skipped (conv=%s) — Chatwoot already moved the conversation on (%s)",
+                `human reply (${humanReplyBy})`,
+                convLabel,
+                live.status,
+              );
+              return false;
+            }
             const now = await conversationOwnershipNow({
               tenantId: params.tenantId,
               instanceId: params.instanceId,

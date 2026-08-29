@@ -914,6 +914,44 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     expect(turnsRan).toBe(before);
   });
 
+  // THE MIRROR CAN BE BEHIND CHATWOOT, and the act guarded here is a write TO Chatwoot. An attendant
+  // who answers and then immediately resolves does both before this detached delivery runs, so the
+  // resolve's own webhook is still in flight and the row still says `pending`. Fenced on the mirror
+  // alone, the toggle reopens the conversation the operator just closed.
+  test("a conversation Chatwoot has already moved on is not reopened", async () => {
+    const conv = 8550;
+    await deliver(conv, { ...customerSays("oi") });
+    // Chatwoot has it resolved; the mirror has not heard yet, which is the whole setup.
+    liveStatus.set(conv, "resolved");
+    try {
+      expect((await convRow(conv))?.status).toBe("pending");
+      await deliver(conv, { ...deviceReply("já te respondo") });
+      expect(toggles(conv).length).toBe(0);
+      expect(liveStatus.get(conv)).toBe("resolved");
+      expect((await convRow(conv))?.status).toBe("pending");
+      expect((await takeoverRows(conv, 200)).length).toBe(0);
+    } finally {
+      liveStatus.delete(conv);
+    }
+  });
+
+  // ...and a read that cannot answer does not block: silence is not evidence that somebody took the
+  // conversation, and refusing on it would trade a rare wrong reopen for the original defect on
+  // every slow Chatwoot.
+  test("an unreadable live read leaves the mirror fence to decide", async () => {
+    const conv = 8551;
+    await deliver(conv, { ...customerSays("oi") });
+    failingReads.add(conv);
+    try {
+      await deliver(conv, { ...deviceReply("já te respondo") });
+      expect(toggles(conv).length).toBe(1);
+      expect(liveStatus.get(conv)).toBe("open");
+      expect((await convRow(conv))?.status).toBe("open");
+    } finally {
+      failingReads.delete(conv);
+    }
+  });
+
   test("the switch turns it off, and nothing else changes", async () => {
     await suDb.agent.update({
       where: { id: agentDbId },

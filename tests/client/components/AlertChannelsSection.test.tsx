@@ -177,6 +177,21 @@ describe("AlertChannelsSection", () => {
     expect(JSON.stringify(body?.secretRef)).toBe(JSON.stringify(null));
   });
 
+  test("switching the channel to Discord strands the ref instead of clearing it", async () => {
+    // The picker is drawn only for a webhook, so a save that switches the type has no picker on
+    // screen to have been touched. The stored ref is therefore untouched, the key is omitted, and the
+    // credential survives the round trip back to `webhook` — where the worker signs again, since it
+    // reads `secretRef && type === "webhook"`. The alternative, sending the blanked picker, is the
+    // same silent erasure this PR is about, reached through a different door.
+    await openEditor();
+    const select = screen.getByLabelText(/^(Type|Tipo)$/) as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: "discord" } });
+
+    const body = await save();
+    expect(String(body?.type)).toBe("discord");
+    expect(Object.hasOwn(body ?? {}, "secretRef")).toBe(false);
+  });
+
   test("the modal says WHICH credential signs, not just that one does", async () => {
     await openEditor();
     // The list badge only ever said "Signed". The picker resolving the ref to its vault entry is

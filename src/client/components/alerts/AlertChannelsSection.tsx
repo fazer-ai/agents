@@ -421,9 +421,11 @@ function AlertChannelModal({
 // `secretRef`. `stages` and `minLevel` are chip rows and a Select with nowhere to render a sentence.
 const ALERT_FIELDS = ["name", "type", "url"] as const;
 
-// The signing secret belongs to a webhook, and its picker is drawn only there. The ref stays in the
-// BODY when the operator switches to Discord, though — a credential picked and then stranded — so
-// the server can still refuse it by name, on a dialog with no picker to mark.
+// The signing secret belongs to a webhook, and its picker is drawn only there. It can still reach the
+// BODY from a dialog showing no picker: an operator who picks a credential and then switches to
+// Discord in the same save sends a ref that MOVED, stranded — so the server can still refuse it by
+// name, and the field has to be listed for that refusal to be placeable. A ref the operator never
+// touched is omitted instead, so switching type leaves the stored one alone rather than clearing it.
 const ALERT_WEBHOOK_FIELDS = [...ALERT_FIELDS, "secretRef"] as const;
 
 export function AlertChannelsSection() {

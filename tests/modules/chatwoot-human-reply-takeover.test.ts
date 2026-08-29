@@ -49,6 +49,7 @@ const suDb = su as PrismaClient;
 
 const INBOX_ID = 74;
 const ORPHAN_INBOX_ID = 75;
+const ZAPI_INBOX_ID = 76;
 const OUR_BOT = 14;
 let tenantId = 0n;
 let instanceId = 0n;
@@ -62,6 +63,8 @@ const liveStatus = new Map<number, string>();
 // Conversations whose REST show comes back without `updated_at`, which is what a Chatwoot too old to
 // render one looks like.
 const unversionedReads = new Set<number>();
+// Conversations whose REST show fails outright, which is a slow or broken Chatwoot.
+const failingReads = new Set<number>();
 // Who holds each conversation in the stub's Chatwoot, when it is not our own bot.
 const liveHolder = new Map<number, number>();
 // Work that runs while the client is being built, which is where the real round trip is: building a
@@ -85,6 +88,7 @@ const stubFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   const show = url.match(/\/conversations\/(\d+)(?:\?|$)/);
   if (show && (init?.method ?? "GET") === "GET") {
     const id = Number(show[1]);
+    if (failingReads.has(id)) return new Response("nope", { status: 502 });
     stamp += 1;
     return Response.json({
       id,
@@ -161,6 +165,18 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
         chatwootInstanceId: instanceId,
         chatwootInboxId: INBOX_ID,
         name: "WhatsApp",
+        provider: "baileys",
+        agentId: agent.id,
+      },
+    });
+    // Same agent, an inbox on a provider whose send path does not reserve its WhatsApp id.
+    await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: ZAPI_INBOX_ID,
+        name: "WhatsApp (zapi)",
+        provider: "zapi",
         agentId: agent.id,
       },
     });
@@ -182,6 +198,7 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
         chatwootInstanceId: instanceId,
         chatwootInboxId: ORPHAN_INBOX_ID,
         name: "WhatsApp sem bot",
+        provider: "baileys",
         agentId: orphan.id,
       },
     });
@@ -550,22 +567,50 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     });
   });
 
-  // The live read is an IMPROVEMENT on the toggle, never a precondition for it, and an unversioned
-  // snapshot cannot be ordered against the events still in flight for this conversation. So the
-  // toggle still goes out and the mirror is left where it stood, rather than being written from a
-  // reading nothing can place in time (the same rule mirrorConsoleWrite states for a console click).
-  test("a live read with no version leaves the mirror alone, and the toggle still happens", async () => {
-    const conv = 8460;
-    unversionedReads.add(conv);
-    try {
+  // The mirror is what decides whether an ALREADY RUNNING turn may post (the runtime rechecks
+  // ownership against that row after the model call), so it has to say `open` the moment the toggle
+  // returns — not after a GET that can be slow, fail, or come back with nothing to order it by.
+  //
+  // Both degraded readings are exercised here, because they fail differently: a read with no version
+  // cannot be ordered and is discarded, and a read that throws leaves nothing at all. In both the row
+  // still has to read `open`.
+  test("the mirror says open even when the live read is useless", async () => {
+    for (const [conv, degrade] of [
+      [8460, () => unversionedReads.add(8460)],
+      [8461, () => failingReads.add(8461)],
+    ] as const) {
+      degrade();
       await deliver(conv, { ...customerSays("oi") });
       await deliver(conv, { ...deviceReply("já te respondo") });
       expect(toggles(conv).length).toBe(1);
       expect(liveStatus.get(conv)).toBe("open");
-      expect((await convRow(conv))?.status).toBe("pending");
-    } finally {
-      unversionedReads.delete(conv);
+      expect((await convRow(conv))?.status).toBe("open");
     }
+    unversionedReads.delete(8460);
+    failingReads.delete(8461);
+  });
+
+  // What the VERSION buys, which the unversioned write above cannot: ordering. Only a reconciled read
+  // stamps the row with the version Chatwoot produced for the change, so a delayed conversation event
+  // carrying an older status loses to it instead of walking the takeover back.
+  test("a versioned live read stamps the row so an older event cannot walk it back", async () => {
+    const conv = 8462;
+    await deliver(conv, { ...customerSays("oi") });
+    const before = (
+      await suDb.conversation.findFirst({
+        where: { tenantId, chatwootConversationId: conv },
+        select: { chatwootStatusAt: true },
+      })
+    )?.chatwootStatusAt;
+    await deliver(conv, { ...deviceReply("já te respondo") });
+    const after = (
+      await suDb.conversation.findFirst({
+        where: { tenantId, chatwootConversationId: conv },
+        select: { chatwootStatusAt: true },
+      })
+    )?.chatwootStatusAt;
+    expect(after).not.toBe(before ?? null);
+    expect(after).not.toBeNull();
   });
 
   // THE FENCE, and the reason it cannot be `act` alone. `act` says the bot owned the conversation
@@ -644,6 +689,22 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     } finally {
       liveHolder.delete(conv);
     }
+  });
+
+  // On a provider that does not reserve its WhatsApp id, our own reply can come back wearing exactly
+  // this shape when a send response is lost, so the device leg refuses there. The composer leg still
+  // works on the same inbox, which is what makes this a refusal about the ECHO and not about the
+  // provider.
+  test("the device leg is refused on a provider that does not reserve echo ids", async () => {
+    const conv = 8495;
+    await deliver(conv, { ...customerSays("oi") }, ZAPI_INBOX_ID);
+    await deliver(conv, { ...deviceReply("já te respondo") }, ZAPI_INBOX_ID);
+    expect(toggles(conv).length).toBe(0);
+    expect(liveStatus.get(conv) ?? "pending").toBe("pending");
+
+    await deliver(conv, { ...composerReply("aqui é a Ana") }, ZAPI_INBOX_ID);
+    expect(toggles(conv).length).toBe(1);
+    expect(liveStatus.get(conv)).toBe("open");
   });
 
   test("the switch turns it off, and nothing else changes", async () => {

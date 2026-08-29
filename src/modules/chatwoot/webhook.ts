@@ -139,6 +139,7 @@ import {
   isIncomingMessage,
   isNewHumanReplyToCustomer,
   isNewIncomingMessage,
+  mayBeNewHumanReply,
   newHumanReplyRoute,
   normalizeChatwootEvent,
   parseLiveConversation,
@@ -206,6 +207,10 @@ async function inboxAgentRuntime(
   // resolve). Left as `unknown`: most callers (the test-mode/eager-media gate) never touch it, so
   // parsing is deferred to readChannelRedirectConfig at the point of use.
   settings: unknown;
+  // The inbox's WhatsApp provider, mirrored from the inbox-list sync. Null for a non-WhatsApp inbox
+  // or one that has not synced. Read here because the takeover's device leg cannot be decided from
+  // the payload alone (see providerReservesEchoIds), and this query already reads the row.
+  whatsappProvider: string | null;
 } | null> {
   if (chatwootInboxId == null) return null;
   return runScopedOn(base, sysCtx(tenantId), async (db) => {
@@ -217,7 +222,7 @@ async function inboxAgentRuntime(
           chatwootInboxId,
         },
       },
-      select: { id: true, agentId: true },
+      select: { id: true, agentId: true, provider: true },
     });
     if (!inbox?.agentId) return null;
     const agent = await db.agent.findUnique({
@@ -231,6 +236,7 @@ async function inboxAgentRuntime(
       enabled: agent.enabled,
       mode: agent.mode,
       settings: agent.settings,
+      whatsappProvider: inbox.provider,
     };
   });
 }
@@ -907,6 +913,10 @@ async function ingestUnhandledMessage(args: {
   // caller already resolved it (inboxAgentRuntime) to decide whether to ingest at all.
   agentId: bigint;
   compactionEnabled: boolean;
+  // The inbox's WhatsApp provider, for the human-reply predicate's device leg. Threaded rather than
+  // re-read: the caller already holds it, and the two decisions (fold this in / step off the
+  // conversation) must be made from the same answer.
+  whatsappProvider: string | null;
   base: PrismaClient;
 }): Promise<void> {
   const { tenantId, instanceId, n, act, consumed, base } = args;
@@ -952,7 +962,9 @@ async function ingestUnhandledMessage(args: {
     isNewIncomingMessage(n) && ((act && consumed) || !act);
   const role: IngestRole | null = incomingUnhandled
     ? "customer"
-    : isNewHumanReplyToCustomer(n)
+    : isNewHumanReplyToCustomer(n, {
+          whatsappProvider: args.whatsappProvider,
+        })
       ? "human_agent"
       : null;
   if (role === null) return;
@@ -3037,7 +3049,10 @@ export async function processChatwootDelivery(
   // A human agent's reply is folded into the contact's memory too (ingestUnhandledMessage), and it
   // ends the agent's attendance on the conversation (the takeover below). The inbox's agent is what
   // says whether to do either. BOTH routes a person can answer by — see isDeviceAttendantMessage.
-  const isNewHumanReply = isNewHumanReplyToCustomer(n);
+  //
+  // The SUPERSET here, deliberately: the device leg also asks about the inbox's WhatsApp provider,
+  // and that answer lives in the very row this flag decides whether to read.
+  const mayBeHumanReply = mayBeNewHumanReply(n);
 
   // Resolve the bound agent for a new message (from either side) or a late-media update. The latter
   // never drives a turn.
@@ -3054,7 +3069,7 @@ export async function processChatwootDelivery(
   // (`message_created`, outgoing, a person wrote it), reached by a second route. The sweep above was
   // re-run against it and the answer did not change.
   const rt =
-    isNewIncoming || hasLateMedia || isNewHumanReply
+    isNewIncoming || hasLateMedia || mayBeHumanReply
       ? await inboxAgentRuntime(
           params.tenantId,
           params.instanceId,
@@ -4059,7 +4074,9 @@ export async function processChatwootDelivery(
   //
   // Best-effort in both directions: a failed toggle leaves the previous behaviour rather than
   // stranding the delivery, and it is logged rather than swallowed.
-  const humanReplyBy = newHumanReplyRoute(n);
+  const humanReplyBy = newHumanReplyRoute(n, {
+    whatsappProvider: rt?.whatsappProvider ?? null,
+  });
   if (
     humanReplyBy !== null &&
     act &&
@@ -4120,22 +4137,54 @@ export async function processChatwootDelivery(
       // neither is a takeover — so nothing below runs. NOT a `return`: the delivery still has its
       // memory ingestion to arm and its row to mark processed.
       if (opened) {
-        // AND THE MIRROR, from a live read, for the two reasons the console pays the same GET for
-        // (mirrorConsoleWrite, issue #77). The toggle endpoint renders a status blob and no
-        // `updated_at`, so there is no version to write from the call itself.
+        // THE MIRROR, IMMEDIATELY, before anything that can wait. Two readers of that row decide
+        // whether to speak: the runtime's ownership recheck after the model call (../../graph/runtime)
+        // and the debounce flush before its turn, and both read the MIRROR rather than Chatwoot. A
+        // turn that was already running when the person replied reaches its recheck in this window,
+        // reads `pending`, and posts on top of them — which is the bug this whole block exists to
+        // prevent, surviving as a narrower one.
         //
-        //  - RE-DELIVERY. `act` is computed off the mirror, and a message payload moves no status
-        //    (state-order.ts: only a brand-new INCOMING message carries the reopen exception), so a
-        //    second delivery of this same reply would read `pending` again and take over again.
-        //    Reconciled, it reads `open`, `act` is false, and the whole block is skipped.
-        //  - THE WINDOW. Until Chatwoot's own conversation_updated lands, the mirror still says
-        //    `pending`, and the runtime's ownership recheck reads that row — a customer answering
-        //    inside that window would be answered by the agent, which is the bug this exists to fix,
-        //    surviving in a narrower shape.
+        // So the row is written the moment the toggle returns, and the versioned reconcile below is
+        // an improvement on it rather than the thing that closes it. Without this the window is the
+        // GET's own duration, and on a read that fails or comes back unversioned it lasts until
+        // Chatwoot's own conversation_updated is delivered.
         //
-        // Unversioned reads are DISCARDED rather than written blind: the reconcile is an improvement
-        // on the toggle, never a precondition for it, and a snapshot with no version cannot be
-        // ordered against the events still in flight for this conversation.
+        // UNVERSIONED, and only the field the action changed — the same fallback the console takes
+        // when its live read cannot be ordered (mirrorConsoleWrite, issue #77). It claims no version,
+        // so a conversation event that really is newer still outranks it when it lands.
+        try {
+          await runScopedOn(base, sysCtx(params.tenantId), (db) =>
+            db.conversation.updateMany({
+              where: {
+                tenantId: params.tenantId,
+                chatwootInstanceId: params.instanceId,
+                chatwootConversationId: conversationId,
+              },
+              data: { status: "open" },
+            }),
+          );
+        } catch (err) {
+          logger.warn(
+            "chatwoot: marking the takeover on the mirrored row failed (conv=%s): %s",
+            convLabel,
+            errMsg(err),
+          );
+        }
+        // AND THEN FROM A LIVE READ, which is what claims a version for it — the toggle endpoint
+        // renders a status blob and no `updated_at`, so there is none to write from the call itself
+        // (mirrorConsoleWrite, issue #77).
+        //
+        // The write above already makes a re-delivery a no-op through the gate (`act` reads that row
+        // and a message payload moves no status of its own — state-order.ts: only a brand-new
+        // INCOMING message carries the reopen exception). What the version buys is ORDERING: an
+        // unversioned `open` leaves `chatwootStatusAt` where it was, so a delayed conversation event
+        // carrying an older status can still win over it. The reconcile stamps the row with the
+        // version Chatwoot actually produced for this change, and a webhook that landed meanwhile
+        // outranks the GET instead of being overwritten by it.
+        //
+        // A read with no version is DISCARDED rather than written blind: a snapshot nothing can place
+        // in time cannot be ordered against the events still in flight, and the row already says
+        // `open` without it.
         try {
           const live = parseLiveConversation(
             await (await client()).getConversation(conversationId),
@@ -4207,6 +4256,7 @@ export async function processChatwootDelivery(
       consumed,
       agentId: rt.agentId,
       compactionEnabled: readMemoryConfig(rt.settings).compaction.enabled,
+      whatsappProvider: rt.whatsappProvider,
       base,
     });
   }

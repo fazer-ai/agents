@@ -486,6 +486,35 @@ export function isNewHumanAgentMessage(e: NormalizedChatwootEvent): boolean {
 // magic string is how a comparison goes quietly false.
 export const SESSION_SENDER_NAME = "WhatsApp";
 
+// THE PROVIDERS WHOSE SEND PATH RESERVES ITS WhatsApp ID BEFORE THE REQUEST, and the only ones on
+// which the marker above can be trusted to mean "a person, not us".
+//
+// WhatsApp echoes back every message the session sends, our own replies included. Those echoes are
+// matched to the row that produced them by `source_id`, which is written from the send RESPONSE — so
+// when that response is lost and the job retries, the echo carries an id Chatwoot never saw and is
+// stored as a NEW sender-less outgoing message, marked exactly like a reply typed on the phone. The
+// fork's own comment names that shape: "rendered as if an agent had replied from the phone".
+//
+// `baileys` closes it with `reserve_source_id` before the request, and the session providers with
+// `Outbound::SourceIdReservation` + `Inbound::EchoMatcher`, so on those three an unmatched echo of
+// our own reply cannot exist. `zapi` writes the same marker and matches on `source_id` alone, with
+// no reservation — so there the agent's own answer can come back wearing this shape, and acting on
+// it would have the agent take the conversation away from itself and file its own reply in the
+// contact's memory as the attendant's.
+//
+// Refused rather than guessed at: correlating an echo with a message we sent means comparing content
+// inside a time window, which fails in both directions (an attendant who repeats what the bot said
+// reads as the bot). The composer route is unaffected on every provider — it is sender-typed.
+export const ECHO_RESERVING_WHATSAPP_PROVIDERS = new Set([
+  "baileys",
+  "native",
+  "uazapi",
+]);
+
+export function providerReservesEchoIds(provider: string | null): boolean {
+  return provider !== null && ECHO_RESERVING_WHATSAPP_PROVIDERS.has(provider);
+}
+
 // The SAME thing isHumanAgentMessage describes — a person, not this agent, answering the customer in
 // this conversation — reached by the other route: typed on the phone paired to the number the inbox
 // is connected to, without the CRM ever being opened.
@@ -520,7 +549,12 @@ export const SESSION_SENDER_NAME = "WhatsApp";
 // it fences is not proportional to its cost: one boolean read against an import quietly opening and
 // silencing an operator's entire backlog, hundreds of conversations at once, on the day they pair a
 // phone.
-export function isDeviceAttendantMessage(e: NormalizedChatwootEvent): boolean {
+// THE PAYLOAD HALF, on its own, because the two halves are answered at different moments. The
+// provider comes from the mirrored inbox row, and resolving that row is itself gated on "could this
+// event be a human reply at all" — so this superset decides whether to pay for the lookup, and
+// `isDeviceAttendantMessage` decides whether to act. Split rather than inlined twice: a second
+// spelling of these five clauses is how one of them comes to be missing from one of the two.
+export function hasDeviceAttendantShape(e: NormalizedChatwootEvent): boolean {
   return (
     e.message?.messageType === "outgoing" &&
     e.message.private !== true &&
@@ -528,6 +562,29 @@ export function isDeviceAttendantMessage(e: NormalizedChatwootEvent): boolean {
     e.message.imported !== true &&
     (e.message.sender ?? null) === null &&
     e.message.externalSenderName === SESSION_SENDER_NAME
+  );
+}
+
+export function isDeviceAttendantMessage(
+  e: NormalizedChatwootEvent,
+  // The mirrored inbox's WhatsApp provider. REQUIRED rather than optional, so a new caller has to
+  // answer it: the payload alone cannot say whether an unmatched echo of our own reply is possible
+  // here, and a caller that forgot would either lose the fix silently or turn it on where it is
+  // unsafe. `null` (unknown, or not a WhatsApp inbox) refuses.
+  opts: { whatsappProvider: string | null },
+): boolean {
+  return (
+    providerReservesEchoIds(opts.whatsappProvider) && hasDeviceAttendantShape(e)
+  );
+}
+
+// COULD this event be a person answering the customer, before the inbox row has been read? The
+// superset above, joined with the composer route, which needs no provider because it is
+// sender-typed. Used only to decide whether resolving the inbox's agent is worth a query.
+export function mayBeNewHumanReply(e: NormalizedChatwootEvent): boolean {
+  return (
+    e.event === "message_created" &&
+    (isHumanAgentMessage(e) || hasDeviceAttendantShape(e))
   );
 }
 
@@ -546,9 +603,10 @@ export type HumanReplyRoute = "composer" | "device";
 
 export function humanReplyRoute(
   e: NormalizedChatwootEvent,
+  opts: { whatsappProvider: string | null },
 ): HumanReplyRoute | null {
   if (isHumanAgentMessage(e)) return "composer";
-  if (isDeviceAttendantMessage(e)) return "device";
+  if (isDeviceAttendantMessage(e, opts)) return "device";
   return null;
 }
 
@@ -558,12 +616,16 @@ export function humanReplyRoute(
 // `isNewHumanReplyToCustomer` is this same question asked by a caller that does not need the route.
 export function newHumanReplyRoute(
   e: NormalizedChatwootEvent,
+  opts: { whatsappProvider: string | null },
 ): HumanReplyRoute | null {
-  return e.event === "message_created" ? humanReplyRoute(e) : null;
+  return e.event === "message_created" ? humanReplyRoute(e, opts) : null;
 }
 
-export function isNewHumanReplyToCustomer(e: NormalizedChatwootEvent): boolean {
-  return newHumanReplyRoute(e) !== null;
+export function isNewHumanReplyToCustomer(
+  e: NormalizedChatwootEvent,
+  opts: { whatsappProvider: string | null },
+): boolean {
+  return newHumanReplyRoute(e, opts) !== null;
 }
 
 // The control commands an operator types into the conversation to drive the agent (matched on the

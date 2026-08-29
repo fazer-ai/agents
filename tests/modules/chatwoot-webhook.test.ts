@@ -508,6 +508,11 @@ describe("isNewHumanAgentMessage (issue #187)", () => {
 // it, and the three shapes Chatwoot itself produces are sender-less too — the whole content of this
 // block is telling them apart.
 describe("isDeviceAttendantMessage (issue #430)", () => {
+  // The provider whose send path reserves its WhatsApp id before the request, which is what makes an
+  // unmatched echo of our own reply impossible. The refusal on every other provider has its own case
+  // at the bottom.
+  const BAILEYS = { whatsappProvider: "baileys" };
+
   const outgoing = (over: Record<string, unknown>) =>
     normalizeChatwootEvent({
       event: "message_created",
@@ -537,9 +542,9 @@ describe("isDeviceAttendantMessage (issue #430)", () => {
 
   test("true for a reply typed on the paired phone", () => {
     const n = device();
-    expect(n && isDeviceAttendantMessage(n)).toBe(true);
-    expect(n && isNewHumanReplyToCustomer(n)).toBe(true);
-    expect(n && humanReplyRoute(n)).toBe("device");
+    expect(n && isDeviceAttendantMessage(n, BAILEYS)).toBe(true);
+    expect(n && isNewHumanReplyToCustomer(n, BAILEYS)).toBe(true);
+    expect(n && humanReplyRoute(n, BAILEYS)).toBe("device");
   });
 
   // MEASURED on a live fork, all three delivered to the bot on a pending, bot-owned conversation and
@@ -551,14 +556,14 @@ describe("isDeviceAttendantMessage (issue #430)", () => {
       {}, // a scheduled message whose author is not a User
     ]) {
       const n = outgoing({ content_attributes });
-      expect(n && isDeviceAttendantMessage(n)).toBe(false);
-      expect(n && isNewHumanReplyToCustomer(n)).toBe(false);
+      expect(n && isDeviceAttendantMessage(n, BAILEYS)).toBe(false);
+      expect(n && isNewHumanReplyToCustomer(n, BAILEYS)).toBe(false);
     }
     const csat = outgoing({
       content_attributes: {},
       content_type: "input_csat",
     });
-    expect(csat && isDeviceAttendantMessage(csat)).toBe(false);
+    expect(csat && isDeviceAttendantMessage(csat, BAILEYS)).toBe(false);
   });
 
   // Our own reply on a Baileys inbox comes back as an echo too. The fork's source-id reservation
@@ -569,14 +574,14 @@ describe("isDeviceAttendantMessage (issue #430)", () => {
     const n = device({
       sender: { id: 9, name: "Atendente", type: "agent_bot" },
     });
-    expect(n && isDeviceAttendantMessage(n)).toBe(false);
+    expect(n && isDeviceAttendantMessage(n, BAILEYS)).toBe(false);
   });
 
   test("false for a composer reply, which is the other predicate's job", () => {
     const n = outgoing({ sender: { id: 5, name: "Ana", type: "user" } });
-    expect(n && isDeviceAttendantMessage(n)).toBe(false);
-    expect(n && isNewHumanReplyToCustomer(n)).toBe(true);
-    expect(n && humanReplyRoute(n)).toBe("composer");
+    expect(n && isDeviceAttendantMessage(n, BAILEYS)).toBe(false);
+    expect(n && isNewHumanReplyToCustomer(n, BAILEYS)).toBe(true);
+    expect(n && humanReplyRoute(n, BAILEYS)).toBe("composer");
   });
 
   // A 👍 from the phone is stored as a real outgoing message, sender-less and marked, exactly like a
@@ -590,12 +595,12 @@ describe("isDeviceAttendantMessage (issue #430)", () => {
       },
     });
     expect(n?.message?.isReaction).toBe(true);
-    expect(n && isDeviceAttendantMessage(n)).toBe(false);
+    expect(n && isDeviceAttendantMessage(n, BAILEYS)).toBe(false);
   });
 
   test("false for a private note", () => {
     const n = device({ private: true });
-    expect(n && isDeviceAttendantMessage(n)).toBe(false);
+    expect(n && isDeviceAttendantMessage(n, BAILEYS)).toBe(false);
   });
 
   // A first pairing replays a year of history through the same writers. The fork never delivers one
@@ -609,13 +614,44 @@ describe("isDeviceAttendantMessage (issue #430)", () => {
         imported: true,
       },
     });
-    expect(n && isDeviceAttendantMessage(n)).toBe(false);
+    expect(n && isDeviceAttendantMessage(n, BAILEYS)).toBe(false);
   });
 
   test("false for a template, an activity and an incoming message", () => {
     for (const message_type of ["template", "activity", "incoming"]) {
       const n = device({ message_type });
-      expect(n && isDeviceAttendantMessage(n)).toBe(false);
+      expect(n && isDeviceAttendantMessage(n, BAILEYS)).toBe(false);
+    }
+  });
+
+  // THE PROVIDER, which the payload cannot answer and which decides whether this shape can be OUR
+  // OWN reply coming back. `zapi` writes the same marker and matches echoes by `source_id` alone, so
+  // a send whose response was lost comes back as a fresh sender-less outgoing message — the fork's
+  // own comment calls that shape "rendered as if an agent had replied from the phone". Acting on it
+  // would have the agent take the conversation away from itself.
+  test("refused on a provider whose send path does not reserve its id", () => {
+    const n = device();
+    for (const whatsappProvider of [
+      "zapi",
+      "whatsapp_cloud",
+      "default",
+      null,
+    ]) {
+      expect(n && isDeviceAttendantMessage(n, { whatsappProvider })).toBe(
+        false,
+      );
+      expect(n && humanReplyRoute(n, { whatsappProvider })).toBeNull();
+    }
+    for (const whatsappProvider of ["baileys", "native", "uazapi"]) {
+      expect(n && isDeviceAttendantMessage(n, { whatsappProvider })).toBe(true);
+    }
+  });
+
+  // The composer route is sender-typed, so no echo can wear it and no provider question arises.
+  test("the composer route is unaffected by the provider", () => {
+    const n = outgoing({ sender: { id: 5, name: "Ana", type: "user" } });
+    for (const whatsappProvider of ["zapi", null]) {
+      expect(n && humanReplyRoute(n, { whatsappProvider })).toBe("composer");
     }
   });
 
@@ -623,8 +659,8 @@ describe("isDeviceAttendantMessage (issue #430)", () => {
   // around, and acting on one is how the voice-note loop happened.
   test("message_updated is not a new reply", () => {
     const n = device({ event: "message_updated" });
-    expect(n && isDeviceAttendantMessage(n)).toBe(true);
-    expect(n && isNewHumanReplyToCustomer(n)).toBe(false);
+    expect(n && isDeviceAttendantMessage(n, BAILEYS)).toBe(true);
+    expect(n && isNewHumanReplyToCustomer(n, BAILEYS)).toBe(false);
   });
 });
 

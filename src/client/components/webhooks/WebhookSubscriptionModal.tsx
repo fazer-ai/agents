@@ -265,7 +265,7 @@ export function WebhookSubscriptionModal({
             secretUnshowable
               ? t(
                   "webhooks.secretRefOpaque",
-                  "A signing secret is configured but does not point at a credential in the vault, so it cannot be shown. Leave this alone to keep it, or pick one to replace it.",
+                  "A signing secret is set but does not point at a credential in the vault, so deliveries go unsigned and it cannot be shown. Pick a credential to sign again, or clear it.",
                 )
               : t(
                   "webhooks.secretRefHint",

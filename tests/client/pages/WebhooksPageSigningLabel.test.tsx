@@ -84,18 +84,29 @@ describe("the webhooks list's signing label", () => {
     expect(says(/vault:7/)).toBe(true);
   });
 
-  test("says unsigned only when nothing is configured", async () => {
+  test("says plain unsigned only when nothing is configured", async () => {
     subs = [subscription({ secretRef: null, hasSecret: false })];
     await show();
-    expect(says(/Unsigned|Não assinado|Sem assinatura/)).toBe(true);
+    expect(says(/Unsigned|Sem assinatura/)).toBe(true);
+    expect(
+      says(/credential is not in the vault|credencial não está no cofre/),
+    ).toBe(false);
   });
 
-  test("does not call a signed subscription unsigned just because it cannot name the credential", async () => {
+  test("says a hidden ref is SET without claiming the deliveries are signed", async () => {
+    // Both halves, and the second is why the word "Signed" cannot lead this sentence: such a ref
+    // resolves to no row, so the worker builds headers with a null secret and the delivery goes out
+    // unsigned. Saying "Signed" would be the console asserting the opposite of what leaves the
+    // installation — the same error as the "Unsigned" it replaced, pointing the other way.
     subs = [subscription({ secretRef: null, hasSecret: true })];
     await show();
-    expect(says(/Unsigned|Não assinado|Sem assinatura/)).toBe(false);
     expect(
       says(/credential is not in the vault|credencial não está no cofre/),
     ).toBe(true);
+    expect(says(/deliveries go unsigned|entregas saem sem assinatura/)).toBe(
+      true,
+    );
+    // …and it is not the plain "Unsigned" of a subscription that has nothing configured.
+    expect(says(/^(Unsigned|Sem assinatura)$/)).toBe(false);
   });
 });

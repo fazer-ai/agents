@@ -177,6 +177,14 @@ describe("WebhookSubscriptionModal", () => {
         /does not point at a credential|não aponta para uma credencial/,
       ).length > 0,
     ).toBe(true);
+    // …and it says what that COSTS, which is the half an operator acts on: such a ref resolves to no
+    // row, so the worker signs nothing. A sentence that only says "cannot be shown" reads like a
+    // display quirk.
+    expect(
+      screen.queryAllByText(
+        /deliveries go unsigned|entregas saem sem assinatura/,
+      ).length > 0,
+    ).toBe(true);
   });
 
   test("clearing the picker still unsigns the subscription", async () => {

@@ -65,6 +65,15 @@ export type StrandedVerdict =
   // Stranded, but carried no inbound message — either its event could never carry one, or its event
   // could and this one did not (our own reply coming back around). Terminal and benign: nothing a
   // customer sent is at stake, so it must NOT appear in the list of lost messages.
+  //
+  // BENIGN IS ABOUT THE CUSTOMER'S MESSAGE, and since issue #430 that is no longer the same as "no
+  // effect was owed": an OUTGOING message can be a colleague answering from the composer or the
+  // paired phone, and the delivery that carries it is what steps the agent off the conversation. A
+  // crash in the detached window strands that row here, it is closed without replay, and the
+  // conversation stays `pending` until the next human reply takes it over instead. Not classified
+  // `lost`, which would be wrong in both directions — it pages an operator about a message nobody
+  // lost, and arms a model turn to answer a reply that was ours. Recovering the SIDE EFFECT rather
+  // than the message is a mechanism this file does not have — issue #439.
   | "no-message"
   // Stranded with a customer message nothing ever covered, or stranded by a build whose columns
   // cannot be read. Nothing will answer it.

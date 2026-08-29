@@ -29,6 +29,19 @@ describe("the scan removes prose and keeps code", () => {
       "template around an interpolation",
       `const a = \`s.slice(0, 1) \${x}\`;\n`,
     ],
+    // A REGEX WHOSE BODY BEGINS WITH `>` IS STILL A REGEX, and this is the row that keeps the JSX
+    // slash rule from eating it. `/>` closing a tag and `/>/` matching a `>` are the same two
+    // characters; what separates them is that the regex CLOSES on its line and the tag does not. Both
+    // spellings are in `src/`.
+    ["a regex body opening with `>`", 'x.replace(/>s.slice(0, 1)/g, "");\n'],
+    // THE ANCHOR OF THE URL-SCHEME RULE, PINNED BY THE COMMENT IT WOULD STOP REMOVING. The rule only
+    // fires when the lookback ENDS in `http:` or `https:`; drop the `$` and a scheme name anywhere in
+    // the window matches, so an ordinary comment after a label called `file` or `http` is read as a
+    // URL and its prose goes back to being counted as code.
+    [
+      "a comment after a label spelled like a scheme",
+      "switch (k) { case http: // s.slice(0, 1)\n}\n",
+    ],
   ];
   for (const [name, source] of REMOVED) {
     test(`${name} is not a cut`, () => {
@@ -118,13 +131,18 @@ describe("the scan removes prose and keeps code", () => {
     // nothing left open to notice. Two characters of rule, and it is what makes the removal safe:
     // what stays uncovered is JSX TEXT, which produces a phantom rather than a swallowed site.
     // Found by review.
+    // WITH A LATER `/` ON THE LINE, WHICH IS WHAT MAKES A MISREAD COST ANYTHING NOW. Since a regex
+    // reading that reaches the newline is backed out, a `</Foo>` read as an opener only damages the
+    // line when a second slash CLOSES it — so a fixture without one measures the back-out rather than
+    // the tag rule, and a mutation run showed exactly that: `closesTag` could return false for every
+    // input with these rows still green.
     [
-      "a cut after a JSX closing tag",
-      "const x = <Foo></Foo>;\nconst a = s.slice(0, 10);\n",
+      "a cut before a division, after a JSX closing tag",
+      "const x = <Foo></Foo>; const a = s.slice(0, 10); const r = b / c;\n",
     ],
     [
-      "a cut after a closing tag on the same line",
-      "const x = <Foo></Foo>; const a = s.slice(0, 10);\n",
+      "a cut after a closing tag, with a division later on the line",
+      "const x = <Foo></Foo>; const a = s.slice(0, 10); const q = d / e;\n",
     ],
     [
       "a cut after a division on an object literal",
@@ -143,6 +161,38 @@ describe("the scan removes prose and keeps code", () => {
     // that eats the rest of the line, and a name in there is counted as the call it merely spells.
     // So the tag is matched as a whole shape now, not by the character before the slash. Found by
     // review, on the previous round's fix.
+    // THE SELF-CLOSING TAG, WHICH THE `</Foo>` RULE DID NOT COVER. `/>` is not a regex either, and it
+    // was being read as one in 135 files — blanking whatever followed it on the line, with nothing
+    // left open to notice. No JSX state answers it: the regex simply never finds its closing `/`
+    // before the newline, and a reading that cannot close is backed out rather than applied.
+    // Written with the spread, which is the spelling that actually breaks and the one all 135 files
+    // use: `<Foo />` puts an IDENTIFIER before the slash, so `endsValue` is true and the regex branch
+    // is never entered — a fixture that reproduces nothing. The `}` of `{...props}` closes a block and
+    // leaves no value, which is what sends the `/` down that branch.
+    [
+      "a cut after a self-closing tag",
+      "const el = <div {...props} />; const a = s.slice(0, 10);\n",
+    ],
+    // The same signal, on the shape review actually reported: a `}` that closes a BLOCK leaves no
+    // value, so the `/` after it opened a regex that ran to the newline and ate the call.
+    [
+      "a cut after a division on a function expression",
+      "const r = function () {} / d; const a = s.slice(0, 10);\n",
+    ],
+    // A URL WRITTEN BARE IN JSX TEXT, whose `//` is not a comment. Every other position puts a URL
+    // inside a string or template, which the branches above consume first; JSX text has no branch, by
+    // the omission this file argues for at the top. The cut here is the real interpolation that the
+    // comment reading swallowed.
+    [
+      "a cut in an interpolation after a URL in JSX text",
+      "const el = <p>Visit https://x {s.slice(0, 10)}</p>;\n",
+    ],
+    // Both schemes, because `https?` is one optional character and a mutation that dropped it to
+    // `https` survived on the row above alone.
+    [
+      "a cut in an interpolation after a plain http URL",
+      "const el = <p>Visit http://x {s.slice(0, 10)}</p>;\n",
+    ],
     [
       "a cut after a regex compared with `<`",
       'const r = a < /["]/.source.length; const x = s.slice(0, 10);\n',
@@ -152,14 +202,14 @@ describe("the scan removes prose and keeps code", () => {
     // fragment from the tag pattern passed a next-line version of this row.
     [
       "a cut after a fragment's closing tag",
-      "const x = <></>; const a = s.slice(0, 10);\n",
+      "const x = <></>; const a = s.slice(0, 10); const r = b / c;\n",
     ],
     // The tag is matched as a WHOLE SHAPE, not by the character before the slash, so a name longer
     // than any fixed lookahead window still closes. Written long on purpose: the first fix used a
     // bounded slice, and this row is what a reintroduced bound fails on.
     [
       "a cut after a closing tag whose name is long",
-      "const x = <UmNomeDeComponenteBemMaisLongoQueQualquerJanelaFixaDeLookahead></UmNomeDeComponenteBemMaisLongoQueQualquerJanelaFixaDeLookahead>;\nconst a = s.slice(0, 10);\n",
+      "const x = <UmNomeDeComponenteBemMaisLongoQueQualquerJanelaFixaDeLookahead></UmNomeDeComponenteBemMaisLongoQueQualquerJanelaFixaDeLookahead>; const a = s.slice(0, 10); const r = b / c;\n",
     ],
     // `else` clears `endsValue` like every keyword and leaves no terminator for the statement-start
     // check to read, so the else body was recorded as an OBJECT — and the `}` of an object ends a
@@ -194,7 +244,7 @@ describe("the scan removes prose and keeps code", () => {
     // statements above the brace being classified.
     [
       "a cut after an object literal written inside an `else` body",
-      "if (x) {} else { o = {} / 2; const a = s.slice(0, 10); }\n",
+      "if (x) {} else { o = {} / 2; const a = s.slice(0, 10); const r = b / c; }\n",
     ],
     // A postfix non-null assertion leaves the value it applied to, so the `/` after it divides.
     [
@@ -290,6 +340,13 @@ describe("the scan removes prose and keeps code", () => {
     expect(codeOnly("f();")).toBe("f();");
   });
 
+  // AND WITH A SECOND `/` ON IT, once the reading is a `/` decision. A regex that reaches the newline
+  // is now BACKED OUT rather than applied, so a misread opener costs nothing unless a later slash
+  // closes it and the text between them goes. A mutation run is what said so: with the closing-tag
+  // rule returning false for every input, four rows written before the back-out stayed green, because
+  // each one measured the back-out instead of the rule it was named for. The DIVIDED rows below are
+  // unaffected — they turn on a quote or a comment, not on a second slash.
+  //
   // ON THE SAME LINE, and that is the whole point of this table rather than the KEPT rows above. A
   // regex the scan opens by mistake runs to the end of the LINE, so a cut on the NEXT line survives
   // either way and proves nothing — a mutation run showed every "cut after a division" row passing

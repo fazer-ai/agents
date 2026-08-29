@@ -25,6 +25,12 @@
 // swept shape would count as code, which is a phantom entry — visible, red, and fixable — rather than
 // a swallowed site. Nothing in `src/` does it today; the ledgers are the check.
 //
+// THAT LAST SENTENCE WAS TOO STRONG ONCE, AND REVIEW CAUGHT IT. JSX text is the one position where a
+// URL can be written bare, and its `//` was read as a comment — a SWALLOW, not a phantom, taking a
+// real interpolation with it. `http` and `https` are answered now (see `URL_SCHEME`); a bare
+// `ws://x` in JSX prose is still a swallow, counted at zero and written down rather than claimed
+// away. The bound holds for everything else JSX text can spell.
+//
 // OFFSETS AND LINE NUMBERS SURVIVE. Every removed character becomes a space and every newline is
 // kept, so `source.slice(0, m.index)` still names the same position and `.split("\n").length` still
 // names the same line. A sweep can strip and keep reporting where it found things.
@@ -84,6 +90,26 @@ const KEYWORD_BEFORE_VALUE =
 const KEYWORD_BEFORE_BLOCK = /\belse\s*$/;
 // Enough to clear `else` plus the whitespace before the brace.
 const KEYWORD_LOOKBACK = 16;
+
+// The scheme whose `//` is part of a URL rather than the start of a comment. See the branch that
+// reads it: only JSX text can carry one bare, because every other position is inside a literal.
+//
+// TWO NARROWER SPELLINGS WERE TRIED AND BOTH WERE REMOVED BY A MUTATION RUN WITHOUT TURNING A TEST
+// RED. `\b(?:https?|wss?|ftps?|file)` claimed five more schemes and a token boundary; nothing reaches
+// either, because the only position where this branch can fire is bare JSX text and there is no
+// `ws://` written as visible prose in `src/`. What survives is what a person actually types where a
+// reader will see it.
+//
+// A bare `ws://x` in JSX text would still be read as a comment and swallow its line. THAT RESIDUE IS
+// COUNTED, NOT ASSUMED: `src/` holds five non-http `scheme://` today, every one inside a `//`
+// comment, where the leading slashes are consumed first and these are never examined; none is in a
+// `.tsx` file at all. No probe guards it, and that is deliberate — every version of one reads a
+// corpse. The swallow happens in the COMMENT branch, so by the time a sweep sees the text the `//`
+// is already blanked, and a raw-text probe cannot tell JSX prose from a websocket URL in a string.
+//
+// The `$` is NOT decoration and has its own row: without it, `case file: // …` matches inside the
+// lookback window and the comment stops being removed.
+const URL_SCHEME = /https?:$/;
 
 // A closing JSX tag or fragment, anchored with the sticky flag so no arbitrary lookahead window has
 // to bound the component name. `lastIndex` is assigned on every call, so nothing leaks between scans.
@@ -184,6 +210,21 @@ function scan(source: string, { strings }: Options): Scanned {
       const c = source[i] as string;
       const d = source[i + 1];
 
+      // A `//` THAT CLOSES A URL SCHEME IS NOT A COMMENT, and JSX text is where one can be written
+      // bare. `<p>Visit https://x {value.slice(0, 1)}</p>` blanked from the `//` to the end of the
+      // line — taking a real interpolation with it, silently, since a comment leaves nothing open.
+      // Everywhere else a URL is already inside a string or template, whose branch consumes it before
+      // this one is reached; JSX text has no such branch, by the deliberate omission at the top of
+      // this file. Found by review.
+      //
+      // The scheme is spelled out rather than matched as `[a-z][a-z0-9+.-]*:`, because that pattern
+      // also covers `case x: //` and a label, where the `//` IS a comment. These are the schemes that
+      // are followed by `//`; a bare `custom://` in JSX text would still be misread, and the probe
+      // below pins that none is written.
+      if (c === "/" && d === "/" && URL_SCHEME.test(before(i, 8))) {
+        i += 2;
+        continue;
+      }
       if (c === "/" && d === "/") {
         const nl = source.indexOf("\n", i);
         const to = nl === -1 ? source.length : nl;
@@ -217,6 +258,7 @@ function scan(source: string, { strings }: Options): Scanned {
         // by review). Skipping it is also what keeps a quote inside it from opening a string.
         let j = i + 1;
         let inClass = false;
+        let closed = false;
         while (j < source.length) {
           const r = source[j];
           if (r === "\\") {
@@ -228,9 +270,37 @@ function scan(source: string, { strings }: Options): Scanned {
           else if (r === "]") inClass = false;
           else if (r === "/" && !inClass) {
             j++;
+            closed = true;
             break;
           }
           j++;
+        }
+        // A REGEX LITERAL CANNOT SPAN A NEWLINE, SO ONE THAT REACHES IT WAS NEVER A REGEX — back the
+        // reading out instead of blanking to the end of the line. Review found the blanking version
+        // erasing a real call site in `function () {} / d && sanitizeErrorMessage(err)` with nothing
+        // left open to notice, and asked for the miss to be REPORTED; reporting turned out to be the
+        // smaller half of the answer, because the same signal identifies the misread.
+        //
+        // It is the whole disambiguator for the JSX slash, and it needs no JSX state: `/>` at the end
+        // of a tag never finds its closing `/` on that line, while `.replace(/>/g, "&gt;")` — a real
+        // regex whose body is `>` — closes two characters later. Both are in `src/`; the first is in
+        // 135 files and was being read as a regex, silently swallowing whatever followed it on the
+        // line. `</Foo>` is answered earlier, by shape; this answers the other half.
+        //
+        // Backing out errs toward the PHANTOM and away from the swallow, which is the direction this
+        // whole module is built to err in: an unterminated regex in genuinely invalid source now shows
+        // its body as code, which a ledger reports loudly, rather than eating the line in silence.
+        //
+        // NOTE: `endsValue = false` HERE IS UNOBSERVABLE, and the note is here instead of a row. It
+        // says what a division operator means — a value is expected after it — but for the flag to
+        // change anything the next token would have to be another `/`, and a `/` that reaches this
+        // line has already scanned forward looking for exactly that. If one were there the regex
+        // would have CLOSED on it and never reached the back-out. A row written for it measured
+        // something else: in `{} / /re/` the first slash closes on the second.
+        if (!closed) {
+          i++;
+          endsValue = false;
+          continue;
         }
         if (strings) blank(i + 1, j - 1);
         i = j;

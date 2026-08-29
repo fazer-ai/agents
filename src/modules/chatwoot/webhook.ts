@@ -4243,16 +4243,24 @@ export async function processChatwootDelivery(
       // exception (state-order.ts), so a conversation Chatwoot really did leave `pending` comes back
       // to the agent on its own, and one Chatwoot really did open stays open.
       //
-      // THAT SAME EXCEPTION LEAVES ONE WINDOW OPEN, and it is measured rather than assumed: a
-      // customer message that arrives while the toggle is still on the wire is processed by its own
-      // detached delivery (chatwoot.controller.ts dispatches with no per-conversation
-      // serialization), carries the `pending` Chatwoot has not moved yet, and the reopen exception
-      // lets it overwrite this claim — after which its own gate reads `pending` and it can start a
-      // turn. Not closable from here: refusing `open → pending` on a message payload is the same
-      // write this block relies on to recover from a failed open, and the two cannot both hold
-      // without something that separates an unconfirmed local claim from a confirmed `open`. It is
-      // a concurrency question about two deliveries on one conversation, which is wider than this
-      // path — issue #436.
+      // AND THE CLAIM IS UNORDERABLE UNTIL THE RECONCILE STAMPS IT, which is one window with three
+      // ways in and is measured rather than assumed. Deliveries for a conversation are dispatched
+      // detached and never serialized (chatwoot.controller.ts), so anything committing in here does
+      // so against a row whose `chatwoot_status_at` still names the state before the claim:
+      //
+      //   - a customer message serialized before Chatwoot committed the toggle carries the old
+      //     `pending`, and the reopen exception lets a message move status;
+      //   - a delayed or companion `conversation_*` event carrying that same pre-takeover `pending`
+      //     wins on version, because the claim advanced none;
+      //   - on a deployment that sends no `updated_at` at all, the ordering check above is skipped
+      //     and a hand-back committed while the client is built is captured as the current state.
+      //
+      // In each, the row goes back to `pending` and a turn can pass its recheck and answer over the
+      // person. Not closable from here: refusing `open → pending` on a message payload is the same
+      // write this block relies on to recover from a failed open — measured, it turns that test red
+      // — and the versionless case has no axis to decide on. Separating an unconfirmed local claim
+      // from a confirmed `open` is what all three need, and that is a concurrency question about
+      // two deliveries on one conversation, wider than this path — issue #436.
       //
       // Refused by the fence, or the write failed: both are already reported by the shared unit, and
       // neither is a takeover — so nothing below runs. NOT a `return`: the delivery still has its

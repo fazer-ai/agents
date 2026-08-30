@@ -11,6 +11,26 @@ jobs:
   test:
     runs-on: ubuntu-latest
 
+    # SHARDED ACROSS JOBS, NOT WORKERS INSIDE ONE.
+    #
+    # `bun test --parallel` was tried first and is wrong HERE, though it is right on a developer's
+    # machine: measured, 120s against 194s serial on 18 cores, and 257s against a 187s serial
+    # baseline on this runner. The difference is not the flag, it is what the workers share. Four
+    # workers on a laptop take four of eighteen cores; four workers here take all four vCPUs the job
+    # has, and take them from the Postgres container running beside them.
+    #
+    # A shard is a whole job, so each one brings its OWN four vCPUs and its OWN database server, and
+    # inside it the suite runs serially the way the runner is happiest. That also removes, for free,
+    # the one thing that made parallelism risky in the first place: shards cannot claim each other's
+    # rows, because they are not looking at the same database.
+    #
+    # `fail-fast: false` because a red shard must not cancel the others. The point of a matrix is to
+    # see every failure in one round, not the first one.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+
     # NOTE: a REAL Postgres, not a mock. Roughly 1600 of this suite's assertions are database-backed
     # and every one of them is gated on `describe.skipIf(!dbUp)`, so without a server here they do
     # not fail: they SKIP, and the job reports green having never run the end-to-end layer the
@@ -81,5 +101,10 @@ jobs:
       - name: Provision Test Database
         run: bun run db:test:setup
 
+      # `bun test`, not `bun run test`: the package script is what a developer runs and takes no
+      # shard. The split is bun's own, by file, and it is the reason `--timings` exists — without a
+      # timings file the shards are balanced by count, and this suite's slowest file is 23s against a
+      # ~39s shard. If the spread between shards turns out to matter, that is the knob, and it is
+      # measured rather than assumed.
       - name: Run Tests
-        run: bun run test
+        run: bun test --shard=${{ matrix.shard }}/4

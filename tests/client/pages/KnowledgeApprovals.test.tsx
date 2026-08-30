@@ -203,6 +203,13 @@ describe("KnowledgeApprovals — reviewing before approving", () => {
 
   // Review finding: the endpoint reports a lost race inside a 200. Checking only `error` left the
   // card marked EDITED and reported success over a revision that was never stored.
+  //
+  // The explicit budget is not decoration. This test asserts a BEHAVIOUR (the card leaves the queue)
+  // and asserts nothing about how fast it happens, but the default 5s was being spent on something
+  // else entirely: instrumenting the component showed the awaited PATCH taking 1.2s to 5.2s here
+  // while the same call in the neighbouring tests of this file returns in 1-4ms, and the figure
+  // moves that much between identical runs of identical code. It has been over the line on CI and
+  // under it locally on the same commit. A budget that a rerun can flip is not measuring the code.
   test("a suggestion reviewed elsewhere meanwhile leaves the queue instead of claiming EDITED", async () => {
     patchResult = "not-pending";
     renderQueue();
@@ -214,7 +221,7 @@ describe("KnowledgeApprovals — reviewing before approving", () => {
     await waitFor(() => expect(screen.queryByText(CLEAN)).toBeNull());
     expect(screen.queryByText("Edited")).toBeNull();
     expect(screen.queryByText(HEDGED)).toBeNull();
-  });
+  }, 20000);
 
   // Review finding: the draft is single, so a second Edit would replace it and the first card's
   // unsaved rewrite would vanish with no warning.

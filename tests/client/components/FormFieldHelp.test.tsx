@@ -1,7 +1,17 @@
 /// <reference lib="dom" />
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from "@testing-library/react";
+
+// Comfortably past Popover's CLOSE_DELAY_MS (140), which is the gap the pointer is given to reach
+// the box before it goes away.
+const CLOSE_WAIT_MS = 400;
 
 // The REAL i18n instance, not the fallback `t` that react-i18next hands out with no provider: that
 // one returns the default string untouched, so an assertion about the accessible name would be
@@ -204,5 +214,57 @@ describe("FormField help", () => {
           el.getAttribute("aria-labelledby") ?? el.getAttribute("aria-label"),
       );
     expect(names).toEqual(["Reminder 1", "Reminder 2"]);
+  });
+  // WHAT THIS PROVES AND WHAT IT DOES NOT. It asserts the observable contract: a box that opened
+  // because the pointer passed over closes on its own and leaves focus where it was. It does NOT
+  // exercise the guard that makes that true in a browser — Radix's non-modal close calls
+  // `triggerRef.focus()` unless `onCloseAutoFocus` is defaulted away, and removing that guard here
+  // changes nothing, because happy-dom does not run that path. Measured, not assumed: with the
+  // guard deleted, focus still stayed on the input.
+  //
+  // So the guard rests on reading `@radix-ui/react-popover`'s source, and this test rests on the
+  // behaviour around it. Kept apart on purpose, because a test that cannot fail for the reason it
+  // names is worse than no test: it reads as coverage.
+  test("a hover-opened popover closes on its own and leaves focus alone", async () => {
+    render(
+      <FormField label="History ceiling" help="Why this field exists.">
+        <input />
+      </FormField>,
+    );
+    const input = screen.getByRole("textbox") as HTMLInputElement;
+    const trigger = screen.getByRole("button");
+    input.focus();
+    fireEvent.pointerEnter(trigger, { pointerType: "mouse" });
+    fireEvent.pointerLeave(trigger, { pointerType: "mouse" });
+    // `act` around a real wait rather than `waitFor`: the close is a setTimeout that ends in a
+    // React state update, and waitFor polls outside act, so the update lands after the assertion.
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, CLOSE_WAIT_MS));
+    });
+    expect(screen.queryByText(/why this field exists/i)).toBeNull();
+    // A BOOLEAN, never the node: a failing expectation holding a happy-dom element serializes a
+    // cyclic tree and floods the runner.
+    expect(document.activeElement === input).toBe(true);
+  });
+
+  // `aria-describedby` takes a LIST, and a control that already describes itself sits inside a
+  // field that describes it too. The component computed the merge and then spread the caller's
+  // props over it, so declaring a description on the control silently dropped the field's message,
+  // which is how a validation message goes unannounced.
+  test("a control's own description does not drop the field's", () => {
+    render(
+      <FormField label="History ceiling" error="Too large.">
+        <div>
+          <span id="own">extra</span>
+          <Input aria-describedby="own" value="" onChange={() => {}} />
+        </div>
+      </FormField>,
+    );
+    const ids = (
+      screen.getByRole("textbox").getAttribute("aria-describedby") ?? ""
+    ).split(" ");
+    expect(ids.includes("own")).toBe(true);
+    // and the field's own message is still named alongside it
+    expect(ids.length > 1).toBe(true);
   });
 });

@@ -172,6 +172,18 @@ export function Popover({
           onOpenAutoFocus={(e) => {
             if (!pinned.current) e.preventDefault();
           }}
+          // And it must not RETURN focus either. Radix's non-modal close focuses the trigger unless
+          // the event is defaulted away, so a box that merely followed the pointer would, 140ms
+          // after the pointer left, pull focus out of the field being typed into and onto the `?`.
+          // The keystrokes after that go nowhere the operator can see.
+          onCloseAutoFocus={(e) => {
+            if (!pinned.current) e.preventDefault();
+          }}
+          // And it must not RETURN focus either. Radix's non-modal close focuses the trigger unless
+          // the event is defaulted away, so a box that merely followed the pointer would, 140ms
+          // after the pointer left, pull focus out of the field being typed into and onto the `?`.
+          // The keystrokes after that go nowhere the operator can see.
+
           className={cn(
             // The width is capped by the VIEWPORT as well as by the design: a fixed 24rem is most
             // of a 375px screen once collision padding is taken out, and a box that is wider than

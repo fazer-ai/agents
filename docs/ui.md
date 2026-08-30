@@ -94,6 +94,14 @@ and checks the three-paragraph shape of `*Help` in both.
   whose icon is not self-evident, and its `children` is now **required** for that reason: it used to
   render its own `?` when given none, which is how a tooltip came to be used as a help affordance in
   the first place. The template it came from still does (`bunfire`, `HomePage.tsx`).
+- The field's `<label>` **points** at its control (`htmlFor`) and does not wrap it. A wrapping label
+  forwards a click on any NON-interactive descendant to the control it labels, and ARIA makes the
+  `?` operable without making it *interactive content* in the HTML sense: measured on a field
+  wrapping a checkbox, where clicking the `?` toggled the checkbox. The earlier version with a real
+  `<button>` had the mirror-image defect, since `button` IS labelable and so became the labelled
+  control. So the control has to CARRY an id, which `FormFieldContext` hands down; a field whose
+  children are not one focusable control takes `group` instead, and in that mode the context hands
+  down neither an id nor a label, or every child would be renamed after the group.
 - `HelpPopover` takes a `label`, and every surface that has one passes it (`FormField` its label,
   `Section` its title, `KpiCard` its caption, `SwitchField` its label). Without it every trigger on
   a page is announced identically, so a screen-reader user tabbing a form of twelve fields hears

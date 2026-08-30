@@ -78,25 +78,49 @@ function Harness() {
 // the URL field answer for the appointment section, and the section's caption answered for
 // "start time".
 function captionOf(label: Element): string {
-  return (label.querySelector("span")?.textContent ?? "").trim();
+  return (label.textContent ?? "").trim();
+}
+
+// A <FormField> label POINTS at its control (`htmlFor`) instead of wrapping it, so the control is
+// not a descendant to query for. Following the association is also the more honest check: it fails
+// if the label names nothing, which a subtree query cannot notice.
+function controlFor<T extends Element>(pattern: RegExp, what: string): T {
+  const label = Array.from(document.querySelectorAll("label")).find((l) =>
+    pattern.test(captionOf(l)),
+  ) as HTMLLabelElement | undefined;
+  const byFor = label?.htmlFor
+    ? (document.getElementById(label.htmlFor) as T | null)
+    : null;
+  // A `group` field has no single control to point at, so its heading is a <span> and the control
+  // inside carries its own aria-label. Both shapes are legitimate; which one a field uses is a
+  // property of its children, not something a test should depend on.
+  const byGroup =
+    byFor ??
+    (Array.from(document.querySelectorAll("[role='group']"))
+      .find((g) =>
+        pattern.test((g.querySelector("span")?.textContent ?? "").trim()),
+      )
+      ?.querySelector("input, select, textarea") as T | null | undefined);
+  if (!byGroup) throw new Error(`no ${what} captioned ${pattern}`);
+  return byGroup;
 }
 
 function inputFor(pattern: RegExp): HTMLInputElement {
-  const label = Array.from(document.querySelectorAll("label")).find((l) =>
-    pattern.test(captionOf(l)),
-  );
-  const input = label?.querySelector("input") as HTMLInputElement | null;
-  if (!input) throw new Error(`no field captioned ${pattern}`);
-  return input;
+  return controlFor<HTMLInputElement>(pattern, "field");
 }
 
 function textareaFor(pattern: RegExp): HTMLTextAreaElement {
-  const label = Array.from(document.querySelectorAll("label")).find((l) =>
-    pattern.test(captionOf(l)),
+  return controlFor<HTMLTextAreaElement>(pattern, "textarea");
+}
+
+// By the SENTENCE, not by the word "appointment": the URL field's own value is on screen too, and a
+// fixture URL like /v1/appointments made this selector return the URL label instead, so the test
+// failed for a reason that had nothing to do with the form.
+function actionSelect(): HTMLSelectElement {
+  return controlFor<HTMLSelectElement>(
+    /(books or cancels|marca ou cancela)/i,
+    "appointment action select",
   );
-  const el = label?.querySelector("textarea") as HTMLTextAreaElement | null;
-  if (!el) throw new Error(`no textarea captioned ${pattern}`);
-  return el;
 }
 
 function saveDisabled(): boolean {
@@ -118,14 +142,6 @@ function clickSave(): void {
 // By the SENTENCE, not by the word "appointment": the URL field's own value is on screen too, and a
 // fixture URL like /v1/appointments made this selector return the URL label instead — the test then
 // failed for a reason that had nothing to do with the form.
-function actionSelect(): HTMLSelectElement {
-  const label = Array.from(document.querySelectorAll("label")).find((l) =>
-    /(books or cancels|marca ou cancela)/i.test(captionOf(l)),
-  );
-  const sel = label?.querySelector("select") as HTMLSelectElement | null;
-  if (!sel) throw new Error("no appointment action select on screen");
-  return sel;
-}
 
 async function openForm() {
   serving();

@@ -51,6 +51,7 @@ function wireNativeControl(
   if (typeof children.type !== "string") return children;
   if (!NATIVE_CONTROLS.has(children.type)) return children;
   const own = children.props as {
+    id?: string;
     "aria-labelledby"?: string;
     "aria-describedby"?: string;
     "aria-invalid"?: boolean | string;
@@ -60,6 +61,7 @@ function wireNativeControl(
     // The TITLE alone, never the wrapping <label>: an accessible name is computed from the label's
     // whole subtree, so the `?` beside the title would be appended to the field's name.
 
+    id: own.id ?? field.controlId,
     "aria-labelledby": own["aria-labelledby"] ?? field.labelledById,
     "aria-describedby": mergeDescribedBy(
       field.describedById,
@@ -72,21 +74,26 @@ function wireNativeControl(
 
 // Label + control + (description | error) stack.
 //
-// THE LABEL WRAPS THE CONTROL, which makes the field's accessible name a property of what is inside
-// that <label>, and that is why the `?` next to the title is a span with `role="button"` and not a
-// <button>. A <label> is associated with the first LABELABLE element in its subtree, and `button`
-// is labelable: as a button, the help trigger became the labelled control, so clicking the title
-// opened the help instead of focusing the input and the input lost its name. Measured, and the same
-// trap the `group` note below describes from the other side. See HelpPopover.tsx.
+// THE LABEL POINTS AT THE CONTROL (`htmlFor`), it does not wrap it, and that is not a style
+// preference: a wrapping <label> forwards a click on any NON-INTERACTIVE descendant to the control
+// it labels. The `?` beside the title is a `<span role="button">`, and ARIA makes a span operable
+// without making it *interactive content* in the HTML sense, so the label kept forwarding: measured
+// on a field wrapping a checkbox, where clicking the `?` toggled the checkbox. The earlier version
+// with a real <button> had the mirror-image defect, because `button` IS labelable and so became the
+// labelled control, which took the input's accessible name with it.
 //
-// The MESSAGE sits outside the <label> for the same algorithm read the other way: an accessible
-// name is computed from the whole label subtree, so a description or an error rendered in there
-// would be appended to the field's name instead of describing it. It reaches the control through
+// Pointing fixes a third thing on the way: a <label> that contains the control is as wide as the
+// field, so the whole row, empty space included, was a click target. Now only the words are.
+//
+// The MESSAGE is a sibling for the same algorithm read the other way: an accessible name is
+// computed from the whole label subtree, so a description or an error inside the label would be
+// appended to the field's name instead of describing it. It reaches the control through
 // `aria-describedby` (FormFieldContext) rather than through containment.
 //
-// Pass `group` when the children are NOT a single focusable control. There is no one element for a
-// label to name, so the wrapper carries `role="group"` + `aria-labelledby` instead: screen readers
-// still announce the group, and no click is forwarded anywhere.
+// Pass `group` when the children are NOT a single focusable control. There is nothing for `htmlFor`
+// to name, so the wrapper carries `role="group"` + `aria-labelledby` instead, and the context hands
+// down neither an id nor a label: a child that took the group's heading as its own name would be
+// announced as the group.
 export function FormField({
   label,
   children,
@@ -100,6 +107,7 @@ export function FormField({
 }: FormFieldProps) {
   const subtext = description ?? hint;
   const titleId = useId();
+  const controlId = useId();
   const messageId = useId();
   const hasMessage = !!error || !!subtext;
 
@@ -108,18 +116,30 @@ export function FormField({
       // In `group` mode the wrapper describes itself; handing the id down as well would make a
       // control inside announce the same message twice.
       describedById: hasMessage && !group ? messageId : undefined,
-      labelledById: titleId,
+      // Both are for the ONE control a non-group field wraps. In `group` mode there is no such
+      // control: handing the group's heading to every child would rename each of them after the
+      // group (`aria-labelledby` beats a control's own `aria-label`), so a row of three inputs
+      // would announce the same words three times.
+      labelledById: group ? undefined : titleId,
+      controlId: group ? undefined : controlId,
       required,
       invalid: !!error,
     }),
-    [group, hasMessage, messageId, titleId, required, error],
+    [group, hasMessage, messageId, titleId, controlId, required, error],
   );
 
-  const title = (
+  // A <label htmlFor> when there is one control to point at, a plain <span> in `group` mode where
+  // there is not. Never a label WRAPPING the control: see the note above the component.
+  const title = group ? (
     <span id={titleId}>
       {label}
       {required && <span className="ml-0.5 text-error">*</span>}
     </span>
+  ) : (
+    <label htmlFor={controlId} id={titleId}>
+      {label}
+      {required && <span className="ml-0.5 text-error">*</span>}
+    </label>
   );
 
   const heading = (
@@ -159,11 +179,8 @@ export function FormField({
         </div>
       ) : (
         <div className={cn("flex flex-col gap-1.5", className)}>
-          {/* biome-ignore lint/a11y/noLabelWithoutControl: the control arrives as children (a real input/select/textarea); the rule cannot see through composition. */}
-          <label className="flex flex-col gap-1.5">
-            {heading}
-            {wireNativeControl(children, field)}
-          </label>
+          {heading}
+          {wireNativeControl(children, field)}
           {message}
         </div>
       )}

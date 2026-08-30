@@ -204,18 +204,28 @@ export function GuardrailsTab({
                     ? refusals.inputTemplateMessage
                     : refusals.outputTemplateMessage
                 }
+                // The two directions say different KINDS of thing about the same box, so they take
+                // different homes. Outbound is one sentence about when this text is used, which is
+                // what the operator needs to fill the field: inline. Inbound is why the field can
+                // never be anything else, read once: behind the `?`. It matters here more than
+                // elsewhere that the inbound text is not inline, because this field renders an
+                // `error` in the same slot, so a refusal would erase the explanation of the rule
+                // it just enforced.
                 description={
-                  d.action !== "generated"
-                    ? undefined
-                    : dir === "input"
-                      ? t(
-                          "editor.guardrails.templateInboundHelp",
-                          "On customer messages, this text is ALWAYS what gets sent.\n\nThere is no reply to rewrite: the text under review is the customer's own message.\n\nThis was measured: a message telling it to state a price and a partnership produced exactly that, word for word, in all 16 runs.",
-                        )
-                      : t(
-                          "editor.guardrails.templateFallbackHint",
-                          "Sent whenever no replacement gets written: when the model returns none, and always when the relevance check is the one that tripped, since there is no reply to rewrite.",
-                        )
+                  d.action === "generated" && dir === "output"
+                    ? t(
+                        "editor.guardrails.templateFallbackHint",
+                        "Sent whenever no replacement gets written: when the model returns none, and always when the relevance check is the one that tripped, since there is no reply to rewrite.",
+                      )
+                    : undefined
+                }
+                help={
+                  d.action === "generated" && dir === "input"
+                    ? t(
+                        "editor.guardrails.templateInboundHelp",
+                        "On customer messages, this text is ALWAYS what gets sent.\n\nThere is no reply to rewrite: the text under review is the customer's own message.\n\nThis was measured: a message telling it to state a price and a partnership produced exactly that, word for word, in all 16 runs.",
+                      )
+                    : undefined
                 }
               >
                 <Textarea

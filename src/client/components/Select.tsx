@@ -25,6 +25,7 @@ export const Select = forwardRef<HTMLSelectElement, SelectProps>(
             props["aria-describedby"],
           )}
           aria-invalid={error || field.invalid || undefined}
+          id={props.id ?? field.controlId}
           aria-labelledby={props["aria-labelledby"] ?? field.labelledById}
           required={props.required ?? field.required}
           className={cn(

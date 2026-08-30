@@ -1125,6 +1125,11 @@ export function ToolEditModal({
             </FormField>
             <FormField
               label={t("tools.url", "URL template")}
+              // The children are a highlighted field PLUS a variable picker, which is what `group`
+              // is for: there is no single control for the label to name. It was missing, and the
+              // wrapping label used to paper over it by forwarding a click to the first labelable
+              // descendant; now that the label points, a dangling `htmlFor` is a visible failure.
+              group
               required
               description={
                 relativeWithoutBase

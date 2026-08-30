@@ -15,6 +15,12 @@ export interface FormFieldContextValue {
   // `aria-labelledby` wins over a native label, so the <label> keeps giving click-to-focus and
   // stops deciding the name.
   labelledById?: string;
+  // The id the field's <label> points `htmlFor` at, so the control has to CARRY it. The label no
+  // longer wraps the control: a wrapping label forwards a click on any non-interactive descendant
+  // to the control it labels, and the `?` is a `<span role="button">`, which ARIA makes operable
+  // but does NOT make interactive content in the HTML sense. Measured: clicking the `?` on a field
+  // wrapping a checkbox toggled the checkbox.
+  controlId?: string;
   required?: boolean;
   invalid?: boolean;
 }

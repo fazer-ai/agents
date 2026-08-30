@@ -1,7 +1,7 @@
 /// <reference lib="dom" />
 
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { GuardrailsTab } from "@/client/pages/agents/GuardrailsTab";
 import type { GuardrailsRefusals } from "@/client/pages/agents/types";
 import {
@@ -121,13 +121,28 @@ describe("GuardrailsTab template message", () => {
 
   // The field is not merely absent on the input direction: the operator has to learn WHERE it went,
   // otherwise picking "generated" there looks like a feature that silently does nothing. The
-  // template hint is the place, because the template is what that direction actually sends.
+  // template field is the place, because the template is what that direction actually sends.
+  //
+  // It lives behind that field's `?` rather than under it (issue #411), which is not a detail of
+  // presentation here: this field renders a server refusal in the same slot a description would
+  // occupy, so an inline explanation would be erased by the very refusal it explains.
   test("the input direction says the template is always what gets sent", () => {
     renderWith("generated");
-    const hints = screen.queryAllByText(
-      /SEMPRE isto que sai|ALWAYS what gets sent/,
-    );
-    expect(hints.length).toBe(1);
+    expect(
+      screen.queryAllByText(/SEMPRE isto que sai|ALWAYS what gets sent/).length,
+    ).toBe(0);
+    const help = screen
+      .getAllByRole("button")
+      .filter((b) =>
+        /(Mostrar ajuda|Show help).*(Mensagem padrão|Template message)/.test(
+          b.getAttribute("aria-label") ?? "",
+        ),
+      );
+    expect(help.length).toBe(1);
+    fireEvent.click(help[0] as HTMLElement);
+    expect(
+      screen.queryAllByText(/SEMPRE isto que sai|ALWAYS what gets sent/).length,
+    ).toBe(1);
   });
 });
 

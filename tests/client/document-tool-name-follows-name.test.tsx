@@ -120,10 +120,15 @@ async function open() {
 // into the name field and asserted about the tool field — green for the wrong reason, in the one
 // test whose whole point is that the two fields are independent.
 function toolInput(): HTMLInputElement {
-  const field = Array.from(document.querySelectorAll("label")).find((l) =>
+  // Through `htmlFor`, because a <FormField> label POINTS at its control instead of wrapping it: a
+  // wrapping label forwards a click on any non-interactive descendant to the control, which is how
+  // clicking the help `?` came to toggle the field beside it (issue #411).
+  const label = Array.from(document.querySelectorAll("label")).find((l) =>
     /ferramenta do agente|agent tool/i.test(l.textContent ?? ""),
-  );
-  const input = field?.querySelector("input") as HTMLInputElement | null;
+  ) as HTMLLabelElement | undefined;
+  const input = label?.htmlFor
+    ? (document.getElementById(label.htmlFor) as HTMLInputElement | null)
+    : null;
   if (!input) throw new Error("tool field not on screen");
   return input;
 }

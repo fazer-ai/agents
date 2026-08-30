@@ -47,6 +47,7 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
           ref={ref}
           rows={rows}
           aria-invalid={hasError || undefined}
+          id={props.id ?? field.controlId}
           aria-labelledby={props["aria-labelledby"] ?? field.labelledById}
           required={props.required ?? field.required}
           aria-describedby={mergeDescribedBy(

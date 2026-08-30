@@ -8,6 +8,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 // reading "Help about {{subject}}" and calling it a name.
 await import("@/client/lib/i18n");
 const { FormField } = await import("@/client/components/FormField");
+const { Input } = await import("@/client/components/Input");
 
 // The `?` that opens a field's long-form help (issue #411).
 //
@@ -145,5 +146,63 @@ describe("FormField help", () => {
     const input = screen.getByRole("textbox");
     expect(input.hasAttribute("required")).toBe(true);
     expect(input.getAttribute("aria-invalid")).toBeTruthy();
+  });
+  // Measured, not reasoned, and it is why the label points at the control instead of wrapping it: a
+  // <label> forwards a click on any NON-INTERACTIVE descendant to the control it labels, and ARIA
+  // makes a `<span role="button">` operable without making it *interactive content* in the HTML
+  // sense. With the old wrapping label this click toggled the checkbox, so asking for help mutated
+  // the form. A checkbox is the shape that makes it visible; on an input it merely stole focus.
+  test("clicking the `?` does not operate the control beside it", () => {
+    render(
+      <FormField label="Active" help="Why this field exists.">
+        <input type="checkbox" />
+      </FormField>,
+    );
+    const box = screen.getByRole("checkbox") as HTMLInputElement;
+    fireEvent.click(screen.getByRole("button"));
+    expect(box.checked).toBe(false);
+    // and the help did open, so this is not passing because the trigger is inert
+    expect(screen.getByText(/why this field exists/i)).toBeTruthy();
+  });
+
+  // The other half of the same association: the title still NAMES the control, so a browser focuses
+  // it on click. Asserted as the association and not as focus, because happy-dom implements a
+  // wrapping label's activation behaviour (which is how the checkbox above is measured) but not
+  // `htmlFor`'s: a focus assertion here would be testing the DOM stub, not the component.
+  test("the title names the control it sits above", () => {
+    render(
+      <FormField label="History ceiling" help="Why this field exists.">
+        <input />
+      </FormField>,
+    );
+    const input = screen.getByRole("textbox");
+    const label = document.querySelector("label") as HTMLLabelElement;
+    expect(label.textContent).toBe("History ceiling");
+    expect(label.htmlFor).toBe(input.id);
+    expect(input.id.length > 0).toBe(true);
+  });
+  // `group` exists for a field whose children are NOT one focusable control, and there the heading
+  // belongs to the WRAPPER. Handing it down as well renamed every child after the group, because
+  // `aria-labelledby` beats a control's own `aria-label`: a row of three inputs announced the same
+  // words three times, and the one thing that told them apart was gone.
+  test("a group's heading does not rename the controls inside it", () => {
+    render(
+      <FormField label="Reminders" group>
+        <div>
+          {/* OUR Input, not a bare <input>: the context is what a control reads, and a bare native
+              child is reached by `wireNativeControl`, which only walks a direct child. A test built
+              on bare inputs inside a wrapper exercises neither path and passes on anything. */}
+          <Input aria-label="Reminder 1" value="" onChange={() => {}} />
+          <Input aria-label="Reminder 2" value="" onChange={() => {}} />
+        </div>
+      </FormField>,
+    );
+    const names = screen
+      .getAllByRole("textbox")
+      .map(
+        (el) =>
+          el.getAttribute("aria-labelledby") ?? el.getAttribute("aria-label"),
+      );
+    expect(names).toEqual(["Reminder 1", "Reminder 2"]);
   });
 });

@@ -63,6 +63,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
                 : autoComplete
             }
             aria-invalid={hasError || undefined}
+            id={props.id ?? field.controlId}
             aria-labelledby={props["aria-labelledby"] ?? field.labelledById}
             required={props.required ?? field.required}
             // BOTH ids, not one: the field describes the control in general and this control

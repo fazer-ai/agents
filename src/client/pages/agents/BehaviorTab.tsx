@@ -1885,6 +1885,9 @@ export function BehaviorTab({
                 <div className="grid gap-4 sm:grid-cols-2">
                   <FormField
                     label={t("editor.ttsVoice", "Voice")}
+                    // A ComboBox-based picker, not one focusable control: `group` per the
+                    // repo rule, so the label names the group instead of dangling.
+                    group
                     description={t(
                       "editor.ttsVoiceHint",
                       "Voice id/name (required for ElevenLabs).",
@@ -1905,6 +1908,9 @@ export function BehaviorTab({
                   </FormField>
                   <FormField
                     label={t("editor.ttsModel", "Model")}
+                    // A ComboBox-based picker, not one focusable control: `group` per the
+                    // repo rule, so the label names the group instead of dangling.
+                    group
                     description={t(
                       "editor.ttsModelHint",
                       "Leave blank for the provider default.",

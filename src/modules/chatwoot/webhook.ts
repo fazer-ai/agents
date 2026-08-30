@@ -2093,15 +2093,19 @@ async function maybeConsumeCommandOrGate(params: {
       redirectClosedAt: null,
     };
     await step("clear the conversation's watermarks", "marcadores", () =>
-      runScopedOn(base, sysCtx(tenantId), (db) =>
-        db.conversation.update({
+      runScopedOn(base, sysCtx(tenantId), async (db) => {
+        // THE EPISODE MARK, on the command's FIRST write: everything it clears comes after, so a
+        // delivery that arrived before this stands itself down (../../graph/reset-episode.ts).
+        //
+        // `now()` and not `new Date()`, because it is COMPARED with a delivery's `received_at`,
+        // which Postgres writes as a column default. Two clocks in one ordering is skew deciding
+        // whether a turn acts; one clock is the whole reason this is a raw statement rather than
+        // another field in the update below.
+        await db.$executeRaw`
+          UPDATE conversations SET reset_at = now() WHERE id = ${ctx.conv.id}`;
+        return db.conversation.update({
           where: { id: ctx.conv.id },
           data: {
-            // THE EPISODE MARK, on the command's FIRST write: everything it clears comes after, so
-            // a turn that started before it reads a different value from here on and stands itself
-            // down (../../graph/runtime.ts). Nothing reads it as a time, which is why it is not one
-            // of the nulls around it.
-            resetAt: new Date(),
             lastInboundAt: null,
             lastFollowUpAt: null,
             testNoticeSentAt: null,
@@ -2112,8 +2116,8 @@ async function maybeConsumeCommandOrGate(params: {
             lastErrorAt: null,
             failureNoticeSentAt: null,
           },
-        }),
-      ),
+        });
+      }),
     );
 
     // Clear the agent's memory thread (per contact-inbox / channel), the AgentThread marker (the
@@ -3056,17 +3060,25 @@ export async function processChatwootDelivery(
   // was introduced, and the caller bounds a retry on it. A live delivery does not touch it — its
   // claim is not an attempt at recovery, it is the first attempt at all.
   const claimFrom = params.claimFrom ?? "PENDING";
+  // RETURNING the arrival time, because the claim is the only statement that already touches this
+  // row and the turn needs it: `receivedAt` is the DATABASE's stamp from the moment the receiver
+  // first recorded this delivery, which is what tells a `/reset` that landed AFTER this message
+  // arrived from one that predates it (../../graph/reset-episode.ts). Read a step later — at the
+  // mirror, or at the turn's own config load — it would be a moment the command can already have
+  // overtaken.
   const claimed = await runScopedOn(base, sysCtx(params.tenantId), (db) =>
-    db.chatwootWebhookDelivery.updateMany({
+    db.chatwootWebhookDelivery.updateManyAndReturn({
       where: { id: params.deliveryRowId, status: claimFrom },
       data: {
         status: "PROCESSING",
         claimedAt: new Date(),
         ...(claimFrom === "DEAD" ? { attempts: { increment: 1 } } : {}),
       },
+      select: { receivedAt: true },
     }),
   );
-  if (claimed.count === 0) return "skipped";
+  if (claimed.length === 0) return "skipped";
+  const deliveredAt = claimed[0]?.receivedAt ?? null;
 
   const n = params.normalized;
 
@@ -3798,10 +3810,10 @@ export async function processChatwootDelivery(
             base,
             deps: params.deps,
             authContext: gate.authContext,
-            // As the MIRROR found it, at the top of this delivery — not as the turn's own read finds
-            // it, which is after the gates, the media pass and the ceiling have all had time to be
-            // overtaken by the command (../../graph/reset-episode.ts).
-            episodeAt: mirror.resetAt,
+            // WHEN THIS MESSAGE ARRIVED, from the ledger row the receiver wrote before any of this
+            // ran. The turn stands down when the command's mark is younger than it
+            // (../../graph/reset-episode.ts).
+            deliveredAt,
           }).then(
             (o) => {
               params.onDirectTurn?.({ kind: "outcome", outcome: o });

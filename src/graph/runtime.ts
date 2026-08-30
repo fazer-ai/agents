@@ -1620,20 +1620,20 @@ export interface RunAgentTurnParams {
   // here and required one layer down: the gate is a caller's business, and every test that runs a
   // turn without one would otherwise have to say so.
   authContext?: AuthContext | null;
-  // The conversation's episode mark as the DELIVERY found it (`MirrorResult.resetAt`), which is what
-  // this turn stands down on when a `/reset` lands under it (./reset-episode.ts).
+  // When the DELIVERY this turn is answering arrived (`ChatwootWebhookDelivery.receivedAt`), which
+  // is what a `/reset` landing under it is compared against (./reset-episode.ts).
   //
-  // It comes from the CALLER and not from this turn's own read, and that is the whole point: by the
-  // time the turn reads anything, the gates, the media pass, the contact-authorization call and the
-  // ceiling have all had time to be overtaken by the command, and a run that captured the mark then
-  // would be comparing the operator's own write against itself.
+  // It comes from the CALLER because the caller holds the earliest moment that exists for this
+  // message. Anything this turn could read for itself is later than the gates, the media pass, the
+  // authorization call and the ceiling, all of which the command can overtake — and a baseline taken
+  // there is the operator's own write compared with itself.
   //
   // Optional here and answered one layer down, the same shape as `authContext` above and for the
   // same reason: `runLoadedTurn` takes `stillWanted` as REQUIRED and nullable, so the compiler asks
   // the question where it decides something, and the hundred-odd tests that drive a turn without a
-  // command racing it do not each have to say so. Absent reads as `null` — no mark observed — which
-  // still stands the turn down for a reset that lands after it started.
-  episodeAt?: Date | null;
+  // command racing it do not each have to say so. Absent means no delivery named itself, and the
+  // fence has nothing to order — the tests/reset-episode.test.ts table says so.
+  deliveredAt?: Date | null;
 }
 
 // Direct (no-debounce) entry: one incoming message → resolve the inbox's Agent → run the turn.
@@ -1774,7 +1774,7 @@ export async function runAgentTurn(
         : stillInSameEpisode({
             tenantId,
             conversationDbId: convDbId,
-            startedAt: params.episodeAt ?? null,
+            deliveredAt: params.deliveredAt ?? null,
             base,
           }),
     loaded,

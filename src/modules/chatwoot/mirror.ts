@@ -47,14 +47,6 @@ export interface MirrorResult {
   // caller that finds no agent has nothing else to name the inbox with — `rt` is null precisely
   // then, which is the state issue #318 is about. Null when the payload named no inbox.
   inboxRowId: bigint | null;
-  // The conversation's EPISODE MARK as this delivery found it (`Conversation.resetAt`, null when no
-  // /reset has ever cleared it). Captured here because this is the first read of the row on the
-  // delivery path, and everything a delivery does afterwards — the gates, eager media, the
-  // contact-authorization call, the spend ceiling, the turn's own config load — can be overtaken by
-  // a `/reset` that then completes. A turn carries this value and stands down when it stops matching
-  // (../../graph/reset-episode.ts); read a step later, it would BE the mark the command just wrote
-  // and the turn would never notice.
-  resetAt: Date | null;
   // The assignee BEFORE this event applied — captured for the REENGAGE flow, which
   // must see the prior human assignee before the mirror overwrites it.
   prevAssigneeId: number | null;
@@ -93,7 +85,6 @@ export async function mirrorChatwootEvent(
   if (n.conversationId === null) {
     return {
       conversationRowId: null,
-      resetAt: null,
       inboxRowId: null,
       prevAssigneeId: null,
       prevStatus: null,
@@ -186,8 +177,6 @@ export async function mirrorChatwootEvent(
           // Read for the stale branch, which advances this watermark only when the payload really is
           // ahead of it. See the write there.
           lastInboundAt: true,
-          // Read for the CALLER, not for anything decided here.
-          resetAt: true,
         },
       });
       const prevAssigneeId = existing?.assigneeId ?? null;
@@ -402,7 +391,6 @@ export async function mirrorChatwootEvent(
         }
         return {
           conversationRowId: existing.id,
-          resetAt: existing.resetAt,
           inboxRowId,
           prevAssigneeId,
           // NOTE: No transition applied — report status/prevStatus equal so a caller's diff sees "no change".
@@ -464,8 +452,6 @@ export async function mirrorChatwootEvent(
         });
         return {
           conversationRowId: created.id,
-          // A row this event created cannot have been reset.
-          resetAt: null,
           inboxRowId,
           prevAssigneeId,
           // NOTE: No prior row → no prior status (never a "transition" for a brand-new conversation).
@@ -572,7 +558,6 @@ export async function mirrorChatwootEvent(
       }
       return {
         conversationRowId: existing.id,
-        resetAt: existing.resetAt,
         inboxRowId,
         prevAssigneeId,
         // NOTE: The status as persisted BEFORE this update — the real transition source value.

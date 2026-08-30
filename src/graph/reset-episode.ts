@@ -17,17 +17,27 @@ import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 // handled watermark past this turn's trigger and the supersede gate refuses the post — but a tool
 // call is not a post, and nothing between the model and Chatwoot asks the question at all.
 //
-// So the fact the run is named by is the EPISODE: `Conversation.resetAt`, stamped by the command's
-// first write. A turn carries the value its config load read and asks whether the conversation is
-// still in it.
+// So the fact the run is named by is the EPISODE, and the question is asked about the DELIVERY
+// rather than about anything the turn read: did the command land after this message arrived?
 //
-// BY VALUE, never as an ordering. "Changed since I started" needs no clock agreement between two
-// replicas and no monotonicity from the column: the run captured one reading and compares it with
-// another. A NULL on both sides is a conversation nothing has ever reset, which is the ordinary case
-// and the one that must never trip.
-export function sameEpisode(startedAt: Date | null, now: Date | null): boolean {
-  if (startedAt === null || now === null) return startedAt === now;
-  return startedAt.getTime() === now.getTime();
+// `Conversation.resetAt` is stamped by the command's first write with `now()`, and
+// `ChatwootWebhookDelivery.receivedAt` is written by the same Postgres as a column default when the
+// receiver first records the delivery — one clock, and the earliest moment that exists for this
+// message. Anything read later (the mirror, the gates, the turn's own config load) is a moment the
+// command can already have overtaken, and a baseline captured there is the operator's own write
+// being compared with itself. Measured, twice, by review rounds on #447.
+//
+// The tie goes to STANDING DOWN: a mark stamped in the same millisecond the delivery arrived is a
+// coincidence nobody can order, and refusing one message is the cheaper half of it.
+export function resetLandedAfter(
+  deliveredAt: Date | null,
+  resetAt: Date | null,
+): boolean {
+  if (resetAt === null) return false;
+  // No arrival time is not evidence of a reset: it is a caller that never named one (the playground,
+  // a test), and the fence has nothing to order.
+  if (deliveredAt === null) return false;
+  return resetAt.getTime() >= deliveredAt.getTime();
 }
 
 function sysCtx(tenantId: bigint): TenantContext {
@@ -37,9 +47,8 @@ function sysCtx(tenantId: bigint): TenantContext {
 export interface EpisodeFenceParams {
   tenantId: bigint;
   conversationDbId: bigint;
-  // What the turn's own config load read. `null` is a conversation no reset has ever cleared, and
-  // it is a value like any other: the fence trips when the command stamps the first one.
-  startedAt: Date | null;
+  // When the DELIVERY this turn is answering arrived, from the ledger row the receiver wrote.
+  deliveredAt: Date | null;
   base: PrismaClient;
 }
 
@@ -67,7 +76,7 @@ export function stillInSameEpisode(
         }),
       );
       if (!row) return true;
-      return sameEpisode(p.startedAt, row.resetAt);
+      return !resetLandedAfter(p.deliveredAt, row.resetAt);
     } catch (err) {
       // AN UNREADABLE MARK IS NOT A RETIREMENT, and under `strict` it must not be answered with
       // `false`. That answer is not "stop", it is "the operator withdrew this run": `runLoadedTurn`

@@ -1,38 +1,34 @@
 import { describe, expect, test } from "bun:test";
 import type { PrismaClient } from "@/../generated/prisma/client";
-import { sameEpisode, stillInSameEpisode } from "@/graph/reset-episode";
+import { resetLandedAfter, stillInSameEpisode } from "@/graph/reset-episode";
 
-// The comparison, as a table. It is a value comparison and not an ordering, so the row that matters
-// most is the last one: a clock that moved backwards still reads as a different episode, because the
-// question is "is this the reading my run started with", never "is this newer".
-describe("the episode a run started in", () => {
+// The comparison, as a table. It orders two stamps from the SAME clock — the command's `now()` and
+// the delivery's `received_at` column default — and asks one question about the DELIVERY, never
+// about anything the turn read for itself.
+describe("whether the command landed after the message arrived", () => {
   const t0 = new Date("2026-08-30T10:00:00.000Z");
-  const t1 = new Date("2026-08-30T10:00:00.001Z");
-  const before = new Date("2026-08-30T09:59:59.000Z");
+  const later = new Date("2026-08-30T10:00:00.001Z");
+  const earlier = new Date("2026-08-29T09:00:00.000Z");
 
   const rows: [string, Date | null, Date | null, boolean][] = [
-    ["never reset, and still not", null, null, true],
-    ["the first reset lands under the run", null, t0, false],
-    ["the same reading, a different object", t0, new Date(t0.getTime()), true],
-    ["a later reset", t0, t1, false],
-    ["a mark that went backwards is still a different one", t0, before, false],
-    // A conversation cannot un-reset itself, so this row is not a state the command produces. It is
-    // here because the answer must not depend on which side is null: whatever put it there, this run
-    // is no longer in the episode it started in.
-    ["the mark disappeared", t0, null, false],
+    ["never reset", t0, null, false],
+    ["the command landed after this message arrived", t0, later, true],
+    ["the reset is older than the message", t0, earlier, false],
+    // Nobody can order two stamps in the same millisecond, and the cheaper half of the coincidence
+    // is one refused message rather than a turn acting on a conversation that was just cleared.
+    ["the same millisecond stands the turn down", t0, new Date(t0), true],
+    // Not evidence of a reset: a caller that named no delivery (the playground, a test) leaves the
+    // fence nothing to order, which is a different unknown from "the command landed".
+    ["no delivery named itself", null, later, false],
+    ["neither", null, null, false],
   ];
-  for (const [name, started, now, expected] of rows) {
+  for (const [name, deliveredAt, resetAt, expected] of rows) {
     test(name, () => {
-      expect(sameEpisode(started, now)).toBe(expected);
+      expect(resetLandedAfter(deliveredAt, resetAt)).toBe(expected);
     });
   }
 });
 
-// The `strict` contract runLoadedTurn states, from the one side this module owns: what an
-// UNREADABLE answer means. Inside the critical section it has to stop the run (guessing "still
-// wanted" recreates the thread /reset just cleared, and no later fence catches it); at a send it has
-// to let the run continue, because throwing there abandons the bookkeeping of a message already
-// delivered and the CAS at the end is the real fence.
 describe("a read that cannot answer", () => {
   // Shaped like `runScopedOn` uses it — `$extends`, then `$transaction`, then the GUC statement and
   // the query — so the failure under test is a READ that fails, not a stub that is missing a method.
@@ -57,11 +53,14 @@ describe("a read that cannot answer", () => {
     $executeRaw: async () => 1,
     conversation: { findUnique: async () => null },
   };
-  const fence = (tx: Record<string, unknown>, startedAt: Date | null = null) =>
+  const fence = (
+    tx: Record<string, unknown>,
+    deliveredAt: Date | null = null,
+  ) =>
     stillInSameEpisode({
       tenantId: 1n,
       conversationDbId: 7n,
-      startedAt,
+      deliveredAt,
       base: base(tx),
     });
 
@@ -88,18 +87,18 @@ describe("a read that cannot answer", () => {
   });
 });
 
-// THE CALL SITE IS WHERE THIS CAN GO SILENT. `episodeAt` is optional on `RunAgentTurnParams`, for
+// THE CALL SITE IS WHERE THIS CAN GO SILENT. `deliveredAt` is optional on `RunAgentTurnParams`, for
 // the reason the field states (the hundred-odd tests that drive a turn with no command racing it
 // would each have to say so, which is the same call `authContext` right above it made). What that
 // buys in signal it gives up in enforcement: a production caller that omits it gets a `null`
-// baseline, which still catches a reset landing after the turn started and misses one that landed
-// before — silently, since nothing fails.
+// fence with nothing to order, so every reset reads as older than the message and no turn ever
+// stands down — silently, since nothing fails.
 //
 // So the enforcement is here, and it is a scan of the SOURCE because that is where the omission
 // lives. One production call site today; the assertion on the count is what keeps a scan that
 // suddenly matches nothing from passing as "every call site is fine".
-describe("every production caller names the episode it observed", () => {
-  test("runAgentTurn is never called without episodeAt", async () => {
+describe("every production caller names the delivery it is answering", () => {
+  test("runAgentTurn is never called without deliveredAt", async () => {
     const src = await Bun.file(
       new URL("../../src/modules/chatwoot/webhook.ts", import.meta.url),
     ).text();
@@ -129,6 +128,6 @@ describe("every production caller names the episode it observed", () => {
     // A scan that finds nothing is as wrong as one that finds a bad site: the anchor would have
     // moved (a rename, a call built from a variable) and this test would go on passing forever.
     expect(sites).toHaveLength(1);
-    for (const site of sites) expect(site).toContain("episodeAt:");
+    for (const site of sites) expect(site).toContain("deliveredAt");
   });
 });

@@ -1409,7 +1409,7 @@ export function ToolEditModal({
               )}
               help={t(
                 "tools.appointmentHelp",
-                "This option identifies when the tool creates or cancels an appointment.\n\nThe platform pauses follow-up messages while the appointment is active and sends the configured reminders.\n\nEnter the response paths for the ID and start time, using dots between levels and numbers for list positions, such as data.items.0.id. The cancellation tool must return the same ID.",
+                "This option identifies when the tool creates or cancels an appointment.\n\nThe platform pauses follow-up messages while the appointment is active and sends the configured reminders.\n\nEnter the response paths for the ID and start time, using dots between levels and numbers for list positions, such as data.items.0.id.",
               )}
             >
               <Select
@@ -1473,6 +1473,14 @@ export function ToolEditModal({
                   )}
                 <FormField
                   label={t("tools.appointmentIdPath", "Where the id is")}
+                  // INLINE, not behind the `?`, and docs/ui.md names this exact case: a cross-field
+                  // dependency is the one kind of help the field can never reveal, because the fact
+                  // lives on another screen. Nothing here can detect that the cancellation tool
+                  // answers with a different id; the cancellation just never finds the appointment.
+                  description={t(
+                    "tools.appointmentIdPathHint",
+                    "The tool that cancels has to answer with this same id.",
+                  )}
                 >
                   <Input
                     value={form.apptIdPath}
@@ -1621,7 +1629,12 @@ export function ToolEditModal({
                       )}
                       description={t(
                         "tools.appointmentOffsetsHint",
-                        "Enter up to five lead times from 1 to 8760 hours, separated by commas, such as 24, 1; empty disables reminders only.",
+                        // The last sentence is a WARNING and it went missing once already: a booking
+                        // system that reminds the customer itself plus reminders here is two
+                        // notifications for one appointment, and nothing on this screen can tell
+                        // that the other system does it. Inline by the outcome-1 test in
+                        // docs/ui.md.
+                        "Enter up to five lead times from 1 to 8760 hours, separated by commas, such as 24, 1; empty disables reminders only. Leave it empty if your own booking system already reminds them.",
                       )}
                     >
                       <Input

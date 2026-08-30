@@ -62,14 +62,14 @@
       "credential": "Langfuse credential",
       "credentialHint": "Public key, secret key and host are stored in the credential. Use the Vault tab to create or update it.",
       "debug": "Debug mode (tool schemas)",
+      "debugHelp": "This mode includes the full definition of every available tool in Logs.\n\nUse it to check which tools the agent received and how they were described.\n\nTool names already appear when this mode is off. Full definitions increase Langfuse data volume, so turn it off after debugging.",
       "desc": "Send agent traces to Langfuse. Content is redacted unless you opt in.",
       "enabled": "Enable tracing",
       "saved": "Observability settings saved.",
       "saveError": "Could not save observability settings.",
       "sendContent": "Send message content (not just structure)",
-      "title": "Observability (Langfuse)",
-      "debugHelp": "This mode includes the full definition of every available tool in Logs.\n\nUse it to check which tools the agent received and how they were described.\n\nTool names already appear when this mode is off. Full definitions increase Langfuse data volume, so turn it off after debugging.",
-      "sendContentHelp": "This option controls whether message text is included in the Logs sent to Langfuse.\n\nWhen on, Langfuse receives the full conversation content.\n\nWhen off, the text is hidden before sending. Logs still show conversation structure, tool use, response times, processed volume, and costs."
+      "sendContentHelp": "This option controls whether message text is included in the Logs sent to Langfuse.\n\nWhen on, Langfuse receives the full conversation content.\n\nWhen off, the text is hidden before sending. Logs still show conversation structure, tool use, response times, processed volume, and costs.",
+      "title": "Observability (Langfuse)"
     }
   },
   "agents": {
@@ -351,8 +351,8 @@
     "save": "Save",
     "saved": "Saved.",
     "search": "Search",
-    "showPassword": "Show password",
-    "showHelp": "Show help"
+    "showHelp": "Show help",
+    "showPassword": "Show password"
   },
   "conversation": {
     "activity": {
@@ -523,6 +523,7 @@
     "inbox": "Inbox #{{id}}",
     "kpi": {
       "firstResponse": "First response",
+      "firstResponseHelp": "Measures the time from conversation creation to the first reply from a person. Agent replies appear in the funnel above, not here.\n\nIf the business started the conversation, its opening message counts as the first reply, just as it does in the Chatwoot dashboard.\n\nOlder conversations only appear after Chatwoot sends another event for them. An empty period means there is no data.",
       "firstResponseHint": "median over {{sampled}} answered conversations",
       "firstResponseNone": "no data for this period yet",
       "handoff": "Handoffs",
@@ -533,8 +534,7 @@
       "resolutionHint": "{{resolved}} closed by the agent itself",
       "resolutionUntracked": "{{untracked}} more were resolved before this instance began recording who closed a conversation, so they are not counted here.",
       "total": "Conversations",
-      "totalHint": "in the period",
-      "firstResponseHelp": "Measures the time from conversation creation to the first reply from a person. Agent replies appear in the funnel above, not here.\n\nIf the business started the conversation, its opening message counts as the first reply, just as it does in the Chatwoot dashboard.\n\nOlder conversations only appear after Chatwoot sends another event for them. An empty period means there is no data."
+      "totalHint": "in the period"
     },
     "loading": "Loading metrics…",
     "metric": {
@@ -665,6 +665,7 @@
     "attributeContextContactHint": "Attributes of the customer, kept across every conversation they have.",
     "attributeContextConversation": "Conversation",
     "attributeContextConversationHint": "Attributes of this conversation (reset with each new conversation).",
+    "attributeContextHelp": "This selection defines which current Chatwoot attribute values the agent receives whenever it replies.\n\nChoose only the data needed for the conversation. The agent uses these values to track what has been collected and what is still missing.\n\nWithout the \"Set attribute\" tool, the agent can read these values but cannot change them.",
     "attributeContextMultiAccount": "This agent serves more than one Chatwoot account, so the listed attributes mix accounts. Type each key exactly as it appears.",
     "attributeContextPlaceholder": "Add an attribute…",
     "attributeContextSearch": "Search attributes…",
@@ -841,9 +842,13 @@
     "contactAuthDenyMessagePlaceholder": "This channel serves registered customers only.",
     "contactAuthEnabled": "Only answer contacts the external check authorizes",
     "contactAuthGrantTtl": "Reuse the answer for (s)",
+    "contactAuthGrantTtlHelp": "Sets how long an approval may be reused, from 60 to 2,592,000 seconds, or 30 days.\n\nDenials are never stored. An approval stops applying when the contact's phone number, email, or identifier changes.\n\nChanging the period, address, or credential does not delete stored approvals. To stop reusing them, choose to check every message.",
     "contactAuthHandoff": "Open refused conversations for humans",
+    "contactAuthHelp": "Before answering, the agent asks an external system whether it may serve this contact, sending the phone number, email and identifier Chatwoot holds for them.\n\nIf the system denies, does not answer, or the contact has none of the three, the agent stays silent to the customer and the operator gets a private note.\n\nThe check does not run in the Playground.",
     "contactAuthIncludeText": "Send the customer's message text",
+    "contactAuthIncludeTextHelp": "This option sends the customer's message with the Contact authorization check.\n\nThis lets the check accept a code sent in that message.\n\nThe text remains separate from the contact's identity and never appears in Logs.",
     "contactAuthMode": "How often the endpoint is asked",
+    "contactAuthModeHelp": "Sets how often the external system checks whether the contact is authorized.\n\n\"Every message\" is the default and applies a revocation on the contact's next message.\n\n\"Reuse\" keeps checking until the first approval, then stores it for the selected period. During that time, a revocation in the external system has no effect.",
     "contactAuthModeOnce": "Once per contact, then reuse the answer",
     "contactAuthModePerMessage": "On every message (recommended)",
     "contactAuthNoTeam": "No team (inbox routing)",
@@ -885,7 +890,9 @@
     "export": "Export",
     "exportError": "Could not export.",
     "exportIncludeComponents": "Include full components",
+    "exportIncludeComponentsHelp": "This option controls whether the file contains copies of the components used by the agent.\n\nWhen on, it includes HTTP tools, MCP servers, integrations, and knowledge base settings. When off, it stores only their names.\n\nAPI keys are never included, and documents depend on the next option.",
     "exportIncludeDocuments": "Include knowledge base documents",
+    "exportIncludeDocumentsHelp": "This option adds the full text of knowledge base documents to the file.\n\nThis lets the import make those documents searchable by the agent again.\n\nThe file will contain that information and must be treated as sensitive. This option is off by default and requires the components option.",
     "exportModalTitle": "Export agent",
     "exportSaved": "Export saved version",
     "exportUnsavedNote": "You have unsaved changes. Save first to export the current version, or export the last saved one.",
@@ -941,6 +948,7 @@
       "checkAdherence": "Adherence to the agent's instructions",
       "checkCompetitors": "Competitor mentions",
       "checkRelevance": "The reply answers what the customer asked",
+      "checkRelevanceHelp": "This check determines whether the agent's reply addresses the customer's message.\n\nIf it fails, the configured action always uses the prepared message. The model does not write a replacement reply.\n\nIt is off by default because short messages such as “yes” can cause false failures. When another check is active, each reply makes two separately billed model requests.",
       "checks": "Checks",
       "checkToxicity": "Toxicity / abuse",
       "checkUnsafe": "Unsafe content",
@@ -967,7 +975,6 @@
       "policyDesc": "Competitor list and extra instructions used by the checks.",
       "template": "Template message",
       "templateFallbackHint": "Sent whenever no replacement gets written: when the model returns none, and always when the relevance check is the one that tripped, since there is no reply to rewrite.",
-      "checkRelevanceHelp": "This check determines whether the agent's reply addresses the customer's message.\n\nIf it fails, the configured action always uses the prepared message. The model does not write a replacement reply.\n\nIt is off by default because short messages such as “yes” can cause false failures. When another check is active, each reply makes two separately billed model requests.",
       "templateInboundHelp": "On customer messages, this text is ALWAYS what gets sent.\n\nThere is no reply to rewrite: the text under review is the customer's own message.\n\nThis was measured: a message telling it to state a price and a partnership produced exactly that, word for word, in all 16 runs."
     },
     "handoffAgentChoice": "Let the AI choose",
@@ -1039,6 +1046,7 @@
     "limits": "Execution limits",
     "limitsHint": "Cap how much work the agent does in a single turn before it must answer.",
     "limitsMaxHistoryTokens": "History ceiling",
+    "limitsMaxHistoryTokensHelp": "The agent sends this contact's whole history on every turn. The more a customer talks, the slower and costlier their answers get.\n\nThe ceiling cuts that off: once it is reached, the oldest attendances stop travelling. The conversation being answered never does.\n\nThe count is an estimate, runs low on tool-heavy threads, and leaves out the instructions and the tool definitions. Set it under the budget you actually have.",
     "limitsMaxHistoryTokensHint": "Empty means no ceiling. Between 2,000 and 1,000,000.",
     "limitsMaxToolCalls": "Max tool calls / turn",
     "limitsMaxToolCallsHint": "After this many tool uses the agent is forced to reply with what it has (no error). 1-50.",
@@ -1047,7 +1055,9 @@
     "memoryBaseURLHint": "Required for OpenAI-compatible endpoints, unless the credential already carries one.",
     "memoryCompaction": "Summarize attendances that have ended",
     "memoryCredentialHint": "Required when summaries use another provider; without its own key, the attendance is not summarized.",
+    "memoryHelp": "Memory keeps this contact's conversations on this channel available to the agent for future replies.\n\nWhen an attendance ends, the agent replaces its messages with a summary of key details, agreements, and open issues. The current attendance stays complete.\n\nExact wording is lost, so turn this off if the agent must quote past conversations. Every closed attendance is summarized, including those handled by your team, but only after the customer receives a reply.",
     "memoryModel": "Summary model",
+    "memoryModelHelp": "Leave this on the agent's model unless you've compared alternatives.\n\nThe summary isn't read once: it becomes what the agent knows about that contact from then on, and is never rewritten.\n\nThis is the wrong place to cut costs: on one vendor's cheapest model, the customer's name was lost in one attendance in five.",
     "memorySameAsAgent": "Same as the agent",
     "mode": "Mode",
     "modeHint": "A test agent stays silent in a conversation until the customer sends /teste; production answers normally.",
@@ -1055,6 +1065,7 @@
     "modelFallback": "Fallback provider",
     "modelFallbackBaseURLHint": "Required for OpenAI-compatible endpoints, unless the credential already carries one.",
     "modelFallbackCredentialHint": "Required when the fallback uses another provider; without its own key, it cannot handle the request.",
+    "modelFallbackHelp": "The fallback provider handles requests when the main provider reaches a usage limit, is overloaded, or does not respond.\n\nOnce configured, the agent sends the request there when one of those failures occurs. Leaving this empty changes nothing.\n\nA rejected key, an invalid model name, or a refused request does not trigger the fallback. Those cases still fail so configuration errors remain visible.",
     "modelFallbackModelRequired": "Pick a model, or the fallback is saved and never runs.",
     "modelFallbackNone": "No fallback",
     "modelFallbackProviderHint": "Pick a different vendor than the agent's whenever you can. The same vendor rate-limits your account as a whole, so a second model there is usually down for the same reason at the same moment.",
@@ -1069,8 +1080,10 @@
     "observability": "Logs",
     "observabilityDebugOn": "Recording more than the default right now:",
     "observabilityFullDetail": "Store log detail in full (expires on its own)",
+    "observabilityFullDetailHelp": "Log lines limit each stored string to 2,000 characters, which can hide the end of a long system prompt.\n\nTurn this on to keep them whole for {{hours}}h. The 2,000-character limit returns automatically.",
     "observabilityFullDetailUntil": "On until {{when}}.",
     "observabilityFullDetailUntilUnsaved": "On until {{when}} once you save.",
+    "observabilityHelp": "By default, Logs show only the shape of data sent to and returned by tools, such as { cpf: \"string(11)\" }, without customer values.\n\nTurning this on records the actual values, so you can identify which record the agent accessed. Those values are also included in exports.\n\nThe data remains for the full Logs retention period. Turn this on while investigating an issue, then turn it off.",
     "observabilityLogToolValues": "Log the values sent to tools",
     "observabilityOnFullDetail": "full log detail",
     "observabilityOnLangfuse": "content sent to Langfuse",
@@ -1107,6 +1120,7 @@
     "sectionsNav": "Sections",
     "selectProvider": "Select…",
     "sendImage": "Sending images",
+    "sendImageHelp": "This list defines which sites the agent may fetch images from with the \"Send image\" tool.\n\nThe agent chooses the address, but it can only access sites on this list. An empty list blocks every attempt.\n\nOutput checks inspect the text, not the image. The list restricts the source, not its contents, and only applies when the tool is granted on the Tools tab.",
     "sendImageHosts": "Allowed hosts",
     "sendImageHostsHint": "One per line, e.g. cdn.minhaloja.com.br. Start with \"*.\" to cover a domain and its subdomains (*.minhaloja.com.br). Paste a full URL and only its host is kept.",
     "settingsTextTooLong": "The text in {{field}} is too long: {{len}} characters (limit {{max}}).",
@@ -1158,6 +1172,7 @@
     },
     "tabs": "Agent settings",
     "takeover": "When a person answers",
+    "takeoverHelp": "This option treats a reply from a person as a signal to take over the conversation. Chatwoot does not transfer it on its own.\n\nWhen enabled, a reply sent through Chatwoot moves the conversation to the human queue and stops the agent from replying.\n\nReplies from the paired phone count on Baileys, native, and uazapi connections, but not on Z-API. To hand the conversation back, use \"Return to AI\" on the Conversations page.",
     "takeoverOnHumanReply": "Stop answering when a person replies to the customer",
     "temperature": "Temperature",
     "temperatureHint": "0-2 (optional)",
@@ -1227,7 +1242,9 @@
     "ttsNormalize": "Rewrite the reply to be spoken, not read",
     "ttsNormalizeBaseURLHint": "Required for OpenAI-compatible endpoints, unless the credential already carries one.",
     "ttsNormalizeCredentialHint": "Required when the provider differs from the agent's: the agent's key is never sent to another vendor, so without a key of its own the rewrite is skipped and the audio goes out unrewritten.",
+    "ttsNormalizeHelp": "This option prepares audio replies to be heard rather than read.\n\nNumbers, dates, and amounts become words, while lists of options become natural spoken sentences.\n\nThe AI processes each audio reply one extra time. Logs show this as a separate step, and the dashboard tracks its usage separately.",
     "ttsNormalizeModel": "Rewrite model",
+    "ttsNormalizeModelHelp": "The rewrite model adjusts the text before each audio reply is generated.\n\nA cheaper model lowers the cost of these replies and is usually enough for this task, which is simpler than writing the answer.\n\nRewriting runs for every audio reply. Agent model uses the same model as the conversation.",
     "ttsNormalizeSameAsAgent": "Same as the agent",
     "ttsOpenRouterFileWarning": "OpenRouter doesn't output Ogg/Opus, so replies arrive as a regular audio file attachment, not a native WhatsApp voice note (PTT).",
     "ttsProvider": "Provider",
@@ -1262,24 +1279,7 @@
     "visionPrompt": "Extraction prompt",
     "visionPromptHint": "How the model should read the file.",
     "visionPromptReset": "Restore default",
-    "visionProvider": "Provider",
-    "attributeContextHelp": "This selection defines which current Chatwoot attribute values the agent receives whenever it replies.\n\nChoose only the data needed for the conversation. The agent uses these values to track what has been collected and what is still missing.\n\nWithout the \"Set attribute\" tool, the agent can read these values but cannot change them.",
-    "contactAuthGrantTtlHelp": "Sets how long an approval may be reused, from 60 to 2,592,000 seconds, or 30 days.\n\nDenials are never stored. An approval stops applying when the contact's phone number, email, or identifier changes.\n\nChanging the period, address, or credential does not delete stored approvals. To stop reusing them, choose to check every message.",
-    "contactAuthHelp": "Before answering, the agent asks an external system whether it may serve this contact, sending the phone number, email and identifier Chatwoot holds for them.\n\nIf the system denies, does not answer, or the contact has none of the three, the agent stays silent to the customer and the operator gets a private note.\n\nThe check does not run in the Playground.",
-    "contactAuthIncludeTextHelp": "This option sends the customer's message with the Contact authorization check.\n\nThis lets the check accept a code sent in that message.\n\nThe text remains separate from the contact's identity and never appears in Logs.",
-    "contactAuthModeHelp": "Sets how often the external system checks whether the contact is authorized.\n\n\"Every message\" is the default and applies a revocation on the contact's next message.\n\n\"Reuse\" keeps checking until the first approval, then stores it for the selected period. During that time, a revocation in the external system has no effect.",
-    "exportIncludeComponentsHelp": "This option controls whether the file contains copies of the components used by the agent.\n\nWhen on, it includes HTTP tools, MCP servers, integrations, and knowledge base settings. When off, it stores only their names.\n\nAPI keys are never included, and documents depend on the next option.",
-    "exportIncludeDocumentsHelp": "This option adds the full text of knowledge base documents to the file.\n\nThis lets the import make those documents searchable by the agent again.\n\nThe file will contain that information and must be treated as sensitive. This option is off by default and requires the components option.",
-    "limitsMaxHistoryTokensHelp": "The agent sends this contact's whole history on every turn. The more a customer talks, the slower and costlier their answers get.\n\nThe ceiling cuts that off: once it is reached, the oldest attendances stop travelling. The conversation being answered never does.\n\nThe count is an estimate, runs low on tool-heavy threads, and leaves out the instructions and the tool definitions. Set it under the budget you actually have.",
-    "memoryHelp": "Memory keeps this contact's conversations on this channel available to the agent for future replies.\n\nWhen an attendance ends, the agent replaces its messages with a summary of key details, agreements, and open issues. The current attendance stays complete.\n\nExact wording is lost, so turn this off if the agent must quote past conversations. Every closed attendance is summarized, including those handled by your team, but only after the customer receives a reply.",
-    "memoryModelHelp": "Leave this on the agent's model unless you've compared alternatives.\n\nThe summary isn't read once: it becomes what the agent knows about that contact from then on, and is never rewritten.\n\nThis is the wrong place to cut costs: on one vendor's cheapest model, the customer's name was lost in one attendance in five.",
-    "modelFallbackHelp": "The fallback provider handles requests when the main provider reaches a usage limit, is overloaded, or does not respond.\n\nOnce configured, the agent sends the request there when one of those failures occurs. Leaving this empty changes nothing.\n\nA rejected key, an invalid model name, or a refused request does not trigger the fallback. Those cases still fail so configuration errors remain visible.",
-    "observabilityFullDetailHelp": "Log lines limit each stored string to 2,000 characters, which can hide the end of a long system prompt.\n\nTurn this on to keep them whole for {{hours}}h. The 2,000-character limit returns automatically.",
-    "observabilityHelp": "By default, Logs show only the shape of data sent to and returned by tools, such as { cpf: \"string(11)\" }, without customer values.\n\nTurning this on records the actual values, so you can identify which record the agent accessed. Those values are also included in exports.\n\nThe data remains for the full Logs retention period. Turn this on while investigating an issue, then turn it off.",
-    "sendImageHelp": "This list defines which sites the agent may fetch images from with the \"Send image\" tool.\n\nThe agent chooses the address, but it can only access sites on this list. An empty list blocks every attempt.\n\nOutput checks inspect the text, not the image. The list restricts the source, not its contents, and only applies when the tool is granted on the Tools tab.",
-    "takeoverHelp": "This option treats a reply from a person as a signal to take over the conversation. Chatwoot does not transfer it on its own.\n\nWhen enabled, a reply sent through Chatwoot moves the conversation to the human queue and stops the agent from replying.\n\nReplies from the paired phone count on Baileys, native, and uazapi connections, but not on Z-API. To hand the conversation back, use \"Return to AI\" on the Conversations page.",
-    "ttsNormalizeHelp": "This option prepares audio replies to be heard rather than read.\n\nNumbers, dates, and amounts become words, while lists of options become natural spoken sentences.\n\nThe AI processes each audio reply one extra time. Logs show this as a separate step, and the dashboard tracks its usage separately.",
-    "ttsNormalizeModelHelp": "The rewrite model adjusts the text before each audio reply is generated.\n\nA cheaper model lowers the cost of these replies and is usually enough for this task, which is simpler than writing the answer.\n\nRewriting runs for every audio reply. Agent model uses the same model as the conversation."
+    "visionProvider": "Provider"
   },
   "experiments": {
     "comingSoonDesc": "Run prompt variants side by side and compare outcomes. This feature is under construction.",
@@ -1905,6 +1905,7 @@
     },
     "goToGeneral": "Go to General",
     "guardrails": "Run guardrails",
+    "guardrailsHelp": "This option applies the same checks in the Playground as in real conversations.\n\nYou test the result a customer would get when talking to the agent.\n\nThis increases cost: one extra analysis for the message and another for the reply. Relevance adds one more when it runs with another reply check.",
     "guardrailsUnavailable": "Guardrails are off or have no credential. Configure them in the Guardrails tab to screen playground turns.",
     "hint": "Uses the saved config.",
     "historyEmpty": "No saved sessions yet.",
@@ -1972,8 +1973,7 @@
       "visionDocument": "Document reading",
       "visionImage": "Image reading"
     },
-    "untitledSession": "Untitled session",
-    "guardrailsHelp": "This option applies the same checks in the Playground as in real conversations.\n\nYou test the result a customer would get when talking to the agent.\n\nThis increases cost: one extra analysis for the message and another for the reply. Relevance adds one more when it runs with another reply check."
+    "untitledSession": "Untitled session"
   },
   "resources": {
     "deleteRefsWarning_one": "{{count}} agent uses this and will stop working if you delete it.",
@@ -2158,6 +2158,7 @@
   "tools": {
     "ack": "Send a holding message",
     "ackExampleLabel": "Tone example (the AI writes its own message):",
+    "ackHelp": "This option makes the agent notify the customer before starting a slow tool.\n\nThe tool starts only after the agent sends this message.\n\nThe example below sets the tone, but is never sent unchanged.",
     "ackPlaceholder": "Let me look into that for you…",
     "ackRequired": "Add a tone example, or turn this off.",
     "add": "New tool",
@@ -2177,6 +2178,7 @@
     "appointmentAskConfirm": "On the last reminder, ask if they will attend",
     "appointmentBook": "It books one",
     "appointmentCancel": "It cancels one",
+    "appointmentHelp": "This option identifies when the tool creates or cancels an appointment.\n\nThe platform pauses follow-up messages while the appointment is active and sends the configured reminders.\n\nEnter the response paths for the ID and start time, using dots between levels and numbers for list positions, such as data.items.0.id. The cancellation tool must return the same ID.",
     "appointmentIdPath": "Where the id is",
     "appointmentNone": "Neither — it is not about appointments",
     "appointmentOffsets": "Remind the customer this many hours before",
@@ -2219,6 +2221,7 @@
     "emptyTitle": "No HTTP tools yet",
     "enumValuePlaceholder": "value",
     "expectedStatuses": "Statuses that mean 'no result'",
+    "expectedStatusesHelp": "These codes identify ordinary responses that arrive with an error status, such as 404 for \"not found.\"\n\nAdding them stops those responses from counting as failures or raising alerts. The AI receives the same response either way.\n\nIf the field is empty, every status outside 200 to 299 counts as a failure.",
     "formatJson": "Format",
     "headerKey": "Header",
     "headers": "Headers",
@@ -2279,10 +2282,7 @@
     "varsCredential": "Credential",
     "varsNative": "Context variables",
     "varsSecret": "Selected credential",
-    "varsSecretDesc": "Inserts the credential where auto-injection doesn't reach.",
-    "ackHelp": "This option makes the agent notify the customer before starting a slow tool.\n\nThe tool starts only after the agent sends this message.\n\nThe example below sets the tone, but is never sent unchanged.",
-    "appointmentHelp": "This option identifies when the tool creates or cancels an appointment.\n\nThe platform pauses follow-up messages while the appointment is active and sends the configured reminders.\n\nEnter the response paths for the ID and start time, using dots between levels and numbers for list positions, such as data.items.0.id. The cancellation tool must return the same ID.",
-    "expectedStatusesHelp": "These codes identify ordinary responses that arrive with an error status, such as 404 for \"not found.\"\n\nAdding them stops those responses from counting as failures or raising alerts. The AI receives the same response either way.\n\nIf the field is empty, every status outside 200 to 299 counts as a failure."
+    "varsSecretDesc": "Inserts the credential where auto-injection doesn't reach."
   },
   "updates": {
     "newVersionAvailable": "Version {{version}} available",

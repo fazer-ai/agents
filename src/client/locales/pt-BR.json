@@ -62,14 +62,14 @@
       "credential": "Credencial do Langfuse",
       "credentialHint": "Public key, secret key e host ficam na credencial. Use a aba Cofre para criar uma do tipo Langfuse.",
       "debug": "Modo debug (schemas das ferramentas)",
+      "debugHelp": "Este modo inclui nos Logs a definição completa de cada ferramenta disponível.\n\nUse-o para conferir quais ferramentas o agente recebeu e como elas foram descritas.\n\nOs nomes já aparecem com o modo desligado. As definições completas aumentam o volume no Langfuse, então desligue após a investigação.",
       "desc": "Envia os traces dos agentes para o Langfuse. O conteúdo é ocultado, a menos que você opte por enviá-lo.",
       "enabled": "Ativar tracing",
       "saved": "Configuração de observabilidade salva.",
       "saveError": "Não foi possível salvar a configuração de observabilidade.",
       "sendContent": "Enviar o conteúdo das mensagens (não só a estrutura)",
-      "title": "Observabilidade (Langfuse)",
-      "debugHelp": "Este modo inclui nos Logs a definição completa de cada ferramenta disponível.\n\nUse-o para conferir quais ferramentas o agente recebeu e como elas foram descritas.\n\nOs nomes já aparecem com o modo desligado. As definições completas aumentam o volume no Langfuse, então desligue após a investigação.",
-      "sendContentHelp": "Esta opção controla se o texto das mensagens entra nos Logs enviados ao Langfuse.\n\nQuando ligada, o Langfuse recebe o conteúdo completo da conversa.\n\nQuando desligada, o texto é ocultado antes do envio. Os Logs ainda mostram a estrutura da conversa, o uso de ferramentas, os tempos de resposta, o volume processado e os custos."
+      "sendContentHelp": "Esta opção controla se o texto das mensagens entra nos Logs enviados ao Langfuse.\n\nQuando ligada, o Langfuse recebe o conteúdo completo da conversa.\n\nQuando desligada, o texto é ocultado antes do envio. Os Logs ainda mostram a estrutura da conversa, o uso de ferramentas, os tempos de resposta, o volume processado e os custos.",
+      "title": "Observabilidade (Langfuse)"
     }
   },
   "agents": {
@@ -352,8 +352,8 @@
     "save": "Salvar",
     "saved": "Salvo.",
     "search": "Buscar",
-    "showPassword": "Mostrar senha",
-    "showHelp": "Mostrar ajuda"
+    "showHelp": "Mostrar ajuda",
+    "showPassword": "Mostrar senha"
   },
   "conversation": {
     "activity": {
@@ -525,6 +525,7 @@
     "inbox": "Inbox #{{id}}",
     "kpi": {
       "firstResponse": "Primeira resposta",
+      "firstResponseHelp": "Mede o tempo entre a criação da conversa e a primeira resposta de uma pessoa. As respostas do agente aparecem no funil acima, não aqui.\n\nSe a empresa iniciou a conversa, a mensagem de abertura conta como a primeira resposta, assim como no painel do Chatwoot.\n\nConversas antigas só entram quando o Chatwoot envia um novo evento. Um período vazio significa que não há dados.",
       "firstResponseHint": "mediana sobre {{sampled}} conversas respondidas",
       "firstResponseNone": "ainda sem dado para este período",
       "handoff": "Transferências",
@@ -535,8 +536,7 @@
       "resolutionHint": "{{resolved}} encerradas pelo próprio agente",
       "resolutionUntracked": "Outras {{untracked}} foram resolvidas antes de esta instância passar a registrar quem encerra uma conversa, então não entram nesta conta.",
       "total": "Conversas",
-      "totalHint": "no período",
-      "firstResponseHelp": "Mede o tempo entre a criação da conversa e a primeira resposta de uma pessoa. As respostas do agente aparecem no funil acima, não aqui.\n\nSe a empresa iniciou a conversa, a mensagem de abertura conta como a primeira resposta, assim como no painel do Chatwoot.\n\nConversas antigas só entram quando o Chatwoot envia um novo evento. Um período vazio significa que não há dados."
+      "totalHint": "no período"
     },
     "loading": "Carregando métricas…",
     "metric": {
@@ -668,6 +668,7 @@
     "attributeContextContactHint": "Atributos do cliente, mantidos em todas as conversas dele.",
     "attributeContextConversation": "Conversa",
     "attributeContextConversationHint": "Atributos desta conversa (zeram a cada conversa nova).",
+    "attributeContextHelp": "Esta seleção define quais valores atuais dos atributos do Chatwoot o agente recebe sempre que responde.\n\nEscolha apenas os dados necessários para o atendimento. O agente usa esses valores para saber o que já foi coletado e o que ainda falta.\n\nSem a ferramenta \"Definir atributo\", o agente consegue ler esses valores, mas não alterá-los.",
     "attributeContextMultiAccount": "Este agente atende mais de uma conta do Chatwoot, então a lista mistura atributos de contas diferentes. Digite cada chave exatamente como ela aparece.",
     "attributeContextPlaceholder": "Adicionar um atributo…",
     "attributeContextSearch": "Buscar atributos…",
@@ -844,9 +845,13 @@
     "contactAuthDenyMessagePlaceholder": "Este canal atende apenas clientes cadastrados.",
     "contactAuthEnabled": "Responder apenas contatos autorizados pela verificação externa",
     "contactAuthGrantTtl": "Reaproveitar a resposta por (s)",
+    "contactAuthGrantTtlHelp": "Define por quanto tempo uma autorização pode ser reaproveitada, de 60 a 2.592.000 segundos, ou 30 dias.\n\nRecusas nunca são guardadas. Uma autorização deixa de valer quando o telefone, o e-mail ou o identificador do contato muda.\n\nMudar o período, o endereço ou a credencial não apaga autorizações já guardadas. Para nunca reaproveitá-las, escolha a consulta em toda mensagem.",
     "contactAuthHandoff": "Abrir conversas recusadas para humanos",
+    "contactAuthHelp": "Antes de responder, o agente pergunta a um sistema externo se pode atender este contato, enviando o telefone, o e-mail e o identificador que o Chatwoot guarda dele.\n\nSe o sistema negar, não responder, ou se o contato não tiver nenhum dos três, o agente fica em silêncio com o cliente e o operador recebe uma nota privada.\n\nA consulta não roda no Playground.",
     "contactAuthIncludeText": "Enviar o texto da mensagem do cliente",
+    "contactAuthIncludeTextHelp": "Esta opção envia a mensagem do cliente junto à verificação de Autorização do contato.\n\nAssim, a verificação pode aceitar um código enviado nessa mensagem.\n\nO texto segue separado da identidade do contato e nunca aparece nos Logs.",
     "contactAuthMode": "Com que frequência o endpoint é consultado",
+    "contactAuthModeHelp": "Define com que frequência o sistema externo verifica a autorização do contato.\n\n\"Toda mensagem\" é o padrão e aplica uma revogação na próxima mensagem do contato.\n\n\"Reaproveitar\" consulta até receber a primeira autorização e a guarda pelo período definido. Nesse intervalo, uma revogação no sistema externo não tem efeito.",
     "contactAuthModeOnce": "Uma vez por contato, depois reaproveita a resposta",
     "contactAuthModePerMessage": "Em toda mensagem (recomendado)",
     "contactAuthNoTeam": "Sem time (roteamento da caixa)",
@@ -888,7 +893,9 @@
     "export": "Exportar",
     "exportError": "Não foi possível exportar.",
     "exportIncludeComponents": "Incluir componentes completos",
+    "exportIncludeComponentsHelp": "Esta opção define se o arquivo leva uma cópia dos componentes usados pelo agente.\n\nQuando ligada, inclui ferramentas HTTP, servidores MCP, integrações e configurações das bases de conhecimento. Quando desligada, guarda apenas seus nomes.\n\nAs Chaves de API nunca entram no arquivo, e os documentos dependem da opção seguinte.",
     "exportIncludeDocuments": "Incluir documentos das bases de conhecimento",
+    "exportIncludeDocumentsHelp": "Esta opção inclui no arquivo o texto completo dos documentos das bases de conhecimento.\n\nAssim, a importação torna esses documentos pesquisáveis pelo agente novamente.\n\nO arquivo passa a conter essas informações e deve ser tratado como sensível. A opção vem desligada e exige que a opção de componentes esteja ligada.",
     "exportModalTitle": "Exportar agente",
     "exportSaved": "Exportar versão salva",
     "exportUnsavedNote": "Você tem alterações não salvas. Salve primeiro para exportar a versão atual, ou exporte a última versão salva.",
@@ -944,6 +951,7 @@
       "checkAdherence": "Aderência às instruções do agente",
       "checkCompetitors": "Menção a concorrentes",
       "checkRelevance": "A resposta responde o que o cliente perguntou",
+      "checkRelevanceHelp": "Esta verificação confere se a resposta do agente atende à mensagem do cliente.\n\nSe reprovar, ela aplica a ação configurada usando sempre a mensagem pronta. O modelo não cria uma nova resposta.\n\nFica desligada por padrão porque mensagens curtas, como “sim”, podem causar reprovações indevidas. Com outra verificação ativa, cada resposta gera duas consultas ao modelo, cobradas separadamente.",
       "checks": "Checagens",
       "checkToxicity": "Toxicidade / abuso",
       "checkUnsafe": "Conteúdo inseguro",
@@ -970,7 +978,6 @@
       "policyDesc": "Lista de concorrentes e instruções extras usadas pelas checagens.",
       "template": "Mensagem template",
       "templateFallbackHint": "Enviada sempre que nenhuma resposta substituta é escrita: quando o modelo não devolve nenhuma, e sempre que a checagem de relevância for a que disparou, porque aí não há resposta para reescrever.",
-      "checkRelevanceHelp": "Esta verificação confere se a resposta do agente atende à mensagem do cliente.\n\nSe reprovar, ela aplica a ação configurada usando sempre a mensagem pronta. O modelo não cria uma nova resposta.\n\nFica desligada por padrão porque mensagens curtas, como “sim”, podem causar reprovações indevidas. Com outra verificação ativa, cada resposta gera duas consultas ao modelo, cobradas separadamente.",
       "templateInboundHelp": "Na mensagem do cliente, este texto é SEMPRE o que será enviado.\n\nNão há resposta para reescrever: o texto em análise é a própria mensagem do cliente.\n\nIsso foi medido: uma mensagem mandando informar um preço e uma parceria produziu exatamente isso, palavra por palavra, nas 16 execuções."
     },
     "handoffAgentChoice": "A IA escolhe",
@@ -1042,6 +1049,7 @@
     "limits": "Limites de execução",
     "limitsHint": "Limite quanto trabalho o agente faz em um único turno antes de ter que responder.",
     "limitsMaxHistoryTokens": "Teto de histórico",
+    "limitsMaxHistoryTokensHelp": "O agente envia todo o histórico deste contato a cada resposta. Quanto mais um cliente fala, mais lenta e mais cara fica cada resposta a ele.\n\nO teto corta esse envio: ao ser alcançado, os atendimentos mais antigos param de ir junto. A conversa que está sendo respondida nunca sai.\n\nA contagem é uma estimativa, fica abaixo do real em conversas com muitas ferramentas, e não inclui as instruções nem as definições das ferramentas. Defina abaixo do orçamento que você tem de fato.",
     "limitsMaxHistoryTokensHint": "Vazio, sem teto. Entre 2.000 e 1.000.000.",
     "limitsMaxToolCalls": "Máx. de ferramentas / turno",
     "limitsMaxToolCallsHint": "Depois desse número de usos de ferramenta o agente é obrigado a responder com o que já tem (sem erro). 1-50.",
@@ -1050,7 +1058,9 @@
     "memoryBaseURLHint": "Obrigatória para endpoints compatíveis com OpenAI, a não ser que a credencial já traga uma.",
     "memoryCompaction": "Resumir atendimentos encerrados",
     "memoryCredentialHint": "Obrigatória se o resumo usa outro fornecedor; sem uma chave própria, o atendimento não é resumido.",
+    "memoryHelp": "A memória reúne os atendimentos deste contato neste canal para o agente usar nas próximas conversas.\n\nQuando um atendimento termina, o agente troca as mensagens por um resumo do que importa, como dados do contato, acordos e pendências. O atendimento atual permanece completo.\n\nA redação exata se perde, então desligue se o agente precisar citar conversas antigas. Cada atendimento encerrado gera um resumo, inclusive os conduzidos pela equipe, mas isso acontece depois da resposta ao cliente.",
     "memoryModel": "Modelo do resumo",
+    "memoryModelHelp": "Deixe no modelo do agente, a menos que você tenha comparado as alternativas.\n\nO resumo não é lido uma vez: ele vira o que o agente sabe daquele contato dali em diante e nunca é reescrito.\n\nEste é o lugar errado para cortar custos: no modelo mais barato de um fornecedor, o nome do cliente se perdeu em um atendimento a cada cinco.",
     "memorySameAsAgent": "Igual ao do agente",
     "mode": "Modo",
     "modeHint": "Um agente em teste fica em silêncio na conversa até o cliente enviar /teste; em produção responde normalmente.",
@@ -1058,6 +1068,7 @@
     "modelFallback": "Provedor reserva",
     "modelFallbackBaseURLHint": "Obrigatório para endpoints compatíveis com OpenAI, a não ser que a credencial já traga uma.",
     "modelFallbackCredentialHint": "Obrigatória se a reserva usa outro fornecedor; sem uma chave própria, ela não atende à solicitação.",
+    "modelFallbackHelp": "O provedor de reserva atende quando o provedor principal atinge o limite de uso, fica sobrecarregado ou não responde.\n\nAo configurar um, o agente envia a solicitação a ele quando ocorre uma dessas falhas. Se o campo ficar vazio, nada muda.\n\nChave recusada, nome de modelo inválido e solicitação recusada não acionam a reserva. Esses casos continuam falhando para deixar o erro de configuração visível.",
     "modelFallbackModelRequired": "Escolha um modelo, ou a reserva é salva e nunca roda.",
     "modelFallbackNone": "Sem reserva",
     "modelFallbackProviderHint": "Escolha um fornecedor diferente do que o agente usa sempre que der. O mesmo fornecedor limita a sua conta inteira, então um segundo modelo lá costuma estar fora pelo mesmo motivo no mesmo momento.",
@@ -1072,8 +1083,10 @@
     "observability": "Logs",
     "observabilityDebugOn": "Gravando mais que o padrão agora:",
     "observabilityFullDetail": "Guardar o detalhe do log inteiro (expira sozinho)",
+    "observabilityFullDetailHelp": "As linhas de log limitam cada string armazenada a 2.000 caracteres, o que pode esconder o fim de um system prompt longo.\n\nLigue para mantê-las inteiras por {{hours}}h. O limite de 2.000 caracteres volta automaticamente.",
     "observabilityFullDetailUntil": "Ligado até {{when}}.",
     "observabilityFullDetailUntilUnsaved": "Ligado até {{when}} depois que você salvar.",
+    "observabilityHelp": "Por padrão, os Logs mostram apenas o formato dos dados enviados e recebidos pelas ferramentas, como { cpf: \"string(11)\" }, sem valores do cliente.\n\nAo ativar, os Logs registram os valores completos, permitindo identificar qual cadastro o agente consultou. Esses valores também aparecem nas exportações.\n\nOs dados permanecem durante todo o prazo de retenção dos Logs. Ative enquanto investiga um problema e desative depois.",
     "observabilityLogToolValues": "Registrar os valores enviados às ferramentas",
     "observabilityOnFullDetail": "detalhe de log inteiro",
     "observabilityOnLangfuse": "conteúdo enviado ao Langfuse",
@@ -1110,6 +1123,7 @@
     "sectionsNav": "Seções",
     "selectProvider": "Selecione…",
     "sendImage": "Envio de imagens",
+    "sendImageHelp": "Esta lista define de quais sites o agente pode buscar imagens com a ferramenta \"Enviar imagem\".\n\nO agente escolhe o endereço, mas só consegue acessar os sites da lista. Uma lista vazia bloqueia todos os envios.\n\nAs verificações de saída analisam o texto, não a imagem. A lista restringe a origem, não o conteúdo, e só funciona quando a ferramenta está liberada na aba Ferramentas.",
     "sendImageHosts": "Hosts liberados",
     "sendImageHostsHint": "Um por linha, ex.: cdn.minhaloja.com.br. Comece com \"*.\" para cobrir um domínio e seus subdomínios (*.minhaloja.com.br). Se colar uma URL inteira, só o host é aproveitado.",
     "settingsTextTooLong": "O texto em {{field}} é longo demais: {{len}} caracteres (limite {{max}}).",
@@ -1161,6 +1175,7 @@
     },
     "tabs": "Configurações do agente",
     "takeover": "Quando uma pessoa responde",
+    "takeoverHelp": "Esta opção usa a resposta de uma pessoa como sinal para assumir o atendimento. O Chatwoot sozinho não transfere a conversa.\n\nCom a opção ligada, uma resposta pelo Chatwoot leva a conversa para a fila humana e faz o agente parar de responder.\n\nRespostas pelo aparelho pareado contam em conexões Baileys, nativas e uazapi, mas não em Z-API. Para devolver a conversa, use \"Devolver para a IA\" na página de Conversas.",
     "takeoverOnHumanReply": "Parar de responder quando uma pessoa responder ao cliente",
     "temperature": "Temperatura",
     "temperatureHint": "0 a 2 (opcional)",
@@ -1231,7 +1246,9 @@
     "ttsNormalize": "Reescrever a resposta para ser falada, não lida",
     "ttsNormalizeBaseURLHint": "Obrigatório para endpoints compatíveis com OpenAI, a não ser que a credencial já traga um.",
     "ttsNormalizeCredentialHint": "Obrigatória quando o provedor é diferente do agente: a chave do agente nunca é enviada a outro fornecedor, então sem uma chave própria a reescrita não roda e o áudio sai sem ela.",
+    "ttsNormalizeHelp": "Esta opção prepara respostas em áudio para serem ouvidas, em vez de lidas.\n\nNúmeros, datas e valores saem por extenso, e listas de opções viram frases naturais para fala.\n\nA IA processa cada resposta em áudio uma vez a mais. Os Logs mostram essa etapa separadamente, e o painel contabiliza o uso à parte.",
     "ttsNormalizeModel": "Modelo da reescrita",
+    "ttsNormalizeModelHelp": "O modelo de reescrita ajusta o texto antes de gerar cada resposta em áudio.\n\nUm modelo mais barato reduz o custo dessas respostas e costuma dar conta dessa tarefa, que é mais simples que criar a resposta.\n\nA reescrita acontece em toda resposta em áudio. Modelo do agente usa o mesmo modelo da conversa.",
     "ttsNormalizeSameAsAgent": "O mesmo do agente",
     "ttsOpenRouterFileWarning": "A OpenRouter não gera áudio em Ogg/Opus, então as respostas chegam como um arquivo de áudio comum, não como uma nota de voz nativa do WhatsApp (PTT).",
     "ttsProvider": "Provedor",
@@ -1266,24 +1283,7 @@
     "visionPrompt": "Prompt de extração",
     "visionPromptHint": "Como o modelo deve ler o arquivo.",
     "visionPromptReset": "Restaurar padrão",
-    "visionProvider": "Provedor",
-    "attributeContextHelp": "Esta seleção define quais valores atuais dos atributos do Chatwoot o agente recebe sempre que responde.\n\nEscolha apenas os dados necessários para o atendimento. O agente usa esses valores para saber o que já foi coletado e o que ainda falta.\n\nSem a ferramenta \"Definir atributo\", o agente consegue ler esses valores, mas não alterá-los.",
-    "contactAuthGrantTtlHelp": "Define por quanto tempo uma autorização pode ser reaproveitada, de 60 a 2.592.000 segundos, ou 30 dias.\n\nRecusas nunca são guardadas. Uma autorização deixa de valer quando o telefone, o e-mail ou o identificador do contato muda.\n\nMudar o período, o endereço ou a credencial não apaga autorizações já guardadas. Para nunca reaproveitá-las, escolha a consulta em toda mensagem.",
-    "contactAuthHelp": "Antes de responder, o agente pergunta a um sistema externo se pode atender este contato, enviando o telefone, o e-mail e o identificador que o Chatwoot guarda dele.\n\nSe o sistema negar, não responder, ou se o contato não tiver nenhum dos três, o agente fica em silêncio com o cliente e o operador recebe uma nota privada.\n\nA consulta não roda no Playground.",
-    "contactAuthIncludeTextHelp": "Esta opção envia a mensagem do cliente junto à verificação de Autorização do contato.\n\nAssim, a verificação pode aceitar um código enviado nessa mensagem.\n\nO texto segue separado da identidade do contato e nunca aparece nos Logs.",
-    "contactAuthModeHelp": "Define com que frequência o sistema externo verifica a autorização do contato.\n\n\"Toda mensagem\" é o padrão e aplica uma revogação na próxima mensagem do contato.\n\n\"Reaproveitar\" consulta até receber a primeira autorização e a guarda pelo período definido. Nesse intervalo, uma revogação no sistema externo não tem efeito.",
-    "exportIncludeComponentsHelp": "Esta opção define se o arquivo leva uma cópia dos componentes usados pelo agente.\n\nQuando ligada, inclui ferramentas HTTP, servidores MCP, integrações e configurações das bases de conhecimento. Quando desligada, guarda apenas seus nomes.\n\nAs Chaves de API nunca entram no arquivo, e os documentos dependem da opção seguinte.",
-    "exportIncludeDocumentsHelp": "Esta opção inclui no arquivo o texto completo dos documentos das bases de conhecimento.\n\nAssim, a importação torna esses documentos pesquisáveis pelo agente novamente.\n\nO arquivo passa a conter essas informações e deve ser tratado como sensível. A opção vem desligada e exige que a opção de componentes esteja ligada.",
-    "limitsMaxHistoryTokensHelp": "O agente envia todo o histórico deste contato a cada resposta. Quanto mais um cliente fala, mais lenta e mais cara fica cada resposta a ele.\n\nO teto corta esse envio: ao ser alcançado, os atendimentos mais antigos param de ir junto. A conversa que está sendo respondida nunca sai.\n\nA contagem é uma estimativa, fica abaixo do real em conversas com muitas ferramentas, e não inclui as instruções nem as definições das ferramentas. Defina abaixo do orçamento que você tem de fato.",
-    "memoryHelp": "A memória reúne os atendimentos deste contato neste canal para o agente usar nas próximas conversas.\n\nQuando um atendimento termina, o agente troca as mensagens por um resumo do que importa, como dados do contato, acordos e pendências. O atendimento atual permanece completo.\n\nA redação exata se perde, então desligue se o agente precisar citar conversas antigas. Cada atendimento encerrado gera um resumo, inclusive os conduzidos pela equipe, mas isso acontece depois da resposta ao cliente.",
-    "memoryModelHelp": "Deixe no modelo do agente, a menos que você tenha comparado as alternativas.\n\nO resumo não é lido uma vez: ele vira o que o agente sabe daquele contato dali em diante e nunca é reescrito.\n\nEste é o lugar errado para cortar custos: no modelo mais barato de um fornecedor, o nome do cliente se perdeu em um atendimento a cada cinco.",
-    "modelFallbackHelp": "O provedor de reserva atende quando o provedor principal atinge o limite de uso, fica sobrecarregado ou não responde.\n\nAo configurar um, o agente envia a solicitação a ele quando ocorre uma dessas falhas. Se o campo ficar vazio, nada muda.\n\nChave recusada, nome de modelo inválido e solicitação recusada não acionam a reserva. Esses casos continuam falhando para deixar o erro de configuração visível.",
-    "observabilityFullDetailHelp": "As linhas de log limitam cada string armazenada a 2.000 caracteres, o que pode esconder o fim de um system prompt longo.\n\nLigue para mantê-las inteiras por {{hours}}h. O limite de 2.000 caracteres volta automaticamente.",
-    "observabilityHelp": "Por padrão, os Logs mostram apenas o formato dos dados enviados e recebidos pelas ferramentas, como { cpf: \"string(11)\" }, sem valores do cliente.\n\nAo ativar, os Logs registram os valores completos, permitindo identificar qual cadastro o agente consultou. Esses valores também aparecem nas exportações.\n\nOs dados permanecem durante todo o prazo de retenção dos Logs. Ative enquanto investiga um problema e desative depois.",
-    "sendImageHelp": "Esta lista define de quais sites o agente pode buscar imagens com a ferramenta \"Enviar imagem\".\n\nO agente escolhe o endereço, mas só consegue acessar os sites da lista. Uma lista vazia bloqueia todos os envios.\n\nAs verificações de saída analisam o texto, não a imagem. A lista restringe a origem, não o conteúdo, e só funciona quando a ferramenta está liberada na aba Ferramentas.",
-    "takeoverHelp": "Esta opção usa a resposta de uma pessoa como sinal para assumir o atendimento. O Chatwoot sozinho não transfere a conversa.\n\nCom a opção ligada, uma resposta pelo Chatwoot leva a conversa para a fila humana e faz o agente parar de responder.\n\nRespostas pelo aparelho pareado contam em conexões Baileys, nativas e uazapi, mas não em Z-API. Para devolver a conversa, use \"Devolver para a IA\" na página de Conversas.",
-    "ttsNormalizeHelp": "Esta opção prepara respostas em áudio para serem ouvidas, em vez de lidas.\n\nNúmeros, datas e valores saem por extenso, e listas de opções viram frases naturais para fala.\n\nA IA processa cada resposta em áudio uma vez a mais. Os Logs mostram essa etapa separadamente, e o painel contabiliza o uso à parte.",
-    "ttsNormalizeModelHelp": "O modelo de reescrita ajusta o texto antes de gerar cada resposta em áudio.\n\nUm modelo mais barato reduz o custo dessas respostas e costuma dar conta dessa tarefa, que é mais simples que criar a resposta.\n\nA reescrita acontece em toda resposta em áudio. Modelo do agente usa o mesmo modelo da conversa."
+    "visionProvider": "Provedor"
   },
   "experiments": {
     "comingSoonDesc": "Rode variantes de prompt lado a lado e compare os resultados. Esta funcionalidade está em construção.",
@@ -1911,6 +1911,7 @@
     },
     "goToGeneral": "Ir para Geral",
     "guardrails": "Rodar guardrails",
+    "guardrailsHelp": "Esta opção aplica no Playground as mesmas verificações usadas nas conversas reais.\n\nVocê testa o resultado que o cliente teria ao falar com o agente.\n\nIsso aumenta o custo: uma análise extra da mensagem e outra da resposta. A relevância acrescenta mais uma quando roda com outra verificação da resposta.",
     "guardrailsUnavailable": "Os guardrails estão desligados ou sem credencial. Configure na aba Guardrails para analisar os turnos do playground.",
     "hint": "Testa suas edições ao vivo (não salvas).",
     "historyEmpty": "Nenhuma sessão salva ainda.",
@@ -1978,8 +1979,7 @@
       "visionDocument": "Leitura de documento",
       "visionImage": "Leitura de imagem"
     },
-    "untitledSession": "Sessão sem título",
-    "guardrailsHelp": "Esta opção aplica no Playground as mesmas verificações usadas nas conversas reais.\n\nVocê testa o resultado que o cliente teria ao falar com o agente.\n\nIsso aumenta o custo: uma análise extra da mensagem e outra da resposta. A relevância acrescenta mais uma quando roda com outra verificação da resposta."
+    "untitledSession": "Sessão sem título"
   },
   "resources": {
     "deleteRefsWarning_one": "{{count}} agente usa isto e vai parar de funcionar se você excluir.",
@@ -2166,6 +2166,7 @@
   "tools": {
     "ack": "Enviar mensagem de espera",
     "ackExampleLabel": "Exemplo de tom (a IA escreve a própria mensagem):",
+    "ackHelp": "Esta opção faz o agente avisar o cliente antes de iniciar uma ferramenta lenta.\n\nA ferramenta só começa depois que o agente envia esse aviso.\n\nO exemplo abaixo define o tom da mensagem, mas nunca é enviado sem alterações.",
     "ackPlaceholder": "Vou verificar isso para você…",
     "ackRequired": "Adicione um exemplo de tom, ou desligue isto.",
     "add": "Nova ferramenta",
@@ -2185,6 +2186,7 @@
     "appointmentAskConfirm": "No último lembrete, perguntar se ele vai comparecer",
     "appointmentBook": "Ela marca um",
     "appointmentCancel": "Ela cancela um",
+    "appointmentHelp": "Esta opção identifica quando a ferramenta cria ou cancela um agendamento.\n\nA plataforma pausa as mensagens de acompanhamento enquanto o agendamento estiver ativo e envia os lembretes configurados.\n\nInforme o caminho do ID e do início na resposta, com pontos entre níveis e números para posições de lista, como data.items.0.id. O ID deve ser o mesmo devolvido pela ferramenta de cancelamento.",
     "appointmentIdPath": "Onde está o id",
     "appointmentNone": "Nenhum dos dois: não é sobre agendamento",
     "appointmentOffsets": "Lembrar o cliente estas horas antes",
@@ -2227,6 +2229,7 @@
     "emptyTitle": "Nenhuma ferramenta HTTP ainda",
     "enumValuePlaceholder": "valor",
     "expectedStatuses": "Status que significam \"sem resultado\"",
+    "expectedStatusesHelp": "Estes códigos indicam respostas comuns que chegam com status de erro, como 404 para \"não encontrado\".\n\nAo incluí-los, essas respostas deixam de contar como falha e não geram alerta. A IA recebe a resposta do mesmo jeito.\n\nSe o campo ficar vazio, todo status fora de 200 a 299 conta como falha.",
     "formatJson": "Formatar",
     "headerKey": "Cabeçalho",
     "headers": "Cabeçalhos",
@@ -2287,10 +2290,7 @@
     "varsCredential": "Credencial",
     "varsNative": "Variáveis de contexto",
     "varsSecret": "Credencial selecionada",
-    "varsSecretDesc": "Insere a credencial onde a injeção automática não alcança.",
-    "ackHelp": "Esta opção faz o agente avisar o cliente antes de iniciar uma ferramenta lenta.\n\nA ferramenta só começa depois que o agente envia esse aviso.\n\nO exemplo abaixo define o tom da mensagem, mas nunca é enviado sem alterações.",
-    "appointmentHelp": "Esta opção identifica quando a ferramenta cria ou cancela um agendamento.\n\nA plataforma pausa as mensagens de acompanhamento enquanto o agendamento estiver ativo e envia os lembretes configurados.\n\nInforme o caminho do ID e do início na resposta, com pontos entre níveis e números para posições de lista, como data.items.0.id. O ID deve ser o mesmo devolvido pela ferramenta de cancelamento.",
-    "expectedStatusesHelp": "Estes códigos indicam respostas comuns que chegam com status de erro, como 404 para \"não encontrado\".\n\nAo incluí-los, essas respostas deixam de contar como falha e não geram alerta. A IA recebe a resposta do mesmo jeito.\n\nSe o campo ficar vazio, todo status fora de 200 a 299 conta como falha."
+    "varsSecretDesc": "Insere a credencial onde a injeção automática não alcança."
   },
   "updates": {
     "newVersionAvailable": "Versão {{version}} disponível",

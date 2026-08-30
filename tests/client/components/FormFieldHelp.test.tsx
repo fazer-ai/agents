@@ -13,10 +13,16 @@ import {
 // the box before it goes away.
 const CLOSE_WAIT_MS = 400;
 
-// The REAL i18n instance, not the fallback `t` that react-i18next hands out with no provider: that
-// one returns the default string untouched, so an assertion about the accessible name would be
-// reading "Help about {{subject}}" and calling it a name.
-await import("@/client/lib/i18n");
+// NO real i18n instance here, and that is a decision with a measurement behind it. This file used
+// to import `@/client/lib/i18n` so the accessible name would be translated rather than a raw
+// "Help about {{subject}}" template. That reason died when `HelpPopover` started COMPOSING the name
+// instead of interpolating it: the fallback `t` react-i18next hands out with no provider returns
+// the default string, which is exactly what these assertions want.
+//
+// The cost was not local. `bun test` shares one worker across files, so initialising i18n here
+// charged every file that ran afterwards: `KnowledgeApprovals` went from 3.9s to 6.2s and blew the
+// 5s per-test budget, in a test that touches none of this. Measured by moving this one file out and
+// re-running the folder. Anything imported at a test file's top level is a global side effect.
 const { FormField } = await import("@/client/components/FormField");
 const { Input } = await import("@/client/components/Input");
 

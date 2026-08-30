@@ -3,6 +3,7 @@ import { NotFoundError as ElysiaNotFoundError } from "elysia";
 import logger from "@/api/lib/logger";
 import { errors } from "@/api/lib/openapi";
 import EN_CATALOG from "@/api/locales/en.json";
+import { buildApp } from "@/app";
 import { REJECTED_TENANT_SELECTOR_HEADER } from "@/lib/console-params";
 import {
   ActiveTenantNotFoundError,
@@ -23,7 +24,12 @@ import { setupPrismaMock } from "@/tests/utils/prisma-mock";
 // what a schema does not declare, and an error body is only exempt because the handler answers with
 // a raw `Response`. That exemption is asserted, not assumed. Issue #231.
 setupPrismaMock();
-const app = (await import("@/app")).default;
+// ITS OWN APP, NOT THE PROCESS'S. This file registers routes below, and registering them on the
+// shared default export only ever worked for whichever file reached it first: Elysia compiles its
+// router on first use, so a later file's routes never took effect and its requests fell through to
+// the `/*` SPA handler, arriving as HTML that `res.json()` refuses. `buildApp()` is the same builder
+// the server runs, so the `onError` arm under test is still the real one.
+const app = await buildApp();
 
 app.get("/__refusal/named", () => {
   throw new SettingsTextTooLongError(

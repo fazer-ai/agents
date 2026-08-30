@@ -2,6 +2,7 @@ import { describe, expect, spyOn, test } from "bun:test";
 import { t } from "elysia";
 import logger from "@/api/lib/logger";
 import { errors } from "@/api/lib/openapi";
+import { buildApp } from "@/app";
 import { setupPrismaMock } from "@/tests/utils/prisma-mock";
 
 // A refusal from the SCHEMA layer, as the client receives it and as the server records it.
@@ -13,7 +14,12 @@ import { setupPrismaMock } from "@/tests/utils/prisma-mock";
 // body carries a write-only secret next to a `name` with `minLength: 1`, and schema validation runs
 // BEFORE the role guard, so an unauthenticated request reaches this branch. Issue #255.
 setupPrismaMock();
-const app = (await import("@/app")).default;
+// ITS OWN APP, NOT THE PROCESS'S. This file registers routes below, and registering them on the
+// shared default export only ever worked for whichever file reached it first: Elysia compiles its
+// router on first use, so a later file's routes never took effect and its requests fell through to
+// the `/*` SPA handler, arriving as HTML that `res.json()` refuses. `buildApp()` is the same builder
+// the server runs, so the `onError` arm under test is still the real one.
+const app = await buildApp();
 
 const SUBMITTED_SECRET = "sk-live-DO-NOT-ECHO-ME";
 

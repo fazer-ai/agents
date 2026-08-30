@@ -619,6 +619,14 @@ model Conversation {
   // not activated; a "test" agent stays silent until this is set. /reset deliberately does NOT clear
   // it (the conversation keeps answering after a reset).
   testActivatedAt          DateTime? @map("test_activated_at")
+  // When /reset last cleared this conversation. NOT a watermark anything schedules from: it names
+  // the EPISODE, so a turn that started before it can tell that the operator asked for a clean slate
+  // under it and stand down (src/graph/runtime.ts, `runAgentTurn`). Every other caller of a turn
+  // answers that question from the scheduler job the command retires; the direct webhook turn has no
+  // job, and this is what names its run instead. Compared BY VALUE and never as an ordering — the
+  // turn captures what it read at the start and asks whether it still reads the same — so a clock
+  // that moves backwards changes nothing. NULL = never reset.
+  resetAt                  DateTime? @map("reset_at")
   // When the one-shot "this agent is in test mode, send /teste to activate" private note was posted
   // to a silenced conversation. Anti-spam: posted at most once per conversation (NULL = not yet).
   // /reset clears it so a fresh note can be posted on the next silenced message.

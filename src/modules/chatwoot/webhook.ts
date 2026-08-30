@@ -2097,6 +2097,11 @@ async function maybeConsumeCommandOrGate(params: {
         db.conversation.update({
           where: { id: ctx.conv.id },
           data: {
+            // THE EPISODE MARK, on the command's FIRST write: everything it clears comes after, so
+            // a turn that started before it reads a different value from here on and stands itself
+            // down (../../graph/runtime.ts). Nothing reads it as a time, which is why it is not one
+            // of the nulls around it.
+            resetAt: new Date(),
             lastInboundAt: null,
             lastFollowUpAt: null,
             testNoticeSentAt: null,
@@ -3823,13 +3828,14 @@ export async function processChatwootDelivery(
           //               reported as a lost customer message every time the process dies in the
           //               tail after a deliberate supersede — which is the one thing separating this
           //               outcome from every other one on this path, since all of them close here.
-          //   stale       Not reachable at all: `runAgentTurn` passes `stillWanted: null`, because
-          //               nothing queued this turn and there is no job for /reset to retire. It is
-          //               NOT written into the condition, because a branch no input can take is a
-          //               branch no test can hold: it would read as a rule and be a comment. The
-          //               premise it rests on is asserted instead, in
-          //               tests/modules/delivery-sweep.test.ts, so the day something hands this path
-          //               a `stillWanted` the failure points here rather than passing silently.
+          //   stale       The operator's /reset withdrew the episode under this turn
+          //               (../../graph/reset-episode.ts). It settles like the rest, and the reason
+          //               is what leaving it open would buy: the sweep would run the delivery path
+          //               again half an hour later, into the conversation the command cleared, with
+          //               the message from before it — the defect that fence exists to close,
+          //               arriving through the recovery instead. "Consumed" is also the honest word
+          //               here, the same one the gate's own rows carry: a command withdrew it.
+          //               Asserted in tests/modules/chatwoot-reset-stale-turn.test.ts.
           //
           // NOTE: no `isNewIncoming` here, because the whole block is already inside it — an
           // incoming `message_updated` (our own media write-back coming around) never reaches this

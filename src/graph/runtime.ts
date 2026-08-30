@@ -73,6 +73,7 @@ import {
   loadAgentConfig,
 } from "./prepare";
 import { undoRefusedTurn } from "./refused-turn";
+import { stillInSameEpisode } from "./reset-episode";
 import { AgentStatusReporter } from "./status";
 import {
   clearTurnOwning,
@@ -1747,9 +1748,21 @@ export async function runAgentTurn(
       : undefined;
 
   const outcome = await runLoadedTurn({
-    // Nothing queued this turn: it is the delivery itself, arriving from the webhook. There is no
-    // job for /reset to retire and no other run that could call it off.
-    stillWanted: null,
+    // Nothing QUEUED this turn — it is the delivery itself, arriving from the webhook — so there is
+    // no job for /reset to retire. What names this run instead is the EPISODE it started in, and
+    // ./reset-episode.ts carries the measurement: without it the operator's /reset is acknowledged
+    // and this turn then runs its tools on the conversation that was just cleared. `null` stays for
+    // a turn with no mirrored conversation to read the mark from (the playground), where nothing can
+    // reset it either.
+    stillWanted:
+      convDbId === null
+        ? null
+        : stillInSameEpisode({
+            tenantId,
+            conversationDbId: convDbId,
+            startedAt: loaded.conversationResetAt,
+            base,
+          }),
     loaded,
     authContext: params.authContext ?? null,
     tenantId,
@@ -1771,9 +1784,10 @@ export async function runAgentTurn(
   // the newer message's own turn advances past it. Best-effort — a watermark miss must not fail the
   // turn.
   // "stale" joins it, for the opposite reason and the same effect: the run was called off, so the
-  // message it carried was withdrawn rather than handled. This path never produces it today (a
-  // webhook turn passes `stillWanted: null`), and it is listed so the next caller that does not
-  // inherit a silent advance.
+  // message it carried was withdrawn rather than handled. On this path the only thing that calls a
+  // run off is the operator's own /reset (./reset-episode.ts), and the command's own delivery has
+  // already advanced this watermark past the message — so the skip costs nothing here and keeps the
+  // rule true for the next caller.
   if (
     outcome !== "superseded" &&
     outcome !== "stale" &&

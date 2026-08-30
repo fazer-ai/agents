@@ -1488,23 +1488,6 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     expect(neither.settlement).toBe("consumed");
   });
 
-  test("the direct path queues nothing, which is why it settles on every outcome", async () => {
-    // The premise under the unconditional settle in webhook.ts, asserted where it can fail loudly.
-    //
-    // The flush keeps "stale" open because a /reset can retire the job that queued it, and that
-    // withdrawal means nothing ever answered the burst. `runAgentTurn` has no job: the delivery IS
-    // the trigger, so `stillWanted` is null and no outcome on that path can be a withdrawal. Written
-    // as a source read because there is no input that reaches the branch — a run that cannot be
-    // called off cannot be asked to prove it stayed uncalled-off — and a rule no test can hold does
-    // not belong in the condition. If this ever stops being null, the settle above needs the same
-    // exception the flush has, and this is what says so.
-    const src = await Bun.file("src/graph/runtime.ts").text();
-    const call = src.slice(
-      src.indexOf("const outcome = await runLoadedTurn({"),
-    );
-    expect(call.slice(0, call.indexOf("});"))).toContain("stillWanted: null,");
-  });
-
   test("a gate taken because ANOTHER BOT holds it settles only our own row", async () => {
     // Chatwoot fans one message to up to TWO bot routes — `agent_bots_for` returns the conversation's
     // assignee bot and the inbox's active bot, each with its own `delivery_id` — so a message can

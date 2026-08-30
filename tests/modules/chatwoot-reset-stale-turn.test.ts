@@ -89,6 +89,9 @@ function fakeChatwoot(
   // Called when the contact-authorization endpoint is hit. The pre-turn gate is the seam this suite
   // parks a delivery in: it sits before the turn's own reads, and it reaches the network.
   onAuthorize?: () => Promise<void>,
+  // Called on the command's live conversation read, which is how a test parks the /RESET itself
+  // mid-flight and lands a customer message inside it.
+  onLiveRead?: () => Promise<void>,
 ): { calls: CwCall[]; impl: typeof fetch } {
   const calls: CwCall[] = [];
   const impl = (async (input, init) => {
@@ -108,12 +111,17 @@ function fakeChatwoot(
     });
     if (token.trim() === "")
       return jsonResponse({ error: "Invalid Access Token" }, 401);
-    if (method === "GET" && url.pathname.endsWith(`/conversations/${CONV_ID}`))
+    if (
+      method === "GET" &&
+      url.pathname.endsWith(`/conversations/${CONV_ID}`)
+    ) {
+      await onLiveRead?.();
       return jsonResponse({
         id: CONV_ID,
         status: "pending",
         meta: { assignee_type: null, assignee: null },
       });
+    }
     if (method === "GET" && url.pathname.endsWith("/messages"))
       return jsonResponse({ payload: [] });
     if (
@@ -557,6 +565,80 @@ describe.skipIf(!dbUp)("a turn already running when /reset lands", () => {
       .find((t) => t.includes("🔄") || t.includes("memória"));
     // The command reports the step it could not do, instead of confirming a clean slate.
     expect(ack ?? "").toContain("memória");
+  }, 30000);
+
+  // THE OTHER DIRECTION, and it is the one a boundary written at the wrong moment breaks. The
+  // command is not instant: it refreshes the conversation live, retires six kinds of scheduled job
+  // and makes a dozen Chatwoot calls. A customer message landing in that stretch arrived AFTER the
+  // operator asked for a clean slate, so it is a message they want ANSWERED — and a mark stamped
+  // when the cleanup finally writes would read it as older than the reset and stand its turn down,
+  // settling it as consumed. That is a swallowed message on the way to fixing swallowed messages,
+  // which is why the boundary is the command's own `receivedAt`.
+  test("a message that arrives while the command is still running is answered", async () => {
+    const inCommand = Promise.withResolvers<void>();
+    const held = Promise.withResolvers<void>();
+    let parked = false;
+    const cw = fakeChatwoot(undefined, async () => {
+      if (parked) return;
+      parked = true;
+      inCommand.resolve();
+      await held.promise;
+    });
+    globalThis.fetch = cw.impl;
+
+    const reset = deliver("/reset");
+    await Promise.race([
+      inCommand.promise,
+      Bun.sleep(10_000).then(() => {
+        throw new Error("the command never reached its live read");
+      }),
+    ]);
+
+    // The turn has to still be RUNNING when the command writes its mark, or the fence reads a
+    // conversation that has not been reset yet and the question never gets asked. Parked in the
+    // model call, which is where a real turn spends its seconds.
+    const inModel = Promise.withResolvers<void>();
+    const modelHeld = Promise.withResolvers<void>();
+    const model = new SetAttributeThenReplyModel();
+    const turn = deliver("bom dia, tudo bem?", {
+      makeModel: () =>
+        ({
+          invoke: model.invoke.bind(model),
+          bindTools: (tools: unknown) => {
+            const bound = model.bindTools(tools);
+            return {
+              invoke: async () => {
+                inModel.resolve();
+                await modelHeld.promise;
+                return bound.invoke();
+              },
+            };
+          },
+        }) as unknown as BaseChatModel,
+    });
+    await Promise.race([
+      inModel.promise,
+      Bun.sleep(10_000).then(() => {
+        throw new Error("the turn never reached the model call");
+      }),
+    ]);
+    // The command finishes — and stamps — with the turn still in flight.
+    held.resolve();
+    await reset;
+    modelHeld.resolve();
+    await turn;
+
+    expect(model.calls).toBeGreaterThan(0);
+    expect(
+      cw.calls.some(
+        (c) =>
+          c.method === "POST" &&
+          c.path.endsWith("/messages") &&
+          String((c.body as { content?: string })?.content ?? "").includes(
+            REPLY,
+          ),
+      ),
+    ).toBe(true);
   }, 30000);
 
   // The control, and it is what says the fence reads the EPISODE rather than "a reset ever

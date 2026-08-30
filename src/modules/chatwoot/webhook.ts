@@ -1322,6 +1322,14 @@ async function maybeConsumeCommandOrGate(params: {
   // `stillOurs` — but a routing one: Chatwoot fans the same message out to the conversation's
   // assigned bot AND the inbox's, and a command must run on exactly one of them.
   agentBotId: number | null;
+  // When THIS delivery arrived (`ChatwootWebhookDelivery.receivedAt`). `/reset` writes it as the
+  // episode boundary, and that is the whole difference between "the episode ended when the operator
+  // typed the command" and "when its cleanup got around to writing": the cleanup runs a live
+  // refresh, retires half a dozen job kinds and calls Chatwoot, and a customer message arriving in
+  // that stretch is a message the operator wants ANSWERED. Stamped from the later moment, the fence
+  // would read it as older than the command and stand its turn down — a message swallowed on the way
+  // to fixing messages being swallowed (../../graph/reset-episode.ts).
+  deliveredAt: Date | null;
   base: PrismaClient;
   // Injectable runtime deps (tests): the Chatwoot client factory and the contact-auth fetch.
   deps?: RuntimeDeps;
@@ -2093,19 +2101,19 @@ async function maybeConsumeCommandOrGate(params: {
       redirectClosedAt: null,
     };
     await step("clear the conversation's watermarks", "marcadores", () =>
-      runScopedOn(base, sysCtx(tenantId), async (db) => {
-        // THE EPISODE MARK, on the command's FIRST write: everything it clears comes after, so a
-        // delivery that arrived before this stands itself down (../../graph/reset-episode.ts).
-        //
-        // `now()` and not `new Date()`, because it is COMPARED with a delivery's `received_at`,
-        // which Postgres writes as a column default. Two clocks in one ordering is skew deciding
-        // whether a turn acts; one clock is the whole reason this is a raw statement rather than
-        // another field in the update below.
-        await db.$executeRaw`
-          UPDATE conversations SET reset_at = now() WHERE id = ${ctx.conv.id}`;
-        return db.conversation.update({
+      runScopedOn(base, sysCtx(tenantId), (db) =>
+        db.conversation.update({
           where: { id: ctx.conv.id },
           data: {
+            // THE EPISODE BOUNDARY, and it is when the COMMAND ARRIVED rather than when this write
+            // runs. Both sides of the comparison are then `received_at` values Postgres wrote as a
+            // column default, on one clock, and the boundary sits where the operator put it: a
+            // customer message that lands while the command is still calling Chatwoot arrived AFTER
+            // the reset and is answered (../../graph/reset-episode.ts).
+            //
+            // The fallback is unreachable — this delivery's own claim is what produced the value —
+            // and it is here so the mark is never left unwritten.
+            resetAt: params.deliveredAt ?? new Date(),
             lastInboundAt: null,
             lastFollowUpAt: null,
             testNoticeSentAt: null,
@@ -2116,8 +2124,8 @@ async function maybeConsumeCommandOrGate(params: {
             lastErrorAt: null,
             failureNoticeSentAt: null,
           },
-        });
-      }),
+        }),
+      ),
     );
 
     // Clear the agent's memory thread (per contact-inbox / channel), the AgentThread marker (the
@@ -3709,6 +3717,7 @@ export async function processChatwootDelivery(
       command,
       commandActive,
       agentBotId: params.agentBotId,
+      deliveredAt,
       base,
       deps: params.deps,
       onAuthContext: (context) => {

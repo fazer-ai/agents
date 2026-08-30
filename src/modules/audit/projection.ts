@@ -84,6 +84,28 @@ export function redactEndpoint(url: string): string {
   }
 }
 
+// One entry of a host allowlist, shown only where it IS one.
+//
+// The column is `z.string().min(1).max(255)` per entry and nothing more, so what lands in it is
+// whatever an operator typed — and the field it sits next to in the editor is the URL, which is
+// where a token actually lives. Redacting it costs nothing operationally: the gate that consumes
+// the list compares `allowedHosts.includes(url.hostname)` (`src/graph/tools/http.ts`), and
+// `url.hostname` never carries a scheme, a port, userinfo, a path or a query. So an entry that is
+// not a bare host can never match anything, is always a mistake rather than a configuration, and
+// is exactly the shape that carries a secret into a row that outlives the tool.
+//
+// The test for "bare host" is the gate's own: an entry survives when it is what `URL` would call
+// the hostname of itself. That admits `example.com`, `1.2.3.4` and `[::1]`, and refuses
+// `example.com/hook/tok`, `user:pass@host`, `host:8080` and `https://host` — the last two being
+// dead weight to the gate for the same reason.
+export function hostForAudit(entry: string): string {
+  try {
+    return new URL(`https://${entry}`).hostname === entry ? entry : "…";
+  } catch {
+    return "…";
+  }
+}
+
 // What a stored credential reference contributes to a projection: the ref where it names an entry,
 // and a marker where it does not.
 //

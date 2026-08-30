@@ -6,6 +6,7 @@ import { AppError, ConflictError, NotFoundError } from "@/lib/errors";
 import { parseInput } from "@/lib/parse-input";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import {
+  hostForAudit,
   markUndisclosed,
   redactEndpoint,
   refForAudit,
@@ -175,7 +176,7 @@ function auditProjection(r: {
     label: r.label,
     method: r.method,
     urlMasked: redactEndpoint(r.urlTemplate),
-    allowedHosts: r.allowedHosts,
+    allowedHosts: r.allowedHosts.map(hostForAudit),
     credentialRef: cred.ref,
     credentialRefOpaque: cred.opaque,
     enabled: r.enabled,
@@ -189,6 +190,7 @@ function auditProjection(r: {
 // what the row shows is the origin and the readable ref, and what moves the trail is the whole
 // value, so rotating a token inside the path still records that the tool changed.
 const UNDISCLOSED = [
+  "allowedHosts",
   "credentialRef",
   "description",
   "urlTemplate",

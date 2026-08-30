@@ -646,6 +646,35 @@ describe.skipIf(!dbUp)(
     // is an allowlist on the way in. A row is append-only and readable by every tenant admin, so what
     // goes on it is the SHAPE of those fields and never their contents.
 
+    // The allowlist is `z.string().min(1).max(255)` per entry and nothing more, and it sits beside
+    // the URL field in the editor, so a pasted URL lands in it. It never WORKS there — the gate
+    // compares `allowedHosts.includes(url.hostname)` — but it would have been archived whole beside
+    // a `urlTemplate` redacted for exactly this reason.
+    test("a token pasted into a tool's host allowlist does not reach the row", async () => {
+      await clearAudit();
+      const created = await createToolDefinition(
+        ctx(),
+        {
+          name: `ah${uniq()}`,
+          label: "l",
+          urlTemplate: "https://203.0.113.10/hook",
+          allowedHosts: [
+            "203.0.113.10",
+            "203.0.113.10/hook/tok-399-in-a-host-entry",
+          ],
+        },
+        appDb,
+      );
+      const [row] = await rows("tool.create");
+      const text = JSON.stringify(row, (_k, v) =>
+        typeof v === "bigint" ? String(v) : v,
+      );
+      expect(text).not.toContain("tok-399-in-a-host-entry");
+      // The bare host is still shown: the allowlist IS the policy, and a reader needs it.
+      expect(text).toContain("203.0.113.10");
+      await deleteToolDefinition(ctx(), BigInt(created.id), appDb);
+    });
+
     // NEITHER the values NOR the key names. `config` is `z.record(z.string(), z.unknown())` on both
     // writers, so an operator names its keys as freely as they fill them, and #394 settled that an
     // unknown, caller-controlled key can itself be secret material.
@@ -1098,7 +1127,7 @@ describe.skipIf(!dbUp)(
         const src = await Bun.file(f.file).text();
         const covered = coveredColumns(src);
         for (const c of cols) {
-          if (c in f.exempt || covered.has(c)) continue;
+          if (c in f.exempt || c in (f.whole ?? {}) || covered.has(c)) continue;
           missing.push(`${f.model}.${c}`);
         }
       }
@@ -1167,6 +1196,14 @@ const UNDISCLOSED = ["secretBag"] as const;`;
       // The shape review found: a column read nowhere in the projection, so it moves and the row does
       // not.
       expect(coveredColumns(leaky).has("count")).toBe(false);
+      // A pair that only OPENS as a whole-value pair does not count: this is the shape review found
+      // on `allowedHosts`, where `.map(hostForAudit)` reports a redacted list under the same key.
+      expect(
+        coveredColumns(`function auditProjection(r: Row) {
+  return { name: r.name.map(redact) };
+}
+const UNDISCLOSED = [] as const;`).has("name"),
+      ).toBe(false);
       // And the extraction stops at the function, so a mention further down the file does not vouch
       // for a projection that omits it.
       expect(
@@ -1230,9 +1267,13 @@ export function mutableColumns(schema: string, model: string): string[] {
 // column counts in exactly two shapes:
 //
 // - named in the module's `UNDISCLOSED` list, which the update path compares whole; or
-// - as a whole-value pair, `name: r.name`, where the projection carries it as it stands.
+// - as a whole-value pair, `name: r.name`, where the projection carries it as it stands, and the
+//   pair has to END there: `allowedHosts: r.allowedHosts.map(hostForAudit)` opens with the same
+//   eleven characters and reports a redacted list, so a prefix match would vouch for exactly the
+//   transform this fence exists to catch.
 //
-// A transformed projection is neither, and has to be listed as well to count.
+// A transformed projection is neither, and has to be listed as well to count. The one lossless
+// transform in the tree is declared per family in `FENCED[].whole`, with its reason.
 export function coveredColumns(source: string): Set<string> {
   const start = source.indexOf("function auditProjection(");
   if (start < 0) return new Set();
@@ -1246,7 +1287,9 @@ export function coveredColumns(source: string): Set<string> {
   for (const m of (listed?.[1] ?? "").matchAll(/"(\w+)"/g)) {
     out.add(m[1] as string);
   }
-  for (const m of body.matchAll(/\b(\w+):\s*r\.\1\b/g)) out.add(m[1] as string);
+  for (const m of body.matchAll(/\b(\w+):\s*r\.\1\s*(?=[,\n}])/g)) {
+    out.add(m[1] as string);
+  }
   return out;
 }
 
@@ -1277,6 +1320,9 @@ const FENCED: {
   model: string;
   file: string;
   exempt: Record<string, string>;
+  // Carried in FULL by the projection, through a transform that loses nothing. Separate from
+  // `exempt`, which is the opposite claim: a column deliberately in neither half.
+  whole?: Record<string, string>;
 }[] = [
   {
     model: "ToolDefinition",
@@ -1301,6 +1347,10 @@ const FENCED: {
     model: "Experiment",
     file: "src/modules/experiments/service.ts",
     exempt: {},
+    whole: {
+      agentId:
+        "projected whole, as a decimal string, because the audit columns are jsonb and JSON has no BigInt",
+    },
   },
   {
     model: "DocumentTemplate",

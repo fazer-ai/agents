@@ -9,7 +9,7 @@ import {
 } from "@/lib/errors";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { unstorableProblem } from "@/lib/text";
-import { digestForAudit } from "@/modules/audit/projection";
+import { markUndisclosed, undisclosedMoved } from "@/modules/audit/projection";
 import { auditMutation, projectionMoved } from "@/modules/audit/service";
 import {
   type CompanySettings,
@@ -350,16 +350,16 @@ type Row = Prisma.DocumentTemplateGetPayload<{ select: typeof SELECT }>;
 // What the audit row carries.
 //
 // Same two halves as the other four families: identity, policy and shape are PROJECTED, everything
-// else is DIGESTED so that changing it still moves the projection. A column in neither half changes
-// without the row noticing, and `projectionMoved` then suppresses the write entirely.
+// else is listed in `UNDISCLOSED` below and compared without being carried. A column in neither
+// half changes without the row noticing, and `projectionMoved` then suppresses the write entirely.
 //
 // A template is a mould rather than an issued document, so what is in it is `{{token}}` prose the
 // operator wrote — but it is also the largest field here, and the trail is append-only and readable
 // by every tenant admin. The structure (`{id, type}` per block, `{key, type}` per field) answers
 // what a reader asks: a block appeared, one was removed, the order moved, a field changed type. The
-// digest over blocks+fields+style is what makes an edit INSIDE a block visible at all — replacing
-// the text of an existing block moves nothing in the structure, and that is the commonest edit a
-// template gets.
+// comparison over blocks+fields+style is what makes an edit INSIDE a block visible at all —
+// replacing the text of an existing block moves nothing in the structure, and that is the commonest
+// edit a template gets.
 //
 // `lastNumber` is in NEITHER half, deliberately: it is the issuer's counter, advanced by issuing a
 // document and not by editing the template, so folding it in would file every issuance as a change
@@ -387,9 +387,14 @@ function auditProjection(r: Row) {
       // moved nothing in this half.
       return { name: o.name ?? null, type: o.type ?? null };
     }),
-    rest: digestForAudit(r.blocks, r.fields, r.style),
   };
 }
+
+// The columns the projection above may not publish, compared and never carried
+// (`@/modules/audit/projection`). A block holds the document's body text and a field its default,
+// so the row shows the shape — which blocks and fields exist, and of what type — and the comparison
+// sees the content.
+const UNDISCLOSED = ["blocks", "fields", "style"] as const;
 
 // Content is validated on the way IN, so a row is trusted on the way out — except that a row written
 // by an older version of this file may not satisfy today's schema. Falling back to an empty document
@@ -718,14 +723,15 @@ export async function updateDocumentTemplate(
     }
     const current = toDto(found);
     const row = await patched(current, found, patch, db, id);
-    const before = auditProjection(found);
-    const after = auditProjection(row);
-    if (projectionMoved(before, after)) {
+    const beforeProj = auditProjection(found);
+    const afterProj = auditProjection(row);
+    const undisclosed = undisclosedMoved(found, row, UNDISCLOSED);
+    if (undisclosed || projectionMoved(beforeProj, afterProj)) {
       await auditMutation(db, ctx, {
         action: "document_template.update",
         target: `document_template:${id}`,
-        before,
-        after,
+        before: undisclosed ? markUndisclosed(beforeProj) : beforeProj,
+        after: undisclosed ? markUndisclosed(afterProj) : afterProj,
       });
     }
     return toDto(row);

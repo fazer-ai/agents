@@ -562,6 +562,21 @@ describe.skipIf(!dbUp)(
       });
     }
 
+    // The rotation takes the SAME lock, and it is the one site where the snapshot is the whole row.
+    // Neither token is on it, so `name` and `catalogType` are all that identify what was rotated:
+    // a rename committing in the window makes the trail say the old name lost its URL.
+    test("integration: a rotation archives the name the holder left", async () => {
+      const l = LOCKED[2] as (typeof LOCKED)[number];
+      const id = await l.make();
+      await clearAudit();
+      await underHolder(l, id, () =>
+        rotateIntegrationRouteToken(ctx(), id, appDb),
+      );
+      const [row] = await rows("integration.rotate_token");
+      expect(row?.after).toMatchObject({ name: "held-int" });
+      await l.del(id);
+    });
+
     // ── a save that moves nothing writes nothing ──
 
     for (const f of FAMILIES) {
@@ -631,21 +646,28 @@ describe.skipIf(!dbUp)(
     // is an allowlist on the way in. A row is append-only and readable by every tenant admin, so what
     // goes on it is the SHAPE of those fields and never their contents.
 
-    test("an integration's config contributes its keys and not its values", async () => {
+    // NEITHER the values NOR the key names. `config` is `z.record(z.string(), z.unknown())` on both
+    // writers, so an operator names its keys as freely as they fill them, and #394 settled that an
+    // unknown, caller-controlled key can itself be secret material.
+    test("an integration's config contributes neither its values nor its key names", async () => {
       const created = await createIntegrationInstance(
         ctx(),
         {
           catalogType: "ASAAS",
           name: `cfg${uniq()}`,
-          config: { pixKey: "typed-by-the-operator-399", timeoutMs: 5000 },
+          config: {
+            "pix-key-399-typed-by-the-operator": "value-399-typed-too",
+            timeoutMs: 5000,
+          },
         },
         appDb,
       );
       const [row] = await rows("integration.create");
-      expect(row?.after).toMatchObject({ configKeys: ["pixKey", "timeoutMs"] });
-      expect(
-        JSON.stringify(row, (_k, v) => (typeof v === "bigint" ? String(v) : v)),
-      ).not.toContain("typed-by-the-operator-399");
+      const text = JSON.stringify(row, (_k, v) =>
+        typeof v === "bigint" ? String(v) : v,
+      );
+      expect(text).not.toContain("value-399-typed-too");
+      expect(text).not.toContain("pix-key-399-typed-by-the-operator");
       await deleteIntegrationInstance(ctx(), created.id, appDb);
     });
 
@@ -694,13 +716,20 @@ describe.skipIf(!dbUp)(
         appDb,
       );
       const [row] = await rows("document_template.update");
-      // The structure did not move — same block, same id, same type — so without the digest this
-      // edit, which is the commonest one a template gets, would write no row.
+      // The structure did not move — same block, same id, same type — so without the compared
+      // half this edit, which is the commonest one a template gets, would write no row.
       expect(row).toBeDefined();
-      const before = row?.before as { rest: string; blocks: unknown };
-      const after = row?.after as { rest: string; blocks: unknown };
+      const before = row?.before as {
+        undisclosedChanged?: true;
+        blocks: unknown;
+      };
+      const after = row?.after as {
+        undisclosedChanged?: true;
+        blocks: unknown;
+      };
       expect(before?.blocks).toEqual(after?.blocks);
-      expect(before?.rest).not.toBe(after?.rest);
+      expect(before?.undisclosedChanged).toBe(true);
+      expect(after?.undisclosedChanged).toBe(true);
       const text = JSON.stringify(row, (_k, v) =>
         typeof v === "bigint" ? String(v) : v,
       );
@@ -745,7 +774,30 @@ describe.skipIf(!dbUp)(
       );
     });
 
-    // ── the half that is digested, and why it is not optional ──
+    // The row says THAT the undisclosed half moved and nothing about what it holds — not the value
+    // and not a fingerprint of one. A fingerprint would be an offline verifier: `audit_logs` is
+    // append-only and readable by every tenant admin long after the record is deleted, and a reader
+    // holding a candidate could hash it and confirm. The proof is that two different contents leave
+    // audit rows that are byte-identical, which no derived value survives.
+    test("two different undisclosed contents leave identical rows", async () => {
+      // ONE definition, edited twice: the projected half is identity and policy, so a second tool
+      // would differ by its name alone and prove nothing about the half under test.
+      const id = await (FAMILIES[0] as Family).create(ctx());
+      const project = async (headers: Record<string, string>) => {
+        await clearAudit();
+        await updateToolDefinition(ctx(), id, { headers }, appDb);
+        const [row] = await rows("tool.update");
+        return JSON.stringify({ before: row?.before, after: row?.after });
+      };
+      const one = await project({ "X-Key": "candidate-a-399" });
+      const other = await project({ "X-Key": "candidate-b-399" });
+      // Both rows exist — the write is NOT being suppressed, which is the other half of the rule.
+      expect(one).toContain("undisclosedChanged");
+      expect(one).toBe(other);
+      await (FAMILIES[0] as Family).del(ctx(), id);
+    });
+
+    // ── the half that is compared and not carried, and why it is not optional ──
     //
     // Review round 1 found five columns that changed without the projection noticing. Each one below
     // is an ORDINARY edit of its family, and each writes no row at all when its column is in neither
@@ -764,9 +816,10 @@ describe.skipIf(!dbUp)(
       );
       const r = await rows("tool.update");
       expect(r.length).toBe(1);
-      const before = r[0]?.before as { rest: string } | undefined;
-      const after = r[0]?.after as { rest: string } | undefined;
-      expect(before?.rest).not.toBe(after?.rest);
+      const before = r[0]?.before as { undisclosedChanged?: true } | undefined;
+      const after = r[0]?.after as { undisclosedChanged?: true } | undefined;
+      expect(before?.undisclosedChanged).toBe(true);
+      expect(after?.undisclosedChanged).toBe(true);
       await (FAMILIES[0] as Family).del(ctx(), id);
     });
 
@@ -827,7 +880,8 @@ describe.skipIf(!dbUp)(
         appDb,
       );
       await clearAudit();
-      // The key set does not move, which is the ordinary shape of an integration edit.
+      // Only a VALUE moves under a key that stays, which is the ordinary shape of an integration
+      // edit and the one a projection listing key names would have missed.
       await updateIntegrationInstance(
         ctx(),
         created.id,
@@ -836,14 +890,10 @@ describe.skipIf(!dbUp)(
       );
       const r = await rows("integration.update");
       expect(r.length).toBe(1);
-      const before = r[0]?.before as
-        | { rest: string; configKeys: string[] }
-        | undefined;
-      const after = r[0]?.after as
-        | { rest: string; configKeys: string[] }
-        | undefined;
-      expect(before?.configKeys).toEqual(after?.configKeys);
-      expect(before?.rest).not.toBe(after?.rest);
+      const before = r[0]?.before as { undisclosedChanged?: true } | undefined;
+      const after = r[0]?.after as { undisclosedChanged?: true } | undefined;
+      expect(before?.undisclosedChanged).toBe(true);
+      expect(after?.undisclosedChanged).toBe(true);
       const text = JSON.stringify(r[0], (_k, v) =>
         typeof v === "bigint" ? String(v) : v,
       );
@@ -876,13 +926,14 @@ describe.skipIf(!dbUp)(
       const r = await rows("experiment.update");
       expect(r.length).toBe(1);
       const before = r[0]?.before as
-        | { rest: string; variants: unknown }
+        | { undisclosedChanged?: true; variants: unknown }
         | undefined;
       const after = r[0]?.after as
-        | { rest: string; variants: unknown }
+        | { undisclosedChanged?: true; variants: unknown }
         | undefined;
       expect(before?.variants).toEqual(after?.variants);
-      expect(before?.rest).not.toBe(after?.rest);
+      expect(before?.undisclosedChanged).toBe(true);
+      expect(after?.undisclosedChanged).toBe(true);
       const text = JSON.stringify(r[0], (_k, v) =>
         typeof v === "bigint" ? String(v) : v,
       );
@@ -916,14 +967,15 @@ describe.skipIf(!dbUp)(
       const r = await rows("tool.update");
       expect(r.length).toBe(1);
       const before = r[0]?.before as
-        | { urlMasked: string; rest: string }
+        | { urlMasked: string; undisclosedChanged?: true }
         | undefined;
       const after = r[0]?.after as
-        | { urlMasked: string; rest: string }
+        | { urlMasked: string; undisclosedChanged?: true }
         | undefined;
       // The masked half cannot tell these apart, which is exactly why the digest is there.
       expect(before?.urlMasked).toBe(after?.urlMasked);
-      expect(before?.rest).not.toBe(after?.rest);
+      expect(before?.undisclosedChanged).toBe(true);
+      expect(after?.undisclosedChanged).toBe(true);
       await deleteToolDefinition(ctx(), BigInt(created.id), appDb);
     });
 
@@ -947,13 +999,14 @@ describe.skipIf(!dbUp)(
       const r = await rows("mcp_connection.update");
       expect(r.length).toBe(1);
       const before = r[0]?.before as
-        | { urlMasked: string; rest: string }
+        | { urlMasked: string; undisclosedChanged?: true }
         | undefined;
       const after = r[0]?.after as
-        | { urlMasked: string; rest: string }
+        | { urlMasked: string; undisclosedChanged?: true }
         | undefined;
       expect(before?.urlMasked).toBe(after?.urlMasked);
-      expect(before?.rest).not.toBe(after?.rest);
+      expect(before?.undisclosedChanged).toBe(true);
+      expect(after?.undisclosedChanged).toBe(true);
       await deleteMcpConnection(ctx(), BigInt(created.id), appDb);
     });
 
@@ -980,10 +1033,10 @@ describe.skipIf(!dbUp)(
       const r = await rows("document_template.update");
       expect(r.length).toBe(1);
       const before = r[0]?.before as
-        | { fields: unknown; rest: string }
+        | { fields: unknown; undisclosedChanged?: true }
         | undefined;
       const after = r[0]?.after as
-        | { fields: unknown; rest: string }
+        | { fields: unknown; undisclosedChanged?: true }
         | undefined;
       // The visible half NAMES the field, which is what makes the comparison below mean anything:
       // read under the wrong key it would be `{name: null}` on both sides — equal for the wrong
@@ -991,7 +1044,8 @@ describe.skipIf(!dbUp)(
       expect(after?.fields).toEqual([{ name: "cliente", type: "text" }]);
       // `{name, type}` is all the visible half carries, and neither moved.
       expect(before?.fields).toEqual(after?.fields);
-      expect(before?.rest).not.toBe(after?.rest);
+      expect(before?.undisclosedChanged).toBe(true);
+      expect(after?.undisclosedChanged).toBe(true);
       await deleteDocumentTemplate(ctx(), id, appDb);
     });
 
@@ -1034,7 +1088,7 @@ describe.skipIf(!dbUp)(
     // projections would only ever agree with itself (the lesson #438 wrote down: count the DECLARATION
     // and not the projection of it).
 
-    test("every mutable column of the five models is projected, digested, or exempt with a reason", async () => {
+    test("every mutable column of the five models is projected, compared, or exempt with a reason", async () => {
       const schema = await Bun.file("prisma/schema.prisma").text();
       const missing: string[] = [];
       for (const f of FENCED) {
@@ -1049,6 +1103,20 @@ describe.skipIf(!dbUp)(
         }
       }
       expect(missing).toEqual([]);
+    });
+
+    test("every undisclosed name is a column the service actually reads", async () => {
+      const unread: string[] = [];
+      for (const f of FENCED) {
+        const src = await Bun.file(f.file).text();
+        const selected = selectedColumns(src);
+        // A select that cannot be read is a broken matcher, not a module with no columns.
+        expect(selected.size).toBeGreaterThan(2);
+        for (const n of undisclosedNames(src)) {
+          if (!selected.has(n)) unread.push(`${f.model}.${n}`);
+        }
+      }
+      expect(unread).toEqual([]);
     });
 
     test("the fence's two halves catch what they are for, over bodies the tree does not hold", () => {
@@ -1086,11 +1154,13 @@ model Widget {
       expect(mutableColumns(schema, "Missing")).toEqual([]);
 
       const complete = `function auditProjection(r: Row) {
-  return { name: r.name, rest: digestForAudit(r.secretBag, r.count) };
-}`;
+  return { name: r.name };
+}
+const UNDISCLOSED = ["secretBag", "count"] as const;`;
       const leaky = `function auditProjection(r: Row) {
-  return { name: r.name, rest: digestForAudit(r.secretBag) };
-}`;
+  return { name: r.name };
+}
+const UNDISCLOSED = ["secretBag"] as const;`;
       expect(coveredColumns(complete)).toEqual(
         new Set(["name", "secretBag", "count"]),
       );
@@ -1159,10 +1229,10 @@ export function mutableColumns(schema: string, model: string): string[] {
 // MCP `url`, for a `command` shown as its launcher, and for `fields` shown as `{key, type}`. So a
 // column counts in exactly two shapes:
 //
-// - inside the arguments of `digestForAudit(...)`, where every byte of it is folded in; or
+// - named in the module's `UNDISCLOSED` list, which the update path compares whole; or
 // - as a whole-value pair, `name: r.name`, where the projection carries it as it stands.
 //
-// A transformed projection is neither, and has to appear in the digest as well to count.
+// A transformed projection is neither, and has to be listed as well to count.
 export function coveredColumns(source: string): Set<string> {
   const start = source.indexOf("function auditProjection(");
   if (start < 0) return new Set();
@@ -1170,13 +1240,37 @@ export function coveredColumns(source: string): Set<string> {
   const next = source.indexOf("\nfunction ", start + 1);
   const body = source.slice(start, next < 0 ? undefined : next);
   const out = new Set<string>();
-  for (const m of body.matchAll(/digestForAudit\(([\s\S]*?)\)/g)) {
-    for (const a of (m[1] ?? "").matchAll(/\br\.(\w+)/g)) {
-      out.add(a[1] as string);
-    }
+  // The undisclosed half is a DECLARATION rather than a call, so the fence reads the list itself.
+  // It is matched over the whole file: the list sits beside the projection, not inside it.
+  const listed = /const UNDISCLOSED = \[([\s\S]*?)\] as const;/.exec(source);
+  for (const m of (listed?.[1] ?? "").matchAll(/"(\w+)"/g)) {
+    out.add(m[1] as string);
   }
   for (const m of body.matchAll(/\b(\w+):\s*r\.\1\b/g)) out.add(m[1] as string);
   return out;
+}
+
+// The names in `UNDISCLOSED` are compared against the ROWS the service read, so a name that is not
+// a key of those rows compares `undefined` to `undefined` on every save — always equal, forever
+// silent, and the column it was meant to cover is uncovered while the fence above reads as
+// satisfied. That is the same hole this whole PR exists to close, one level down, so the list is
+// checked against the module's own `select` rather than trusted.
+export function selectedColumns(source: string): Set<string> {
+  const block = /^const [A-Z_]*SELECT[A-Z_]* = \{([\s\S]*?)^\} as const;/m.exec(
+    source,
+  );
+  const out = new Set<string>();
+  for (const m of (block?.[1] ?? "").matchAll(/^\s*(\w+):\s*true,/gm)) {
+    out.add(m[1] as string);
+  }
+  return out;
+}
+
+export function undisclosedNames(source: string): string[] {
+  const listed = /const UNDISCLOSED = \[([\s\S]*?)\] as const;/.exec(source);
+  return [...(listed?.[1] ?? "").matchAll(/"(\w+)"/g)].map(
+    (m) => m[1] as string,
+  );
 }
 
 const FENCED: {

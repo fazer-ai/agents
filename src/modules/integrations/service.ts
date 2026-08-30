@@ -8,7 +8,11 @@ import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { AppError, NotFoundError } from "@/lib/errors";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
-import { digestForAudit, refForAudit } from "@/modules/audit/projection";
+import {
+  markUndisclosed,
+  refForAudit,
+  undisclosedMoved,
+} from "@/modules/audit/projection";
 import { auditMutation, projectionMoved } from "@/modules/audit/service";
 import { readableVaultRef, requireVaultRef } from "@/modules/vault/service";
 import { isUsableHeaderName } from "@/modules/webhooks/inbound/auth";
@@ -104,26 +108,25 @@ export function assertUsableHeaderNames(config: Record<string, unknown>): void {
 // What the audit row carries.
 //
 // Same two halves as the other four families: identity, policy and shape are PROJECTED, everything
-// else is DIGESTED so that changing it still moves the projection.
+// else is listed in `UNDISCLOSED` below and compared without being carried.
 //
-// `config` is where that matters most here. It contributes its sorted KEYS and never its values: it
-// is a free-form bag on both writers (`z.record(z.string(), z.unknown())`, no allowlist) whose
-// contents are whatever an operator typed, two of its keys are read back as HTTP header names, and
-// a value nothing validated does not belong in an append-only row. The keys alone are not enough,
-// though — editing a value under an existing key is the ordinary edit an integration gets, and it
-// moves no key — so the whole bag goes in the digest, which reports the change without carrying it.
+// `config` is where that matters most here, and it contributes NEITHER its values nor its key
+// names. It is a free-form bag on both writers (`z.record(z.string(), z.unknown())`, no allowlist),
+// so nothing about it was vouched for by a schema: the values are whatever an operator typed, two
+// of its keys are read back as HTTP header names, and #394 already settled that an unknown,
+// caller-controlled key can itself be secret material (`docs/mcp.md`). Listing the keys would also
+// have missed the ordinary edit — a value changed under an existing key moves no key at all.
 //
 // `routeToken` and `routeTokenHash` are in NEITHER half, deliberately. The token IS the credential
 // the inbound route authenticates by, and the hash is its verifier; the change that matters to them
 // has an action of its own (`integration.rotate_token`), so nothing is lost by leaving both out and
 // a great deal would be lost by folding them in.
 //
-//
-// The RAW `credentialRef` is in the digest as well as projected, and that is not belt-and-braces:
-// two different opaque values both project as `{ref: null, opaque: true}`, so swapping one for the
+// The RAW `credentialRef` is compared as well as projected, and that is not belt-and-braces: two
+// different opaque values both project as `{ref: null, opaque: true}`, so swapping one for the
 // other would move nothing. `requireVaultRef` has refused that spelling on the way in since #126,
 // which makes it a legacy row rather than a reachable write — but the fence answers for columns and
-// not for what today's writer happens to allow, and folding it in costs a digest argument.
+// not for what today's writer happens to allow, and listing it costs one line.
 // `tests/modules/audit-config-families.test.ts` holds the fence over this model's columns.
 function auditProjection(r: {
   catalogType: string;
@@ -140,18 +143,20 @@ function auditProjection(r: {
     catalogType: r.catalogType,
     name: r.name,
     enabled: r.enabled,
-    configKeys:
-      r.config && typeof r.config === "object" && !Array.isArray(r.config)
-        ? Object.keys(r.config).sort()
-        : [],
     credentialRef: cred.ref,
     credentialRefOpaque: cred.opaque,
     inboundAuthStrategy: r.inboundAuthStrategy,
     inboundSecretRef: inbound.ref,
     inboundSecretRefOpaque: inbound.opaque,
-    rest: digestForAudit(r.config, r.credentialRef, r.inboundSecretRef),
   };
 }
+
+// The columns the projection above may not publish, compared and never carried
+// (`@/modules/audit/projection`). `config` is the reason this family needs the rule at all: it is
+// `z.record(z.string(), z.unknown())` on both writers, so neither its values NOR ITS KEY NAMES are
+// anything the schema vouched for, and #394 already settled that an unknown, caller-controlled key
+// can itself be secret material — which is why the row no longer lists them.
+const UNDISCLOSED = ["config", "credentialRef", "inboundSecretRef"] as const;
 
 export interface CreateIntegrationParams {
   catalogType: string;
@@ -399,14 +404,15 @@ export async function updateIntegrationInstance(
       where: { id },
       select: INSTANCE_SELECT,
     });
-    const before = auditProjection(current);
-    const after = auditProjection(row);
-    if (projectionMoved(before, after)) {
+    const beforeProj = auditProjection(current);
+    const afterProj = auditProjection(row);
+    const undisclosed = undisclosedMoved(current, row, UNDISCLOSED);
+    if (undisclosed || projectionMoved(beforeProj, afterProj)) {
       await auditMutation(db, ctx, {
         action: "integration.update",
         target: `integration:${id}`,
-        before,
-        after,
+        before: undisclosed ? markUndisclosed(beforeProj) : beforeProj,
+        after: undisclosed ? markUndisclosed(afterProj) : afterProj,
       });
     }
     return toInstanceDto(row);
@@ -423,6 +429,11 @@ export async function rotateIntegrationRouteToken(
   base: PrismaClient = basePrisma,
 ): Promise<{ routeToken: string }> {
   return runScopedOn(base, ctx, async (db) => {
+    // Locked BEFORE the snapshot, like every other audited write in this family. At READ COMMITTED
+    // a rename committing between this read and the update below is invisible to it, and the row
+    // then files a rotation against a name the instance no longer has — the one identifying detail
+    // it carries, since neither token is on it.
+    await db.$queryRaw`SELECT 1 FROM "integration_instances" WHERE "id" = ${id} FOR UPDATE`;
     const current = await db.integrationInstance.findUnique({
       where: { id },
       select: { catalogType: true, name: true },

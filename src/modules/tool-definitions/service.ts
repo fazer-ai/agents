@@ -6,9 +6,10 @@ import { AppError, ConflictError, NotFoundError } from "@/lib/errors";
 import { parseInput } from "@/lib/parse-input";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import {
-  digestForAudit,
+  markUndisclosed,
   redactEndpoint,
   refForAudit,
+  undisclosedMoved,
 } from "@/modules/audit/projection";
 import { auditMutation, projectionMoved } from "@/modules/audit/service";
 import { readAppointmentDeclaration } from "@/modules/tool-definitions/appointment";
@@ -131,23 +132,22 @@ function toDto(r: {
 //
 // Every mutable column of the row is in one of two halves, and the split is the point rather than
 // the contents of either. What is PROJECTED is identity, policy and shape — safe to keep in a row
-// that is append-only and outlives the definition. What is DIGESTED is everything else, so that a
-// change to it still moves the projection: a column left out of BOTH halves changes without the row
-// noticing, `projectionMoved` sees nothing, and the edit writes nothing at all. Review found five
-// such columns on the first pass of this PR.
+// that is append-only and outlives the definition. Everything else is listed in `UNDISCLOSED`
+// below, compared but never carried, so that a change to it still writes the row: a column left out
+// of BOTH halves changes without the row noticing, `projectionMoved` sees nothing, and the edit
+// writes nothing at all. Review found five such columns on the first pass of this PR.
 //
 // `urlTemplate` is REDACTED to its origin even though the column holds it whole and every read
 // surface returns it whole. The schema accepts any template, and a token in the path or the query
 // is how these are actually written — where a value is stored says nothing about whether it is a
 // secret, which is the reasoning `redactEndpoint` carries from #397. A relative template has no
-// origin to keep, so it masks to nothing; the digest is what still reports that it moved.
+// origin to keep, so it masks to nothing; the comparison is what still reports that it moved.
 //
-//
-// The RAW `credentialRef` is in the digest as well as projected, and that is not belt-and-braces:
-// two different opaque values both project as `{ref: null, opaque: true}`, so swapping one for the
+// The RAW `credentialRef` is compared as well as projected, and that is not belt-and-braces: two
+// different opaque values both project as `{ref: null, opaque: true}`, so swapping one for the
 // other would move nothing. `requireVaultRef` has refused that spelling on the way in since #126,
 // which makes it a legacy row rather than a reachable write — but the fence answers for columns and
-// not for what today's writer happens to allow, and folding it in costs a digest argument.
+// not for what today's writer happens to allow, and listing it costs one line.
 // `tests/modules/audit-config-families.test.ts` holds the fence: it reads the columns of this model
 // out of `prisma/schema.prisma` and fails while one is in neither half.
 function auditProjection(r: {
@@ -181,20 +181,25 @@ function auditProjection(r: {
     enabled: r.enabled,
     ackEnabled: r.ackEnabled,
     expectedStatuses: r.expectedStatuses,
-    rest: digestForAudit(
-      r.credentialRef,
-      r.description,
-      r.urlTemplate,
-      r.headers,
-      r.inputSchema,
-      r.outputSchema,
-      r.query,
-      r.body,
-      r.ackMessage,
-      r.appointment,
-    ),
   };
 }
+
+// The columns the projection above may not publish, compared and never carried
+// (`@/modules/audit/projection`). `urlTemplate` and `credentialRef` are in BOTH halves on purpose:
+// what the row shows is the origin and the readable ref, and what moves the trail is the whole
+// value, so rotating a token inside the path still records that the tool changed.
+const UNDISCLOSED = [
+  "credentialRef",
+  "description",
+  "urlTemplate",
+  "headers",
+  "inputSchema",
+  "outputSchema",
+  "query",
+  "body",
+  "ackMessage",
+  "appointment",
+] as const;
 
 export const toolDefinitionCreateSchema = z
   .object({
@@ -443,16 +448,17 @@ export async function updateToolDefinition(
       where: { id },
       select: SELECT,
     });
-    const before = auditProjection(current);
-    const after = auditProjection(row);
+    const beforeProj = auditProjection(current);
+    const afterProj = auditProjection(row);
+    const undisclosed = undisclosedMoved(current, row, UNDISCLOSED);
     // Only when something MOVED: the console PATCHes a whole editor tab per save, so a row per
     // apply would fill the trail with saves that changed nothing (`docs/api-and-fleet.md`).
-    if (projectionMoved(before, after)) {
+    if (undisclosed || projectionMoved(beforeProj, afterProj)) {
       await auditMutation(db, ctx, {
         action: "tool.update",
         target: `tool:${id}`,
-        before,
-        after,
+        before: undisclosed ? markUndisclosed(beforeProj) : beforeProj,
+        after: undisclosed ? markUndisclosed(afterProj) : afterProj,
       });
     }
     return toDto(row);

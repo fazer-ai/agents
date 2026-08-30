@@ -15,9 +15,10 @@ import { parseInput } from "@/lib/parse-input";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import {
-  digestForAudit,
+  markUndisclosed,
   redactEndpoint,
   refForAudit,
+  undisclosedMoved,
 } from "@/modules/audit/projection";
 import { auditMutation, projectionMoved } from "@/modules/audit/service";
 import { ensureFreshGoogleAccessToken } from "@/modules/vault/google-oauth";
@@ -87,22 +88,21 @@ function toDto(r: {
 // What the audit row carries.
 //
 // Same two halves as the other four families: identity, policy and shape are PROJECTED, everything
-// else is DIGESTED so that changing it still moves the projection. A column in neither half changes
-// without the row noticing, and `projectionMoved` then suppresses the write entirely.
+// else is listed in `UNDISCLOSED` below and compared without being carried. A column in neither
+// half changes without the row noticing, and `projectionMoved` then suppresses the write entirely.
 //
 // `url` is REDACTED to its origin. An MCP endpoint accepts any absolute URL, and userinfo, a path
 // segment and a query parameter are all places a token is actually carried — this row is
 // append-only and readable by every tenant admin, so it would outlive the correction. `command` is
 // projected as its LAUNCHER (`bunx`/`uvx`) for the same reason: a stdio invocation carries its
-// arguments, and an argument is where a self-hosted server's key goes. Both whole values are in the
-// digest, so a change to either is still visible as a change.
+// arguments, and an argument is where a self-hosted server's key goes. Both whole values are
+// compared, so a change to either is still visible as a change.
 //
-//
-// The RAW `credentialRef` is in the digest as well as projected, and that is not belt-and-braces:
-// two different opaque values both project as `{ref: null, opaque: true}`, so swapping one for the
+// The RAW `credentialRef` is compared as well as projected, and that is not belt-and-braces: two
+// different opaque values both project as `{ref: null, opaque: true}`, so swapping one for the
 // other would move nothing. `requireVaultRef` has refused that spelling on the way in since #126,
 // which makes it a legacy row rather than a reachable write — but the fence answers for columns and
-// not for what today's writer happens to allow, and folding it in costs a digest argument.
+// not for what today's writer happens to allow, and listing it costs one line.
 // `tests/modules/audit-config-families.test.ts` holds the fence over this model's columns.
 function auditProjection(r: {
   name: string;
@@ -122,9 +122,14 @@ function auditProjection(r: {
     credentialRef: cred.ref,
     credentialRefOpaque: cred.opaque,
     enabled: r.enabled,
-    rest: digestForAudit(r.url, r.command, r.credentialRef),
   };
 }
+
+// The columns the projection above may not publish, compared and never carried
+// (`@/modules/audit/projection`). All three are in BOTH halves: the row shows the URL's origin, the
+// stdio launcher and the readable ref, and the comparison sees the whole value, so a token moved
+// inside a path or an argument still records that the connection changed.
+const UNDISCLOSED = ["url", "command", "credentialRef"] as const;
 
 export const mcpConnectionCreateSchema = z
   .object({
@@ -337,14 +342,15 @@ export async function updateMcpConnection(
       where: { id },
       select: SELECT,
     });
-    const before = auditProjection(snapshot);
-    const after = auditProjection(row);
-    if (projectionMoved(before, after)) {
+    const beforeProj = auditProjection(snapshot);
+    const afterProj = auditProjection(row);
+    const undisclosed = undisclosedMoved(snapshot, row, UNDISCLOSED);
+    if (undisclosed || projectionMoved(beforeProj, afterProj)) {
       await auditMutation(db, ctx, {
         action: "mcp_connection.update",
         target: `mcp_connection:${id}`,
-        before,
-        after,
+        before: undisclosed ? markUndisclosed(beforeProj) : beforeProj,
+        after: undisclosed ? markUndisclosed(afterProj) : afterProj,
       });
     }
     return toDto(row);

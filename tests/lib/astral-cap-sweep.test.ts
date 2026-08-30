@@ -420,10 +420,6 @@ const BARE_SLICES: Record<
   // The tool name a template derives to, after the name was reduced to [a-z0-9_]. The two cuts moved
   // here from templates.ts when the slug rules were split out for the console to import; this ledger
   // is keyed by PATH, so a move reads exactly like an unaccounted cut appearing from nowhere.
-  // The audit fingerprint of whatever a projection may not publish: a hex digest, so the cut cannot
-  // land inside a surrogate pair. Same shape and same reason as tenant-settings' over-ceiling
-  // sentence (#399).
-  "src/modules/audit/projection.ts": [1, "ascii"],
   "src/modules/documents/slug.ts": [2, "ascii"],
   "src/modules/flowlog/export.ts": [2, "fixed-format + array"],
   "src/modules/flowlog/read.ts": [1, "array"],

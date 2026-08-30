@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { clipText, makeStorable } from "@/lib/text";
 import { readableVaultRef } from "@/modules/vault/service";
 
@@ -102,34 +101,51 @@ export function refForAudit(stored: string | null): {
   return { ref, opaque: stored !== null && ref === null };
 }
 
-// The other half of a projection: one fingerprint over every mutable column the row may NOT publish.
+// The other half of the rule: the columns a row may NOT publish, compared but never carried.
 //
-// The rule this enforces is that a column is either projected in a form safe to keep forever, or
-// folded in here — never left out of both. Left out of both, the column changes and the projection
-// does not, `projectionMoved` sees nothing, and the edit writes no row at all. That is not a corner:
-// review found it on five columns at once (a tool's headers/body/schemas, an integration's config
-// VALUES under unchanged keys, an experiment's variant prompts), and each of those is the ordinary
-// edit its family gets.
+// The rule is that a mutable column is either projected in a form safe to keep forever, or listed
+// here — never left out of both. Left out of both, the column changes and the projection does not,
+// `projectionMoved` sees nothing, and the edit writes no row at all. That is not a corner: review
+// found it on five columns at once (a tool's headers/body/schemas, an integration's config VALUES
+// under unchanged keys, an experiment's variant prompts), and each of those is the ordinary edit its
+// family gets.
 //
-// It is a digest rather than the values because the columns that end up here are exactly the ones a
-// row may not carry — a free-form bag whose contents nothing validated, a prompt, a document body.
-// Two rows can be compared, which is all the trail needs from a body it may not show; the target
-// names the record, and the projected half says which of it moved.
+// WHAT THE ROW KEEPS IS A BOOLEAN, and that is the whole point of the shape. These columns are the
+// ones a row may not carry — a free-form bag nothing validated, a prompt, a document body — so
+// anything DERIVED from them may not be carried either: an unsalted digest of a low-entropy value
+// is an offline verifier for it, and `audit_logs` is append-only and readable by every tenant admin
+// long after the record itself is deleted. The comparison happens here, in memory, on values that
+// are already in hand; only the answer is stored. Same answer #394 reached for the settings bag
+// (`src/modules/agents/audit-projection.ts`, `unreadConfigChanged`), for the same reason.
 //
 // BigInt is stringified on the way in: `JSON.stringify` throws on it, and a column that threw here
 // would take the audit row down with the mutation it belongs to.
-export function digestForAudit(...values: unknown[]): string {
-  return (
-    createHash("sha256")
-      .update(
-        JSON.stringify(values, (_k, v) =>
-          typeof v === "bigint" ? String(v) : v,
-        ),
-      )
-      .digest("hex")
-      // NOTE: the cut is over a hex digest, so it cannot land inside a surrogate pair — the same
-      // reason tenant-settings' over-ceiling fingerprint gives, and the entry for this file in
-      // `tests/lib/astral-cap-sweep.test.ts` says so.
-      .slice(0, 16)
+function stableJson(v: unknown): string {
+  // A column the service did not READ is `undefined` on both sides, which would compare equal on
+  // every save and leave that column silently uncovered. `JSON.stringify` renders it as `undefined`
+  // (the value, not a string), so the sentinel is what keeps it distinguishable from a stored
+  // `null` — and `tests/modules/audit-config-families.test.ts` fails while a name in an
+  // `UNDISCLOSED` list is not a key of that module's `select`, so it should never arise.
+  if (v === undefined) return "\u0000undefined";
+  return JSON.stringify(v, (_k, val) =>
+    typeof val === "bigint" ? String(val) : val,
   );
+}
+
+export function undisclosedMoved(
+  before: Record<string, unknown>,
+  after: Record<string, unknown>,
+  columns: readonly string[],
+): boolean {
+  return columns.some((c) => stableJson(before[c]) !== stableJson(after[c]));
+}
+
+// Put on BOTH sides, like #394's marker: it says a write moved something the row does not show, and
+// that is a fact about the change rather than about either end of it. The audit write is gated on
+// `undisclosedMoved` directly, never on this marker moving `projectionMoved` — two identical
+// markers move nothing, which is exactly why the gate cannot be left to it.
+export function markUndisclosed<T extends object>(
+  projection: T,
+): T & { undisclosedChanged: true } {
+  return { ...projection, undisclosedChanged: true };
 }

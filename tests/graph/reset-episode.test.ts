@@ -82,3 +82,48 @@ describe("a read that cannot answer", () => {
     expect(await fence(absent, new Date())({ strict: false })).toBe(true);
   });
 });
+
+// THE CALL SITE IS WHERE THIS CAN GO SILENT. `episodeAt` is optional on `RunAgentTurnParams`, for
+// the reason the field states (the hundred-odd tests that drive a turn with no command racing it
+// would each have to say so, which is the same call `authContext` right above it made). What that
+// buys in signal it gives up in enforcement: a production caller that omits it gets a `null`
+// baseline, which still catches a reset landing after the turn started and misses one that landed
+// before — silently, since nothing fails.
+//
+// So the enforcement is here, and it is a scan of the SOURCE because that is where the omission
+// lives. One production call site today; the assertion on the count is what keeps a scan that
+// suddenly matches nothing from passing as "every call site is fine".
+describe("every production caller names the episode it observed", () => {
+  test("runAgentTurn is never called without episodeAt", async () => {
+    const src = await Bun.file(
+      new URL("../../src/modules/chatwoot/webhook.ts", import.meta.url),
+    ).text();
+    const anchor = "runAgentTurn({";
+    const sites: string[] = [];
+    for (
+      let i = src.indexOf(anchor);
+      i !== -1;
+      i = src.indexOf(anchor, i + 1)
+    ) {
+      // The object literal, by balancing braces from the one the anchor opens — a fixed window would
+      // measure whatever happens to follow, and the argument here is forty lines long.
+      let depth = 0;
+      let end = i + anchor.length - 1;
+      for (let j = end; j < src.length; j++) {
+        if (src[j] === "{") depth++;
+        else if (src[j] === "}") {
+          depth--;
+          if (depth === 0) {
+            end = j;
+            break;
+          }
+        }
+      }
+      sites.push(src.slice(i, end + 1));
+    }
+    // A scan that finds nothing is as wrong as one that finds a bad site: the anchor would have
+    // moved (a rename, a call built from a variable) and this test would go on passing forever.
+    expect(sites).toHaveLength(1);
+    for (const site of sites) expect(site).toContain("episodeAt:");
+  });
+});

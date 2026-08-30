@@ -33,6 +33,9 @@ const CONTACT_CW_ID = 909;
 const CONTACT_INBOX_ID = 371;
 const REPLY = "RESPOSTA-DO-TURNO-DE-ANTES";
 const ATTR_KEY = "qualificado";
+// The authorization endpoint the pre-turn gate calls. TEST-NET-3 on the discard port, like the
+// instance URL: nothing is dialed, `globalThis.fetch` is the double.
+const AUTH_URL = "https://203.0.113.11:9/authorize";
 
 // The model of the turn that is already running when the operator types /reset: it calls a tool
 // that WRITES to Chatwoot and then answers. Both halves matter and they fail differently — the
@@ -82,10 +85,18 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
-function fakeChatwoot(): { calls: CwCall[]; impl: typeof fetch } {
+function fakeChatwoot(
+  // Called when the contact-authorization endpoint is hit. The pre-turn gate is the seam this suite
+  // parks a delivery in: it sits before the turn's own reads, and it reaches the network.
+  onAuthorize?: () => Promise<void>,
+): { calls: CwCall[]; impl: typeof fetch } {
   const calls: CwCall[] = [];
   const impl = (async (input, init) => {
     const url = new URL(String(input));
+    if (String(input).startsWith(AUTH_URL)) {
+      await onAuthorize?.();
+      return jsonResponse({ authorized: true });
+    }
     const method = (init?.method ?? "GET").toUpperCase();
     const token = new Headers(init?.headers).get(CHATWOOT_AUTH_HEADER) ?? "";
     const raw = init?.body;
@@ -268,6 +279,9 @@ describe.skipIf(!dbUp)("a turn already running when /reset lands", () => {
         chatwootInstanceId: instanceId,
         chatwootContactId: CONTACT_CW_ID,
         name: "Cliente",
+        // The authorization gate has nothing to ask about without one, and answers `no_identity`
+        // before it ever reaches the endpoint this suite parks in.
+        phone: "+5511955554444",
       },
     });
     await suDb.conversation.create({
@@ -437,6 +451,112 @@ describe.skipIf(!dbUp)("a turn already running when /reset lands", () => {
         })
       ).status,
     ).toBe("PROCESSED");
+  }, 30000);
+
+  // The window the round-1 review named, and the one the turn's OWN read cannot cover: the command
+  // overtakes the delivery before it ever loads a config. The mark then already carries the
+  // operator's write, so a baseline captured there would be compared against itself and every later
+  // ask would pass — the model runs and the tools fire, with only the final reply superseded.
+  //
+  // Parked in the contact-authorization call, which is a real pre-turn gate that reaches the network
+  // (docs/contact-auth.md). What makes it the right seam is not the endpoint but the position: it
+  // runs after the mirror write, which is where the delivery reads the mark it carries.
+  test("stands down even when the command overtook it before the turn loaded anything", async () => {
+    await suDb.agent.updateMany({
+      where: { tenantId },
+      data: {
+        settings: {
+          debounce: { enabled: false },
+          split: { enabled: false },
+          contactAuth: { enabled: true, url: AUTH_URL, mode: "perMessage" },
+        },
+      },
+    });
+    const inGate = Promise.withResolvers<void>();
+    const held = Promise.withResolvers<void>();
+    let gated = false;
+    const cw = fakeChatwoot(async () => {
+      if (gated) return;
+      gated = true;
+      inGate.resolve();
+      await held.promise;
+    });
+    globalThis.fetch = cw.impl;
+
+    const model = new SetAttributeThenReplyModel();
+    const turn = deliver("dá pra parcelar?", {
+      makeModel: () => model as unknown as BaseChatModel,
+    });
+    try {
+      await Promise.race([
+        inGate.promise,
+        Bun.sleep(10_000).then(() => {
+          throw new Error("the delivery never reached the authorization gate");
+        }),
+      ]);
+      await deliver("/reset");
+      const afterReset = cw.calls.length;
+      held.resolve();
+      await turn;
+
+      expect(attributeWrites(cw.calls.slice(afterReset))).toEqual([]);
+      expect(model.calls).toBe(0);
+    } finally {
+      // The gate is this test's alone: left on, it refuses every turn the tests below drive.
+      held.resolve();
+      await suDb.agent.updateMany({
+        where: { tenantId },
+        data: {
+          settings: { debounce: { enabled: false }, split: { enabled: false } },
+        },
+      });
+    }
+  }, 30000);
+
+  // THE BOUNDARY OF THIS FENCE, measured rather than asserted. Once the turn holds the durable claim
+  // the model call is in flight, and the asks that guard it have all been answered: a command
+  // landing THERE cannot stop a tool. What it does instead is refuse its own memory step, on the
+  // claim, and say so in the acknowledgement — so the operator is told the conversation was not
+  // fully cleared and /reset is a command they can type again, which is what makes this window a
+  // different defect from the one this PR closes (there the command completes and says nothing).
+  test("a command landing mid-invoke is refused, and says so", async () => {
+    const inModel = Promise.withResolvers<void>();
+    const held = Promise.withResolvers<void>();
+    const cw = fakeChatwoot();
+    globalThis.fetch = cw.impl;
+    const model = new SetAttributeThenReplyModel();
+    const parked = {
+      invoke: model.invoke.bind(model),
+      bindTools: (tools: unknown) => {
+        const bound = model.bindTools(tools);
+        return {
+          invoke: async () => {
+            inModel.resolve();
+            await held.promise;
+            return bound.invoke();
+          },
+        };
+      },
+    };
+    const turn = deliver("consegue ver meu pedido?", {
+      makeModel: () => parked as unknown as BaseChatModel,
+    });
+    await Promise.race([
+      inModel.promise,
+      Bun.sleep(10_000).then(() => {
+        throw new Error("the turn never reached the model call");
+      }),
+    ]);
+    await deliver("/reset");
+    held.resolve();
+    await turn;
+
+    const ack = cw.calls
+      .filter((c) => c.method === "POST" && c.path.endsWith("/messages"))
+      .map((c) => String((c.body as { content?: string })?.content ?? ""))
+      .find((t) => t.includes("🔄") || t.includes("memória"));
+    // The command reports the step it could not do, instead of confirming a clean slate.
+    expect(ack ?? "").toContain("memória");
   }, 30000);
 
   // The control, and it is what says the fence reads the EPISODE rather than "a reset ever

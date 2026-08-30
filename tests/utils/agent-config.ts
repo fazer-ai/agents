@@ -33,7 +33,6 @@ export function makeConfig(
     agentBotId: null,
     agentBotToken: null,
     conversationDbId: null,
-    conversationResetAt: null,
     inboxDbId: null,
     channelType: null,
     contactDbId: null,

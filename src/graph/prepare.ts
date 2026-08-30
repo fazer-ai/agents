@@ -166,11 +166,6 @@ export interface AgentConfig {
   agentBotId: number | null;
   agentBotToken: string | null;
   conversationDbId: bigint | null;
-  // What `Conversation.resetAt` said when this turn's config was loaded — the episode the run
-  // belongs to. The direct webhook turn compares it against the live value to notice a /reset that
-  // landed under it (src/graph/runtime.ts). null in the playground, and on a conversation no reset
-  // has ever cleared.
-  conversationResetAt: Date | null;
   // The DB Inbox.id this conversation belongs to (null in the playground / no mirror row). Feeds
   // the per-inbox usage attribution on LlmUsage.
   inboxDbId: bigint | null;
@@ -504,10 +499,6 @@ export async function loadAgentConfig(
     select: {
       id: true,
       contactInboxId: true,
-      // The episode this turn is about to run in, as of its start. Read here rather than beside the
-      // turn because this query already has the row, and the whole point is that the value is the
-      // one the run BEGAN with.
-      resetAt: true,
       // NOTE: Mirrored Chatwoot custom attributes (conversation + linked kanban card); the contact's
       // own bag comes from the relation below. Feed the attribute-context block — no API call. The
       // three bags are unbounded jsonb, so they are projected ONLY when the agent selected keys:
@@ -736,7 +727,6 @@ export async function loadAgentConfig(
     agentBotId: bot?.chatwootAgentBotId ?? null,
     agentBotToken: bot ? decryptJson<string>(bot.accessToken) : null,
     conversationDbId: conv?.id ?? null,
-    conversationResetAt: conv?.resetAt ?? null,
     inboxDbId: conv?.inbox?.id ?? null,
     channelType: conv?.inbox?.channelType ?? null,
     contactDbId: conv?.contact?.id ?? null,

@@ -3798,6 +3798,10 @@ export async function processChatwootDelivery(
             base,
             deps: params.deps,
             authContext: gate.authContext,
+            // As the MIRROR found it, at the top of this delivery — not as the turn's own read finds
+            // it, which is after the gates, the media pass and the ceiling have all had time to be
+            // overtaken by the command (../../graph/reset-episode.ts).
+            episodeAt: mirror.resetAt,
           }).then(
             (o) => {
               params.onDirectTurn?.({ kind: "outcome", outcome: o });

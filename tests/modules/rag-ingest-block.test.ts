@@ -282,6 +282,35 @@ describe.skipIf(!dbUp)(
       expect(config.model).toBe("text-embedding-3-small");
     });
 
+    // `updateEmbeddingSettings` validates that the ref RESOLVES and nothing else, and four other
+    // kinds persist a baseUrl of their own. Honouring it for any kind means the operator who picks
+    // the Chatwoot credential here POSTs every chunk of their knowledge base at the Chatwoot host,
+    // with a request that looks entirely plausible on the way out.
+    test("a base URL belonging to another service never becomes the embedding endpoint", async () => {
+      const { id } = await seedTenant("embed-wrong-kind");
+      const entry = await createVaultEntry(
+        ctx(id),
+        {
+          name: "chatwoot-of-this-tenant",
+          value: "internal-test-value",
+          kind: "chatwoot_api_token",
+          baseUrl: "https://chatwoot.internal.example",
+        },
+        undefined,
+        undefined,
+        appDb,
+      );
+      await updateEmbeddingSettings(
+        ctx(id),
+        { credentialRef: entry.ref },
+        appDb,
+      );
+      const config = await runScopedOn(appDb, ctx(id), (db) =>
+        resolveEmbeddingConfig(db, id, "text-embedding-3-small"),
+      );
+      expect(config.baseURL).toBeUndefined();
+    });
+
     // Review finding, round 4: this shape also rides on the documents list, which any authenticated
     // role can read, while the reindex endpoint that needs the deeplink is TENANT_ADMIN. The ref is
     // still resolved here — the controller is what drops it — so the split has to stay visible.

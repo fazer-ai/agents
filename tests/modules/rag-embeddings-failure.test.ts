@@ -64,10 +64,20 @@ describe("an embedding failure carries no part of what was embedded", () => {
     baseURL,
   });
 
+  // The SSRF guard is ON here (`tests/setup.ts` sets NODE_ENV=test, so `allowPrivateTargets` is
+  // false) and the fixture below is a loopback server, which the guard refuses — correctly, and in
+  // production too, where reaching a private endpoint is an explicit SSRF_ALLOW_PRIVATE_TARGETS
+  // opt-in. The subject here is what a provider's REJECTION is allowed to say, so the guard is
+  // stubbed out of the way rather than tested twice; `rag-embeddings.test.ts` owns the assertion
+  // that it runs at all, and before any fetch.
+  const deps = () => ({ assertSafe: async (u: string) => new URL(u) });
+
   // Both entry points, because they leak into different stores and a rule applied to one of two
   // callers is the shape this whole change exists to stop repeating.
   test("the query path reports the status, not the question", async () => {
-    const err = (await embedQuery(MARKER, cfg()).catch((e) => e)) as Error;
+    const err = (await embedQuery(MARKER, cfg(), deps()).catch(
+      (e) => e,
+    )) as Error;
     expect(err).toBeInstanceOf(Error);
     expect(err.message).not.toContain(MARKER);
     expect(err.message).toBe("HTTP 400");
@@ -75,7 +85,9 @@ describe("an embedding failure carries no part of what was embedded", () => {
   });
 
   test("the document path reports the status, not the text", async () => {
-    const err = (await embedTexts([MARKER], cfg()).catch((e) => e)) as Error;
+    const err = (await embedTexts([MARKER], cfg(), deps()).catch(
+      (e) => e,
+    )) as Error;
     expect(err).toBeInstanceOf(Error);
     expect(err.message).not.toContain(MARKER);
     expect(err.message).toBe("HTTP 400");
@@ -90,7 +102,7 @@ describe("an embedding failure carries no part of what was embedded", () => {
       seen.push(args[0]);
     };
     try {
-      await embedQuery(MARKER, cfg()).catch(() => undefined);
+      await embedQuery(MARKER, cfg(), deps()).catch(() => undefined);
     } finally {
       (logger as { warn: unknown }).warn = realWarn;
     }
@@ -103,6 +115,6 @@ describe("an embedding failure carries no part of what was embedded", () => {
   // The early return is not a way past the boundary: an empty batch never calls the provider, so
   // there is nothing to reduce and nothing to leak.
   test("an empty batch never reaches the provider", async () => {
-    expect(await embedTexts([], cfg())).toEqual([]);
+    expect(await embedTexts([], cfg(), deps())).toEqual([]);
   });
 });

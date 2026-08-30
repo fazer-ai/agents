@@ -14,6 +14,7 @@ import {
   mcpConnectionList,
   toolList,
 } from "@/modules/mcp/read";
+import { mcpConnectionUpdate } from "@/modules/mcp/write-agents";
 import {
   createMcpConnection,
   listMcpConnections,
@@ -110,6 +111,7 @@ describe.skipIf(!dbUp)(
     afterAll(async () => {
       if (su && tenantId) {
         for (const table of [
+          "audit_logs",
           "tool_definitions",
           "mcp_server_connections",
           "integration_instances",
@@ -168,6 +170,25 @@ describe.skipIf(!dbUp)(
 
         const one = await getToolDefinition(ctx(), BigInt(made.id), appDb);
         expect(JSON.stringify(one).includes(PLANTED)).toBe(false);
+      });
+
+      // WHAT NULL MEANS, and the four MCP descriptions say the same sentence. The guard proves the
+      // value IS a reference, deliberately not that it resolves (#437), so a ref whose entry was
+      // deleted still comes back: the operator sees a credential that is set and broken instead of a
+      // field that reads empty. Pinned because the first spelling of those descriptions said "names
+      // no entry", which is a different and false claim.
+      test("a ref whose entry is gone is still a ref, and is still shown", async () => {
+        const made = await create("td-dangling");
+        await plant(
+          "tool_definitions",
+          "credential_ref",
+          BigInt(made.id),
+          "vault:999999999",
+        );
+        const row = (await listToolDefinitions(ctx(), appDb)).find(
+          (t) => t.name === "td-dangling",
+        );
+        expect(row?.credentialRef).toBe("vault:999999999");
       });
 
       test("a lenient spelling is answered with the canonical one", async () => {
@@ -331,6 +352,71 @@ describe.skipIf(!dbUp)(
         // three refusals carry no planted value either, and would pass the line above.
         expect(text.includes(name)).toBe(true);
       }
+    });
+
+    // ── the AUDIT row, which is where a leak would have been permanent ──
+    //
+    // `mcpConnectionUpdate` projects its before/after out of the DTO, so the column reached
+    // `recordMcpAudit` and an append-only row. An MCP caller clearing an opaque ref therefore wrote
+    // whatever the column held — plausibly a secret — into storage nothing deletes.
+    //
+    // What is LEFT is a diff that under-reports: the before is now null and the caller sends null, so
+    // the change reads as none while the column does get cleared. That is the residue of removing the
+    // leak, and it under-reports the removal of a value that resolved nowhere. A presence signal on
+    // the DTO would close it, and that is a different mechanism from this one.
+
+    test("clearing an opaque ref over MCP leaves no trace of what it held", async () => {
+      const principal: VerifiedToken = {
+        userId: 9438n,
+        tenantId,
+        role: "TENANT_ADMIN",
+        scopes: ["mcp:read", "mcp:write"],
+        clientId: "c",
+        jti: "j",
+      };
+      const made = await createMcpConnection(
+        ctx(),
+        {
+          name: "mcp-audit",
+          transport: "streamableHttp",
+          url: outboundUrl("/mcp"),
+          credentialRef: `vault:${secretId}`,
+        },
+        appDb,
+      );
+      await plant(
+        "mcp_server_connections",
+        "credential_ref",
+        BigInt(made.id),
+        PLANTED,
+      );
+
+      const res = await mcpConnectionUpdate(
+        principal,
+        {
+          connection_id: made.id,
+          credential_ref: null,
+          dry_run: false,
+        },
+        { base: appDb },
+      );
+      expect(res.ok).toBe(true);
+
+      const rows = await (su as PrismaClient).$queryRawUnsafe<
+        { payload: string }[]
+      >(
+        `SELECT row_to_json(a)::text AS payload FROM audit_logs a WHERE tenant_id = ${tenantId} AND action = 'mcp_connection.update'`,
+      );
+      expect(rows.length).toBeGreaterThan(0);
+      for (const r of rows) expect(r.payload.includes(PLANTED)).toBe(false);
+
+      const stored = await (
+        su as PrismaClient
+      ).mcpServerConnection.findUniqueOrThrow({
+        where: { id: BigInt(made.id) },
+        select: { credentialRef: true },
+      });
+      expect(stored.credentialRef).toBe(null);
     });
 
     // ── what the echo-back does, which is the question the redaction OPENS ──

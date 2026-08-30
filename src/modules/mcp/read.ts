@@ -89,7 +89,9 @@ import {
 // stable `vault:<id>` the column holds. This comment claimed NAMES for all of them and was true of
 // the two it could see — the entity DTOs were passing the COLUMN through, and until #126 that column
 // took any string, so a secret typed into it reached every `mcp:read` client (issue #438). The
-// services redact through `readableVaultRef` now: a stored value that names no entry reads as null.
+// services redact through `readableVaultRef` now: a stored value that is not a reference reads as null. A ref whose
+// ENTRY was deleted still comes back — the guard proves the value is a reference, deliberately not
+// that it resolves, so a dangling ref stays visible instead of reading as an empty field.
 
 const sid = (v: bigint): string => v.toString();
 const sidn = (v: bigint | null): string | null =>

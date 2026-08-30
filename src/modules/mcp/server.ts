@@ -612,7 +612,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
     // Ref-bearing fields come back in ONE of two vocabularies, and which one is the SERVICE's choice,
     // not this file's: the settings reads translate to a vault entry NAME (`vaultNameByRef`), the
     // entity reads hand back the stable `vault:<id>` the column holds. Both go through
-    // `readableVaultRef`, so a stored value that names no entry reads as null rather than reaching a
+    // `readableVaultRef`, so a stored value that is not a reference at all reads as null rather than reaching a
     // client — these columns took any string until #126 (issue #438). The descriptions below say
     // which vocabulary each tool speaks; they used to promise NAMES for all of them, which was true
     // of two.
@@ -649,7 +649,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "tool_list",
       {
         description:
-          "List the tenant's HTTP tool definitions (id, name, method, urlTemplate, enabled, credentialRef as a stable vault:<id> ref, null when the stored value names no entry). No secrets.",
+          "List the tenant's HTTP tool definitions (id, name, method, urlTemplate, enabled, credentialRef as a stable vault:<id> ref, null when the stored value is not a reference at all). No secrets.",
         inputSchema: {},
       },
       async (_args, eff) => writeContent(await toolList(eff)),
@@ -661,7 +661,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "tool_get",
       {
         description:
-          "Get one HTTP tool definition in full (schemas, headers, body, allowedHosts, credentialRef as a stable vault:<id> ref, null when the stored value names no entry). No secrets.",
+          "Get one HTTP tool definition in full (schemas, headers, body, allowedHosts, credentialRef as a stable vault:<id> ref, null when the stored value is not a reference at all). No secrets.",
         inputSchema: { tool_id: z.string() },
       },
       async (args: { tool_id: string }, eff) =>
@@ -674,7 +674,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "mcp_connection_list",
       {
         description:
-          "List the tenant's outbound MCP server connections (id, name, transport, url/command, enabled, credentialRef as a stable vault:<id> ref, null when the stored value names no entry). No secrets.",
+          "List the tenant's outbound MCP server connections (id, name, transport, url/command, enabled, credentialRef as a stable vault:<id> ref, null when the stored value is not a reference at all). No secrets.",
         inputSchema: {},
       },
       async (_args, eff) => writeContent(await mcpConnectionList(eff)),
@@ -686,7 +686,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "integration_list",
       {
         description:
-          "List the tenant's integration instances (id, catalogType, name, enabled, config, credentialRef/inboundSecretRef as stable vault:<id> refs, null when the stored value names no entry). No secrets, no route tokens.",
+          "List the tenant's integration instances (id, catalogType, name, enabled, config, credentialRef/inboundSecretRef as stable vault:<id> refs, null when the stored value is not a reference at all). No secrets, no route tokens.",
         inputSchema: {},
       },
       async (_args, eff) => writeContent(await integrationList(eff)),

@@ -267,4 +267,32 @@ describe("FormField help", () => {
     // and the field's own message is still named alongside it
     expect(ids.length > 1).toBe(true);
   });
+  // A caller that already knows its control is invalid (BusinessHoursForm marks an overlapping
+  // window) must keep saying so. The round that put `{...props}` first to protect the described-by
+  // merge broke this in the same stroke: the computed `aria-invalid` then won over the caller's,
+  // and the computation did not look at it.
+  test("a control keeps the invalid state its caller declared", () => {
+    render(
+      <FormField label="Opens at">
+        <Input aria-invalid value="" onChange={() => {}} />
+      </FormField>,
+    );
+    expect(
+      screen.getByRole("textbox").getAttribute("aria-invalid"),
+    ).toBeTruthy();
+  });
+
+  // A child that brought its own id keeps it, so the label has to point at THAT one. Pointing at
+  // the generated id would name nothing: clicking the title would focus nothing and the control
+  // would have no name at all.
+  test("the label follows an id the child brought itself", () => {
+    render(
+      <FormField label="Email">
+        <input id="email-field" />
+      </FormField>,
+    );
+    const label = document.querySelector("label") as HTMLLabelElement;
+    expect(label.htmlFor).toBe("email-field");
+    expect(screen.getByRole("textbox").id).toBe("email-field");
+  });
 });

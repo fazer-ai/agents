@@ -107,8 +107,17 @@ export function FormField({
 }: FormFieldProps) {
   const subtext = description ?? hint;
   const titleId = useId();
-  const controlId = useId();
+  const generatedId = useId();
   const messageId = useId();
+  // A child that brought its OWN id keeps it, and the label has to point at THAT: the control's own
+  // id wins in every control here (`props.id ?? field.controlId`), so a label naming the generated
+  // one would name nothing at all. Only a direct child can be read this way; a control buried in a
+  // wrapper is a composite, which is what `group` is for.
+  const childId =
+    isValidElement(children) && typeof children.props === "object"
+      ? (children.props as { id?: string }).id
+      : undefined;
+  const controlId = childId ?? generatedId;
   const hasMessage = !!error || !!subtext;
 
   const field = useMemo<FormFieldContextValue>(

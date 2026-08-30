@@ -38,7 +38,13 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
     const showCount =
       max !== null && count !== null && count >= max * COUNTER_FROM;
     // The field's `error` counts too: a FormField-level refusal has to mark the box it is about.
-    const hasError = error || !!errorMessage || over || !!field.invalid;
+    const hasError =
+      error ||
+      !!errorMessage ||
+      over ||
+      !!field.invalid ||
+      props["aria-invalid"] === true ||
+      props["aria-invalid"] === "true";
     const descriptionId = useId();
     const hasDescription = !!errorMessage || !!helperText || over;
     return (

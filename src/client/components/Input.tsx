@@ -46,7 +46,12 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
     // `aria-describedby` at it. Without this the field's own description is announced nowhere.
     const field = useFormField();
     // The field's `error` counts too: a FormField-level refusal has to mark the box it is about.
-    const hasError = error || !!errorMessage || !!field.invalid;
+    const hasError =
+      error ||
+      !!errorMessage ||
+      !!field.invalid ||
+      props["aria-invalid"] === true ||
+      props["aria-invalid"] === "true";
     const descriptionId = useId();
     const hasDescription = !!errorMessage || !!helperText;
     const [showPassword, setShowPassword] = useState(false);

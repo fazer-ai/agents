@@ -93,6 +93,12 @@ export function Popover({
   // of those may pin: without this flag, Escape on a box the pointer merely hovered open took the
   // pin branch and left it on screen, which is the opposite of what Escape means.
   const fromTrigger = useRef(false);
+  // Whether the close now in flight was a DELIBERATE dismissal of a pinned box, captured before
+  // `pinned` is cleared. Radix fires `onCloseAutoFocus` after the content unmounts, by which time
+  // `pinned` is already false, so reading it there would answer "hover" for every close and a
+  // keyboard user who opened the help with Enter and dismissed it with Escape would be left with
+  // focus on nothing.
+  const restoreFocus = useRef(false);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const cancelClose = useCallback(() => {
@@ -143,6 +149,7 @@ export function Popover({
           pinned.current = true;
           return;
         }
+        restoreFocus.current = pinned.current;
         pinned.current = false;
         setOpen(false);
       }}
@@ -177,7 +184,10 @@ export function Popover({
           // after the pointer left, pull focus out of the field being typed into and onto the `?`.
           // The keystrokes after that go nowhere the operator can see.
           onCloseAutoFocus={(e) => {
-            if (!pinned.current) e.preventDefault();
+            // Let Radix return focus only when the box was dismissed on purpose. It is Radix's
+            // call from there: on an outside click it declines to move focus on its own.
+            if (!restoreFocus.current) e.preventDefault();
+            restoreFocus.current = false;
           }}
           // And it must not RETURN focus either. Radix's non-modal close focuses the trigger unless
           // the event is defaulted away, so a box that merely followed the pointer would, 140ms

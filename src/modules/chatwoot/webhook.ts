@@ -2101,19 +2101,28 @@ async function maybeConsumeCommandOrGate(params: {
       redirectClosedAt: null,
     };
     await step("clear the conversation's watermarks", "marcadores", () =>
-      runScopedOn(base, sysCtx(tenantId), (db) =>
-        db.conversation.update({
+      runScopedOn(base, sysCtx(tenantId), async (db) => {
+        // THE EPISODE BOUNDARY, and it is when the COMMAND ARRIVED rather than when this write runs.
+        // Both sides of the comparison are then `received_at` values Postgres wrote as a column
+        // default, on one clock, and the boundary sits where the operator put it: a customer message
+        // that lands while the command is still calling Chatwoot arrived AFTER the reset and is
+        // answered (../../graph/reset-episode.ts).
+        //
+        // NEVER BACKWARDS, which is what makes it a statement of its own rather than another field
+        // in the update below. Two `/reset` deliveries are dispatched detached and nothing
+        // serializes them, so the older one can finish last; assigned, it would move the boundary
+        // back and let a turn from between the two commands run on a conversation the newer one
+        // cleared. `GREATEST` ignores a NULL, so the first reset writes its own value.
+        //
+        // The fallback is unreachable — this delivery's own claim is what produced the value — and
+        // it is here so the boundary is never left unwritten.
+        await db.$executeRaw`
+          UPDATE conversations
+             SET reset_at = GREATEST(reset_at, ${params.deliveredAt ?? new Date()})
+           WHERE id = ${ctx.conv.id}`;
+        return db.conversation.update({
           where: { id: ctx.conv.id },
           data: {
-            // THE EPISODE BOUNDARY, and it is when the COMMAND ARRIVED rather than when this write
-            // runs. Both sides of the comparison are then `received_at` values Postgres wrote as a
-            // column default, on one clock, and the boundary sits where the operator put it: a
-            // customer message that lands while the command is still calling Chatwoot arrived AFTER
-            // the reset and is answered (../../graph/reset-episode.ts).
-            //
-            // The fallback is unreachable — this delivery's own claim is what produced the value —
-            // and it is here so the mark is never left unwritten.
-            resetAt: params.deliveredAt ?? new Date(),
             lastInboundAt: null,
             lastFollowUpAt: null,
             testNoticeSentAt: null,
@@ -2124,8 +2133,8 @@ async function maybeConsumeCommandOrGate(params: {
             lastErrorAt: null,
             failureNoticeSentAt: null,
           },
-        }),
-      ),
+        });
+      }),
     );
 
     // Clear the agent's memory thread (per contact-inbox / channel), the AgentThread marker (the

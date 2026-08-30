@@ -641,6 +641,48 @@ describe.skipIf(!dbUp)("a turn already running when /reset lands", () => {
     ).toBe(true);
   }, 30000);
 
+  // The boundary never moves BACKWARDS. Two `/reset` deliveries are dispatched detached and nothing
+  // serializes them, so the older one can finish last — and assigned rather than merged, its write
+  // would move the boundary back and let a turn from between the two commands run on a conversation
+  // the newer one cleared.
+  test("an older command finishing last does not move the boundary back", async () => {
+    const inFirst = Promise.withResolvers<void>();
+    const held = Promise.withResolvers<void>();
+    let parked = false;
+    const cw = fakeChatwoot(undefined, async () => {
+      if (parked) return;
+      parked = true;
+      inFirst.resolve();
+      await held.promise;
+    });
+    globalThis.fetch = cw.impl;
+
+    const older = deliver("/reset");
+    await Promise.race([
+      inFirst.promise,
+      Bun.sleep(10_000).then(() => {
+        throw new Error("the first command never reached its live read");
+      }),
+    ]);
+    // The NEWER command arrives and finishes while the older one is still parked.
+    await deliver("/reset");
+    const newest = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: CONV_ID },
+      select: { resetAt: true },
+    });
+    held.resolve();
+    await older;
+
+    expect(
+      (
+        await suDb.conversation.findFirstOrThrow({
+          where: { tenantId, chatwootConversationId: CONV_ID },
+          select: { resetAt: true },
+        })
+      ).resetAt,
+    ).toEqual(newest.resetAt);
+  }, 30000);
+
   // The control, and it is what says the fence reads the EPISODE rather than "a reset ever
   // happened": the conversation above carries a `resetAt` now, and a turn that starts after it
   // answers normally.

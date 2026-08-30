@@ -5,6 +5,7 @@ import config from "@/config";
 import { NotFoundError } from "@/lib/errors";
 import { parseInput } from "@/lib/parse-input";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
+import { digestForAudit } from "@/modules/audit/projection";
 import { auditMutation, projectionMoved } from "@/modules/audit/service";
 
 // Prompt A/B experiments. A thread is bucketed to a variant DETERMINISTICALLY (so re-resolution is
@@ -110,14 +111,19 @@ export async function resolveVariantOverride(
   return variants.find((v) => v.key === key)?.systemPrompt ?? null;
 }
 
-// What the audit row carries: which agent this experiment steers, and the shape of its variants.
+// What the audit row carries.
 //
-// The variants are projected as their KEYS and WEIGHTS, never their `systemPrompt`. A prompt is the
-// largest field an experiment holds and the seam already truncates it to 4000 characters, so
-// carrying it would fill the trail with clipped prose while answering nothing the row is for: what
-// a reader needs from a variant change is that the split moved and which arm it moved for. The
-// prompt itself is readable on the experiment for as long as the experiment exists, and this row
-// outlives it.
+// Same two halves as the other four families: identity, policy and shape are PROJECTED, everything
+// else is DIGESTED so that changing it still moves the projection.
+//
+// The variants contribute their KEYS and WEIGHTS and never their `systemPrompt`. A prompt is the
+// largest field an experiment holds, and what a reader needs from a variant change is that the
+// split moved and which arm it moved for; the prompt is readable on the experiment for as long as
+// the experiment exists, and this row outlives it. But editing one arm's prompt while leaving its
+// key and weight alone is a substantive change to the experiment and moves nothing above, so the
+// whole variant array goes in the digest.
+//
+// `tests/modules/audit-config-families.test.ts` holds the fence over this model's columns.
 function auditProjection(r: {
   name: string;
   agentId: bigint | null;
@@ -133,6 +139,7 @@ function auditProjection(r: {
       const o = (v ?? {}) as Record<string, unknown>;
       return { key: o.key ?? null, weight: o.weight ?? null };
     }),
+    rest: digestForAudit(r.variants),
   };
 }
 

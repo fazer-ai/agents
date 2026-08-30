@@ -8,7 +8,7 @@ import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { AppError, NotFoundError } from "@/lib/errors";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
-import { refForAudit } from "@/modules/audit/projection";
+import { digestForAudit, refForAudit } from "@/modules/audit/projection";
 import { auditMutation, projectionMoved } from "@/modules/audit/service";
 import { readableVaultRef, requireVaultRef } from "@/modules/vault/service";
 import { isUsableHeaderName } from "@/modules/webhooks/inbound/auth";
@@ -101,15 +101,30 @@ export function assertUsableHeaderNames(config: Record<string, unknown>): void {
   }
 }
 
-// What the audit row carries: which catalog entry this is, how its inbound side authenticates, and
-// the two credential references it holds.
+// What the audit row carries.
 //
-// `config` contributes its KEYS and not its values. It is a free-form bag on both writers
-// (`z.record(z.string(), z.unknown())`, no allowlist) whose contents are whatever an operator typed
-// — two of its keys are already read back as HTTP header names — and a value nothing validated does
-// not belong in an append-only row. The keys still answer the question the trail is for: they say
-// that the wiring changed and which part of it, while `redactEndpoint`'s reasoning applies to the
-// rest (where a value is stored says nothing about whether it is a secret).
+// Same two halves as the other four families: identity, policy and shape are PROJECTED, everything
+// else is DIGESTED so that changing it still moves the projection.
+//
+// `config` is where that matters most here. It contributes its sorted KEYS and never its values: it
+// is a free-form bag on both writers (`z.record(z.string(), z.unknown())`, no allowlist) whose
+// contents are whatever an operator typed, two of its keys are read back as HTTP header names, and
+// a value nothing validated does not belong in an append-only row. The keys alone are not enough,
+// though — editing a value under an existing key is the ordinary edit an integration gets, and it
+// moves no key — so the whole bag goes in the digest, which reports the change without carrying it.
+//
+// `routeToken` and `routeTokenHash` are in NEITHER half, deliberately. The token IS the credential
+// the inbound route authenticates by, and the hash is its verifier; the change that matters to them
+// has an action of its own (`integration.rotate_token`), so nothing is lost by leaving both out and
+// a great deal would be lost by folding them in.
+//
+//
+// The RAW `credentialRef` is in the digest as well as projected, and that is not belt-and-braces:
+// two different opaque values both project as `{ref: null, opaque: true}`, so swapping one for the
+// other would move nothing. `requireVaultRef` has refused that spelling on the way in since #126,
+// which makes it a legacy row rather than a reachable write — but the fence answers for columns and
+// not for what today's writer happens to allow, and folding it in costs a digest argument.
+// `tests/modules/audit-config-families.test.ts` holds the fence over this model's columns.
 function auditProjection(r: {
   catalogType: string;
   name: string;
@@ -134,6 +149,7 @@ function auditProjection(r: {
     inboundAuthStrategy: r.inboundAuthStrategy,
     inboundSecretRef: inbound.ref,
     inboundSecretRefOpaque: inbound.opaque,
+    rest: digestForAudit(r.config, r.credentialRef, r.inboundSecretRef),
   };
 }
 

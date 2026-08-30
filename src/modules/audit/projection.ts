@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { clipText, makeStorable } from "@/lib/text";
 import { readableVaultRef } from "@/modules/vault/service";
 
@@ -99,4 +100,36 @@ export function refForAudit(stored: string | null): {
 } {
   const ref = readableVaultRef(stored);
   return { ref, opaque: stored !== null && ref === null };
+}
+
+// The other half of a projection: one fingerprint over every mutable column the row may NOT publish.
+//
+// The rule this enforces is that a column is either projected in a form safe to keep forever, or
+// folded in here — never left out of both. Left out of both, the column changes and the projection
+// does not, `projectionMoved` sees nothing, and the edit writes no row at all. That is not a corner:
+// review found it on five columns at once (a tool's headers/body/schemas, an integration's config
+// VALUES under unchanged keys, an experiment's variant prompts), and each of those is the ordinary
+// edit its family gets.
+//
+// It is a digest rather than the values because the columns that end up here are exactly the ones a
+// row may not carry — a free-form bag whose contents nothing validated, a prompt, a document body.
+// Two rows can be compared, which is all the trail needs from a body it may not show; the target
+// names the record, and the projected half says which of it moved.
+//
+// BigInt is stringified on the way in: `JSON.stringify` throws on it, and a column that threw here
+// would take the audit row down with the mutation it belongs to.
+export function digestForAudit(...values: unknown[]): string {
+  return (
+    createHash("sha256")
+      .update(
+        JSON.stringify(values, (_k, v) =>
+          typeof v === "bigint" ? String(v) : v,
+        ),
+      )
+      .digest("hex")
+      // NOTE: the cut is over a hex digest, so it cannot land inside a surrogate pair — the same
+      // reason tenant-settings' over-ceiling fingerprint gives, and the entry for this file in
+      // `tests/lib/astral-cap-sweep.test.ts` says so.
+      .slice(0, 16)
+  );
 }

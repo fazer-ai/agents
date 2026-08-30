@@ -697,10 +697,10 @@ describe.skipIf(!dbUp)(
       // The structure did not move — same block, same id, same type — so without the digest this
       // edit, which is the commonest one a template gets, would write no row.
       expect(row).toBeDefined();
-      const before = row?.before as { contentDigest: string; blocks: unknown };
-      const after = row?.after as { contentDigest: string; blocks: unknown };
-      expect(before.blocks).toEqual(after.blocks);
-      expect(before.contentDigest).not.toBe(after.contentDigest);
+      const before = row?.before as { rest: string; blocks: unknown };
+      const after = row?.after as { rest: string; blocks: unknown };
+      expect(before?.blocks).toEqual(after?.blocks);
+      expect(before?.rest).not.toBe(after?.rest);
       const text = JSON.stringify(row, (_k, v) =>
         typeof v === "bigint" ? String(v) : v,
       );
@@ -744,5 +744,476 @@ describe.skipIf(!dbUp)(
         "auditMutation(",
       );
     });
+
+    // ── the half that is digested, and why it is not optional ──
+    //
+    // Review round 1 found five columns that changed without the projection noticing. Each one below
+    // is an ORDINARY edit of its family, and each writes no row at all when its column is in neither
+    // half of the projection.
+
+    test("a tool patch that touches only an omitted field still writes a row", async () => {
+      const id = await (FAMILIES[0] as Family).create(ctx());
+      await clearAudit();
+      // `headers` is not projected — a header name and value are the caller's to write and the row
+      // may not keep them — and editing the headers of an HTTP tool is the ordinary edit it gets.
+      await updateToolDefinition(
+        ctx(),
+        id,
+        { headers: { "X-Trace": "on" } },
+        appDb,
+      );
+      const r = await rows("tool.update");
+      expect(r.length).toBe(1);
+      const before = r[0]?.before as { rest: string } | undefined;
+      const after = r[0]?.after as { rest: string } | undefined;
+      expect(before?.rest).not.toBe(after?.rest);
+      await (FAMILIES[0] as Family).del(ctx(), id);
+    });
+
+    test("a token in a tool's url template does not reach the row", async () => {
+      await clearAudit();
+      const created = await createToolDefinition(
+        ctx(),
+        {
+          name: `tu${uniq()}`,
+          label: "l",
+          urlTemplate:
+            "https://203.0.113.10/hook/tok-399-in-the-path?k=tok-399-in-the-query",
+          allowedHosts: ["203.0.113.10"],
+        },
+        appDb,
+      );
+      const [row] = await rows("tool.create");
+      expect((row?.after as { urlMasked: string } | undefined)?.urlMasked).toBe(
+        "https://203.0.113.10/…",
+      );
+      const text = JSON.stringify(row, (_k, v) =>
+        typeof v === "bigint" ? String(v) : v,
+      );
+      expect(text).not.toContain("tok-399-in-the-path");
+      expect(text).not.toContain("tok-399-in-the-query");
+      await deleteToolDefinition(ctx(), BigInt(created.id), appDb);
+    });
+
+    test("a token in an MCP connection's url does not reach the row", async () => {
+      await clearAudit();
+      const created = await createMcpConnection(
+        ctx(),
+        {
+          name: `mu${uniq()}`,
+          transport: "streamableHttp",
+          url: "https://203.0.113.10/mcp/tok-399-mcp-path",
+        },
+        appDb,
+      );
+      const [row] = await rows("mcp_connection.create");
+      expect((row?.after as { urlMasked: string } | undefined)?.urlMasked).toBe(
+        "https://203.0.113.10/…",
+      );
+      expect(
+        JSON.stringify(row, (_k, v) => (typeof v === "bigint" ? String(v) : v)),
+      ).not.toContain("tok-399-mcp-path");
+      await deleteMcpConnection(ctx(), BigInt(created.id), appDb);
+    });
+
+    test("an integration config value edited under an existing key still writes a row", async () => {
+      const created = await createIntegrationInstance(
+        ctx(),
+        {
+          catalogType: "ASAAS",
+          name: `iv${uniq()}`,
+          config: { pixKey: "first-399" },
+        },
+        appDb,
+      );
+      await clearAudit();
+      // The key set does not move, which is the ordinary shape of an integration edit.
+      await updateIntegrationInstance(
+        ctx(),
+        created.id,
+        { config: { pixKey: "second-399" } },
+        appDb,
+      );
+      const r = await rows("integration.update");
+      expect(r.length).toBe(1);
+      const before = r[0]?.before as
+        | { rest: string; configKeys: string[] }
+        | undefined;
+      const after = r[0]?.after as
+        | { rest: string; configKeys: string[] }
+        | undefined;
+      expect(before?.configKeys).toEqual(after?.configKeys);
+      expect(before?.rest).not.toBe(after?.rest);
+      const text = JSON.stringify(r[0], (_k, v) =>
+        typeof v === "bigint" ? String(v) : v,
+      );
+      expect(text).not.toContain("first-399");
+      expect(text).not.toContain("second-399");
+      await deleteIntegrationInstance(ctx(), created.id, appDb);
+    });
+
+    test("an experiment variant's prompt edited alone still writes a row", async () => {
+      const e = await createExperiment({
+        ctx: ctx(),
+        name: `ep${uniq()}`,
+        variants: [
+          { key: "a", systemPrompt: "FIRST-399", weight: 1 },
+          { key: "b", systemPrompt: "B", weight: 1 },
+        ],
+        base: appDb,
+      });
+      await clearAudit();
+      // Same keys, same weights: only the prompt behind arm `a` moved.
+      await updateExperiment({
+        ctx: ctx(),
+        id: e.id,
+        variants: [
+          { key: "a", systemPrompt: "SECOND-399", weight: 1 },
+          { key: "b", systemPrompt: "B", weight: 1 },
+        ],
+        base: appDb,
+      });
+      const r = await rows("experiment.update");
+      expect(r.length).toBe(1);
+      const before = r[0]?.before as
+        | { rest: string; variants: unknown }
+        | undefined;
+      const after = r[0]?.after as
+        | { rest: string; variants: unknown }
+        | undefined;
+      expect(before?.variants).toEqual(after?.variants);
+      expect(before?.rest).not.toBe(after?.rest);
+      const text = JSON.stringify(r[0], (_k, v) =>
+        typeof v === "bigint" ? String(v) : v,
+      );
+      expect(text).not.toContain("FIRST-399");
+      expect(text).not.toContain("SECOND-399");
+      await deleteExperiment(ctx(), e.id, appDb);
+    });
+
+    // The four the battery caught after the first fix: a column the projection MENTIONS through a
+    // transform that reports less than it holds. Each of these keeps the visible half identical, so
+    // only the digest can say the change happened.
+
+    test("a tool url template edited within the same origin still writes a row", async () => {
+      const created = await createToolDefinition(
+        ctx(),
+        {
+          name: `tp${uniq()}`,
+          label: "l",
+          urlTemplate: "https://203.0.113.10/first",
+          allowedHosts: ["203.0.113.10"],
+        },
+        appDb,
+      );
+      await clearAudit();
+      await updateToolDefinition(
+        ctx(),
+        BigInt(created.id),
+        { urlTemplate: "https://203.0.113.10/second" },
+        appDb,
+      );
+      const r = await rows("tool.update");
+      expect(r.length).toBe(1);
+      const before = r[0]?.before as
+        | { urlMasked: string; rest: string }
+        | undefined;
+      const after = r[0]?.after as
+        | { urlMasked: string; rest: string }
+        | undefined;
+      // The masked half cannot tell these apart, which is exactly why the digest is there.
+      expect(before?.urlMasked).toBe(after?.urlMasked);
+      expect(before?.rest).not.toBe(after?.rest);
+      await deleteToolDefinition(ctx(), BigInt(created.id), appDb);
+    });
+
+    test("an MCP url edited within the same origin still writes a row", async () => {
+      const created = await createMcpConnection(
+        ctx(),
+        {
+          name: `mp${uniq()}`,
+          transport: "streamableHttp",
+          url: "https://203.0.113.10/one",
+        },
+        appDb,
+      );
+      await clearAudit();
+      await updateMcpConnection(
+        ctx(),
+        BigInt(created.id),
+        { url: "https://203.0.113.10/two" },
+        appDb,
+      );
+      const r = await rows("mcp_connection.update");
+      expect(r.length).toBe(1);
+      const before = r[0]?.before as
+        | { urlMasked: string; rest: string }
+        | undefined;
+      const after = r[0]?.after as
+        | { urlMasked: string; rest: string }
+        | undefined;
+      expect(before?.urlMasked).toBe(after?.urlMasked);
+      expect(before?.rest).not.toBe(after?.rest);
+      await deleteMcpConnection(ctx(), BigInt(created.id), appDb);
+    });
+
+    test("a template field edited without changing its key or type still writes a row", async () => {
+      const created = await createDocumentTemplate(
+        ctx(),
+        {
+          name: `df${uniq()}`,
+          blocks: [{ id: "t", type: "text", text: "x" }],
+          fields: [{ name: "cliente", type: "text", label: "Cliente" }],
+        },
+        appDb,
+      );
+      const id = BigInt(created.id);
+      await clearAudit();
+      await updateDocumentTemplate(
+        ctx(),
+        id,
+        {
+          fields: [{ name: "cliente", type: "text", label: "Nome do cliente" }],
+        },
+        appDb,
+      );
+      const r = await rows("document_template.update");
+      expect(r.length).toBe(1);
+      const before = r[0]?.before as
+        | { fields: unknown; rest: string }
+        | undefined;
+      const after = r[0]?.after as
+        | { fields: unknown; rest: string }
+        | undefined;
+      // The visible half NAMES the field, which is what makes the comparison below mean anything:
+      // read under the wrong key it would be `{name: null}` on both sides — equal for the wrong
+      // reason — and a field added or retyped would move nothing here either.
+      expect(after?.fields).toEqual([{ name: "cliente", type: "text" }]);
+      // `{name, type}` is all the visible half carries, and neither moved.
+      expect(before?.fields).toEqual(after?.fields);
+      expect(before?.rest).not.toBe(after?.rest);
+      await deleteDocumentTemplate(ctx(), id, appDb);
+    });
+
+    test("a stdio command's arguments do not reach the row, only its launcher", async () => {
+      // Planted with the SUPERUSER client: creating a stdio connection is gated on
+      // `config.mcpStdioEnabled`, and what is under test is the PROJECTION of such a row rather than
+      // the writer's gate. The row is what an operator with stdio enabled would have.
+      const planted = await su?.mcpServerConnection.create({
+        data: {
+          tenantId,
+          name: `ms${uniq()}`,
+          transport: "stdio",
+          command: "bunx some-server --api-key=sk-399-in-an-argument",
+        },
+        select: { id: true },
+      });
+      const id = planted?.id as bigint;
+      await clearAudit();
+      await deleteMcpConnection(ctx(), id, appDb);
+      const [row] = await rows("mcp_connection.delete");
+      expect(
+        (row?.before as { commandLauncher: string } | undefined)
+          ?.commandLauncher,
+      ).toBe("bunx");
+      // An argument is where a self-hosted server's key goes, and this row outlives the connection.
+      expect(
+        JSON.stringify(row, (_k, v) => (typeof v === "bigint" ? String(v) : v)),
+      ).not.toContain("sk-399-in-an-argument");
+    });
+
+    // ── the fence: every mutable column is in one half or the other ──
+    //
+    // The five findings above were five instances of ONE mistake — a column that is in neither half —
+    // and fixing them one by one would leave the sixth to be found by review again. So the coverage
+    // is cobbled from the SOURCE of the invariant rather than from the projections: the columns come
+    // out of `prisma/schema.prisma`, and a column added to any of these models later fails this test
+    // until its author has decided which half it belongs in.
+    //
+    // Reading the schema is what makes it a fence rather than a restatement. Counting off the
+    // projections would only ever agree with itself (the lesson #438 wrote down: count the DECLARATION
+    // and not the projection of it).
+
+    test("every mutable column of the five models is projected, digested, or exempt with a reason", async () => {
+      const schema = await Bun.file("prisma/schema.prisma").text();
+      const missing: string[] = [];
+      for (const f of FENCED) {
+        const cols = mutableColumns(schema, f.model);
+        // A model whose columns cannot be read is a broken matcher, not a clean model.
+        expect(cols.length).toBeGreaterThan(2);
+        const src = await Bun.file(f.file).text();
+        const covered = coveredColumns(src);
+        for (const c of cols) {
+          if (c in f.exempt || covered.has(c)) continue;
+          missing.push(`${f.model}.${c}`);
+        }
+      }
+      expect(missing).toEqual([]);
+    });
+
+    test("the fence's two halves catch what they are for, over bodies the tree does not hold", () => {
+      const schema = `
+enum Mood {
+  HAPPY
+  SAD
+}
+
+model Widget {
+  id        BigInt   @id
+  tenantId  BigInt
+  name      String
+  secretBag Json
+  count     Int      @default(0)
+  mood      Mood     @default(HAPPY)
+  owner     Tenant   @relation(fields: [tenantId], references: [id])
+  parts     Part[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+`;
+      // Relations and the four columns the row already holds in its own columns are not the
+      // projection's business; every scalar and every enum is — and `Tenant`/`Part` are recognised
+      // as relations WITHOUT either being declared in this fixture, which is what the allowlist
+      // buys over asking whether a type is a model here.
+      expect(mutableColumns(schema, "Widget")).toEqual([
+        "count",
+        "mood",
+        "name",
+        "secretBag",
+      ]);
+      // A model that is not there reads as no columns, which the test above turns into a failure
+      // rather than a silent pass.
+      expect(mutableColumns(schema, "Missing")).toEqual([]);
+
+      const complete = `function auditProjection(r: Row) {
+  return { name: r.name, rest: digestForAudit(r.secretBag, r.count) };
+}`;
+      const leaky = `function auditProjection(r: Row) {
+  return { name: r.name, rest: digestForAudit(r.secretBag) };
+}`;
+      expect(coveredColumns(complete)).toEqual(
+        new Set(["name", "secretBag", "count"]),
+      );
+      // The shape review found: a column read nowhere in the projection, so it moves and the row does
+      // not.
+      expect(coveredColumns(leaky).has("count")).toBe(false);
+      // And the extraction stops at the function, so a mention further down the file does not vouch
+      // for a projection that omits it.
+      expect(
+        coveredColumns(`${leaky}\nfunction other() { return r.count; }`).has(
+          "count",
+        ),
+      ).toBe(false);
+    });
   },
 );
+
+// The columns a projection answers for: every scalar the model declares, minus the four the audit
+// row already holds in its own columns and minus every relation. Enums count as scalars — an
+// inbound auth strategy is a policy an operator changes — so relations are told apart by being
+// declared as `model` in the same schema.
+export function mutableColumns(schema: string, model: string): string[] {
+  // An ALLOWLIST of what counts, not a denylist of what does not. Told the other way round — "a
+  // type that is a model in this schema is a relation" — the predicate quietly admits any type it
+  // does not recognise, and a relation to a model declared elsewhere, or a type this file has not
+  // heard of, becomes a column the fence then demands a projection for. Enums are on the list
+  // because an inbound auth strategy IS a policy an operator changes.
+  const SCALARS = new Set([
+    "String",
+    "Int",
+    "BigInt",
+    "Boolean",
+    "DateTime",
+    "Json",
+    "Float",
+    "Decimal",
+    "Bytes",
+  ]);
+  const enums = new Set(
+    [...schema.matchAll(/^enum\s+(\w+)/gm)].map((m) => m[1] as string),
+  );
+  const block = new RegExp(
+    `^model\\s+${model}\\s*\\{([\\s\\S]*?)^\\}`,
+    "m",
+  ).exec(schema);
+  if (!block?.[1]) return [];
+  const skip = new Set(["id", "tenantId", "createdAt", "updatedAt"]);
+  const out: string[] = [];
+  for (const line of block[1].split("\n")) {
+    const m = /^\s*(\w+)\s+(\w+)(\[\])?\??/.exec(line);
+    if (!m?.[1] || !m[2]) continue;
+    const [, name, type] = m;
+    if (skip.has(name)) continue;
+    if (!SCALARS.has(type) && !enums.has(type)) continue;
+    out.push(name);
+  }
+  return out.sort();
+}
+
+// Which columns a change to would MOVE the projection, which is not the same as which ones it
+// mentions.
+//
+// Mentioning is what the first version of this fence counted, and it passed with the defect
+// restored: `urlMasked: redactEndpoint(r.urlTemplate)` mentions `urlTemplate` while reporting only
+// its origin, so a template edited from `/a` to `/b` moves nothing and writes no row. Same for an
+// MCP `url`, for a `command` shown as its launcher, and for `fields` shown as `{key, type}`. So a
+// column counts in exactly two shapes:
+//
+// - inside the arguments of `digestForAudit(...)`, where every byte of it is folded in; or
+// - as a whole-value pair, `name: r.name`, where the projection carries it as it stands.
+//
+// A transformed projection is neither, and has to appear in the digest as well to count.
+export function coveredColumns(source: string): Set<string> {
+  const start = source.indexOf("function auditProjection(");
+  if (start < 0) return new Set();
+  // Bounded at the function, so a `r.column` anywhere else in the file cannot vouch for it.
+  const next = source.indexOf("\nfunction ", start + 1);
+  const body = source.slice(start, next < 0 ? undefined : next);
+  const out = new Set<string>();
+  for (const m of body.matchAll(/digestForAudit\(([\s\S]*?)\)/g)) {
+    for (const a of (m[1] ?? "").matchAll(/\br\.(\w+)/g)) {
+      out.add(a[1] as string);
+    }
+  }
+  for (const m of body.matchAll(/\b(\w+):\s*r\.\1\b/g)) out.add(m[1] as string);
+  return out;
+}
+
+const FENCED: {
+  model: string;
+  file: string;
+  exempt: Record<string, string>;
+}[] = [
+  {
+    model: "ToolDefinition",
+    file: "src/modules/tool-definitions/service.ts",
+    exempt: {},
+  },
+  {
+    model: "McpServerConnection",
+    file: "src/modules/mcp-connections/service.ts",
+    exempt: {},
+  },
+  {
+    model: "IntegrationInstance",
+    file: "src/modules/integrations/service.ts",
+    exempt: {
+      routeToken:
+        "the inbound credential itself: the route authenticates by nothing else, and the change that matters to it has an action of its own (integration.rotate_token)",
+      routeTokenHash: "the verifier for that same credential",
+    },
+  },
+  {
+    model: "Experiment",
+    file: "src/modules/experiments/service.ts",
+    exempt: {},
+  },
+  {
+    model: "DocumentTemplate",
+    file: "src/modules/documents/templates.ts",
+    exempt: {
+      lastNumber:
+        "the issuer's counter, advanced by issuing a document and not by editing the template",
+    },
+  },
+];

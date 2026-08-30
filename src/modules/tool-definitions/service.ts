@@ -5,7 +5,11 @@ import { normalizeExpectedStatuses } from "@/graph/tools/http-status";
 import { AppError, ConflictError, NotFoundError } from "@/lib/errors";
 import { parseInput } from "@/lib/parse-input";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
-import { refForAudit } from "@/modules/audit/projection";
+import {
+  digestForAudit,
+  redactEndpoint,
+  refForAudit,
+} from "@/modules/audit/projection";
 import { auditMutation, projectionMoved } from "@/modules/audit/service";
 import { readAppointmentDeclaration } from "@/modules/tool-definitions/appointment";
 import { readableVaultRef, requireVaultRef } from "@/modules/vault/service";
@@ -123,34 +127,72 @@ function toDto(r: {
   };
 }
 
-// What the audit row carries: the server-trusted wiring an operator can change, minus the
-// identifiers and timestamps the row already holds in its own columns.
+// What the audit row carries.
 //
-// The four schema bags (headers, query, body, inputSchema) are NOT on it. They are the largest
-// fields a definition has and the only ones that can carry a placeholder value pasted by hand, and
-// what the trail needs from them is that they changed rather than what they became — `urlTemplate`
-// and `allowedHosts` already say where this tool can reach. `credentialRef` is on it because
-// rewiring which credential a tool authenticates with is exactly the class of change a trail exists
-// to attribute.
+// Every mutable column of the row is in one of two halves, and the split is the point rather than
+// the contents of either. What is PROJECTED is identity, policy and shape — safe to keep in a row
+// that is append-only and outlives the definition. What is DIGESTED is everything else, so that a
+// change to it still moves the projection: a column left out of BOTH halves changes without the row
+// noticing, `projectionMoved` sees nothing, and the edit writes nothing at all. Review found five
+// such columns on the first pass of this PR.
+//
+// `urlTemplate` is REDACTED to its origin even though the column holds it whole and every read
+// surface returns it whole. The schema accepts any template, and a token in the path or the query
+// is how these are actually written — where a value is stored says nothing about whether it is a
+// secret, which is the reasoning `redactEndpoint` carries from #397. A relative template has no
+// origin to keep, so it masks to nothing; the digest is what still reports that it moved.
+//
+//
+// The RAW `credentialRef` is in the digest as well as projected, and that is not belt-and-braces:
+// two different opaque values both project as `{ref: null, opaque: true}`, so swapping one for the
+// other would move nothing. `requireVaultRef` has refused that spelling on the way in since #126,
+// which makes it a legacy row rather than a reachable write — but the fence answers for columns and
+// not for what today's writer happens to allow, and folding it in costs a digest argument.
+// `tests/modules/audit-config-families.test.ts` holds the fence: it reads the columns of this model
+// out of `prisma/schema.prisma` and fails while one is in neither half.
 function auditProjection(r: {
   name: string;
   label: string;
+  description: string | null;
   method: string;
   urlTemplate: string;
   allowedHosts: string[];
+  headers: unknown;
+  inputSchema: unknown;
+  outputSchema: unknown;
+  query: unknown;
+  body: unknown;
   credentialRef: string | null;
   enabled: boolean;
+  expectedStatuses: number[];
+  ackEnabled: boolean;
+  ackMessage: string | null;
+  appointment: unknown;
 }) {
   const cred = refForAudit(r.credentialRef);
   return {
     name: r.name,
     label: r.label,
     method: r.method,
-    urlTemplate: r.urlTemplate,
+    urlMasked: redactEndpoint(r.urlTemplate),
     allowedHosts: r.allowedHosts,
     credentialRef: cred.ref,
     credentialRefOpaque: cred.opaque,
     enabled: r.enabled,
+    ackEnabled: r.ackEnabled,
+    expectedStatuses: r.expectedStatuses,
+    rest: digestForAudit(
+      r.credentialRef,
+      r.description,
+      r.urlTemplate,
+      r.headers,
+      r.inputSchema,
+      r.outputSchema,
+      r.query,
+      r.body,
+      r.ackMessage,
+      r.appointment,
+    ),
   };
 }
 

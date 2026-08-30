@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
@@ -10,6 +9,7 @@ import {
 } from "@/lib/errors";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { unstorableProblem } from "@/lib/text";
+import { digestForAudit } from "@/modules/audit/projection";
 import { auditMutation, projectionMoved } from "@/modules/audit/service";
 import {
   type CompanySettings,
@@ -347,33 +347,25 @@ const SELECT = {
 
 type Row = Prisma.DocumentTemplateGetPayload<{ select: typeof SELECT }>;
 
-// What the audit row carries: the template's identity and the SHAPE of its content, never the
-// content itself.
+// What the audit row carries.
+//
+// Same two halves as the other four families: identity, policy and shape are PROJECTED, everything
+// else is DIGESTED so that changing it still moves the projection. A column in neither half changes
+// without the row noticing, and `projectionMoved` then suppresses the write entirely.
 //
 // A template is a mould rather than an issued document, so what is in it is `{{token}}` prose the
 // operator wrote — but it is also the largest field here, and the trail is append-only and readable
 // by every tenant admin. The structure (`{id, type}` per block, `{key, type}` per field) answers
-// what a reader asks: a block appeared, one was removed, the order moved, a field changed type.
+// what a reader asks: a block appeared, one was removed, the order moved, a field changed type. The
+// digest over blocks+fields+style is what makes an edit INSIDE a block visible at all — replacing
+// the text of an existing block moves nothing in the structure, and that is the commonest edit a
+// template gets.
 //
-// `contentDigest` is what makes an edit INSIDE a block visible at all. Without it, replacing the
-// text of an existing block moves nothing in the projection, `projectionMoved` sees no change, and
-// the most common edit a template gets writes no row. The digest is over the same three parts, so
-// it moves for every content change and shows none of it; two rows can be compared, which is all
-// the trail needs from a body it may not publish.
-function contentDigest(r: {
-  blocks: unknown;
-  fields: unknown;
-  style: unknown;
-}): string {
-  // NOTE: the cut is over a hex digest, so it cannot land inside a surrogate pair — the same
-  // reason tenant-settings' over-ceiling fingerprint gives, and the entry beside it in
-  // `tests/lib/astral-cap-sweep.test.ts` says so.
-  return createHash("sha256")
-    .update(JSON.stringify([r.blocks, r.fields, r.style]))
-    .digest("hex")
-    .slice(0, 16);
-}
-
+// `lastNumber` is in NEITHER half, deliberately: it is the issuer's counter, advanced by issuing a
+// document and not by editing the template, so folding it in would file every issuance as a change
+// the next save reported.
+//
+// `tests/modules/audit-config-families.test.ts` holds the fence over this model's columns.
 function auditProjection(r: Row) {
   const blocks = Array.isArray(r.blocks) ? r.blocks : [];
   const fields = Array.isArray(r.fields) ? r.fields : [];
@@ -389,9 +381,13 @@ function auditProjection(r: Row) {
     }),
     fields: fields.map((f) => {
       const o = (f ?? {}) as Record<string, unknown>;
-      return { key: o.key ?? null, type: o.type ?? null };
+      // `name`, which is what `documentFieldSchema` calls it — the identifier a block references
+      // and the argument name the agent's tool ends up with. Reading `key` here (the experiment
+      // family's spelling) projected `null` for every field, so a field added, removed or retyped
+      // moved nothing in this half.
+      return { name: o.name ?? null, type: o.type ?? null };
     }),
-    contentDigest: contentDigest(r),
+    rest: digestForAudit(r.blocks, r.fields, r.style),
   };
 }
 

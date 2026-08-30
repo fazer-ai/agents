@@ -1390,6 +1390,15 @@ export function ToolEditModal({
               "tools.expectedStatusesHelp",
               'These codes identify ordinary responses that arrive with an error status, such as 404 for "not found."\n\nAdding them stops those responses from counting as failures or raising alerts. The AI receives the same response either way.\n\nIf the field is empty, every status outside 200 to 299 counts as a failure.',
             )}
+            // INLINE, because a format example is what no state can reveal (docs/ui.md), and here
+            // the cost of not saying it is silence: `parseExpectedStatuses` splits on comma, space
+            // or semicolon and drops whatever is not a positive integer, so `404/410` yields an
+            // EMPTY list, no refusal, and a tool that goes on treating both as failures. The
+            // placeholder shows one code and says nothing about how to write two.
+            description={t(
+              "tools.expectedStatusesHint",
+              "Comma-separated, e.g. 404, 410.",
+            )}
             error={refusal.at("expectedStatuses", current.expectedStatuses)}
           >
             <Input
@@ -1409,7 +1418,7 @@ export function ToolEditModal({
               )}
               help={t(
                 "tools.appointmentHelp",
-                "This option identifies when the tool creates or cancels an appointment.\n\nThe platform pauses follow-up messages while the appointment is active and sends the configured reminders.\n\nEnter the response paths for the ID and start time, using dots between levels and numbers for list positions, such as data.items.0.id.",
+                "This option identifies when the tool creates or cancels an appointment.\n\nThe platform pauses follow-up messages while the appointment is active and sends the configured reminders.\n\nPoint it at where the id and the start time sit in the tool's response.",
               )}
             >
               <Select
@@ -1479,7 +1488,7 @@ export function ToolEditModal({
                   // answers with a different id; the cancellation just never finds the appointment.
                   description={t(
                     "tools.appointmentIdPathHint",
-                    "The tool that cancels has to answer with this same id.",
+                    "Dot-separated keys, with a number for a list position: data.items.0.id. The tool that cancels has to answer with this same id.",
                   )}
                 >
                   <Input
@@ -1542,6 +1551,10 @@ export function ToolEditModal({
                       label={t(
                         "tools.appointmentStartPath",
                         "Where the start time is",
+                      )}
+                      description={t(
+                        "tools.appointmentStartPathHint",
+                        "Dot-separated keys, with a number for a list position: data.items.0.start.",
                       )}
                     >
                       <Input

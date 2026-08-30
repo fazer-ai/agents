@@ -51,16 +51,37 @@ const COMPATIBLE_BATCH_SIZE = 512;
 // Three attempts rather than six, because the same function serves `embedQuery` inside a live turn,
 // where every extra attempt is a customer waiting; three with these delays is still strictly more
 // patient than the zero this path shipped with, and strictly less than the six a 600s-default SDK
-// timeout could stretch out on main today. Only the ENDPOINT's momentary state is retried — the
-// predicate is `provider-failure`'s, so a 401 or a 404 answers the same way every time and is not
-// asked twice.
+// timeout could stretch out on main today.
 const COMPATIBLE_RETRY_DELAYS_MS = [500, 2000];
 
-function isTransient(err: unknown): boolean {
+// WHAT COUNTS AS WORTH ASKING AGAIN, and it is not one answer for both callers — the same split
+// `provider-failure` describes, where the set of transient STATUSES is shared and the policy over it
+// belongs to the call site.
+//
+// A failure with no status at all is the case that divides them. `AsyncCaller` retried it (its
+// `STATUS_NO_RETRY` list is statuses, so a connection reset falls through to a retry), and it is
+// just as often a base URL that will never resolve. `modules/vision/retry` excludes it deliberately,
+// because a customer is waiting on that turn and the operator needs a bad endpoint to fail on the
+// first attempt. Both readings are right, for different callers:
+//
+//   embedTexts — the INGEST. Nobody is waiting, and the failure is terminal: the document lands in
+//   FAILED and only a manual reindex moves it. A reset costs the document, so it is asked again.
+//   embedQuery — a live TURN, where the retry is time a customer spends waiting for a search that
+//   the turn can proceed without.
+//
+// A response we could not use (wrong count, unusable indexes, a vector that is not numbers) is never
+// retried on either: the endpoint answered, and it will answer the same way again.
+function isTransient(err: unknown, retryStatusless: boolean): boolean {
+  if (err instanceof UnusableResponseError) return false;
   if (providerFailure(err) === "timeout") return true;
   const status = statusOf(err);
-  return status !== null && isTransientProviderStatus(status);
+  if (status === null) return retryStatusless;
+  return isTransientProviderStatus(status);
 }
+
+// A response that arrived and cannot be used. Its own class so the retry policy can tell it from a
+// transport failure, which otherwise looks identical: neither carries a status.
+class UnusableResponseError extends Error {}
 
 function client(cfg: EmbeddingConfig, deps: EmbeddingDeps): OpenAIEmbeddings {
   const configuration = {
@@ -127,22 +148,38 @@ async function embedCompatibleBatch(
     data?: Array<{ index?: number; embedding?: unknown }>;
   };
   const items = [...(json.data ?? [])];
-  // Sort by `index` only when EVERY item carries one. The SDK path reads the array positionally, so
-  // response order is the fallback that has always been in use; treating a missing index as 0 would
-  // instead collapse every item onto the same key and make the order depend on the sort's tie
-  // handling, which is a worse answer than the one we already trusted.
-  if (items.every((i) => typeof i.index === "number")) {
-    items.sort((a, b) => (a.index as number) - (b.index as number));
-  }
   if (items.length !== texts.length) {
-    throw new Error("embedding provider returned the wrong vector count");
+    throw new UnusableResponseError(
+      "embedding provider returned the wrong vector count",
+    );
+  }
+  // Reorder by `index` only when EVERY item carries one AND they form exactly 0..n-1. The SDK path
+  // reads the array positionally, so response order is the fallback that has always been in use;
+  // treating a missing index as 0 would collapse every item onto one key and hand the order to the
+  // sort's tie handling instead. And a set that is numeric but not a permutation — a duplicate, a
+  // 1.5, a 9 among two inputs — sorts into SOMETHING and passes the count check above, which is how
+  // a document gets published with each vector attached to the wrong chunk. There is no order to
+  // recover there, so it is refused rather than guessed.
+  if (items.every((i) => typeof i.index === "number")) {
+    const indexes = items.map((i) => i.index as number);
+    const permutation =
+      new Set(indexes).size === indexes.length &&
+      indexes.every((n) => Number.isInteger(n) && n >= 0 && n < items.length);
+    if (!permutation) {
+      throw new UnusableResponseError(
+        "embedding provider returned an unusable index set",
+      );
+    }
+    items.sort((a, b) => (a.index as number) - (b.index as number));
   }
   return items.map((item) => {
     if (
       !Array.isArray(item.embedding) ||
       !item.embedding.every((value) => typeof value === "number")
     ) {
-      throw new Error("embedding provider returned an invalid vector");
+      throw new UnusableResponseError(
+        "embedding provider returned an invalid vector",
+      );
     }
     return item.embedding as number[];
   });
@@ -152,6 +189,7 @@ async function embedCompatible(
   texts: string[],
   cfg: EmbeddingConfig & { baseURL: string },
   deps: EmbeddingDeps,
+  retryStatusless: boolean,
 ): Promise<number[][]> {
   // Through `URL`, not concatenation: the vault accepts any http(s) URL, and Azure's own spelling
   // carries a query (`…/v1?api-version=2024-02-01`). Appending to that string puts the path INSIDE
@@ -172,8 +210,9 @@ async function embedCompatible(
   for (let i = 0; i < texts.length; i += COMPATIBLE_BATCH_SIZE) {
     const batch = texts.slice(i, i + COMPATIBLE_BATCH_SIZE);
     out.push(
-      ...(await withTransientRetry(() =>
-        embedCompatibleBatch(batch, cfg, url, fetchImpl),
+      ...(await withTransientRetry(
+        () => embedCompatibleBatch(batch, cfg, url, fetchImpl),
+        retryStatusless,
       )),
     );
   }
@@ -193,13 +232,16 @@ function compatibleEndpoint(baseURL: string): string {
   }
 }
 
-async function withTransientRetry<T>(call: () => Promise<T>): Promise<T> {
+async function withTransientRetry<T>(
+  call: () => Promise<T>,
+  retryStatusless: boolean,
+): Promise<T> {
   for (let attempt = 0; ; attempt++) {
     try {
       return await call();
     } catch (err) {
       const delay = COMPATIBLE_RETRY_DELAYS_MS[attempt];
-      if (delay === undefined || !isTransient(err)) throw err;
+      if (delay === undefined || !isTransient(err, retryStatusless)) throw err;
       await Bun.sleep(delay);
     }
   }
@@ -238,7 +280,7 @@ export async function embedTexts(
   if (texts.length === 0) return [];
   const vectors = await throughProvider(() =>
     cfg.baseURL
-      ? embedCompatible(texts, { ...cfg, baseURL: cfg.baseURL }, deps)
+      ? embedCompatible(texts, { ...cfg, baseURL: cfg.baseURL }, deps, true)
       : client(cfg, deps).embedDocuments(texts),
   );
   return vectors.map((v) => assertWidth(v, cfg));
@@ -255,6 +297,7 @@ export async function embedQuery(
         [text],
         { ...cfg, baseURL: cfg.baseURL },
         deps,
+        false,
       );
       return vectors[0] as number[];
     }

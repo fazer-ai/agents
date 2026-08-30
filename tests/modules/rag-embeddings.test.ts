@@ -240,6 +240,69 @@ describe("OpenAI-compatible embeddings", () => {
     );
   });
 
+  // AsyncCaller's no-retry list is STATUSES, so a connection reset fell through to a retry on the
+  // path this replaced. The ingest is where that matters: nobody is waiting and the document lands
+  // terminally FAILED.
+  test("the ingest asks again after a transport failure with no status", async () => {
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls += 1;
+      if (calls === 1) throw new TypeError("fetch failed");
+      return json({ data: [{ index: 0, embedding: vec(4) }] });
+    }) as unknown as typeof fetch;
+    expect(
+      await embedTexts(["a"], config(), { fetchImpl, assertSafe: passThrough }),
+    ).toEqual([vec(4)]);
+    expect(calls).toBe(2);
+  });
+
+  // The other half of that split: a live turn, where the retry is time a customer spends and a base
+  // URL that will never resolve has to fail on the first attempt (`modules/vision/retry`).
+  test("the query path does not, and fails on the first attempt", async () => {
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls += 1;
+      throw new TypeError("fetch failed");
+    }) as unknown as typeof fetch;
+    await expect(
+      embedQuery("q", config(), { fetchImpl, assertSafe: passThrough }),
+    ).rejects.toThrow("provider error");
+    expect(calls).toBe(1);
+  });
+
+  // A response that arrived and cannot be used is never asked again: the endpoint answered, and it
+  // will answer the same way next time.
+  test("an unusable response is not retried", async () => {
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls += 1;
+      return json({ data: [] });
+    }) as unknown as typeof fetch;
+    await expect(
+      embedTexts(["a"], config(), { fetchImpl, assertSafe: passThrough }),
+    ).rejects.toThrow("provider error");
+    expect(calls).toBe(1);
+  });
+
+  // Numeric but not a permutation of 0..n-1: it sorts into SOMETHING and passes the count check, so
+  // without this the document publishes with each vector attached to the wrong chunk.
+  test.each([
+    ["a duplicate index", [0, 0]],
+    ["an index past the batch", [0, 9]],
+    ["a non-integer index", [0, 1.5]],
+  ])("refuses %s", async (_label, indexes) => {
+    const fetchImpl = (async () =>
+      json({
+        data: (indexes as number[]).map((index, i) => ({
+          index,
+          embedding: vec(i),
+        })),
+      })) as unknown as typeof fetch;
+    await expect(
+      embedTexts(["a", "b"], config(), { fetchImpl, assertSafe: passThrough }),
+    ).rejects.toThrow("provider error");
+  });
+
   test("the query path refuses the same mismatch", async () => {
     const fetchImpl = (async () =>
       json({

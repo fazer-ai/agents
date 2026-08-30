@@ -307,6 +307,42 @@ describe("FormField help", () => {
     expect(select.className).toContain("border-error");
   });
 
+  // A group's error is a statement about the COMPOSITE. Propagating it painted every control
+  // inside red over one refusal about the whole thing (ToolEditModal's AI fields, the alert
+  // channel's signing secret, McpEditModal's credential), while a bare <input> in the same group
+  // stayed normal because nothing wires it: one error drawn as many, inconsistently.
+  test("a group's error marks the group, not every control inside it", () => {
+    render(
+      <FormField label="AI fields" group error="Two fields share a name.">
+        <div>
+          <Input value="" onChange={() => {}} />
+          <Input value="" onChange={() => {}} />
+        </div>
+      </FormField>,
+    );
+    expect(screen.getByRole("group").getAttribute("aria-invalid")).toBeTruthy();
+    for (const box of screen.getAllByRole("textbox")) {
+      expect(box.getAttribute("aria-invalid")).toBeNull();
+      expect(box.className).not.toContain("border-error");
+    }
+  });
+
+  // `required` on a composite is not decoration: handed down, it makes every part of the composite
+  // individually mandatory to submit, which is a different form than the one the caller declared.
+  test("a group's required does not make each part mandatory", () => {
+    render(
+      <FormField label="URL template" group required>
+        <div>
+          <Input value="" onChange={() => {}} />
+          <Input value="" onChange={() => {}} />
+        </div>
+      </FormField>,
+    );
+    for (const box of screen.getAllByRole("textbox")) {
+      expect((box as HTMLInputElement).required).toBe(false);
+    }
+  });
+
   // A child that brought its own id keeps it, so the label has to point at THAT one. Pointing at
   // the generated id would name nothing: clicking the title would focus nothing and the control
   // would have no name at all.

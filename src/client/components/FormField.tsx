@@ -131,8 +131,14 @@ export function FormField({
       // would announce the same words three times.
       labelledById: group ? undefined : titleId,
       controlId: group ? undefined : controlId,
-      required,
-      invalid: !!error,
+      // Also for the ONE control, and for the same reason the ids are. A group's `required` and its
+      // `error` are statements about the COMPOSITE, and handing them down painted every <Input> and
+      // <Select> inside red over a single refusal about the whole thing, while a bare <input> in
+      // the same group stayed normal because nothing wires it. Worse for `required`, which is not
+      // decoration: it would make each part of a composite individually mandatory to submit. The
+      // group says both about itself, on the wrapper.
+      required: group ? undefined : required,
+      invalid: group ? undefined : !!error,
     }),
     [group, hasMessage, messageId, titleId, controlId, required, error],
   );
@@ -180,6 +186,7 @@ export function FormField({
           role="group"
           aria-labelledby={titleId}
           aria-describedby={hasMessage ? messageId : undefined}
+          aria-invalid={error ? true : undefined}
           className={cn("flex flex-col gap-1.5", className)}
         >
           {heading}

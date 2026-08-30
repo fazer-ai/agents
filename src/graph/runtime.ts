@@ -1785,14 +1785,19 @@ export async function runAgentTurn(
   // fell back here) re-answers the whole recent page (issue #8). "superseded" stays put BY DESIGN:
   // the newer message's own turn advances past it. Best-effort — a watermark miss must not fail the
   // turn.
-  // "stale" joins it, for the opposite reason and the same effect: the run was called off, so the
-  // message it carried was withdrawn rather than handled. On this path the only thing that calls a
-  // run off is the operator's own /reset (./reset-episode.ts), and the command's own delivery has
-  // already advanced this watermark past the message — so the skip costs nothing here and keeps the
-  // rule true for the next caller.
+  // "stale" ADVANCES IT, and used not to. It was excluded when nothing on this path could produce
+  // it, on the reasoning that a called-off run withdraws its message rather than handling it — which
+  // is the flush's truth, where a re-armed flush answers the burst, and not this path's. Here the
+  // only thing that calls a run off is the operator's own /reset (./reset-episode.ts), nothing else
+  // is coming for the message, and the receiver settles its ledger row as CONSUMED. The watermark
+  // has to agree with the ledger: left behind, the row is terminal while the watermark still sits
+  // below the message, and the first flush after debounce is enabled re-answers it (issue #8).
+  //
+  // Not covered by the command's own advance, which is the shape a review round measured: /reset
+  // writes the boundary in its FIRST step and advances this watermark in its LAST, with a dozen
+  // Chatwoot calls in between, so a process dying in that stretch leaves exactly the gap above.
   if (
     outcome !== "superseded" &&
-    outcome !== "stale" &&
     n.message?.id != null &&
     loaded.conversationDbId !== null
   ) {

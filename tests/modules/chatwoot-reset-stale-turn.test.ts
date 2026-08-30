@@ -90,8 +90,14 @@ function fakeChatwoot(
   // parks a delivery in: it sits before the turn's own reads, and it reaches the network.
   onAuthorize?: () => Promise<void>,
   // Called on the command's live conversation read, which is how a test parks the /RESET itself
-  // mid-flight and lands a customer message inside it.
+  // mid-flight and lands a customer message inside it. It fires on the command's FIRST live read,
+  // which happens before the episode boundary is written — see `onAfterBoundary` for the other side.
   onLiveRead?: () => Promise<void>,
+  // Called when anything posts a message. The one test that uses it arms it only once the TURN is
+  // parked in its model call, so the first post that reaches it is the command's acknowledgement —
+  // its last act inside the gate, with the boundary already written and its own watermark advance
+  // still to come.
+  onAfterBoundary?: () => Promise<void>,
 ): { calls: CwCall[]; impl: typeof fetch } {
   const calls: CwCall[] = [];
   const impl = (async (input, init) => {
@@ -111,6 +117,10 @@ function fakeChatwoot(
     });
     if (token.trim() === "")
       return jsonResponse({ error: "Invalid Access Token" }, 401);
+    if (method === "POST" && url.pathname.endsWith("/messages")) {
+      await onAfterBoundary?.();
+      return jsonResponse({ id: 1 });
+    }
     if (
       method === "GET" &&
       url.pathname.endsWith(`/conversations/${CONV_ID}`)
@@ -565,6 +575,75 @@ describe.skipIf(!dbUp)("a turn already running when /reset lands", () => {
       .find((t) => t.includes("🔄") || t.includes("memória"));
     // The command reports the step it could not do, instead of confirming a clean slate.
     expect(ack ?? "").toContain("memória");
+  }, 30000);
+
+  // THE LEDGER AND THE WATERMARK HAVE TO AGREE. A stale turn's delivery is settled as CONSUMED, so
+  // nothing is coming for that message — and if the watermark still sits below it, the first flush
+  // after debounce is enabled re-answers it (issue #8). The command's own advance does not cover it:
+  // /reset writes the boundary in its FIRST step and advances the watermark in its LAST, so this
+  // asserts the state while the command is still parked between the two, which is also what a
+  // process dying in that stretch leaves behind.
+  test("the message it withdrew is under the watermark before the command finishes", async () => {
+    const inCommand = Promise.withResolvers<void>();
+    const commandHeld = Promise.withResolvers<void>();
+    // Armed only once the TURN is parked, because the turn reads the conversation too and would
+    // otherwise spend the one park this hook has.
+    let armed = false;
+    let parked = false;
+    const cw = fakeChatwoot(undefined, undefined, async () => {
+      if (!armed || parked) return;
+      parked = true;
+      inCommand.resolve();
+      await commandHeld.promise;
+    });
+    globalThis.fetch = cw.impl;
+
+    const inModel = Promise.withResolvers<void>();
+    const modelHeld = Promise.withResolvers<void>();
+    const model = new SetAttributeThenReplyModel();
+    const triggerId = 7000 + seq + 1;
+    const turn = deliver("tem cor azul?", {
+      makeModel: () =>
+        ({
+          invoke: model.invoke.bind(model),
+          bindTools: (tools: unknown) => {
+            const bound = model.bindTools(tools);
+            return {
+              invoke: async () => {
+                inModel.resolve();
+                await modelHeld.promise;
+                return bound.invoke();
+              },
+            };
+          },
+        }) as unknown as BaseChatModel,
+    });
+    await Promise.race([
+      inModel.promise,
+      Bun.sleep(10_000).then(() => {
+        throw new Error("the turn never reached the model call");
+      }),
+    ]);
+    armed = true;
+    const reset = deliver("/reset");
+    await Promise.race([
+      inCommand.promise,
+      Bun.sleep(10_000).then(() => {
+        throw new Error("the command never posted its acknowledgement");
+      }),
+    ]);
+    // The boundary is written by now; the command's own watermark advance is not.
+    modelHeld.resolve();
+    await turn;
+
+    const wm = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: CONV_ID },
+      select: { lastHandledMessageId: true },
+    });
+    expect(wm.lastHandledMessageId ?? 0).toBeGreaterThanOrEqual(triggerId);
+
+    commandHeld.resolve();
+    await reset;
   }, 30000);
 
   // THE OTHER DIRECTION, and it is the one a boundary written at the wrong moment breaks. The

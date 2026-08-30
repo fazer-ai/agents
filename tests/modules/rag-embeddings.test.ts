@@ -314,6 +314,69 @@ describe("OpenAI-compatible embeddings", () => {
     expect(calls).toBe(1);
   });
 
+  // Reading a body is still transport: the connection can reset between the headers and the last
+  // byte, and it rejects out of the same call a syntax error does.
+  test("a body that dies mid-read is transport, and is asked again", async () => {
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls += 1;
+      if (calls === 1) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => {
+            throw new TypeError(
+              "The socket connection was closed unexpectedly",
+            );
+          },
+        } as unknown as Response;
+      }
+      return json({ data: [{ index: 0, embedding: vec(5) }] });
+    }) as unknown as typeof fetch;
+    expect(
+      await embedTexts(["a"], config(), { fetchImpl, assertSafe: passThrough }),
+    ).toEqual([vec(5)]);
+    expect(calls).toBe(2);
+  });
+
+  // Valid JSON, unusable shape: reading `data` off a null root, or spreading an object, throws a
+  // statusless TypeError the ingest would otherwise pay for twice more.
+  test.each([
+    ["a null root", null],
+    ["a data that is not an array", { data: { 0: "nope" } }],
+  ])("refuses %s without asking again", async (_label, body) => {
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls += 1;
+      return json(body);
+    }) as unknown as typeof fetch;
+    await expect(
+      embedTexts(["a"], config(), { fetchImpl, assertSafe: passThrough }),
+    ).rejects.toThrow("provider error");
+    expect(calls).toBe(1);
+  });
+
+  // A first response that already proves the endpoint serves another model stops the document there
+  // instead of paying for every remaining batch.
+  test("stops at the first batch whose width is wrong", async () => {
+    let calls = 0;
+    const fetchImpl = (async (_u: unknown, init?: RequestInit) => {
+      calls += 1;
+      const body = JSON.parse(init?.body as string) as { input: string[] };
+      return json({
+        data: body.input.map((_t, i) => ({ index: i, embedding: vec(0, 768) })),
+      });
+    }) as unknown as typeof fetch;
+    await expect(
+      embedTexts(
+        Array.from({ length: 600 }, (_, i) => String(i)),
+        config(),
+        { fetchImpl, assertSafe: passThrough },
+      ),
+    ).rejects.toThrow(/returned 768 dimensions/);
+    expect(calls).toBe(1);
+  });
+
   // Numeric but not a permutation of 0..n-1: it sorts into SOMETHING and passes the count check, so
   // without this the document publishes with each vector attached to the wrong chunk.
   test.each([

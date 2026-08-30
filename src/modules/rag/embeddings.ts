@@ -145,17 +145,42 @@ async function embedCompatibleBatch(
   });
   if (!res.ok) throw await providerResponseError(res);
   // A 2xx whose body is not JSON is a response that ARRIVED and cannot be used, and it has to be
-  // said here: `res.json()` rejects with a statusless SyntaxError, which is indistinguishable from a
-  // connection reset and would be sent the same batch twice more on the ingest path.
-  let json: { data?: Array<{ index?: number; embedding?: unknown }> };
+  // said here: `res.json()` rejects with a statusless SyntaxError, indistinguishable from a
+  // connection reset, and the ingest's policy would send the same batch twice more.
+  //
+  // ONLY a syntax failure, though. Reading a body is still transport: the connection can reset or
+  // the deadline can fire between the headers and the last byte, and both reject out of this same
+  // call. Swallowing those into "unusable" would skip the retry they deserve and make one
+  // interruption a terminally FAILED document.
+  let json: unknown;
   try {
-    json = (await res.json()) as typeof json;
-  } catch {
+    json = await res.json();
+  } catch (err) {
+    if (!(err instanceof SyntaxError)) throw err;
     throw new UnusableResponseError(
       "embedding provider returned a body that is not JSON",
     );
   }
-  const items = [...(json.data ?? [])];
+  // The SHAPE is checked before anything is read off it, for the same reason. Valid JSON whose root
+  // is `null`, or whose `data` is an object, throws a statusless TypeError on the property access
+  // and the spread — which the ingest would then read as transport and pay for twice more, against a
+  // provider that already gave its deterministic answer.
+  const data =
+    typeof json === "object" && json !== null
+      ? (json as { data?: unknown }).data
+      : undefined;
+  if (
+    json === null ||
+    typeof json !== "object" ||
+    (data !== undefined && !Array.isArray(data))
+  ) {
+    throw new UnusableResponseError(
+      "embedding provider returned an unusable response shape",
+    );
+  }
+  const items = [
+    ...((data ?? []) as Array<{ index?: number; embedding?: unknown }>),
+  ];
   if (items.length !== texts.length) {
     throw new UnusableResponseError(
       "embedding provider returned the wrong vector count",
@@ -198,17 +223,16 @@ async function embedCompatibleBatch(
   });
 }
 
-async function embedCompatible(
-  texts: string[],
-  cfg: EmbeddingConfig & { baseURL: string },
+// Where the compatible request is aimed, resolved once for the whole document rather than per batch.
+async function compatibleTarget(
+  baseURL: string,
   deps: EmbeddingDeps,
-  retryStatusless: boolean,
-): Promise<number[][]> {
+): Promise<string> {
   // Through `URL`, not concatenation: the vault accepts any http(s) URL, and Azure's own spelling
   // carries a query (`…/v1?api-version=2024-02-01`). Appending to that string puts the path INSIDE
   // the query and the POST lands on `/v1`, which a compatible server answers with something that
   // parses far enough to be confusing.
-  const endpoint = compatibleEndpoint(cfg.baseURL);
+  const endpoint = compatibleEndpoint(baseURL);
   // SSRF guard on the URL the OPERATOR configured, immediately before the fetch, exactly as the
   // openai-compatible branch of `listProviderModels` does. The vault validates `baseUrl` as http(s)
   // syntax and nothing more, so without this a tenant admin turns knowledge ingestion into a POST at
@@ -217,17 +241,13 @@ async function embedCompatible(
   const safeUrl = await (deps.assertSafe ?? assertSafeOutboundUrl)(endpoint, {
     allowHttp: true,
   });
-  const url = safeUrl.toString();
-  const fetchImpl = deps.fetchImpl ?? fetch;
-  const out: number[][] = [];
+  return safeUrl.toString();
+}
+
+function batchesOf(texts: string[]): string[][] {
+  const out: string[][] = [];
   for (let i = 0; i < texts.length; i += COMPATIBLE_BATCH_SIZE) {
-    const batch = texts.slice(i, i + COMPATIBLE_BATCH_SIZE);
-    out.push(
-      ...(await withTransientRetry(
-        () => embedCompatibleBatch(batch, cfg, url, fetchImpl),
-        retryStatusless,
-      )),
-    );
+    out.push(texts.slice(i, i + COMPATIBLE_BATCH_SIZE));
   }
   return out;
 }
@@ -291,12 +311,31 @@ export async function embedTexts(
   deps: EmbeddingDeps = {},
 ): Promise<number[][]> {
   if (texts.length === 0) return [];
-  const vectors = await throughProvider(() =>
-    cfg.baseURL
-      ? embedCompatible(texts, { ...cfg, baseURL: cfg.baseURL }, deps, true)
-      : client(cfg, deps).embedDocuments(texts),
-  );
-  return vectors.map((v) => assertWidth(v, cfg));
+  const baseURL = cfg.baseURL;
+  if (!baseURL) {
+    const vectors = await throughProvider(() =>
+      client(cfg, deps).embedDocuments(texts),
+    );
+    return vectors.map((v) => assertWidth(v, cfg));
+  }
+  const url = await throughProvider(() => compatibleTarget(baseURL, deps));
+  const fetchImpl = deps.fetchImpl ?? fetch;
+  const out: number[][] = [];
+  // The loop lives HERE rather than inside one `throughProvider`, so the width is asserted after
+  // EACH batch: a document past 512 chunks whose first response already proves the endpoint serves a
+  // 768-wide model stops there instead of paying for the rest of it. It also keeps `assertWidth`
+  // outside the boundary, where its own sentence survives instead of being reduced to the closed
+  // vocabulary — which is the whole reason it is not left to `toVectorLiteral`.
+  for (const batch of batchesOf(texts)) {
+    const vectors = await throughProvider(() =>
+      withTransientRetry(
+        () => embedCompatibleBatch(batch, cfg, url, fetchImpl),
+        true,
+      ),
+    );
+    for (const v of vectors) out.push(assertWidth(v, cfg));
+  }
+  return out;
 }
 
 export async function embedQuery(
@@ -304,12 +343,12 @@ export async function embedQuery(
   cfg: EmbeddingConfig,
   deps: EmbeddingDeps = {},
 ): Promise<number[]> {
+  const baseURL = cfg.baseURL;
   const vector = await throughProvider(async () => {
-    if (cfg.baseURL) {
-      const vectors = await embedCompatible(
-        [text],
-        { ...cfg, baseURL: cfg.baseURL },
-        deps,
+    if (baseURL) {
+      const url = await compatibleTarget(baseURL, deps);
+      const vectors = await withTransientRetry(
+        () => embedCompatibleBatch([text], cfg, url, deps.fetchImpl ?? fetch),
         false,
       );
       return vectors[0] as number[];

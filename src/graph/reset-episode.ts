@@ -85,10 +85,19 @@ export function stillInSameEpisode(
       // customer's message quietly, which is the one outcome the whole delivery ledger exists to
       // prevent (issue #228: wrong and visible over quiet and wrong).
       //
-      // So it STOPS by throwing, which is what the contract means at that seam: the delivery path
-      // records the failure on the conversation, posts the note that a human has to take over, and
-      // leaves the row for the sweep to replay — and the replay asks this question again, with an
-      // answer it can read.
+      // So it STOPS by throwing, which is what the contract means at that seam, and what that buys
+      // is exactly what every other failed turn buys — no more, and the difference is worth writing
+      // down because a review round read the first version of this comment as promising a replay it
+      // does not get. The delivery path catches the rejection, records the failure on the
+      // conversation, posts the note that a human has to take over, and then closes the row
+      // PROCESSED like any other completed delivery. The message is not answered and the sweep will
+      // not come back for it; the operator is told, twice, on the conversation itself.
+      //
+      // That is the right side of the trade because this read is not special: a turn opens dozens of
+      // scoped reads, and a database transient that takes this one is taking the others too — the
+      // turn was going to fail through this same machinery either way. What the throw prevents is
+      // the ONE outcome that machinery cannot express, `false`, which says the operator withdrew the
+      // run and takes the message out of the loss list with nothing recorded anywhere.
       if (strict) throw err;
       // At a send the contract is the opposite, and for a reason that is not symmetry: throwing here
       // abandons the bookkeeping of a message that may already be with the customer. The CAS at the

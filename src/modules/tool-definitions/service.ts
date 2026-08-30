@@ -6,7 +6,6 @@ import { AppError, ConflictError, NotFoundError } from "@/lib/errors";
 import { parseInput } from "@/lib/parse-input";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import {
-  hostForAudit,
   markUndisclosed,
   redactEndpoint,
   refForAudit,
@@ -176,7 +175,14 @@ function auditProjection(r: {
     label: r.label,
     method: r.method,
     urlMasked: redactEndpoint(r.urlTemplate),
-    allowedHosts: r.allowedHosts.map(hostForAudit),
+    // The COUNT, and not the entries. Every entry is `z.string().min(1).max(255)` and nothing more,
+    // and no test on the string can tell a hostname an operator meant from a secret they pasted:
+    // `ghp_0123`, `xoxb-1-2` and a dotted JWT are all things `URL` will happily call a host. So the
+    // same standard `redactEndpoint` applies to a URL applies here — where a value is STORED says
+    // nothing about whether it is a secret, and this row outlives every correction. What a reader
+    // needs from the trail is that the allowlist WIDENED, which the count says; which hosts it
+    // names is on the live read surface, and that one is deletable.
+    allowedHostCount: r.allowedHosts.length,
     credentialRef: cred.ref,
     credentialRefOpaque: cred.opaque,
     enabled: r.enabled,

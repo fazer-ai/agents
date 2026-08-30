@@ -646,11 +646,12 @@ describe.skipIf(!dbUp)(
     // is an allowlist on the way in. A row is append-only and readable by every tenant admin, so what
     // goes on it is the SHAPE of those fields and never their contents.
 
-    // The allowlist is `z.string().min(1).max(255)` per entry and nothing more, and it sits beside
-    // the URL field in the editor, so a pasted URL lands in it. It never WORKS there — the gate
-    // compares `allowedHosts.includes(url.hostname)` — but it would have been archived whole beside
-    // a `urlTemplate` redacted for exactly this reason.
-    test("a token pasted into a tool's host allowlist does not reach the row", async () => {
+    // The allowlist is `z.string().min(1).max(255)` per entry and nothing more, and in the editor
+    // it sits beside the URL field. Two rounds of review landed on the same place: a pasted URL
+    // goes in it, and so does a bare token — `ghp_0123` and `xoxb-1-2` are things `URL` will call a
+    // host, and a JWT has dots. No test on the string separates the two, so the row carries the
+    // COUNT and the live surface carries the names.
+    test("a tool's host allowlist reaches the row as a count, not as entries", async () => {
       await clearAudit();
       const created = await createToolDefinition(
         ctx(),
@@ -660,18 +661,21 @@ describe.skipIf(!dbUp)(
           urlTemplate: "https://203.0.113.10/hook",
           allowedHosts: [
             "203.0.113.10",
-            "203.0.113.10/hook/tok-399-in-a-host-entry",
+            // A second host that is NOT the template's, so seeing it would be this projection
+            // and not `urlMasked`; and one entry that parses as a host and is a credential.
+            "relay-399.example.net",
+            "ghp0399tokenpastedhere",
           ],
         },
         appDb,
       );
       const [row] = await rows("tool.create");
+      expect(row?.after).toMatchObject({ allowedHostCount: 3 });
       const text = JSON.stringify(row, (_k, v) =>
         typeof v === "bigint" ? String(v) : v,
       );
-      expect(text).not.toContain("tok-399-in-a-host-entry");
-      // The bare host is still shown: the allowlist IS the policy, and a reader needs it.
-      expect(text).toContain("203.0.113.10");
+      expect(text).not.toContain("ghp0399tokenpastedhere");
+      expect(text).not.toContain("relay-399.example.net");
       await deleteToolDefinition(ctx(), BigInt(created.id), appDb);
     });
 
@@ -1197,7 +1201,7 @@ const UNDISCLOSED = ["secretBag"] as const;`;
       // not.
       expect(coveredColumns(leaky).has("count")).toBe(false);
       // A pair that only OPENS as a whole-value pair does not count: this is the shape review found
-      // on `allowedHosts`, where `.map(hostForAudit)` reports a redacted list under the same key.
+      // on `allowedHosts`, where a `.map(redact)` under the same key reports less than the column.
       expect(
         coveredColumns(`function auditProjection(r: Row) {
   return { name: r.name.map(redact) };

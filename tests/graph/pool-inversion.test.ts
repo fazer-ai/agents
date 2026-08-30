@@ -49,19 +49,19 @@ let instanceId = 0n;
 
 // A checkpointer that samples the transaction counter on every call the ingestion makes.
 class SamplingSaver extends MemorySaver {
-  readonly samples: Array<{ call: string; open: number }> = [];
-  constructor(private readonly openTx: () => number) {
+  readonly samples: Array<{ call: string; held: boolean }> = [];
+  constructor(private readonly heldTx: () => boolean) {
     super();
   }
   // biome-ignore lint/suspicious/noExplicitAny: matching the saver's own signatures
   override async getTuple(...args: any[]): Promise<any> {
-    this.samples.push({ call: "getTuple", open: this.openTx() });
+    this.samples.push({ call: "getTuple", held: this.heldTx() });
     // biome-ignore lint/suspicious/noExplicitAny: same
     return (MemorySaver.prototype.getTuple as any).apply(this, args);
   }
   // biome-ignore lint/suspicious/noExplicitAny: same
   override async put(...args: any[]): Promise<any> {
-    this.samples.push({ call: "put", open: this.openTx() });
+    this.samples.push({ call: "put", held: this.heldTx() });
     // biome-ignore lint/suspicious/noExplicitAny: same
     return (MemorySaver.prototype.put as any).apply(this, args);
   }
@@ -105,7 +105,7 @@ describe.skipIf(!dbUp)("no Prisma transaction spans the checkpointer", () => {
       contactInboxId,
     );
     const counting = countingBase(appDb);
-    const saver = new SamplingSaver(counting.open);
+    const saver = new SamplingSaver(counting.heldHere);
 
     // Two messages on one thread: the first opens the attendance (divider + marker), the second goes
     // through the dedupe read. Between them they exercise every checkpointer call the section makes.
@@ -131,7 +131,7 @@ describe.skipIf(!dbUp)("no Prisma transaction spans the checkpointer", () => {
     // The section really did touch the checkpointer, or the assertion below would be vacuous.
     expect(saver.samples.length).toBeGreaterThan(0);
     expect(saver.samples.some((s) => s.call === "put")).toBe(true);
-    expect(saver.samples.filter((s) => s.open !== 0)).toEqual([]);
+    expect(saver.samples.filter((s) => s.held)).toEqual([]);
     // And it left nothing open behind it.
     expect(counting.open()).toBe(0);
   });

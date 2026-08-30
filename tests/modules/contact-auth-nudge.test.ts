@@ -262,14 +262,16 @@ describe.skipIf(!dbUp)("contact authorization on the proactive nudge", () => {
       wanted = false;
       return new Response('{"authorized":true}', { status: 200 });
     });
-    // Recorded per ask, and what is recorded is how many Prisma transactions are OPEN at that moment.
+    // Recorded per ask, and what is recorded is whether the ASK ITSELF is inside a Prisma
+    // transaction — not how many exist, which counts `emitFlowEvent`'s fire-and-forget write on the
+    // same client and fails whenever that INSERT is still in flight (`tests/utils/counting-base.ts`).
     // The ask made inside the thread claim used to have to arrive WITH a connection, because the
     // claim was one long advisory-lock transaction and a provider opening its own there asked a
     // pinned pool for a second one, which fails under `DB_POOL_MAX=1` — and jobRetired swallows a
     // failed read as "not retired", so the fence went quiet exactly where it mattered. The claim
     // holds no transaction any more (issue #225), so the invariant that replaces it is the stronger
     // one: the ask is free to open its own scope precisely because nothing is pinned.
-    const openTxAtAsk: number[] = [];
+    const heldAtAsk: boolean[] = [];
     const strictness: boolean[] = [];
     const counted = countingBase(appDb);
     const outcome = await runAgentNudge({
@@ -278,7 +280,7 @@ describe.skipIf(!dbUp)("contact authorization on the proactive nudge", () => {
       nudge: { source: "followup", kind: "inactivity" },
       postActions: { assignLabels: ["seguimento"] },
       stillWanted: async ({ strict }) => {
-        openTxAtAsk.push(counted.open());
+        heldAtAsk.push(counted.heldHere());
         strictness.push(strict);
         return wanted;
       },
@@ -296,8 +298,8 @@ describe.skipIf(!dbUp)("contact authorization on the proactive nudge", () => {
     expect(auth.calls).toHaveLength(1);
     // Asked at both moments it has to be: on entry, and again inside the thread claim, which is what
     // makes it exclusive with a /reset. And no ask, the claim's included, finds a transaction open.
-    expect(openTxAtAsk.length).toBeGreaterThanOrEqual(2);
-    expect(openTxAtAsk.filter((n) => n !== 0)).toEqual([]);
+    expect(heldAtAsk.length).toBeGreaterThanOrEqual(2);
+    expect(heldAtAsk.filter(Boolean)).toEqual([]);
     // EXACTLY ONE of them asks strictly, and it is not the entry one. The two want opposite answers
     // when the read itself fails: before the write an unreadable answer has to stop the run, and
     // around a send it must not, because throwing there abandons the bookkeeping of a message the

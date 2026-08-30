@@ -25,6 +25,7 @@ const CLOSE_WAIT_MS = 400;
 // re-running the folder. Anything imported at a test file's top level is a global side effect.
 const { FormField } = await import("@/client/components/FormField");
 const { Input } = await import("@/client/components/Input");
+const { Select } = await import("@/client/components/Select");
 
 // The `?` that opens a field's long-form help (issue #411).
 //
@@ -286,6 +287,24 @@ describe("FormField help", () => {
     expect(
       screen.getByRole("textbox").getAttribute("aria-invalid"),
     ).toBeTruthy();
+  });
+
+  // The announcement and the drawing have to agree. `aria-invalid` folded the field's refusal in
+  // while the border read only the control's own prop, so a `FormField error=` around a <Select>
+  // (ToolEditModal's method and transport, IntegrationEditModal's) turned every neighbouring
+  // <Input> red and left the dropdown looking untouched: a screen reader was told which control
+  // the sentence was about and a sighted operator was not.
+  test("a field-level refusal marks the select it is about, not just announces it", () => {
+    render(
+      <FormField label="Method" error="Not allowed for this transport.">
+        <Select value="GET" onChange={() => {}}>
+          <option value="GET">GET</option>
+        </Select>
+      </FormField>,
+    );
+    const select = screen.getByRole("combobox");
+    expect(select.getAttribute("aria-invalid")).toBeTruthy();
+    expect(select.className).toContain("border-error");
   });
 
   // A child that brought its own id keeps it, so the label has to point at THAT one. Pointing at

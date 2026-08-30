@@ -1620,20 +1620,6 @@ export interface RunAgentTurnParams {
   // here and required one layer down: the gate is a caller's business, and every test that runs a
   // turn without one would otherwise have to say so.
   authContext?: AuthContext | null;
-  // When the DELIVERY this turn is answering arrived (`ChatwootWebhookDelivery.receivedAt`), which
-  // is what a `/reset` landing under it is compared against (./reset-episode.ts).
-  //
-  // It comes from the CALLER because the caller holds the earliest moment that exists for this
-  // message. Anything this turn could read for itself is later than the gates, the media pass, the
-  // authorization call and the ceiling, all of which the command can overtake — and a baseline taken
-  // there is the operator's own write compared with itself.
-  //
-  // Optional here and answered one layer down, the same shape as `authContext` above and for the
-  // same reason: `runLoadedTurn` takes `stillWanted` as REQUIRED and nullable, so the compiler asks
-  // the question where it decides something, and the hundred-odd tests that drive a turn without a
-  // command racing it do not each have to say so. Absent means no delivery named itself, and the
-  // fence has nothing to order — the tests/reset-episode.test.ts table says so.
-  deliveredAt?: Date | null;
 }
 
 // Direct (no-debounce) entry: one incoming message → resolve the inbox's Agent → run the turn.
@@ -1763,18 +1749,20 @@ export async function runAgentTurn(
 
   const outcome = await runLoadedTurn({
     // Nothing QUEUED this turn — it is the delivery itself, arriving from the webhook — so there is
-    // no job for /reset to retire. What names this run instead is the EPISODE it started in, and
-    // ./reset-episode.ts carries the measurement: without it the operator's /reset is acknowledged
-    // and this turn then runs its tools on the conversation that was just cleared. `null` stays for
-    // a turn with no mirrored conversation to read the mark from (the playground), where nothing can
-    // reset it either.
+    // no job for /reset to retire. What names this run instead is the EPISODE, read off the message
+    // it is answering, and ./reset-episode.ts carries the measurement: without it the operator's
+    // /reset is acknowledged and this turn then runs its tools on the conversation that was just
+    // cleared. `null` stays for a turn with no mirrored conversation to read the boundary from (the
+    // playground), where nothing can reset it either.
     stillWanted:
       convDbId === null
         ? null
         : stillInSameEpisode({
             tenantId,
             conversationDbId: convDbId,
-            deliveredAt: params.deliveredAt ?? null,
+            // The same id the supersede gate claims with, and for a related reason: it is what
+            // names this run in the order the SOURCE put it in.
+            triggerMessageId: triggerId,
             base,
           }),
     loaded,

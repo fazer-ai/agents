@@ -668,7 +668,7 @@ describe.skipIf(!dbUp)("a turn already running when /reset lands", () => {
     await deliver("/reset");
     const newest = await suDb.conversation.findFirstOrThrow({
       where: { tenantId, chatwootConversationId: CONV_ID },
-      select: { resetAt: true },
+      select: { resetAtMessageId: true },
     });
     held.resolve();
     await older;
@@ -677,10 +677,10 @@ describe.skipIf(!dbUp)("a turn already running when /reset lands", () => {
       (
         await suDb.conversation.findFirstOrThrow({
           where: { tenantId, chatwootConversationId: CONV_ID },
-          select: { resetAt: true },
+          select: { resetAtMessageId: true },
         })
-      ).resetAt,
-    ).toEqual(newest.resetAt);
+      ).resetAtMessageId,
+    ).toEqual(newest.resetAtMessageId);
   }, 30000);
 
   // The control, and it is what says the fence reads the EPISODE rather than "a reset ever

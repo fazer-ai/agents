@@ -17,27 +17,27 @@ import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 // handled watermark past this turn's trigger and the supersede gate refuses the post — but a tool
 // call is not a post, and nothing between the model and Chatwoot asks the question at all.
 //
-// So the fact the run is named by is the EPISODE, and the question is asked about the DELIVERY
-// rather than about anything the turn read: did the command land after this message arrived?
+// So the fact the run is named by is the EPISODE, and the question is asked in the SOURCE's own
+// order: is the message this turn is answering at or below the one that carried the command?
 //
-// `Conversation.resetAt` is stamped by the command's first write with `now()`, and
-// `ChatwootWebhookDelivery.receivedAt` is written by the same Postgres as a column default when the
-// receiver first records the delivery — one clock, and the earliest moment that exists for this
-// message. Anything read later (the mirror, the gates, the turn's own config load) is a moment the
-// command can already have overtaken, and a baseline captured there is the operator's own write
-// being compared with itself. Measured, twice, by review rounds on #447.
+// A MESSAGE ID and not a timestamp of ours. Our ledger row is inserted on the detached path, after
+// the ack (`recordAndProcessChatwootDelivery`), so two events acked in order can be recorded out of
+// it — and on the two web replicas docs/deploy.md §4 sanctions, more easily still. Chatwoot's
+// sequence is the order the operator and the customer actually experienced, which is the only order
+// this question has ever been about. Three review rounds on #447 walked the baseline from the turn's
+// own config load, to the mirror, to the delivery's insertion time, before landing here.
 //
-// The tie goes to STANDING DOWN: a mark stamped in the same millisecond the delivery arrived is a
-// coincidence nobody can order, and refusing one message is the cheaper half of it.
+// AT OR BELOW, not below: the command's own message carries the boundary, and a turn answering that
+// same id would be a turn on the command itself.
 export function resetLandedAfter(
-  deliveredAt: Date | null,
-  resetAt: Date | null,
+  triggerMessageId: number | null,
+  resetAtMessageId: number | null,
 ): boolean {
-  if (resetAt === null) return false;
-  // No arrival time is not evidence of a reset: it is a caller that never named one (the playground,
-  // a test), and the fence has nothing to order.
-  if (deliveredAt === null) return false;
-  return resetAt.getTime() >= deliveredAt.getTime();
+  if (resetAtMessageId === null) return false;
+  // No trigger is not evidence of a reset: it is a caller that named no message (the playground, a
+  // test), and the fence has nothing to order.
+  if (triggerMessageId === null) return false;
+  return triggerMessageId <= resetAtMessageId;
 }
 
 function sysCtx(tenantId: bigint): TenantContext {
@@ -47,8 +47,8 @@ function sysCtx(tenantId: bigint): TenantContext {
 export interface EpisodeFenceParams {
   tenantId: bigint;
   conversationDbId: bigint;
-  // When the DELIVERY this turn is answering arrived, from the ledger row the receiver wrote.
-  deliveredAt: Date | null;
+  // The Chatwoot message id this turn is answering.
+  triggerMessageId: number | null;
   base: PrismaClient;
 }
 
@@ -72,11 +72,11 @@ export function stillInSameEpisode(
       const row = await runScopedOn(p.base, sysCtx(p.tenantId), (db) =>
         db.conversation.findUnique({
           where: { id: p.conversationDbId },
-          select: { resetAt: true },
+          select: { resetAtMessageId: true },
         }),
       );
       if (!row) return true;
-      return !resetLandedAfter(p.deliveredAt, row.resetAt);
+      return !resetLandedAfter(p.triggerMessageId, row.resetAtMessageId);
     } catch (err) {
       // AN UNREADABLE MARK IS NOT A RETIREMENT, and under `strict` it must not be answered with
       // `false`. That answer is not "stop", it is "the operator withdrew this run": `runLoadedTurn`

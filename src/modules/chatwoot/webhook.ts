@@ -1322,14 +1322,6 @@ async function maybeConsumeCommandOrGate(params: {
   // `stillOurs` — but a routing one: Chatwoot fans the same message out to the conversation's
   // assigned bot AND the inbox's, and a command must run on exactly one of them.
   agentBotId: number | null;
-  // When THIS delivery arrived (`ChatwootWebhookDelivery.receivedAt`). `/reset` writes it as the
-  // episode boundary, and that is the whole difference between "the episode ended when the operator
-  // typed the command" and "when its cleanup got around to writing": the cleanup runs a live
-  // refresh, retires half a dozen job kinds and calls Chatwoot, and a customer message arriving in
-  // that stretch is a message the operator wants ANSWERED. Stamped from the later moment, the fence
-  // would read it as older than the command and stand its turn down — a message swallowed on the way
-  // to fixing messages being swallowed (../../graph/reset-episode.ts).
-  deliveredAt: Date | null;
   base: PrismaClient;
   // Injectable runtime deps (tests): the Chatwoot client factory and the contact-auth fetch.
   deps?: RuntimeDeps;
@@ -2093,6 +2085,8 @@ async function maybeConsumeCommandOrGate(params: {
     // entry conversation leaves `redirectClosedAt` on the widget, and the funnel can be run again
     // but not closed again until the widget side is reset too. Named in the acknowledgement's own
     // scope rather than worked around — see the NOTE above the job cancellations.
+    // The command's own message, in Chatwoot's sequence: the boundary this episode ends at.
+    const commandMessageId = params.n.message?.id ?? null;
     const redirectAnchors = {
       redirectSentAt: null,
       // A counter, so it goes back to zero rather than to null.
@@ -2102,11 +2096,12 @@ async function maybeConsumeCommandOrGate(params: {
     };
     await step("clear the conversation's watermarks", "marcadores", () =>
       runScopedOn(base, sysCtx(tenantId), async (db) => {
-        // THE EPISODE BOUNDARY, and it is when the COMMAND ARRIVED rather than when this write runs.
-        // Both sides of the comparison are then `received_at` values Postgres wrote as a column
-        // default, on one clock, and the boundary sits where the operator put it: a customer message
-        // that lands while the command is still calling Chatwoot arrived AFTER the reset and is
-        // answered (../../graph/reset-episode.ts).
+        // THE EPISODE BOUNDARY: the message id the COMMAND itself carried, in Chatwoot's own order.
+        // Not a moment of ours — neither this write's, which happens after a live refresh, six job
+        // retirements and a dozen Chatwoot calls (a customer message landing in that stretch arrived
+        // AFTER the reset and is one the operator wants answered), nor the ledger row's, which is
+        // inserted on the detached path and therefore does not preserve the order two events arrived
+        // in (../../graph/reset-episode.ts).
         //
         // NEVER BACKWARDS, which is what makes it a statement of its own rather than another field
         // in the update below. Two `/reset` deliveries are dispatched detached and nothing
@@ -2114,12 +2109,14 @@ async function maybeConsumeCommandOrGate(params: {
         // back and let a turn from between the two commands run on a conversation the newer one
         // cleared. `GREATEST` ignores a NULL, so the first reset writes its own value.
         //
-        // The fallback is unreachable — this delivery's own claim is what produced the value — and
-        // it is here so the boundary is never left unwritten.
-        await db.$executeRaw`
-          UPDATE conversations
-             SET reset_at = GREATEST(reset_at, ${params.deliveredAt ?? new Date()})
-           WHERE id = ${ctx.conv.id}`;
+        // A command with no message id is not reachable (it is parsed from the message's own text),
+        // and the guard is what keeps the column from holding a number that orders nothing.
+        if (commandMessageId !== null) {
+          await db.$executeRaw`
+            UPDATE conversations
+               SET reset_at_message_id = GREATEST(reset_at_message_id, ${commandMessageId})
+             WHERE id = ${ctx.conv.id}`;
+        }
         return db.conversation.update({
           where: { id: ctx.conv.id },
           data: {
@@ -3077,25 +3074,17 @@ export async function processChatwootDelivery(
   // was introduced, and the caller bounds a retry on it. A live delivery does not touch it — its
   // claim is not an attempt at recovery, it is the first attempt at all.
   const claimFrom = params.claimFrom ?? "PENDING";
-  // RETURNING the arrival time, because the claim is the only statement that already touches this
-  // row and the turn needs it: `receivedAt` is the DATABASE's stamp from the moment the receiver
-  // first recorded this delivery, which is what tells a `/reset` that landed AFTER this message
-  // arrived from one that predates it (../../graph/reset-episode.ts). Read a step later — at the
-  // mirror, or at the turn's own config load — it would be a moment the command can already have
-  // overtaken.
   const claimed = await runScopedOn(base, sysCtx(params.tenantId), (db) =>
-    db.chatwootWebhookDelivery.updateManyAndReturn({
+    db.chatwootWebhookDelivery.updateMany({
       where: { id: params.deliveryRowId, status: claimFrom },
       data: {
         status: "PROCESSING",
         claimedAt: new Date(),
         ...(claimFrom === "DEAD" ? { attempts: { increment: 1 } } : {}),
       },
-      select: { receivedAt: true },
     }),
   );
-  if (claimed.length === 0) return "skipped";
-  const deliveredAt = claimed[0]?.receivedAt ?? null;
+  if (claimed.count === 0) return "skipped";
 
   const n = params.normalized;
 
@@ -3726,7 +3715,6 @@ export async function processChatwootDelivery(
       command,
       commandActive,
       agentBotId: params.agentBotId,
-      deliveredAt,
       base,
       deps: params.deps,
       onAuthContext: (context) => {
@@ -3828,10 +3816,6 @@ export async function processChatwootDelivery(
             base,
             deps: params.deps,
             authContext: gate.authContext,
-            // WHEN THIS MESSAGE ARRIVED, from the ledger row the receiver wrote before any of this
-            // ran. The turn stands down when the command's mark is younger than it
-            // (../../graph/reset-episode.ts).
-            deliveredAt,
           }).then(
             (o) => {
               params.onDirectTurn?.({ kind: "outcome", outcome: o });

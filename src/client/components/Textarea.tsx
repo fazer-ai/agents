@@ -50,11 +50,7 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
     return (
       <div className="w-full">
         <textarea
-          // {...props} FIRST, so every attribute this component COMPUTES wins over the same one
-          // passed in. The order used to be the reverse, and the spread then overwrote the merged
-          // `aria-describedby`: a caller that described its control lost the field's own message,
-          // which is how a validation message goes unannounced. Anything a caller may legitimately
-          // override is folded into the computation instead of racing it.
+          // {...props} FIRST, for the reason spelled out in Input.tsx.
           {...props}
           ref={ref}
           rows={rows}

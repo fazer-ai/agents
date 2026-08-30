@@ -42,10 +42,17 @@ export function HelpPopover({
   contentClassName,
 }: HelpPopoverProps) {
   const { t } = useTranslation();
-  // One name for both halves of the affordance: the button the operator activates and the box that
-  // opens. Radix names the box nothing on its own, and hearing the same words on the way in and on
-  // the way out is what ties the two together for somebody who cannot see that one came from the
-  // other.
+  // "Show help: History ceiling", and ONE name for both halves of the affordance: the button the
+  // operator activates and the box that opens. Radix names the box nothing on its own, and hearing
+  // the same words on the way in and on the way out is what ties the two together for somebody who
+  // cannot see that one came from the other.
+  //
+  // COMPOSED and not interpolated, which is the unusual choice here and is deliberate. The two
+  // halves are an action and its subject, in that order in both catalogues, and the subject arrives
+  // already translated from whoever rendered the label. Interpolation would make the name of every
+  // trigger depend on a `t` that interpolates, and in this suite one does not: nine client test
+  // files stub `react-i18next` and the stub leaks across files (tests/lib/module-mock-package.test.ts
+  // records exactly that, and predicted it would bite).
   const name = label
     ? `${t("common.showHelp", "Show help")}: ${label}`
     : t("common.showHelp", "Show help");
@@ -67,13 +74,6 @@ export function HelpPopover({
             e.currentTarget.click();
           }
         }}
-        // "Show help: History ceiling". COMPOSED and not interpolated, which is the unusual choice
-        // here and is deliberate. The two halves are an action and its subject, in that order in
-        // both catalogues, and the subject arrives already translated from whoever rendered the
-        // label. Interpolation would make the name of every trigger depend on a `t` that
-        // interpolates, and in this suite one does not: nine client test files stub
-        // `react-i18next` and the stub leaks across files (tests/lib/module-mock-package.test.ts
-        // records exactly that, and predicted it would bite).
         aria-label={name}
         className={cn(
           // The RING is 16px; the TARGET is not, and the two are separated on purpose. A bare

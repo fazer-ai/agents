@@ -26,7 +26,13 @@ jobs:
           POSTGRES_PASSWORD: postgres
         ports:
           - 5432:5432
+        # tmpfs for the DATA DIRECTORY: this database is created, migrated, written to for three
+        # minutes and thrown away, so nothing it writes has to survive the job, and 183 of this
+        # suite's files are database-backed. On a 4-vCPU runner the server competes for the same
+        # cores as the tests, and every fsync it does is paid out of them. Borrowed from the
+        # Chatwoot upstream, which does the same on its own spec matrix.
         options: >-
+          --mount type=tmpfs,destination=/var/lib/postgresql/data
           --health-cmd "pg_isready -U postgres"
           --health-interval 5s
           --health-timeout 5s

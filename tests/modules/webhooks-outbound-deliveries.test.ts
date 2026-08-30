@@ -11,6 +11,7 @@ import {
 } from "@/modules/webhooks/outbound/deliveries";
 import { processOutboundBatch } from "@/modules/webhooks/outbound/worker";
 import { clearFlowLog, flowLogRows } from "@/tests/utils/flowlog";
+import { POLL_DEADLINE_MS } from "@/tests/utils/poll";
 
 // ── THE DELIVERY LEDGER AS A SUPPORTED SURFACE (issue #305) ──
 // Integration, real DB, real RLS: every call goes through `runScopedOn` exactly as the controller
@@ -106,7 +107,7 @@ async function clearDeliveries() {
 
 // The emit is fire-and-forget, so the line lands after the call returned. Poll for it rather than
 // sleeping a fixed amount: a fixed sleep is either flaky or slow and never says which.
-async function webhookLines(expected: number, waitMs = 3000) {
+async function webhookLines(expected: number, waitMs = POLL_DEADLINE_MS) {
   const deadline = Date.now() + waitMs;
   for (;;) {
     // flowlog-scope: tenant-wide — the subject is HOW MANY lines a requeue writes, so scoping the

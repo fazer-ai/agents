@@ -4,6 +4,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
+import { POLL_DEADLINE_MS } from "@/tests/utils/poll";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRows } from "../utils/flowlog";
 
@@ -190,7 +191,7 @@ describe.skipIf(!dbUp)("an unbound inbox says so", () => {
   // Scoped to the conversation asked for, by its INTERNAL id, and polled: the emit is
   // fire-and-forget, so an unscoped read answers with a neighbour's row and an unpolled one races
   // the write it is asserting.
-  async function routeRows(convId: number, waitMs = 2000) {
+  async function routeRows(convId: number, waitMs = POLL_DEADLINE_MS) {
     const conv = await suDb.conversation.findFirst({
       where: { tenantId, chatwootConversationId: convId },
       select: { id: true },

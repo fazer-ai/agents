@@ -215,6 +215,23 @@ async function onProbe<T>(
 // nothing. None of the deploy composes uses `env_file`: each lists its environment explicitly, so a
 // variable they do not name never arrives, and `docs/deploy.md` would be telling operators to set
 // something with no effect. Measured by reading them — all three whitelist, none inherits.
+// THE THRESHOLD IS DERIVED FROM THE TIMEOUT, AND BOTH ARE SIZED FOR A BUSY MACHINE.
+//
+// The two tests below tell a healthy boot from a broken one BY HOW LONG IT WAITED: a transfer that
+// takes the lock queues behind the reader and dies at `lock_timeout`, and one that filters correctly
+// never queues at all. The signal is the gap between those, so the only thing that can break the
+// measurement is machine noise wide enough to cross it.
+//
+// It was 2000ms of timeout against a 1000ms threshold, on a healthy path measured at 60ms. That is a
+// 16x margin, and `bun test --parallel` spends it: at 24 workers the healthy boot took 1478ms, all of
+// it subprocess startup and none of it lock waiting, and the test failed for the machine it ran on.
+//
+// Widening the timeout costs nothing on a passing run, because the healthy path never waits on the
+// lock; only a genuinely broken transfer reaches the deadline, and only then is the extra time paid.
+// The threshold stays at half the timeout, and is now written as that rather than said to be.
+const LOCK_TIMEOUT_MS = 10_000;
+const HEALTHY_BOOT_CEILING_MS = LOCK_TIMEOUT_MS / 2;
+
 describe("the retention declaration reaches a deployed container", () => {
   const COMPOSES = [
     "docker-compose.prod.yml",
@@ -1821,16 +1838,17 @@ describe.skipIf(!dbUp)(
         // reader fails in seconds instead of hanging the suite.
         const started = Date.now();
         const { exitCode } = await runBootstrap(ROTATED_PW, APP_ROLE, {
-          PGOPTIONS: "-c lock_timeout=2000",
+          PGOPTIONS: `-c lock_timeout=${LOCK_TIMEOUT_MS}`,
         });
         const elapsed = Date.now() - started;
 
         // NOTE: the wait is the assertion, not the exit code — a lock timeout inside the transfer
         // is caught and, on an install that needs no transfer, correctly swallowed, so a broken
         // loop still exits 0. What it cannot hide is having waited. The threshold sits an order of
-        // magnitude above the healthy time and half the timeout below the broken one.
+        // magnitude above the healthy time and half the timeout below the broken one; both numbers are
+        // at the top of this file, with what a parallel run did to the previous pair.
         expect(exitCode).toBe(0);
-        expect(elapsed).toBeLessThan(1000);
+        expect(elapsed).toBeLessThan(HEALTHY_BOOT_CEILING_MS);
       } finally {
         await reader.query("ROLLBACK").catch(() => {});
         await reader.end();
@@ -1877,14 +1895,14 @@ describe.skipIf(!dbUp)(
 
         const started = Date.now();
         const { exitCode } = await bootSolo({
-          PGOPTIONS: "-c lock_timeout=2000",
+          PGOPTIONS: `-c lock_timeout=${LOCK_TIMEOUT_MS}`,
         });
         const elapsed = Date.now() - started;
 
         // Same threshold and same reasoning as the re-boot case above: the wait is the assertion.
         // Measured: 126ms as it stands, 2131ms with `<> v_role` dropped from the filter.
         expect(exitCode).toBe(0);
-        expect(elapsed).toBeLessThan(1000);
+        expect(elapsed).toBeLessThan(HEALTHY_BOOT_CEILING_MS);
       } finally {
         await reader.query("ROLLBACK").catch(() => {});
         await reader.end();

@@ -772,9 +772,24 @@ describe.skipIf(!dbUp)("a reminder retired while claimed", () => {
   // The ceiling has to hold across the model call, not only before it. A retry can be scheduled
   // minutes before the start, and a turn that begins in time can finish out of it.
   test("an appointment that starts during the model call sends nothing", async () => {
+    // TWO NUMBERS THAT USED TO BE GUESSES ABOUT HOW FAST THE MACHINE IS.
+    //
+    // The case needs the start to be AHEAD when the handler begins and BEHIND when the model
+    // returns. It was written as a start 1s out and a model that sleeps 2s, which holds only while
+    // everything before the handler fits in that first second. `armed()` is a database write, and
+    // under `bun test --parallel` it does not: measured at 24 workers, the start had already passed
+    // before the handler looked, the pre-call check dropped the job, the model never ran, and the
+    // assertion below read `Expected: 1, Received: 0` — the test failing for the machine rather than
+    // for the ceiling it exists to pin.
+    //
+    // The second number is gone rather than raised. The model now holds the call open UNTIL the
+    // start has actually passed, which is the condition the test is about, so no sleep has to be
+    // guessed against it. The first is 3s instead of 1s, which is real time paid on every run and is
+    // why it is not larger: it only has to outlast one row's insert.
+    const startAt = Date.now() + 3_000;
     const job = await armed("reminder:evt-crosses-start:60", {
       isLast: true,
-      startISO: new Date(Date.now() + 1_000).toISOString(),
+      startISO: new Date(startAt).toISOString(),
     });
     const s = stubClient();
     let invoked = 0;
@@ -787,7 +802,7 @@ describe.skipIf(!dbUp)("a reminder retired while claimed", () => {
       }
       async _generate(): Promise<ChatResult> {
         invoked += 1;
-        await Bun.sleep(2_000);
+        while (Date.now() <= startAt) await Bun.sleep(25);
         return {
           generations: [
             { text: "Lembrete!", message: new AIMessage("Lembrete!") },

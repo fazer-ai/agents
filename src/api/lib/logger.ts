@@ -48,11 +48,28 @@ export function deepSanitizeObject(
   return output;
 }
 
-// NOTE: In production, avoid pino transports (which use thread-stream worker threads)
-// because the compiled binary's virtual FS prevents resolving packages like real-require.
-// Write JSON to stdout instead — Docker/Coolify captures stdout natively.
+// A PINO TRANSPORT IS FOR A HUMAN WATCHING A TERMINAL, AND ONLY DEVELOPMENT HAS ONE.
+//
+// The condition is on `development` rather than on `not production`, and that is the whole of what
+// this note is about. A transport runs in a thread-stream WORKER THREAD, and the two contexts that
+// are not development each break on that worker for their own reason:
+//
+//   - production: the compiled binary's virtual FS cannot resolve packages like real-require, which is
+//     why this branch existed already. Docker/Coolify capture stdout natively, so plain JSON is
+//     what a deployment wants anyway.
+//   - test: `bun test` sets NODE_ENV=test (it overrides `.env`; see the note on `config.env`), so
+//     `!== "production"` used to be TRUE here and every test process built the worker. Serially that
+//     only costs a `logs/log` nobody reads. Under `bun test --parallel` it is fatal: measured on this
+//     suite at 18 workers, 229 × `error: the worker thread exited` and 225 failures, with 3207 tests
+//     never reaching a runner. Giving each process its OWN roll file changes nothing (measured: still
+//     229), so it is the worker, not the file. With this branch taken: 8192 pass, and the run drops
+//     from 193.6s to 50.8s at `--parallel=12`.
+//
+// The same worker has taken this suite down once before by another path: see the MessagePort note
+// in tests/dom-setup.ts, where Bun 1.4.0's `new Worker()` cut the suite from 4133 passing to 2096.
+// Nothing else in this codebase constructs a Worker; pino's transport was always the only one.
 let logger = pino(
-  config.env === "production"
+  config.env !== "development"
     ? {
         level: config.logLevel,
       }

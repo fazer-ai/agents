@@ -5,6 +5,7 @@ import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { createAlertChannel } from "@/modules/flowlog/channels";
 import { processOutboundBatch } from "@/modules/webhooks/outbound/worker";
 import { clearFlowLog, flowLogRows } from "@/tests/utils/flowlog";
+import { POLL_DEADLINE_MS } from "@/tests/utils/poll";
 
 // ── A DEAD DELIVERY HAS TO SAY SO WHERE THE OPERATOR READS (issue #325) ──
 // Integration, real DB, real RLS: the claim runs cross-tenant under asSuperAdmin and the outcome
@@ -77,7 +78,7 @@ async function seedDelivery(
 // The emit is fire-and-forget, so the row lands after the worker returned. Poll for the expected
 // count instead of sleeping a fixed amount: a fixed sleep is either flaky or slow, and this says
 // which of the two it is when it fails.
-async function webhookRows(expected: number, waitMs = 3000) {
+async function webhookRows(expected: number, waitMs = POLL_DEADLINE_MS) {
   const deadline = Date.now() + waitMs;
   for (;;) {
     // flowlog-scope: tenant-wide — the subject is HOW MANY lines the tick wrote, so scoping the
@@ -95,7 +96,7 @@ async function webhookRows(expected: number, waitMs = 3000) {
   }
 }
 
-async function alertRows(expected: number, waitMs = 3000) {
+async function alertRows(expected: number, waitMs = POLL_DEADLINE_MS) {
   const deadline = Date.now() + waitMs;
   for (;;) {
     const rows = await suDb.alertDelivery.findMany({

@@ -6,6 +6,7 @@ import {
   settleFlowEvents,
 } from "@/modules/flowlog/scheduled";
 import { emitFlowEvent } from "@/modules/flowlog/service";
+import { POLL_DEADLINE_MS } from "@/tests/utils/poll";
 
 // ── EMPTYING THE TABLE IS NOT THE SAME AS IT STAYING EMPTY (issue #375) ──
 //
@@ -197,7 +198,7 @@ describe.skipIf(!dbUp)(
       // No settle anywhere in this case, because production never calls one: the write has to clear
       // its own entry or the set grows by one row per log line until the process dies. Polled rather
       // than slept so the failure says "never dropped" instead of "not dropped within 500ms".
-      const deadline = Date.now() + 3000;
+      const deadline = Date.now() + POLL_DEADLINE_MS;
       while (scheduledFlowWrites() > 0 && Date.now() < deadline)
         await Bun.sleep(25);
       expect(scheduledFlowWrites()).toBe(0);

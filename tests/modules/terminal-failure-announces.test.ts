@@ -24,6 +24,7 @@ import {
 } from "@/modules/webhooks/inbound/service";
 import { clearFlowLog, flowLogRows } from "@/tests/utils/flowlog";
 import { withJobHandler } from "@/tests/utils/job-registry";
+import { POLL_DEADLINE_MS } from "@/tests/utils/poll";
 
 // ── A UNIT OF WORK THAT DIES PERMANENTLY HAS TO SAY SO (issue #356) ──
 //
@@ -76,7 +77,7 @@ const past = () => new Date(Date.now() - 60_000);
 // The emit is fire-and-forget, so the row lands after the caller returned. Poll for the expected
 // count rather than sleeping a fixed amount: a fixed sleep is either flaky or slow, and this says
 // which of the two it is when it fails.
-async function deadRows(expected: number, waitMs = 4000) {
+async function deadRows(expected: number, waitMs = POLL_DEADLINE_MS) {
   const deadline = Date.now() + waitMs;
   for (;;) {
     const rows = await flowLogRows(suDb, {

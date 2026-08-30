@@ -899,7 +899,20 @@ describe.skipIf(!dbUp)("contact authorization: reusing a verdict", () => {
 
   test("the overflow a refusal spike leaves behind drains on its own", async () => {
     setMaxTrackedContactsForTest(1);
-    setRefusalProtectionForTest(60);
+    // THE WINDOW HAS TO OUTLAST THE SETUP, NOT JUST THE ASSERTION.
+    //
+    // The loop below is what fills the map AND what arms the sweep, so the protection window has to
+    // cover the whole of it: the first drop arms a timer for `refusedAt + window`, and every later
+    // drop is a database write. At 60ms this held only while the machine was idle. Under
+    // `bun test --parallel` four writes can take longer than that, the timer fires BETWEEN two of
+    // them, and the map is back at its cap before the precondition below ever reads it: measured at
+    // `--parallel=18`, `Expected: > 1, Received: 1`, on a test that was failing for being on a busy
+    // machine rather than for anything about eviction.
+    //
+    // 2s is not a fix for slowness, the same way the 30s in tests/tooling/stale-base-guard.test.ts is
+    // not: it is the window sized to the work that has to fit inside it. The wait below is sized past
+    // it so the drain still has room to happen after.
+    setRefusalProtectionForTest(2000);
     // Every marker young enough to be protected, so eviction cannot take any of them and the map is
     // over its cap. Nothing else is coming: a spike that stops refusing is exactly the case where no
     // later call arrives to look at this again, and the entries would sit there for the life of the
@@ -912,7 +925,7 @@ describe.skipIf(!dbUp)("contact authorization: reusing a verdict", () => {
       );
     }
     expect(knownContactCount()).toBeGreaterThan(1);
-    for (let i = 0; i < 40 && knownContactCount() > 1; i++) {
+    for (let i = 0; i < 160 && knownContactCount() > 1; i++) {
       await Bun.sleep(25);
     }
     // Back to the cap, without another refusal having arrived.

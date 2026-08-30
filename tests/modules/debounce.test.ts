@@ -37,6 +37,7 @@ import {
   flowLogRow,
   flowLogRows,
 } from "@/tests/utils/flowlog";
+import { POLL_DEADLINE_MS } from "@/tests/utils/poll";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import {
   EmptyThenReplyModel,
@@ -276,7 +277,7 @@ async function convRowId(convId: number) {
 
 async function correctionLine(convId: number) {
   const conversationId = await convRowId(convId);
-  const deadline = Date.now() + 2000;
+  const deadline = Date.now() + POLL_DEADLINE_MS;
   let lines: Array<{ level: string; detail: unknown }> = [];
   while (Date.now() < deadline) {
     lines = await flowLogRows(suDb, {

@@ -24,6 +24,7 @@ import {
   registerJobHandler,
   runSchedulerTick,
 } from "@/modules/scheduler/worker";
+import { POLL_DEADLINE_MS } from "@/tests/utils/poll";
 
 // Issue #165. Two things are asserted here, and they are the two halves of the rule in lanes.ts.
 //
@@ -396,7 +397,7 @@ describe.skipIf(!dbUp)("scheduler lanes", () => {
     // Waiting for the cheap ones to ALL have started is the signal that the drain is under way, and
     // it does not presuppose the bound: if the bound were broken the costly count would race past it
     // and the peak assertion below is what catches that.
-    const deadline = Date.now() + 10_000;
+    const deadline = Date.now() + POLL_DEADLINE_MS;
     while (
       (cheapStarted < N || costlyStarted < BOUND) &&
       Date.now() < deadline
@@ -414,7 +415,7 @@ describe.skipIf(!dbUp)("scheduler lanes", () => {
     void tick.then(() => {
       finished = true;
     });
-    const drainDeadline = Date.now() + 10_000;
+    const drainDeadline = Date.now() + POLL_DEADLINE_MS;
     while (!finished && Date.now() < drainDeadline) {
       for (const r of release.splice(0)) r();
       await new Promise((r) => setTimeout(r, 10));

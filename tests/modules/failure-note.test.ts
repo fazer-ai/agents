@@ -602,7 +602,17 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
       select: { id: true },
     });
     registerDebounceHandler();
-    await runSchedulerTick(appDb, { staleMs: 5 * 60_000, batchSize: 20 });
+    // `tenantId` IS THE FENCE, not decoration: the tick is cross-tenant by design (one leader in
+    // production), so without it this drain claims and executes rows belonging to whatever else is
+    // using this database. Under `bun test --parallel` that is another worker's file, and the row it
+    // steals is gone before that file ever looks: measured, this call took the WEBHOOK_RETRY that
+    // tests/modules/debounce.test.ts had just enqueued for its own tenant, and the failure surfaced
+    // there, in a file that had done nothing wrong. See the note on TickOptions.tenantId.
+    await runSchedulerTick(appDb, {
+      staleMs: 5 * 60_000,
+      batchSize: 20,
+      tenantId,
+    });
     const after = await suDb.schedulerJob.findUniqueOrThrow({
       where: { id: row.id },
       select: { status: true },

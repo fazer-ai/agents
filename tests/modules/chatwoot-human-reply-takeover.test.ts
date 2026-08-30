@@ -10,6 +10,7 @@ import {
 } from "@/modules/chatwoot/normalize";
 import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
 import { isFollowUpLive } from "@/modules/followups/eligibility";
+import { POLL_DEADLINE_MS } from "@/tests/utils/poll";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRows } from "../utils/flowlog";
 
@@ -363,7 +364,7 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
   // is a different statement about a different moment, and counting it here would make this assertion
   // depend on how many messages the fixture happens to send afterwards. `via` is the discriminator:
   // only this path writes it.
-  async function takeoverRows(convId: number, waitMs = 2000) {
+  async function takeoverRows(convId: number, waitMs = POLL_DEADLINE_MS) {
     const conv = await convRow(convId);
     if (!conv) return [];
     const deadline = Date.now() + waitMs;

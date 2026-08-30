@@ -1,4 +1,6 @@
 import "@testing-library/jest-dom";
+import { jest } from "bun:test";
+import { configure } from "@testing-library/dom";
 import {
   DB_GATE_OPT_OUT,
   localMigrations,
@@ -17,6 +19,28 @@ import { checkoutRootFrom, testDbNameFor, withDbName } from "./db-name";
 // ./dom-setup.ts, which bunfig.toml preloads BEFORE this file. The DOM must
 // exist before the @testing-library import above is evaluated — see the comment
 // there before moving either piece back here.
+
+// A DEADLINE MEASURES THE MACHINE, AND BOTH DEFAULTS BELOW WERE CHOSEN FOR AN IDLE ONE.
+//
+// Neither number is ours: 5s is `bun test`'s default per test, 1s is @testing-library's default for
+// `waitFor`, and this suite has 260 `waitFor` calls, not one of which passes a timeout of its own. On
+// a machine running the suite alone both are generous. Under `bun test --parallel` they are not: at
+// 18 workers on 6 performance cores everything runs roughly three times slower, and one deadline or
+// another lapses on most runs — a DIFFERENT one each time, which is what makes the class so
+// expensive to chase. Measured across five runs at the default worker count: three failures, in
+// three unrelated files, none reproducible on its own.
+//
+// RAISING THEM COSTS NOTHING ON A PASSING RUN, and that is the whole reason this is a fix rather
+// than a bandage. `waitFor` polls and returns the moment its condition holds; a test timeout only
+// elapses when a test hangs. What gets slower is the report of a genuine failure, from one second to
+// five — a trade worth making against a green suite that goes red by lottery.
+//
+// This is NOT the answer for a window a test's own SETUP has to fit inside. There, a bigger number
+// is paid in full on every run, so those are sized one at a time where they live: see the note on
+// `setRefusalProtectionForTest` in tests/modules/contact-auth-grant.test.ts and the one on
+// `jest.setTimeout` in tests/tooling/stale-base-guard.test.ts.
+jest.setTimeout(30_000);
+configure({ asyncUtilTimeout: 5_000 });
 
 process.env.NODE_ENV = "test";
 process.env.DATABASE_URL = "postgresql://test:test@localhost:5432/test";

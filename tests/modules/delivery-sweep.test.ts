@@ -21,6 +21,7 @@ import {
   recordAndProcessChatwootDelivery,
 } from "@/modules/chatwoot/webhook";
 import { clearFlowLog, flowLogRows } from "@/tests/utils/flowlog";
+import { POLL_DEADLINE_MS } from "@/tests/utils/poll";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // A Chatwoot delivery stranded by a process death, and the sweep that says so (issue #228).
@@ -143,7 +144,7 @@ async function statusOf(rowId: bigint) {
 // tenant-wide one on the argument — the exact reader tests/modules/flowlog-reader-scope.test.ts
 // exists to catch. The line that names no conversation is a different subject and has its own
 // reader below.
-async function deliveryLines(convDbId: bigint, waitMs = 2000) {
+async function deliveryLines(convDbId: bigint, waitMs = POLL_DEADLINE_MS) {
   const started = Date.now();
   while (true) {
     const rows = await flowLogRows(suDb, {
@@ -164,7 +165,7 @@ async function correctionOutcome(convId: number) {
     where: { tenantId, chatwootConversationId: convId },
     select: { id: true },
   });
-  const deadline = Date.now() + 2000;
+  const deadline = Date.now() + POLL_DEADLINE_MS;
   let lines: Array<{ detail: unknown }> = [];
   while (Date.now() < deadline) {
     lines = await flowLogRows(suDb, {
@@ -182,7 +183,7 @@ async function correctionOutcome(convId: number) {
 
 // The line a strand leaves when the mirror does not know the conversation: no conversation id to
 // scope by, so it is found by its absence. Polled for the same reason as the scoped read.
-async function unscopedDeliveryLines(waitMs = 2000) {
+async function unscopedDeliveryLines(waitMs = POLL_DEADLINE_MS) {
   const started = Date.now();
   while (true) {
     const rows = await flowLogRows(suDb, {

@@ -49,7 +49,8 @@ export interface EpisodeFenceParams {
 // written, an unreadable answer must STOP the run, because guessing "still wanted" there recreates
 // the thread /reset just cleared and no later fence catches it; at a send, an unreadable answer lets
 // the run continue and be fenced by the CAS at the end, because throwing would abandon the
-// bookkeeping of a message already delivered.
+// bookkeeping of a message already delivered. How it stops is part of the contract too, and the
+// catch below says why: `false` there would report a withdrawal that nobody made.
 //
 // A conversation row that is GONE is not a reset and never answers `false`. The two are different
 // unknowns and only one of them is this fence's question — the same rule `jobNotRetiredSql` writes
@@ -68,13 +69,26 @@ export function stillInSameEpisode(
       if (!row) return true;
       return sameEpisode(p.startedAt, row.resetAt);
     } catch (err) {
+      // AN UNREADABLE MARK IS NOT A RETIREMENT, and under `strict` it must not be answered with
+      // `false`. That answer is not "stop", it is "the operator withdrew this run": `runLoadedTurn`
+      // reports `stale`, and the direct path settles the message as CONSUMED — taken out of the loss
+      // list, no reply, no alert, nothing owed. A transient database failure would swallow a
+      // customer's message quietly, which is the one outcome the whole delivery ledger exists to
+      // prevent (issue #228: wrong and visible over quiet and wrong).
+      //
+      // So it STOPS by throwing, which is what the contract means at that seam: the delivery path
+      // records the failure on the conversation, posts the note that a human has to take over, and
+      // leaves the row for the sweep to replay — and the replay asks this question again, with an
+      // answer it can read.
+      if (strict) throw err;
+      // At a send the contract is the opposite, and for a reason that is not symmetry: throwing here
+      // abandons the bookkeeping of a message that may already be with the customer. The CAS at the
+      // end is the fence that still holds.
       logger.warn(
         { err, conversation: String(p.conversationDbId) },
-        strict
-          ? "could not read the episode mark before writing; standing the turn down"
-          : "could not read the episode mark; letting the turn reach its own fence",
+        "could not read the episode mark; letting the turn reach its own fence",
       );
-      return !strict;
+      return true;
     }
   };
 }

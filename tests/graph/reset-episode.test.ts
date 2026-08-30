@@ -65,8 +65,13 @@ describe("a read that cannot answer", () => {
       base: base(tx),
     });
 
-  test("stops the run inside the critical section", async () => {
-    expect(await fence(reading)({ strict: true })).toBe(false);
+  // It stops by THROWING, not by answering `false`. `false` is the word for "the operator withdrew
+  // this run", and the direct path reads it as a message consumed on purpose: settled, out of the
+  // loss list, no reply and no alert. A database blip must not be able to say that.
+  test("stops the run inside the critical section, without calling it withdrawn", async () => {
+    expect(fence(reading)({ strict: true })).rejects.toThrow(
+      "connection reset",
+    );
   });
 
   test("lets the run reach its own fence at a send", async () => {

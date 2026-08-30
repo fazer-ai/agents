@@ -1,6 +1,5 @@
 import basePrisma from "@/api/lib/prisma";
 import { AppError } from "@/lib/errors";
-import { truncForAudit } from "@/modules/audit/projection";
 import { parseDocumentStyle } from "@/modules/documents/blocks";
 import { documentStarter } from "@/modules/documents/starters";
 import {
@@ -20,7 +19,6 @@ import {
   gate,
   ok,
   parseMcpId,
-  recordMcpAudit,
   type WriteDeps,
   type WriteResult,
 } from "./write";
@@ -164,14 +162,6 @@ export async function documentTemplateCreate(
     }
     const created = await createDocumentTemplate(ctx, input, base);
     const target = `document_template:${created.id}`;
-    await recordMcpAudit(gated, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "document_template.create",
-      target,
-      before: null,
-      after: truncForAudit(projection(created)),
-    });
     return ok({
       dryRun: false,
       applied: true,
@@ -275,15 +265,7 @@ export async function documentTemplateUpdate(
         renderedBytes: pdf.byteLength,
       });
     }
-    const updated = await updateDocumentTemplate(ctx, id, patch, base);
-    await recordMcpAudit(gated, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "document_template.update",
-      target,
-      before: truncForAudit(before),
-      after: truncForAudit(projection(updated)),
-    });
+    await updateDocumentTemplate(ctx, id, patch, base);
     return ok({ dryRun: false, applied: true, target });
   } catch (e) {
     return failOf(e);
@@ -316,14 +298,6 @@ export async function documentTemplateDelete(
       });
     }
     await deleteDocumentTemplate(ctx, id, base);
-    await recordMcpAudit(gated, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "document_template.delete",
-      target,
-      before: truncForAudit(projection(current)),
-      after: null,
-    });
     return ok({ dryRun: false, applied: true, target });
   } catch (e) {
     return failOf(e);

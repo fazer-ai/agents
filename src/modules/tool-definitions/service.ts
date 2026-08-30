@@ -5,6 +5,8 @@ import { normalizeExpectedStatuses } from "@/graph/tools/http-status";
 import { AppError, ConflictError, NotFoundError } from "@/lib/errors";
 import { parseInput } from "@/lib/parse-input";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
+import { refForAudit } from "@/modules/audit/projection";
+import { auditMutation, projectionMoved } from "@/modules/audit/service";
 import { readAppointmentDeclaration } from "@/modules/tool-definitions/appointment";
 import { readableVaultRef, requireVaultRef } from "@/modules/vault/service";
 import { unsupportedBodyShape } from "./body-shape";
@@ -118,6 +120,37 @@ function toDto(r: {
     > | null,
     createdAt: r.createdAt,
     updatedAt: r.updatedAt,
+  };
+}
+
+// What the audit row carries: the server-trusted wiring an operator can change, minus the
+// identifiers and timestamps the row already holds in its own columns.
+//
+// The four schema bags (headers, query, body, inputSchema) are NOT on it. They are the largest
+// fields a definition has and the only ones that can carry a placeholder value pasted by hand, and
+// what the trail needs from them is that they changed rather than what they became — `urlTemplate`
+// and `allowedHosts` already say where this tool can reach. `credentialRef` is on it because
+// rewiring which credential a tool authenticates with is exactly the class of change a trail exists
+// to attribute.
+function auditProjection(r: {
+  name: string;
+  label: string;
+  method: string;
+  urlTemplate: string;
+  allowedHosts: string[];
+  credentialRef: string | null;
+  enabled: boolean;
+}) {
+  const cred = refForAudit(r.credentialRef);
+  return {
+    name: r.name,
+    label: r.label,
+    method: r.method,
+    urlTemplate: r.urlTemplate,
+    allowedHosts: r.allowedHosts,
+    credentialRef: cred.ref,
+    credentialRefOpaque: cred.opaque,
+    enabled: r.enabled,
   };
 }
 
@@ -272,6 +305,11 @@ export async function createToolDefinition(
       },
       select: SELECT,
     });
+    await auditMutation(db, ctx, {
+      action: "tool.create",
+      target: `tool:${row.id}`,
+      after: auditProjection(row),
+    });
     return toDto(row);
   });
 }
@@ -287,16 +325,15 @@ export async function updateToolDefinition(
   // write that sets the body is refused.
   assertSupportedBody(data.body);
   return runScopedOn(base, ctx, async (db) => {
+    // LOCKED before the snapshot the trail compares against, which is the rule the audited families
+    // already follow (`agents`, `tenants`, `tenant_settings`, branding, the delivery requeue, and
+    // the two the #397 round wrote). At READ COMMITTED two concurrent PATCHes both read state A;
+    // the first commits B; the second's `update` blocks, wakes and writes C — and files a row
+    // saying A became C, attributing B's change to whoever wrote C.
+    await db.$queryRaw`SELECT 1 FROM "tool_definitions" WHERE "id" = ${id} FOR UPDATE`;
     const current = await db.toolDefinition.findUnique({
       where: { id },
-      select: {
-        id: true,
-        urlTemplate: true,
-        query: true,
-        headers: true,
-        body: true,
-        inputSchema: true,
-      },
+      select: SELECT,
     });
     if (!current) {
       throw new NotFoundError(
@@ -364,6 +401,18 @@ export async function updateToolDefinition(
       where: { id },
       select: SELECT,
     });
+    const before = auditProjection(current);
+    const after = auditProjection(row);
+    // Only when something MOVED: the console PATCHes a whole editor tab per save, so a row per
+    // apply would fill the trail with saves that changed nothing (`docs/api-and-fleet.md`).
+    if (projectionMoved(before, after)) {
+      await auditMutation(db, ctx, {
+        action: "tool.update",
+        target: `tool:${id}`,
+        before,
+        after,
+      });
+    }
     return toDto(row);
   });
 }
@@ -374,13 +423,26 @@ export async function deleteToolDefinition(
   base: PrismaClient = basePrisma,
 ): Promise<void> {
   await runScopedOn(base, ctx, async (db) => {
+    // Locked, then read before the delete: after `deleteMany` there is nothing left to name what
+    // was removed, and the same lock keeps a concurrent update from making the row describe a
+    // definition that never looked like that.
+    await db.$queryRaw`SELECT 1 FROM "tool_definitions" WHERE "id" = ${id} FOR UPDATE`;
+    const current = await db.toolDefinition.findUnique({
+      where: { id },
+      select: SELECT,
+    });
     const res = await db.toolDefinition.deleteMany({ where: { id } });
-    if (res.count === 0) {
+    if (res.count === 0 || !current) {
       throw new NotFoundError(
         "tool definition not found",
         "errors.toolDefinitionNotFound",
       );
     }
+    await auditMutation(db, ctx, {
+      action: "tool.delete",
+      target: `tool:${id}`,
+      before: auditProjection(current),
+    });
   });
 }
 

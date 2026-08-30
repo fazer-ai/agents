@@ -120,14 +120,6 @@ export async function experimentCreate(
       base,
     });
     const target = `experiment:${created.id}`;
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "experiment.create",
-      target,
-      before: null,
-      after: truncForAudit({ id: String(created.id), name: args.name }),
-    });
     return ok({ dryRun: false, applied: true, id: String(created.id), target });
   } catch (e) {
     return failOf(e);
@@ -185,11 +177,6 @@ export async function experimentUpdate(
   try {
     const current = await getExperiment(ctx, id, base);
     const target = `experiment:${id}`;
-    const beforeProj = {
-      name: current.name,
-      enabled: current.enabled,
-      agentId: current.agentId ? String(current.agentId) : null,
-    };
     if (args.dry_run !== false) {
       return ok({
         dryRun: true,
@@ -200,19 +187,7 @@ export async function experimentUpdate(
         },
       });
     }
-    const updated = await updateExperiment({ ctx, id, ...patch, base });
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "experiment.update",
-      target,
-      before: truncForAudit(beforeProj),
-      after: truncForAudit({
-        name: updated.name,
-        enabled: updated.enabled,
-        agentId: updated.agentId ? String(updated.agentId) : null,
-      }),
-    });
+    await updateExperiment({ ctx, id, ...patch, base });
     return ok({ dryRun: false, applied: true, target });
   } catch (e) {
     return failOf(e);
@@ -242,14 +217,6 @@ export async function experimentDelete(
       });
     }
     await deleteExperiment(ctx, id, base);
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "experiment.delete",
-      target,
-      before: truncForAudit(beforeProj),
-      after: null,
-    });
     return ok({ dryRun: false, applied: true, target });
   } catch (e) {
     return failOf(e);

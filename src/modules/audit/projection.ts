@@ -1,4 +1,5 @@
 import { clipText, makeStorable } from "@/lib/text";
+import { readableVaultRef } from "@/modules/vault/service";
 
 // The before/after projection of an audit row, bounded so it can be stored.
 //
@@ -81,4 +82,21 @@ export function redactEndpoint(url: string): string {
     // Not parseable as a URL, so no part of it can be shown to be safe.
     return "…";
   }
+}
+
+// What a stored credential reference contributes to a projection: the ref where it names an entry,
+// and a marker where it does not.
+//
+// `readableVaultRef` shows the stored value only where it IS a reference (#438), so a column holding
+// anything else reads as null. The marker is what keeps the trail honest once that redaction exists:
+// without it, clearing an unreadable value looks identical on both sides of the change,
+// `projectionMoved` sees nothing, and the one save that removed a credential writes no row at all.
+// Same shape as `secretRefOpaque` on the outbound subscription (#397), which is why it lives here
+// rather than being spelled out at each of the three columns that need it.
+export function refForAudit(stored: string | null): {
+  ref: string | null;
+  opaque: boolean;
+} {
+  const ref = readableVaultRef(stored);
+  return { ref, opaque: stored !== null && ref === null };
 }

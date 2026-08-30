@@ -15,7 +15,6 @@ import {
   updateAgent,
 } from "@/modules/agents/service";
 import { agentExportSchema, importAgent } from "@/modules/agents/transfer";
-import { truncForAudit } from "@/modules/audit/projection";
 import {
   createMcpConnection,
   deleteMcpConnection,
@@ -42,7 +41,6 @@ import {
   gate,
   ok,
   parseMcpId,
-  recordMcpAudit,
   resolveSecretRef,
   type WriteDeps,
   type WriteResult,
@@ -486,14 +484,6 @@ export async function toolCreate(
     }
     const created = await createToolDefinition(ctx, input, base);
     const target = `tool:${created.id}`;
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "tool.create",
-      target,
-      before: null,
-      after: truncForAudit({ id: created.id, name: created.name }),
-    });
     return ok({
       dryRun: false,
       applied: true,
@@ -567,14 +557,6 @@ export async function toolUpdate(
     const appliedProj: Record<string, unknown> = {};
     for (const k of keys)
       appliedProj[k] = (updated as unknown as Record<string, unknown>)[k];
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "tool.update",
-      target,
-      before: truncForAudit(beforeProj),
-      after: truncForAudit(appliedProj),
-    });
     return ok({
       dryRun: false,
       applied: true,
@@ -610,14 +592,6 @@ export async function toolDelete(
       });
     }
     await deleteToolDefinition(ctx, id, base);
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "tool.delete",
-      target,
-      before: truncForAudit(beforeProj),
-      after: null,
-    });
     return ok({ dryRun: false, applied: true, target });
   } catch (e) {
     return failOf(e);
@@ -686,14 +660,6 @@ export async function mcpConnectionCreate(
     }
     const created = await createMcpConnection(ctx, input, base);
     const target = `mcp_connection:${created.id}`;
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "mcp_connection.create",
-      target,
-      before: null,
-      after: truncForAudit({ id: created.id, name: created.name }),
-    });
     return ok({ dryRun: false, applied: true, target, connection: created });
   } catch (e) {
     return failOf(e);
@@ -736,14 +702,6 @@ export async function mcpConnectionUpdate(
     const appliedProj: Record<string, unknown> = {};
     for (const k of keys)
       appliedProj[k] = (updated as unknown as Record<string, unknown>)[k];
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "mcp_connection.update",
-      target,
-      before: truncForAudit(beforeProj),
-      after: truncForAudit(appliedProj),
-    });
     return ok({
       dryRun: false,
       applied: true,
@@ -778,14 +736,6 @@ export async function mcpConnectionDelete(
       });
     }
     await deleteMcpConnection(ctx, id, base);
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "mcp_connection.delete",
-      target,
-      before: truncForAudit(beforeProj),
-      after: null,
-    });
     return ok({ dryRun: false, applied: true, target });
   } catch (e) {
     return failOf(e);

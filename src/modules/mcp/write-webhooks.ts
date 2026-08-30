@@ -1,7 +1,6 @@
 import type { InboundAuthStrategy } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import { AppError } from "@/lib/errors";
-import { truncForAudit } from "@/modules/audit/projection";
 import {
   createAlertChannel,
   deleteAlertChannel,
@@ -36,7 +35,6 @@ import {
   gate,
   ok,
   parseMcpId,
-  recordMcpAudit,
   resolveSecretRef,
   resolveSecretValue,
   type WriteDeps,
@@ -564,18 +562,6 @@ export async function integrationCreate(
       },
       base,
     );
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "integration.create",
-      target: `integration:${created.id}`,
-      before: null,
-      after: truncForAudit({
-        id: String(created.id),
-        catalogType: args.catalog_type,
-        name: args.name,
-      }),
-    });
     // The route token is a generated secret: surface it via the console, never raw to the model.
     return ok({
       dryRun: false,
@@ -672,14 +658,6 @@ export async function integrationUpdate(
     const appliedProj: Record<string, unknown> = {};
     for (const k of keys)
       appliedProj[k] = (updated as unknown as Record<string, unknown>)[k];
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "integration.update",
-      target,
-      before: truncForAudit(beforeProj),
-      after: truncForAudit(appliedProj),
-    });
     return ok({
       dryRun: false,
       applied: true,
@@ -718,14 +696,6 @@ export async function integrationDelete(
       });
     }
     await deleteIntegrationInstance(ctx, id, base);
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "integration.delete",
-      target,
-      before: truncForAudit(beforeProj),
-      after: null,
-    });
     return ok({ dryRun: false, applied: true, target });
   } catch (e) {
     return failOf(e);

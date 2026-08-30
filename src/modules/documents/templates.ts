@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
@@ -9,6 +10,7 @@ import {
 } from "@/lib/errors";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { unstorableProblem } from "@/lib/text";
+import { auditMutation, projectionMoved } from "@/modules/audit/service";
 import {
   type CompanySettings,
   readCompanySettings,
@@ -345,6 +347,54 @@ const SELECT = {
 
 type Row = Prisma.DocumentTemplateGetPayload<{ select: typeof SELECT }>;
 
+// What the audit row carries: the template's identity and the SHAPE of its content, never the
+// content itself.
+//
+// A template is a mould rather than an issued document, so what is in it is `{{token}}` prose the
+// operator wrote — but it is also the largest field here, and the trail is append-only and readable
+// by every tenant admin. The structure (`{id, type}` per block, `{key, type}` per field) answers
+// what a reader asks: a block appeared, one was removed, the order moved, a field changed type.
+//
+// `contentDigest` is what makes an edit INSIDE a block visible at all. Without it, replacing the
+// text of an existing block moves nothing in the projection, `projectionMoved` sees no change, and
+// the most common edit a template gets writes no row. The digest is over the same three parts, so
+// it moves for every content change and shows none of it; two rows can be compared, which is all
+// the trail needs from a body it may not publish.
+function contentDigest(r: {
+  blocks: unknown;
+  fields: unknown;
+  style: unknown;
+}): string {
+  // NOTE: the cut is over a hex digest, so it cannot land inside a surrogate pair — the same
+  // reason tenant-settings' over-ceiling fingerprint gives, and the entry beside it in
+  // `tests/lib/astral-cap-sweep.test.ts` says so.
+  return createHash("sha256")
+    .update(JSON.stringify([r.blocks, r.fields, r.style]))
+    .digest("hex")
+    .slice(0, 16);
+}
+
+function auditProjection(r: Row) {
+  const blocks = Array.isArray(r.blocks) ? r.blocks : [];
+  const fields = Array.isArray(r.fields) ? r.fields : [];
+  return {
+    name: r.name,
+    slug: r.slug,
+    description: r.description,
+    numberPrefix: r.numberPrefix,
+    enabled: r.enabled,
+    blocks: blocks.map((b) => {
+      const o = (b ?? {}) as Record<string, unknown>;
+      return { id: o.id ?? null, type: o.type ?? null };
+    }),
+    fields: fields.map((f) => {
+      const o = (f ?? {}) as Record<string, unknown>;
+      return { key: o.key ?? null, type: o.type ?? null };
+    }),
+    contentDigest: contentDigest(r),
+  };
+}
+
 // Content is validated on the way IN, so a row is trusted on the way out — except that a row written
 // by an older version of this file may not satisfy today's schema. Falling back to an empty document
 // rather than throwing keeps the console listable: a template that cannot be parsed has to be
@@ -623,11 +673,17 @@ export async function createDocumentTemplate(
     const refusal = nameTaken(holder.name, name, slug, !derived);
     refuse(refusal, 409);
   }
-  const row = await runScopedOn(base, ctx, (db) =>
-    db.documentTemplate
+  const row = await runScopedOn(base, ctx, async (db) => {
+    const created = await db.documentTemplate
       .create({ data: { ...data, slug }, select: SELECT })
-      .catch(writeConflict(slug, name, !derived)),
-  );
+      .catch(writeConflict(slug, name, !derived));
+    await auditMutation(db, ctx, {
+      action: "document_template.create",
+      target: `document_template:${created.id}`,
+      after: auditProjection(created),
+    });
+    return created;
+  });
   return toDto(row);
 }
 
@@ -666,6 +722,16 @@ export async function updateDocumentTemplate(
     }
     const current = toDto(found);
     const row = await patched(current, found, patch, db, id);
+    const before = auditProjection(found);
+    const after = auditProjection(row);
+    if (projectionMoved(before, after)) {
+      await auditMutation(db, ctx, {
+        action: "document_template.update",
+        target: `document_template:${id}`,
+        before,
+        after,
+      });
+    }
     return toDto(row);
   });
 }
@@ -936,13 +1002,25 @@ export async function deleteDocumentTemplate(
   base: PrismaClient = basePrisma,
 ): Promise<void> {
   await runScopedOn(base, ctx, async (db) => {
+    // Locked, then read before the delete: after `deleteMany` there is nothing left to name what
+    // was removed. The same lock the update takes, three functions up, and for the same reason.
+    await db.$queryRaw`SELECT 1 FROM "document_templates" WHERE "id" = ${id} FOR UPDATE`;
+    const current = await db.documentTemplate.findUnique({
+      where: { id },
+      select: SELECT,
+    });
     const res = await db.documentTemplate.deleteMany({ where: { id } });
-    if (res.count === 0) {
+    if (res.count === 0 || !current) {
       throw new NotFoundError(
         "document template not found",
         "errors.documentTemplateNotFound",
       );
     }
+    await auditMutation(db, ctx, {
+      action: "document_template.delete",
+      target: `document_template:${id}`,
+      before: auditProjection(current),
+    });
   });
 }
 

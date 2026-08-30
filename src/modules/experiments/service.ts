@@ -5,6 +5,7 @@ import config from "@/config";
 import { NotFoundError } from "@/lib/errors";
 import { parseInput } from "@/lib/parse-input";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
+import { auditMutation, projectionMoved } from "@/modules/audit/service";
 
 // Prompt A/B experiments. A thread is bucketed to a variant DETERMINISTICALLY (so re-resolution is
 // stable), and the assignment is persisted race-safely via createMany({skipDuplicates}) — an
@@ -109,6 +110,32 @@ export async function resolveVariantOverride(
   return variants.find((v) => v.key === key)?.systemPrompt ?? null;
 }
 
+// What the audit row carries: which agent this experiment steers, and the shape of its variants.
+//
+// The variants are projected as their KEYS and WEIGHTS, never their `systemPrompt`. A prompt is the
+// largest field an experiment holds and the seam already truncates it to 4000 characters, so
+// carrying it would fill the trail with clipped prose while answering nothing the row is for: what
+// a reader needs from a variant change is that the split moved and which arm it moved for. The
+// prompt itself is readable on the experiment for as long as the experiment exists, and this row
+// outlives it.
+function auditProjection(r: {
+  name: string;
+  agentId: bigint | null;
+  variants: unknown;
+  enabled: boolean;
+}) {
+  const variants = Array.isArray(r.variants) ? r.variants : [];
+  return {
+    name: r.name,
+    agentId: r.agentId === null ? null : String(r.agentId),
+    enabled: r.enabled,
+    variants: variants.map((v) => {
+      const o = (v ?? {}) as Record<string, unknown>;
+      return { key: o.key ?? null, weight: o.weight ?? null };
+    }),
+  };
+}
+
 // ── CRUD ──
 
 export async function listExperiments(
@@ -153,7 +180,12 @@ export async function createExperiment(params: {
         variants: variants as unknown as object,
         enabled: params.enabled ?? true,
       },
-      select: { id: true },
+      select: EXPERIMENT_SELECT,
+    });
+    await auditMutation(db, params.ctx, {
+      action: "experiment.create",
+      target: `experiment:${exp.id}`,
+      after: auditProjection(exp),
     });
     return { id: exp.id };
   });
@@ -201,9 +233,12 @@ export async function updateExperiment(params: {
       ? parseInput(z.array(variantWriteSchema), params.variants, "variants")
       : undefined;
   return runScopedOn(base, params.ctx, async (db) => {
+    // LOCKED before the snapshot the trail compares against: at READ COMMITTED two concurrent
+    // updates both read state A, the first commits B, and the second files a row saying A became C.
+    await db.$queryRaw`SELECT 1 FROM "experiments" WHERE "id" = ${params.id} FOR UPDATE`;
     const current = await db.experiment.findUnique({
       where: { id: params.id },
-      select: { id: true },
+      select: EXPERIMENT_SELECT,
     });
     if (!current) {
       throw new NotFoundError(
@@ -222,10 +257,21 @@ export async function updateExperiment(params: {
         ...(params.enabled !== undefined ? { enabled: params.enabled } : {}),
       },
     });
-    return db.experiment.findUniqueOrThrow({
+    const row = await db.experiment.findUniqueOrThrow({
       where: { id: params.id },
       select: EXPERIMENT_SELECT,
     });
+    const before = auditProjection(current);
+    const after = auditProjection(row);
+    if (projectionMoved(before, after)) {
+      await auditMutation(db, params.ctx, {
+        action: "experiment.update",
+        target: `experiment:${params.id}`,
+        before,
+        after,
+      });
+    }
+    return row;
   });
 }
 
@@ -235,13 +281,25 @@ export async function deleteExperiment(
   base: PrismaClient = basePrisma,
 ): Promise<void> {
   await runScopedOn(base, ctx, async (db) => {
+    // Locked, then read before the delete: after `deleteMany` there is nothing left to name what
+    // was removed.
+    await db.$queryRaw`SELECT 1 FROM "experiments" WHERE "id" = ${id} FOR UPDATE`;
+    const current = await db.experiment.findUnique({
+      where: { id },
+      select: EXPERIMENT_SELECT,
+    });
     const res = await db.experiment.deleteMany({ where: { id } });
-    if (res.count === 0) {
+    if (res.count === 0 || !current) {
       throw new NotFoundError(
         "experiment not found",
         "errors.experimentNotFound",
       );
     }
+    await auditMutation(db, ctx, {
+      action: "experiment.delete",
+      target: `experiment:${id}`,
+      before: auditProjection(current),
+    });
   });
 }
 

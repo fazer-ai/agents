@@ -14,6 +14,8 @@ import {
 import { parseInput } from "@/lib/parse-input";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
+import { refForAudit } from "@/modules/audit/projection";
+import { auditMutation, projectionMoved } from "@/modules/audit/service";
 import { ensureFreshGoogleAccessToken } from "@/modules/vault/google-oauth";
 import { ensureFreshMcpAccessToken } from "@/modules/vault/mcp-oauth";
 import { isManagedOAuthKind } from "@/modules/vault/secret-types";
@@ -75,6 +77,29 @@ function toDto(r: {
     ...r,
     id: String(r.id),
     credentialRef: readableVaultRef(r.credentialRef),
+  };
+}
+
+// What the audit row carries: the endpoint an operator can point this at, and the credential it
+// authenticates with. `command` is on it for the same reason `url` is — under the stdio transport
+// it IS the endpoint, and the two are alternatives rather than a pair.
+function auditProjection(r: {
+  name: string;
+  transport: string;
+  url: string | null;
+  command: string | null;
+  credentialRef: string | null;
+  enabled: boolean;
+}) {
+  const cred = refForAudit(r.credentialRef);
+  return {
+    name: r.name,
+    transport: r.transport,
+    url: r.url,
+    command: r.command,
+    credentialRef: cred.ref,
+    credentialRefOpaque: cred.opaque,
+    enabled: r.enabled,
   };
 }
 
@@ -224,6 +249,11 @@ export async function createMcpConnection(
       },
       select: SELECT,
     });
+    await auditMutation(db, ctx, {
+      action: "mcp_connection.create",
+      target: `mcp_connection:${row.id}`,
+      after: auditProjection(row),
+    });
     return toDto(row);
   });
 }
@@ -254,6 +284,15 @@ export async function updateMcpConnection(
     command: data.command !== undefined ? data.command : current.command,
   });
   return runScopedOn(base, ctx, async (db) => {
+    // LOCKED before the snapshot the trail compares against. The `current` read above is outside
+    // this transaction on purpose — it feeds the SSRF check, which does DNS — so it is not the
+    // snapshot: at READ COMMITTED two concurrent PATCHes would both read state A, the first commits
+    // B, and the second files a row saying A became C, attributing B's change to whoever wrote C.
+    await db.$queryRaw`SELECT 1 FROM "mcp_server_connections" WHERE "id" = ${id} FOR UPDATE`;
+    const snapshot = await db.mcpServerConnection.findUniqueOrThrow({
+      where: { id },
+      select: SELECT,
+    });
     if (data.name) await assertNameFree(db, data.name, id);
     const credentialRef = data.credentialRef
       ? await requireVaultRef(db, data.credentialRef, "credentialRef")
@@ -275,6 +314,16 @@ export async function updateMcpConnection(
       where: { id },
       select: SELECT,
     });
+    const before = auditProjection(snapshot);
+    const after = auditProjection(row);
+    if (projectionMoved(before, after)) {
+      await auditMutation(db, ctx, {
+        action: "mcp_connection.update",
+        target: `mcp_connection:${id}`,
+        before,
+        after,
+      });
+    }
     return toDto(row);
   });
 }
@@ -285,13 +334,25 @@ export async function deleteMcpConnection(
   base: PrismaClient = basePrisma,
 ): Promise<void> {
   await runScopedOn(base, ctx, async (db) => {
+    // Locked, then read before the delete: after `deleteMany` there is nothing left to name what
+    // was removed.
+    await db.$queryRaw`SELECT 1 FROM "mcp_server_connections" WHERE "id" = ${id} FOR UPDATE`;
+    const current = await db.mcpServerConnection.findUnique({
+      where: { id },
+      select: SELECT,
+    });
     const res = await db.mcpServerConnection.deleteMany({ where: { id } });
-    if (res.count === 0) {
+    if (res.count === 0 || !current) {
       throw new NotFoundError(
         "mcp connection not found",
         "errors.mcpConnectionNotFound",
       );
     }
+    await auditMutation(db, ctx, {
+      action: "mcp_connection.delete",
+      target: `mcp_connection:${id}`,
+      before: auditProjection(current),
+    });
   });
 }
 

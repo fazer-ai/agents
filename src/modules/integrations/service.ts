@@ -8,6 +8,8 @@ import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { AppError, NotFoundError } from "@/lib/errors";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { refForAudit } from "@/modules/audit/projection";
+import { auditMutation, projectionMoved } from "@/modules/audit/service";
 import { readableVaultRef, requireVaultRef } from "@/modules/vault/service";
 import { isUsableHeaderName } from "@/modules/webhooks/inbound/auth";
 import {
@@ -99,6 +101,42 @@ export function assertUsableHeaderNames(config: Record<string, unknown>): void {
   }
 }
 
+// What the audit row carries: which catalog entry this is, how its inbound side authenticates, and
+// the two credential references it holds.
+//
+// `config` contributes its KEYS and not its values. It is a free-form bag on both writers
+// (`z.record(z.string(), z.unknown())`, no allowlist) whose contents are whatever an operator typed
+// — two of its keys are already read back as HTTP header names — and a value nothing validated does
+// not belong in an append-only row. The keys still answer the question the trail is for: they say
+// that the wiring changed and which part of it, while `redactEndpoint`'s reasoning applies to the
+// rest (where a value is stored says nothing about whether it is a secret).
+function auditProjection(r: {
+  catalogType: string;
+  name: string;
+  enabled: boolean;
+  config: unknown;
+  credentialRef: string | null;
+  inboundAuthStrategy: string;
+  inboundSecretRef: string | null;
+}) {
+  const cred = refForAudit(r.credentialRef);
+  const inbound = refForAudit(r.inboundSecretRef);
+  return {
+    catalogType: r.catalogType,
+    name: r.name,
+    enabled: r.enabled,
+    configKeys:
+      r.config && typeof r.config === "object" && !Array.isArray(r.config)
+        ? Object.keys(r.config).sort()
+        : [],
+    credentialRef: cred.ref,
+    credentialRefOpaque: cred.opaque,
+    inboundAuthStrategy: r.inboundAuthStrategy,
+    inboundSecretRef: inbound.ref,
+    inboundSecretRefOpaque: inbound.opaque,
+  };
+}
+
 export interface CreateIntegrationParams {
   catalogType: string;
   name: string;
@@ -133,7 +171,7 @@ export async function createIntegrationInstance(
       minted && params.inboundSecretRef
         ? await requireVaultRef(db, params.inboundSecretRef, "inboundSecretRef")
         : null;
-    return db.integrationInstance.create({
+    const row = await db.integrationInstance.create({
       data: {
         tenantId,
         catalogType: params.catalogType,
@@ -148,8 +186,14 @@ export async function createIntegrationInstance(
         routeTokenHash: minted?.hash ?? null,
         routeToken: minted ? encryptJson(minted.token) : null,
       },
-      select: { id: true },
+      select: INSTANCE_SELECT,
     });
+    await auditMutation(db, ctx, {
+      action: "integration.create",
+      target: `integration:${row.id}`,
+      after: auditProjection(row),
+    });
+    return row;
   });
   return { id: created.id, routeToken: minted?.token ?? null };
 }
@@ -300,9 +344,13 @@ export async function updateIntegrationInstance(
 ): Promise<IntegrationInstanceDto> {
   if (params.config) assertUsableHeaderNames(params.config);
   return runScopedOn(base, ctx, async (db) => {
+    // LOCKED before the snapshot the trail compares against: at READ COMMITTED two concurrent
+    // PATCHes both read state A, the first commits B, and the second's `update` blocks, wakes and
+    // writes C — filing a row that says A became C and attributing B's change to whoever wrote C.
+    await db.$queryRaw`SELECT 1 FROM "integration_instances" WHERE "id" = ${id} FOR UPDATE`;
     const current = await db.integrationInstance.findUnique({
       where: { id },
-      select: { id: true },
+      select: INSTANCE_SELECT,
     });
     if (!current) {
       throw new NotFoundError(
@@ -335,6 +383,16 @@ export async function updateIntegrationInstance(
       where: { id },
       select: INSTANCE_SELECT,
     });
+    const before = auditProjection(current);
+    const after = auditProjection(row);
+    if (projectionMoved(before, after)) {
+      await auditMutation(db, ctx, {
+        action: "integration.update",
+        target: `integration:${id}`,
+        before,
+        after,
+      });
+    }
     return toInstanceDto(row);
   });
 }
@@ -351,7 +409,7 @@ export async function rotateIntegrationRouteToken(
   return runScopedOn(base, ctx, async (db) => {
     const current = await db.integrationInstance.findUnique({
       where: { id },
-      select: { catalogType: true },
+      select: { catalogType: true, name: true },
     });
     if (!current) {
       throw new NotFoundError(
@@ -376,6 +434,19 @@ export async function rotateIntegrationRouteToken(
         routeToken: encryptJson(minted.token),
       },
     });
+    // A name this issue invents (#399): rotating has no MCP twin, so there was no action to move
+    // down. It is recorded rather than left out because the old URL stops answering the instant
+    // this commits — the provider keeps posting to an address nothing serves, and until now
+    // nothing said who did that or when.
+    //
+    // NEITHER token is in the projection, old or new. The row is readable by every tenant admin
+    // and outlives the instance, and the token IS the credential: the inbound route authenticates
+    // by nothing else. What identifies the rotation is the target.
+    await auditMutation(db, ctx, {
+      action: "integration.rotate_token",
+      target: `integration:${id}`,
+      after: { catalogType: current.catalogType, name: current.name },
+    });
     return { routeToken: minted.token };
   });
 }
@@ -386,12 +457,24 @@ export async function deleteIntegrationInstance(
   base: PrismaClient = basePrisma,
 ): Promise<void> {
   await runScopedOn(base, ctx, async (db) => {
+    // Locked, then read before the delete: after `deleteMany` there is nothing left to name what
+    // was removed.
+    await db.$queryRaw`SELECT 1 FROM "integration_instances" WHERE "id" = ${id} FOR UPDATE`;
+    const current = await db.integrationInstance.findUnique({
+      where: { id },
+      select: INSTANCE_SELECT,
+    });
     const res = await db.integrationInstance.deleteMany({ where: { id } });
-    if (res.count === 0) {
+    if (res.count === 0 || !current) {
       throw new NotFoundError(
         "integration instance not found",
         "errors.integrationInstanceNotFound",
       );
     }
+    await auditMutation(db, ctx, {
+      action: "integration.delete",
+      target: `integration:${id}`,
+      before: auditProjection(current),
+    });
   });
 }

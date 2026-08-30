@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Elysia } from "elysia";
 import { clientKeyFor, rateLimitMiddleware } from "@/api/middlewares/rateLimit";
-import app from "@/app";
+import { buildApp } from "@/app";
 import { AppError, ForbiddenError, NotFoundError } from "@/lib/errors";
 
 // What a REJECTED request costs. Separate from rateLimit.test.ts, which is about who a bucket
@@ -24,14 +24,15 @@ interface ListeningApp {
 let base = "";
 let server: ListeningApp["server"] | undefined;
 
-beforeAll(() => {
+beforeAll(async () => {
   (globalThis as { Response: typeof Response }).Response = BunResponse;
-  // NOTE: registered on the REAL app, so the hooks it exercises are the ones src/app.ts installed,
-  // in the order it installed them. There is no unauthenticated route in the app that throws a
-  // 404 to borrow for this, and rebuilding an equivalent app would pin the test's own ordering
-  // instead of the app's. It mutates the exported singleton, which several files now do; the
-  // `listen` below rebuilds the route table, which is what keeps a route registered after another
-  // file has already served a request from being silently dropped (see refusal-wire.test.ts).
+  // NOTE: `buildApp()` is what src/app.ts builds its own default export from, so the hooks this
+  // exercises are the ones that file installs, in the order it installs them — which is the whole
+  // point, since there is no unauthenticated route in the app that throws a 404 to borrow, and a
+  // hand-rolled equivalent would pin this test's ordering instead of the app's. It used to mutate
+  // the exported singleton, and both halves of that (a route AND a `listen`) reached every file
+  // that ran afterwards: a stopped-but-compiled app answered their `handle()` calls with 500s.
+  const app = await buildApp();
   app.get("/__metering/thrown-404", () => {
     throw new NotFoundError("gone");
   });
@@ -122,12 +123,10 @@ describe("rate-limit metering (what a rejected request costs)", () => {
   // separately below, on a probe small enough to reach the ceiling.
   test("a matched route that throws a 404 is charged once, not twice", async () => {
     // NOTE: the status is asserted before the cost, because the cost alone cannot tell this case
-    // from the case where the probe route is not there at all. It is registered on the shared app
-    // singleton in beforeAll, and credentialRateLimit.test.ts runs earlier in the SAME process and
-    // has already called `listen()` on it, so the route is added to a compiled app. Elysia routes it
-    // anyway, measured alone and under the full suite, but if that ever changed the request would
-    // fall through to the SPA catch-all, spend exactly the same 1, and leave this test green while
-    // it stopped testing a matched route entirely.
+    // from the case where the probe route is not there at all: a request that falls through to the
+    // SPA catch-all spends exactly the same 1 and would leave this test green while it stopped
+    // testing a matched route entirely. The route is registered on this file's OWN app, before any
+    // request compiles it, so nothing another file does can drop it.
     const answered = await send("GET", "/__metering/thrown-404");
     expect(answered.status).toBe(404);
     expect(await answered.json()).toEqual({ error: "gone" });

@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, mock, test } from "bun:test";
+import { afterAll, describe, expect, mock, spyOn, test } from "bun:test";
 import { Elysia } from "elysia";
 import { authPlugin } from "@/api/lib/auth";
 import type { SearchParams } from "@/modules/rag/service";
@@ -42,12 +42,16 @@ const ragService = await import("@/modules/rag/service");
 const searchKnowledge = mock(
   async (_params: SearchParams): Promise<ChunkHit[]> => [HIT],
 );
-// Spread the real module: the controller imports a dozen other names from it, and replacing the
-// whole module with one function would break the route graph at import time.
-mock.module("@/modules/rag/service", () => ({
-  ...ragService,
+// A SPY ON THE MODULE OBJECT, NOT A `mock.module`. The registry rewrite is process-global and its
+// undo is a second rewrite, so whether another file sees the stub depends on when that file's
+// imports resolve relative to this file's `afterAll` — which is an ordering nobody controls.
+// Measured: tests/modules/tenant-selector-entry-points.test.ts calls the real `searchKnowledge` to
+// prove it refuses a dead tenant selector, and under `bun test --shard=7/8` it got this stub and the
+// refusal never happened. The pair alone does not reproduce; it needs a third file between them,
+// which is what makes the registry version so hard to attribute.
+const spy = spyOn(ragService, "searchKnowledge").mockImplementation(
   searchKnowledge,
-}));
+);
 
 const app = (await import("@/app")).default;
 
@@ -55,7 +59,7 @@ const app = (await import("@/app")).default;
 // worker. Spreading the real module already keeps the leak inert (only `searchKnowledge` differs,
 // and no other suite calls it), but put the module back anyway so file order can never matter.
 afterAll(() => {
-  mock.module("@/modules/rag/service", () => ragService);
+  spy.mockRestore();
 });
 
 // The session the route runs under: an AGENT with a tenant, which is what `requireAuth: true` asks

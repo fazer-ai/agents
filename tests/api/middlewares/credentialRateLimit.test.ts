@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { isCredentialRequest } from "@/api/middlewares/rateLimit";
-import app from "@/app";
+import { buildApp } from "@/app";
 import {
   assertCredentialBudgetIsTighter,
   assertLimiterBudgetsAreDistinct,
@@ -27,9 +27,17 @@ interface ListeningApp {
 let base = "";
 let server: ListeningApp["server"] | undefined;
 
-beforeAll(() => {
+// ITS OWN APP, NOT THE PROCESS'S, because `listen()` is a mutation and this one outlived the file.
+//
+// Binding the shared default export starts and compiles the one instance every other file reaches
+// through `app.handle(...)`, and `stop()` does not put it back: it leaves a compiled, once-listening
+// Elysia behind. The next file to hand it a request gets a 500 out of it. Measured on a clean tree:
+// tests/api/v1/mcp-dcr.test.ts answered `Received: 500` where it expects a 404, and neutralising THIS
+// file was what made those two failures go away — found by bisecting bun's own shard ordering, since
+// the pair alone does not reproduce (the two need the rest of the shard around them).
+beforeAll(async () => {
   (globalThis as { Response: typeof Response }).Response = BunResponse;
-  const listening = app.listen(0) as unknown as ListeningApp;
+  const listening = (await buildApp()).listen(0) as unknown as ListeningApp;
   if (!listening.server?.port) throw new Error("Failed to start the app");
   server = listening.server;
   base = `http://localhost:${listening.server.port}`;

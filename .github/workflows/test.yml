@@ -11,6 +11,36 @@ jobs:
   test:
     runs-on: ubuntu-latest
 
+    # NOT SHARDED YET, AND WHAT IS LEFT IN THE WAY IS ONE TEST.
+    #
+    # Four shards (one job each, own vCPUs, own database) took the test step from 157s to 36-61s and
+    # the wall from 217s to ~109s. What came back red was not the split: the same `--shard=1/4` fails
+    # on a clean origin/main, because this suite was only ever green in the order the full serial run
+    # happens to give it. Four causes were found and fixed on this branch, taking the four shards from
+    # 19 failures to 1:
+    #
+    #   - src/app.ts exported ONE Elysia instance, and three files mutated it: two registered their
+    #     own routes on it, one called `listen()`. Elysia compiles its router on first use, so a later
+    #     file's route never existed and its request fell through to the `/*` SPA handler, and a
+    #     stopped-but-compiled app answered later `handle()` calls with 500s. `buildApp()` is the fix.
+    #   - one file replaced `@/modules/rag/service` in the module registry. Re-registering the real
+    #     module in `afterAll` is a second global rewrite, and whether it lands before another file's
+    #     imports resolve is an ordering nobody controls. A `spyOn` on the module object restores.
+    #
+    # THE ONE LEFT: tests/client/components/UserMenu.test.tsx stubs `react-i18next` (plus the auth and
+    # theme contexts) with `mock.module`, which has no reliable undo, and
+    # tests/client/document-starters-race.test.tsx switches the REAL i18n language to prove a stale
+    # response cannot overwrite a newer one. Against the stub the switch does nothing. Both files
+    # already document the hazard from their own side. Two fixes were measured and rejected: restoring
+    # the modules in `afterAll` does not undo the leak, and dropping the stub for the real instance
+    # makes UserMenu itself order-dependent and breaks the stub ledger in
+    # tests/lib/module-mock-package.test.ts, which lists that stub on purpose.
+    #
+    # `bun test --parallel` is NOT affected and runs clean: it implies `--isolate`, so each file gets
+    # its own module registry and a `mock.module` cannot reach the next file. Only a shard, which runs
+    # serially inside its job, shares one.
+    runs-on: ubuntu-latest
+
     # NOT SHARDED, AND THE MEASUREMENT THAT SAYS WHY IS WORTH KEEPING.
     #
     # Four shards (one job each, own vCPUs, own database) took the test step from 157s to 36-61s and

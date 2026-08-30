@@ -284,6 +284,36 @@ describe("OpenAI-compatible embeddings", () => {
     expect(calls).toBe(1);
   });
 
+  // One item saying `index: 1` is the provider stating that position is not the order. Reading the
+  // array positionally anyway publishes the pair swapped.
+  test("refuses a response only some of whose items are indexed", async () => {
+    const fetchImpl = (async () =>
+      json({
+        data: [{ index: 1, embedding: vec(1) }, { embedding: vec(0) }],
+      })) as unknown as typeof fetch;
+    await expect(
+      embedTexts(["a", "b"], config(), { fetchImpl, assertSafe: passThrough }),
+    ).rejects.toThrow("provider error");
+  });
+
+  // A 2xx whose body is not JSON arrived and cannot be used: `res.json()` rejects with a statusless
+  // SyntaxError, which the ingest's own policy would otherwise read as a transport failure and send
+  // the same batch twice more.
+  test("a 2xx that is not JSON is refused once, not asked again", async () => {
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls += 1;
+      return new BunResponse("<html>gateway</html>", {
+        status: 200,
+        headers: { "content-type": "text/html" },
+      });
+    }) as unknown as typeof fetch;
+    await expect(
+      embedTexts(["a"], config(), { fetchImpl, assertSafe: passThrough }),
+    ).rejects.toThrow("provider error");
+    expect(calls).toBe(1);
+  });
+
   // Numeric but not a permutation of 0..n-1: it sorts into SOMETHING and passes the count check, so
   // without this the document publishes with each vector attached to the wrong chunk.
   test.each([

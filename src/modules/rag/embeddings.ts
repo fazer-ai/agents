@@ -144,28 +144,41 @@ async function embedCompatibleBatch(
     signal: AbortSignal.timeout(EMBEDDING_TIMEOUT_MS),
   });
   if (!res.ok) throw await providerResponseError(res);
-  const json = (await res.json()) as {
-    data?: Array<{ index?: number; embedding?: unknown }>;
-  };
+  // A 2xx whose body is not JSON is a response that ARRIVED and cannot be used, and it has to be
+  // said here: `res.json()` rejects with a statusless SyntaxError, which is indistinguishable from a
+  // connection reset and would be sent the same batch twice more on the ingest path.
+  let json: { data?: Array<{ index?: number; embedding?: unknown }> };
+  try {
+    json = (await res.json()) as typeof json;
+  } catch {
+    throw new UnusableResponseError(
+      "embedding provider returned a body that is not JSON",
+    );
+  }
   const items = [...(json.data ?? [])];
   if (items.length !== texts.length) {
     throw new UnusableResponseError(
       "embedding provider returned the wrong vector count",
     );
   }
-  // Reorder by `index` only when EVERY item carries one AND they form exactly 0..n-1. The SDK path
-  // reads the array positionally, so response order is the fallback that has always been in use;
-  // treating a missing index as 0 would collapse every item onto one key and hand the order to the
-  // sort's tie handling instead. And a set that is numeric but not a permutation — a duplicate, a
-  // 1.5, a 9 among two inputs — sorts into SOMETHING and passes the count check above, which is how
-  // a document gets published with each vector attached to the wrong chunk. There is no order to
-  // recover there, so it is refused rather than guessed.
-  if (items.every((i) => typeof i.index === "number")) {
+  // Two acceptable shapes and nothing between them: NO item carries an index, or every one does and
+  // they form exactly 0..n-1.
+  //
+  // The empty case is the SDK path's own assumption — it reads the array positionally — so response
+  // order is the fallback that has always been in use here. A PARTIAL set is not that: one item
+  // saying `index: 1` is the provider stating that position is not the order, and reading the array
+  // positionally anyway publishes `[b, a]` for `[{index:1,b},{a}]`. And a full set that is not a
+  // permutation (a duplicate, a 1.5, a 9 among two inputs) sorts into SOMETHING and sails past the
+  // count check above. Neither leaves an order to recover, so both are refused rather than guessed —
+  // the cost of guessing is a document published with every vector against the wrong chunk.
+  const indexed = items.filter((i) => typeof i.index === "number").length;
+  if (indexed > 0) {
     const indexes = items.map((i) => i.index as number);
-    const permutation =
+    const usable =
+      indexed === items.length &&
       new Set(indexes).size === indexes.length &&
       indexes.every((n) => Number.isInteger(n) && n >= 0 && n < items.length);
-    if (!permutation) {
+    if (!usable) {
       throw new UnusableResponseError(
         "embedding provider returned an unusable index set",
       );

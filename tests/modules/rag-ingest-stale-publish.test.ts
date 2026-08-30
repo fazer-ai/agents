@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import config from "@/config";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import {
   createDocument,
@@ -118,8 +119,17 @@ function toBase64(vec: number[]): string {
   );
 }
 
+let savedAllowPrivate = false;
+
 beforeAll(() => {
   if (!dbUp) return;
+  // The fixture below is a loopback embedding endpoint reached through the REAL ingest path, and
+  // `embedCompatible` now runs the SSRF guard on the operator-configured URL before fetching — which
+  // refuses 127.0.0.1 under NODE_ENV=test, exactly as it would in production. Same save/restore the
+  // mcp-oauth suite uses for its own loopback fixture; reaching a private endpoint for real is the
+  // operator's explicit SSRF_ALLOW_PRIVATE_TARGETS opt-in, and it is not what this suite is about.
+  savedAllowPrivate = config.ssrf.allowPrivateTargets;
+  config.ssrf.allowPrivateTargets = true;
   embedServer = Bun.serve({
     port: 0,
     async fetch(req) {
@@ -246,6 +256,7 @@ async function readChunks(tenantId: bigint, id: bigint): Promise<string[]> {
 }
 
 afterAll(async () => {
+  config.ssrf.allowPrivateTargets = savedAllowPrivate;
   embedServer?.stop(true);
   if (!dbUp) return;
   for (const id of tenants) {

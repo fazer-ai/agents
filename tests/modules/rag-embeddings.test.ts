@@ -193,6 +193,53 @@ describe("OpenAI-compatible embeddings", () => {
     ).rejects.toThrow(/returned 768 dimensions .* is 1536 wide/);
   });
 
+  // `@langchain/openai` pins the OpenAI client to `maxRetries: 0` and wraps the call in AsyncCaller,
+  // which retries six times; this path shipped with none, and an ingest failure is terminal (the
+  // document lands in FAILED and only a manual reindex moves it).
+  test("asks again after a transient failure, and only then", async () => {
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls += 1;
+      return calls === 1
+        ? new BunResponse("upstream busy", { status: 503 })
+        : json({ data: [{ index: 0, embedding: vec(2) }] });
+    }) as unknown as typeof fetch;
+    expect(
+      await embedTexts(["a"], config(), { fetchImpl, assertSafe: passThrough }),
+    ).toEqual([vec(2)]);
+    expect(calls).toBe(2);
+  });
+
+  test("does not ask again about what we sent", async () => {
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls += 1;
+      return new BunResponse("bad key", { status: 401 });
+    }) as unknown as typeof fetch;
+    await expect(
+      embedTexts(["a"], config(), { fetchImpl, assertSafe: passThrough }),
+    ).rejects.toThrow("HTTP 401");
+    expect(calls).toBe(1);
+  });
+
+  // Azure's own spelling of a compatible base carries a query; concatenating puts `/embeddings`
+  // inside it and the POST lands on the base path instead.
+  test("keeps a query on the base URL out of the path", async () => {
+    let seenUrl = "";
+    const fetchImpl = (async (url: string | URL) => {
+      seenUrl = String(url);
+      return json({ data: [{ index: 0, embedding: vec(1) }] });
+    }) as unknown as typeof fetch;
+    await embedTexts(
+      ["a"],
+      { ...config(), baseURL: "https://azure.example/openai/v1?api-version=x" },
+      { fetchImpl, assertSafe: passThrough },
+    );
+    expect(seenUrl).toBe(
+      "https://azure.example/openai/v1/embeddings?api-version=x",
+    );
+  });
+
   test("the query path refuses the same mismatch", async () => {
     const fetchImpl = (async () =>
       json({

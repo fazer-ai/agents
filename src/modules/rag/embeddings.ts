@@ -1,6 +1,12 @@
 import { OpenAIEmbeddings } from "@langchain/openai";
-import { throughProvider } from "@/lib/provider-failure";
+import {
+  isTransientProviderStatus,
+  providerFailure,
+  statusOf,
+  throughProvider,
+} from "@/lib/provider-failure";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
+import { clipText } from "@/lib/text";
 
 // Embedding wrapper. OpenAI-compatible by default (text-embedding-3-small → 1536 dims, matching
 // the knowledge_chunks vector(1536) column). The API key is resolved from the vault by the
@@ -35,6 +41,27 @@ const EMBEDDING_TIMEOUT_MS = 60_000;
 // a single-GPU endpoint is not helped by twenty simultaneous requests.
 const COMPATIBLE_BATCH_SIZE = 512;
 
+// WHAT THE SDK PATH WAS ALREADY DOING, AND WHY DROPPING IT COSTS MORE HERE THAN ELSEWHERE.
+//
+// `@langchain/openai` sets the OpenAI client's own `maxRetries` to 0 and wraps every call in
+// `AsyncCaller`, whose default is SIX retries — so this path started out with none where the one it
+// replaces had six. And an ingest failure is terminal: the document lands in FAILED and only a
+// manual reindex moves it, which is a worse outcome than any single 503 deserves.
+//
+// Three attempts rather than six, because the same function serves `embedQuery` inside a live turn,
+// where every extra attempt is a customer waiting; three with these delays is still strictly more
+// patient than the zero this path shipped with, and strictly less than the six a 600s-default SDK
+// timeout could stretch out on main today. Only the ENDPOINT's momentary state is retried — the
+// predicate is `provider-failure`'s, so a 401 or a 404 answers the same way every time and is not
+// asked twice.
+const COMPATIBLE_RETRY_DELAYS_MS = [500, 2000];
+
+function isTransient(err: unknown): boolean {
+  if (providerFailure(err) === "timeout") return true;
+  const status = statusOf(err);
+  return status !== null && isTransientProviderStatus(status);
+}
+
 function client(cfg: EmbeddingConfig, deps: EmbeddingDeps): OpenAIEmbeddings {
   const configuration = {
     ...(cfg.baseURL ? { baseURL: cfg.baseURL } : {}),
@@ -66,7 +93,10 @@ function client(cfg: EmbeddingConfig, deps: EmbeddingDeps): OpenAIEmbeddings {
 async function providerResponseError(res: Response): Promise<Error> {
   let body = "";
   try {
-    body = (await res.text()).slice(0, 2000);
+    // `clipText`, not a bare slice: this is arbitrary text an arbitrary server wrote, and a cut
+    // landing between the halves of a surrogate pair leaves a lone surrogate in a value bound for
+    // the process log (`tests/lib/astral-cap-sweep.test.ts`).
+    body = clipText(await res.text(), 2000);
   } catch {
     // A body that cannot be read costs the log its detail, never the status.
   }
@@ -123,24 +153,56 @@ async function embedCompatible(
   cfg: EmbeddingConfig & { baseURL: string },
   deps: EmbeddingDeps,
 ): Promise<number[][]> {
-  const base = cfg.baseURL.replace(/\/+$/, "");
+  // Through `URL`, not concatenation: the vault accepts any http(s) URL, and Azure's own spelling
+  // carries a query (`…/v1?api-version=2024-02-01`). Appending to that string puts the path INSIDE
+  // the query and the POST lands on `/v1`, which a compatible server answers with something that
+  // parses far enough to be confusing.
+  const endpoint = compatibleEndpoint(cfg.baseURL);
   // SSRF guard on the URL the OPERATOR configured, immediately before the fetch, exactly as the
   // openai-compatible branch of `listProviderModels` does. The vault validates `baseUrl` as http(s)
   // syntax and nothing more, so without this a tenant admin turns knowledge ingestion into a POST at
   // any loopback, RFC1918 or metadata address. `allowHttp` for the same reason the models listing
   // allows it: these endpoints are self-hosted and routinely plain http on a private network.
-  const safeUrl = await (deps.assertSafe ?? assertSafeOutboundUrl)(
-    `${base}/embeddings`,
-    { allowHttp: true },
-  );
+  const safeUrl = await (deps.assertSafe ?? assertSafeOutboundUrl)(endpoint, {
+    allowHttp: true,
+  });
   const url = safeUrl.toString();
   const fetchImpl = deps.fetchImpl ?? fetch;
   const out: number[][] = [];
   for (let i = 0; i < texts.length; i += COMPATIBLE_BATCH_SIZE) {
     const batch = texts.slice(i, i + COMPATIBLE_BATCH_SIZE);
-    out.push(...(await embedCompatibleBatch(batch, cfg, url, fetchImpl)));
+    out.push(
+      ...(await withTransientRetry(() =>
+        embedCompatibleBatch(batch, cfg, url, fetchImpl),
+      )),
+    );
   }
   return out;
+}
+
+// The `/embeddings` sibling of whatever path the operator configured, with the query and fragment
+// carried over. A base URL that does not parse is handed to the SSRF guard as it stands, so the
+// refusal is the guard's own "invalid URL" rather than a TypeError reduced to "provider error".
+function compatibleEndpoint(baseURL: string): string {
+  try {
+    const u = new URL(baseURL);
+    u.pathname = `${u.pathname.replace(/\/+$/, "")}/embeddings`;
+    return u.toString();
+  } catch {
+    return baseURL;
+  }
+}
+
+async function withTransientRetry<T>(call: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await call();
+    } catch (err) {
+      const delay = COMPATIBLE_RETRY_DELAYS_MS[attempt];
+      if (delay === undefined || !isTransient(err)) throw err;
+      await Bun.sleep(delay);
+    }
+  }
 }
 
 // WHY THIS IS CHECKED HERE AND NOT ONLY AT INSERT TIME.

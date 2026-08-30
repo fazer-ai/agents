@@ -39,41 +39,6 @@ jobs:
     # `bun test --parallel` is NOT affected and runs clean: it implies `--isolate`, so each file gets
     # its own module registry and a `mock.module` cannot reach the next file. Only a shard, which runs
     # serially inside its job, shares one.
-    runs-on: ubuntu-latest
-
-    # NOT SHARDED, AND THE MEASUREMENT THAT SAYS WHY IS WORTH KEEPING.
-    #
-    # Four shards (one job each, own vCPUs, own database) took the test step from 157s to 36-61s and
-    # the wall from 217s to ~109s. Three of the four came back RED, and not from anything the split
-    # did: the same `bun test --shard=1/4` on a clean origin/main fails the same 19 tests. This suite
-    # has files that pass only in the order the full serial run happens to give them, and sharding is
-    # simply the first thing to reorder it.
-    #
-    # Most of the cause was found and fixed on this branch: `src/app.ts` exports a singleton, two test
-    # files registered THEIR OWN routes on it, and Elysia compiles its router on first use, so
-    # whichever file got there first was the only one whose routes existed. The rest fell through to
-    # the `/*` SPA handler and came back as HTML. `buildApp()` is the fix, and it took shard 1/4 from
-    # 19 failures to 2.
-    #
-    # The 2 that remain, plus 7 more across the other shards, are a DIFFERENT cause and it is not
-    # isolated yet: `Expected: 404, Received: 500`, so a handler throwing rather than a route missing.
-    # It is not pairwise — sweeping all 133 other files of the shard, each run immediately before the
-    # victim, reproduces on none of them — which points at a combination rather than one bad
-    # neighbour. `setupPrismaMock` was the obvious suspect (a permanent process-global `mock.module`
-    # that 14 of its 26 callers never reset) and was measured and RULED OUT: resetting it changes
-    # nothing.
-    #
-    # So sharding stays off until that is found. The same unknown also blocks
-    # `bun test --parallel --no-isolate`, which is 42s against 65s locally and fails the same way.
-
-    # NOTE: a REAL Postgres, not a mock. Roughly 1600 of this suite's assertions are database-backed
-    # and every one of them is gated on `describe.skipIf(!dbUp)`, so without a server here they do
-    # not fail: they SKIP, and the job reports green having never run the end-to-end layer the
-    # project's testing standard is built on. A stubbed database would be worse than none, because
-    # row-level security is enforced by the server and a stub cannot enforce it.
-    #
-    # pgvector, not plain postgres: `scripts/db-bootstrap.sql` runs CREATE EXTENSION vector. pg17 is
-    # what every docker-compose in this repo ships, so CI tests the server operators actually run.
     services:
       postgres:
         image: pgvector/pgvector:pg17

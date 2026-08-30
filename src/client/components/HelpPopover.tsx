@@ -3,7 +3,7 @@ import { cn } from "@/client/lib/utils";
 import { Popover } from "./Popover";
 
 interface HelpPopoverProps {
-  // What the operator needs to DECIDE — why this exists, when it applies, what it costs — as
+  // What the operator needs to DECIDE (why this exists, when it applies, what it costs) as
   // opposed to what they need to act correctly, which stays on screen. The rule that sorts one
   // from the other is in docs/ui.md.
   content: React.ReactNode;
@@ -27,7 +27,7 @@ interface HelpPopoverProps {
 //
 // A SPAN, NOT A BUTTON, and that is load-bearing rather than stylistic. A <label> is associated
 // with the first LABELABLE element in its subtree, and `button` is labelable: as a button, this
-// became the labelled control of any field it sat in — clicking the field's title opened the help
+// became the labelled control of any field it sat in: clicking the field's title opened the help
 // instead of focusing the input, and the input lost its accessible name. Measured. `role="button"`
 // plus `tabIndex` makes it interactive content (so a label forwards no click to it) without making
 // it labelable, at the cost of wiring Enter and Space by hand, which a span does not emit as
@@ -42,14 +42,22 @@ export function HelpPopover({
   contentClassName,
 }: HelpPopoverProps) {
   const { t } = useTranslation();
+  // One name for both halves of the affordance: the button the operator activates and the box that
+  // opens. Radix names the box nothing on its own, and hearing the same words on the way in and on
+  // the way out is what ties the two together for somebody who cannot see that one came from the
+  // other.
+  const name = label
+    ? `${t("common.showHelp", "Show help")}: ${label}`
+    : t("common.showHelp", "Show help");
   return (
     <Popover
       content={content}
+      label={name}
       side={side}
       align={align}
       contentClassName={contentClassName}
     >
-      {/* biome-ignore lint/a11y/useSemanticElements: a real <button> is labelable and would steal the label of any field this sits in — see above. */}
+      {/* biome-ignore lint/a11y/useSemanticElements: a real <button> is labelable and would steal the label of any field this sits in, see above. */}
       <span
         role="button"
         tabIndex={0}
@@ -66,17 +74,13 @@ export function HelpPopover({
         // interpolates, and in this suite one does not: nine client test files stub
         // `react-i18next` and the stub leaks across files (tests/lib/module-mock-package.test.ts
         // records exactly that, and predicted it would bite).
-        aria-label={
-          label
-            ? `${t("common.showHelp", "Show help")}: ${label}`
-            : t("common.showHelp", "Show help")
-        }
+        aria-label={name}
         className={cn(
           // The RING is 16px; the TARGET is not, and the two are separated on purpose. A bare
           // `h-4 w-4` gives 256px² of which `rounded-full` then clips the four corners away, so
           // roughly 200px² are live and the outer band of the visible circle is dead: the pointer
           // has to be near the middle to open anything. The `after` box restores the missing area
-          // without touching the drawing or the layout — it is 6px of overhang on every side,
+          // without touching the drawing or the layout: it is 6px of overhang on every side,
           // which is exactly the `gap-1.5` between this and the label it sits beside, so it never
           // reaches the label's own text.
           "relative inline-flex h-4 w-4 shrink-0 cursor-help items-center justify-center rounded-full border border-border bg-transparent p-0 font-medium text-[10px] text-text-muted transition-colors after:absolute after:-inset-1.5 after:content-[''] hover:border-border-hover hover:text-text-secondary focus-visible:outline-2 focus-visible:outline-border-focus focus-visible:outline-offset-2",

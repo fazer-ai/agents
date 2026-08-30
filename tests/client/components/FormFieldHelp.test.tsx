@@ -26,14 +26,14 @@ const { Input } = await import("@/client/components/Input");
 // prop, because the two ways this affordance dies are both invisible to a shallower check.
 //
 // The first is measured, not imagined: the trigger shipped with an `onClick` that called
-// `preventDefault` — added to stop the wrapping <label> from forwarding the click to the control —
+// `preventDefault`, added to stop the wrapping <label> from forwarding the click to the control,
 // and Radix composes the trigger's handler with `checkForDefaultPrevented`, so cancelling the event
 // cancelled its own `onOpenToggle`. The button rendered, the aria wiring was right, and nothing
 // opened. (The guard was also unnecessary: a label's activation behaviour does nothing for an event
 // targeted at an interactive descendant, and a <button> is one.)
 //
 // The second is the reason this is a Popover and not a Tooltip at all: a Radix tooltip cannot be
-// opened by touch — three handlers close every route in, measured in the note on Popover.tsx — and
+// opened by touch (three handlers close every route in, measured in the note on Popover.tsx) and
 // the console has a mobile drawer. A test that only hovered would pass on a component no phone can
 // open.
 
@@ -59,7 +59,7 @@ describe("FormField help", () => {
         <input />
       </FormField>,
     );
-    // Before the click the help is nowhere in the document — not merely hidden, since a popover
+    // Before the click the help is nowhere in the document, not merely hidden, since a popover
     // renders into a portal only once open.
     expect(screen.queryByText(/sends the whole history/i)).toBeNull();
     fireEvent.click(screen.getByRole("button"));
@@ -217,7 +217,7 @@ describe("FormField help", () => {
   });
   // WHAT THIS PROVES AND WHAT IT DOES NOT. It asserts the observable contract: a box that opened
   // because the pointer passed over closes on its own and leaves focus where it was. It does NOT
-  // exercise the guard that makes that true in a browser — Radix's non-modal close calls
+  // exercise the guard that makes that true in a browser: Radix's non-modal close calls
   // `triggerRef.focus()` unless `onCloseAutoFocus` is defaulted away, and removing that guard here
   // changes nothing, because happy-dom does not run that path. Measured, not assumed: with the
   // guard deleted, focus still stayed on the input.
@@ -294,5 +294,45 @@ describe("FormField help", () => {
     const label = document.querySelector("label") as HTMLLabelElement;
     expect(label.htmlFor).toBe("email-field");
     expect(screen.getByRole("textbox").id).toBe("email-field");
+  });
+
+  // The BOX is a `role="dialog"` and Radix names it nothing, so without this every help on a page
+  // is announced as the same anonymous dialog. Naming the trigger does not fix it: `aria-controls`
+  // points at the box, it does not name it, and a reader who tabs into an open one, or comes back
+  // to it, hears "dialog" and has to read the body to work out which field it belongs to.
+  test("the open help box is named after the field", () => {
+    render(
+      <FormField label="History ceiling" help="Why this field exists.">
+        <input />
+      </FormField>,
+    );
+    fireEvent.click(screen.getByRole("button"));
+    expect(
+      screen.getByRole("dialog", { name: /History ceiling/ }),
+    ).toBeTruthy();
+  });
+
+  // Pinning had to DISARM the close a preceding `pointerleave` scheduled. The path is real: tab to
+  // the `?`, hover it (the box opens), move the pointer off (140ms armed), press Enter inside that
+  // window. The box pinned and then vanished under the operator, and the wreckage outlived it,
+  // because `pinned` stayed true on a closed box and the next hover then opened one that
+  // `closeOnLeave` refused to close.
+  test("pinning a hover-opened popover survives the close it interrupted", async () => {
+    render(
+      <FormField label="History ceiling" help="Why this field exists.">
+        <input />
+      </FormField>,
+    );
+    const trigger = screen.getByRole("button");
+    trigger.focus();
+    fireEvent.pointerEnter(trigger, { pointerType: "mouse" });
+    fireEvent.pointerLeave(trigger, { pointerType: "mouse" });
+    // The pin arrives while the close is still pending, which is the whole point: firing it after
+    // the timer had already run would test nothing.
+    fireEvent.click(trigger);
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, CLOSE_WAIT_MS));
+    });
+    expect(screen.queryByText(/why this field exists/i)).toBeTruthy();
   });
 });

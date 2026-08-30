@@ -15,6 +15,12 @@ interface PopoverProps {
   // The trigger. Always required, unlike Tooltip's optional `?` fallback: a popover is opened
   // deliberately, so the thing that opens it has to be something the caller chose to be clickable.
   children: ReactElement;
+  // The box's own accessible name. Radix renders the content as `role="dialog"` and names it
+  // nothing, so a screen reader announces "dialog" and every help box on a page is the same
+  // unnamed one: the reader who lands in it by mistake, or comes back to it later, has no way to
+  // tell WHICH help they are in. The trigger's name does not carry over: `aria-controls` points
+  // at the box, it does not name it.
+  label?: string;
   side?: "top" | "right" | "bottom" | "left";
   align?: "start" | "center" | "end";
   sideOffset?: number;
@@ -27,7 +33,7 @@ interface PopoverProps {
 const CLOSE_DELAY_MS = 140;
 
 // A string `content` is split on blank lines and rendered as paragraphs. The alternative was to make
-// every caller pass JSX, which would put markup in the translation catalogue — where a translator
+// every caller pass JSX, which would put markup in the translation catalogue, where a translator
 // cannot see it, a lint rule cannot check it, and one missing tag breaks a page. A blank line is
 // something a catalogue holds natively and a translator already understands.
 //
@@ -68,8 +74,8 @@ function renderContent(content: ReactNode): ReactNode {
 // that is not a hypothetical viewport.
 //
 // THIS ONE OPENS THREE WAYS, and the three are one behaviour rather than a desktop mode and a touch
-// mode: a click (which every input method produces, touch and Enter/Space included), and — for a
-// fine pointer only — hovering, which is the cheap glance a tooltip was good for. The difference
+// mode: a click (which every input method produces, touch and Enter/Space included), and, for a
+// fine pointer only, hovering, which is the cheap glance a tooltip was good for. The difference
 // between the two is what happens when the pointer leaves: a hovered box follows the pointer away,
 // a clicked one stays until it is dismissed, so the text can be read slowly, selected and copied.
 //
@@ -78,6 +84,7 @@ function renderContent(content: ReactNode): ReactNode {
 export function Popover({
   content,
   children,
+  label,
   side = "bottom",
   align = "start",
   sideOffset = 6,
@@ -113,7 +120,7 @@ export function Popover({
   const openOnHover = useCallback(
     (e: React.PointerEvent) => {
       // Coarse pointers get nothing here: a tap emits pointerenter too, and opening on it would
-      // race the click that follows — the box would open on enter and toggle shut on click.
+      // race the click that follows: the box would open on enter and toggle shut on click.
       if (e.pointerType === "touch") return;
       cancelClose();
       setOpen(true);
@@ -147,6 +154,12 @@ export function Popover({
         // Every other close (Escape, outside click, a second click on the trigger) dismisses.
         if (byTrigger && !pinned.current) {
           pinned.current = true;
+          // The close timer a preceding `pointerleave` armed is still running, and pinning does not
+          // disarm it on its own. Reachable: tab to the trigger, hover it (opens), move the pointer
+          // away (arms the timer), press Enter inside 140ms. The box would pin and then vanish, and
+          // `pinned` would stay true on a closed box, after which the next hover opens a box that
+          // `closeOnLeave` refuses to close.
+          cancelClose();
           return;
         }
         restoreFocus.current = pinned.current;
@@ -172,6 +185,7 @@ export function Popover({
           align={align}
           sideOffset={sideOffset}
           collisionPadding={8}
+          aria-label={label}
           onPointerEnter={cancelClose}
           onPointerLeave={closeOnLeave}
           // A box that appeared because the pointer passed over must not steal focus from the field
@@ -189,11 +203,6 @@ export function Popover({
             if (!restoreFocus.current) e.preventDefault();
             restoreFocus.current = false;
           }}
-          // And it must not RETURN focus either. Radix's non-modal close focuses the trigger unless
-          // the event is defaulted away, so a box that merely followed the pointer would, 140ms
-          // after the pointer left, pull focus out of the field being typed into and onto the `?`.
-          // The keystrokes after that go nowhere the operator can see.
-
           className={cn(
             // The width is capped by the VIEWPORT as well as by the design: a fixed 24rem is most
             // of a 375px screen once collision padding is taken out, and a box that is wider than
@@ -201,7 +210,7 @@ export function Popover({
             //
             // `text-sm` and not the `text-xs` a tooltip uses: this box exists to be READ, not
             // glanced at, and 24rem at 14px lands around 50 characters a line, inside the measure
-            // prose wants. The colour is the primary one for the same reason — a muted tone is for
+            // prose wants. The colour is the primary one for the same reason: a muted tone is for
             // text competing with something else on the page, and nothing competes in here.
             "data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 z-(--z-tooltip) w-max max-w-[min(24rem,calc(100vw-2rem))] rounded-md border border-border bg-bg-primary px-3.5 py-3 text-sm text-text-primary leading-relaxed shadow-lg data-[state=closed]:animate-out data-[state=open]:animate-in",
             contentClassName,

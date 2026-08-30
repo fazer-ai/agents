@@ -32,7 +32,7 @@ function flatten(node: unknown, prefix = ""): [string, string][] {
   );
 }
 
-// A key is inline text by its suffix. `Help` is the popover and is deliberately unbounded here —
+// A key is inline text by its suffix. `Help` is the popover and is deliberately unbounded here:
 // it has its own shape check below.
 const INLINE = /(Hint|Note|Explain)$/;
 
@@ -52,7 +52,7 @@ describe("where help goes (docs/ui.md)", () => {
   });
 
   // The `?` is not a licence for the wall of prose it just took off the page. Three short
-  // paragraphs — what it is, what it does, the caveat — is the shape, and `Popover` renders a
+  // paragraphs (what it is, what it does, the caveat) is the shape, and `Popover` renders a
   // blank-line-separated string as exactly that.
   test("popover help keeps its three-paragraph shape", () => {
     const bad: string[] = [];

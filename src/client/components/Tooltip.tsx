@@ -22,7 +22,7 @@ interface TooltipBaseProps {
 //
 // CHILDREN IS REQUIRED, and used to be optional: a `<Tooltip content=… />` with
 // nothing inside rendered its own `?` button. That made a tooltip look exactly
-// like the help affordance while being a different thing — and one that no
+// like the help affordance while being a different thing, and one that no
 // phone can open, since a Radix tooltip has no touch route in (Popover.tsx).
 // Help behind a `?` is `HelpPopover`; a tooltip LABELS something that is already
 // on screen, so it always has a child to label.

@@ -32,7 +32,7 @@ export function useFormField(): FormFieldContextValue {
 }
 
 // `aria-describedby` takes a LIST of ids, so a control that renders its own message and sits in a
-// field that renders one must name both — dropping either is how a validation message goes
+// field that renders one must name both. Dropping either is how a validation message goes
 // unannounced. Order is meaningful: assistive tech reads them in sequence, and the field's own
 // description is the general one, so it comes first.
 export function mergeDescribedBy(

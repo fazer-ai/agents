@@ -302,6 +302,24 @@ describe("FormField help", () => {
     expect(screen.getByRole("textbox").id).toBe("email-field");
   });
 
+  // Radix arms `FocusScope`'s Tab handler with a hard-coded `loop: true` even on the non-modal
+  // branch, and our help is prose, so the scope has nothing tabbable to land on and focuses its own
+  // container. From there it cancels every Tab and every Shift+Tab: whoever opened the help with
+  // Enter is inside it until they guess Escape. The trigger keeps focus instead, so Tab carries on
+  // through the form.
+  test("opening the help with the keyboard leaves focus on the trigger", () => {
+    render(
+      <FormField label="History ceiling" help="Why this field exists.">
+        <input />
+      </FormField>,
+    );
+    const trigger = screen.getByRole("button");
+    trigger.focus();
+    fireEvent.click(trigger);
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(document.activeElement === trigger).toBe(true);
+  });
+
   // The BOX is a `role="dialog"` and Radix names it nothing, so without this every help on a page
   // is announced as the same anonymous dialog. Naming the trigger does not fix it: `aria-controls`
   // points at the box, it does not name it, and a reader who tabs into an open one, or comes back

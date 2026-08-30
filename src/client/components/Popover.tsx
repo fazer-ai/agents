@@ -100,12 +100,6 @@ export function Popover({
   // of those may pin: without this flag, Escape on a box the pointer merely hovered open took the
   // pin branch and left it on screen, which is the opposite of what Escape means.
   const fromTrigger = useRef(false);
-  // Whether the close now in flight was a DELIBERATE dismissal of a pinned box, captured before
-  // `pinned` is cleared. Radix fires `onCloseAutoFocus` after the content unmounts, by which time
-  // `pinned` is already false, so reading it there would answer "hover" for every close and a
-  // keyboard user who opened the help with Enter and dismissed it with Escape would be left with
-  // focus on nothing.
-  const restoreFocus = useRef(false);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const cancelClose = useCallback(() => {
@@ -162,7 +156,6 @@ export function Popover({
           cancelClose();
           return;
         }
-        restoreFocus.current = pinned.current;
         pinned.current = false;
         setOpen(false);
       }}
@@ -188,21 +181,24 @@ export function Popover({
           aria-label={label}
           onPointerEnter={cancelClose}
           onPointerLeave={closeOnLeave}
-          // A box that appeared because the pointer passed over must not steal focus from the field
-          // being filled. One opened on purpose does take it, which is what a keyboard user needs.
-          onOpenAutoFocus={(e) => {
-            if (!pinned.current) e.preventDefault();
-          }}
-          // And it must not RETURN focus either. Radix's non-modal close focuses the trigger unless
-          // the event is defaulted away, so a box that merely followed the pointer would, 140ms
-          // after the pointer left, pull focus out of the field being typed into and onto the `?`.
-          // The keystrokes after that go nowhere the operator can see.
-          onCloseAutoFocus={(e) => {
-            // Let Radix return focus only when the box was dismissed on purpose. It is Radix's
-            // call from there: on an outside click it declines to move focus on its own.
-            if (!restoreFocus.current) e.preventDefault();
-            restoreFocus.current = false;
-          }}
+          // FOCUS NEVER ENTERS THE BOX, however it was opened, and this is the opposite of what a
+          // dialog usually wants. Radix hands `FocusScope` a hard-coded `loop: true` even on the
+          // non-modal branch that sets `trapped: false`, and `loop` alone is enough to arm the Tab
+          // handler (`if (!loop && !trapped) return`). Our help is prose, so the scope finds no
+          // tabbable candidate, focuses its own container, and from there every Tab and every
+          // Shift+Tab is `preventDefault`ed: a keyboard user who opened the help with Enter could
+          // not get back to the form except by guessing Escape. Read in
+          // @radix-ui/react-focus-scope's handleKeyDown.
+          //
+          // The trigger keeps focus instead, which is the ordinary non-modal disclosure: Radix
+          // still puts `aria-expanded` and `aria-controls` on it, the box is named (see `label`),
+          // and Escape reaches it from anywhere because DismissableLayer listens on the document.
+          onOpenAutoFocus={(e) => e.preventDefault()}
+          // And it must not move focus on the way out either. Radix's non-modal close focuses the
+          // trigger unless the event is defaulted away, so a box that merely followed the pointer
+          // would, 140ms after the pointer left, pull focus out of the field being typed into and
+          // onto the `?`. Nothing to restore, either: focus never left where it was.
+          onCloseAutoFocus={(e) => e.preventDefault()}
           className={cn(
             // The width is capped by the VIEWPORT as well as by the design: a fixed 24rem is most
             // of a 375px screen once collision padding is taken out, and a box that is wider than

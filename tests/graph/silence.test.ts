@@ -38,9 +38,17 @@ describe("customerFacingReply — the REACTIVE rule", () => {
       false,
       "Olá! Como posso ajudar?",
     ],
-    ["a real reply carrying the token", `${S} Claro.`, false, "Claro."],
-    ["a real reply ending in the token", `Claro. ${S}`, false, "Claro."],
-    ["the token twice inside a reply", `${S}Bom${S} dia`, false, "Bom dia"],
+    // Review round 4. The token inside a REAL answer is left alone: editing a substring out of a
+    // customer-facing reply is the silent data loss docs/graph.md rejects, and the cause fix means
+    // only a legacy transcript can still put it here. Reported, never mutated (see `carriesToken`).
+    ["a real reply carrying the token", `${S} Claro.`, false, `${S} Claro.`],
+    ["a real reply ending in the token", `Claro. ${S}`, false, `Claro. ${S}`],
+    [
+      "the token twice inside a reply",
+      `${S}Bom${S} dia`,
+      false,
+      `${S}Bom${S} dia`,
+    ],
     // The heuristics below belong to the proactive path ONLY. Here a customer is waiting, and these
     // are ordinary short answers — swallowing one is its own defect (review round 1, P2).
     ["a bare SKIP", "SKIP", false, "SKIP"],
@@ -58,7 +66,6 @@ describe("customerFacingReply — the REACTIVE rule", () => {
       const out = customerFacingReply(raw);
       expect(out.silent).toBe(silent);
       expect(out.text).toBe(text);
-      expect(out.text).not.toContain(S);
       // The contract the repeated-sentinel case used to fall through: emptiness and silence are one
       // decision, so a caller can never see silent=false with nothing to send.
       expect(out.silent).toBe(out.text.length === 0);
@@ -67,6 +74,18 @@ describe("customerFacingReply — the REACTIVE rule", () => {
 
   // `bySentinel` is what lets a caller tell "the model wrote the token" from "the model wrote
   // nothing", which is the difference between silence worth a line and an ordinary empty turn.
+  // A token that survives into a delivered reply is REPORTED, which is what makes not-editing-it
+  // honest rather than a leak nobody hears about.
+  test("a token riding along in a real reply is flagged, not removed", () => {
+    const out = customerFacingReply(`${S} Claro.`);
+    expect(out.carriesToken).toBe(true);
+    expect(out.silent).toBe(false);
+    expect(out.text).toBe(`${S} Claro.`);
+    // Silence is not "carrying": there is no reply left to carry anything.
+    expect(customerFacingReply(S).carriesToken).toBe(false);
+    expect(customerFacingReply("Olá").carriesToken).toBe(false);
+  });
+
   test("silence by token is distinguishable from an empty answer", () => {
     expect(customerFacingReply(S).bySentinel).toBe(true);
     expect(customerFacingReply(`${S}${S}`).bySentinel).toBe(true);
@@ -98,10 +117,19 @@ describe("proactiveReply — the follow-up rule", () => {
     });
   }
 
-  test("a real follow-up survives, minus any stray token", () => {
+  // The two rules diverge on a stray token too, and deliberately: this is the path that ASKED for
+  // it, so an occurrence here is an artifact of our own instruction rather than a customer's words.
+  test("a real follow-up loses a stray token, unlike a reactive reply", () => {
     const out = proactiveReply(`Oi! Vi que seu pagamento venceu. ${S}`);
     expect(out.silent).toBe(false);
     expect(out.text).toBe("Oi! Vi que seu pagamento venceu.");
+    expect(out.carriesToken).toBe(false);
+    // The reactive rule leaves the same input alone and reports it instead.
+    const reactive = customerFacingReply(
+      `Oi! Vi que seu pagamento venceu. ${S}`,
+    );
+    expect(reactive.text).toBe(`Oi! Vi que seu pagamento venceu. ${S}`);
+    expect(reactive.carriesToken).toBe(true);
   });
 
   // The two rules DIVERGE here, and that divergence is the point: the same string is silence for a
@@ -230,6 +258,27 @@ describe("withFollowupSilenceChannel", () => {
   test("an undefined allowlist already means every tool", () => {
     const cfg = { nativeToolsAllow: undefined };
     expect(withFollowupSilenceChannel(cfg)).toBe(cfg);
+  });
+
+  // Granting is only half. A precondition on the tool is fail-closed and refuses the very call the
+  // directive depends on, so the follow-up would answer with text instead — the leak by a third road.
+  test("it also drops a precondition standing on the channel", () => {
+    const preconditions: Record<string, unknown> = {
+      [SKIP_REPLY_TOOL]: { kind: "attribute", key: "x" },
+      handoff_to_human: { kind: "attribute", key: "article_url" },
+    };
+    const out = withFollowupSilenceChannel({
+      nativeToolsAllow: [SKIP_REPLY_TOOL],
+      toolPreconditions: preconditions,
+    });
+    expect(out.toolPreconditions).toEqual({
+      handoff_to_human: { kind: "attribute", key: "article_url" },
+    });
+  });
+
+  test("it leaves an agent with no preconditions alone", () => {
+    const cfg = { nativeToolsAllow: undefined, toolPreconditions: {} };
+    expect(withFollowupSilenceChannel(cfg).toolPreconditions).toEqual({});
   });
 
   test("it revokes nothing else", () => {

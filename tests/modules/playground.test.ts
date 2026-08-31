@@ -236,7 +236,7 @@ describe.skipIf(!dbUp)("playground", () => {
     expect(r.reply).toBe("");
   });
 
-  test("a playground reply carrying a stray sentinel keeps its text", async () => {
+  test("a playground reply carrying a stray sentinel is left intact", async () => {
     const r = await runPlaygroundTurn({
       ctx: ctx(tenantId),
       agentId: agentOk,
@@ -250,7 +250,8 @@ describe.skipIf(!dbUp)("playground", () => {
         checkpointer: new MemorySaver(),
       },
     });
-    expect(r.reply).toBe("Claro, posso ajudar.");
+    // Round 4: carried, not edited out (docs/graph.md — never strip a real reply).
+    expect(r.reply).toBe(`${FOLLOWUP_SKIP_SENTINEL} Claro, posso ajudar.`);
   });
 
   // The playground synthesized WITHOUT the speech rewrite until #105, so the operator heard a

@@ -26,6 +26,10 @@ export interface CustomerFacingReply {
   // from one strip rather than decided separately, which is what makes `[[SKIP]][[SKIP]]` behave
   // like `[[SKIP]]` instead of falling between the two answers.
   text: string;
+  // The delivered text still CARRIES the token, because editing it out would be the data loss the
+  // repo's standing rule prohibits. Nothing is mutated and nothing is suppressed; the caller says so
+  // out loud instead, which is what keeps this from being a silent cosmetic leak.
+  carriesToken: boolean;
   // Silence caused by the TOKEN rather than by the model writing nothing. Only the caller knows
   // whether that deserves a line: on the proactive path staying silent is the expected outcome, and
   // on the reactive one a customer is waiting, so silence with no trace reads to the operator like
@@ -39,21 +43,28 @@ export interface CustomerFacingReply {
 // swallowing a real answer is its own defect. A reply that REDUCES to the token is silence; a reply
 // that merely carries it keeps its text and loses the token.
 export function customerFacingReply(raw: string): CustomerFacingReply {
-  const text = raw.split(SENTINEL).join("").trim();
-  // Wrapping quotes are a model habit rather than content — the proactive path has tolerated them
-  // since it was written — so a reply that is nothing BUT quotes once the token is gone is still the
-  // token, and posting `""` ships the marker in a costume. Decided on the unquoted form and
-  // returned on the original: stripping quotes from a real reply would be its own data loss.
-  // ...and only when the raw reply actually CARRIED the token. A customer asking what an empty
-  // string literal looks like gets `""` back, and that is content: tolerating quotes unconditionally
-  // would silence a real answer and even report it as token-caused (review round 3).
-  const silent = raw.includes(SENTINEL)
-    ? text.replace(/^["'`]+|["'`]+$/g, "").trim().length === 0
-    : text.length === 0;
+  const trimmed = raw.trim();
+  const carriesToken = trimmed.includes(SENTINEL);
+  // "Reduces ENTIRELY to the marker" is the whole test, and it is deliberately not a strip of the
+  // token wherever it appears. `docs/graph.md` rejects that shape — the citation-marker precedent —
+  // because editing a real answer to remove a substring trades a rare cosmetic leak for silent data
+  // loss, and the cause fix (the directive asks for a TOOL now) means the only replies that can
+  // still carry this token come from transcripts written before it. Wrapping quotes and repetition
+  // are tolerated because both are the same reply wearing a hat.
+  const bare = trimmed
+    .split(SENTINEL)
+    .join("")
+    .trim()
+    .replace(/^["'`]+|["'`]+$/g, "")
+    .trim();
+  const silent = carriesToken ? bare.length === 0 : trimmed.length === 0;
   return {
     silent,
-    text: silent ? "" : text,
-    bySentinel: silent && raw.trim().length > 0,
+    // Unchanged when it is not silence. The token riding along is a cosmetic leak the caller REPORTS
+    // (see `carriesToken`) rather than one this edits away.
+    text: silent ? "" : trimmed,
+    bySentinel: silent && trimmed.length > 0,
+    carriesToken: !silent && carriesToken,
   };
 }
 
@@ -87,9 +98,21 @@ export function proactiveReply(raw: string): CustomerFacingReply {
         .trim()
         .replace(/^["'`]+|["'`]+$/g, "")
         .includes(SENTINEL),
+      carriesToken: false,
     };
   }
-  return customerFacingReply(raw);
+  // A real follow-up still loses a stray token, and that asymmetry with the reactive rule is
+  // deliberate rather than an oversight. This is the path that ASKED for the token until this
+  // change, so a stray occurrence here is an artifact of our own instruction; on the reactive side
+  // it can only have come from a transcript, where editing a customer's answer is the data loss
+  // `docs/graph.md` prohibits. The behaviour predates this PR and its test is older still — reversing
+  // it would be a second change, on a path this issue is not about.
+  const drafted = customerFacingReply(raw);
+  return {
+    ...drafted,
+    text: drafted.text.split(SENTINEL).join("").trim(),
+    carriesToken: false,
+  };
 }
 
 // The follow-up's silence CHANNEL, as one rule rather than one copy per caller.
@@ -101,13 +124,26 @@ export function proactiveReply(raw: string): CustomerFacingReply {
 // renderers of that directive (production and the playground simulation), and round 3 of review
 // found the second one because round 2 changed the protocol in only the first.
 export function withFollowupSilenceChannel<
-  T extends { nativeToolsAllow?: string[] },
+  T extends {
+    nativeToolsAllow?: string[];
+    toolPreconditions?: Record<string, unknown>;
+  },
 >(cfg: T): T {
-  // undefined ⇒ every native tool is allowed, so there is nothing to widen.
-  if (!cfg.nativeToolsAllow) return cfg;
-  if (cfg.nativeToolsAllow.includes(SKIP_REPLY_TOOL)) return cfg;
-  return {
-    ...cfg,
-    nativeToolsAllow: [...cfg.nativeToolsAllow, SKIP_REPLY_TOOL],
-  };
+  let out = cfg;
+  // GRANTED. undefined ⇒ every native tool is allowed, so there is nothing to widen.
+  if (out.nativeToolsAllow && !out.nativeToolsAllow.includes(SKIP_REPLY_TOOL)) {
+    out = {
+      ...out,
+      nativeToolsAllow: [...out.nativeToolsAllow, SKIP_REPLY_TOOL],
+    };
+  }
+  // ...AND UNGUARDED, which granting alone does not buy. Preconditions are keyed by tool name, are
+  // fail-closed, and wrap the tool at the merge point — so an operator condition on `skip_reply`
+  // refuses the call the directive now depends on, and the model answers with text instead. It bites
+  // hardest in the playground, which has no conversation attributes for a condition to be met by.
+  if (out.toolPreconditions && SKIP_REPLY_TOOL in out.toolPreconditions) {
+    const { [SKIP_REPLY_TOOL]: _dropped, ...rest } = out.toolPreconditions;
+    out = { ...out, toolPreconditions: rest };
+  }
+  return out;
 }

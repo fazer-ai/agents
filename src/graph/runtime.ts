@@ -1288,6 +1288,18 @@ export async function runLoadedTurn(
         detail: { silenceTokenSuppressed: true },
       });
     }
+    // The other half, and it exists because the rule REFUSES to edit the token out of a real answer
+    // (that is the data loss `docs/graph.md` prohibits). So the reply goes out carrying it, and the
+    // operator hears about it here rather than from the customer — a cosmetic leak that is reported
+    // is a different thing from one that is silent.
+    if (drafted.carriesToken) {
+      emitFlowEvent(flow, {
+        stage: "generate",
+        level: "warn",
+        status: "ok",
+        detail: { silenceTokenInReply: true },
+      });
+    }
 
     // The deferred resolve falls with the TRANSFER, not with the suppression of the final text: a
     // conversation the human queue now owns is not ours to close, and that holds even when the

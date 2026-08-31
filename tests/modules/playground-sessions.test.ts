@@ -33,14 +33,16 @@ describe("rebuildPlaygroundTurns", () => {
   // Issue #454, review round 1. The live response sanitizes, but the CHECKPOINTER holds the model's
   // raw turn, so reopening a session rebuilt the token and showed it to the operator again — the
   // same defect one surface over.
-  test("a reloaded session does not show the follow-up's skip sentinel", () => {
+  test("a reloaded session renders a sentinel-carrying reply as written", () => {
     const turns = rebuildPlaygroundTurns([
       new HumanMessage("oi"),
       new AIMessage(`${FOLLOWUP_SKIP_SENTINEL} Claro, posso ajudar.`),
     ]);
     expect(turns.map((x) => [x.role, x.text])).toEqual([
       ["user", "oi"],
-      ["assistant", "Claro, posso ajudar."],
+      // Round 4: a reload shows what the model actually wrote. Only a turn that reduces ENTIRELY to
+      // the token is silence; editing the token out of a real answer is the prohibited data loss.
+      ["assistant", `${FOLLOWUP_SKIP_SENTINEL} Claro, posso ajudar.`],
     ]);
   });
 

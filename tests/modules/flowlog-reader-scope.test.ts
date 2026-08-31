@@ -200,7 +200,7 @@ const FLOWLOG_READERS: Record<string, number> = {
   "tests/graph/duplicate-tool-name-visible.test.ts": 1,
   "tests/graph/history-ceiling-turn.test.ts": 1,
   "tests/graph/nudge.test.ts": 3,
-  "tests/graph/runtime.test.ts": 10,
+  "tests/graph/runtime.test.ts": 11,
   "tests/graph/side-effect-flowlog.test.ts": 1,
   "tests/graph/tool-flowlog.test.ts": 1,
   "tests/modules/chatwoot-command-dropped.test.ts": 2,

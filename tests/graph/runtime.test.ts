@@ -468,8 +468,24 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         checkpointer: new MemorySaver(),
       },
     });
+    // Review round 4: the token is NOT edited out of a real answer — that is the silent data loss
+    // docs/graph.md rejects. It rides along, and the operator gets a line saying so.
     expect(outcome).toBe("posted");
-    expect(sent).toEqual([[9455, "Claro, posso ajudar."]]);
+    expect(sent).toEqual([
+      [9455, `${FOLLOWUP_SKIP_SENTINEL} Claro, posso ajudar.`],
+    ]);
+    const conv455 = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 9455 },
+    });
+    const rows455 = await flowLogRows(suDb, {
+      where: { tenantId, conversationId: conv455.id, stage: "generate" },
+      select: { detail: true },
+    });
+    expect(
+      rows455.filter((r) =>
+        JSON.stringify(r.detail ?? {}).includes("silenceTokenInReply"),
+      ),
+    ).toHaveLength(1);
   });
 
   // Review round 1, P2. The proactive path also reads a bare "SKIP" and a parenthetical-only reply

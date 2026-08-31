@@ -74,6 +74,7 @@ import {
 } from "./prepare";
 import { undoRefusedTurn } from "./refused-turn";
 import { stillInSameEpisode } from "./reset-episode";
+import { customerFacingReply } from "./silence";
 import { AgentStatusReporter } from "./status";
 import {
   clearTurnOwning,
@@ -1267,7 +1268,26 @@ export async function runLoadedTurn(
       }
       return outcome;
     };
-    let reply = lastAssistantText(result.messages).trim();
+    // The follow-up's silence token is not vocabulary of this path, but it IS in this thread: the
+    // memory is keyed per contact-inbox, so every silent follow-up leaves an assistant turn whose
+    // whole content is the token, and the model reproduces it here (issue #454). Reduced to it, the
+    // reply is silence — the shape `skip_reply` produces, and the one the `!reply` branch below
+    // already handles; carrying it, the reply keeps its text and loses the token. Before the output
+    // guardrail on purpose: the judge would otherwise be asked to screen a marker as if it were
+    // something the agent wrote for the customer.
+    const drafted = customerFacingReply(lastAssistantText(result.messages));
+    let reply = drafted.text;
+    // Silence the operator can explain. `skip_reply` records itself in the timeline, and a turn that
+    // went quiet because the model emitted the token would otherwise be indistinguishable from the
+    // agent ignoring a customer who is waiting.
+    if (drafted.bySentinel) {
+      emitFlowEvent(flow, {
+        stage: "generate",
+        level: "warn",
+        status: "ok",
+        detail: { silenceTokenSuppressed: true },
+      });
+    }
 
     // The deferred resolve falls with the TRANSFER, not with the suppression of the final text: a
     // conversation the human queue now owns is not ours to close, and that holds even when the

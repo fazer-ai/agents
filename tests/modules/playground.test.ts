@@ -6,6 +6,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { loadAgentConfig } from "@/graph/prepare";
+import { FOLLOWUP_SKIP_SENTINEL } from "@/graph/silence";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import {
   listPlaygroundTools,
@@ -215,6 +216,41 @@ describe.skipIf(!dbUp)("playground", () => {
     expect(r.threadId.startsWith(`${tenantId}:playground:${agentOk}:`)).toBe(
       true,
     );
+  });
+
+  // The second half of issue #454's family. The playground runs the production toolset on a thread
+  // of its own, and its REACTIVE path restated none of the silence rule the follow-up path next to
+  // it already had — so the operator testing an agent could be shown the raw token as the reply.
+  test("the follow-up's skip sentinel is not rendered as a playground reply", async () => {
+    const r = await runPlaygroundTurn({
+      ctx: ctx(tenantId),
+      agentId: agentOk,
+      message: "oi",
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new FakeListChatModel({ responses: [FOLLOWUP_SKIP_SENTINEL] }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(r.reply).toBe("");
+  });
+
+  test("a playground reply carrying a stray sentinel keeps its text", async () => {
+    const r = await runPlaygroundTurn({
+      ctx: ctx(tenantId),
+      agentId: agentOk,
+      message: "oi",
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new FakeListChatModel({
+            responses: [`${FOLLOWUP_SKIP_SENTINEL} Claro, posso ajudar.`],
+          }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(r.reply).toBe("Claro, posso ajudar.");
   });
 
   // The playground synthesized WITHOUT the speech rewrite until #105, so the operator heard a

@@ -64,6 +64,14 @@ import {
 import { undoRefusedTurn } from "./refused-turn";
 import type { RuntimeDeps } from "./runtime";
 import {
+  customerFacingReply,
+  FOLLOWUP_SKIP_SENTINEL,
+  isNudgeSilent,
+} from "./silence";
+
+export { FOLLOWUP_SKIP_SENTINEL, isNudgeSilent };
+
+import {
   clearTurnOwning,
   markTurnOwning,
   type ThreadOwner,
@@ -246,28 +254,6 @@ export const DATA_FENCE = "⟦external-data⟧";
 export const OUTSIDE_WINDOW_NOTE_PREFIX =
   "⏳ Fora da janela de 24h do WhatsApp: a mensagem abaixo NÃO foi enviada ao cliente. " +
   "Para reengajar fora da janela, configure um template aprovado (HSM) na aba Comportamento do agente.\n\n";
-
-// Explicit "no follow-up" signal. We ask the model to emit EXACTLY this token when a proactive
-// message isn't warranted, instead of "reply with an empty message" — models routinely NARRATE
-// their emptiness ("(empty — nothing to do yet)") instead of returning truly empty text, and that
-// non-empty narration would otherwise get posted to the customer. A distinctive sentinel is
-// detectable and is stripped before any post so it can never leak.
-export const FOLLOWUP_SKIP_SENTINEL = "[[SKIP]]";
-
-// True when the model declined to follow up: empty, the skip sentinel (tolerating wrapping quotes),
-// a bare "SKIP", or a parenthetical-only "narrated emptiness" (the failure mode that leaked before).
-export function isNudgeSilent(reply: string): boolean {
-  const trimmed = reply.trim();
-  if (!trimmed) return true;
-  const stripped = trimmed.replace(/^["'`]+|["'`]+$/g, "").trim();
-  if (stripped === FOLLOWUP_SKIP_SENTINEL) return true;
-  if (stripped.toUpperCase() === "SKIP") return true;
-  // A reply that is ONLY a parenthetical starting with empty/nothing/none (pt-BR + EN) → silence.
-  if (/^\((?:empty|vazi|nothing|none|nada|sem|n\/a)[^)]*\)$/i.test(stripped)) {
-    return true;
-  }
-  return false;
-}
 
 // External free-text is UNTRUSTED (the inbound poster controls it). Collapse control chars and
 // newlines to a single line (so it cannot forge multi-line "system" framing), drop the data fence
@@ -1378,11 +1364,9 @@ export async function runAgentNudge(
 
   // Silence via the explicit sentinel / narrated-emptiness guard (never post that), else strip any
   // stray sentinel occurrence from a real reply so it can't leak into the customer message.
-  const replyRaw = lastAssistantText(result.messages);
-  const silent = isNudgeSilent(replyRaw);
-  const reply = silent
-    ? ""
-    : replyRaw.split(FOLLOWUP_SKIP_SENTINEL).join("").trim();
+  const drafted = customerFacingReply(lastAssistantText(result.messages));
+  const silent = drafted.silent;
+  const reply = drafted.text;
 
   // 5. Re-check ownership at post time (a human may have taken over during model execution). Needed
   // for BOTH the customer message AND the deterministic post-actions. The live-gated path re-probes

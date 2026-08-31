@@ -19,6 +19,7 @@ import { ingestMessageIntoThread } from "@/graph/ingest";
 import { armIngest } from "@/graph/ingest-job";
 import { isConversationDivider, stampedConversationId } from "@/graph/markers";
 import type { ResolvedModelConfig } from "@/graph/models";
+import { FOLLOWUP_SKIP_SENTINEL } from "@/graph/nudge";
 import { runAgentTurn } from "@/graph/runtime";
 import { buildThreadStateGraph } from "@/graph/thread-state";
 import type { TenantContext } from "@/lib/tenancy";
@@ -369,6 +370,102 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     });
     expect(outcome).toBe("posted");
     expect(sent).toEqual([[900, REPLY]]);
+  });
+
+  // NOTE: Issue #454. `[[SKIP]]` is the FOLLOW-UP's way of saying "stay silent", and it is stripped
+  // on both proactive paths. The reactive path had no equivalent, so a model that reproduced the
+  // token — it is in the shared per-contact-inbox transcript every silent follow-up leaves behind —
+  // had it delivered verbatim. On an email inbox that is a real email, to whoever wrote in.
+  test("a reply that is only the follow-up's skip sentinel is silence, not text", async () => {
+    await seedConversation(9454, null);
+    const sent: Array<[number, string]> = [];
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 9454 }),
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new FakeListChatModel({ responses: [FOLLOWUP_SKIP_SENTINEL] }),
+        makeClient: makeStubClient(sent),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(sent).toEqual([]);
+    expect(outcome).toBe("empty");
+
+    // And the operator can tell this apart from the agent ignoring a customer: `skip_reply` records
+    // itself in the timeline, so a turn silenced by the token owes a line of its own.
+    const conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 9454 },
+    });
+    const row = await flowLogRow(suDb, {
+      where: { tenantId, conversationId: conv.id, stage: "generate" },
+      orderBy: { id: "desc" },
+      select: { level: true, detail: true },
+    });
+    expect(row?.level).toBe("warn");
+    expect(row?.detail).toMatchObject({ silenceTokenSuppressed: true });
+  });
+
+  // The control for the line above, and the reason it is not just "log on every empty turn": a model
+  // that genuinely wrote nothing is an ordinary silent turn, and a warn there would cry wolf on the
+  // shape `skip_reply` produces on purpose.
+  test("an ordinary empty reply logs no suppression line", async () => {
+    await seedConversation(9456, null);
+    const sent: Array<[number, string]> = [];
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 9456 }),
+      base: appDb,
+      deps: {
+        makeModel: () => new FakeListChatModel({ responses: [""] }),
+        makeClient: makeStubClient(sent),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(sent).toEqual([]);
+    expect(outcome).toBe("empty");
+    const conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 9456 },
+    });
+    const rows = await flowLogRows(suDb, {
+      where: { tenantId, conversationId: conv.id, stage: "generate" },
+      select: { detail: true },
+    });
+    expect(
+      rows.filter((r) =>
+        JSON.stringify(r.detail ?? {}).includes("silenceTokenSuppressed"),
+      ),
+    ).toEqual([]);
+  });
+
+  // The other half, and the one that says this is a strip and not a refusal: a real answer that
+  // happens to carry the token still reaches the customer, minus the token. Suppressing the whole
+  // reply here would trade a leaked marker for an ignored customer.
+  test("a real reply carrying a stray sentinel keeps its text and loses the token", async () => {
+    await seedConversation(9455, null);
+    const sent: Array<[number, string]> = [];
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 9455 }),
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new FakeListChatModel({
+            responses: [`${FOLLOWUP_SKIP_SENTINEL} Claro, posso ajudar.`],
+          }),
+        makeClient: makeStubClient(sent),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(outcome).toBe("posted");
+    expect(sent).toEqual([[9455, "Claro, posso ajudar."]]);
   });
 
   // NOTE: Issue #63 end-to-end. A provider answering 200 with an empty completion used to end the

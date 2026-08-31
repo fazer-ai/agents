@@ -8,12 +8,7 @@ import basePrisma from "@/api/lib/prisma";
 import { lastAssistantText } from "@/graph/graph";
 import type { ModelRetryInfo } from "@/graph/model-limit";
 import type { ResolvedModelConfig } from "@/graph/models";
-import {
-  type AgentNudge,
-  FOLLOWUP_SKIP_SENTINEL,
-  isNudgeSilent,
-  renderNudge,
-} from "@/graph/nudge";
+import { type AgentNudge, renderNudge } from "@/graph/nudge";
 import {
   type AgentConfig,
   type AgentConfigOverrides,
@@ -23,6 +18,7 @@ import {
   buildToolset,
   loadAgentConfig,
 } from "@/graph/prepare";
+import { customerFacingReply } from "@/graph/silence";
 import { ToolFlowLogger } from "@/graph/tool-flowlog";
 import {
   CONVERSATION_NATIVE_TOOL_NAMES,
@@ -724,7 +720,10 @@ export async function runPlaygroundTurn(
   }
   // OUTPUT direction: screen the reply BEFORE anything renders it, so the TTS below synthesizes the
   // text that would actually be delivered rather than the one the guardrail took away.
-  const raw = lastAssistantText(result.messages).trim();
+  // Same rule as the inbox's reactive path (issue #454), and for the same reason: the playground
+  // runs the production toolset over a thread of its own, and a model that reproduces the follow-up's
+  // silence token would otherwise have it rendered as the reply the operator is testing.
+  const raw = customerFacingReply(lastAssistantText(result.messages)).text;
   const outGuard = raw
     ? await screen("output", raw)
     : { kind: "not-run" as const };
@@ -1040,11 +1039,7 @@ export async function runPlaygroundFollowup(
   }
   // Same silence contract as production (runAgentNudge): the skip sentinel / narrated-emptiness is
   // "stayed silent", and a stray sentinel is stripped so it never shows in the simulated reply.
-  const replyRaw = lastAssistantText(result.messages);
-  const silentByChoice = isNudgeSilent(replyRaw);
-  const drafted = silentByChoice
-    ? ""
-    : replyRaw.split(FOLLOWUP_SKIP_SENTINEL).join("").trim();
+  const drafted = customerFacingReply(lastAssistantText(result.messages)).text;
   // OUTPUT direction only, exactly as the inbox's proactive path (issue #160): a follow-up answers
   // no question, so there is no customer message for the relevance check to judge, and the gate
   // drops that check structurally when none is passed. A `silent` verdict reads as silence here for

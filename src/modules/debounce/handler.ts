@@ -79,9 +79,15 @@ function err(e: unknown): string {
 // The shared "re-fetch → coalesce a burst → answer once" tail, reused by the debounce flush AND the
 // manual re-engage (item 6). The caller resolves the agent + conversation context; `selectPending`
 // is the burst strategy (flush: incoming past the watermark; re-engage: incoming after the last
-// outgoing). At-most-once is the monotonic watermark CAS in `shouldPost` (NOT an advisory lock — the
-// turn does network I/O and must not hold a transaction): a concurrent flush/re-engage that lost the
-// CAS posts nothing. Returns the runtime outcome, or "empty" when there is nothing to answer.
+// outgoing). At-most-once is a monotonic CAS in `shouldPost` (NOT an advisory lock — the turn does
+// network I/O and must not hold a transaction): a concurrent run that lost the CAS posts nothing.
+//
+// WHICH COLUMN that CAS writes is the CALLER'S, and it has to be (issue #452). The flush claims by
+// advancing the handled watermark, which works because its burst is BY CONSTRUCTION above it. The
+// re-engage's is not: the watermark is advanced by deliberate skips too, so after a human-owned
+// stretch it stands ahead of the tail the button answers and the same CAS loses forever, reporting
+// a race that never happened. Returns the runtime outcome, or "empty" when there is nothing to
+// answer.
 export interface CoalesceTurnContext {
   tenantId: bigint;
   instanceId: bigint;
@@ -105,6 +111,11 @@ export interface CoalesceTurnContext {
   // which asks it inside the `ingest:` lock and again before each post. REQUIRED and nullable so a
   // future caller has to answer it: `null` says "nothing queued this, nothing can call it off".
   stillWanted: ((opts: { strict: boolean }) => Promise<boolean>) | null;
+  // THE CLAIM: the conditional write that elects the single poster for this burst, asked once, at
+  // the post gate. Returns whether this run won it. REQUIRED and caller-supplied rather than
+  // defaulted to the watermark, because the two callers claim in different columns for a reason the
+  // header states, and a default would silently hand a new caller the flush's assumption.
+  claimBurst: (targetWatermark: number) => Promise<boolean>;
   // Label for the single summary log line ("debounce flush" / "reengage").
   label: string;
   // When set (the debounce flush passes "debounce"), emit a flow line for the coalescing under the
@@ -259,12 +270,7 @@ export async function coalesceAndRunTurn(
         err(e),
       );
     }
-    return advanceHandledWatermark({
-      tenantId,
-      conversationDbId: convDbId,
-      toMessageId: targetWatermark,
-      base,
-    });
+    return ctx.claimBurst(targetWatermark);
   };
 
   // 3. Run the turn with the coalesced text. A thrown error bubbles to the caller. Share one turnId
@@ -308,13 +314,13 @@ export async function coalesceAndRunTurn(
     deps,
     shouldPost,
   });
-  // Every completed outcome except "superseded" consumed the burst: answered ("posted" — where
-  // shouldPost's CAS already advanced, making this a no-op, including the input-guardrail template
-  // which claims through the same gate), or deliberately dropped (taken over mid-turn, empty
-  // reply, guardrail "silent"). Advance so the next flush cannot re-answer the same burst (issue
-  // #8: the pre-handoff backlog was re-coalesced — and the bot re-transferred for the old reason —
-  // after a human returned the conversation). "superseded" stays put by design: the re-armed flush
-  // answers the FULL burst.
+  // Every completed outcome except "superseded" consumed the burst: answered ("posted" — a no-op
+  // for the flush, whose claim IS this advance, including the input-guardrail template which claims
+  // through the same gate; a real advance for the re-engage, which claims in its own column), or
+  // deliberately dropped (taken over mid-turn, empty reply, guardrail "silent"). Advance so the
+  // next flush cannot re-answer the same burst (issue #8: the pre-handoff backlog was re-coalesced
+  // — and the bot re-transferred for the old reason — after a human returned the conversation).
+  // "superseded" stays put by design: the re-armed flush answers the FULL burst.
   // "stale" stays put too, and NOT by the same reasoning: superseded means a newer message will
   // re-answer this burst, while stale means the burst was withdrawn with the thread the command
   // cleared. Advancing on it would declare handled a set of messages nothing ever answered, and the
@@ -1166,6 +1172,16 @@ export async function flushDebounceJob(
         authContext,
         // The same closure the ceiling branch above asked with; see its definition for the floor.
         selectPending,
+        // The flush claims by advancing the watermark, and it is entitled to: its burst is selected
+        // from ABOVE that watermark, so a CAS that loses means another claim really did take these
+        // messages.
+        claimBurst: (toMessageId) =>
+          advanceHandledWatermark({
+            tenantId,
+            conversationDbId: ctx.convDbId,
+            toMessageId,
+            base,
+          }),
         label: "debounce flush",
         coalesceStage: "debounce",
       },

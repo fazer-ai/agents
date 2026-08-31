@@ -573,6 +573,13 @@ model Conversation {
   // (responded to or deliberately skipped). The flush re-fetches and answers only ids beyond it,
   // so re-arm / retry / a concurrent claim cannot produce a duplicate reply. NULL = nothing handled.
   lastHandledMessageId     Int?      @map("last_handled_message_id")
+  // The re-engage button's own claim: the id of the last burst a manual re-engage took. It cannot
+  // share `lastHandledMessageId`, and that is the whole reason it exists (issue #452). The watermark
+  // is monotonic, and a deliberate skip advances it — so after a human-owned stretch it sits AHEAD
+  // of the tail the button answers, and a CAS against it can never win again. Same monotonic CAS,
+  // its own column, so at-most-once survives where the watermark has nothing left to claim.
+  // NULL = no re-engage has ever claimed a burst here.
+  lastReengagedMessageId   Int?      @map("last_reengaged_message_id")
   // Timestamp of the last INCOMING customer message — the WhatsApp 24h service-window anchor. A
   // proactive (follow-up/nudge) free-form send is only allowed within the window; outside it, an
   // approved template (HSM) is required. NULL = no inbound seen yet.

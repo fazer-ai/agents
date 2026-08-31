@@ -101,6 +101,7 @@ async function seedConversation(
     assigneeId?: number | null;
     lastError?: string | null;
     contactId?: bigint;
+    lastHandledMessageId?: number;
   } = {},
 ): Promise<bigint> {
   const c = await suDb.conversation.create({
@@ -117,6 +118,7 @@ async function seedConversation(
       lastEventAt: new Date(),
       lastError: over.lastError ?? null,
       lastErrorAt: over.lastError ? new Date() : null,
+      lastHandledMessageId: over.lastHandledMessageId ?? null,
     },
   });
   return c.id;
@@ -562,6 +564,38 @@ describe.skipIf(!dbUp)("reengage", () => {
       expect(sent).toEqual([[909, REPLY]]);
     });
 
+    // AND THE FLOOR IS ABOUT THE WINDOW, NOT ABOUT THE PAST. The watermark this call found ON THE
+    // WAY IN was left by whatever went before — a human-owned stretch, an out-of-hours skip — and
+    // that is precisely the tail the button exists to answer. Only what something else handled
+    // WHILE the endpoint was being asked is not this click's to re-answer.
+    test("a tail the watermark already covered on entry is still answered", async () => {
+      const id = await seedConversation(913, {
+        contactId: await seedContact(47),
+        lastHandledMessageId: 2,
+      });
+      const sent: Array<[number, string]> = [];
+      const calls = { n: 0 };
+      const res = await reengageConversation(
+        ctx(),
+        id,
+        {
+          makeModel: fakeModel,
+          makeClient: makeStub({
+            page: page([
+              { id: 1, content: "oi" },
+              { id: 2, content: "alguém aí?" },
+            ]),
+            sent,
+          }),
+          checkpointer: new MemorySaver(),
+          contactAuthFetch: answering(true, calls),
+        },
+        appDb,
+      );
+      expect(res.outcome).toBe("posted");
+      expect(sent).toEqual([[913, REPLY]]);
+    });
+
     // The assignee gate runs before the authorization round-trip, which has a ten-second ceiling. A
     // human arriving inside it used to get the turn run on their conversation: the post gate holds
     // the reply back, and by then the tools have written.
@@ -626,6 +660,107 @@ describe.skipIf(!dbUp)("reengage", () => {
       );
       expect(res.outcome).toBe("not-authorized");
       expect(calls.n).toBe(0);
+      expect(sent).toEqual([]);
+    });
+  });
+
+  // WHAT THE BUTTON IS FOR, and what it could not do (issue #452). A human-owned stretch advances
+  // the watermark without ever writing an outgoing message of ours: every turn in it is a
+  // DELIBERATE skip, and `advanceHandledWatermark` is how a skip is recorded. So the moment the
+  // conversation comes back to the bot, the watermark sits AHEAD of the last outgoing message, and
+  // the tail this button answers — incoming after that outgoing — is entirely at or below it.
+  //
+  // The post gate's CAS then loses, every time, with nothing concurrent anywhere: the target is not
+  // greater than a watermark a skip already moved. Reported as "superseded", which names a race that
+  // did not happen, and permanent — no new inbound, no new target, no way out but /reset.
+  describe("after a human-owned stretch left the watermark ahead of the tail", () => {
+    // The reported sequence, with the ids of the log excerpt: turns ran, ended without a reply, and
+    // moved the watermark to 291; the two clicks that followed both came back superseded.
+    test("answers the tail the watermark already covers", async () => {
+      const id = await seedConversation(930, { lastHandledMessageId: 291 });
+      const sent: Array<[number, string]> = [];
+      const res = await reengageConversation(
+        ctx(),
+        id,
+        {
+          makeModel: fakeModel,
+          makeClient: makeStub({
+            page: page([
+              { id: 288, content: "oi", type: 0 },
+              { id: 289, content: "vou te passar pra uma pessoa", type: 1 },
+              { id: 290, content: "alguém aí?", type: 0 },
+              { id: 291, content: "?", type: 0 },
+            ]),
+            sent,
+          }),
+          checkpointer: new MemorySaver(),
+        },
+        appDb,
+      );
+      expect(res.outcome).toBe("posted");
+      expect(sent).toEqual([[930, REPLY]]);
+    });
+
+    // AND AT-MOST-ONCE SURVIVES IT. The watermark CAS was the claim; below the watermark it has
+    // nothing left to win, so the claim has to be a write of its own or a double click posts twice.
+    test("two clicks racing on the same tail post once", async () => {
+      const id = await seedConversation(931, { lastHandledMessageId: 291 });
+      const sent: Array<[number, string]> = [];
+      const deps = () => ({
+        makeModel: fakeModel,
+        makeClient: makeStub({
+          page: page([
+            { id: 289, content: "resposta antiga", type: 1 },
+            { id: 290, content: "alguém aí?", type: 0 },
+            { id: 291, content: "?", type: 0 },
+          ]),
+          sent,
+        }),
+        checkpointer: new MemorySaver(),
+      });
+      const [a, b] = await Promise.all([
+        reengageConversation(ctx(), id, deps(), appDb),
+        reengageConversation(ctx(), id, deps(), appDb),
+      ]);
+      expect(sent.length).toBe(1);
+      expect([a.outcome, b.outcome].sort()).toEqual(["posted", "superseded"]);
+    });
+
+    // The supersede gate still means what it says: a customer message that lands mid-turn defers
+    // this click, because the re-armed flush answers the burst INCLUDING it.
+    test("a message that lands mid-turn still defers", async () => {
+      const id = await seedConversation(932, { lastHandledMessageId: 291 });
+      const sent: Array<[number, string]> = [];
+      const before = page([
+        { id: 289, content: "resposta antiga", type: 1 },
+        { id: 290, content: "alguém aí?", type: 0 },
+        { id: 291, content: "?", type: 0 },
+      ]);
+      const res = await reengageConversation(
+        ctx(),
+        id,
+        {
+          makeModel: fakeModel,
+          makeClient: makeStub({
+            // The pre-fetch and the burst selection see the tail; the post gate's re-fetch sees the
+            // message that arrived while the model was thinking.
+            pages: [
+              before,
+              before,
+              page([
+                { id: 289, content: "resposta antiga", type: 1 },
+                { id: 290, content: "alguém aí?", type: 0 },
+                { id: 291, content: "?", type: 0 },
+                { id: 292, content: "esquece, já resolvi", type: 0 },
+              ]),
+            ],
+            sent,
+          }),
+          checkpointer: new MemorySaver(),
+        },
+        appDb,
+      );
+      expect(res.outcome).toBe("superseded");
       expect(sent).toEqual([]);
     });
   });

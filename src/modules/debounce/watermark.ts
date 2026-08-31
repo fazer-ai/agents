@@ -50,6 +50,40 @@ export async function advanceHandledWatermark(
   });
 }
 
+// THE MANUAL RE-ENGAGE'S CLAIM, and it is a column of its own for one reason: the watermark above
+// is advanced by deliberate SKIPS, not only by answers. A human-owned stretch moves it without ever
+// writing an outgoing message of ours, so the moment the conversation comes back to the bot the
+// watermark stands AHEAD of the tail the button answers (incoming after the last outgoing), and the
+// CAS above can never win again — with nothing concurrent anywhere. Reported as "superseded", which
+// names a race that did not happen, and permanent, because no new inbound means no new target
+// (issue #452).
+//
+// So the button claims here instead. Same monotonic CAS, same at-most-once: two clicks racing on one
+// tail elect a single poster, and a click on a burst a previous one already took loses. What it does
+// NOT do is stand in for the supersede re-fetch — a customer message landing mid-turn is still what
+// defers the click, and that question is answered from Chatwoot, not from this column.
+export async function claimReengageBurst(params: {
+  tenantId: bigint;
+  conversationDbId: bigint;
+  toMessageId: number;
+  base?: PrismaClient;
+}): Promise<boolean> {
+  const base = params.base ?? basePrisma;
+  return runScopedOn(base, sysCtx(params.tenantId), async (db) => {
+    const cas = await db.conversation.updateMany({
+      where: {
+        id: params.conversationDbId,
+        OR: [
+          { lastReengagedMessageId: null },
+          { lastReengagedMessageId: { lt: params.toMessageId } },
+        ],
+      },
+      data: { lastReengagedMessageId: params.toMessageId },
+    });
+    return cas.count > 0;
+  });
+}
+
 // The watermark as it stands RIGHT NOW. Read where the burst is selected, not where the flush
 // started: between those two points sits an authorization round-trip to somebody else's endpoint,
 // and a message that arrived and was REFUSED during it has already had the watermark advanced past

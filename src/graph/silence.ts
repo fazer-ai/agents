@@ -15,6 +15,9 @@ const SENTINEL = "[[SKIP]]";
 
 export const FOLLOWUP_SKIP_SENTINEL = SENTINEL;
 
+// The tool that REPLACED the token as the follow-up's way of saying nothing.
+export const SKIP_REPLY_TOOL = "skip_reply";
+
 export interface CustomerFacingReply {
   // The model said nothing this turn. Callers post no text; what else the turn produced (a queued
   // image, a deferred resolve, a handoff line) is a separate question and still applies.
@@ -41,7 +44,12 @@ export function customerFacingReply(raw: string): CustomerFacingReply {
   // since it was written — so a reply that is nothing BUT quotes once the token is gone is still the
   // token, and posting `""` ships the marker in a costume. Decided on the unquoted form and
   // returned on the original: stripping quotes from a real reply would be its own data loss.
-  const silent = text.replace(/^["'`]+|["'`]+$/g, "").trim().length === 0;
+  // ...and only when the raw reply actually CARRIED the token. A customer asking what an empty
+  // string literal looks like gets `""` back, and that is content: tolerating quotes unconditionally
+  // would silence a real answer and even report it as token-caused (review round 3).
+  const silent = raw.includes(SENTINEL)
+    ? text.replace(/^["'`]+|["'`]+$/g, "").trim().length === 0
+    : text.length === 0;
   return {
     silent,
     text: silent ? "" : text,
@@ -82,4 +90,24 @@ export function proactiveReply(raw: string): CustomerFacingReply {
     };
   }
   return customerFacingReply(raw);
+}
+
+// The follow-up's silence CHANNEL, as one rule rather than one copy per caller.
+//
+// The directive (`renderNudge`) asks the model to call `skip_reply`, and `skip_reply` is an
+// operator-revocable native tool — so a path that renders the directive without binding the tool
+// asks for something that is not there, and a follow-up with nothing to say has to say something.
+// That is the leak by another road, which is why this is not left to each call site: there are two
+// renderers of that directive (production and the playground simulation), and round 3 of review
+// found the second one because round 2 changed the protocol in only the first.
+export function withFollowupSilenceChannel<
+  T extends { nativeToolsAllow?: string[] },
+>(cfg: T): T {
+  // undefined ⇒ every native tool is allowed, so there is nothing to widen.
+  if (!cfg.nativeToolsAllow) return cfg;
+  if (cfg.nativeToolsAllow.includes(SKIP_REPLY_TOOL)) return cfg;
+  return {
+    ...cfg,
+    nativeToolsAllow: [...cfg.nativeToolsAllow, SKIP_REPLY_TOOL],
+  };
 }

@@ -3,6 +3,7 @@ import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
+import { SKIP_REPLY_TOOL } from "@/graph/silence";
 import { failableTool, toolFailure } from "@/graph/tools/failure";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
@@ -1377,7 +1378,13 @@ export function buildSimulatedNativeTools(
   allowed?: Iterable<string>,
 ): StructuredToolInterface[] {
   return buildNativeTools(ctx, allowed).map((tl) =>
-    NATIVE_TOOL_CATEGORY[tl.name as NativeToolName] === "utility"
+    // `skip_reply` is simulated-by-nature: it performs nothing, and its RETURN is the whole tool —
+    // "Produce no message now" is an instruction the model reads and acts on, since LangGraph calls
+    // the model again after a tool result. Replacing it with the generic `[simulated]` line makes
+    // the playground write a follow-up that production stays silent on, which is the simulation
+    // lying about the one decision it exists to show (issue #454, review round 3).
+    NATIVE_TOOL_CATEGORY[tl.name as NativeToolName] === "utility" ||
+    tl.name === SKIP_REPLY_TOOL
       ? tl
       : simulatedTool(tl),
   );

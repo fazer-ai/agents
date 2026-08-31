@@ -67,6 +67,7 @@ import {
   FOLLOWUP_SKIP_SENTINEL,
   isNudgeSilent,
   proactiveReply,
+  withFollowupSilenceChannel,
 } from "./silence";
 
 export { FOLLOWUP_SKIP_SENTINEL, isNudgeSilent };
@@ -863,14 +864,7 @@ export async function runAgentNudge(
   // capability on this path — it is the protocol. Revoking it used to leave the token as the only
   // silence channel, which is the leak above; leaving it revocable now would leave the model with no
   // channel at all, and a follow-up with nothing to say would have to say something.
-  const nudgeCfg: AgentConfig = cfg.nativeToolsAllow
-    ? {
-        ...cfg,
-        nativeToolsAllow: cfg.nativeToolsAllow.includes("skip_reply")
-          ? cfg.nativeToolsAllow
-          : [...cfg.nativeToolsAllow, "skip_reply"],
-      }
-    : cfg;
+  const nudgeCfg: AgentConfig = withFollowupSilenceChannel(cfg);
   const tools = await buildToolset(
     nudgeCfg,
     {

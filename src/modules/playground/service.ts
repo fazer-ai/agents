@@ -18,7 +18,11 @@ import {
   buildToolset,
   loadAgentConfig,
 } from "@/graph/prepare";
-import { customerFacingReply, proactiveReply } from "@/graph/silence";
+import {
+  customerFacingReply,
+  proactiveReply,
+  withFollowupSilenceChannel,
+} from "@/graph/silence";
 import { ToolFlowLogger } from "@/graph/tool-flowlog";
 import {
   CONVERSATION_NATIVE_TOOL_NAMES,
@@ -908,13 +912,19 @@ export async function runPlaygroundFollowup(
   // answering 429 in a spent one reports a refusal that did not happen and sends the operator to
   // look at their budget over a selector that was simply wrong. The read is handed to the graph
   // below, so asking in this order costs nothing.
-  const loadedConfig = await loadPlaygroundConfig({
-    ctx,
-    agentId,
-    threadId,
-    base,
-    overrides: params.overrides,
-  });
+  // The SAME widening production applies, because this path renders the SAME directive: it asks the
+  // model to call `skip_reply`, which is operator-revocable, so a simulation without it shows the
+  // operator a follow-up that production would have stayed silent on. One function and not two
+  // copies precisely because there are two renderers of that directive (issue #454, round 3).
+  const loadedConfig = withFollowupSilenceChannel(
+    await loadPlaygroundConfig({
+      ctx,
+      agentId,
+      threadId,
+      base,
+      overrides: params.overrides,
+    }),
+  );
   // The playground's token ceiling, before the graph is built and before a single provider call.
   // Its own number, never the inbox one: an operator burning the month testing must not be able to
   // silence the agent for customers, and the two ledgers are already told apart by `source`.

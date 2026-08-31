@@ -45,6 +45,33 @@ describe("buildSimulatedNativeTools (P4)", () => {
 });
 
 describe("applyToolMocks (P4)", () => {
+  // Issue #454, review round 3. `skip_reply` is conversation-scoped by category, so it used to be
+  // wrapped like the rest — and its RETURN is the whole tool: LangGraph calls the model again after
+  // a tool result, and "Produce no message now" is the instruction that makes the follow-up silent.
+  // Replaced by the generic `[simulated]` line, the playground writes a message production suppresses,
+  // which is the simulation lying about the one decision it exists to show.
+  test("skip_reply keeps its real acknowledgement instead of the simulated line", async () => {
+    const tools = buildSimulatedNativeTools(
+      { client: explodingClient, conversationId: 0 },
+      ["skip_reply", "handoff_to_human"],
+    );
+    const skip = tools.find((t) => t.name === "skip_reply");
+    expect(skip).toBeDefined();
+    const out = String(await skip?.invoke({}));
+    expect(out.toLowerCase()).not.toContain("simulated");
+    expect(out).toContain("Produce no message now");
+    // With a reason, the real tool echoes it — and it still never reaches the exploding client.
+    const withReason = String(
+      await skip?.invoke({ reason: "nothing new to say" }),
+    );
+    expect(withReason).toContain("nothing new to say");
+    // The neighbours are untouched: this is an exemption for one tool, not the end of simulation.
+    const handoff = tools.find((t) => t.name === "handoff_to_human");
+    expect(
+      String(await handoff?.invoke({ reason: "x" })).toLowerCase(),
+    ).toContain("simulated");
+  });
+
   test("a mock overrides the tool's result; unmatched tools are untouched", async () => {
     const base = buildSimulatedNativeTools(
       { client: explodingClient, conversationId: 0 },

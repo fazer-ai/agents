@@ -6,6 +6,8 @@ import {
   FOLLOWUP_SKIP_SENTINEL,
   isNudgeSilent,
   proactiveReply,
+  SKIP_REPLY_TOOL,
+  withFollowupSilenceChannel,
 } from "@/graph/silence";
 
 const S = FOLLOWUP_SKIP_SENTINEL;
@@ -24,6 +26,10 @@ describe("customerFacingReply — the REACTIVE rule", () => {
     ["quotes around repeated sentinels", `"${S}${S}"`, true, ""],
     // ...and the other direction: quotes on a REAL reply are content and survive untouched.
     ["a quoted real reply", `"Olá!"`, false, `"Olá!"`],
+    // Review round 3. Quotes are tolerated only when the token was actually there: a customer asking
+    // what an empty string literal looks like gets `""` back, and that is an answer.
+    ["a reply that IS two quote characters", `""`, false, `""`],
+    ["a reply that is a quoted empty string", `"''"`, false, `"''"`],
     ["nothing at all", "", true, ""],
     ["only whitespace", "   \n ", true, ""],
     [
@@ -200,5 +206,92 @@ describe("every site that reads the model's final text applies a rule", () => {
     // it is allowed to grow, and a drop to zero means the scan broke, not that the tree got safer.
     expect(sites).toBeGreaterThanOrEqual(4);
     expect(offenders).toEqual([]);
+  });
+});
+
+// The FOLLOW-UP SILENCE PROTOCOL, which is where round 3 landed and why it is a rule rather than a
+// line: the directive asks the model to call `skip_reply`, `skip_reply` is operator-revocable, and
+// there are TWO paths that render that directive. Round 2 changed the protocol in one of them.
+describe("withFollowupSilenceChannel", () => {
+  test("adds the channel to an allowlist that revoked it", () => {
+    expect(
+      withFollowupSilenceChannel({ nativeToolsAllow: ["private_note"] })
+        .nativeToolsAllow,
+    ).toEqual(["private_note", SKIP_REPLY_TOOL]);
+  });
+
+  test("leaves an allowlist that already has it untouched", () => {
+    const allow = ["private_note", SKIP_REPLY_TOOL];
+    expect(
+      withFollowupSilenceChannel({ nativeToolsAllow: allow }).nativeToolsAllow,
+    ).toBe(allow);
+  });
+
+  test("an undefined allowlist already means every tool", () => {
+    const cfg = { nativeToolsAllow: undefined };
+    expect(withFollowupSilenceChannel(cfg)).toBe(cfg);
+  });
+
+  test("it revokes nothing else", () => {
+    expect(
+      withFollowupSilenceChannel({
+        nativeToolsAllow: ["private_note", "assign_label"],
+      }).nativeToolsAllow,
+    ).toEqual(["private_note", "assign_label", SKIP_REPLY_TOOL]);
+  });
+
+  test("the fence wants the CALL, not the import", () => {
+    const CALL = /withFollowupSilenceChannel\(/;
+    const importOnly =
+      'import { withFollowupSilenceChannel } from "@/graph/silence";';
+    expect(
+      CALL.test(
+        importOnly
+          .split("\n")
+          .filter((l) => !l.trimStart().startsWith("import"))
+          .join("\n"),
+      ),
+    ).toBe(false);
+    expect(CALL.test("  const c = withFollowupSilenceChannel(cfg);")).toBe(
+      true,
+    );
+  });
+
+  // The fence for the invariant itself. Round 3 found the playground because the protocol lives in
+  // TWO places: whoever renders the directive owes the channel. A third renderer must fail here.
+  test("every renderer of the follow-up directive grants the channel", () => {
+    const files: string[] = [];
+    const walk = (dir: string) => {
+      for (const e of readdirSync(dir)) {
+        const p = join(dir, e);
+        if (statSync(p).isDirectory()) walk(p);
+        else if (p.endsWith(".ts")) files.push(p);
+      }
+    };
+    walk("src");
+
+    const renderers = files.filter((f) => {
+      const src = readFileSync(f, "utf8");
+      return /renderNudge\(/.test(
+        src
+          .split("\n")
+          .filter(
+            (l) =>
+              !l.trimStart().startsWith("//") && !l.trimStart().startsWith("*"),
+          )
+          .join("\n"),
+      );
+    });
+    // Positive control: a fence that stopped FINDING renderers proves nothing about the ones it
+    // would have to check.
+    expect(renderers.length).toBeGreaterThanOrEqual(2);
+    const CALL = /withFollowupSilenceChannel\(/;
+    for (const f of renderers) {
+      const body = readFileSync(f, "utf8")
+        .split("\n")
+        .filter((l) => !l.trimStart().startsWith("import"))
+        .join("\n");
+      expect([f, CALL.test(body)]).toEqual([f, true]);
+    }
   });
 });

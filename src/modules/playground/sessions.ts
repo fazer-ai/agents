@@ -48,9 +48,16 @@ function msgType(m: BaseMessage): string {
 // graph's lastAssistantText here: it returns the last message's content regardless of type, so a
 // silent follow-up slice — just the system nudge, no AI — would wrongly echo the nudge text.)
 function lastAi(messages: BaseMessage[]): { text: string; id?: string } {
+  // THE LAST AI MESSAGE, even when it is empty — not the last one that happens to have text. A turn
+  // that ends in silence ends with an empty AI message (after `skip_reply`'s tool result), and an
+  // EARLIER tool-calling AI message in the same slice can carry text; scanning past the empty one
+  // returned that instead, so reopening the session showed a follow-up the live run reported silent
+  // (issue #454, review round 9).
   for (let k = messages.length - 1; k >= 0; k--) {
     const m = messages[k] as BaseMessage;
     if (msgType(m) === "ai") {
+      const terminal = contentToText(m.content).trim();
+      if (!terminal) return { text: "" };
       const txt = contentToText(m.content).trim();
       if (txt) {
         const id = (m as unknown as { id?: unknown }).id;

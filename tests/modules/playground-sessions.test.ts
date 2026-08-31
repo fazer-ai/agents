@@ -62,6 +62,23 @@ describe("rebuildPlaygroundTurns", () => {
     ]);
   });
 
+  // Round 9. A silent follow-up ends with an EMPTY ai message after the tool result, and an earlier
+  // tool-calling ai message in the same slice can carry text. Scanning past the empty one returned
+  // that text, so reopening the session showed a follow-up the live run had reported silent.
+  test("a turn ending in an empty ai message renders as silence, not as its earlier text", () => {
+    const turns = rebuildPlaygroundTurns([
+      new HumanMessage("oi"),
+      new AIMessage("deixa eu ver aqui"),
+      new ToolMessage({
+        content: "Produce no message now.",
+        tool_call_id: "c1",
+        name: "skip_reply",
+      }),
+      new AIMessage(""),
+    ]);
+    expect(turns.map((x) => [x.role, x.text])).toEqual([["user", "oi"]]);
+  });
+
   test("unwraps an audio message and flags it", () => {
     const turns = rebuildPlaygroundTurns([
       new HumanMessage("<mensagem-de-audio>quero agendar</mensagem-de-audio>"),

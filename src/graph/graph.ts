@@ -1,5 +1,9 @@
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
-import { type BaseMessage, SystemMessage } from "@langchain/core/messages";
+import {
+  AIMessage,
+  type BaseMessage,
+  SystemMessage,
+} from "@langchain/core/messages";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import {
   END,
@@ -211,6 +215,18 @@ export function buildAgentGraph({
     // append a "wrap up" instruction but keep tools available for the imprescindible case.
     const toolCalls = hasTools ? toolCallsSinceLastHuman(history) : 0;
     const hardLimit = hasTools && toolCalls >= max;
+    const staySilent = hasTools && justDecidedToStaySilent(history);
+    // THE DECISION IS TERMINAL, and the hard limit is the other way it used to be talked over. At
+    // `maxToolCalls: 1`, or when a parallel batch (`react_to_message` + `skip_reply`) reaches the
+    // cap, the budget is spent on the very round that chose silence — and the hard-limit path exists
+    // to force a TEXT answer, invoking the raw model with no tools bound. Ending here instead is the
+    // same outcome the model was heading for on its own: no tool calls, so `toolsCondition` routes
+    // to END, and an empty message posts nothing. The calls still counted, which is what keeps a
+    // model that loops on skip_reply bounded.
+    if (staySilent && hardLimit) {
+      onToolLimit?.({ maxToolCalls: max, toolCalls });
+      return { messages: [new AIMessage("")] };
+    }
     const softLimit =
       hasTools &&
       !hardLimit &&

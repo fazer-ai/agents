@@ -153,6 +153,61 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     ).toBe(false);
   });
 
+  // Round 9: the HARD limit is the other way the decision gets talked over. At `maxToolCalls: 1` the
+  // budget is spent by the very round that chose silence, and that path exists to force a TEXT
+  // answer — it invokes the raw model with no tools bound. A deliberate silence became a message.
+  test("the hard limit does not force text out of a turn that chose silence", async () => {
+    const skipTool = tool(async () => "Produce no message now.", {
+      name: "skip_reply",
+      description: "skip",
+      schema: z.object({}),
+    });
+    class SkipThenWouldSpeakModel {
+      rawInvokes = 0;
+      // The raw path is what the hard limit reaches for, and it is what must NOT run here.
+      async invoke(): Promise<AIMessage> {
+        this.rawInvokes++;
+        return new AIMessage("texto que o cliente não deveria receber");
+      }
+      bindTools(_tools: unknown) {
+        const self = this;
+        let n = 0;
+        return {
+          async invoke(): Promise<AIMessage> {
+            n++;
+            if (n === 1) {
+              return new AIMessage({
+                content: "",
+                tool_calls: [{ name: "skip_reply", args: {}, id: "c1" }],
+              });
+            }
+            return self.invoke();
+          },
+        };
+      }
+    }
+    const model = new SkipThenWouldSpeakModel();
+    const hits: Array<{ maxToolCalls: number; toolCalls: number }> = [];
+    const graph = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
+      model: model as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer: new MemorySaver(),
+      tools: [skipTool],
+      maxToolCalls: 1,
+      onToolLimit: (info) => hits.push(info),
+    });
+    const result = await graph.invoke(
+      { messages: [new HumanMessage("nada a fazer")] },
+      { configurable: { thread_id: "limit-hard-skip" } },
+    );
+    // The turn ends silent, the raw model never spoke, and the call still COUNTED — which is what
+    // keeps a model that loops on skip_reply bounded.
+    expect(String(result.messages.at(-1)?.content ?? "")).toBe("");
+    expect(model.rawInvokes).toBe(0);
+    expect(hits).toEqual([{ maxToolCalls: 1, toolCalls: 1 }]);
+  });
+
   // Round 7: parallel tool calls. `skip_reply` alongside `react_to_message` is the documented way to
   // answer with a reaction alone, and whichever result lands last is an ordering accident — reading
   // only the last one made the wrap-up instruction depend on it.

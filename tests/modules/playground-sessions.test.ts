@@ -5,6 +5,7 @@ import {
   SystemMessage,
   ToolMessage,
 } from "@langchain/core/messages";
+import { FOLLOWUP_SKIP_SENTINEL } from "@/graph/silence";
 import {
   applyTurnNotes,
   rebuildPlaygroundTurns,
@@ -26,6 +27,36 @@ describe("rebuildPlaygroundTurns", () => {
       ["assistant", "Olá!"],
       ["user", "tudo bem?"],
       ["assistant", "Tudo!"],
+    ]);
+  });
+
+  // Issue #454, review round 1. The live response sanitizes, but the CHECKPOINTER holds the model's
+  // raw turn, so reopening a session rebuilt the token and showed it to the operator again — the
+  // same defect one surface over.
+  test("a reloaded session does not show the follow-up's skip sentinel", () => {
+    const turns = rebuildPlaygroundTurns([
+      new HumanMessage("oi"),
+      new AIMessage(`${FOLLOWUP_SKIP_SENTINEL} Claro, posso ajudar.`),
+    ]);
+    expect(turns.map((x) => [x.role, x.text])).toEqual([
+      ["user", "oi"],
+      ["assistant", "Claro, posso ajudar."],
+    ]);
+  });
+
+  // A turn that reduces to the token was a SILENT turn, so it renders no assistant bubble at all —
+  // and, in particular, does not borrow the previous exchange's answer to fill the gap.
+  test("a sentinel-only turn renders no assistant bubble", () => {
+    const turns = rebuildPlaygroundTurns([
+      new HumanMessage("oi"),
+      new AIMessage("Olá!"),
+      new HumanMessage("e agora?"),
+      new AIMessage(FOLLOWUP_SKIP_SENTINEL),
+    ]);
+    expect(turns.map((x) => [x.role, x.text])).toEqual([
+      ["user", "oi"],
+      ["assistant", "Olá!"],
+      ["user", "e agora?"],
     ]);
   });
 

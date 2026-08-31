@@ -18,7 +18,7 @@ import {
   buildToolset,
   loadAgentConfig,
 } from "@/graph/prepare";
-import { customerFacingReply } from "@/graph/silence";
+import { customerFacingReply, proactiveReply } from "@/graph/silence";
 import { ToolFlowLogger } from "@/graph/tool-flowlog";
 import {
   CONVERSATION_NATIVE_TOOL_NAMES,
@@ -1039,7 +1039,7 @@ export async function runPlaygroundFollowup(
   }
   // Same silence contract as production (runAgentNudge): the skip sentinel / narrated-emptiness is
   // "stayed silent", and a stray sentinel is stripped so it never shows in the simulated reply.
-  const drafted = customerFacingReply(lastAssistantText(result.messages)).text;
+  const drafted = proactiveReply(lastAssistantText(result.messages)).text;
   // OUTPUT direction only, exactly as the inbox's proactive path (issue #160): a follow-up answers
   // no question, so there is no customer message for the relevance check to judge, and the gate
   // drops that check structurally when none is passed. A `silent` verdict reads as silence here for

@@ -400,13 +400,17 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     const conv = await suDb.conversation.findFirstOrThrow({
       where: { tenantId, chatwootConversationId: 9454 },
     });
-    const row = await flowLogRow(suDb, {
+    // Searched rather than taken by order: a turn writes several `generate` lines, and "the last
+    // one" is whichever the stage happened to end on.
+    const rows = await flowLogRows(suDb, {
       where: { tenantId, conversationId: conv.id, stage: "generate" },
-      orderBy: { id: "desc" },
       select: { level: true, detail: true },
     });
-    expect(row?.level).toBe("warn");
-    expect(row?.detail).toMatchObject({ silenceTokenSuppressed: true });
+    const suppressed = rows.filter((r) =>
+      JSON.stringify(r.detail ?? {}).includes("silenceTokenSuppressed"),
+    );
+    expect(suppressed).toHaveLength(1);
+    expect(suppressed[0]?.level).toBe("warn");
   });
 
   // The control for the line above, and the reason it is not just "log on every empty turn": a model
@@ -466,6 +470,70 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     });
     expect(outcome).toBe("posted");
     expect(sent).toEqual([[9455, "Claro, posso ajudar."]]);
+  });
+
+  // Review round 1, P2. The proactive path also reads a bare "SKIP" and a parenthetical-only reply
+  // as silence, because ITS prompt asked the model to produce nothing. Nothing asks that here, a
+  // customer is waiting, and these are ordinary short answers — importing that heuristic would trade
+  // a leaked marker for an ignored customer, which is the defect this PR exists to avoid.
+  test("a short reply the follow-up would read as silence is still delivered", async () => {
+    for (const [conv, reply] of [
+      [9457, "SKIP"],
+      [9458, "(nada consta)"],
+    ] as Array<[number, string]>) {
+      await seedConversation(conv, null);
+      const sent: Array<[number, string]> = [];
+      const outcome = await runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: incoming({ conversationId: conv }),
+        base: appDb,
+        deps: {
+          makeModel: () => new FakeListChatModel({ responses: [reply] }),
+          makeClient: makeStubClient(sent),
+          checkpointer: new MemorySaver(),
+        },
+      });
+      expect(outcome).toBe("posted");
+      expect(sent).toEqual([[conv, reply]]);
+    }
+  });
+
+  // Review round 1, P3. `[[SKIP]][[SKIP]]` used to fall between the two answers: not equal to the
+  // sentinel, so "not silent", yet empty once stripped — silenced with no line explaining it.
+  test("a reply of repeated sentinels is silence, and says so", async () => {
+    await seedConversation(9459, null);
+    const sent: Array<[number, string]> = [];
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 9459 }),
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new FakeListChatModel({
+            responses: [`${FOLLOWUP_SKIP_SENTINEL} ${FOLLOWUP_SKIP_SENTINEL}`],
+          }),
+        makeClient: makeStubClient(sent),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(sent).toEqual([]);
+    expect(outcome).toBe("empty");
+    const conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 9459 },
+    });
+    const rows = await flowLogRows(suDb, {
+      where: { tenantId, conversationId: conv.id, stage: "generate" },
+      select: { detail: true },
+    });
+    expect(
+      rows.filter((r) =>
+        JSON.stringify(r.detail ?? {}).includes("silenceTokenSuppressed"),
+      ),
+    ).toHaveLength(1);
   });
 
   // NOTE: Issue #63 end-to-end. A provider answering 200 with an empty completion used to end the

@@ -8,6 +8,7 @@ import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { getCheckpointer } from "@/graph/checkpointer";
 import { DATA_FENCE } from "@/graph/nudge";
+import { customerFacingReply } from "@/graph/silence";
 import { CONVERSATION_NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
 import {
   buildPlaygroundTrace,
@@ -53,7 +54,15 @@ function lastAi(messages: BaseMessage[]): { text: string; id?: string } {
       const txt = contentToText(m.content).trim();
       if (txt) {
         const id = (m as unknown as { id?: unknown }).id;
-        return { text: txt, id: typeof id === "string" ? id : undefined };
+        // The checkpointer holds the model's RAW turn, so a reload rebuilds text the live response
+        // already sanitized — a session reopened after a silent follow-up would show `[[SKIP]]`
+        // again (issue #454). Sanitized after picking WHICH message is the reply, not before: a
+        // sentinel-only turn is a silent turn, and letting the scan walk past it would render the
+        // previous exchange's text as this turn's answer.
+        return {
+          text: customerFacingReply(txt).text,
+          id: typeof id === "string" ? id : undefined,
+        };
       }
     }
   }

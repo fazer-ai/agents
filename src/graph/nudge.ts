@@ -64,9 +64,9 @@ import {
 import { undoRefusedTurn } from "./refused-turn";
 import type { RuntimeDeps } from "./runtime";
 import {
-  customerFacingReply,
   FOLLOWUP_SKIP_SENTINEL,
   isNudgeSilent,
+  proactiveReply,
 } from "./silence";
 
 export { FOLLOWUP_SKIP_SENTINEL, isNudgeSilent };
@@ -1364,7 +1364,7 @@ export async function runAgentNudge(
 
   // Silence via the explicit sentinel / narrated-emptiness guard (never post that), else strip any
   // stray sentinel occurrence from a real reply so it can't leak into the customer message.
-  const drafted = customerFacingReply(lastAssistantText(result.messages));
+  const drafted = proactiveReply(lastAssistantText(result.messages));
   const silent = drafted.silent;
   const reply = drafted.text;
 

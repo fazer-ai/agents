@@ -19,6 +19,7 @@ import {
 } from "@/graph/model-limit";
 import { countMessageTokens } from "@/graph/token-count";
 import { USAGE_MODEL_METADATA_KEY } from "@/graph/usage";
+import { SKIP_REPLY_TOOL } from "./silence";
 
 // The second provider as the graph needs it: the built model plus the two labels that name it on
 // the usage row and the flow trail. Built and bounded by `prepare.buildModelAndGraph`; the node only
@@ -94,6 +95,22 @@ function toolCallsSinceLastHuman(history: BaseMessage[]): number {
     if (t === "tool") count++;
   }
   return count;
+}
+
+// True when the model's most recent act was to decide NOT to answer. `skip_reply` performs nothing
+// and IS that decision (since #454 it is also how a follow-up says so), so the soft wrap-up
+// instruction must not land on the round after it: "Conclua agora: responda ao cliente" is the exact
+// opposite of what the model just chose, and an agent with a small `maxToolCalls` crosses the soft
+// limit on that very round. The COUNT is left alone deliberately — the cap still has to bound a model
+// that calls skip_reply in a loop.
+function justDecidedToStaySilent(history: BaseMessage[]): boolean {
+  for (let i = history.length - 1; i >= 0; i--) {
+    const m = history[i];
+    const t = m?.getType();
+    if (t === "human") return false;
+    if (t === "tool") return (m as { name?: string }).name === SKIP_REPLY_TOOL;
+  }
+  return false;
 }
 
 // Applies the per-agent history ceiling, if there is one. Best-effort: trimming is an optimization
@@ -184,7 +201,10 @@ export function buildAgentGraph({
     const toolCalls = hasTools ? toolCallsSinceLastHuman(history) : 0;
     const hardLimit = hasTools && toolCalls >= max;
     const softLimit =
-      hasTools && !hardLimit && toolCalls >= Math.max(1, max - 2);
+      hasTools &&
+      !hardLimit &&
+      toolCalls >= Math.max(1, max - 2) &&
+      !justDecidedToStaySilent(history);
 
     let prompt = systemPrompt;
     if (softLimit) {

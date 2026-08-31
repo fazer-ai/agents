@@ -95,6 +95,64 @@ const noopTool = tool(async () => "feito", {
 });
 
 describe("agentNode tool-call limit (soft+hard)", () => {
+  // Issue #454, review round 5. Silence is a TOOL CALL now (`skip_reply`), and the soft limit tells
+  // the model "Conclua agora: responda ao cliente" — the exact opposite of what it just chose. An
+  // agent with a small `maxToolCalls` crosses that limit on the very round after skip_reply, so a
+  // deliberate silent follow-up became an unsolicited customer message. The COUNT is untouched: the
+  // cap still has to bound a model that calls skip_reply in a loop.
+  test("the wrap-up instruction does not land on the round after skip_reply", async () => {
+    const skipTool = tool(
+      async () =>
+        "Acknowledged: not replying this turn. Produce no message now.",
+      { name: "skip_reply", description: "skip", schema: z.object({}) },
+    );
+    // One skip_reply call, then an empty answer — the shape a silent turn actually has.
+    class SkipThenSilentModel {
+      boundSystemPrompts: string[] = [];
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("");
+      }
+      bindTools(_tools: unknown) {
+        const self = this;
+        let n = 0;
+        return {
+          async invoke(messages: BaseMessage[]): Promise<AIMessage> {
+            n++;
+            self.boundSystemPrompts.push(String(messages[0]?.content ?? ""));
+            if (n === 1) {
+              return new AIMessage({
+                content: "",
+                tool_calls: [{ name: "skip_reply", args: {}, id: "c1" }],
+              });
+            }
+            return new AIMessage("");
+          },
+        };
+      }
+    }
+    const model = new SkipThenSilentModel();
+    const graph = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
+      model: model as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer: new MemorySaver(),
+      tools: [skipTool],
+      maxToolCalls: 3,
+    });
+    await graph.invoke(
+      { messages: [new HumanMessage("nada a fazer")] },
+      { configurable: { thread_id: "limit-skip" } },
+    );
+    // Two rounds ran (the control below proves the same cap DOES produce the instruction), and the
+    // second one — the round after the silence decision — was not told to answer the customer.
+    expect(model.boundSystemPrompts.length).toBeGreaterThanOrEqual(2);
+    expect(
+      model.boundSystemPrompts.some((p) =>
+        p.includes("[Sistema] Você já usou"),
+      ),
+    ).toBe(false);
+  });
+
   test("forces a no-tools answer at the hard limit and fires onToolLimit", async () => {
     const model = new ToolLoopModel();
     const hits: Array<{ maxToolCalls: number; toolCalls: number }> = [];

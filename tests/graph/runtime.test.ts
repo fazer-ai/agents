@@ -378,6 +378,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
   // had it delivered verbatim. On an email inbox that is a real email, to whoever wrote in.
   test("a reply that is only the follow-up's skip sentinel is silence, not text", async () => {
     await seedConversation(9454, null);
+    const saver9454 = new MemorySaver();
     const sent: Array<[number, string]> = [];
     const outcome = await runAgentTurn({
       tenantId,
@@ -389,7 +390,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         makeModel: () =>
           new FakeListChatModel({ responses: [FOLLOWUP_SKIP_SENTINEL] }),
         makeClient: makeStubClient(sent),
-        checkpointer: new MemorySaver(),
+        checkpointer: saver9454,
       },
     });
     expect(sent).toEqual([]);
@@ -411,6 +412,14 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     );
     expect(suppressed).toHaveLength(1);
     expect(suppressed[0]?.level).toBe("warn");
+
+    // Review round 5: and the token is not left in the thread to feed itself. The raw message was
+    // already checkpointed, the thread is shared per contact-inbox, and the next turn reading one
+    // more sentinel answer is what reinforces the condition that produced this one.
+    const held = await threadChannel(saver9454, 9454);
+    expect(held.filter(([, c]) => c.includes(FOLLOWUP_SKIP_SENTINEL))).toEqual(
+      [],
+    );
   });
 
   // The control for the line above, and the reason it is not just "log on every empty turn": a model

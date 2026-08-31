@@ -910,6 +910,10 @@ export async function runLoadedTurn(
   // Set inside the `ingest:` lock when the ask below says this run was called off. A flag and not a
   // throw: the lock's transaction has to commit and release before this function can return.
   let calledOff = false;
+  // What the turn produced, kept when the TOKEN silenced it, and consumed in the `finally` once the
+  // in-flight flag the rollback refuses on has been released. The messages travel rather than a
+  // boolean because the rollback runs outside the scope that has them.
+  let silenceProduced: BaseMessage[] | null = null;
   try {
     // ── Attendance boundary. A NEW conversation reusing this contact-inbox thread gets the
     //    "fresh attendance" divider, and the attendance it replaced becomes compactable.
@@ -1287,6 +1291,16 @@ export async function runLoadedTurn(
         status: "ok",
         detail: { silenceTokenSuppressed: true },
       });
+      // ...and the turn must not leave the token behind, or the defect FEEDS itself: the raw message
+      // is already checkpointed (graph.invoke persisted it before this line), the thread is shared
+      // per contact-inbox, and the next turn reads one more sentinel answer — reinforcing exactly the
+      // condition that produced this one.
+      //
+      // ARMED here and run in the `finally`, not called here, and that is not tidiness: the rollback
+      // takes the ingest queue and REFUSES while `isTurnInFlight` holds, which is this very turn.
+      // Called inline it returns `keep` every time and silently does nothing — measured, the message
+      // stayed in the channel with the test green on everything else.
+      silenceProduced = result.messages as BaseMessage[];
     }
     // The other half, and it exists because the rule REFUSES to edit the token out of a real answer
     // (that is the data loss `docs/graph.md` prohibits). So the reply goes out carrying it, and the
@@ -1614,6 +1628,33 @@ export async function runLoadedTurn(
     return "posted";
   } finally {
     clearTurnInFlight(threadId);
+    // Now that the flag is down, the rollback the sentinel branch armed can actually run. Ordered
+    // after the clear and before the claim release for exactly that reason. Best-effort and quiet
+    // about failure: the customer was correctly not messaged either way, and a throw here would turn
+    // a correct turn into a retried one.
+    if (silenceProduced) {
+      const produced = silenceProduced;
+      try {
+        const plan = await undoRefusedTurn({
+          checkpointer: params.deps?.checkpointer ?? (await getCheckpointer()),
+          graphThreadId,
+          produced,
+          kind: "reactive",
+        });
+        if (plan?.action === "remove") {
+          logger.info(
+            "turn rolled back a token-silenced turn: conv=%s messages=%d",
+            String(conversationId),
+            plan.ids.length,
+          );
+        }
+      } catch (err) {
+        logger.warn(
+          { err, conversationId: String(conversationId) },
+          "turn: could not roll back a token-silenced turn",
+        );
+      }
+    }
     // Only what this turn actually took: releasing a claim we never made would release a CONCURRENT
     // turn's, and hand the thread to a compaction while that turn is still reading it.
     // NOTE: releasing is best-effort, and deliberately cannot fail the turn. By here the reply may

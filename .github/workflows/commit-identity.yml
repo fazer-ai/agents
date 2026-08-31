@@ -1,16 +1,26 @@
 name: Commit identity on PR
 
-# The layer that always runs, and the only one that sees a fork's commits.
+# The layer that decides who a commit says it is, and the only one that sees a fork's commits.
 #
-# The husky hooks are the fast half and they are not a net: `core.hooksPath` points at `.husky/_`,
-# which husky's `prepare` writes and nobody commits, so a hook exists only where an install ran —
-# the same silent gap `stale-base-guard.yml` was split out for. And `--author` is applied AFTER
-# pre-commit, where no hook can see it. This job reads the commits as they actually landed.
+# `pull_request_target`, not `pull_request`, and the difference IS the check. A `pull_request` run
+# executes the workflow file from the MERGE ref — the PR's own copy — so a fork could keep this file
+# name and this job name while replacing the step below with `exit 0`, and the required check would
+# report success over commits nobody read. `pull_request_target` runs the BASE branch's copy, which
+# the PR cannot touch, and defaults its checkout to the base as well.
 #
-# It runs before install: the check is one API call and one script with no imports.
+# The trade `pull_request_target` makes is a token with write scope and access to secrets, which is
+# only ever dangerous when the job RUNS CODE FROM THE HEAD. This one never does: it does not check
+# out the head, does not `bun install`, and does not execute anything the PR wrote. The commits come
+# from the API and the checker comes from the base. `permissions` is narrowed to read anyway.
+#
+# The husky hooks are the fast half and are not a net: `core.hooksPath` points at `.husky/_`, which
+# husky's `prepare` writes and nobody commits, so a hook exists only where an install ran — not in a
+# worktree whose `node_modules` is a symlink, which is every worktree this project's own procedure
+# creates. A probe commit carrying the exact identity from #440 was accepted in one, with the hook in
+# place and the check never invoked.
 
 on:
-  pull_request:
+  pull_request_target:
     branches: [main]
   workflow_dispatch:
 
@@ -22,10 +32,9 @@ jobs:
   identity:
     runs-on: ubuntu-latest
     steps:
-      # The BASE revision, never the PR's merge ref. A fork PR owns its own tree, so a checkout of it
-      # would let the contributor replace `check-commit-identity.ts` with a no-op and make this gate
-      # succeed. Nothing from the PR's tree is needed here: the commits come from the API.
-      # (The workflow FILE is already safe — for `pull_request`, GitHub runs the base branch's copy.)
+      # The base revision, explicitly. It is already `pull_request_target`'s default, and it is
+      # spelled out because the whole property depends on it: the checker must be the one main
+      # carries, never the one the PR ships.
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.base.sha }}
@@ -48,9 +57,16 @@ jobs:
             echo "no pull request in context; nothing to check"
             exit 0
           fi
+          # A missing checker is never "nothing to check": on main it can only mean someone removed
+          # or moved it, which is the move this whole file exists to refuse.
+          if [ ! -f scripts/check-commit-identity.ts ]; then
+            echo "::error::the base revision carries no scripts/check-commit-identity.ts"
+            exit 1
+          fi
           # `author.login` is empty when GitHub matches the address to no account — the script reads
           # that empty fourth field as UNATTRIBUTED and says so, rather than leaving it to the
           # ruleset's silent extra approval.
+          #
           # `--cap=250` is the size at which this listing stops being trustworthy: the endpoint
           # returns at most 250 commits even paginated, so beyond it the job would go green over
           # commits nobody looked at. The script refuses instead of vouching for a partial answer.

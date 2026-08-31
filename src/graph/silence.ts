@@ -154,3 +154,16 @@ export function withFollowupSilenceChannel<
   }
   return out;
 }
+
+// Whether the tool bound under the silence name is OUR no-op one. `dropDuplicateToolNames` puts
+// native tools first, so a native grant WINS the name — which is exactly when the name may be read
+// as "this call did nothing". With natives revoked, a custom HTTP tool can hold that name and really
+// call something (`toolDefinitionCreateSchema` reserves none), so nothing is inert.
+export function inertToolsFor(cfg: {
+  nativeToolsAllow?: string[];
+}): ReadonlySet<string> {
+  const bound =
+    cfg.nativeToolsAllow === undefined ||
+    cfg.nativeToolsAllow.includes(SKIP_REPLY_TOOL);
+  return bound ? new Set([SKIP_REPLY_TOOL]) : new Set<string>();
+}

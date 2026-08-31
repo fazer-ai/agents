@@ -1027,7 +1027,20 @@ export async function runPlaygroundFollowup(
     result = await graph.invoke(
       // HUMAN turn, not SystemMessage: the agent node prepends the only system prompt; a second
       // system message makes strict providers (Google) reject the call. See graph.ts agentNode.
-      { messages: [new HumanMessage(renderNudge(nudge, true))] },
+      {
+        messages: [
+          new HumanMessage(
+            renderNudge(
+              nudge,
+              true,
+              // Same question production answers, and the same reason the grant is shared: an agent
+              // that revoked every tool has no `skip_reply` bound, so asking it to call one produces
+              // TEXT — a simulation showing a message where production stays silent.
+              loadedConfig.nativeToolsAllow?.length === 0 ? "sentinel" : "tool",
+            ),
+          ),
+        ],
+      },
       {
         configurable: { thread_id: threadId },
         callbacks: [

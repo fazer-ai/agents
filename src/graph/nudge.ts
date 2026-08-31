@@ -65,6 +65,7 @@ import { undoRefusedTurn } from "./refused-turn";
 import type { RuntimeDeps } from "./runtime";
 import {
   FOLLOWUP_SKIP_SENTINEL,
+  inertToolsFor,
   isNudgeSilent,
   proactiveReply,
   withFollowupSilenceChannel,
@@ -1356,6 +1357,11 @@ export async function runAgentNudge(
     outcome: RunAgentNudgeOutcome,
   ): Promise<RunAgentNudgeOutcome> => {
     const plan = await undoRefusedTurn({
+      // `skip_reply` counts as inert only when the NATIVE one is what got bound. A custom HTTP tool
+      // may legitimately carry that name (`toolDefinitionCreateSchema` reserves none), and that one
+      // really calls something — removing a turn after it ran is the case `actedOnTheWorld` exists
+      // to prevent.
+      inertTools: inertToolsFor(nudgeCfg),
       checkpointer,
       graphThreadId,
       produced: result.messages,

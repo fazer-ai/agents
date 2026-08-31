@@ -8,7 +8,6 @@ import {
   markTurnInFlight,
 } from "./inflight";
 import { isNudgeTurn } from "./markers";
-import { SKIP_REPLY_TOOL } from "./silence";
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "./thread-state";
 
 // WHAT A PROACTIVE TURN LEAVES BEHIND WHEN IT IS REFUSED AFTER IT WAS GENERATED.
@@ -57,18 +56,31 @@ export type RollbackPlan =
 // #454 it is how a follow-up says so. Counting it as an action pins a refused turn's directive and
 // tool result in shared memory after a `/reset`, a takeover, or any post-generation refusal: exactly
 // the residue this planner exists to clear, and now reachable through the silence protocol itself.
-function isInertToolCall(m: BaseMessage): boolean {
+// A NAME IS NOT AN IDENTITY HERE EITHER, and this one is a real collision rather than a hypothetical:
+// `toolDefinitionCreateSchema` does not reserve the native names, so an agent with native tools
+// disabled can grant a custom HTTP tool called `skip_reply` that really does call something. Judging
+// by name alone would let a refused turn be removed after that call went out, which is the exact case
+// `actedOnTheWorld` exists to preserve. So the CALLER — the only side that knows which tool was
+// actually bound — passes the set, and an empty set means nothing was inert.
+function isInertToolCall(m: BaseMessage, inert: ReadonlySet<string>): boolean {
+  // No early return on an empty set, deliberately: `inert.has` already answers false for one, and
+  // the shortcut made a by-name mutation of the branch below unobservable — the battery could not
+  // tell the two implementations apart.
   if (m.getType() === "tool") {
-    return (m as { name?: string }).name === SKIP_REPLY_TOOL;
+    const name = (m as { name?: string }).name;
+    return name !== undefined && inert.has(name);
   }
   const calls = (m as AIMessage).tool_calls ?? [];
-  return calls.length > 0 && calls.every((c) => c.name === SKIP_REPLY_TOOL);
+  return calls.length > 0 && calls.every((c) => inert.has(c.name));
 }
 
-function actedOnTheWorld(slice: readonly BaseMessage[]): boolean {
+function actedOnTheWorld(
+  slice: readonly BaseMessage[],
+  inert: ReadonlySet<string>,
+): boolean {
   return slice.some(
     (m) =>
-      !isInertToolCall(m) &&
+      !isInertToolCall(m, inert) &&
       (m.getType() === "tool" ||
         ((m as AIMessage).tool_calls?.length ?? 0) > 0),
   );
@@ -102,6 +114,10 @@ function isStillTheSameMessage(
 export function planTurnRollback(
   produced: readonly BaseMessage[],
   current: readonly BaseMessage[],
+  // Tools whose call performed NOTHING, so a turn holding only those can still be taken back. Named
+  // by the caller because only the toolset knows which tool a name resolved to; empty by default,
+  // which is the behaviour every caller had before the silence protocol existed.
+  inertTools: ReadonlySet<string> = new Set(),
 ): RollbackPlan {
   // NOTE: the LAST one, not the first: the thread can already carry the directive of an earlier nudge that
   // ended silent, and that one belongs to a turn nobody refused. Everything from here on is what
@@ -116,7 +132,8 @@ export function planTurnRollback(
   }
   if (start === -1) return { action: "keep", reason: "no-turn-found" };
   const slice = produced.slice(start);
-  if (actedOnTheWorld(slice)) return { action: "keep", reason: "tool-ran" };
+  if (actedOnTheWorld(slice, inertTools))
+    return { action: "keep", reason: "tool-ran" };
   return nameWhatSurvived(slice, current);
 }
 
@@ -167,6 +184,9 @@ function saidSomethingAndNothingElse(m: BaseMessage): boolean {
 export function planReactiveTurnRollback(
   produced: readonly BaseMessage[],
   current: readonly BaseMessage[],
+  // Unused here: a reactive turn's removable slice never includes a tool result (see below), so the
+  // question the proactive planner asks does not arise. Accepted so the two share one call shape.
+  _inertTools: ReadonlySet<string> = new Set(),
 ): RollbackPlan {
   let start = produced.length;
   while (start > 0) {
@@ -221,6 +241,9 @@ export async function undoRefusedTurn(params: {
   // answer, a reactive one is answering the CUSTOMER'S message and must leave it standing. Required
   // rather than defaulted — a caller that has to name it cannot inherit the wrong one by omission.
   kind: "proactive" | "reactive";
+  // See planTurnRollback. The caller resolves it from the toolset it actually built, so a CUSTOM tool
+  // that happens to be named like a native one is never mistaken for the inert one.
+  inertTools?: ReadonlySet<string>;
 }): Promise<RollbackPlan> {
   const { checkpointer, graphThreadId, produced, kind } = params;
   const plan =
@@ -240,7 +263,7 @@ export async function undoRefusedTurn(params: {
           | { messages?: BaseMessage[] }
           | undefined
       )?.messages ?? []) as BaseMessage[];
-      const decided = plan(produced, current);
+      const decided = plan(produced, current, params.inertTools ?? new Set());
       if (decided.action === "remove") {
         await graph.updateState(
           threadCfg,

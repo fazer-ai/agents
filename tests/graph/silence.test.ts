@@ -4,6 +4,7 @@ import { join } from "node:path";
 import {
   customerFacingReply,
   FOLLOWUP_SKIP_SENTINEL,
+  inertToolsFor,
   isNudgeSilent,
   proactiveReply,
   SKIP_REPLY_TOOL,
@@ -240,6 +241,26 @@ describe("every site that reads the model's final text applies a rule", () => {
 // The FOLLOW-UP SILENCE PROTOCOL, which is where round 3 landed and why it is a rule rather than a
 // line: the directive asks the model to call `skip_reply`, `skip_reply` is operator-revocable, and
 // there are TWO paths that render that directive. Round 2 changed the protocol in one of them.
+describe("inertToolsFor", () => {
+  // Round 8: the name is not the identity. A native grant wins the name (natives are merged first),
+  // and only then may a call under it be read as "did nothing".
+  test("the native tool is inert when it is the one bound", () => {
+    expect([...inertToolsFor({ nativeToolsAllow: undefined })]).toEqual([
+      SKIP_REPLY_TOOL,
+    ]);
+    expect([...inertToolsFor({ nativeToolsAllow: [SKIP_REPLY_TOOL] })]).toEqual(
+      [SKIP_REPLY_TOOL],
+    );
+  });
+
+  test("nothing is inert once natives are revoked, because a custom tool can hold the name", () => {
+    expect([...inertToolsFor({ nativeToolsAllow: [] })]).toEqual([]);
+    expect([...inertToolsFor({ nativeToolsAllow: ["private_note"] })]).toEqual(
+      [],
+    );
+  });
+});
+
 describe("withFollowupSilenceChannel", () => {
   test("adds the channel to an allowlist that revoked it", () => {
     expect(
@@ -298,6 +319,16 @@ describe("withFollowupSilenceChannel", () => {
     ).toEqual(["private_note", "assign_label", SKIP_REPLY_TOOL]);
   });
 
+  test("the fence wants the channel ARGUMENT too, not just the grant", () => {
+    const CHANNEL = /"sentinel" : "tool"/;
+    expect(CHANNEL.test("renderNudge(nudge, true)")).toBe(false);
+    expect(
+      CHANNEL.test(
+        'renderNudge(n, true, x?.length === 0 ? "sentinel" : "tool")',
+      ),
+    ).toBe(true);
+  });
+
   test("the fence wants the CALL, not the import", () => {
     const CALL = /withFollowupSilenceChannel\(/;
     const importOnly =
@@ -350,6 +381,11 @@ describe("withFollowupSilenceChannel", () => {
         .filter((l) => !l.trimStart().startsWith("import"))
         .join("\n");
       expect([f, CALL.test(body)]).toEqual([f, true]);
+      // ...AND it must CHOOSE the channel, not inherit the default. Round 7 taught the grant to both
+      // renderers and left the directive's third argument in production only, so the playground told
+      // a tool-less agent to call a tool that was not bound — the same miss, one argument over. The
+      // fence covers the pair now, because they are one obligation.
+      expect([f, /"sentinel" : "tool"/.test(body)]).toEqual([f, true]);
     }
   });
 });

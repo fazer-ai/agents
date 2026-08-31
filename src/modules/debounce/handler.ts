@@ -59,7 +59,7 @@ import {
 } from "@/modules/spend-ceiling/service";
 import { readLastMessageId } from "./service";
 import { readDebounceConfig } from "./settings";
-import { advanceHandledWatermark, readHandledWatermark } from "./watermark";
+import { advanceHandledWatermark, readAnsweredFloor } from "./watermark";
 
 // The DEBOUNCE flush: re-fetch the conversation from Chatwoot, coalesce the inbound messages past the
 // watermark into one turn, and answer once. Two re-fetches by design: the first builds the burst to
@@ -79,9 +79,15 @@ function err(e: unknown): string {
 // The shared "re-fetch → coalesce a burst → answer once" tail, reused by the debounce flush AND the
 // manual re-engage (item 6). The caller resolves the agent + conversation context; `selectPending`
 // is the burst strategy (flush: incoming past the watermark; re-engage: incoming after the last
-// outgoing). At-most-once is the monotonic watermark CAS in `shouldPost` (NOT an advisory lock — the
-// turn does network I/O and must not hold a transaction): a concurrent flush/re-engage that lost the
-// CAS posts nothing. Returns the runtime outcome, or "empty" when there is nothing to answer.
+// outgoing). At-most-once is a monotonic CAS in `shouldPost` (NOT an advisory lock — the turn does
+// network I/O and must not hold a transaction): a concurrent run that lost the CAS posts nothing.
+//
+// WHAT THAT CAS WRITES is `Conversation.lastRepliedMessageId`, and NOT the handled watermark (issue
+// #452). The watermark is advanced by deliberate skips as well as by answers, so after a human-owned
+// stretch it stands ahead of the tail the re-engage answers and a CAS there loses forever, reporting
+// a race that never happened. One column for every posting path, so a flush retry and an operator's
+// click on the same failed burst still elect one sender. Returns the runtime outcome, or "empty"
+// when there is nothing to answer.
 export interface CoalesceTurnContext {
   tenantId: bigint;
   instanceId: bigint;
@@ -105,6 +111,11 @@ export interface CoalesceTurnContext {
   // which asks it inside the `ingest:` lock and again before each post. REQUIRED and nullable so a
   // future caller has to answer it: `null` says "nothing queued this, nothing can call it off".
   stillWanted: ((opts: { strict: boolean }) => Promise<boolean>) | null;
+  // How far the handled watermark may have moved and this caller's claim still stand — see
+  // `claimReply` on RunLoadedTurnParams. Computed per burst, so the caller hands down a function of
+  // the target rather than a value it would have to keep in step with the burst selection. Null is
+  // a ceiling of its own ("this caller read no mark"), never the absence of one.
+  claimHandledCeiling: (targetWatermark: number) => number | null;
   // Label for the single summary log line ("debounce flush" / "reengage").
   label: string;
   // When set (the debounce flush passes "debounce"), emit a flow line for the coalescing under the
@@ -236,8 +247,9 @@ export async function coalesceAndRunTurn(
   const { client, pending, dropped, targetWatermark, lastMessageId, text } =
     burst;
 
-  // 2. Post gate: re-fetch to detect mid-turn arrivals (supersede), then advance the watermark
-  //    monotonically so a concurrent claim cannot also post. Re-fetch failure is non-fatal.
+  // 2. Post gate, first half: re-fetch to detect mid-turn arrivals (supersede). Re-fetch failure is
+  //    non-fatal. The second half — the monotonic claim that makes this exclusive with every other
+  //    posting path — is taken by `runLoadedTurn` off `claimReply` below.
   const shouldPost = async (): Promise<boolean> => {
     try {
       const latest = parseChatwootMessages(
@@ -259,12 +271,7 @@ export async function coalesceAndRunTurn(
         err(e),
       );
     }
-    return advanceHandledWatermark({
-      tenantId,
-      conversationDbId: convDbId,
-      toMessageId: targetWatermark,
-      base,
-    });
+    return true;
   };
 
   // 3. Run the turn with the coalesced text. A thrown error bubbles to the caller. Share one turnId
@@ -307,22 +314,32 @@ export async function coalesceAndRunTurn(
     base,
     deps,
     shouldPost,
+    // The burst this turn is exclusive over, in the one column every posting path claims — which is
+    // what keeps this flush, a retry of it and an operator's re-engage of the same tail from each
+    // sending a reply (issue #452). `runLoadedTurn` also gives it back when the turn throws or
+    // stands down, so a failed send does not leave a burst nothing answered marked as claimed.
+    claimReply: {
+      conversationDbId: convDbId,
+      toMessageId: targetWatermark,
+      maxHandledAllowed: ctx.claimHandledCeiling(targetWatermark),
+    },
   });
-  // Every completed outcome except "superseded" consumed the burst: answered ("posted" — where
-  // shouldPost's CAS already advanced, making this a no-op, including the input-guardrail template
-  // which claims through the same gate), or deliberately dropped (taken over mid-turn, empty
-  // reply, guardrail "silent"). Advance so the next flush cannot re-answer the same burst (issue
-  // #8: the pre-handoff backlog was re-coalesced — and the bot re-transferred for the old reason —
-  // after a human returned the conversation). "superseded" stays put by design: the re-armed flush
-  // answers the FULL burst.
+  // Every completed outcome except "superseded" consumed the burst: answered ("posted", including
+  // the input-guardrail template which claims through the same gate), or deliberately dropped
+  // (taken over mid-turn, empty reply, guardrail "silent"). Advance so the next flush cannot
+  // re-answer the same burst (issue #8: the pre-handoff backlog was re-coalesced — and the bot
+  // re-transferred for the old reason — after a human returned the conversation). This is where the
+  // watermark moves for BOTH callers now: the post gate claims in its own column, so the advance is
+  // no longer a no-op the claim already performed.
+  // "superseded" stays put by design: the re-armed flush answers the FULL burst.
   // "stale" stays put too, and NOT by the same reasoning: superseded means a newer message will
   // re-answer this burst, while stale means the burst was withdrawn with the thread the command
   // cleared. Advancing on it would declare handled a set of messages nothing ever answered, and the
   // next inbound would arm a flush that starts after them.
-  // NOTE: Which this skip can only preserve where the CAS has not already run. A retirement that
-  // lands inside `shouldPost` is caught by the ask after it, and by then the claim has advanced —
-  // skipping here is a no-op for that one window. Accepted where it stands: the alternative is a
-  // reply posted into a conversation the customer just reset.
+  // NOTE: Which this skip now preserves in EVERY window, including the one it could not before. A
+  // retirement landing inside `shouldPost` is caught by the ask after it, and the claim it races is
+  // no longer the watermark, so the burst is left unanswered AND unmarked instead of being marked by
+  // a CAS that ran on the way past (issue #452).
   if (outcome !== "superseded" && outcome !== "stale") {
     await advanceHandledWatermark({
       tenantId,
@@ -741,8 +758,12 @@ export async function flushDebounceJob(
   // Against the stale value it would be selected here and handed to the model, and the post gate
   // would only withhold the reply — after the tools had run. The floor is the one this flush read at
   // claim time, so a watermark that somehow reads lower cannot widen the burst.
+  //
+  // And it is the ANSWERED floor rather than the watermark, because the two can disagree: the reply
+  // claim is written before the send and the watermark after the turn, so a reply whose watermark
+  // write was lost leaves the message answered with the mark behind it (issue #452).
   const selectPending = async (messages: ChatwootMessageRow[]) => {
-    const fresh = await readHandledWatermark({
+    const fresh = await readAnsweredFloor({
       tenantId,
       conversationDbId: ctx.convDbId,
       base,
@@ -1166,6 +1187,9 @@ export async function flushDebounceJob(
         authContext,
         // The same closure the ceiling branch above asked with; see its definition for the floor.
         selectPending,
+        // The flush answers messages ABOVE the mark, so a mark at or past its target says something
+        // else settled them while the model was running.
+        claimHandledCeiling: (target) => target - 1,
         label: "debounce flush",
         coalesceStage: "debounce",
       },

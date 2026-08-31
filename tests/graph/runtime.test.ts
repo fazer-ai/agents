@@ -24,6 +24,7 @@ import { buildThreadStateGraph } from "@/graph/thread-state";
 import type { TenantContext } from "@/lib/tenancy";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
+import { reengageConversation } from "@/modules/conversations/reengage";
 import { storageKey } from "@/modules/documents/issue";
 import { documentStarter } from "@/modules/documents/starters";
 import { createDocumentTemplate } from "@/modules/documents/templates";
@@ -3022,6 +3023,100 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       ["toggleStatus", 9701, "open"],
       ["sendMessage", 9701, "Um humano já te atende."],
     ]);
+  });
+
+  // ONE CLAIM FOR EVERY POSTING PATH (issue #452). This direct turn and a manual re-engage of the
+  // same message are two paths to one reply, and the only thing that stops them both sending is
+  // that they claim the same column. While the claim was per caller — this one on the watermark,
+  // the button on a column of its own — an operator clicking during a delivery got the customer two
+  // answers.
+  //
+  // Ordered rather than raced, and stopped at the ONE instant where the claim is the only thing that
+  // can answer: the direct turn runs to completion inside the click's burst selection, and then its
+  // watermark write is undone. That is a real state — the claim is written before the send and the
+  // watermark only after the turn returns, so every reply passes through it. Letting the watermark
+  // stand instead makes this pass with the claim GONE, because the click's handled ceiling refuses
+  // it on the mark alone. (The other order proves nothing either: the click advances the watermark
+  // on its way out, and the direct turn's own ceiling would stop it whatever the claim did.)
+  test("issue #452: a direct turn completing inside an operator's click leaves one reply", async () => {
+    await seedConversation(978, null);
+    const inbox = await suDb.inbox.findFirstOrThrow({
+      where: { tenantId, chatwootInboxId: 7 },
+      select: { id: true },
+    });
+    const conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 978 },
+      select: { id: true },
+    });
+    await suDb.conversation.update({
+      where: { id: conv.id },
+      data: { inboxId: inbox.id },
+    });
+    const sent: Array<[number, string]> = [];
+    const inner: { direct: string | null } = { direct: null };
+    let running = false;
+    let fetches = 0;
+    const client = {
+      getMessages: async () => {
+        fetches += 1;
+        // The click's burst selection (its pre-fetch was #1). Guarded before the call, not by its
+        // result: the direct turn reads the thread through this same stub.
+        if (fetches === 2 && !running) {
+          running = true;
+          const before = (
+            await suDb.conversation.findUniqueOrThrow({
+              where: { id: conv.id },
+              select: { lastHandledMessageId: true },
+            })
+          ).lastHandledMessageId;
+          inner.direct = await runAgentTurn({
+            tenantId,
+            instanceId,
+            agentBotId: 9,
+            event: incoming({ conversationId: 978 }),
+            base: appDb,
+            deps: {
+              makeModel: fakeModel,
+              makeClient: async () => client,
+              checkpointer: new MemorySaver(),
+            },
+          });
+          // Back to the instant between the direct turn's claim and its watermark write.
+          await suDb.conversation.update({
+            where: { id: conv.id },
+            data: { lastHandledMessageId: before },
+          });
+        }
+        return {
+          payload: [{ id: 1, content: "oi", message_type: 0, private: false }],
+        };
+      },
+      sendMessage: async (conversationId: number, content: string) => {
+        sent.push([conversationId, content]);
+        return {};
+      },
+      toggleTyping: async () => ({}),
+    } as unknown as ChatwootClient;
+
+    const clicked = await reengageConversation(
+      { tenantId, userId: null, role: "TENANT_ADMIN" },
+      conv.id,
+      {
+        makeModel: fakeModel,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+      },
+      appDb,
+    );
+
+    expect(inner.direct).toBe("posted");
+    expect(clicked.outcome).toBe("superseded");
+    expect(sent.length).toBe(1);
+    const after = await suDb.conversation.findUniqueOrThrow({
+      where: { id: conv.id },
+      select: { lastHandledMessageId: true },
+    });
+    expect(after.lastHandledMessageId).toBeNull();
   });
 
   test("issue #49: a stale trigger loses the watermark CAS and does not double-post", async () => {

@@ -16,13 +16,17 @@ import {
   type ChatwootClient,
   ChatwootMissingTokenError,
 } from "@/modules/chatwoot/client";
+import { reengageConversation } from "@/modules/conversations/reengage";
 import { flushDebounceJob } from "@/modules/debounce/handler";
 import {
   armDebounce,
   debounceDedupeKey,
   resolveDebounceConfig,
 } from "@/modules/debounce/service";
-import { advanceHandledWatermark } from "@/modules/debounce/watermark";
+import {
+  advanceHandledWatermark,
+  claimReplyBurst,
+} from "@/modules/debounce/watermark";
 import { settleFlowEvents } from "@/modules/flowlog/scheduled";
 import type { ClaimedJob } from "@/modules/scheduler/service";
 import {
@@ -250,6 +254,14 @@ function jobFor(
     attempts: 0,
     claimSeq: 0,
   };
+}
+
+async function replyClaimOf(convId: number): Promise<number | null> {
+  const row = await suDb.conversation.findFirstOrThrow({
+    where: { tenantId, chatwootConversationId: convId },
+    select: { lastRepliedMessageId: true },
+  });
+  return row.lastRepliedMessageId;
 }
 
 async function watermarkOf(convId: number): Promise<number | null> {
@@ -698,6 +710,247 @@ describe.skipIf(!dbUp)("debounce", () => {
     expect(out).toEqual({ outcome: "done" });
     expect(sent).toEqual([[800, REPLY]]);
     expect(await watermarkOf(800)).toBe(2);
+  });
+
+  // The claim's own table, decided in one place and asked here directly: the paths above prove the
+  // gate consults it, this proves what it answers (issue #452).
+  test("the reply claim is monotonic and honours its handled ceiling", async () => {
+    const convId = 892;
+    await seedConversation(convId);
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    const claim = (
+      toMessageId: number,
+      maxHandledAllowed: number | null = null,
+    ) =>
+      claimReplyBurst({
+        tenantId,
+        conversationDbId: id,
+        toMessageId,
+        maxHandledAllowed,
+        base: appDb,
+      });
+    const stored = async () =>
+      (
+        await suDb.conversation.findUniqueOrThrow({
+          where: { id },
+          select: { lastRepliedMessageId: true },
+        })
+      ).lastRepliedMessageId;
+
+    // Nothing claimed yet, then a burst ahead of it, then the same burst twice, then one behind —
+    // the shape a flush retry and a second click both take.
+    expect(await claim(10)).toEqual({ won: true });
+    expect(await claim(20)).toEqual({ won: true });
+    expect(await claim(20)).toEqual({ won: false, reason: "claimed" });
+    expect(await claim(15)).toEqual({ won: false, reason: "claimed" });
+    expect(await stored()).toBe(20);
+
+    // AND THE WATERMARK IS THE SECOND QUESTION, settled under the same lock. The ceiling is what
+    // separates the callers: a flush answering above the mark passes `target - 1` and loses to a
+    // skip; a re-engage passes the mark it read on the way IN, so what was already settled when the
+    // operator clicked does not refuse it, and what lands afterwards does.
+    await advanceHandledWatermark({
+      tenantId,
+      conversationDbId: id,
+      toMessageId: 40,
+      base: appDb,
+    });
+    expect(await claim(30, 29)).toEqual({ won: false, reason: "handled" });
+    expect(await claim(30, 40)).toEqual({ won: true });
+    // A click that read the mark at 30 and found it at 40 by claim time: somebody settled this tail
+    // while the model was running.
+    expect(await claim(50, 30)).toEqual({ won: false, reason: "handled" });
+    // A caller that read NO mark on the way in. Null is that reading, not "no ceiling": a mark
+    // stands here now, so it was written after that read and this claim is not entitled to it.
+    expect(await claim(50, null)).toEqual({ won: false, reason: "handled" });
+  });
+
+  // A LOST WATERMARK WRITE MUST NOT COST A SECOND REPLY (issue #452). The claim is written
+  // immediately before the send and the watermark only after the turn returns, so a reply that
+  // lands and then loses its watermark write leaves the message answered with the mark behind it —
+  // the direct path catches that failure and logs it, and a process exit does the same. Selecting
+  // from the mark alone, this flush would coalesce the answered message with the newer one and, the
+  // target being higher, win the claim and answer it again. The floor is the max of the two.
+  test("a message the claim records is not re-answered when the watermark lags", async () => {
+    const convId = 895;
+    await seedConversation(convId);
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    // The state a lost watermark write leaves: message 1 answered (the claim says so), mark behind.
+    await suDb.conversation.update({
+      where: { id },
+      data: { lastRepliedMessageId: 1, lastHandledMessageId: null },
+    });
+    const sent: Array<[number, string]> = [];
+
+    const out = await flushDebounceJob({
+      job: jobFor(convId),
+      base: appDb,
+      deps: {
+        makeModel: fakeModel,
+        makeClient: makeStub({
+          pages: [
+            page([
+              { id: 1, content: "já respondida" },
+              { id: 2, content: "a nova" },
+            ]),
+          ],
+          sent,
+          calls: { getMessages: 0 },
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+
+    expect(out).toEqual({ outcome: "done" });
+    expect(sent).toEqual([[convId, REPLY]]);
+    // THE BURST'S SIZE IS THE ASSERTION, read off the line the coalescing writes: one message, not
+    // two. Selecting from the watermark alone this is 2, and the answered message goes to the model
+    // a second time.
+    await settleFlowEvents();
+    const row = await flowLogRow(suDb, {
+      where: { tenantId, threadId: threadOf(convId), stage: "debounce" },
+      select: { detail: true },
+    });
+    expect((row?.detail as { coalesced?: number } | null)?.coalesced).toBe(1);
+  });
+
+  // THE SECOND QUESTION THE CLAIM ANSWERS, and the flush needs it too: a burst is selected from
+  // ABOVE the watermark, but the mark can move between that selection and the post — a deliberate
+  // skip by another delivery (a handoff, an out-of-hours silence) settles those messages without
+  // ever writing a reply of ours to claim against. The losing CAS used to say so for free; now it
+  // is `requireUnhandled`, asked under the claim's own row lock (issue #452).
+  test("a burst handled while the turn ran is not answered", async () => {
+    const convId = 893;
+    await seedConversation(convId);
+    const sent: Array<[number, string]> = [];
+    let fetches = 0;
+    const client = {
+      getMessages: async () => {
+        fetches += 1;
+        // The supersede re-fetch: the burst is chosen and the claim has not been taken yet.
+        if (fetches === 2) {
+          const { id } = await suDb.conversation.findFirstOrThrow({
+            where: { tenantId, chatwootConversationId: convId },
+            select: { id: true },
+          });
+          await advanceHandledWatermark({
+            tenantId,
+            conversationDbId: id,
+            toMessageId: 1,
+            base: appDb,
+          });
+        }
+        return page([{ id: 1, content: "oi" }]);
+      },
+      sendMessage: async (conversationId: number, content: string) => {
+        sent.push([conversationId, content]);
+        return {};
+      },
+      sendPrivateNote: async () => ({}),
+      toggleTyping: async () => ({}),
+    } as unknown as ChatwootClient;
+
+    const out = await flushDebounceJob({
+      job: jobFor(convId),
+      base: appDb,
+      deps: {
+        makeModel: fakeModel,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+      },
+    });
+
+    expect(out).toEqual({ outcome: "done" });
+    expect(fetches).toBe(2);
+    expect(sent).toEqual([]);
+    // Nothing claimed it either: the burst was settled by whoever moved the mark.
+    expect(await replyClaimOf(convId)).toBeNull();
+  });
+
+  // ONE CLAIM FOR EVERY POSTING PATH (issue #452). The re-engage button and a flush answer the same
+  // burst through different entry points, and the only thing that stops them both sending is that
+  // they claim the SAME column. Split the claim per caller — the flush on the watermark, the button
+  // on a column of its own — and the two stop contending: an operator clicking while a retry of the
+  // same failed burst is in flight gets the customer two replies.
+  //
+  // Ordered deterministically instead of raced, and stopped at the ONE instant where the claim is
+  // the only thing that can answer: the flush runs to completion inside the click's burst selection,
+  // and then its watermark write is undone. That is a real state, not a contrivance — the claim is
+  // written before the send and the watermark only after the turn returns, so every reply passes
+  // through it, and a lost watermark write leaves the conversation there for good. Letting the
+  // flush's watermark stand instead makes the test pass with the claim GONE: the click's handled
+  // ceiling refuses it on the mark alone, and the mutation that drops the claim's CAS survives.
+  test("a flush completing inside an operator's click leaves one reply", async () => {
+    const convId = 891;
+    await seedConversation(convId);
+    const convRow = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    const sent: Array<[number, string]> = [];
+    const thread = page([{ id: 1, content: "alguém aí?" }]);
+    let flushed: unknown = null;
+    let fetches = 0;
+    const client = {
+      getMessages: async () => {
+        fetches += 1;
+        // The click's burst selection (its pre-fetch was #1): the tail is about to be chosen, and
+        // the flush answers it and claims it before the click's own post gate is reached.
+        if (fetches === 2) {
+          const before = (
+            await suDb.conversation.findUniqueOrThrow({
+              where: { id: convRow.id },
+              select: { lastHandledMessageId: true },
+            })
+          ).lastHandledMessageId;
+          flushed = await flushDebounceJob({
+            job: jobFor(convId),
+            base: appDb,
+            deps: {
+              makeModel: fakeModel,
+              makeClient: async () => client,
+              checkpointer: new MemorySaver(),
+            },
+          });
+          // Back to the instant between the flush's claim and its watermark write.
+          await suDb.conversation.update({
+            where: { id: convRow.id },
+            data: { lastHandledMessageId: before },
+          });
+        }
+        return thread;
+      },
+      sendMessage: async (conversationId: number, content: string) => {
+        sent.push([conversationId, content]);
+        return {};
+      },
+      sendPrivateNote: async () => ({}),
+      toggleTyping: async () => ({}),
+    } as unknown as ChatwootClient;
+
+    const clicked = await reengageConversation(
+      { tenantId, userId: null, role: "TENANT_ADMIN" },
+      convRow.id,
+      {
+        makeModel: fakeModel,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+      },
+      appDb,
+    );
+
+    expect(flushed).toEqual({ outcome: "done" });
+    // The flush took the claim; the click found the burst already claimed and stood down, with no
+    // watermark standing to refuse it on the flush's behalf.
+    expect(clicked.outcome).toBe("superseded");
+    expect(sent).toEqual([[convId, REPLY]]);
+    expect(await watermarkOf(convId)).toBeNull();
   });
 
   test("a flush retires the ledger row of a message it rescued", async () => {
@@ -2740,6 +2993,93 @@ describe.skipIf(!dbUp)("debounce", () => {
     expect(await watermarkOf(804)).toBe(2);
   });
 
+  // AND IT CLAIMS NOTHING, which is the other half and the one the issue is about (#452). The
+  // watermark advances because the burst was CONSUMED — nothing will answer it again on its own —
+  // but no reply left this turn, so the tail is still unanswered and the operator's re-engage is
+  // exactly the thing that should be able to answer it. A claim taken before the turn knows whether
+  // it will send would mark the burst answered and refuse that click forever, which is the reported
+  // bug wearing a different cause.
+  test("an empty reply claims nothing, so the tail stays answerable", async () => {
+    await seedConversation(808);
+    const sent: Array<[number, string]> = [];
+    const out = await flushDebounceJob({
+      job: jobFor(808),
+      base: appDb,
+      deps: {
+        makeModel: () => new FakeListChatModel({ responses: [""] }),
+        makeClient: makeStub({
+          pages: [
+            page([
+              { id: 1, content: "oi" },
+              { id: 2, content: "?" },
+            ]),
+          ],
+          sent,
+          calls: { getMessages: 0 },
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(out).toEqual({ outcome: "done" });
+    expect(sent).toEqual([]);
+    expect(await watermarkOf(808)).toBe(2);
+    expect(await replyClaimOf(808)).toBeNull();
+  });
+
+  // THE REPORTED SEQUENCE, END TO END (#452): the flush runs, the turn ends without a reply, and the
+  // operator clicks re-engage on a tail nobody answered. Both halves of the fix have to hold at once
+  // — the watermark must not refuse the click (it covers the tail), and neither must the claim (the
+  // empty turn sent nothing, so it holds no claim).
+  test("the tail an empty flush left is answered by the operator's click", async () => {
+    const convId = 809;
+    await seedConversation(convId);
+    const convRow = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    const sent: Array<[number, string]> = [];
+    const thread = page([
+      { id: 1, content: "oi" },
+      { id: 2, content: "alguém aí?" },
+    ]);
+    const client = {
+      getMessages: async () => thread,
+      sendMessage: async (conversationId: number, content: string) => {
+        sent.push([conversationId, content]);
+        return {};
+      },
+      sendPrivateNote: async () => ({}),
+      toggleTyping: async () => ({}),
+    } as unknown as ChatwootClient;
+
+    const flushed = await flushDebounceJob({
+      job: jobFor(convId),
+      base: appDb,
+      deps: {
+        makeModel: () => new FakeListChatModel({ responses: [""] }),
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(flushed).toEqual({ outcome: "done" });
+    expect(sent).toEqual([]);
+    // The mark covers the whole tail, which is what made the button report `superseded` forever.
+    expect(await watermarkOf(convId)).toBe(2);
+
+    const clicked = await reengageConversation(
+      { tenantId, userId: null, role: "TENANT_ADMIN" },
+      convRow.id,
+      {
+        makeModel: fakeModel,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+      },
+      appDb,
+    );
+    expect(clicked.outcome).toBe("posted");
+    expect(sent).toEqual([[convId, REPLY]]);
+  });
+
   test("a human takeover mid-turn advances the watermark (no re-answer after the return)", async () => {
     await seedConversation(805);
     const sent: Array<[number, string]> = [];
@@ -3193,6 +3533,51 @@ describe.skipIf(!dbUp)("debounce", () => {
       });
     });
 
+    // A FAILED SEND KEEPS THE CLAIM (issue #452). The template goes out through a raw `sendMessage`
+    // with no reconciliation, so a rejection here does not even say whether Chatwoot accepted it
+    // first — and the claim is taken before the send precisely so that the scheduler's retry cannot
+    // send it a second time to a customer who may already have it. The claim is never given back.
+    test("a send that fails keeps the claim, so the retry cannot duplicate it", async () => {
+      const convId = 894;
+      await seedConversation(convId);
+      const verdict = JSON.stringify({
+        violated: true,
+        categories: ["toxicity"],
+        rationale: "abuse",
+      });
+      const client = {
+        getMessages: async () =>
+          page([{ id: 1, content: "vocês são uns inúteis" }]),
+        sendMessage: async () => {
+          throw new Error("chatwoot: 504 gateway timeout");
+        },
+        sendPrivateNote: async () => ({}),
+        toggleTyping: async () => ({}),
+      } as unknown as ChatwootClient;
+
+      await expect(
+        flushDebounceJob({
+          job: jobFor(convId),
+          base: appDb,
+          deps: {
+            makeModel: (cfg: ResolvedModelConfig) =>
+              cfg.model === GUARD_MODEL
+                ? guardrailModel(async () => ({ content: verdict }))
+                : fakeModel(),
+            makeClient: async () => client,
+            checkpointer: new MemorySaver(),
+          },
+        }),
+      ).rejects.toThrow();
+
+      // Held: nothing here can say the customer did not get the template.
+      expect(await replyClaimOf(convId)).toBe(1);
+      // And the watermark stays put, so the retry would have had a burst to re-answer had the claim
+      // been released — which is what makes this assertion about the claim and not about the burst
+      // being gone.
+      expect(await watermarkOf(convId)).toBeNull();
+    });
+
     test("a burst retired inside the post gate is not answered", async () => {
       await seedConversation(862);
       const thread = threadOf(862);
@@ -3256,10 +3641,18 @@ describe.skipIf(!dbUp)("debounce", () => {
       expect(fetches).toBe(2);
       // And the customer got nothing after their reset, template included.
       expect(sent).toEqual([]);
-      // The residual, asserted rather than left to be discovered: the only ask that can catch this
-      // window answers after the CAS, so the burst is marked handled without having been answered.
-      // The alternative is the send above.
-      expect(await watermarkOf(862)).toBe(1);
+      // The residual this used to assert is GONE, and the change is what closed it (issue #452). The
+      // post gate no longer claims by advancing the watermark — it claims in `lastRepliedMessageId`
+      // — so a retirement caught by the ask after the claim leaves the watermark exactly where
+      // "stale" says it should be: on a burst nothing answered, which the next flush re-coalesces.
+      // That is the rule the outcome was written for; the old value was the CAS leaking through it.
+      expect(await watermarkOf(862)).toBeNull();
+      // And NOTHING WAS CLAIMED either, because the claim is asked one statement before the send and
+      // this turn never got there. The trade the claim makes — a lost reply rather than a risked
+      // duplicate — is about a send that FAILED, which is a burst the customer may already hold. A
+      // run retired before any send is the opposite case: nothing left, so nothing is owed, and the
+      // burst stays answerable by the re-armed flush and by the operator's click.
+      expect(await replyClaimOf(862)).toBeNull();
     });
   });
   // A turn that answers with BOTH an attachment and text, retired between the two. The image is with

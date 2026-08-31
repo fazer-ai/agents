@@ -89,7 +89,7 @@ import {
 } from "@/modules/debounce/service";
 import {
   advanceHandledWatermark,
-  readHandledWatermark,
+  readAnsweredFloor,
 } from "@/modules/debounce/watermark";
 import { emitCommandDropped } from "@/modules/flowlog/command";
 import { emitFlowEvent } from "@/modules/flowlog/service";
@@ -2705,16 +2705,20 @@ async function maybeConsumeCommandOrGate(params: {
     // the agent cannot answer, open the conversation for humans, and write an `error` line saying a
     // turn was skipped for budget — about a message that was answered.
     //
-    // The watermark is what says it was: `runAgentTurn` advances it on the message it posted for.
-    // Read only on the `over` branch, so the ordinary message pays nothing for it, and read BEFORE
-    // the announcement so a refusal that did not happen leaves no record of having happened.
+    // The ANSWERED FLOOR is what says it was — max(watermark, reply claim) — and the claim is the
+    // half that matters here: the post gate takes it immediately before the send, while the
+    // watermark is written only after the turn returns (issue #452). Reading the watermark alone,
+    // this guard would go blind for the whole of that stretch and refuse a message the other route
+    // was already sending a reply for. Read only on the `over` branch, so the ordinary message pays
+    // nothing for it, and read BEFORE the announcement so a refusal that did not happen leaves no
+    // record of having happened.
     //
     // It does not close the whole race. A delivery landing inside the window between the other
-    // route's usage write and its watermark CAS sees neither, and that narrow interleaving is left
-    // to the CAS, which is what keeps the ANSWER single. What this closes is the wide half: a second
-    // delivery arriving after the first has finished, which needs no coincidence at all.
+    // route's usage write and its claim sees neither, and that narrow interleaving is left to the
+    // claim's own CAS, which is what keeps the ANSWER single. What this closes is the wide half: a
+    // second delivery arriving after the first has claimed, which needs no coincidence at all.
     if (ceiling.state === "over") {
-      const handled = await readHandledWatermark({
+      const handled = await readAnsweredFloor({
         tenantId,
         conversationDbId: ctx.conv.id,
         base,

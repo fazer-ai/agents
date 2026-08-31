@@ -573,6 +573,15 @@ model Conversation {
   // (responded to or deliberately skipped). The flush re-fetches and answers only ids beyond it,
   // so re-arm / retry / a concurrent claim cannot produce a duplicate reply. NULL = nothing handled.
   lastHandledMessageId     Int?      @map("last_handled_message_id")
+  // THE REPLY CLAIM: the burst id the last posting path claimed before sending — the debounce flush
+  // and the manual re-engage alike, which is what keeps them exclusive. It cannot be the watermark
+  // above, and that is the whole reason it exists (issue #452): the watermark is also advanced by
+  // deliberate SKIPS, so it answers "will anything answer this again" and not "did anything answer
+  // this" (see the note in debounce/watermark.ts). After a human-owned stretch it stands ahead of
+  // the tail the re-engage answers, and a CAS against it can never win again. Monotonic like the
+  // watermark, and RELEASED when the turn throws before delivering, because that path does not
+  // advance the watermark either. NULL = nothing has ever claimed a reply here.
+  lastRepliedMessageId     Int?      @map("last_replied_message_id")
   // Timestamp of the last INCOMING customer message — the WhatsApp 24h service-window anchor. A
   // proactive (follow-up/nudge) free-form send is only allowed within the window; outside it, an
   // approved template (HSM) is required. NULL = no inbound seen yet.

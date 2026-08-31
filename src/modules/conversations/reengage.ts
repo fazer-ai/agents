@@ -32,7 +32,9 @@ import { clearConversationError } from "./error";
 // Manual re-engage (item 6): re-fire the agent turn on a conversation WITHOUT waiting for a new
 // customer message — the recovery path after a failed turn. It answers the unanswered tail (every
 // incoming message after the last outgoing one), reusing the debounce flush's coalesce machinery
-// (watermark CAS = at-most-once, so a double click or a racing flush posts at most once). Honors the
+// (the shared reply claim = at-most-once, so a double click, a racing flush and its retry post at
+// most once between them, and a message that lands mid-turn still defers the click through the same
+// supersede re-fetch the flush uses). Honors the
 // assignee gate: if a human owns the conversation it does nothing (the operator should "return to
 // agent" first), and the contact-authorization gate, because this path RUNS the model and SENDS its
 // answer. Clears the conversation's lastError on a successful post.
@@ -173,28 +175,44 @@ export async function reengageConversation(
   // because the pre-check and the turn disagreeing is how a gate ends up refusing work that was
   // never going to happen (or letting through work it should have stopped).
   const authCfg = resolved.loaded.contactAuthConfig;
+  // THE WATERMARK AS THIS CALL FOUND IT, read before the round-trip below and used twice: as the
+  // origin of the authorization floor, and as the ceiling this click's claim will accept. Everything
+  // at or under it was settled by whatever went before — a human-owned stretch, an out-of-hours
+  // skip, a turn that ended without a reply — and that is precisely the tail this button exists to
+  // answer. What moves the mark AFTER this read belongs to somebody else, on both counts.
+  const floorAtEntry = await readHandledWatermark({
+    tenantId,
+    conversationDbId: resolved.convDbId,
+    base,
+  });
   const selectPending = authCfg.enabled
     ? async (messages: ChatwootMessageRow[]) => {
-        // With the gate on, the tail is filtered by the handled watermark as well, re-read at the
-        // point the burst is chosen. The authorization call below is a round-trip to somebody
+        // With the gate on, the tail drops what something else handled DURING this call, re-read at
+        // the point the burst is chosen. The authorization call below is a round-trip to somebody
         // else's endpoint, and a message that arrived and was REFUSED during it has already had the
         // watermark advanced past it by its own delivery — but the tail is chosen from the last
         // OUTGOING message, which a refusal never writes, so that refused message would be handed
         // straight to the model. "No turn for a contact the endpoint will not vouch for" is a
         // statement about turns, and this is one. The same guard the debounce flush carries.
         //
-        // Only with the gate on: this floor is not free. A watermark ahead of the last outgoing
-        // message is exactly what a deliberate skip leaves behind (out of hours, a human took
-        // over), and re-engage exists to answer a tail nobody answered — so applying it
-        // unconditionally would turn the button into a no-op on the conversations it was written
-        // for.
+        // THE WINDOW, and not the whole past (issue #452). A watermark ahead of the last outgoing
+        // message is exactly what a deliberate skip leaves behind, and re-engage exists to answer a
+        // tail nobody answered — so a blunt floor turns the button into a no-op on the conversations
+        // it was written for, which is the failure this gate's own comment used to say it was
+        // avoiding. What arrived and was consumed while the endpoint was being asked sits ABOVE the
+        // entry mark and under the fresh one; everything at or below the entry mark predates this
+        // click and stays.
         const tail = incomingAfterLastOutgoing(messages);
         const handled = await readHandledWatermark({
           tenantId,
           conversationDbId: resolved.convDbId,
           base,
         });
-        return handled === null ? tail : tail.filter((m) => m.id > handled);
+        if (handled === null) return tail;
+        return tail.filter(
+          (m) =>
+            m.id > handled || (floorAtEntry !== null && m.id <= floorAtEntry),
+        );
       }
     : incomingAfterLastOutgoing;
 
@@ -341,6 +359,19 @@ export async function reengageConversation(
       // The same expression the pre-check above used, re-evaluated against a FRESH fetch: the
       // authorization call between them is a round trip long enough for the tail to change.
       selectPending,
+      // THE ONE CALLER THAT ANSWERS WHAT THE WATERMARK ALREADY COVERS, and this is issue #452 in
+      // one line: the tail is chosen from the last OUTGOING message, and a deliberate skip (a
+      // human-owned stretch, an out-of-hours silence, a turn that ended without a reply) advances
+      // the watermark past it without ever writing one of ours. A claim that refused a covered
+      // burst would make the button a no-op on exactly the conversations it was written for.
+      //
+      // The ceiling is the mark this call READ ON THE WAY IN, not "no ceiling": what was already
+      // settled when the operator clicked is the tail they are asking about, but a skip that lands
+      // WHILE the model runs settled it for somebody else, and this click is not entitled to
+      // answer over that. Including when that reading was NULL — a conversation with no mark yet
+      // is the case with the least evidence the tail is unanswered, so a mark appearing under a
+      // running model refuses it there too.
+      claimHandledCeiling: () => floorAtEntry,
       label: "reengage",
     },
     base,

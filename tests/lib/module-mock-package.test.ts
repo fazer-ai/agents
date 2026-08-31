@@ -40,17 +40,6 @@ const PACKAGE_MOCK = () => /mock\.module\(\s*"(?![./]|@\/)([^"]+)"/g;
 const PACKAGE_MOCKS_WAIVED: Record<string, string> = {
   "api/features/auth/google.service.test.ts → jose":
     "the stub DELEGATES to the real `jwtVerify` unless a test overrides it for its own call, so the leaked function still verifies real tokens for every file downstream. Asserted there by a round trip that runs after `beforeEach`, which is what fails if the delegation or the `mockClear` is taken away.",
-  "client/components/TenantDeepLink.test.tsx → react-i18next":
-    "predates this ledger, and the argument it used to carry — that a leaked stub only ever meets another stub — was measured false on 2026-08-29 (#435): a new page test renders a translated component WITHOUT stubbing, four of these stubs dropped the vars argument, and the label came out holding a literal `{{ref}}`. Green locally, red on CI, because the answer is whichever file ran last. What keeps it harmless now is the sweep below, not the coincidence: every one of these returns the fallback AND interpolates, which is this ledger's rule applied to `t` — the leak is permanent either way, so it has to carry correct behaviour.",
-  "client/components/UserMenu.test.tsx → react-i18next": "same as above.",
-  "client/pages/DashboardFirstResponse.test.tsx → react-i18next":
-    "same as above.",
-  "client/pages/KnowledgeApprovals.test.tsx → react-i18next": "same as above.",
-  "client/pages/KnowledgeDocsBlock.test.tsx → react-i18next": "same as above.",
-  "client/pages/LogsGroupTitle.test.tsx → react-i18next": "same as above.",
-  "client/pages/LogsScopeChip.test.tsx → react-i18next": "same as above.",
-  "client/pages/SetupPage.test.tsx → react-i18next": "same as above.",
-  "client/pages/VaultFillDeepLink.test.tsx → react-i18next": "same as above.",
 };
 
 // This file's own `mock.module(…)` occurrences are FIXTURES for the decision table below, not calls.
@@ -141,7 +130,7 @@ describe("every third-party module stub is argued for", () => {
   });
 
   test("the ledger may only shrink", () => {
-    expectWaiverLedger("PACKAGE_MOCKS_WAIVED", PACKAGE_MOCKS_WAIVED, 10);
+    expectWaiverLedger("PACKAGE_MOCKS_WAIVED", PACKAGE_MOCKS_WAIVED, 1);
   });
 
   // What the sweep READS, asserted separately from what it decides. No helper stubs a package
@@ -290,14 +279,29 @@ describe("a leaked `t` still interpolates", () => {
       "`mock.module` has no file scope, so this `t` is what every file that runs afterwards gets — " +
         "including files that never asked for a stub and whose labels DO interpolate. A `t` that " +
         "returns the fallback unexpanded renders `{{ref}}` on screen, and the file that fails is not " +
-        "this one. Expand `{{name}}` from the vars argument, the way " +
-        "tests/client/pages/LogsGroupTitle.test.tsx does.",
+        "this one. Do not write one: `withI18n` in tests/utils/i18n.tsx hands the tree a real i18next " +
+        "instance by context, and real interpolation comes with it.",
     ).toEqual([]);
   });
 
-  // The sweep is worth nothing if it stops finding the stubs it is meant to police.
-  test("and the sweep still finds them", async () => {
-    expect(i18nStubFiles(await scanTree()).length).toBeGreaterThan(0);
+  // THE TREE NO LONGER HOLDS ONE, AND THAT IS THE POINT, SO THIS SELF-CHECK IS INVERTED.
+  //
+  // It used to read `toBeGreaterThan(0)`, on the rule that a sweep finding nothing has stopped
+  // being evidence. Nine files stubbed the package then; none does now, because a per-file i18next
+  // instance handed down through `I18nextProvider` answers the same `t` without writing anything to
+  // the module registry (tests/utils/i18n.tsx). So the honest assertion is the stronger one: zero.
+  //
+  // What covers the function now that the tree cannot exercise it is the fixture table below, which
+  // is the same answer this file already gives for its own `SELF` exclusion. And the sweep above is
+  // what keeps the zero true: an unwaived `mock.module("react-i18next", …)` fails there first.
+  test("nothing stubs react-i18next any more", async () => {
+    expect(
+      i18nStubFiles(await scanTree()),
+      "Stubbing this package replaces it for the whole process, and the `i18n` a hand-written stub " +
+        "hands back freezes `language` at a literal, which is what made " +
+        "tests/client/document-starters-race.test.tsx stop racing. Use `withI18n` from " +
+        "tests/utils/i18n.tsx instead: a real instance, per file, delivered by context.",
+    ).toEqual([]);
   });
 
   describe("the decision, over files it is handed", () => {

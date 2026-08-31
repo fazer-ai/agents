@@ -1,6 +1,14 @@
 /// <reference lib="dom" />
 
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  spyOn,
+  test,
+} from "bun:test";
 import * as TooltipPrimitive from "@radix-ui/react-tooltip";
 import {
   act,
@@ -11,10 +19,10 @@ import {
 } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { MemoryRouter, Route, Routes } from "react-router";
+import { createTestI18n } from "@/tests/utils/i18n";
 
 const mockLogout = mock(async () => {});
 const mockSetTheme = mock((_: string) => {});
-const mockChangeLanguage = mock(async (_: string) => {});
 
 mock.module("@/client/contexts/AuthContext", () => ({
   useAuth: () => ({
@@ -34,35 +42,28 @@ mock.module("@/client/contexts/ThemeContext", () => ({
   ThemeProvider: ({ children }: { children: ReactNode }) => children,
 }));
 
-mock.module("react-i18next", () => ({
-  useTranslation: () => ({
-    t: (key: string, fallback?: string, vars?: Record<string, unknown>) => {
-      const text = typeof fallback === "string" ? fallback : key;
-      if (!vars) return text;
-      return text.replace(/\{\{(\w+)\}\}/g, (m, name) =>
-        name in vars ? String(vars[name]) : m,
-      );
-    },
-    i18n: {
-      language: "en",
-      changeLanguage: mockChangeLanguage,
-    },
-  }),
-}));
+// A REAL i18next instance, held here so the language radio's effect can be read off it. See
+// tests/utils/i18n.tsx: a registry stub of `react-i18next` used to live here, and the `i18n` it
+// handed back was a literal `{ language: "en" }` that every file running afterwards imported.
+const i18n = createTestI18n();
+const changeLanguage = spyOn(i18n, "changeLanguage");
 
+import { I18nextProvider } from "react-i18next";
 import { UserMenu } from "@/client/components/UserMenu";
 
 function renderMenu() {
   return render(
-    <TooltipPrimitive.Provider>
-      <MemoryRouter initialEntries={["/"]}>
-        <Routes>
-          <Route path="/" element={<UserMenu />} />
-          <Route path="/login" element={<div>LOGIN_PAGE_MARKER</div>} />
-          <Route path="/settings" element={<div>SETTINGS_PAGE_MARKER</div>} />
-        </Routes>
-      </MemoryRouter>
-    </TooltipPrimitive.Provider>,
+    <I18nextProvider i18n={i18n}>
+      <TooltipPrimitive.Provider>
+        <MemoryRouter initialEntries={["/"]}>
+          <Routes>
+            <Route path="/" element={<UserMenu />} />
+            <Route path="/login" element={<div>LOGIN_PAGE_MARKER</div>} />
+            <Route path="/settings" element={<div>SETTINGS_PAGE_MARKER</div>} />
+          </Routes>
+        </MemoryRouter>
+      </TooltipPrimitive.Provider>
+    </I18nextProvider>,
   );
 }
 
@@ -77,7 +78,7 @@ describe("UserMenu", () => {
   beforeEach(() => {
     mockLogout.mockClear();
     mockSetTheme.mockClear();
-    mockChangeLanguage.mockClear();
+    changeLanguage.mockClear();
   });
 
   afterEach(() => cleanup());
@@ -112,7 +113,7 @@ describe("UserMenu", () => {
     openDropdown();
     const ptRadio = screen.getByRole("menuitemradio", { name: /português/i });
     fireEvent.click(ptRadio);
-    expect(mockChangeLanguage).toHaveBeenCalledWith("pt-BR");
+    expect(changeLanguage).toHaveBeenCalledWith("pt-BR");
   });
 
   test("Settings menuitem navigates to /settings", () => {

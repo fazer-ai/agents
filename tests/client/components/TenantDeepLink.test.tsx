@@ -18,6 +18,7 @@ import {
 } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { ToastProvider } from "@/client/components";
+import { withI18n } from "@/tests/utils/i18n";
 
 // The decision this applies has a table of its own (tests/client/lib/tenantDeepLink.test.ts). What
 // is tested HERE is the part a pure function cannot see: when the parameter is consumed, and when
@@ -63,20 +64,6 @@ function installFetchStub() {
   }) as typeof fetch;
 }
 
-mock.module("react-i18next", () => ({
-  useTranslation: () => ({
-    t: (key: string, fallback?: string, vars?: Record<string, unknown>) => {
-      const text = typeof fallback === "string" ? fallback : key;
-      if (!vars) return text;
-      return text.replace(/\{\{(\w+)\}\}/g, (m, name) =>
-        name in vars ? String(vars[name]) : m,
-      );
-    },
-    i18n: { language: "en" },
-  }),
-  initReactI18next: { type: "3rdParty", init: () => {} },
-}));
-
 mock.module("@/client/contexts/AuthContext", () => ({
   useAuth: () => ({
     user: { id: "1", role, tenantId: userTenantId },
@@ -94,21 +81,23 @@ function SearchProbe() {
 
 function renderAt(search: string) {
   return render(
-    <MemoryRouter initialEntries={[`/resources/vault${search}`]}>
-      <ToastProvider>
-        <SearchProbe />
-        <Routes>
-          <Route
-            path="/resources/vault"
-            element={
-              <TenantDeepLink>
-                <div>panel</div>
-              </TenantDeepLink>
-            }
-          />
-        </Routes>
-      </ToastProvider>
-    </MemoryRouter>,
+    withI18n(
+      <MemoryRouter initialEntries={[`/resources/vault${search}`]}>
+        <ToastProvider>
+          <SearchProbe />
+          <Routes>
+            <Route
+              path="/resources/vault"
+              element={
+                <TenantDeepLink>
+                  <div>panel</div>
+                </TenantDeepLink>
+              }
+            />
+          </Routes>
+        </ToastProvider>
+      </MemoryRouter>,
+    ),
   );
 }
 

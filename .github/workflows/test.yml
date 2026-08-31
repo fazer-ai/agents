@@ -11,34 +11,46 @@ jobs:
   test:
     runs-on: ubuntu-latest
 
-    # NOT SHARDED YET, AND WHAT IS LEFT IN THE WAY IS ONE TEST.
+    strategy:
+      # Every shard runs: one red shard must not cancel the other three, or the report names one
+      # failure when there may be four.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+
+    name: test (${{ matrix.shard }}/4)
+
+    # SHARDED FOUR WAYS. Each job gets its own runner, its own vCPUs and its own database, and
+    # `--shard=k/4` splits the files by index so the four sets are disjoint and cover the tree.
     #
-    # Four shards (one job each, own vCPUs, own database) took the test step from 157s to 36-61s and
-    # the wall from 217s to ~109s. What came back red was not the split: the same `--shard=1/4` fails
-    # on a clean origin/main, because this suite was only ever green in the order the full serial run
-    # happens to give it. Four causes were found and fixed on this branch, taking the four shards from
-    # 19 failures to 1:
+    # It could not be turned on before, and the reason was never the split: this suite was only ever
+    # green in the order the full serial run happens to give it, so `--shard=1/4` failed on a clean
+    # main. Two rounds found and fixed the causes, all of them the same shape: a test writing to
+    # something the whole process shares, undone by nothing:
     #
-    #   - src/app.ts exported ONE Elysia instance, and three files mutated it: two registered their
-    #     own routes on it, one called `listen()`. Elysia compiles its router on first use, so a later
-    #     file's route never existed and its request fell through to the `/*` SPA handler, and a
-    #     stopped-but-compiled app answered later `handle()` calls with 500s. `buildApp()` is the fix.
-    #   - one file replaced `@/modules/rag/service` in the module registry. Re-registering the real
-    #     module in `afterAll` is a second global rewrite, and whether it lands before another file's
-    #     imports resolve is an ordering nobody controls. A `spyOn` on the module object restores.
+    #   - src/app.ts exported ONE Elysia instance and three files mutated it.
+    #   - `mock.module` on a module whose teardown handed the registry back the namespace
+    #     `await import()` returned, which is the object the rewrite already changed in place. Six
+    #     files; tests/lib/module-mock-undo.test.ts now refuses the shape.
+    #   - `mock.module("react-i18next", …)` in nine client test files, each freezing `i18n.language`
+    #     at a literal for every file downstream. Replaced by a per-file instance delivered through
+    #     `I18nextProvider` (tests/utils/i18n.tsx).
+    #   - an unfenced `runSchedulerTick` draining rows other files had enqueued
+    #     (tests/modules/scheduler-tenant-fence.test.ts).
     #
-    # THE ONE LEFT: tests/client/components/UserMenu.test.tsx stubs `react-i18next` (plus the auth and
-    # theme contexts) with `mock.module`, which has no reliable undo, and
-    # tests/client/document-starters-race.test.tsx switches the REAL i18n language to prove a stale
-    # response cannot overwrite a newer one. Against the stub the switch does nothing. Both files
-    # already document the hazard from their own side. Two fixes were measured and rejected: restoring
-    # the modules in `afterAll` does not undo the leak, and dropping the stub for the real instance
-    # makes UserMenu itself order-dependent and breaks the stub ledger in
-    # tests/lib/module-mock-package.test.ts, which lists that stub on purpose.
+    # Every one of them failed in a DIFFERENT file than the one at fault, which is why three of the
+    # four are now static sweeps rather than notes.
     #
-    # `bun test --parallel` is NOT affected and runs clean: it implies `--isolate`, so each file gets
-    # its own module registry and a `mock.module` cannot reach the next file. Only a shard, which runs
-    # serially inside its job, shares one.
+    # HOW THEY WERE FOUND, because two full pairwise sweeps (133 files each) found none of them: bun
+    # ignores argument order, so narrow with `--shard=k/N` doubling N. A file in `1/8` is in `1/16`
+    # or `9/16`. When the victim lands alone in a passing shard, the culprit is in the sibling shard.
+    # Neutralise candidates in halves by replacing their CONTENTS, never their paths: moving a file
+    # moves it in the ordering, which is also why adding one test file reshuffles every shard.
+    #
+    # `bun test --parallel` stays off here. It is right on a developer machine (189s to 51s at 18
+    # workers) and wrong on a 4-vCPU runner, measured at 257s against a 187s serial baseline: four
+    # workers take all four vCPUs and take them from the Postgres container beside them. Sharding
+    # buys the same wall clock by adding runners instead of dividing one.
     services:
       postgres:
         image: pgvector/pgvector:pg17
@@ -102,4 +114,4 @@ jobs:
         run: bun run db:test:setup
 
       - name: Run Tests
-        run: bun run test
+        run: bun test --shard=${{ matrix.shard }}/4

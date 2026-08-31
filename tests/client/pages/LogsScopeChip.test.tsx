@@ -6,7 +6,6 @@ import {
   beforeAll,
   describe,
   expect,
-  mock,
   test,
 } from "bun:test";
 import * as TooltipPrimitive from "@radix-ui/react-tooltip";
@@ -14,6 +13,7 @@ import { cleanup, render, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { ToastProvider } from "@/client/components";
 import { LogsPage } from "@/client/pages/LogsPage";
+import { withI18n } from "@/tests/utils/i18n";
 
 // THE OTHER PLACE THE PAGE NAMES A GROUP, AND IT WAS NAMING IT SOMETHING ELSE.
 //
@@ -29,22 +29,10 @@ import { LogsPage } from "@/client/pages/LogsPage";
 // NOTE: every assertion reduces to a string or a boolean BEFORE expect. A failing expectation still
 // holding a DOM node serializes a cyclic happy-dom tree and stalls the runner.
 
-// `mock.module` is process-global in Bun and leaks across files in the same worker, so this file
-// states the i18n surface it needs rather than depending on which file ran first.
-mock.module("react-i18next", () => ({
-  useTranslation: () => ({
-    t: (key: string, fallback?: string, vars?: Record<string, unknown>) => {
-      const text = typeof fallback === "string" ? fallback : key;
-      if (!vars) return text;
-      return text.replace(/\{\{(\w+)\}\}/g, (m, name) =>
-        name in vars ? String(vars[name]) : m,
-      );
-    },
-    i18n: { language: "en" },
-  }),
-  initReactI18next: { type: "3rdParty", init: () => {} },
-}));
-
+// This file asserts on rendered LABELS, so what `t` answers is part of the fixture. It used to
+// secure that by replacing `react-i18next` in the module registry, which secured it for every other
+// file in the process too: the stub the last such file installed was what they all got. `withI18n`
+// hands this tree its own i18next by context instead: same answers, no reach past this file.
 const realFetch = globalThis.fetch;
 
 interface Row {
@@ -100,13 +88,15 @@ async function labels(
 ): Promise<{ chip: string; card: string | null }> {
   items = rows.map(row);
   const { container } = render(
-    <MemoryRouter initialEntries={[`/logs?turnId=${scopeTurnId}`]}>
-      <TooltipPrimitive.Provider>
-        <ToastProvider>
-          <LogsPage />
-        </ToastProvider>
-      </TooltipPrimitive.Provider>
-    </MemoryRouter>,
+    withI18n(
+      <MemoryRouter initialEntries={[`/logs?turnId=${scopeTurnId}`]}>
+        <TooltipPrimitive.Provider>
+          <ToastProvider>
+            <LogsPage />
+          </ToastProvider>
+        </TooltipPrimitive.Provider>
+      </MemoryRouter>,
+    ),
   );
   return await waitFor(() => {
     const chipEl = [...container.querySelectorAll("span")].find((s) =>

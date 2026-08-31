@@ -19,6 +19,7 @@ import {
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router";
 import { ToastProvider } from "@/client/components";
+import { withI18n } from "@/tests/utils/i18n";
 
 // Issue #81: the approval card offered exactly two actions, Approve and Reject. An operator facing a
 // suggestion the agent hedged ("solicita-se validação da informação") could only approve the hedge
@@ -76,22 +77,6 @@ function installFetchStub() {
   }) as typeof fetch;
 }
 
-mock.module("react-i18next", () => ({
-  useTranslation: () => ({
-    t: (
-      key: string,
-      fallback?: string | Record<string, unknown>,
-      opts?: Record<string, unknown>,
-    ) => {
-      const fb = typeof fallback === "string" ? fallback : key;
-      const vars = (typeof fallback === "string" ? opts : fallback) ?? {};
-      return fb.replace(/\{\{(\w+)\}\}/g, (_m, k) => String(vars[k] ?? ""));
-    },
-    i18n: { language: "en" },
-  }),
-  initReactI18next: { type: "3rdParty", init: () => {} },
-}));
-
 mock.module("@/client/contexts/ThemeContext", () => ({
   useTheme: () => ({
     theme: "dark",
@@ -127,11 +112,13 @@ function seed(over: Record<string, unknown> = {}) {
 
 function renderQueue() {
   return render(
-    <MemoryRouter>
-      <ToastProvider>
-        <KnowledgeApprovals />
-      </ToastProvider>
-    </MemoryRouter>,
+    withI18n(
+      <MemoryRouter>
+        <ToastProvider>
+          <KnowledgeApprovals />
+        </ToastProvider>
+      </MemoryRouter>,
+    ),
   );
 }
 

@@ -10,6 +10,7 @@ import {
 } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
+import { withI18n } from "@/tests/utils/i18n";
 
 const mockLogin = mock((_: unknown) => {});
 const mockRefresh = mock(async () => {});
@@ -39,26 +40,6 @@ mock.module("@/client/contexts/ThemeContext", () => ({
   ThemeProvider: ({ children }: { children: ReactNode }) => children,
 }));
 
-mock.module("react-i18next", () => ({
-  useTranslation: () => ({
-    t: (key: string, fallback?: string, vars?: Record<string, unknown>) => {
-      const text = typeof fallback === "string" ? fallback : key;
-      if (!vars) return text;
-      return text.replace(/\{\{(\w+)\}\}/g, (m, name) =>
-        name in vars ? String(vars[name]) : m,
-      );
-    },
-    i18n: { language: "en" },
-  }),
-  // NOTE: `SetupPage` imports from the `@/client/components` barrel, which
-  // transitively pulls `@/client/lib/i18n.ts` and its top-level
-  // `i18n.use(initReactI18next).init(...)`. Without this stub the file fails
-  // to load on CI (different module-eval ordering than the dev box) with
-  // `SyntaxError: Export named 'initReactI18next' not found`. Shape matches
-  // the real export: `{ type: "3rdParty", init }`.
-  initReactI18next: { type: "3rdParty", init: () => {} },
-}));
-
 const { SetupPage } = await import("@/client/pages/SetupPage");
 const { ToastProvider } = await import("@/client/components/Toast");
 
@@ -72,21 +53,23 @@ function LocationProbe() {
 // its promise that exactly one channel fires. The app mounts every route inside one.
 function renderAt(path: string) {
   return render(
-    <ToastProvider>
-      <MemoryRouter initialEntries={[path]}>
-        <Routes>
-          <Route
-            path="/setup"
-            element={
-              <>
-                <SetupPage />
-                <LocationProbe />
-              </>
-            }
-          />
-        </Routes>
-      </MemoryRouter>
-    </ToastProvider>,
+    withI18n(
+      <ToastProvider>
+        <MemoryRouter initialEntries={[path]}>
+          <Routes>
+            <Route
+              path="/setup"
+              element={
+                <>
+                  <SetupPage />
+                  <LocationProbe />
+                </>
+              }
+            />
+          </Routes>
+        </MemoryRouter>
+      </ToastProvider>,
+    ),
   );
 }
 

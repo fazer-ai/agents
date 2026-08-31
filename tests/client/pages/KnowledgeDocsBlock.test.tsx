@@ -21,6 +21,7 @@ import type { ReactNode } from "react";
 import { ToastProvider } from "@/client/components";
 import clientEn from "@/client/locales/en.json";
 import clientPt from "@/client/locales/pt-BR.json";
+import { createTestI18n, withI18n } from "@/tests/utils/i18n";
 
 // Issue #80, review finding of round 5: the embedding block is a READ-TIME answer about the
 // workspace's configuration, and the documents modal holds it as a snapshot taken when the list was
@@ -146,17 +147,30 @@ function json(body: unknown): Response {
   });
 }
 
-// The stub resolves against the REAL catalogs, and falls back to the call site's default only when
-// the key is missing — which is what i18next itself does. A stub that always answered the default
-// would render correctly for a key the catalog does not have, and that is precisely the failure
-// issue #256 is about: an unresolvable key is invisible at runtime. With the lookup in place, a
-// test asserting the CATALOG's sentence goes red when the key stops resolving.
+// THE REAL CATALOGS, because this file's subject is whether a key RESOLVES.
+//
+// `t` has to answer the catalog entry where there is one and the call site's default only where
+// there is not. Something that always answered the default would render correctly for a key the
+// catalog does not have, and that is precisely the failure issue #256 is about: an unresolvable key
+// is invisible at runtime. With the catalogs loaded, a test asserting the CATALOG's sentence goes
+// red when the key stops resolving.
+//
+// That used to be a hand-written `t` doing its own lookup, installed into the module registry. It
+// answered the same thing and it answered for the whole process: the `i18n` beside it froze
+// `language` at whatever this file last assigned, for every file that ran afterwards. Real i18next,
+// held here and delivered by context, is the same behaviour with none of the reach.
 const CATALOGS: Record<string, Record<string, unknown>> = {
   en: clientEn as Record<string, unknown>,
   "pt-BR": clientPt as Record<string, unknown>,
 };
-// The locale the mounted tree renders in; a test flips it to read the other language.
-let uiLanguage = "en";
+// The locale the mounted tree renders in; a test flips it with `setLanguage` below.
+const i18n = createTestI18n("en", {
+  en: { translation: clientEn },
+  "pt-BR": { translation: clientPt },
+});
+function setLanguage(locale: string) {
+  i18n.changeLanguage(locale);
+}
 
 function lookup(locale: string, key: string): string | undefined {
   let node: unknown = CATALOGS[locale];
@@ -166,25 +180,6 @@ function lookup(locale: string, key: string): string | undefined {
   }
   return typeof node === "string" ? node : undefined;
 }
-
-mock.module("react-i18next", () => ({
-  useTranslation: () => ({
-    t: (
-      key: string,
-      fallback?: string | Record<string, unknown>,
-      opts?: Record<string, unknown>,
-    ) => {
-      const fb = typeof fallback === "string" ? fallback : key;
-      const vars = (typeof fallback === "string" ? opts : fallback) ?? {};
-      const template = lookup(uiLanguage, key) ?? fb;
-      return template.replace(/\{\{(\w+)\}\}/g, (_m, k) =>
-        String(vars[k] ?? ""),
-      );
-    },
-    i18n: { language: uiLanguage },
-  }),
-  initReactI18next: { type: "3rdParty", init: () => {} },
-}));
 
 mock.module("@/client/contexts/ThemeContext", () => ({
   useTheme: () => ({
@@ -239,11 +234,14 @@ async function openModal(firstDocTitle = "Doc") {
   render(
     // The blocked badge is wrapped in a <Tooltip>, which is a Radix consumer: without the provider
     // the App normally supplies, rendering the row throws.
-    <TooltipProvider>
-      <ToastProvider>
-        <Harness />
-      </ToastProvider>
-    </TooltipProvider>,
+    withI18n(
+      <TooltipProvider>
+        <ToastProvider>
+          <Harness />
+        </ToastProvider>
+      </TooltipProvider>,
+      i18n,
+    ),
   );
   fireEvent.click(screen.getByRole("button", { name: "open" }));
   await screen.findByText(firstDocTitle);
@@ -821,13 +819,13 @@ describe("a failed document's reason, rendered", () => {
     gatedDocsCalls = [];
     docsReleasers.clear();
     addDocResponse = null;
-    uiLanguage = "en";
+    setLanguage("en");
     installFetchStub();
   });
 
   afterEach(() => {
     cleanup();
-    uiLanguage = "en";
+    setLanguage("en");
   });
 
   // The three tokens the ingest job stores, next to the sentence each catalog answers with. Read
@@ -850,7 +848,7 @@ describe("a failed document's reason, rendered", () => {
   for (const [token, catalogKey] of CASES) {
     for (const locale of ["en", "pt-BR"] as const) {
       test(`${token} renders the ${locale} sentence`, async () => {
-        uiLanguage = locale;
+        setLanguage(locale);
         docsQueue = [
           {
             documents: [doc({ status: "FAILED", error: token })],
@@ -883,7 +881,7 @@ describe("a failed document's reason, rendered", () => {
     async (token, catalogKey) => {
       const seen: string[] = [];
       for (const locale of ["en", "pt-BR"] as const) {
-        uiLanguage = locale;
+        setLanguage(locale);
         docsQueue = [
           {
             documents: [doc({ status: "FAILED", error: token })],
@@ -910,7 +908,7 @@ describe("a failed document's reason, rendered", () => {
   test("the two languages are not the same sentence on screen", async () => {
     const seen: string[] = [];
     for (const locale of ["en", "pt-BR"] as const) {
-      uiLanguage = locale;
+      setLanguage(locale);
       docsQueue = [
         {
           documents: [
@@ -937,7 +935,7 @@ describe("a failed document's reason, rendered", () => {
   // The stored column, in the shape a row written before issue #256 carries. Same render path, same
   // tooltip — the alias only matters if it survives to the screen.
   test("a row written before the rename renders the pt-BR sentence too", async () => {
-    uiLanguage = "pt-BR";
+    setLanguage("pt-BR");
     docsQueue = [
       {
         documents: [
@@ -970,7 +968,7 @@ describe("a failed document's reason, rendered", () => {
   // An unknown token is NOT localized: it is the worker's raw diagnostic, and showing it verbatim is
   // the point (a translated "unknown error" would replace the only information there is).
   test("a diagnostic the map does not know is shown verbatim", async () => {
-    uiLanguage = "pt-BR";
+    setLanguage("pt-BR");
     docsQueue = [
       {
         documents: [

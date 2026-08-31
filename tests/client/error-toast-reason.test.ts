@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { expectWaiverLedger } from "@/tests/utils/ledger";
+import { codeSkeleton } from "@/tests/utils/source-text";
 
 // THE GUARD AGAINST THE NEXT HANDLER THAT ASKS THE SERVER AND THEN INVENTS ITS OWN SENTENCE.
 //
@@ -55,46 +56,6 @@ function callArgs(src: string, openParen: number): string {
     i++;
   }
   return src.slice(openParen + 1, i - 1);
-}
-
-// The source with every comment and every string body blanked to spaces, offsets preserved.
-//
-// Counting braces on the raw text drifts, and it drifts SILENTLY: this tree's comments are prose
-// about the code and full of `{ error }`, `{{placeholder}}` and `${…}`. One unbalanced brace inside
-// one comment shifts every block boundary after it, and the scan then answers about the wrong
-// function for the rest of the file. Measured: on the raw text the scan found 28 offenders and
-// missed `BusinessHoursForm.tsx:230`, which is a bare `catch {}` under `throw err` read by hand.
-export function codeSkeleton(src: string): string {
-  const out = src.split("");
-  let i = 0;
-  const blank = (from: number, to: number) => {
-    for (let k = from; k < to && k < out.length; k++) {
-      if (out[k] !== "\n") out[k] = " ";
-    }
-  };
-  while (i < src.length) {
-    const two = src.slice(i, i + 2);
-    if (two === "//") {
-      const end = src.indexOf("\n", i);
-      blank(i, end < 0 ? src.length : end);
-      i = end < 0 ? src.length : end;
-    } else if (two === "/*") {
-      const end = src.indexOf("*/", i + 2);
-      blank(i, end < 0 ? src.length : end + 2);
-      i = end < 0 ? src.length : end + 2;
-    } else if (src[i] === '"' || src[i] === "'" || src[i] === "`") {
-      const quote = src[i] as string;
-      let k = i + 1;
-      while (k < src.length) {
-        if (src[k] === "\\") k += 2;
-        else if (src[k] === quote) break;
-        else k++;
-      }
-      blank(i + 1, k);
-      i = k + 1;
-    } else i++;
-  }
-  return out.join("");
 }
 
 // Every `{` still open at `at`, innermost last. Brace-matched rather than indentation-matched: this

@@ -501,3 +501,63 @@ export async function countInSrc(re: RegExp): Promise<Record<string, number>> {
   }
   return found;
 }
+
+// A SECOND, SIMPLER SCRUBBER, AND WHY BOTH EXIST.
+//
+// It lived in tests/client/error-toast-reason.test.ts until another test file imported it from
+// there, which is what a helper in a `.test.ts` invites. That import cost something measurable:
+// under `bun test --shard=k/4` the two files land in different processes, so the exporting file's
+// 47 tests registered TWICE across the fleet and the shard totals stopped matching the serial run.
+// Nothing failed, and the arithmetic of a gate that no longer adds up is exactly what a gate is for.
+//
+// ONE SUCH IMPORT IS LEFT, DELIBERATELY. tests/lib/source-text.test.ts takes `bigIntArgs` from
+// tests/lib/caller-id-spelling.test.ts, and moving that one was tried and reverted: it drags
+// `blankNonCode`, `startsRegex` and `KEYWORDS_BEFORE_REGEX` behind it, and relocating those call
+// sites moves `BigInt(` occurrences into a different file, which is the key the waiver ledger in
+// caller-id-spelling is written against. Two tests went red for that reason alone. The cost of
+// leaving it is 12 test registrations repeated across four shards; the cost of moving it is
+// rewriting a ledger to buy them back.
+//
+// It is NOT merged into `codeOnly` above. That one answers regex bodies and URL schemes and carries
+// five rounds of measurement behind those answers; this one does not, and its callers count braces
+// rather than positions. Merging them is a change to what those sweeps decide, so it is a separate
+// piece of work from moving a function out of a test file.
+// The source with every comment and every string body blanked to spaces, offsets preserved.
+//
+// Counting braces on the raw text drifts, and it drifts SILENTLY: this tree's comments are prose
+// about the code and full of `{ error }`, `{{placeholder}}` and `${…}`. One unbalanced brace inside
+// one comment shifts every block boundary after it, and the scan then answers about the wrong
+// function for the rest of the file. Measured: on the raw text the scan found 28 offenders and
+// missed `BusinessHoursForm.tsx:230`, which is a bare `catch {}` under `throw err` read by hand.
+export function codeSkeleton(src: string): string {
+  const out = src.split("");
+  let i = 0;
+  const blank = (from: number, to: number) => {
+    for (let k = from; k < to && k < out.length; k++) {
+      if (out[k] !== "\n") out[k] = " ";
+    }
+  };
+  while (i < src.length) {
+    const two = src.slice(i, i + 2);
+    if (two === "//") {
+      const end = src.indexOf("\n", i);
+      blank(i, end < 0 ? src.length : end);
+      i = end < 0 ? src.length : end;
+    } else if (two === "/*") {
+      const end = src.indexOf("*/", i + 2);
+      blank(i, end < 0 ? src.length : end + 2);
+      i = end < 0 ? src.length : end + 2;
+    } else if (src[i] === '"' || src[i] === "'" || src[i] === "`") {
+      const quote = src[i] as string;
+      let k = i + 1;
+      while (k < src.length) {
+        if (src[k] === "\\") k += 2;
+        else if (src[k] === quote) break;
+        else k++;
+      }
+      blank(i + 1, k);
+      i = k + 1;
+    } else i++;
+  }
+  return out.join("");
+}

@@ -6,12 +6,12 @@ import {
   beforeAll,
   describe,
   expect,
-  mock,
   test,
 } from "bun:test";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { DashboardPage } from "@/client/pages/DashboardPage";
+import { withI18n } from "@/tests/utils/i18n";
 
 // Issue #283: on an inbox served by humans every KPI on this page is derived from LlmUsage, so the
 // panel reads zero, which reads as failure rather than as "the agent was not here". The number
@@ -22,26 +22,10 @@ import { DashboardPage } from "@/client/pages/DashboardPage";
 // NOTE: every assertion reduces to a string or a number BEFORE expect. A failing expectation still
 // holding a DOM node serializes a cyclic happy-dom tree and stalls the runner.
 
-// `mock.module` is process-global in Bun and leaks across files in the same worker, and one of them
-// (tests/client/components/TenantDeepLink.test.tsx) installs a `t` that returns the default string
-// WITHOUT interpolating, so `{{sampled}}` reaches the DOM literally and an assertion about the
-// sample size fails on a translation detail rather than on the figure. Declared here rather than
-// inherited, and interpolating, so this file states the surface it needs instead of depending on
-// which file ran first. Measured: passes alone, failed inside `bun check`, until this existed.
-mock.module("react-i18next", () => ({
-  useTranslation: () => ({
-    t: (key: string, fallback?: string, vars?: Record<string, unknown>) => {
-      const text = typeof fallback === "string" ? fallback : key;
-      if (!vars) return text;
-      return text.replace(/\{\{(\w+)\}\}/g, (m, name) =>
-        name in vars ? String(vars[name]) : m,
-      );
-    },
-    i18n: { language: "en" },
-  }),
-  initReactI18next: { type: "3rdParty", init: () => {} },
-}));
-
+// This file asserts on rendered LABELS, so what `t` answers is part of the fixture. It used to
+// secure that by replacing `react-i18next` in the module registry, which secured it for every other
+// file in the process too: the stub the last such file installed was what they all got. `withI18n`
+// hands this tree its own i18next by context instead: same answers, no reach past this file.
 const realFetch = globalThis.fetch;
 
 let kpis: Record<string, unknown> = {};
@@ -80,9 +64,11 @@ const BASE = {
 async function renderWith(k: Record<string, unknown>): Promise<void> {
   kpis = { ...BASE, ...k };
   render(
-    <MemoryRouter>
-      <DashboardPage />
-    </MemoryRouter>,
+    withI18n(
+      <MemoryRouter>
+        <DashboardPage />
+      </MemoryRouter>,
+    ),
   );
   await waitFor(() => {
     expect(screen.queryAllByText("First response").length).toBeGreaterThan(0);

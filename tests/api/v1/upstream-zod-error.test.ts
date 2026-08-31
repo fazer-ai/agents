@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, mock, test } from "bun:test";
+import { afterAll, describe, expect, spyOn, test } from "bun:test";
 import { Elysia } from "elysia";
 import { z } from "zod";
 import { authPlugin } from "@/api/lib/auth";
@@ -30,20 +30,20 @@ const mcpService = await import("@/modules/mcp-connections/service");
 // A ZodError produced the way the SDK produces one: a schema THIS request never chose, over a value
 // the caller never sent.
 const upstream = z.object({ tools: z.array(z.object({ name: z.string() })) });
-mock.module("@/modules/mcp-connections/service", () => ({
-  ...mcpService,
-  discoverMcpTools: async () => {
-    upstream.parse({ tools: [{ name: 42 }] });
-    return { instructions: null, tools: [] };
-  },
-}));
+// A spy, not a registry rewrite: the undo below has to actually undo. Handing `mock.module` the
+// namespace `await import()` returned puts back the object the rewrite already changed in place.
+const discoverMcpTools = spyOn(
+  mcpService,
+  "discoverMcpTools",
+).mockImplementation((async () => {
+  upstream.parse({ tools: [{ name: 42 }] });
+  return { instructions: null, tools: [] };
+}) as unknown as typeof mcpService.discoverMcpTools);
 
 const app = (await import("@/app")).default;
 
-// `mock.module` is GLOBAL to the process and outlives this file for every other test in the same
-// worker, so put the module back.
 afterAll(() => {
-  mock.module("@/modules/mcp-connections/service", () => mcpService);
+  discoverMcpTools.mockRestore();
 });
 
 const admin = { ...mockUser, tenantId: 1n, role: "TENANT_ADMIN" as const };

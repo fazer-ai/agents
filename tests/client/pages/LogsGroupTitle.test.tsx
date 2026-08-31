@@ -6,7 +6,6 @@ import {
   beforeAll,
   describe,
   expect,
-  mock,
   test,
 } from "bun:test";
 import * as TooltipPrimitive from "@radix-ui/react-tooltip";
@@ -14,6 +13,7 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { ToastProvider } from "@/client/components";
 import { LogsPage } from "@/client/pages/LogsPage";
+import { withI18n } from "@/tests/utils/i18n";
 
 // Issue #357: a Logs group whose rows have no conversation announces itself as "Turn", and the one
 // stage that can NEVER be a turn (`webhook`: an outbound delivery on a worker tick, long after
@@ -24,24 +24,10 @@ import { LogsPage } from "@/client/pages/LogsPage";
 // NOTE: every assertion reduces to a string or a boolean BEFORE expect. A failing expectation still
 // holding a DOM node serializes a cyclic happy-dom tree and stalls the runner.
 
-// `mock.module` is process-global in Bun and leaks across files in the same worker; another file's
-// `t` returns the key rather than the default string, which would make an assertion about the
-// rendered label fail on a translation detail instead of on the label. Declared here, interpolating,
-// so this file states the surface it needs instead of depending on which file ran first.
-mock.module("react-i18next", () => ({
-  useTranslation: () => ({
-    t: (key: string, fallback?: string, vars?: Record<string, unknown>) => {
-      const text = typeof fallback === "string" ? fallback : key;
-      if (!vars) return text;
-      return text.replace(/\{\{(\w+)\}\}/g, (m, name) =>
-        name in vars ? String(vars[name]) : m,
-      );
-    },
-    i18n: { language: "en" },
-  }),
-  initReactI18next: { type: "3rdParty", init: () => {} },
-}));
-
+// This file asserts on rendered LABELS, so what `t` answers is part of the fixture. It used to
+// secure that by replacing `react-i18next` in the module registry, which secured it for every other
+// file in the process too: the stub the last such file installed was what they all got. `withI18n`
+// hands this tree its own i18next by context instead: same answers, no reach past this file.
 const realFetch = globalThis.fetch;
 
 interface Row {
@@ -94,13 +80,15 @@ const stubFetch = (async (input: unknown) => {
 async function titles(rows: Row[]): Promise<string[]> {
   items = rows.map(row);
   render(
-    <MemoryRouter>
-      <TooltipPrimitive.Provider>
-        <ToastProvider>
-          <LogsPage />
-        </ToastProvider>
-      </TooltipPrimitive.Provider>
-    </MemoryRouter>,
+    withI18n(
+      <MemoryRouter>
+        <TooltipPrimitive.Provider>
+          <ToastProvider>
+            <LogsPage />
+          </ToastProvider>
+        </TooltipPrimitive.Provider>
+      </MemoryRouter>,
+    ),
   );
   return await waitFor(() => {
     const found = screen

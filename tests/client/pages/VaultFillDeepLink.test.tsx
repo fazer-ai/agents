@@ -13,6 +13,7 @@ import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { ToastProvider } from "@/client/components";
+import { withI18n } from "@/tests/utils/i18n";
 
 // Issue #151: `credential_create` answers with a `fillAt` link so the operator can put the secret in
 // out of band. The vault panel looked the id up in the tenant the browser happened to have selected
@@ -53,20 +54,6 @@ function installFetchStub() {
   }) as typeof fetch;
 }
 
-mock.module("react-i18next", () => ({
-  useTranslation: () => ({
-    t: (key: string, fallback?: string, vars?: Record<string, unknown>) => {
-      const text = typeof fallback === "string" ? fallback : key;
-      if (!vars) return text;
-      return text.replace(/\{\{(\w+)\}\}/g, (m, name) =>
-        name in vars ? String(vars[name]) : m,
-      );
-    },
-    i18n: { language: "en" },
-  }),
-  initReactI18next: { type: "3rdParty", init: () => {} },
-}));
-
 mock.module("@/client/contexts/ThemeContext", () => ({
   useTheme: () => ({
     theme: "dark",
@@ -88,14 +75,16 @@ function SearchProbe() {
 
 function renderPanel(search: string) {
   return render(
-    <MemoryRouter initialEntries={[`/resources/vault${search}`]}>
-      <ToastProvider>
-        <SearchProbe />
-        <Routes>
-          <Route path="/resources/vault" element={<VaultPanel />} />
-        </Routes>
-      </ToastProvider>
-    </MemoryRouter>,
+    withI18n(
+      <MemoryRouter initialEntries={[`/resources/vault${search}`]}>
+        <ToastProvider>
+          <SearchProbe />
+          <Routes>
+            <Route path="/resources/vault" element={<VaultPanel />} />
+          </Routes>
+        </ToastProvider>
+      </MemoryRouter>,
+    ),
   );
 }
 

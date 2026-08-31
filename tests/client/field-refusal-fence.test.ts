@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { codeSkeleton } from "@/tests/client/error-toast-reason.test";
 import { expectWaiverLedger } from "@/tests/utils/ledger";
+import { codeSkeleton } from "@/tests/utils/source-text";
 
 // THE GUARD AGAINST THE NEXT FORM THAT SENDS A FIELD REFUSAL TO A BANNER.
 //

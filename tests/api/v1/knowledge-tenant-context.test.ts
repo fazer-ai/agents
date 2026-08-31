@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, mock, test } from "bun:test";
+import { afterAll, describe, expect, mock, spyOn, test } from "bun:test";
 import { Elysia } from "elysia";
 import { authPlugin } from "@/api/lib/auth";
 import type { TenantContext } from "@/lib/tenancy";
@@ -26,22 +26,34 @@ const BunRequest = (globalThis as unknown as { BunRequest: typeof Request })
 setupPrismaMock();
 
 const ragService = await import("@/modules/rag/service");
+// The return type is DERIVED from the real function rather than written as `unknown[]`: `spyOn` is
+// typed where a registry rewrite was not, so the shape the route actually receives is checked here
+// instead of at runtime in whatever file the leak reached.
 const listKnowledgeBases = mock(
-  async (_ctx: TenantContext, _base?: unknown): Promise<unknown[]> => [],
+  async (
+    _ctx: TenantContext,
+    _base?: unknown,
+  ): Promise<Awaited<ReturnType<typeof ragService.listKnowledgeBases>>> => [],
 );
-// Spread the real module: the controller imports a dozen other names from it, and replacing the
-// whole module with one function would break the route graph at import time.
-mock.module("@/modules/rag/service", () => ({
-  ...ragService,
+// A SPY ON THE MODULE OBJECT, NOT A REGISTRY REWRITE. A rewrite is process-global and its undo is a
+// second rewrite that does not undo anything: `await import()` hands back the LIVE namespace, and
+// the mock rewrote it in place, so handing that same object back re-registers the stub while
+// reading as a cleanup. tests/lib/module-mock-package.test.ts states this; this file was written
+// before it did.
+//
+// Measured on the four shards: with the rewrite in place, `listKnowledgeBases` went on answering
+// `[]` for every file downstream, and tests/modules/tenant-selector-entry-points.test.ts, which
+// calls the real one to prove it REFUSES a dead tenant selector, got the stub, so nothing
+// was refused and the tenant lookup it counts never happened. Two failures in shard 1/4, neither
+// naming this file.
+const spy = spyOn(ragService, "listKnowledgeBases").mockImplementation(
   listKnowledgeBases,
-}));
+);
 
 const app = (await import("@/app")).default;
 
-// `mock.module` is GLOBAL to the process and outlives this file for every other test in the same
-// worker, so put the module back.
 afterAll(() => {
-  mock.module("@/modules/rag/service", () => ragService);
+  spy.mockRestore();
 });
 
 // A fleet operator: no home tenant, and a target chosen per request via the header.

@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, mock, test } from "bun:test";
+import { afterAll, describe, expect, spyOn, test } from "bun:test";
 import { Elysia } from "elysia";
 import { authPlugin } from "@/api/lib/auth";
 import {
@@ -31,40 +31,59 @@ const record =
     return Promise.resolve({ items: [], nextCursor: null, entries: [] });
   };
 
+// SPIES ON THE MODULE OBJECTS, NOT REGISTRY REWRITES. Four rewrites used to sit here, each undone
+// in `afterAll` by handing the module back the namespace `await import()` returned, which is the
+// LIVE object the rewrite had already changed in place, so the teardown re-registered the stub
+// while reading as a cleanup. tests/lib/module-mock-package.test.ts states exactly this; these
+// lines predate it.
+//
+// Measured on the four shards: `listExecutionLogs` went on answering `{ items: [] }` for every file
+// downstream, so tests/modules/flowlog.test.ts read nothing back and reported a tenant unable to
+// see its OWN rows, as an RLS failure, in a file that stubs nothing. `listAudit` did the same to
+// tests/modules/tier3.test.ts. Three failures in shard 4/4, none naming this file.
 const flowlogRead = await import("@/modules/flowlog/read");
-mock.module("@/modules/flowlog/read", () => ({
-  ...flowlogRead,
-  listExecutionLogs: mock(record("logs")),
-}));
+// `record` answers an empty page for all three readers, so it cannot carry one derived return type.
+// The cast NAMES the function it is standing in for rather than erasing to `never`, so a signature
+// change points here instead of passing silently.
+const listExecutionLogs = spyOn(
+  flowlogRead,
+  "listExecutionLogs",
+).mockImplementation(
+  record("logs") as unknown as typeof flowlogRead.listExecutionLogs,
+);
+
 const auditService = await import("@/modules/audit/service");
-mock.module("@/modules/audit/service", () => ({
-  ...auditService,
-  listAudit: mock(async (..._a: unknown[]) => []),
-}));
+const listAudit = spyOn(auditService, "listAudit").mockImplementation(
+  (async () => []) as unknown as typeof auditService.listAudit,
+);
 
 const conversationsService = await import("@/modules/conversations/service");
-mock.module("@/modules/conversations/service", () => ({
-  ...conversationsService,
-  listConversations: mock(record("conversations")),
-}));
+const listConversations = spyOn(
+  conversationsService,
+  "listConversations",
+).mockImplementation(
+  record(
+    "conversations",
+  ) as unknown as typeof conversationsService.listConversations,
+);
+
 const adminService = await import("@/api/features/admin/admin.service");
-mock.module("@/api/features/admin/admin.service", () => ({
-  ...adminService,
-  getUsers: mock(async (..._a: unknown[]) => ({
+const getUsers = spyOn(adminService, "getUsers").mockImplementation(
+  (async () => ({
     users: [],
     total: 0,
     page: 1,
     totalPages: 0,
-  })),
-}));
+  })) as unknown as typeof adminService.getUsers,
+);
 
 const app = (await import("@/app")).default;
 
 afterAll(() => {
-  mock.module("@/modules/flowlog/read", () => flowlogRead);
-  mock.module("@/modules/audit/service", () => auditService);
-  mock.module("@/modules/conversations/service", () => conversationsService);
-  mock.module("@/api/features/admin/admin.service", () => adminService);
+  listExecutionLogs.mockRestore();
+  listAudit.mockRestore();
+  listConversations.mockRestore();
+  getUsers.mockRestore();
 });
 
 // TENANT_ADMIN, which is what these routes ask for.

@@ -59,7 +59,12 @@ import {
 } from "@/modules/spend-ceiling/service";
 import { readLastMessageId } from "./service";
 import { readDebounceConfig } from "./settings";
-import { advanceHandledWatermark, readHandledWatermark } from "./watermark";
+import {
+  advanceHandledWatermark,
+  claimReplyBurst,
+  readHandledWatermark,
+  releaseReplyBurst,
+} from "./watermark";
 
 // The DEBOUNCE flush: re-fetch the conversation from Chatwoot, coalesce the inbound messages past the
 // watermark into one turn, and answer once. Two re-fetches by design: the first builds the burst to
@@ -82,12 +87,12 @@ function err(e: unknown): string {
 // outgoing). At-most-once is a monotonic CAS in `shouldPost` (NOT an advisory lock — the turn does
 // network I/O and must not hold a transaction): a concurrent run that lost the CAS posts nothing.
 //
-// WHICH COLUMN that CAS writes is the CALLER'S, and it has to be (issue #452). The flush claims by
-// advancing the handled watermark, which works because its burst is BY CONSTRUCTION above it. The
-// re-engage's is not: the watermark is advanced by deliberate skips too, so after a human-owned
-// stretch it stands ahead of the tail the button answers and the same CAS loses forever, reporting
-// a race that never happened. Returns the runtime outcome, or "empty" when there is nothing to
-// answer.
+// WHAT THAT CAS WRITES is `Conversation.lastRepliedMessageId`, and NOT the handled watermark (issue
+// #452). The watermark is advanced by deliberate skips as well as by answers, so after a human-owned
+// stretch it stands ahead of the tail the re-engage answers and a CAS there loses forever, reporting
+// a race that never happened. One column for every posting path, so a flush retry and an operator's
+// click on the same failed burst still elect one sender. Returns the runtime outcome, or "empty"
+// when there is nothing to answer.
 export interface CoalesceTurnContext {
   tenantId: bigint;
   instanceId: bigint;
@@ -111,11 +116,6 @@ export interface CoalesceTurnContext {
   // which asks it inside the `ingest:` lock and again before each post. REQUIRED and nullable so a
   // future caller has to answer it: `null` says "nothing queued this, nothing can call it off".
   stillWanted: ((opts: { strict: boolean }) => Promise<boolean>) | null;
-  // THE CLAIM: the conditional write that elects the single poster for this burst, asked once, at
-  // the post gate. Returns whether this run won it. REQUIRED and caller-supplied rather than
-  // defaulted to the watermark, because the two callers claim in different columns for a reason the
-  // header states, and a default would silently hand a new caller the flush's assumption.
-  claimBurst: (targetWatermark: number) => Promise<boolean>;
   // Label for the single summary log line ("debounce flush" / "reengage").
   label: string;
   // When set (the debounce flush passes "debounce"), emit a flow line for the coalescing under the
@@ -247,8 +247,14 @@ export async function coalesceAndRunTurn(
   const { client, pending, dropped, targetWatermark, lastMessageId, text } =
     burst;
 
-  // 2. Post gate: re-fetch to detect mid-turn arrivals (supersede), then advance the watermark
-  //    monotonically so a concurrent claim cannot also post. Re-fetch failure is non-fatal.
+  // 2. Post gate: re-fetch to detect mid-turn arrivals (supersede), then claim the burst
+  //    monotonically so a concurrent poster cannot also send. Re-fetch failure is non-fatal.
+  //
+  //    Held here rather than returned, because the claim outlives the answer: the send is the next
+  //    thing that happens, and a turn that throws inside it has to give the claim back (below).
+  const claim: { held: { target: number; previous: number | null } | null } = {
+    held: null,
+  };
   const shouldPost = async (): Promise<boolean> => {
     try {
       const latest = parseChatwootMessages(
@@ -270,7 +276,14 @@ export async function coalesceAndRunTurn(
         err(e),
       );
     }
-    return ctx.claimBurst(targetWatermark);
+    const { won, previous } = await claimReplyBurst({
+      tenantId,
+      conversationDbId: convDbId,
+      toMessageId: targetWatermark,
+      base,
+    });
+    if (won) claim.held = { target: targetWatermark, previous };
+    return won;
   };
 
   // 3. Run the turn with the coalesced text. A thrown error bubbles to the caller. Share one turnId
@@ -296,39 +309,60 @@ export async function coalesceAndRunTurn(
       },
     );
   }
-  const outcome = await runLoadedTurn({
-    stillWanted: ctx.stillWanted,
-    loaded,
-    authContext: ctx.authContext,
-    tenantId,
-    instanceId,
-    conversationId,
-    agentBotId,
-    threadId,
-    turnId,
-    text,
-    // The id of the burst's most recent message, exposed to tools as {{message_id}}.
-    messageId: lastMessageId,
-    userSentAudio: pending.some((m) => m.attachmentTypes.includes("audio")),
-    base,
-    deps,
-    shouldPost,
-  });
-  // Every completed outcome except "superseded" consumed the burst: answered ("posted" — a no-op
-  // for the flush, whose claim IS this advance, including the input-guardrail template which claims
-  // through the same gate; a real advance for the re-engage, which claims in its own column), or
-  // deliberately dropped (taken over mid-turn, empty reply, guardrail "silent"). Advance so the
-  // next flush cannot re-answer the same burst (issue #8: the pre-handoff backlog was re-coalesced
-  // — and the bot re-transferred for the old reason — after a human returned the conversation).
+  // A THROW GIVES THE CLAIM BACK, for the same reason it leaves the watermark alone: the burst was
+  // not consumed. The claim is taken immediately before the send, so a Chatwoot failure would
+  // otherwise leave a burst nothing answered marked as claimed, and the retry the scheduler runs —
+  // or the operator's next click, which is what this whole path exists for — would find it and
+  // stand down. The two writes move together: whatever the error path does not advance, it does not
+  // hold either.
+  let outcome: RunAgentTurnOutcome | "empty";
+  try {
+    outcome = await runLoadedTurn({
+      stillWanted: ctx.stillWanted,
+      loaded,
+      authContext: ctx.authContext,
+      tenantId,
+      instanceId,
+      conversationId,
+      agentBotId,
+      threadId,
+      turnId,
+      text,
+      // The id of the burst's most recent message, exposed to tools as {{message_id}}.
+      messageId: lastMessageId,
+      userSentAudio: pending.some((m) => m.attachmentTypes.includes("audio")),
+      base,
+      deps,
+      shouldPost,
+    });
+  } catch (e) {
+    if (claim.held) {
+      await releaseReplyBurst({
+        tenantId,
+        conversationDbId: convDbId,
+        toMessageId: claim.held.target,
+        previous: claim.held.previous,
+        base,
+      });
+    }
+    throw e;
+  }
+  // Every completed outcome except "superseded" consumed the burst: answered ("posted", including
+  // the input-guardrail template which claims through the same gate), or deliberately dropped
+  // (taken over mid-turn, empty reply, guardrail "silent"). Advance so the next flush cannot
+  // re-answer the same burst (issue #8: the pre-handoff backlog was re-coalesced — and the bot
+  // re-transferred for the old reason — after a human returned the conversation). This is where the
+  // watermark moves for BOTH callers now: the post gate claims in its own column, so the advance is
+  // no longer a no-op the claim already performed.
   // "superseded" stays put by design: the re-armed flush answers the FULL burst.
   // "stale" stays put too, and NOT by the same reasoning: superseded means a newer message will
   // re-answer this burst, while stale means the burst was withdrawn with the thread the command
   // cleared. Advancing on it would declare handled a set of messages nothing ever answered, and the
   // next inbound would arm a flush that starts after them.
-  // NOTE: Which this skip can only preserve where the CAS has not already run. A retirement that
-  // lands inside `shouldPost` is caught by the ask after it, and by then the claim has advanced —
-  // skipping here is a no-op for that one window. Accepted where it stands: the alternative is a
-  // reply posted into a conversation the customer just reset.
+  // NOTE: Which this skip now preserves in EVERY window, including the one it could not before. A
+  // retirement landing inside `shouldPost` is caught by the ask after it, and the claim it races is
+  // no longer the watermark, so the burst is left unanswered AND unmarked instead of being marked by
+  // a CAS that ran on the way past (issue #452).
   if (outcome !== "superseded" && outcome !== "stale") {
     await advanceHandledWatermark({
       tenantId,
@@ -1172,16 +1206,6 @@ export async function flushDebounceJob(
         authContext,
         // The same closure the ceiling branch above asked with; see its definition for the floor.
         selectPending,
-        // The flush claims by advancing the watermark, and it is entitled to: its burst is selected
-        // from ABOVE that watermark, so a CAS that loses means another claim really did take these
-        // messages.
-        claimBurst: (toMessageId) =>
-          advanceHandledWatermark({
-            tenantId,
-            conversationDbId: ctx.convDbId,
-            toMessageId,
-            base,
-          }),
         label: "debounce flush",
         coalesceStage: "debounce",
       },

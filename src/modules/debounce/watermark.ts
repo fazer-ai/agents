@@ -50,37 +50,75 @@ export async function advanceHandledWatermark(
   });
 }
 
-// THE MANUAL RE-ENGAGE'S CLAIM, and it is a column of its own for one reason: the watermark above
-// is advanced by deliberate SKIPS, not only by answers. A human-owned stretch moves it without ever
-// writing an outgoing message of ours, so the moment the conversation comes back to the bot the
-// watermark stands AHEAD of the tail the button answers (incoming after the last outgoing), and the
-// CAS above can never win again — with nothing concurrent anywhere. Reported as "superseded", which
-// names a race that did not happen, and permanent, because no new inbound means no new target
-// (issue #452).
+// THE REPLY CLAIM, and it is a column of its own for one reason: the watermark above is advanced by
+// deliberate SKIPS, not only by answers. A human-owned stretch moves it without ever writing an
+// outgoing message of ours, so the moment the conversation comes back to the bot the watermark
+// stands AHEAD of the tail the manual re-engage answers (incoming after the last outgoing), and a
+// CAS against it can never win again — with nothing concurrent anywhere. Reported as "superseded",
+// which names a race that did not happen, and permanent, because no new inbound means no new target
+// (issue #452). It is the second question the note above says this file cannot answer: not "will
+// anything answer this again", but "did anything claim to answer this".
 //
-// So the button claims here instead. Same monotonic CAS, same at-most-once: two clicks racing on one
-// tail elect a single poster, and a click on a burst a previous one already took loses. What it does
-// NOT do is stand in for the supersede re-fetch — a customer message landing mid-turn is still what
-// defers the click, and that question is answered from Chatwoot, not from this column.
-export async function claimReengageBurst(params: {
+// EVERY POSTING PATH CLAIMS HERE, which is what keeps them exclusive. Two flushes racing one burst,
+// a flush retry and an operator's click on the same failed burst, two clicks on the same tail: one
+// column, one winner. A claim per caller would have made the flush and the button contend on
+// different rows and both send.
+//
+// Returns whether this call won, and the value it displaced — which the release below needs.
+export async function claimReplyBurst(params: {
   tenantId: bigint;
   conversationDbId: bigint;
   toMessageId: number;
   base?: PrismaClient;
-}): Promise<boolean> {
+}): Promise<{ won: boolean; previous: number | null }> {
   const base = params.base ?? basePrisma;
   return runScopedOn(base, sysCtx(params.tenantId), async (db) => {
+    // Read and CAS inside one transaction: the update takes the row lock, so a concurrent claimant
+    // blocks on it and then re-evaluates against the committed value. The loser's `previous` is
+    // never used, and the winner's is the value its own update displaced.
+    const before = await db.conversation.findUnique({
+      where: { id: params.conversationDbId },
+      select: { lastRepliedMessageId: true },
+    });
     const cas = await db.conversation.updateMany({
       where: {
         id: params.conversationDbId,
         OR: [
-          { lastReengagedMessageId: null },
-          { lastReengagedMessageId: { lt: params.toMessageId } },
+          { lastRepliedMessageId: null },
+          { lastRepliedMessageId: { lt: params.toMessageId } },
         ],
       },
-      data: { lastReengagedMessageId: params.toMessageId },
+      data: { lastRepliedMessageId: params.toMessageId },
     });
-    return cas.count > 0;
+    return {
+      won: cas.count > 0,
+      previous: before?.lastRepliedMessageId ?? null,
+    };
+  });
+}
+
+// GIVE THE CLAIM BACK when the turn threw before delivering anything. The claim is taken immediately
+// BEFORE the send, so a Chatwoot failure leaves a burst nothing answered under a claim saying
+// somebody did, and the retry the scheduler runs finds it and stands down — which is the behaviour
+// docs/debounce.md already promised was not happening ("an LLM/Chatwoot error retries against the
+// same burst"). Conditional on the claim still being ours: a later claimant that moved the column on
+// is not to be rolled back.
+export async function releaseReplyBurst(params: {
+  tenantId: bigint;
+  conversationDbId: bigint;
+  toMessageId: number;
+  previous: number | null;
+  base?: PrismaClient;
+}): Promise<void> {
+  const base = params.base ?? basePrisma;
+  await runScopedOn(base, sysCtx(params.tenantId), async (db) => {
+    await db.conversation.updateMany({
+      where: {
+        id: params.conversationDbId,
+        lastRepliedMessageId: params.toMessageId,
+      },
+      data: { lastRepliedMessageId: params.previous },
+    });
   });
 }
 

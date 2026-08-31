@@ -726,6 +726,53 @@ describe.skipIf(!dbUp)("reengage", () => {
       expect([a.outcome, b.outcome].sort()).toEqual(["posted", "superseded"]);
     });
 
+    // A CLAIM IS TAKEN BEFORE THE SEND, so a send that throws must give it back. Otherwise the
+    // burst nobody answered sits marked as claimed and the next click — on the button whose whole
+    // purpose is recovering from a failed turn — stands down against the failure it exists to undo.
+    // Same rule as the watermark, which this path does not advance either.
+    test("a send that throws gives the claim back, so the next click answers", async () => {
+      const id = await seedConversation(933, { lastHandledMessageId: 291 });
+      const sent: Array<[number, string]> = [];
+      const thread = page([
+        { id: 289, content: "resposta antiga", type: 1 },
+        { id: 290, content: "alguém aí?", type: 0 },
+        { id: 291, content: "?", type: 0 },
+      ]);
+      // Every send of the first click fails, the retry inside `deliverReply` included, and the
+      // read-back finds nothing in the thread — which is what makes the turn throw rather than
+      // report a delivery it cannot prove.
+      let failing = true;
+      const client = {
+        getMessages: async () => thread,
+        sendMessage: async (conversationId: number, content: string) => {
+          if (failing) throw new Error("chatwoot: 502 bad gateway");
+          sent.push([conversationId, content]);
+          return {};
+        },
+        toggleTyping: async () => ({}),
+      } as unknown as ChatwootClient;
+      const deps = {
+        makeModel: fakeModel,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+      };
+
+      await expect(
+        reengageConversation(ctx(), id, deps, appDb),
+      ).rejects.toThrow();
+      // Given back, not left behind: the column reads as it did before the failed attempt.
+      const afterFailure = await suDb.conversation.findUniqueOrThrow({
+        where: { id },
+        select: { lastRepliedMessageId: true },
+      });
+      expect(afterFailure.lastRepliedMessageId).toBeNull();
+
+      failing = false;
+      const res = await reengageConversation(ctx(), id, deps, appDb);
+      expect(res.outcome).toBe("posted");
+      expect(sent).toEqual([[933, REPLY]]);
+    });
+
     // The supersede gate still means what it says: a customer message that lands mid-turn defers
     // this click, because the re-armed flush answers the burst INCLUDING it.
     test("a message that lands mid-turn still defers", async () => {

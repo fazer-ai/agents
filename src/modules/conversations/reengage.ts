@@ -21,10 +21,7 @@ import {
   contactAuthFlowEvent,
 } from "@/modules/contact-auth/service";
 import { coalesceAndRunTurn } from "@/modules/debounce/handler";
-import {
-  claimReengageBurst,
-  readHandledWatermark,
-} from "@/modules/debounce/watermark";
+import { readHandledWatermark } from "@/modules/debounce/watermark";
 import { emitFlowEvent } from "@/modules/flowlog/service";
 import {
   announceSpendCeiling,
@@ -35,8 +32,9 @@ import { clearConversationError } from "./error";
 // Manual re-engage (item 6): re-fire the agent turn on a conversation WITHOUT waiting for a new
 // customer message — the recovery path after a failed turn. It answers the unanswered tail (every
 // incoming message after the last outgoing one), reusing the debounce flush's coalesce machinery
-// (a monotonic CAS = at-most-once, so a double click posts at most once, and a message that lands
-// mid-turn still defers the click through the flush's own supersede re-fetch). Honors the
+// (the shared reply claim = at-most-once, so a double click, a racing flush and its retry post at
+// most once between them, and a message that lands mid-turn still defers the click through the same
+// supersede re-fetch the flush uses). Honors the
 // assignee gate: if a human owns the conversation it does nothing (the operator should "return to
 // agent" first), and the contact-authorization gate, because this path RUNS the model and SENDS its
 // answer. Clears the conversation's lastError on a successful post.
@@ -363,18 +361,6 @@ export async function reengageConversation(
       // The same expression the pre-check above used, re-evaluated against a FRESH fetch: the
       // authorization call between them is a round trip long enough for the tail to change.
       selectPending,
-      // ITS OWN COLUMN, and this is the whole of issue #452. The flush claims by advancing the
-      // handled watermark; this tail is chosen from the last OUTGOING message and is routinely at
-      // or below that watermark, because a deliberate skip advances it without ever writing one of
-      // ours. Claiming there would lose every time, with nothing concurrent, and report the loss as
-      // "superseded" — a race that did not happen, and one no new inbound could ever clear.
-      claimBurst: (toMessageId) =>
-        claimReengageBurst({
-          tenantId,
-          conversationDbId: resolved.convDbId,
-          toMessageId,
-          base,
-        }),
       label: "reengage",
     },
     base,

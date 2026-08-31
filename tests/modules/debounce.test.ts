@@ -16,13 +16,18 @@ import {
   type ChatwootClient,
   ChatwootMissingTokenError,
 } from "@/modules/chatwoot/client";
+import { reengageConversation } from "@/modules/conversations/reengage";
 import { flushDebounceJob } from "@/modules/debounce/handler";
 import {
   armDebounce,
   debounceDedupeKey,
   resolveDebounceConfig,
 } from "@/modules/debounce/service";
-import { advanceHandledWatermark } from "@/modules/debounce/watermark";
+import {
+  advanceHandledWatermark,
+  claimReplyBurst,
+  releaseReplyBurst,
+} from "@/modules/debounce/watermark";
 import { settleFlowEvents } from "@/modules/flowlog/scheduled";
 import type { ClaimedJob } from "@/modules/scheduler/service";
 import {
@@ -698,6 +703,125 @@ describe.skipIf(!dbUp)("debounce", () => {
     expect(out).toEqual({ outcome: "done" });
     expect(sent).toEqual([[800, REPLY]]);
     expect(await watermarkOf(800)).toBe(2);
+  });
+
+  // The claim's own table, decided in one place and asked here directly: the paths above prove the
+  // gate consults it, this proves what it answers (issue #452).
+  test("the reply claim is monotonic, and its release is conditional", async () => {
+    const convId = 892;
+    await seedConversation(convId);
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    const claim = (toMessageId: number) =>
+      claimReplyBurst({
+        tenantId,
+        conversationDbId: id,
+        toMessageId,
+        base: appDb,
+      });
+    const stored = async () =>
+      (
+        await suDb.conversation.findUniqueOrThrow({
+          where: { id },
+          select: { lastRepliedMessageId: true },
+        })
+      ).lastRepliedMessageId;
+
+    // Nothing claimed yet, then a burst ahead of it, then the same burst twice.
+    expect(await claim(10)).toEqual({ won: true, previous: null });
+    expect(await claim(20)).toEqual({ won: true, previous: 10 });
+    expect(await claim(20)).toEqual({ won: false, previous: 20 });
+    // And a burst BEHIND it, which is the shape the flush's retry and a second click both take.
+    expect(await claim(15)).toEqual({ won: false, previous: 20 });
+    expect(await stored()).toBe(20);
+
+    // Released by the holder: back to what it displaced, so the next attempt can take it.
+    await releaseReplyBurst({
+      tenantId,
+      conversationDbId: id,
+      toMessageId: 20,
+      previous: 10,
+      base: appDb,
+    });
+    expect(await stored()).toBe(10);
+
+    // Released by somebody the column has moved past: a no-op. Rolling this back would hand a burst
+    // the CURRENT holder claimed to a third poster.
+    expect(await claim(30)).toEqual({ won: true, previous: 10 });
+    await releaseReplyBurst({
+      tenantId,
+      conversationDbId: id,
+      toMessageId: 20,
+      previous: 10,
+      base: appDb,
+    });
+    expect(await stored()).toBe(30);
+  });
+
+  // ONE CLAIM FOR EVERY POSTING PATH (issue #452). The re-engage button and a flush answer the same
+  // burst through different entry points, and the only thing that stops them both sending is that
+  // they claim the SAME column. Split the claim per caller — the flush on the watermark, the button
+  // on a column of its own — and the two stop contending: an operator clicking while a retry of the
+  // same failed burst is in flight gets the customer two replies.
+  //
+  // Ordered deterministically instead of raced, and in the order that isolates the claim: the flush
+  // runs to completion inside the click's burst selection, so by the time the click reaches its post
+  // gate the flush has already answered AND advanced the watermark. The click's tail was chosen
+  // before that, so nothing but the claim can stop it — which is exactly the question this asks.
+  test("a flush completing inside an operator's click leaves one reply", async () => {
+    const convId = 891;
+    await seedConversation(convId);
+    const convRow = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    const sent: Array<[number, string]> = [];
+    const thread = page([{ id: 1, content: "alguém aí?" }]);
+    let flushed: unknown = null;
+    let fetches = 0;
+    const client = {
+      getMessages: async () => {
+        fetches += 1;
+        // The click's burst selection (its pre-fetch was #1): the tail is about to be chosen, and
+        // the flush answers it and claims it before the click's own post gate is reached.
+        if (fetches === 2) {
+          flushed = await flushDebounceJob({
+            job: jobFor(convId),
+            base: appDb,
+            deps: {
+              makeModel: fakeModel,
+              makeClient: async () => client,
+              checkpointer: new MemorySaver(),
+            },
+          });
+        }
+        return thread;
+      },
+      sendMessage: async (conversationId: number, content: string) => {
+        sent.push([conversationId, content]);
+        return {};
+      },
+      sendPrivateNote: async () => ({}),
+      toggleTyping: async () => ({}),
+    } as unknown as ChatwootClient;
+
+    const clicked = await reengageConversation(
+      { tenantId, userId: null, role: "TENANT_ADMIN" },
+      convRow.id,
+      {
+        makeModel: fakeModel,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+      },
+      appDb,
+    );
+
+    expect(flushed).toEqual({ outcome: "done" });
+    // The flush took the claim; the click found the burst already answered and stood down.
+    expect(clicked.outcome).toBe("superseded");
+    expect(sent).toEqual([[convId, REPLY]]);
   });
 
   test("a flush retires the ledger row of a message it rescued", async () => {
@@ -3256,10 +3380,12 @@ describe.skipIf(!dbUp)("debounce", () => {
       expect(fetches).toBe(2);
       // And the customer got nothing after their reset, template included.
       expect(sent).toEqual([]);
-      // The residual, asserted rather than left to be discovered: the only ask that can catch this
-      // window answers after the CAS, so the burst is marked handled without having been answered.
-      // The alternative is the send above.
-      expect(await watermarkOf(862)).toBe(1);
+      // The residual this used to assert is GONE, and the change is what closed it (issue #452). The
+      // post gate no longer claims by advancing the watermark — it claims in `lastRepliedMessageId`
+      // — so a retirement caught by the ask after the claim leaves the watermark exactly where
+      // "stale" says it should be: on a burst nothing answered, which the next flush re-coalesces.
+      // That is the rule the outcome was written for; the old value was the CAS leaking through it.
+      expect(await watermarkOf(862)).toBeNull();
     });
   });
   // A turn that answers with BOTH an attachment and text, retired between the two. The image is with

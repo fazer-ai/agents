@@ -701,6 +701,41 @@ describe.skipIf(!dbUp)("the spend ceiling (webhook e2e)", () => {
     expect(await ceilingRows(9413)).toHaveLength(0);
   });
 
+  // AND THE CLAIM ANSWERS IT ONE STEP EARLIER THAN THE WATERMARK DOES (issue #452). The watermark
+  // used to be advanced by the post gate itself, immediately before the send; now the gate claims in
+  // its own column there and the watermark is written only after the turn returns. Read off the
+  // watermark alone, this guard would go blind for the whole of that stretch and tell a customer the
+  // agent cannot answer a message the other route was already sending a reply for. It reads the
+  // ANSWERED FLOOR — max(watermark, claim) — so it closes at the instant it always closed.
+  test("a message the other route has claimed but not yet marked handled is not refused", async () => {
+    await setCeiling({
+      enabled: true,
+      monthlyInboxTokens: 100,
+      overCeilingMessage: OVER_COPY,
+    });
+    await spend("inbox", 500);
+    await seedConversation(9421);
+    const conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 9421 },
+      select: { id: true },
+    });
+    // Exactly what the other route leaves behind between its claim and its watermark write.
+    await suDb.conversation.update({
+      where: { id: conv.id },
+      data: { lastRepliedMessageId: 8900, lastHandledMessageId: null },
+    });
+    const s = stubChatwoot();
+    await deliverCustomerMessage({
+      convId: 9421,
+      makeClient: s.makeClient,
+      messageId: 8900,
+    });
+    expect(s.publicOn(9421)).toEqual([]);
+    expect(s.statusToggles.filter(([c]) => c === 9421)).toEqual([]);
+    expect(s.notesOn(9421)).toEqual([]);
+    expect(await ceilingRows(9421)).toHaveLength(0);
+  });
+
   // The control, and it is the half that makes the test above about the WATERMARK rather than about
   // the conversation: the very next message is past it, and that one IS refused.
   test("the message after the watermark is still refused", async () => {

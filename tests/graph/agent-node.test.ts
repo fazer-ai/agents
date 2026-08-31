@@ -153,6 +153,67 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     ).toBe(false);
   });
 
+  // Round 7: parallel tool calls. `skip_reply` alongside `react_to_message` is the documented way to
+  // answer with a reaction alone, and whichever result lands last is an ordering accident — reading
+  // only the last one made the wrap-up instruction depend on it.
+  test("skip_reply counts even when another tool's result lands last", async () => {
+    const skipTool = tool(async () => "Produce no message now.", {
+      name: "skip_reply",
+      description: "skip",
+      schema: z.object({}),
+    });
+    const reactTool = tool(async () => "reagiu", {
+      name: "react_to_message",
+      description: "react",
+      schema: z.object({}),
+    });
+    class ParallelThenSilentModel {
+      boundSystemPrompts: string[] = [];
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("");
+      }
+      bindTools(_tools: unknown) {
+        const self = this;
+        let n = 0;
+        return {
+          async invoke(messages: BaseMessage[]): Promise<AIMessage> {
+            n++;
+            self.boundSystemPrompts.push(String(messages[0]?.content ?? ""));
+            if (n === 1) {
+              return new AIMessage({
+                content: "",
+                tool_calls: [
+                  { name: "skip_reply", args: {}, id: "c1" },
+                  { name: "react_to_message", args: {}, id: "c2" },
+                ],
+              });
+            }
+            return new AIMessage("");
+          },
+        };
+      }
+    }
+    const model = new ParallelThenSilentModel();
+    const graph = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
+      model: model as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer: new MemorySaver(),
+      tools: [skipTool, reactTool],
+      maxToolCalls: 3,
+    });
+    await graph.invoke(
+      { messages: [new HumanMessage("ok")] },
+      { configurable: { thread_id: "limit-parallel" } },
+    );
+    expect(model.boundSystemPrompts.length).toBeGreaterThanOrEqual(2);
+    expect(
+      model.boundSystemPrompts.some((p) =>
+        p.includes("[Sistema] Você já usou"),
+      ),
+    ).toBe(false);
+  });
+
   test("forces a no-tools answer at the hard limit and fires onToolLimit", async () => {
     const model = new ToolLoopModel();
     const hits: Array<{ maxToolCalls: number; toolCalls: number }> = [];

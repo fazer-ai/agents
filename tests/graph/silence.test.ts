@@ -255,6 +255,15 @@ describe("withFollowupSilenceChannel", () => {
     ).toBe(allow);
   });
 
+  // Review round 7. Revoking EVERY tool is how a tool-less deployment is configured (a plain chat
+  // model, or an `openai-compatible` endpoint that answers 400 to any function schema). Forcing one
+  // tool back in would make every follow-up call `bindTools` and fail at the provider — a token that
+  // leaks traded for a follow-up that never runs.
+  test("an agent that revoked every tool keeps zero", () => {
+    const cfg = { nativeToolsAllow: [] as string[] };
+    expect(withFollowupSilenceChannel(cfg)).toBe(cfg);
+  });
+
   test("an undefined allowlist already means every tool", () => {
     const cfg = { nativeToolsAllow: undefined };
     expect(withFollowupSilenceChannel(cfg)).toBe(cfg);

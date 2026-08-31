@@ -32,8 +32,18 @@ function calling(id: string, name: string): BaseMessage {
     tool_calls: [{ id: `${id}-c`, name, args: {} }],
   });
 }
-function toolResult(id: string, text: string): BaseMessage {
-  return new ToolMessage({ id, content: text, tool_call_id: `${id}-c` });
+function toolResult(
+  id: string,
+  text: string,
+  // The tool NAME, which the rollback planner reads to tell an inert `skip_reply` from a real act.
+  name?: string,
+): BaseMessage {
+  return new ToolMessage({
+    id,
+    content: text,
+    tool_call_id: `${id}-c`,
+    ...(name ? { name } : {}),
+  });
 }
 function nudge(id: string): BaseMessage {
   const m = nudgeMessage("An external system event just occurred…", 900);
@@ -71,6 +81,42 @@ describe("planTurnRollback", () => {
         produced,
         current: produced,
         expected: { action: "remove", ids: ["n1", "a2"] },
+      };
+    })(),
+    (() => {
+      // Issue #454, review round 7. `skip_reply` is the one tool that acts on NOTHING — it IS the
+      // decision to stay quiet, and since this change it is how a follow-up says so. Counting it as
+      // an act pinned the directive and its tool result in shared memory after a `/reset`, a
+      // takeover, or any post-generation refusal: the residue this planner exists to clear, reached
+      // through the silence protocol itself.
+      const produced = [
+        nudge("n1"),
+        calling("a1", "skip_reply"),
+        toolResult("t1", "Produce no message now.", "skip_reply"),
+        a("a2", ""),
+      ];
+      return {
+        name: "a turn whose only tool was skip_reply acted on nothing, so it can still be taken back",
+        produced,
+        current: produced,
+        expected: { action: "remove", ids: ["n1", "a1", "t1", "a2"] },
+      };
+    })(),
+    (() => {
+      // ...and the exemption is for that tool ALONE: paired with a real one, the act happened.
+      const produced = [
+        nudge("n1"),
+        calling("a1", "skip_reply"),
+        toolResult("t1", "ok", "skip_reply"),
+        calling("a2", "assign_label"),
+        toolResult("t2", "ok", "assign_label"),
+        a("a3", ""),
+      ];
+      return {
+        name: "skip_reply next to a real tool still keeps the history",
+        produced,
+        current: produced,
+        expected: { action: "keep", reason: "tool-ran" },
       };
     })(),
     (() => {

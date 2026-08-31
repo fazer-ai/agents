@@ -276,6 +276,11 @@ function sanitizeFreeText(s: string, max: number): string {
 export function renderNudge(
   n: AgentNudge,
   canMessageCustomer: boolean,
+  // Which silence channel this agent HAS. The tool is the one that leaves nothing to imitate and is
+  // the default; an agent that revoked every tool cannot be handed a schema at all (a plain chat
+  // model, an `openai-compatible` endpoint that 400s on function definitions), so for it the token
+  // is still the only way to say nothing. Asking for a tool that is not bound would produce text.
+  silenceChannel: "tool" | "sentinel" = "tool",
 ): string {
   const facts = [`source=${sanitizeFreeText(n.source, 60)}`];
   if (n.kind) facts.push(`kind=${sanitizeFreeText(n.kind, 40)}`);
@@ -303,7 +308,9 @@ export function renderNudge(
   // SOURCE, never by stripping the reply. `skip_reply` already exists, already means exactly this on
   // the reactive path, and leaves a tool call rather than text — so there is nothing to imitate.
   const silenceInstruction =
-    "call the `skip_reply` tool and produce NO text (end your turn)";
+    silenceChannel === "tool"
+      ? "call the `skip_reply` tool and produce NO text (end your turn)"
+      : `reply with EXACTLY ${FOLLOWUP_SKIP_SENTINEL} and nothing else`;
   const directive = canMessageCustomer
     ? `An external system event just occurred for this conversation. By default, send a brief, warm, helpful proactive message to the customer about it — keep it short and natural, in the conversation's language. Lean toward reaching out: a timely follow-up is usually welcome. Stay silent ONLY if a message would clearly be unhelpful, premature, duplicated, or annoying; in that rare case ${silenceInstruction}.`
     : `A human agent is currently handling this conversation. Do NOT message the customer. If the event is worth flagging, write a short internal note for the human; otherwise ${silenceInstruction}.`;
@@ -1295,7 +1302,13 @@ export async function runAgentNudge(
         {
           messages: [
             nudgeMessage(
-              renderNudge(params.nudge, canMessagePre),
+              renderNudge(
+                params.nudge,
+                canMessagePre,
+                // Same question the toolset answered: an agent with an empty native allowlist has no
+                // tool to call, so it is told to use the token instead.
+                nudgeCfg.nativeToolsAllow?.length === 0 ? "sentinel" : "tool",
+              ),
               conversationId,
             ),
           ],

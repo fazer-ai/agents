@@ -57,6 +57,19 @@ describe("renderNudge (prompt-injection boundary)", () => {
   // TOOL CALL now — `skip_reply`, which already means this on the reactive path — so a silent
   // follow-up leaves nothing in the transcript for anyone to imitate. The absence of the token is
   // the regression guard: this is the cause, and the strip elsewhere is only the backstop.
+  // Round 7: the directive asks for whichever channel the agent HAS. An agent with no tools cannot
+  // be handed a schema, so for it the token is still the only way to say nothing — and the strip
+  // backstop is what keeps that from reaching a customer.
+  test("a tool-less agent is still told to use the token", () => {
+    const out = renderNudge(
+      { source: "followup", kind: "inactivity" },
+      true,
+      "sentinel",
+    );
+    expect(out).toContain(FOLLOWUP_SKIP_SENTINEL);
+    expect(out).not.toContain("skip_reply");
+  });
+
   test("leans toward sending and asks for a tool call, never a token", () => {
     for (const canMessageCustomer of [true, false]) {
       const out = renderNudge(

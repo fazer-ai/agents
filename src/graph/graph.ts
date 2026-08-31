@@ -104,11 +104,22 @@ function toolCallsSinceLastHuman(history: BaseMessage[]): number {
 // limit on that very round. The COUNT is left alone deliberately — the cap still has to bound a model
 // that calls skip_reply in a loop.
 function justDecidedToStaySilent(history: BaseMessage[]): boolean {
+  let sawTool = false;
+  // The CONTIGUOUS batch, not the last message: a model can emit parallel calls (`skip_reply`
+  // alongside `react_to_message`, which is the documented way to answer with a reaction alone), and
+  // whichever result lands last is an ordering accident. Returning on the first `ToolMessage` read
+  // the accident instead of the decision.
   for (let i = history.length - 1; i >= 0; i--) {
     const m = history[i];
     const t = m?.getType();
+    if (t === "tool") {
+      sawTool = true;
+      if ((m as { name?: string }).name === SKIP_REPLY_TOOL) return true;
+      continue;
+    }
+    // The batch ends at the AI message that requested it — anything before is an earlier round.
+    if (sawTool) return false;
     if (t === "human") return false;
-    if (t === "tool") return (m as { name?: string }).name === SKIP_REPLY_TOOL;
   }
   return false;
 }

@@ -130,6 +130,13 @@ export function withFollowupSilenceChannel<
   },
 >(cfg: T): T {
   let out = cfg;
+  // AN AGENT THAT REVOKED EVERY TOOL IS LEFT ALONE, and that is not an oversight. Revoking all of
+  // them is how a tool-less deployment is configured — a plain chat model, or an
+  // `openai-compatible` endpoint that answers 400 to any function schema, both explicitly supported
+  // (`docs/graph.md`). Forcing one tool back in would make every follow-up call `bindTools` and fail
+  // at the provider, trading a token that leaks for a follow-up that never runs. Those agents keep
+  // the sentinel as their silence channel; `renderNudge` asks for whichever one they have.
+  if (out.nativeToolsAllow?.length === 0) return out;
   // GRANTED. undefined ⇒ every native tool is allowed, so there is nothing to widen.
   if (out.nativeToolsAllow && !out.nativeToolsAllow.includes(SKIP_REPLY_TOOL)) {
     out = {

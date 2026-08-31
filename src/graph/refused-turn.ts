@@ -8,6 +8,7 @@ import {
   markTurnInFlight,
 } from "./inflight";
 import { isNudgeTurn } from "./markers";
+import { SKIP_REPLY_TOOL } from "./silence";
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "./thread-state";
 
 // WHAT A PROACTIVE TURN LEAVES BEHIND WHEN IT IS REFUSED AFTER IT WAS GENERATED.
@@ -52,10 +53,24 @@ export type RollbackPlan =
 // the turn would erase the only record of an act that really happened, to the outside world, and no
 // removal here can undo. So the question is asked of the whole slice and answered conservatively:
 // any tool call at all, and the turn stays.
+// `skip_reply` is the one tool that acts on NOTHING — it is the decision to stay quiet, and since
+// #454 it is how a follow-up says so. Counting it as an action pins a refused turn's directive and
+// tool result in shared memory after a `/reset`, a takeover, or any post-generation refusal: exactly
+// the residue this planner exists to clear, and now reachable through the silence protocol itself.
+function isInertToolCall(m: BaseMessage): boolean {
+  if (m.getType() === "tool") {
+    return (m as { name?: string }).name === SKIP_REPLY_TOOL;
+  }
+  const calls = (m as AIMessage).tool_calls ?? [];
+  return calls.length > 0 && calls.every((c) => c.name === SKIP_REPLY_TOOL);
+}
+
 function actedOnTheWorld(slice: readonly BaseMessage[]): boolean {
   return slice.some(
     (m) =>
-      m.getType() === "tool" || ((m as AIMessage).tool_calls?.length ?? 0) > 0,
+      !isInertToolCall(m) &&
+      (m.getType() === "tool" ||
+        ((m as AIMessage).tool_calls?.length ?? 0) > 0),
   );
 }
 

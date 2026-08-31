@@ -18,6 +18,12 @@ describe("customerFacingReply — the REACTIVE rule", () => {
     ["the sentinel with whitespace", `\n  ${S}  \n`, true, ""],
     ["the sentinel twice", `${S}${S}`, true, ""],
     ["the sentinel twice, spaced", `${S} ${S}`, true, ""],
+    // Review round 2, P2. The token in a costume: strip it and only quotes are left.
+    ["the sentinel in quotes", `"${S}"`, true, ""],
+    ["the sentinel in backticks", `\`${S}\``, true, ""],
+    ["quotes around repeated sentinels", `"${S}${S}"`, true, ""],
+    // ...and the other direction: quotes on a REAL reply are content and survive untouched.
+    ["a quoted real reply", `"Olá!"`, false, `"Olá!"`],
     ["nothing at all", "", true, ""],
     ["only whitespace", "   \n ", true, ""],
     [
@@ -58,6 +64,7 @@ describe("customerFacingReply — the REACTIVE rule", () => {
   test("silence by token is distinguishable from an empty answer", () => {
     expect(customerFacingReply(S).bySentinel).toBe(true);
     expect(customerFacingReply(`${S}${S}`).bySentinel).toBe(true);
+    expect(customerFacingReply(`"${S}"`).bySentinel).toBe(true);
     expect(customerFacingReply("").bySentinel).toBe(false);
     expect(customerFacingReply("   ").bySentinel).toBe(false);
     expect(customerFacingReply("Olá").bySentinel).toBe(false);

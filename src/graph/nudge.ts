@@ -294,9 +294,18 @@ export function renderNudge(
       }
     }
   }
+  // WHY A TOOL AND NOT A TOKEN (issue #454). This used to ask for the literal string `[[SKIP]]`,
+  // which made silence a MESSAGE — and the memory thread is keyed per contact-inbox, so every silent
+  // follow-up left an assistant turn whose whole content was that token, on the same thread a later
+  // ordinary turn loads. The model then reproduced it in a reactive turn where nothing stripped it,
+  // and it went to the customer. `docs/graph.md` states the rule this violated: fix a leak at the
+  // SOURCE, never by stripping the reply. `skip_reply` already exists, already means exactly this on
+  // the reactive path, and leaves a tool call rather than text — so there is nothing to imitate.
+  const silenceInstruction =
+    "call the `skip_reply` tool and produce NO text (end your turn)";
   const directive = canMessageCustomer
-    ? `An external system event just occurred for this conversation. By default, send a brief, warm, helpful proactive message to the customer about it — keep it short and natural, in the conversation's language. Lean toward reaching out: a timely follow-up is usually welcome. Stay silent ONLY if a message would clearly be unhelpful, premature, duplicated, or annoying; in that rare case reply with EXACTLY ${FOLLOWUP_SKIP_SENTINEL} and nothing else.`
-    : `A human agent is currently handling this conversation. Do NOT message the customer. If the event is worth flagging, write a short internal note for the human; otherwise reply with EXACTLY ${FOLLOWUP_SKIP_SENTINEL} and nothing else.`;
+    ? `An external system event just occurred for this conversation. By default, send a brief, warm, helpful proactive message to the customer about it — keep it short and natural, in the conversation's language. Lean toward reaching out: a timely follow-up is usually welcome. Stay silent ONLY if a message would clearly be unhelpful, premature, duplicated, or annoying; in that rare case ${silenceInstruction}.`
+    : `A human agent is currently handling this conversation. Do NOT message the customer. If the event is worth flagging, write a short internal note for the human; otherwise ${silenceInstruction}.`;
   const parts = [
     directive,
     "",
@@ -850,8 +859,20 @@ export async function runAgentNudge(
     cfg = withAuthContextSection(cfg, auth.context ?? null);
   }
 
+  // A follow-up must ALWAYS have a way to say nothing, so `skip_reply` is not an operator-revocable
+  // capability on this path — it is the protocol. Revoking it used to leave the token as the only
+  // silence channel, which is the leak above; leaving it revocable now would leave the model with no
+  // channel at all, and a follow-up with nothing to say would have to say something.
+  const nudgeCfg: AgentConfig = cfg.nativeToolsAllow
+    ? {
+        ...cfg,
+        nativeToolsAllow: cfg.nativeToolsAllow.includes("skip_reply")
+          ? cfg.nativeToolsAllow
+          : [...cfg.nativeToolsAllow, "skip_reply"],
+      }
+    : cfg;
   const tools = await buildToolset(
-    cfg,
+    nudgeCfg,
     {
       tenantId,
       instanceId,

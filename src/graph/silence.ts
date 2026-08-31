@@ -37,8 +37,16 @@ export interface CustomerFacingReply {
 // that merely carries it keeps its text and loses the token.
 export function customerFacingReply(raw: string): CustomerFacingReply {
   const text = raw.split(SENTINEL).join("").trim();
-  const silent = text.length === 0;
-  return { silent, text, bySentinel: silent && raw.trim().length > 0 };
+  // Wrapping quotes are a model habit rather than content — the proactive path has tolerated them
+  // since it was written — so a reply that is nothing BUT quotes once the token is gone is still the
+  // token, and posting `""` ships the marker in a costume. Decided on the unquoted form and
+  // returned on the original: stripping quotes from a real reply would be its own data loss.
+  const silent = text.replace(/^["'`]+|["'`]+$/g, "").trim().length === 0;
+  return {
+    silent,
+    text: silent ? "" : text,
+    bySentinel: silent && raw.trim().length > 0,
+  };
 }
 
 // True when the model declined to FOLLOW UP: empty, the skip sentinel (tolerating wrapping quotes),

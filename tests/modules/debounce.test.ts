@@ -2993,6 +2993,93 @@ describe.skipIf(!dbUp)("debounce", () => {
     expect(await watermarkOf(804)).toBe(2);
   });
 
+  // AND IT CLAIMS NOTHING, which is the other half and the one the issue is about (#452). The
+  // watermark advances because the burst was CONSUMED — nothing will answer it again on its own —
+  // but no reply left this turn, so the tail is still unanswered and the operator's re-engage is
+  // exactly the thing that should be able to answer it. A claim taken before the turn knows whether
+  // it will send would mark the burst answered and refuse that click forever, which is the reported
+  // bug wearing a different cause.
+  test("an empty reply claims nothing, so the tail stays answerable", async () => {
+    await seedConversation(808);
+    const sent: Array<[number, string]> = [];
+    const out = await flushDebounceJob({
+      job: jobFor(808),
+      base: appDb,
+      deps: {
+        makeModel: () => new FakeListChatModel({ responses: [""] }),
+        makeClient: makeStub({
+          pages: [
+            page([
+              { id: 1, content: "oi" },
+              { id: 2, content: "?" },
+            ]),
+          ],
+          sent,
+          calls: { getMessages: 0 },
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(out).toEqual({ outcome: "done" });
+    expect(sent).toEqual([]);
+    expect(await watermarkOf(808)).toBe(2);
+    expect(await replyClaimOf(808)).toBeNull();
+  });
+
+  // THE REPORTED SEQUENCE, END TO END (#452): the flush runs, the turn ends without a reply, and the
+  // operator clicks re-engage on a tail nobody answered. Both halves of the fix have to hold at once
+  // — the watermark must not refuse the click (it covers the tail), and neither must the claim (the
+  // empty turn sent nothing, so it holds no claim).
+  test("the tail an empty flush left is answered by the operator's click", async () => {
+    const convId = 809;
+    await seedConversation(convId);
+    const convRow = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    const sent: Array<[number, string]> = [];
+    const thread = page([
+      { id: 1, content: "oi" },
+      { id: 2, content: "alguém aí?" },
+    ]);
+    const client = {
+      getMessages: async () => thread,
+      sendMessage: async (conversationId: number, content: string) => {
+        sent.push([conversationId, content]);
+        return {};
+      },
+      sendPrivateNote: async () => ({}),
+      toggleTyping: async () => ({}),
+    } as unknown as ChatwootClient;
+
+    const flushed = await flushDebounceJob({
+      job: jobFor(convId),
+      base: appDb,
+      deps: {
+        makeModel: () => new FakeListChatModel({ responses: [""] }),
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(flushed).toEqual({ outcome: "done" });
+    expect(sent).toEqual([]);
+    // The mark covers the whole tail, which is what made the button report `superseded` forever.
+    expect(await watermarkOf(convId)).toBe(2);
+
+    const clicked = await reengageConversation(
+      { tenantId, userId: null, role: "TENANT_ADMIN" },
+      convRow.id,
+      {
+        makeModel: fakeModel,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+      },
+      appDb,
+    );
+    expect(clicked.outcome).toBe("posted");
+    expect(sent).toEqual([[convId, REPLY]]);
+  });
+
   test("a human takeover mid-turn advances the watermark (no re-answer after the return)", async () => {
     await seedConversation(805);
     const sent: Array<[number, string]> = [];
@@ -3560,12 +3647,12 @@ describe.skipIf(!dbUp)("debounce", () => {
       // "stale" says it should be: on a burst nothing answered, which the next flush re-coalesces.
       // That is the rule the outcome was written for; the old value was the CAS leaking through it.
       expect(await watermarkOf(862)).toBeNull();
-      // The claim STAYS, and that is the contract rather than an oversight: it is taken the moment a
-      // turn commits to answering and never given back, so a burst claimed and then withdrawn is one
-      // nothing will answer again. Same trade the watermark's own CAS made before this change — a
-      // lost reply rather than a risked duplicate — and `lastError` plus the console badge are what
-      // surface it.
-      expect(await replyClaimOf(862)).toBe(1);
+      // And NOTHING WAS CLAIMED either, because the claim is asked one statement before the send and
+      // this turn never got there. The trade the claim makes — a lost reply rather than a risked
+      // duplicate — is about a send that FAILED, which is a burst the customer may already hold. A
+      // run retired before any send is the opposite case: nothing left, so nothing is owed, and the
+      // burst stays answerable by the re-armed flush and by the operator's click.
+      expect(await replyClaimOf(862)).toBeNull();
     });
   });
   // A turn that answers with BOTH an attachment and text, retired between the two. The image is with

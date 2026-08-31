@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { SsrfError } from "@/lib/ssrf";
 import {
   EMBEDDING_DIM,
   type EmbeddingDeps,
@@ -102,15 +103,41 @@ describe("OpenAI-compatible embeddings", () => {
     const seen: Array<[string, unknown]> = [];
     const assertSafe: EmbeddingDeps["assertSafe"] = async (u, opts) => {
       seen.push([u, opts]);
-      throw new Error("Blocked outbound URL: 169.254.169.254 is blocked");
+      throw new SsrfError("address 169.254.169.254 is in a blocked range");
     };
     await expect(
       embedTexts(["a"], config(), { fetchImpl, assertSafe }),
-    ).rejects.toThrow("provider error");
+      // The guard's own sentence, not `HTTP 400`: nothing was sent, and dressing our refusal as the
+      // endpoint's status sends the operator to look at a server that never heard from us.
+    ).rejects.toThrow("169.254.169.254");
     expect(fetched).toBe(false);
+    // Exactly once: a refusal by the guard is deterministic, and the one case where a second answer
+    // would differ is the rebinding the per-fetch check exists to catch.
     expect(seen).toEqual([
       ["https://embedding.internal/v1/embeddings", { allowHttp: true }],
     ]);
+  });
+
+  // The guard runs before EVERY fetch, not once per document: a name can answer publicly for the
+  // check and privately a moment later, and a document is many batches.
+  test("vets the URL again for every batch", async () => {
+    let asserts = 0;
+    const assertSafe: EmbeddingDeps["assertSafe"] = async (u) => {
+      asserts += 1;
+      return new URL(u);
+    };
+    const fetchImpl = (async (_u: unknown, init?: RequestInit) => {
+      const body = JSON.parse(init?.body as string) as { input: string[] };
+      return json({
+        data: body.input.map((_t, i) => ({ index: i, embedding: vec(0) })),
+      });
+    }) as unknown as typeof fetch;
+    await embedTexts(
+      Array.from({ length: 600 }, (_, i) => String(i)),
+      config(),
+      { fetchImpl, assertSafe },
+    );
+    expect(asserts).toBe(2);
   });
 
   // `documents.ts` hands over EVERY chunk of a document at once and nothing caps a document's size,
@@ -354,6 +381,24 @@ describe("OpenAI-compatible embeddings", () => {
       embedTexts(["a"], config(), { fetchImpl, assertSafe: passThrough }),
     ).rejects.toThrow("provider error");
     expect(calls).toBe(1);
+  });
+
+  // `"1"` and `null` are not ABSENT: they are the provider stating an order in a spelling we cannot
+  // read. Counting them as absent falls back to position and publishes this response swapped.
+  test.each([
+    ["indexes that are strings", ["1", "0"]],
+    ["indexes that are null", [null, null]],
+  ])("refuses %s rather than reading position", async (_label, indexes) => {
+    const fetchImpl = (async () =>
+      json({
+        data: (indexes as unknown[]).map((index, i) => ({
+          index,
+          embedding: vec(i === 0 ? 1 : 0),
+        })),
+      })) as unknown as typeof fetch;
+    await expect(
+      embedTexts(["a", "b"], config(), { fetchImpl, assertSafe: passThrough }),
+    ).rejects.toThrow("provider error");
   });
 
   // A first response that already proves the endpoint serves another model stops the document there

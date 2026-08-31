@@ -5,7 +5,7 @@ import {
   statusOf,
   throughProvider,
 } from "@/lib/provider-failure";
-import { assertSafeOutboundUrl } from "@/lib/ssrf";
+import { assertSafeOutboundUrl, SsrfError } from "@/lib/ssrf";
 import { clipText } from "@/lib/text";
 
 // Embedding wrapper. OpenAI-compatible by default (text-embedding-3-small → 1536 dims, matching
@@ -73,6 +73,13 @@ const COMPATIBLE_RETRY_DELAYS_MS = [500, 2000];
 // retried on either: the endpoint answered, and it will answer the same way again.
 function isTransient(err: unknown, retryStatusless: boolean): boolean {
   if (err instanceof UnusableResponseError) return false;
+  // NO clause for the guard's own refusal, which now runs on every attempt and so lands in here.
+  // `SsrfError` extends `AppError` and carries status 400, which `statusOf` already reads and
+  // `isTransientProviderStatus` already rejects — a second copy is a branch no input can reach, and
+  // mutation found it dead exactly as `provider-failure` records for its own. The outcome is the one
+  // we want and it is worth naming: a block is deterministic, and the one case where a second answer
+  // WOULD differ is the rebinding this re-check exists to catch, where asking again is asking to be
+  // let through on the second reply.
   if (providerFailure(err) === "timeout") return true;
   const status = statusOf(err);
   if (status === null) return retryStatusless;
@@ -129,10 +136,20 @@ async function providerResponseError(res: Response): Promise<Error> {
 
 async function embedCompatibleBatch(
   texts: string[],
-  cfg: EmbeddingConfig,
-  url: string,
-  fetchImpl: typeof fetch,
+  cfg: EmbeddingConfig & { baseURL: string },
+  deps: EmbeddingDeps,
 ): Promise<number[][]> {
+  // BEFORE EVERY FETCH, not once per document. `assertSafeOutboundUrl` resolves the hostname, and a
+  // tenant-controlled name can answer publicly for the check and privately a moment later; a
+  // document is many batches and a batch may be retried twice, so a URL vetted once and reused hands
+  // the key and the chunks to whatever the name resolves to by then. Same rule as the custom HTTP
+  // tool, which re-asserts on the FINAL url immediately before its own fetch (`graph/tools/http.ts`).
+  //
+  // It narrows the window rather than closing it: `fetch` resolves the name again, so the check and
+  // the connection are still two lookups. Pinning the vetted address is the only thing that closes
+  // it, and it is not what any other outbound path here does.
+  const url = await compatibleTarget(cfg.baseURL, deps);
+  const fetchImpl = deps.fetchImpl ?? fetch;
   const res = await fetchImpl(url, {
     method: "POST",
     headers: {
@@ -179,7 +196,7 @@ async function embedCompatibleBatch(
     );
   }
   const items = [
-    ...((data ?? []) as Array<{ index?: number; embedding?: unknown }>),
+    ...((data ?? []) as Array<{ index?: unknown; embedding?: unknown } | null>),
   ];
   if (items.length !== texts.length) {
     throw new UnusableResponseError(
@@ -196,23 +213,37 @@ async function embedCompatibleBatch(
   // permutation (a duplicate, a 1.5, a 9 among two inputs) sorts into SOMETHING and sails past the
   // count check above. Neither leaves an order to recover, so both are refused rather than guessed —
   // the cost of guessing is a document published with every vector against the wrong chunk.
-  const indexed = items.filter((i) => typeof i.index === "number").length;
-  if (indexed > 0) {
-    const indexes = items.map((i) => i.index as number);
+  // ABSENT is the only thing that licenses positional order, and `"1"` or `null` is not absent — it
+  // is the provider stating an order in a spelling we cannot read. Testing `typeof === "number"`
+  // conflated the two and fell back to position, which publishes the vectors swapped whenever such a
+  // response is also out of order.
+  const present = items.filter((i) => i?.index !== undefined);
+  if (present.length > 0) {
+    const indexes = present.map((i) => i?.index);
     const usable =
-      indexed === items.length &&
-      new Set(indexes).size === indexes.length &&
-      indexes.every((n) => Number.isInteger(n) && n >= 0 && n < items.length);
+      present.length === items.length &&
+      indexes.every(
+        (n) =>
+          typeof n === "number" &&
+          Number.isInteger(n) &&
+          n >= 0 &&
+          n < items.length,
+      ) &&
+      new Set(indexes).size === indexes.length;
     if (!usable) {
       throw new UnusableResponseError(
         "embedding provider returned an unusable index set",
       );
     }
-    items.sort((a, b) => (a.index as number) - (b.index as number));
+    items.sort((a, b) => (a?.index as number) - (b?.index as number));
   }
+  // Optional chaining throughout, and no separate clause for a `null` ITEM inside `data`: every read
+  // above is `i?.`, so a null never reaches a property access, and it arrives here with no
+  // `embedding` and is refused by this check. A clause of its own changed only which of two
+  // sentences the process log got, and mutation found it dead.
   return items.map((item) => {
     if (
-      !Array.isArray(item.embedding) ||
+      !Array.isArray(item?.embedding) ||
       !item.embedding.every((value) => typeof value === "number")
     ) {
       throw new UnusableResponseError(
@@ -305,6 +336,18 @@ function assertWidth(vec: number[], cfg: EmbeddingConfig): number[] {
   return vec;
 }
 
+// An SSRF refusal is OURS: nothing was sent, and the operator has a configuration to fix. Left to
+// the boundary it is dressed as `HTTP 400` — `SsrfError` extends `AppError`, which carries that
+// status, and `providerFailure` reads exactly that field — which tells the operator the endpoint
+// answered. Unwrapped from `cause`, where `asProviderFailure` parks the original, so the guard's own
+// sentence and its i18n code survive. Same principle as `assertWidth`: what WE concluded is not
+// reduced to the vocabulary reserved for what a server wrote.
+function unwrapOurOwn(err: unknown): never {
+  const cause = (err as { cause?: unknown })?.cause;
+  if (cause instanceof SsrfError) throw cause;
+  throw err;
+}
+
 export async function embedTexts(
   texts: string[],
   cfg: EmbeddingConfig,
@@ -318,8 +361,6 @@ export async function embedTexts(
     );
     return vectors.map((v) => assertWidth(v, cfg));
   }
-  const url = await throughProvider(() => compatibleTarget(baseURL, deps));
-  const fetchImpl = deps.fetchImpl ?? fetch;
   const out: number[][] = [];
   // The loop lives HERE rather than inside one `throughProvider`, so the width is asserted after
   // EACH batch: a document past 512 chunks whose first response already proves the endpoint serves a
@@ -329,10 +370,10 @@ export async function embedTexts(
   for (const batch of batchesOf(texts)) {
     const vectors = await throughProvider(() =>
       withTransientRetry(
-        () => embedCompatibleBatch(batch, cfg, url, fetchImpl),
+        () => embedCompatibleBatch(batch, { ...cfg, baseURL }, deps),
         true,
       ),
-    );
+    ).catch(unwrapOurOwn);
     for (const v of vectors) out.push(assertWidth(v, cfg));
   }
   return out;
@@ -346,14 +387,13 @@ export async function embedQuery(
   const baseURL = cfg.baseURL;
   const vector = await throughProvider(async () => {
     if (baseURL) {
-      const url = await compatibleTarget(baseURL, deps);
       const vectors = await withTransientRetry(
-        () => embedCompatibleBatch([text], cfg, url, deps.fetchImpl ?? fetch),
+        () => embedCompatibleBatch([text], { ...cfg, baseURL }, deps),
         false,
       );
       return vectors[0] as number[];
     }
     return client(cfg, deps).embedQuery(text);
-  });
+  }).catch(unwrapOurOwn);
   return assertWidth(vector, cfg);
 }

@@ -5,6 +5,7 @@ import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
+import { getCheckpointer } from "@/graph/checkpointer";
 import { lastAssistantText } from "@/graph/graph";
 import type { ModelRetryInfo } from "@/graph/model-limit";
 import type { ResolvedModelConfig } from "@/graph/models";
@@ -18,8 +19,10 @@ import {
   buildToolset,
   loadAgentConfig,
 } from "@/graph/prepare";
+import { undoRefusedTurn } from "@/graph/refused-turn";
 import {
   customerFacingReply,
+  followupSilenceChannel,
   proactiveReply,
   withFollowupSilenceChannel,
 } from "@/graph/silence";
@@ -727,7 +730,49 @@ export async function runPlaygroundTurn(
   // Same rule as the inbox's reactive path (issue #454), and for the same reason: the playground
   // runs the production toolset over a thread of its own, and a model that reproduces the follow-up's
   // silence token would otherwise have it rendered as the reply the operator is testing.
-  const raw = customerFacingReply(lastAssistantText(result.messages)).text;
+  const draftedTurn = customerFacingReply(lastAssistantText(result.messages));
+  const raw = draftedTurn.text;
+  // ...and the token must not stay in the THREAD, which emptying the reply does not do. `graph.invoke`
+  // checkpointed the raw message before this line, the playground session is multi-turn on one
+  // thread, and the next turn would read one more sentinel answer — the same compounding the inbox
+  // path rolls back (runtime.ts), on the surface whose whole claim is production fidelity
+  // (`docs/playground.md`). Inline rather than armed for later, unlike the inbox: no claim is held
+  // on this thread (the playground marks none), so the rollback is free to read it now.
+  //
+  // The turn TRACE is built from `result.messages` and keeps the raw token, deliberately: it exists
+  // to show what the model actually produced, and the operator testing an agent that emits the
+  // sentinel needs to see it. What must not survive is the message in the THREAD, which is the copy
+  // the next turn reads back as an example.
+  if (draftedTurn.bySentinel) {
+    emitFlowEvent(flow, {
+      stage: "generate",
+      level: "warn",
+      status: "ok",
+      detail: { silenceTokenSuppressed: true },
+    });
+    try {
+      const plan = await undoRefusedTurn({
+        checkpointer: params.deps?.checkpointer ?? (await getCheckpointer()),
+        graphThreadId: threadId,
+        produced: result.messages as BaseMessage[],
+        kind: "reactive",
+      });
+      if (plan.action !== "remove") {
+        // Named rather than silent, for the reason the inbox names it: the thread still holds a
+        // message nobody was shown, and the next simulated turn will read it.
+        logger.warn(
+          "playground could not roll back a token-silenced turn: thread=%s reason=%s",
+          threadId,
+          plan.reason,
+        );
+      }
+    } catch (err) {
+      logger.warn(
+        { err, threadId },
+        "playground: could not roll back a token-silenced turn",
+      );
+    }
+  }
   const outGuard = raw
     ? await screen("output", raw)
     : { kind: "not-run" as const };
@@ -1033,10 +1078,11 @@ export async function runPlaygroundFollowup(
             renderNudge(
               nudge,
               true,
-              // Same question production answers, and the same reason the grant is shared: an agent
-              // that revoked every tool has no `skip_reply` bound, so asking it to call one produces
-              // TEXT — a simulation showing a message where production stays silent.
-              loadedConfig.nativeToolsAllow?.length === 0 ? "sentinel" : "tool",
+              // Same question production answers, asked the same way and of the same thing: THIS
+              // turn's assembled toolset. An agent with no `skip_reply` bound would answer a
+              // directive naming it with TEXT — a simulation showing a message where production
+              // stays silent.
+              followupSilenceChannel(loadedConfig, tools),
             ),
           ),
         ],

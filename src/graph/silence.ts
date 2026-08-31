@@ -1,3 +1,6 @@
+import type { MessageContent } from "@langchain/core/messages";
+import { contentToText } from "./message-text";
+
 // What a model turn may hand to a person, and what counts as the model choosing to say nothing.
 //
 // The rule exists because the proactive path ASKS for a token. A follow-up that decides not to
@@ -17,6 +20,11 @@ export const FOLLOWUP_SKIP_SENTINEL = SENTINEL;
 
 // The tool that REPLACED the token as the follow-up's way of saying nothing.
 export const SKIP_REPLY_TOOL = "skip_reply";
+
+// The tool's OWN acknowledgement, exported so its writer and its reader share one literal rather
+// than two copies that drift. `skipReplyRan` is the reader; `skipReplyTool` (tools/native.ts) is the
+// writer, and `tests/graph/silence.test.ts` calls the real tool to prove the two still agree.
+export const SKIP_REPLY_ACK = "Acknowledged: not replying this turn";
 
 export interface CustomerFacingReply {
   // The model said nothing this turn. Callers post no text; what else the turn produced (a queued
@@ -115,6 +123,33 @@ export function proactiveReply(raw: string): CustomerFacingReply {
   };
 }
 
+// What deciding the channel needs to read. Only the tool SOURCES: whether each one yields a tool is
+// `buildToolset`'s answer, and `followupSilenceChannel` asks it directly of the assembled list.
+export interface FollowupSilenceConfig {
+  nativeToolsAllow?: string[];
+  toolPreconditions?: Record<string, unknown>;
+  httpToolDefs?: unknown[];
+  mcpSelections?: unknown[];
+  integrationSelections?: unknown[];
+  documentSelections?: unknown[];
+  ragConfig?: { knowledgeBaseIds?: unknown[] };
+}
+
+// Whether ANY source would put a tool in this turn's toolset, native or not. A CONFIGURED source is
+// the question, not an assembled one: this runs before `buildToolset` and its answer decides whether
+// the tool is granted at all. The two can differ in one direction only — a source configured that
+// yields nothing (an MCP server that is down) — and `followupSilenceChannel` catches that afterwards
+// by reading the toolset that actually got built, which is why the grant may be generous here.
+function configuresAnyTool(cfg: FollowupSilenceConfig): boolean {
+  return (
+    (cfg.httpToolDefs?.length ?? 0) > 0 ||
+    (cfg.mcpSelections?.length ?? 0) > 0 ||
+    (cfg.integrationSelections?.length ?? 0) > 0 ||
+    (cfg.documentSelections?.length ?? 0) > 0 ||
+    (cfg.ragConfig?.knowledgeBaseIds?.length ?? 0) > 0
+  );
+}
+
 // The follow-up's silence CHANNEL, as one rule rather than one copy per caller.
 //
 // The directive (`renderNudge`) asks the model to call `skip_reply`, and `skip_reply` is an
@@ -123,20 +158,24 @@ export function proactiveReply(raw: string): CustomerFacingReply {
 // That is the leak by another road, which is why this is not left to each call site: there are two
 // renderers of that directive (production and the playground simulation), and round 3 of review
 // found the second one because round 2 changed the protocol in only the first.
-export function withFollowupSilenceChannel<
-  T extends {
-    nativeToolsAllow?: string[];
-    toolPreconditions?: Record<string, unknown>;
-  },
->(cfg: T): T {
+export function withFollowupSilenceChannel<T extends FollowupSilenceConfig>(
+  cfg: T,
+): T {
   let out = cfg;
-  // AN AGENT THAT REVOKED EVERY TOOL IS LEFT ALONE, and that is not an oversight. Revoking all of
-  // them is how a tool-less deployment is configured — a plain chat model, or an
-  // `openai-compatible` endpoint that answers 400 to any function schema, both explicitly supported
-  // (`docs/graph.md`). Forcing one tool back in would make every follow-up call `bindTools` and fail
-  // at the provider, trading a token that leaks for a follow-up that never runs. Those agents keep
-  // the sentinel as their silence channel; `renderNudge` asks for whichever one they have.
-  if (out.nativeToolsAllow?.length === 0) return out;
+  // AN AGENT WITH NO TOOLS AT ALL IS LEFT ALONE, and that is not an oversight. A toolset that is
+  // empty is how a tool-less deployment is configured — a plain chat model, or an
+  // `openai-compatible` endpoint that answers 400 to any function schema. Forcing one tool back in
+  // would make every follow-up call `bindTools` and fail at the provider, trading a token that leaks
+  // for a follow-up that never runs. Those agents keep the sentinel as their silence channel;
+  // `renderNudge` asks for whichever one they have.
+  //
+  // EMPTY MEANS EVERY SOURCE, not `nativeToolsAllow` alone, and round 10 of review is why: revoking
+  // the natives disables exactly the natives, while HTTP, MCP, toolpack, document and RAG tools are
+  // assembled independently (`buildToolset`). An agent with an HTTP tool and no natives already
+  // binds a schema on every reactive turn, so the provider argument above does not apply to it — and
+  // keying on the native list alone left that agent on the sentinel, persisting `[[SKIP]]` in the
+  // shared thread: the exact source this PR exists to remove, kept alive for a whole class of agent.
+  if (out.nativeToolsAllow?.length === 0 && !configuresAnyTool(out)) return out;
   // GRANTED. undefined ⇒ every native tool is allowed, so there is nothing to widen.
   if (out.nativeToolsAllow && !out.nativeToolsAllow.includes(SKIP_REPLY_TOOL)) {
     out = {
@@ -166,4 +205,50 @@ export function inertToolsFor(cfg: {
     cfg.nativeToolsAllow === undefined ||
     cfg.nativeToolsAllow.includes(SKIP_REPLY_TOOL);
   return bound ? new Set([SKIP_REPLY_TOOL]) : new Set<string>();
+}
+
+// WHICH CHANNEL THE DIRECTIVE MAY ASK FOR, answered by the toolset that was actually BUILT rather
+// than by the config that asked for it. `renderNudge` takes this and nothing else.
+//
+// Two conditions, and each covers what the other cannot:
+//   - the native one is what got BOUND (`inertToolsFor`): with natives revoked, a custom HTTP tool
+//     may legitimately carry this name and really call something, and asking the model to call it
+//     to stay quiet would fire a side effect on every silent follow-up;
+//   - and it is really THERE: a grant is not an assembled tool. `withFollowupSilenceChannel` grants
+//     generously — it cannot know that the MCP server behind the only other source is down — so a
+//     turn can be granted `skip_reply` and still reach the model with no tool bound at all.
+//
+// Reading the assembled list is also what makes a third renderer impossible to get wrong: the
+// answer comes from the turn's own toolset, not from a condition each call site restates. Round 3
+// found the playground because round 2 changed the protocol in only one of two copies of it.
+export function followupSilenceChannel(
+  cfg: { nativeToolsAllow?: string[] },
+  tools: readonly { name: string }[],
+): "tool" | "sentinel" {
+  return inertToolsFor(cfg).has(SKIP_REPLY_TOOL) &&
+    tools.some((t) => t.name === SKIP_REPLY_TOOL)
+    ? "tool"
+    : "sentinel";
+}
+
+// Whether this tool result is OUR no-op tool reporting that it ran — the model's decision to say
+// nothing, as opposed to anything else that can arrive under the same name.
+//
+// A NAME IS NOT AN OUTCOME. An operator may declare a precondition on `skip_reply` like on any other
+// native tool (`isGuardableToolName`), and an unmet or unreadable one returns a NORMAL `ToolMessage`
+// carrying the same name and a sentence telling the model to carry on — by design, so the turn
+// continues. Read by name, that refusal is indistinguishable from silence, and the turn then ends
+// with no text at all where the contract says the model must answer: a customer left waiting by the
+// rule that was supposed to make the agent more careful.
+//
+// So the ACK is the identity, and the polarity is deliberate: content this does not recognise is not
+// silence, and the caller falls back to making the model finish its turn. An unrecognised result
+// costs a wrap-up instruction; an unrecognised refusal costs a customer their answer.
+export function skipReplyRan(m: {
+  getType: () => string;
+  name?: string;
+  content: MessageContent;
+}): boolean {
+  if (m.getType() !== "tool" || m.name !== SKIP_REPLY_TOOL) return false;
+  return contentToText(m.content).trimStart().startsWith(SKIP_REPLY_ACK);
 }

@@ -1,15 +1,22 @@
 import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { AIMessage, ToolMessage } from "@langchain/core/messages";
 import {
   customerFacingReply,
   FOLLOWUP_SKIP_SENTINEL,
+  type FollowupSilenceConfig,
+  followupSilenceChannel,
   inertToolsFor,
   isNudgeSilent,
   proactiveReply,
+  SKIP_REPLY_ACK,
   SKIP_REPLY_TOOL,
+  skipReplyRan,
   withFollowupSilenceChannel,
 } from "@/graph/silence";
+import { buildNativeTools } from "@/graph/tools/native";
+import { unmetPreconditionMessage } from "@/modules/agents/tool-preconditions";
 
 const S = FOLLOWUP_SKIP_SENTINEL;
 
@@ -145,6 +152,118 @@ describe("proactiveReply — the follow-up rule", () => {
   test("isNudgeSilent still answers for the proactive path", () => {
     expect(isNudgeSilent(S)).toBe(true);
     expect(isNudgeSilent("Oi! Vi que seu pagamento venceu.")).toBe(false);
+  });
+});
+
+describe("followupSilenceChannel — what the directive may ASK for", () => {
+  const tool = (name: string) => ({ name });
+
+  test("the native one is bound and really there", () => {
+    expect(
+      followupSilenceChannel({ nativeToolsAllow: undefined }, [
+        tool(SKIP_REPLY_TOOL),
+      ]),
+    ).toBe("tool");
+    expect(
+      followupSilenceChannel({ nativeToolsAllow: [SKIP_REPLY_TOOL] }, [
+        tool(SKIP_REPLY_TOOL),
+        tool("private_note"),
+      ]),
+    ).toBe("tool");
+  });
+
+  // Round 10. A grant is not an assembled tool: `withFollowupSilenceChannel` grants generously (it
+  // cannot know the MCP server behind the only other source is down), so a turn can be granted the
+  // channel and reach the model with nothing bound. The directive must not name it then.
+  test("granted but not assembled is the sentinel", () => {
+    expect(followupSilenceChannel({ nativeToolsAllow: undefined }, [])).toBe(
+      "sentinel",
+    );
+    expect(
+      followupSilenceChannel({ nativeToolsAllow: [SKIP_REPLY_TOOL] }, [
+        tool("cep"),
+      ]),
+    ).toBe("sentinel");
+  });
+
+  // The other direction, and the one a name-only check gets wrong: with natives revoked, a custom
+  // HTTP tool may legitimately carry this name and really call something. Asking the model to call
+  // it to stay quiet fires a side effect on every silent follow-up.
+  test("assembled under a REVOKED native is somebody else's tool", () => {
+    expect(
+      followupSilenceChannel({ nativeToolsAllow: [] }, [tool(SKIP_REPLY_TOOL)]),
+    ).toBe("sentinel");
+    expect(
+      followupSilenceChannel({ nativeToolsAllow: ["private_note"] }, [
+        tool(SKIP_REPLY_TOOL),
+      ]),
+    ).toBe("sentinel");
+  });
+
+  // The pair is one obligation: what the grant produces is what the renderer must be able to ask
+  // for. Answered against the transform rather than restated, so the two cannot drift apart.
+  test("what the grant leaves is what the channel answers", () => {
+    const granted = withFollowupSilenceChannel({
+      nativeToolsAllow: [],
+      httpToolDefs: [{ name: "cep" }],
+    });
+    expect(
+      followupSilenceChannel(granted, [tool(SKIP_REPLY_TOOL), tool("cep")]),
+    ).toBe("tool");
+    const toolless = withFollowupSilenceChannel({ nativeToolsAllow: [] });
+    expect(followupSilenceChannel(toolless, [])).toBe("sentinel");
+  });
+});
+
+describe("skipReplyRan — the ACK is the identity, not the name", () => {
+  const msg = (name: string, content: string) =>
+    new ToolMessage({ content, tool_call_id: "c1", name });
+
+  test("our no-op reporting that it ran", () => {
+    expect(skipReplyRan(msg(SKIP_REPLY_TOOL, `${SKIP_REPLY_ACK}. x`))).toBe(
+      true,
+    );
+  });
+
+  // Round 10, the defect. `skip_reply` is a native name, so `isGuardableToolName` accepts a
+  // precondition on it; unmet or unreadable, the wrapper returns a NORMAL tool result under the same
+  // name telling the model to carry on. Read by name that is silence, and the turn then ends with no
+  // text at all — a customer left waiting by the rule meant to make the agent more careful.
+  test("a precondition refusal wearing the same name is NOT silence", () => {
+    const refusal = unmetPreconditionMessage(SKIP_REPLY_TOOL, {
+      kind: "attribute",
+      scope: "conversation",
+      key: "cpf",
+    });
+    expect(refusal).toContain(SKIP_REPLY_TOOL);
+    expect(skipReplyRan(msg(SKIP_REPLY_TOOL, refusal))).toBe(false);
+  });
+
+  test("another tool's result is not silence, whatever it says", () => {
+    expect(skipReplyRan(msg("private_note", `${SKIP_REPLY_ACK}.`))).toBe(false);
+  });
+
+  test("an AI message that CALLED it is not a result", () => {
+    const ai = new AIMessage({
+      content: "",
+      tool_calls: [{ id: "c1", name: SKIP_REPLY_TOOL, args: {} }],
+    });
+    expect(skipReplyRan(ai as never)).toBe(false);
+  });
+
+  // The anti-drift half, and the reason the ack is a shared constant: the reader recognises the
+  // string the REAL tool returns, both of its variants, not a copy of it kept in this file.
+  test("the real tool's own return is recognised, with and without a reason", async () => {
+    // `skip_reply` calls nothing, so the ctx it is bound to is never reached — the client below
+    // exists only to satisfy the signature, and a call reaching it would be the test's own failure.
+    const skip = buildNativeTools({ client: {} as never, conversationId: 1 }, [
+      SKIP_REPLY_TOOL,
+    ]).find((t) => t.name === SKIP_REPLY_TOOL);
+    expect(skip).toBeDefined();
+    for (const args of [{}, { reason: "customer only sent 'ok'" }]) {
+      const out = (await skip?.invoke(args as never)) as string;
+      expect(skipReplyRan(msg(SKIP_REPLY_TOOL, out))).toBe(true);
+    }
   });
 });
 
@@ -285,6 +404,41 @@ describe("withFollowupSilenceChannel", () => {
     expect(withFollowupSilenceChannel(cfg)).toBe(cfg);
   });
 
+  // Review round 10. `nativeToolsAllow: []` revokes the NATIVES; every other source is assembled
+  // independently, so an agent with one HTTP tool and no natives already binds a schema on every
+  // reactive turn. Left on the sentinel it kept persisting `[[SKIP]]` in the shared thread — the
+  // source this PR removes, alive for a whole class of agent. One row per source, because a check
+  // that forgets one is exactly how this came back.
+  const sources: Array<[string, Partial<FollowupSilenceConfig>]> = [
+    ["an HTTP tool", { httpToolDefs: [{ name: "cep" }] }],
+    ["an MCP server", { mcpSelections: [{ connectionId: 1n }] }],
+    ["a toolpack", { integrationSelections: [{ catalogType: "x" }] }],
+    ["a document template", { documentSelections: [{ slug: "recibo" }] }],
+    ["a knowledge base", { ragConfig: { knowledgeBaseIds: [1n] } }],
+  ];
+  for (const [what, extra] of sources) {
+    test(`natives revoked but ${what} is configured still gets the tool`, () => {
+      expect(
+        withFollowupSilenceChannel({
+          nativeToolsAllow: [] as string[],
+          ...extra,
+        }).nativeToolsAllow,
+      ).toEqual([SKIP_REPLY_TOOL]);
+    });
+  }
+
+  test("an empty source is not a source", () => {
+    const cfg = {
+      nativeToolsAllow: [] as string[],
+      httpToolDefs: [],
+      mcpSelections: [],
+      integrationSelections: [],
+      documentSelections: [],
+      ragConfig: { knowledgeBaseIds: [] },
+    };
+    expect(withFollowupSilenceChannel(cfg)).toBe(cfg);
+  });
+
   test("an undefined allowlist already means every tool", () => {
     const cfg = { nativeToolsAllow: undefined };
     expect(withFollowupSilenceChannel(cfg)).toBe(cfg);
@@ -320,13 +474,24 @@ describe("withFollowupSilenceChannel", () => {
   });
 
   test("the fence wants the channel ARGUMENT too, not just the grant", () => {
-    const CHANNEL = /"sentinel" : "tool"/;
+    const CHANNEL = /(?<![A-Za-z])followupSilenceChannel\(/;
     expect(CHANNEL.test("renderNudge(nudge, true)")).toBe(false);
+    // The shape round 10 removed: a renderer deciding the channel from the native allowlist by
+    // hand. It passes an argument and is still wrong, so the fence has to want THIS function and
+    // not merely a third argument.
     expect(
       CHANNEL.test(
         'renderNudge(n, true, x?.length === 0 ? "sentinel" : "tool")',
       ),
+    ).toBe(false);
+    expect(
+      CHANNEL.test("renderNudge(n, true, followupSilenceChannel(cfg, tools))"),
     ).toBe(true);
+    // ...and the grant is a DIFFERENT function whose name ends the same way. A fence that matched it
+    // would pass on a renderer that grants the tool and never names the channel.
+    expect(CHANNEL.test("  const c = withFollowupSilenceChannel(cfg);")).toBe(
+      false,
+    );
   });
 
   test("the fence wants the CALL, not the import", () => {
@@ -381,11 +546,17 @@ describe("withFollowupSilenceChannel", () => {
         .filter((l) => !l.trimStart().startsWith("import"))
         .join("\n");
       expect([f, CALL.test(body)]).toEqual([f, true]);
-      // ...AND it must CHOOSE the channel, not inherit the default. Round 7 taught the grant to both
-      // renderers and left the directive's third argument in production only, so the playground told
-      // a tool-less agent to call a tool that was not bound — the same miss, one argument over. The
-      // fence covers the pair now, because they are one obligation.
-      expect([f, /"sentinel" : "tool"/.test(body)]).toEqual([f, true]);
+      // ...AND it must CHOOSE the channel through the shared rule, not inherit the default and not
+      // re-derive it. Round 7 taught the grant to both renderers and left the directive's third
+      // argument in production only, so the playground told a tool-less agent to call a tool that
+      // was not bound — the same miss, one argument over; round 10 then found that argument reading
+      // `nativeToolsAllow` alone, which is the config rather than the toolset. The fence covers the
+      // pair because they are one obligation, and it wants the function so a hand-rolled ternary
+      // cannot satisfy it.
+      expect([f, /(?<![A-Za-z])followupSilenceChannel\(/.test(body)]).toEqual([
+        f,
+        true,
+      ]);
     }
   });
 });

@@ -3,7 +3,7 @@ import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
-import { SKIP_REPLY_TOOL } from "@/graph/silence";
+import { SKIP_REPLY_ACK, SKIP_REPLY_TOOL } from "@/graph/silence";
 import { failableTool, toolFailure } from "@/graph/tools/failure";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
@@ -1098,9 +1098,12 @@ function reactToMessageTool(ctx: ToolCtx) {
 function skipReplyTool(_ctx: ToolCtx) {
   return tool(
     async ({ reason }: { reason?: string }) => {
+      // Built from SKIP_REPLY_ACK rather than spelling it out, because `skipReplyRan` reads this
+      // string back to tell a real no-op from a precondition refusal wearing the same tool name.
+      // Two copies of the literal is how that reader silently stops recognising its own tool.
       return reason
-        ? `Acknowledged: not replying this turn (${reason}). Produce no message now.`
-        : "Acknowledged: not replying this turn. Produce no message now.";
+        ? `${SKIP_REPLY_ACK} (${reason}). Produce no message now.`
+        : `${SKIP_REPLY_ACK}. Produce no message now.`;
     },
     {
       name: "skip_reply",

@@ -65,6 +65,7 @@ import { undoRefusedTurn } from "./refused-turn";
 import type { RuntimeDeps } from "./runtime";
 import {
   FOLLOWUP_SKIP_SENTINEL,
+  followupSilenceChannel,
   inertToolsFor,
   isNudgeSilent,
   proactiveReply,
@@ -1306,9 +1307,9 @@ export async function runAgentNudge(
               renderNudge(
                 params.nudge,
                 canMessagePre,
-                // Same question the toolset answered: an agent with an empty native allowlist has no
-                // tool to call, so it is told to use the token instead.
-                nudgeCfg.nativeToolsAllow?.length === 0 ? "sentinel" : "tool",
+                // Asked of THIS turn's assembled toolset, not of the config that asked for it: a
+                // grant that produced no bound tool would otherwise have the directive name one.
+                followupSilenceChannel(nudgeCfg, tools),
               ),
               conversationId,
             ),

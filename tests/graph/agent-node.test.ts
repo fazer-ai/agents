@@ -10,6 +10,8 @@ import { tool } from "@langchain/core/tools";
 import { MemorySaver } from "@langchain/langgraph";
 import { z } from "zod";
 import { buildAgentGraph } from "@/graph/graph";
+import { SKIP_REPLY_ACK, SKIP_REPLY_TOOL } from "@/graph/silence";
+import { unmetPreconditionMessage } from "@/modules/agents/tool-preconditions";
 
 // Records the messages handed to the model on each invoke (the only thing agentNode does with it).
 class RecordingModel {
@@ -102,9 +104,12 @@ describe("agentNode tool-call limit (soft+hard)", () => {
   // cap still has to bound a model that calls skip_reply in a loop.
   test("the wrap-up instruction does not land on the round after skip_reply", async () => {
     const skipTool = tool(
-      async () =>
-        "Acknowledged: not replying this turn. Produce no message now.",
-      { name: "skip_reply", description: "skip", schema: z.object({}) },
+      async () => `${SKIP_REPLY_ACK}. Produce no message now.`,
+      {
+        name: "skip_reply",
+        description: "skip",
+        schema: z.object({}),
+      },
     );
     // One skip_reply call, then an empty answer — the shape a silent turn actually has.
     class SkipThenSilentModel {
@@ -157,11 +162,14 @@ describe("agentNode tool-call limit (soft+hard)", () => {
   // budget is spent by the very round that chose silence, and that path exists to force a TEXT
   // answer — it invokes the raw model with no tools bound. A deliberate silence became a message.
   test("the hard limit does not force text out of a turn that chose silence", async () => {
-    const skipTool = tool(async () => "Produce no message now.", {
-      name: "skip_reply",
-      description: "skip",
-      schema: z.object({}),
-    });
+    const skipTool = tool(
+      async () => `${SKIP_REPLY_ACK}. Produce no message now.`,
+      {
+        name: "skip_reply",
+        description: "skip",
+        schema: z.object({}),
+      },
+    );
     class SkipThenWouldSpeakModel {
       rawInvokes = 0;
       // The raw path is what the hard limit reaches for, and it is what must NOT run here.
@@ -208,15 +216,76 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     expect(hits).toEqual([{ maxToolCalls: 1, toolCalls: 1 }]);
   });
 
+  // Round 10: the SAME name, the opposite outcome. `skip_reply` is a native name, so an operator may
+  // declare a precondition on it (`isGuardableToolName`); unmet, the wrapper returns a normal tool
+  // result under that name telling the model to carry on. Read by name that is a decision to stay
+  // silent, and at `maxToolCalls: 1` the turn then ends with NO text — a customer left waiting by
+  // the guard that was supposed to make the agent more careful.
+  test("a refused skip_reply is not silence: the hard limit still forces an answer", async () => {
+    const refusal = unmetPreconditionMessage(SKIP_REPLY_TOOL, {
+      kind: "attribute",
+      scope: "conversation",
+      key: "cpf",
+    });
+    const guardedSkip = tool(async () => refusal, {
+      name: SKIP_REPLY_TOOL,
+      description: "skip",
+      schema: z.object({}),
+    });
+    class SkipRefusedThenSpeaks {
+      rawInvokes = 0;
+      async invoke(): Promise<AIMessage> {
+        this.rawInvokes++;
+        return new AIMessage("Claro! Me confirma seu CPF?");
+      }
+      bindTools(_tools: unknown) {
+        const self = this;
+        let n = 0;
+        return {
+          async invoke(): Promise<AIMessage> {
+            n++;
+            if (n === 1) {
+              return new AIMessage({
+                content: "",
+                tool_calls: [{ name: SKIP_REPLY_TOOL, args: {}, id: "c1" }],
+              });
+            }
+            return self.invoke();
+          },
+        };
+      }
+    }
+    const model = new SkipRefusedThenSpeaks();
+    const graph = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
+      model: model as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer: new MemorySaver(),
+      tools: [guardedSkip],
+      maxToolCalls: 1,
+    });
+    const result = await graph.invoke(
+      { messages: [new HumanMessage("quero a segunda via")] },
+      { configurable: { thread_id: "limit-hard-skip-refused" } },
+    );
+    expect(model.rawInvokes).toBe(1);
+    expect(String(result.messages.at(-1)?.content ?? "")).toBe(
+      "Claro! Me confirma seu CPF?",
+    );
+  });
+
   // Round 7: parallel tool calls. `skip_reply` alongside `react_to_message` is the documented way to
   // answer with a reaction alone, and whichever result lands last is an ordering accident — reading
   // only the last one made the wrap-up instruction depend on it.
   test("skip_reply counts even when another tool's result lands last", async () => {
-    const skipTool = tool(async () => "Produce no message now.", {
-      name: "skip_reply",
-      description: "skip",
-      schema: z.object({}),
-    });
+    const skipTool = tool(
+      async () => `${SKIP_REPLY_ACK}. Produce no message now.`,
+      {
+        name: "skip_reply",
+        description: "skip",
+        schema: z.object({}),
+      },
+    );
     const reactTool = tool(async () => "reagiu", {
       name: "react_to_message",
       description: "react",

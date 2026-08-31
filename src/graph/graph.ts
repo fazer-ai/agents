@@ -23,7 +23,7 @@ import {
 } from "@/graph/model-limit";
 import { countMessageTokens } from "@/graph/token-count";
 import { USAGE_MODEL_METADATA_KEY } from "@/graph/usage";
-import { SKIP_REPLY_TOOL } from "./silence";
+import { skipReplyRan } from "./silence";
 
 // The second provider as the graph needs it: the built model plus the two labels that name it on
 // the usage row and the flow trail. Built and bounded by `prepare.buildModelAndGraph`; the node only
@@ -118,7 +118,11 @@ function justDecidedToStaySilent(history: BaseMessage[]): boolean {
     const t = m?.getType();
     if (t === "tool") {
       sawTool = true;
-      if ((m as { name?: string }).name === SKIP_REPLY_TOOL) return true;
+      // The ACK, not the name. A precondition on `skip_reply` returns a normal tool result under
+      // that same name saying the call did NOT run — read by name, an operator's own guard would
+      // end the turn with no text where the customer is waiting for one. `skipReplyRan` recognises
+      // our no-op and nothing else, so anything unrecognised falls through to "answer them".
+      if (skipReplyRan(m as Parameters<typeof skipReplyRan>[0])) return true;
       continue;
     }
     // The batch ends at the AI message that requested it — anything before is an earlier round.

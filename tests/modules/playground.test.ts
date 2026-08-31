@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
+import type { BaseMessage } from "@langchain/core/messages";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
 import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -7,6 +8,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { loadAgentConfig } from "@/graph/prepare";
 import { FOLLOWUP_SKIP_SENTINEL } from "@/graph/silence";
+import { buildThreadStateGraph } from "@/graph/thread-state";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import {
   listPlaygroundTools,
@@ -53,6 +55,19 @@ const fakeModel = () => new FakeListChatModel({ responses: [REPLY] });
 const deps = () => ({ makeModel: fakeModel, checkpointer: new MemorySaver() });
 function ctx(t: bigint): TenantContext {
   return { tenantId: t, userId: null, role: "TENANT_ADMIN" };
+}
+
+// What the thread actually HOLDS after a turn, read through the same minimal graph the rollback
+// writes through — the checkpointer's own view, not the value the service returned.
+async function threadMessages(
+  checkpointer: MemorySaver,
+  threadId: string,
+): Promise<BaseMessage[]> {
+  const state = await buildThreadStateGraph(checkpointer).getState({
+    configurable: { thread_id: threadId },
+  });
+  return ((state.values as { messages?: BaseMessage[] }).messages ??
+    []) as BaseMessage[];
 }
 
 describe.skipIf(!dbUp)("playground", () => {
@@ -234,6 +249,46 @@ describe.skipIf(!dbUp)("playground", () => {
       },
     });
     expect(r.reply).toBe("");
+  });
+
+  // Round 10. Emptying the REPLY does not empty the THREAD: `graph.invoke` checkpointed the raw
+  // message before the rule ran, a playground session is multi-turn on one thread, and the next turn
+  // would read one more sentinel answer — the compounding the inbox path rolls back. The playground
+  // claims production fidelity (`docs/playground.md`), and this is the one place it was not.
+  test("a token-silenced playground turn leaves nothing behind in the thread", async () => {
+    const checkpointer = new MemorySaver();
+    const r = await runPlaygroundTurn({
+      ctx: ctx(tenantId),
+      agentId: agentOk,
+      message: "oi",
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new FakeListChatModel({ responses: [FOLLOWUP_SKIP_SENTINEL] }),
+        checkpointer,
+      },
+    });
+    expect(r.reply).toBe("");
+    const after = await threadMessages(checkpointer, r.threadId);
+    expect(after.filter((m) => m.getType() === "ai")).toHaveLength(0);
+    // The CUSTOMER's message is not the turn's to take back — the reactive plan's whole distinction
+    // from the proactive one.
+    expect(after.map((m) => String(m.content))).toEqual(["oi"]);
+  });
+
+  // Positive control: the same machinery must leave a REAL answer standing, or the assertion above
+  // would pass on a rollback that eats every reply.
+  test("an ordinary playground turn keeps its reply in the thread", async () => {
+    const checkpointer = new MemorySaver();
+    const r = await runPlaygroundTurn({
+      ctx: ctx(tenantId),
+      agentId: agentOk,
+      message: "oi",
+      base: appDb,
+      deps: { makeModel: fakeModel, checkpointer },
+    });
+    const after = await threadMessages(checkpointer, r.threadId);
+    expect(after.map((m) => String(m.content))).toEqual(["oi", REPLY]);
   });
 
   test("a playground reply carrying a stray sentinel is left intact", async () => {

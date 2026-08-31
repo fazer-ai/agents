@@ -3393,6 +3393,52 @@ describe.skipIf(!dbUp)("debounce", () => {
       });
     });
 
+    // AN AMBIGUOUS SEND KEEPS THE CLAIM (issue #452). The template goes out through a raw
+    // `sendMessage` with no reconciliation, so a rejection here does not say whether Chatwoot
+    // accepted it first. Releasing the claim on any throw would hand this burst to the scheduler's
+    // retry, which would send the template a second time to a customer who may already have it.
+    // Only a throw that PROVES nothing was delivered releases; this one does not.
+    test("a send that cannot prove non-delivery keeps the claim", async () => {
+      const convId = 894;
+      await seedConversation(convId);
+      const verdict = JSON.stringify({
+        violated: true,
+        categories: ["toxicity"],
+        rationale: "abuse",
+      });
+      const client = {
+        getMessages: async () =>
+          page([{ id: 1, content: "vocês são uns inúteis" }]),
+        sendMessage: async () => {
+          throw new Error("chatwoot: 504 gateway timeout");
+        },
+        sendPrivateNote: async () => ({}),
+        toggleTyping: async () => ({}),
+      } as unknown as ChatwootClient;
+
+      await expect(
+        flushDebounceJob({
+          job: jobFor(convId),
+          base: appDb,
+          deps: {
+            makeModel: (cfg: ResolvedModelConfig) =>
+              cfg.model === GUARD_MODEL
+                ? guardrailModel(async () => ({ content: verdict }))
+                : fakeModel(),
+            makeClient: async () => client,
+            checkpointer: new MemorySaver(),
+          },
+        }),
+      ).rejects.toThrow();
+
+      // Held, not given back: nothing here can say the customer did not get the template.
+      expect(await replyClaimOf(convId)).toBe(1);
+      // And the watermark stays put, so the retry would have had a burst to re-answer had the
+      // claim been released — which is what makes this assertion about the claim and not about
+      // the burst being gone.
+      expect(await watermarkOf(convId)).toBeNull();
+    });
+
     test("a burst retired inside the post gate is not answered", async () => {
       await seedConversation(862);
       const thread = threadOf(862);

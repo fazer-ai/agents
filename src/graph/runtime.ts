@@ -497,6 +497,24 @@ async function deliverPendingAttachments(
   return { sent, failed, calledOff: stopped };
 }
 
+// A TURN THAT FAILED WITH NOTHING DELIVERED, said by the only code that can know it (issue #452).
+//
+// The two customer-facing sends that throw do so ONLY after proving the customer holds nothing — the
+// text path reconciles a rejected send against the thread before it decides, and the attachment path
+// checks `sent`. That proof is what makes releasing the reply claim safe, so it travels WITH the
+// error instead of being re-derived by a caller that cannot see it.
+//
+// Everything else that can throw past the claim is ambiguous by comparison: a send Chatwoot accepted
+// and then failed to acknowledge, a failure after a reply already went out, a bug. The claim is held
+// through all of those, which is the safe direction — a burst nobody answered can be re-answered by
+// the operator's next click, while a duplicate reply cannot be taken back.
+export class NothingDeliveredError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NothingDeliveredError";
+  }
+}
+
 // THE REPLY CLAIM'S WHOLE LIFECYCLE, wrapped around the turn because this is the tail every posting
 // path shares (issue #452): the direct webhook turn, the debounce flush and the manual re-engage all
 // arrive here, and at-most-once only holds while the three claim the same column.
@@ -504,9 +522,10 @@ async function deliverPendingAttachments(
 // Taken immediately before the send, as the second half of the post gate, and GIVEN BACK on the two
 // exits that leave the burst unanswered:
 //
-//   - a throw (the send itself failed, or anything after the claim did), which is what makes an
-//     LLM/Chatwoot error retry against the same burst instead of standing down against a claim
-//     nothing ever answered;
+//   - a throw that PROVES nothing was delivered (`NothingDeliveredError`, above), which is what
+//     makes an LLM/Chatwoot error retry against the same burst instead of standing down against a
+//     claim nothing ever answered. Any other throw keeps the claim: a send Chatwoot accepted before
+//     failing to acknowledge would otherwise be re-sent by the retry;
 //   - "stale", where the run was called off between the claim and the send. Nothing was answered,
 //     so holding the claim would make the operator's next click on that unanswered tail lose to a
 //     turn that stood down — the very shape this issue is about, one incarnation further along.
@@ -567,7 +586,7 @@ export async function runLoadedTurn(
     if (outcome === "stale") await release();
     return outcome;
   } catch (e) {
-    await release();
+    if (e instanceof NothingDeliveredError) await release();
     throw e;
   }
 }
@@ -1535,7 +1554,7 @@ async function runTurnBody(
       // heard back on must not close.
       if (queued > 0 && !sent && !handedOff) {
         if (failed) {
-          throw new Error(
+          throw new NothingDeliveredError(
             "envio de anexo: nada foi entregue e o turno não tinha resposta em texto",
           );
         }
@@ -1618,7 +1637,7 @@ async function runTurnBody(
       delivered.delivered === 0
     ) {
       if (!attachments.sent) {
-        throw new Error(
+        throw new NothingDeliveredError(
           "envio da resposta: nenhum balão foi entregue ao cliente",
         );
       }

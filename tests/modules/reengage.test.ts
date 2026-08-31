@@ -774,6 +774,53 @@ describe.skipIf(!dbUp)("reengage", () => {
       expect(sent).toEqual([]);
     });
 
+    // NO MARK AT ENTRY IS A CEILING TOO, and it is the one a nullable ceiling loses. A conversation
+    // that never had a watermark reads null on the way in, and "null" must keep meaning what it
+    // read — nothing was settled — instead of collapsing into "no ceiling". The two are opposite
+    // instructions to the claim: the first refuses every mark that appears after the read, the
+    // second accepts every one of them, on the conversation where the click has the LEAST evidence
+    // that the tail is still unanswered.
+    test("a skip that lands over a conversation with no mark refuses the click", async () => {
+      const id = await seedConversation(935);
+      const sent: Array<[number, string]> = [];
+      const thread = page([
+        { id: 289, content: "resposta antiga", type: 1 },
+        { id: 290, content: "alguém aí?", type: 0 },
+        { id: 291, content: "?", type: 0 },
+      ]);
+      let fetches = 0;
+      const client = {
+        getMessages: async () => {
+          fetches += 1;
+          if (fetches === 3) {
+            await suDb.conversation.update({
+              where: { id },
+              data: { lastHandledMessageId: 295 },
+            });
+          }
+          return thread;
+        },
+        sendMessage: async (conversationId: number, content: string) => {
+          sent.push([conversationId, content]);
+          return {};
+        },
+        toggleTyping: async () => ({}),
+      } as unknown as ChatwootClient;
+
+      const res = await reengageConversation(
+        ctx(),
+        id,
+        {
+          makeModel: fakeModel,
+          makeClient: async () => client,
+          checkpointer: new MemorySaver(),
+        },
+        appDb,
+      );
+      expect(res.outcome).toBe("superseded");
+      expect(sent).toEqual([]);
+    });
+
     // A CLAIM IS TAKEN BEFORE THE SEND AND NEVER GIVEN BACK, and this pins the trade rather than
     // leaving it to be rediscovered. A send that fails leaves the burst claimed, so the next click
     // stands down instead of risking a second copy of a reply Chatwoot may already have accepted.

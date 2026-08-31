@@ -79,7 +79,14 @@ export async function advanceHandledWatermark(
 // the window where a deliberate skip lands between the read and the claim. The direct turn and the
 // flush answer above the mark and pass `target - 1`; the manual re-engage answers a tail the mark
 // already covers — the whole of issue #452 — and passes the mark it read on the way IN, so a skip
-// landing WHILE it runs still refuses it. Null means no ceiling.
+// landing WHILE it runs still refuses it.
+//
+// NULL IS A CEILING, NOT THE ABSENCE OF ONE: it says the caller read NO mark, so the highest value
+// it may answer over is nothing at all, and any mark standing here now was written after that read
+// by somebody else. Read as "no ceiling" instead, it would let the click post over a deliberate
+// skip on exactly the conversation where it has the least evidence the tail is still unanswered —
+// the one that never had a mark to compare against. There is no caller for "no ceiling", and this
+// is why the parameter is not optional.
 export async function claimReplyBurst(params: {
   tenantId: bigint;
   conversationDbId: bigint;
@@ -104,9 +111,9 @@ export async function claimReplyBurst(params: {
       return { won: false, reason: "claimed" };
     }
     if (
-      params.maxHandledAllowed !== null &&
       row.handled !== null &&
-      row.handled > params.maxHandledAllowed
+      (params.maxHandledAllowed === null ||
+        row.handled > params.maxHandledAllowed)
     ) {
       return { won: false, reason: "handled" };
     }

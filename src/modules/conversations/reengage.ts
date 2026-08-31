@@ -368,7 +368,9 @@ export async function reengageConversation(
       // The ceiling is the mark this call READ ON THE WAY IN, not "no ceiling": what was already
       // settled when the operator clicked is the tail they are asking about, but a skip that lands
       // WHILE the model runs settled it for somebody else, and this click is not entitled to
-      // answer over that.
+      // answer over that. Including when that reading was NULL — a conversation with no mark yet
+      // is the case with the least evidence the tail is unanswered, so a mark appearing under a
+      // running model refuses it there too.
       claimHandledCeiling: () => floorAtEntry,
       label: "reengage",
     },

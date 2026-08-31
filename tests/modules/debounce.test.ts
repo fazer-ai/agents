@@ -763,8 +763,9 @@ describe.skipIf(!dbUp)("debounce", () => {
     // A click that read the mark at 30 and found it at 40 by claim time: somebody settled this tail
     // while the model was running.
     expect(await claim(50, 30)).toEqual({ won: false, reason: "handled" });
-    // No ceiling at all: nothing about the watermark can refuse it.
-    expect(await claim(50, null)).toEqual({ won: true });
+    // A caller that read NO mark on the way in. Null is that reading, not "no ceiling": a mark
+    // stands here now, so it was written after that read and this claim is not entitled to it.
+    expect(await claim(50, null)).toEqual({ won: false, reason: "handled" });
   });
 
   // A LOST WATERMARK WRITE MUST NOT COST A SECOND REPLY (issue #452). The claim is written

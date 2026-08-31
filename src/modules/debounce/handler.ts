@@ -113,7 +113,8 @@ export interface CoalesceTurnContext {
   stillWanted: ((opts: { strict: boolean }) => Promise<boolean>) | null;
   // How far the handled watermark may have moved and this caller's claim still stand — see
   // `claimReply` on RunLoadedTurnParams. Computed per burst, so the caller hands down a function of
-  // the target rather than a value it would have to keep in step with the burst selection.
+  // the target rather than a value it would have to keep in step with the burst selection. Null is
+  // a ceiling of its own ("this caller read no mark"), never the absence of one.
   claimHandledCeiling: (targetWatermark: number) => number | null;
   // Label for the single summary log line ("debounce flush" / "reengage").
   label: string;

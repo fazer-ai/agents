@@ -35,7 +35,6 @@ import {
 import {
   advanceHandledWatermark,
   claimReplyBurst,
-  readHandledWatermark,
   releaseReplyBurst,
 } from "@/modules/debounce/watermark";
 import {
@@ -236,7 +235,18 @@ export interface RunLoadedTurnParams {
   // every path that sends, and a per-caller claim is how the flush and the manual re-engage came to
   // contend on different rows and both answer the same burst (issue #452). Whoever adds the next
   // posting path gets the protocol by construction, including the release.
-  claimReply: { conversationDbId: bigint; toMessageId: number } | null;
+  claimReply: {
+    conversationDbId: bigint;
+    toMessageId: number;
+    // Whether this claim must ALSO fail when the handled watermark already covers the target —
+    // "was this message answered or deliberately skipped before I got here". Asked inside the
+    // claim's own transaction, because the two questions have to be settled under one row lock: a
+    // skip landing between a read of the watermark and the claim is exactly the window the CAS this
+    // replaced used to close for free. True for the direct turn and the flush; the manual re-engage
+    // passes false, and that is the whole of issue #452 — it is the one path whose job is to answer
+    // a tail the watermark already covers.
+    requireUnhandled: boolean;
+  } | null;
   // Whether the run that queued this turn is still wanted. Asked INSIDE the `ingest:` critical
   // section, and again immediately before each post — the two moments this function writes
   // something the customer or the next turn can see.
@@ -536,10 +546,22 @@ export async function runLoadedTurn(
           tenantId: params.tenantId,
           conversationDbId: target.conversationDbId,
           toMessageId: target.toMessageId,
+          requireUnhandled: target.requireUnhandled,
           base,
         });
-        if (won.won) claim.held = { previous: won.previous };
-        return won.won;
+        if (won.won) {
+          claim.held = { previous: won.previous };
+          return true;
+        }
+        logger.info(
+          "turn: %s (conv=%s target=%s), deferring",
+          won.reason === "handled"
+            ? "the burst was already handled"
+            : "another turn holds the reply claim",
+          String(params.conversationId),
+          String(target.toMessageId),
+        );
+        return false;
       },
     });
     if (outcome === "stale") await release();
@@ -1789,14 +1811,15 @@ export async function runAgentTurn(
   // conversation (webhook deliveries are not serialized) each generate a reply — without this gate
   // the STALE one posts too, answering a message the customer already moved past.
   //
-  // TWO QUESTIONS, and the CAS this used to be was answering both with one write (issue #452).
-  // "Has a newer message arrived?" is the re-fetch. "Was this trigger already handled?" is the
-  // WATERMARK, read rather than advanced: a delivery arriving late for a message some earlier turn
-  // already answered or skipped finds the mark at or past its own id and stands down — that is what
-  // the losing CAS used to say, and it is a fact about the message, not a claim on it. The claim
-  // ("is anybody else answering this right now?") is `claimReply` below, taken by `runLoadedTurn` in
-  // the ONE column every posting path shares, which is what makes this turn and a manual re-engage
-  // of the same tail exclusive. Re-fetch failure is non-fatal (same contract as the flush).
+  // THREE QUESTIONS, where the CAS this used to be answered two of them with one write (issue #452).
+  // "Has a newer message arrived?" is this re-fetch. The other two are settled together, under one
+  // row lock, by the claim `claimReply` names below: "was this trigger already handled" (the
+  // watermark, `requireUnhandled` — a delivery arriving late for a message an earlier turn answered
+  // or skipped stands down, which is what the losing CAS used to say) and "is anybody else
+  // answering it right now" (the reply claim, the ONE column every posting path shares, which is
+  // what makes this turn and a manual re-engage of the same message exclusive). Splitting those two
+  // apart would reopen the window a deliberate skip lands in. Re-fetch failure is non-fatal (same
+  // contract as the flush).
   const triggerId = n.message?.id ?? null;
   const convDbId = loaded.conversationDbId;
   const shouldPost =
@@ -1823,19 +1846,6 @@ export async function runAgentTurn(
               String(conversationId),
               e instanceof Error ? e.message : String(e),
             );
-          }
-          const handled = await readHandledWatermark({
-            tenantId,
-            conversationDbId: convDbId,
-            base,
-          });
-          if (handled !== null && handled >= triggerId) {
-            logger.info(
-              "direct turn: trigger %s already handled (conv=%s), deferring",
-              String(triggerId),
-              String(conversationId),
-            );
-            return false;
           }
           return true;
         }
@@ -1877,7 +1887,11 @@ export async function runAgentTurn(
     // mirrored conversation (the playground), or no triggering message.
     claimReply:
       triggerId !== null && convDbId !== null
-        ? { conversationDbId: convDbId, toMessageId: triggerId }
+        ? {
+            conversationDbId: convDbId,
+            toMessageId: triggerId,
+            requireUnhandled: true,
+          }
         : null,
   });
   // NOTE: Watermark tail, now for every outcome including "posted" — the post gate claims in its own

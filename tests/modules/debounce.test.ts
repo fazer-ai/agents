@@ -722,11 +722,12 @@ describe.skipIf(!dbUp)("debounce", () => {
       where: { tenantId, chatwootConversationId: convId },
       select: { id: true },
     });
-    const claim = (toMessageId: number) =>
+    const claim = (toMessageId: number, requireUnhandled = false) =>
       claimReplyBurst({
         tenantId,
         conversationDbId: id,
         toMessageId,
+        requireUnhandled,
         base: appDb,
       });
     const stored = async () =>
@@ -742,9 +743,9 @@ describe.skipIf(!dbUp)("debounce", () => {
     expect(await claim(20)).toEqual({ won: true, previous: 10 });
     // A loser carries no `previous`: it displaced nothing, and a value it did not displace is
     // exactly what a release must never restore.
-    expect(await claim(20)).toEqual({ won: false });
+    expect(await claim(20)).toEqual({ won: false, reason: "claimed" });
     // And a burst BEHIND it, which is the shape the flush's retry and a second click both take.
-    expect(await claim(15)).toEqual({ won: false });
+    expect(await claim(15)).toEqual({ won: false, reason: "claimed" });
     expect(await stored()).toBe(20);
 
     // Released by the holder: back to what it displaced, so the next attempt can take it.
@@ -768,6 +769,71 @@ describe.skipIf(!dbUp)("debounce", () => {
       base: appDb,
     });
     expect(await stored()).toBe(30);
+
+    // AND THE WATERMARK IS THE SECOND QUESTION, settled under the same lock. A caller that must not
+    // answer what something else already handled (the direct turn, the flush) loses to the mark;
+    // the manual re-engage, which passes false, does not — the whole of issue #452 in one row.
+    await advanceHandledWatermark({
+      tenantId,
+      conversationDbId: id,
+      toMessageId: 40,
+      base: appDb,
+    });
+    expect(await claim(40, true)).toEqual({ won: false, reason: "handled" });
+    expect(await claim(40, false)).toEqual({ won: true, previous: 30 });
+  });
+
+  // THE SECOND QUESTION THE CLAIM ANSWERS, and the flush needs it too: a burst is selected from
+  // ABOVE the watermark, but the mark can move between that selection and the post — a deliberate
+  // skip by another delivery (a handoff, an out-of-hours silence) settles those messages without
+  // ever writing a reply of ours to claim against. The losing CAS used to say so for free; now it
+  // is `requireUnhandled`, asked under the claim's own row lock (issue #452).
+  test("a burst handled while the turn ran is not answered", async () => {
+    const convId = 893;
+    await seedConversation(convId);
+    const sent: Array<[number, string]> = [];
+    let fetches = 0;
+    const client = {
+      getMessages: async () => {
+        fetches += 1;
+        // The supersede re-fetch: the burst is chosen and the claim has not been taken yet.
+        if (fetches === 2) {
+          const { id } = await suDb.conversation.findFirstOrThrow({
+            where: { tenantId, chatwootConversationId: convId },
+            select: { id: true },
+          });
+          await advanceHandledWatermark({
+            tenantId,
+            conversationDbId: id,
+            toMessageId: 1,
+            base: appDb,
+          });
+        }
+        return page([{ id: 1, content: "oi" }]);
+      },
+      sendMessage: async (conversationId: number, content: string) => {
+        sent.push([conversationId, content]);
+        return {};
+      },
+      sendPrivateNote: async () => ({}),
+      toggleTyping: async () => ({}),
+    } as unknown as ChatwootClient;
+
+    const out = await flushDebounceJob({
+      job: jobFor(convId),
+      base: appDb,
+      deps: {
+        makeModel: fakeModel,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+      },
+    });
+
+    expect(out).toEqual({ outcome: "done" });
+    expect(fetches).toBe(2);
+    expect(sent).toEqual([]);
+    // Nothing claimed it either: the burst was settled by whoever moved the mark.
+    expect(await replyClaimOf(convId)).toBeNull();
   });
 
   // ONE CLAIM FOR EVERY POSTING PATH (issue #452). The re-engage button and a flush answer the same

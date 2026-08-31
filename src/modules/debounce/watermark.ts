@@ -66,37 +66,59 @@ export async function advanceHandledWatermark(
 //
 // Returns whether this call won, and the value it displaced — which the release below needs.
 //
-// ONE STATEMENT, and that is not tidiness: the displaced value has to be the one THIS update
-// displaced. Read separately, two claimants racing on different targets both read the pre-A value,
-// B commits over A, and B's release then restores a mark that predates A — handing a burst A
-// answered back to a later retry, which sends A's reply a second time. The self-join reads the row
-// as it was before the SET, in the same statement that takes the row lock, so there is no window to
-// read in.
+// UNDER THE ROW LOCK, and both halves of that matter. `FOR UPDATE` is taken BEFORE the value is
+// read, so a claimant that arrives second waits here and then reads what its predecessor committed:
+// read-then-write without it (and a self-join `UPDATE … FROM`, which reads `old` from the statement
+// snapshot rather than from the row it waits on) can hand B the value that predated A, and B's
+// release would then restore a mark A had already moved — handing a burst A answered back to a
+// later retry.
+//
+// `requireUnhandled` is the second question the same lock has to answer atomically: "was this
+// message already handled", read off the WATERMARK. The direct turn and the flush both need it —
+// a late delivery for a message an earlier turn answered or skipped must stand down, and the losing
+// CAS used to say so — and asking it outside this transaction leaves the window where a deliberate
+// skip lands between the read and the claim. The manual re-engage passes `false`, and that is the
+// whole of issue #452: it is the one path that answers a tail the watermark already covers.
 export async function claimReplyBurst(params: {
   tenantId: bigint;
   conversationDbId: bigint;
   toMessageId: number;
+  requireUnhandled: boolean;
   base?: PrismaClient;
 }): Promise<
-  { won: true; previous: number | null } | { won: false; previous?: never }
+  | { won: true; previous: number | null }
+  | { won: false; reason: "claimed" | "handled"; previous?: never }
 > {
   const base = params.base ?? basePrisma;
   return runScopedOn(base, sysCtx(params.tenantId), async (db) => {
-    const rows = await db.$queryRaw<Array<{ previous: number | null }>>`
-      UPDATE "conversations" AS c
-         SET "last_replied_message_id" = ${params.toMessageId}
-        FROM "conversations" AS old
-       WHERE c."id" = ${params.conversationDbId}
-         AND old."id" = c."id"
-         AND (c."last_replied_message_id" IS NULL
-              OR c."last_replied_message_id" < ${params.toMessageId})
-   RETURNING old."last_replied_message_id" AS "previous"`;
+    const locked = await db.$queryRaw<
+      Array<{ previous: number | null; handled: number | null }>
+    >`SELECT "last_replied_message_id" AS "previous",
+             "last_handled_message_id" AS "handled"
+        FROM "conversations"
+       WHERE "id" = ${params.conversationDbId}
+         FOR UPDATE`;
+    const row = locked[0];
+    // No row is not this function's to explain: the conversation was deleted under a running turn,
+    // and nothing may be posted for it.
+    if (row === undefined) return { won: false, reason: "claimed" };
+    if (row.previous !== null && row.previous >= params.toMessageId) {
+      return { won: false, reason: "claimed" };
+    }
+    if (
+      params.requireUnhandled &&
+      row.handled !== null &&
+      row.handled >= params.toMessageId
+    ) {
+      return { won: false, reason: "handled" };
+    }
+    await db.conversation.update({
+      where: { id: params.conversationDbId },
+      data: { lastRepliedMessageId: params.toMessageId },
+    });
     // A LOSER HAS NO `previous`, and the type says so: it displaced nothing, and handing it the
     // column's current value is what would let a release roll back somebody else's claim.
-    const row = rows[0];
-    return row === undefined
-      ? { won: false }
-      : { won: true, previous: row.previous };
+    return { won: true, previous: row.previous };
   });
 }
 

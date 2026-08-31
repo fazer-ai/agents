@@ -111,6 +111,12 @@ export interface CoalesceTurnContext {
   // which asks it inside the `ingest:` lock and again before each post. REQUIRED and nullable so a
   // future caller has to answer it: `null` says "nothing queued this, nothing can call it off".
   stillWanted: ((opts: { strict: boolean }) => Promise<boolean>) | null;
+  // Whether this caller's burst must be UNHANDLED for the claim to succeed — see `claimReply` on
+  // RunLoadedTurnParams. The flush passes true (its burst is selected above the watermark, and a
+  // deliberate skip landing between that selection and the claim means somebody else settled these
+  // messages); the manual re-engage passes false, because answering a tail the watermark already
+  // covers is its entire job (issue #452).
+  claimRequiresUnhandled: boolean;
   // Label for the single summary log line ("debounce flush" / "reengage").
   label: string;
   // When set (the debounce flush passes "debounce"), emit a flow line for the coalescing under the
@@ -313,7 +319,11 @@ export async function coalesceAndRunTurn(
     // what keeps this flush, a retry of it and an operator's re-engage of the same tail from each
     // sending a reply (issue #452). `runLoadedTurn` also gives it back when the turn throws or
     // stands down, so a failed send does not leave a burst nothing answered marked as claimed.
-    claimReply: { conversationDbId: convDbId, toMessageId: targetWatermark },
+    claimReply: {
+      conversationDbId: convDbId,
+      toMessageId: targetWatermark,
+      requireUnhandled: ctx.claimRequiresUnhandled,
+    },
   });
   // Every completed outcome except "superseded" consumed the burst: answered ("posted", including
   // the input-guardrail template which claims through the same gate), or deliberately dropped
@@ -1174,6 +1184,7 @@ export async function flushDebounceJob(
         authContext,
         // The same closure the ceiling branch above asked with; see its definition for the floor.
         selectPending,
+        claimRequiresUnhandled: true,
         label: "debounce flush",
         coalesceStage: "debounce",
       },

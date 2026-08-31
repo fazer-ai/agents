@@ -361,6 +361,12 @@ export async function reengageConversation(
       // The same expression the pre-check above used, re-evaluated against a FRESH fetch: the
       // authorization call between them is a round trip long enough for the tail to change.
       selectPending,
+      // THE ONE CALLER THAT ANSWERS WHAT THE WATERMARK ALREADY COVERS, and this is issue #452 in
+      // one field: the tail is chosen from the last OUTGOING message, and a deliberate skip (a
+      // human-owned stretch, an out-of-hours silence, a turn that ended without a reply) advances
+      // the watermark past it without ever writing one of ours. Requiring the burst to be unhandled
+      // here would make the button a no-op on exactly the conversations it was written for.
+      claimRequiresUnhandled: false,
       label: "reengage",
     },
     base,

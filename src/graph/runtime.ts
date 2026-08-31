@@ -1628,10 +1628,29 @@ export async function runLoadedTurn(
     return "posted";
   } finally {
     clearTurnInFlight(threadId);
-    // Now that the flag is down, the rollback the sentinel branch armed can actually run. Ordered
-    // after the clear and before the claim release for exactly that reason. Best-effort and quiet
-    // about failure: the customer was correctly not messaged either way, and a throw here would turn
-    // a correct turn into a retried one.
+    if (graphOwner) {
+      const heldOwner: ThreadOwner = graphOwner;
+      try {
+        await clearTurnOwning(
+          heldOwner,
+          base,
+          graphHold ?? { epoch: null, heldBefore: false },
+        );
+      } catch (err) {
+        logger.warn(
+          { err, thread: heldOwner.graphThreadId },
+          "failed to release the durable turn claim; its lease will expire",
+        );
+      }
+    }
+    // LAST, and the order is the whole point. `undoRefusedTurn` stands down while the GRAPH thread is
+    // in flight, and there are two claims on this turn: `markTurnInFlight(threadId)` cleared at the
+    // top of this block, and the durable one `markTurnOwning` takes on `graphThreadId` — which is a
+    // DIFFERENT key whenever the conversation has a contact-inbox, i.e. the normal case. Released
+    // only by `clearTurnOwning` just above, so anywhere earlier the rollback reads this turn's own
+    // claim and answers `another-invoke-is-reading`: a no-op, silently, in exactly the production
+    // shape. Round 5 put it after the first clear and the test agreed, because the test seeded a
+    // conversation with no contact-inbox and the two keys collapsed into one.
     if (silenceProduced) {
       const produced = silenceProduced;
       try {
@@ -1647,33 +1666,19 @@ export async function runLoadedTurn(
             String(conversationId),
             plan.ids.length,
           );
+        } else {
+          // Named rather than silent: the history still holds a message the customer never received,
+          // which is the compounding this exists to stop.
+          logger.warn(
+            "turn could not roll back a token-silenced turn: conv=%s reason=%s",
+            String(conversationId),
+            plan?.reason ?? "unknown",
+          );
         }
       } catch (err) {
         logger.warn(
           { err, conversationId: String(conversationId) },
           "turn: could not roll back a token-silenced turn",
-        );
-      }
-    }
-    // Only what this turn actually took: releasing a claim we never made would release a CONCURRENT
-    // turn's, and hand the thread to a compaction while that turn is still reading it.
-    // NOTE: releasing is best-effort, and deliberately cannot fail the turn. By here the reply may
-    // already be with the customer; a throw from this line would skip `status.finished` and make the
-    // caller treat a delivered turn as failed, which a retry then answers a second time. The row
-    // carries a lease precisely so a release that never lands is recovered by expiry instead of by
-    // anyone waiting on it.
-    if (graphOwner) {
-      const heldOwner: ThreadOwner = graphOwner;
-      try {
-        await clearTurnOwning(
-          heldOwner,
-          base,
-          graphHold ?? { epoch: null, heldBefore: false },
-        );
-      } catch (err) {
-        logger.warn(
-          { err, thread: heldOwner.graphThreadId },
-          "failed to release the durable turn claim; its lease will expire",
         );
       }
     }

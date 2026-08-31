@@ -422,6 +422,70 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     );
   });
 
+  // Review round 6. The rollback stands down while the GRAPH thread is in flight, and a conversation
+  // WITH a contact-inbox — the normal production shape — carries TWO claims on two different keys:
+  // the conversation one, and the durable `markTurnOwning` one on the contact-inbox thread. Placed
+  // between them, the rollback read this turn's own claim and did nothing, silently. The case above
+  // could not catch it: with no contact-inbox the two keys collapse into one.
+  test("the token is rolled back on a contact-inbox thread too", async () => {
+    const contactInboxId = 7454;
+    const contact = await suDb.contact.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootContactId: 88454,
+        name: "C",
+      },
+      select: { id: true },
+    });
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: 9460,
+        contactInboxId,
+        contactId: contact.id,
+        status: "pending",
+        threadId: `${tenantId}:${instanceId}:9460`,
+        lastEventAt: new Date(),
+      },
+    });
+    const saver = new MemorySaver();
+    const sent: Array<[number, string]> = [];
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 9460, contactInboxId }),
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new FakeListChatModel({ responses: [FOLLOWUP_SKIP_SENTINEL] }),
+        makeClient: makeStubClient(sent),
+        checkpointer: saver,
+      },
+    });
+    expect(sent).toEqual([]);
+    expect(outcome).toBe("empty");
+
+    // Read on the key the NUDGE and the next reactive turn actually load: the contact-inbox thread.
+    const state = await buildThreadStateGraph(saver).getState({
+      configurable: {
+        thread_id: contactInboxThreadId(tenantId, instanceId, contactInboxId),
+      },
+    });
+    const messages = ((state.values as { messages?: BaseMessage[] })
+      ?.messages ?? []) as BaseMessage[];
+    // Positive control: a probe that found no messages measured nothing. The customer's own turn
+    // stands (the reactive rollback plan leaves it), and the sentinel answer is gone.
+    expect(messages.length).toBeGreaterThan(0);
+    expect(
+      messages.filter((m) =>
+        JSON.stringify(m.content).includes(FOLLOWUP_SKIP_SENTINEL),
+      ),
+    ).toEqual([]);
+  });
+
   // The control for the line above, and the reason it is not just "log on every empty turn": a model
   // that genuinely wrote nothing is an ordinary silent turn, and a warn there would cry wolf on the
   // shape `skip_reply` produces on purpose.

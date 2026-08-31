@@ -147,6 +147,36 @@ export async function releaseReplyBurst(params: {
   });
 }
 
+// WHAT A FLUSH MUST NOT RE-ANSWER, which is not the watermark alone (issue #452). The claim is
+// written immediately before the send and the watermark only after the turn returns, so between the
+// two there is a real gap: a reply that lands and then loses its watermark write (the direct path
+// catches that failure and logs it; a process exit does the same) leaves the message answered, the
+// claim recording it, and the mark behind. Selecting from the mark alone, the next flush coalesces
+// that answered message with the newer one and — the target being higher — wins the claim and
+// answers it again.
+//
+// So the floor is the max of the two. The claim is the half that says "something answered this"; the
+// watermark is the half that also covers deliberate skips, which the claim never records.
+export async function readAnsweredFloor(params: {
+  tenantId: bigint;
+  conversationDbId: bigint;
+  base?: PrismaClient;
+}): Promise<number | null> {
+  const base = params.base ?? basePrisma;
+  return runScopedOn(base, sysCtx(params.tenantId), async (db) => {
+    const row = await db.conversation.findUnique({
+      where: { id: params.conversationDbId },
+      select: { lastHandledMessageId: true, lastRepliedMessageId: true },
+    });
+    if (!row) return null;
+    const { lastHandledMessageId: handled, lastRepliedMessageId: replied } =
+      row;
+    if (handled === null) return replied;
+    if (replied === null) return handled;
+    return Math.max(handled, replied);
+  });
+}
+
 // The watermark as it stands RIGHT NOW. Read where the burst is selected, not where the flush
 // started: between those two points sits an authorization round-trip to somebody else's endpoint,
 // and a message that arrived and was REFUSED during it has already had the watermark advanced past

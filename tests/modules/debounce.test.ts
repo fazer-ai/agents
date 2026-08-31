@@ -783,6 +783,58 @@ describe.skipIf(!dbUp)("debounce", () => {
     expect(await claim(40, false)).toEqual({ won: true, previous: 30 });
   });
 
+  // A LOST WATERMARK WRITE MUST NOT COST A SECOND REPLY (issue #452). The claim is written
+  // immediately before the send and the watermark only after the turn returns, so a reply that
+  // lands and then loses its watermark write leaves the message answered with the mark behind it —
+  // the direct path catches that failure and logs it, and a process exit does the same. Selecting
+  // from the mark alone, this flush would coalesce the answered message with the newer one and, the
+  // target being higher, win the claim and answer it again. The floor is the max of the two.
+  test("a message the claim records is not re-answered when the watermark lags", async () => {
+    const convId = 895;
+    await seedConversation(convId);
+    const { id } = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    // The state a lost watermark write leaves: message 1 answered (the claim says so), mark behind.
+    await suDb.conversation.update({
+      where: { id },
+      data: { lastRepliedMessageId: 1, lastHandledMessageId: null },
+    });
+    const sent: Array<[number, string]> = [];
+
+    const out = await flushDebounceJob({
+      job: jobFor(convId),
+      base: appDb,
+      deps: {
+        makeModel: fakeModel,
+        makeClient: makeStub({
+          pages: [
+            page([
+              { id: 1, content: "já respondida" },
+              { id: 2, content: "a nova" },
+            ]),
+          ],
+          sent,
+          calls: { getMessages: 0 },
+        }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+
+    expect(out).toEqual({ outcome: "done" });
+    expect(sent).toEqual([[convId, REPLY]]);
+    // THE BURST'S SIZE IS THE ASSERTION, read off the line the coalescing writes: one message, not
+    // two. Selecting from the watermark alone this is 2, and the answered message goes to the model
+    // a second time.
+    await settleFlowEvents();
+    const row = await flowLogRow(suDb, {
+      where: { tenantId, threadId: threadOf(convId), stage: "debounce" },
+      select: { detail: true },
+    });
+    expect((row?.detail as { coalesced?: number } | null)?.coalesced).toBe(1);
+  });
+
   // THE SECOND QUESTION THE CLAIM ANSWERS, and the flush needs it too: a burst is selected from
   // ABOVE the watermark, but the mark can move between that selection and the post — a deliberate
   // skip by another delivery (a handoff, an out-of-hours silence) settles those messages without

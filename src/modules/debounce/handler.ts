@@ -59,7 +59,7 @@ import {
 } from "@/modules/spend-ceiling/service";
 import { readLastMessageId } from "./service";
 import { readDebounceConfig } from "./settings";
-import { advanceHandledWatermark, readHandledWatermark } from "./watermark";
+import { advanceHandledWatermark, readAnsweredFloor } from "./watermark";
 
 // The DEBOUNCE flush: re-fetch the conversation from Chatwoot, coalesce the inbound messages past the
 // watermark into one turn, and answer once. Two re-fetches by design: the first builds the burst to
@@ -759,8 +759,12 @@ export async function flushDebounceJob(
   // Against the stale value it would be selected here and handed to the model, and the post gate
   // would only withhold the reply — after the tools had run. The floor is the one this flush read at
   // claim time, so a watermark that somehow reads lower cannot widen the burst.
+  //
+  // And it is the ANSWERED floor rather than the watermark, because the two can disagree: the reply
+  // claim is written before the send and the watermark after the turn, so a reply whose watermark
+  // write was lost leaves the message answered with the mark behind it (issue #452).
   const selectPending = async (messages: ChatwootMessageRow[]) => {
-    const fresh = await readHandledWatermark({
+    const fresh = await readAnsweredFloor({
       tenantId,
       conversationDbId: ctx.convDbId,
       base,

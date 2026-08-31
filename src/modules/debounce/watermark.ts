@@ -64,7 +64,8 @@ export async function advanceHandledWatermark(
 // column, one winner. A claim per caller would have made the flush and the button contend on
 // different rows and both send.
 //
-// Returns whether this call won, and the value it displaced — which the release below needs.
+// Returns whether this call won, and why not when it lost — the two reasons are different facts and
+// the log line distinguishes them.
 //
 // UNDER THE ROW LOCK, and both halves of that matter. `FOR UPDATE` is taken BEFORE the value is
 // read, so a claimant that arrives second waits here and then reads what its predecessor committed:
@@ -73,27 +74,24 @@ export async function advanceHandledWatermark(
 // release would then restore a mark A had already moved — handing a burst A answered back to a
 // later retry.
 //
-// `requireUnhandled` is the second question the same lock has to answer atomically: "was this
-// message already handled", read off the WATERMARK. The direct turn and the flush both need it —
-// a late delivery for a message an earlier turn answered or skipped must stand down, and the losing
-// CAS used to say so — and asking it outside this transaction leaves the window where a deliberate
-// skip lands between the read and the claim. The manual re-engage passes `false`, and that is the
-// whole of issue #452: it is the one path that answers a tail the watermark already covers.
+// `maxHandledAllowed` is the second question the same lock has to answer atomically: "has the WATERMARK
+// moved past what this caller is entitled to answer over". Asking it outside this transaction leaves
+// the window where a deliberate skip lands between the read and the claim. The direct turn and the
+// flush answer above the mark and pass `target - 1`; the manual re-engage answers a tail the mark
+// already covers — the whole of issue #452 — and passes the mark it read on the way IN, so a skip
+// landing WHILE it runs still refuses it. Null means no ceiling.
 export async function claimReplyBurst(params: {
   tenantId: bigint;
   conversationDbId: bigint;
   toMessageId: number;
-  requireUnhandled: boolean;
+  maxHandledAllowed: number | null;
   base?: PrismaClient;
-}): Promise<
-  | { won: true; previous: number | null }
-  | { won: false; reason: "claimed" | "handled"; previous?: never }
-> {
+}): Promise<{ won: true } | { won: false; reason: "claimed" | "handled" }> {
   const base = params.base ?? basePrisma;
   return runScopedOn(base, sysCtx(params.tenantId), async (db) => {
     const locked = await db.$queryRaw<
-      Array<{ previous: number | null; handled: number | null }>
-    >`SELECT "last_replied_message_id" AS "previous",
+      Array<{ claimed: number | null; handled: number | null }>
+    >`SELECT "last_replied_message_id" AS "claimed",
              "last_handled_message_id" AS "handled"
         FROM "conversations"
        WHERE "id" = ${params.conversationDbId}
@@ -102,13 +100,13 @@ export async function claimReplyBurst(params: {
     // No row is not this function's to explain: the conversation was deleted under a running turn,
     // and nothing may be posted for it.
     if (row === undefined) return { won: false, reason: "claimed" };
-    if (row.previous !== null && row.previous >= params.toMessageId) {
+    if (row.claimed !== null && row.claimed >= params.toMessageId) {
       return { won: false, reason: "claimed" };
     }
     if (
-      params.requireUnhandled &&
+      params.maxHandledAllowed !== null &&
       row.handled !== null &&
-      row.handled >= params.toMessageId
+      row.handled > params.maxHandledAllowed
     ) {
       return { won: false, reason: "handled" };
     }
@@ -116,34 +114,7 @@ export async function claimReplyBurst(params: {
       where: { id: params.conversationDbId },
       data: { lastRepliedMessageId: params.toMessageId },
     });
-    // A LOSER HAS NO `previous`, and the type says so: it displaced nothing, and handing it the
-    // column's current value is what would let a release roll back somebody else's claim.
-    return { won: true, previous: row.previous };
-  });
-}
-
-// GIVE THE CLAIM BACK when the turn threw before delivering anything. The claim is taken immediately
-// BEFORE the send, so a Chatwoot failure leaves a burst nothing answered under a claim saying
-// somebody did, and the retry the scheduler runs finds it and stands down — which is the behaviour
-// docs/debounce.md already promised was not happening ("an LLM/Chatwoot error retries against the
-// same burst"). Conditional on the claim still being ours: a later claimant that moved the column on
-// is not to be rolled back.
-export async function releaseReplyBurst(params: {
-  tenantId: bigint;
-  conversationDbId: bigint;
-  toMessageId: number;
-  previous: number | null;
-  base?: PrismaClient;
-}): Promise<void> {
-  const base = params.base ?? basePrisma;
-  await runScopedOn(base, sysCtx(params.tenantId), async (db) => {
-    await db.conversation.updateMany({
-      where: {
-        id: params.conversationDbId,
-        lastRepliedMessageId: params.toMessageId,
-      },
-      data: { lastRepliedMessageId: params.previous },
-    });
+    return { won: true };
   });
 }
 

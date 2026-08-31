@@ -726,11 +726,64 @@ describe.skipIf(!dbUp)("reengage", () => {
       expect([a.outcome, b.outcome].sort()).toEqual(["posted", "superseded"]);
     });
 
-    // A CLAIM IS TAKEN BEFORE THE SEND, so a send that throws must give it back. Otherwise the
-    // burst nobody answered sits marked as claimed and the next click — on the button whose whole
-    // purpose is recovering from a failed turn — stands down against the failure it exists to undo.
-    // Same rule as the watermark, which this path does not advance either.
-    test("a send that throws gives the claim back, so the next click answers", async () => {
+    // THE CEILING IS THE MARK THIS CLICK READ ON THE WAY IN, not "no ceiling" (issue #452). What was
+    // already settled when the operator clicked is the tail they are asking about — that is the
+    // whole point of the button. What settles WHILE the model runs belongs to whoever settled it: a
+    // handoff, an out-of-hours skip, another delivery consuming the burst. This click is not
+    // entitled to answer over that, and the watermark CAS it replaced would have refused it.
+    test("a skip that lands while the model runs refuses the click", async () => {
+      const id = await seedConversation(934, { lastHandledMessageId: 291 });
+      const sent: Array<[number, string]> = [];
+      const thread = page([
+        { id: 289, content: "resposta antiga", type: 1 },
+        { id: 290, content: "alguém aí?", type: 0 },
+        { id: 291, content: "?", type: 0 },
+      ]);
+      let fetches = 0;
+      const client = {
+        getMessages: async () => {
+          fetches += 1;
+          // The post gate's supersede re-fetch: the burst is chosen, the model has run, and the
+          // claim is one step away. Another delivery deliberately consumes the burst right here.
+          if (fetches === 3) {
+            await suDb.conversation.update({
+              where: { id },
+              data: { lastHandledMessageId: 295 },
+            });
+          }
+          return thread;
+        },
+        sendMessage: async (conversationId: number, content: string) => {
+          sent.push([conversationId, content]);
+          return {};
+        },
+        toggleTyping: async () => ({}),
+      } as unknown as ChatwootClient;
+
+      const res = await reengageConversation(
+        ctx(),
+        id,
+        {
+          makeModel: fakeModel,
+          makeClient: async () => client,
+          checkpointer: new MemorySaver(),
+        },
+        appDb,
+      );
+      expect(res.outcome).toBe("superseded");
+      expect(sent).toEqual([]);
+    });
+
+    // A CLAIM IS TAKEN BEFORE THE SEND AND NEVER GIVEN BACK, and this pins the trade rather than
+    // leaving it to be rediscovered. A send that fails leaves the burst claimed, so the next click
+    // stands down instead of risking a second copy of a reply Chatwoot may already have accepted.
+    // It is the same trade the watermark's own CAS made before this change, and the operator hears
+    // about it through `lastError` and the console's error badge.
+    //
+    // Making a failed send retryable is a real improvement and a change to that trade for every
+    // posting path — the direct turn and the flush included — so it belongs in an issue of its own,
+    // not in the fix for a button that could not answer at all.
+    test("a send that fails keeps the claim, and the next click stands down", async () => {
       const id = await seedConversation(933, { lastHandledMessageId: 291 });
       const sent: Array<[number, string]> = [];
       const thread = page([
@@ -738,9 +791,6 @@ describe.skipIf(!dbUp)("reengage", () => {
         { id: 290, content: "alguém aí?", type: 0 },
         { id: 291, content: "?", type: 0 },
       ]);
-      // Every send of the first click fails, the retry inside `deliverReply` included, and the
-      // read-back finds nothing in the thread — which is what makes the turn throw rather than
-      // report a delivery it cannot prove.
       let failing = true;
       const client = {
         getMessages: async () => thread,
@@ -760,17 +810,17 @@ describe.skipIf(!dbUp)("reengage", () => {
       await expect(
         reengageConversation(ctx(), id, deps, appDb),
       ).rejects.toThrow();
-      // Given back, not left behind: the column reads as it did before the failed attempt.
       const afterFailure = await suDb.conversation.findUniqueOrThrow({
         where: { id },
         select: { lastRepliedMessageId: true },
       });
-      expect(afterFailure.lastRepliedMessageId).toBeNull();
+      expect(afterFailure.lastRepliedMessageId).toBe(291);
 
+      // Even with the send working again, the burst is spent: nothing may answer it twice.
       failing = false;
       const res = await reengageConversation(ctx(), id, deps, appDb);
-      expect(res.outcome).toBe("posted");
-      expect(sent).toEqual([[933, REPLY]]);
+      expect(res.outcome).toBe("superseded");
+      expect(sent).toEqual([]);
     });
 
     // The supersede gate still means what it says: a customer message that lands mid-turn defers

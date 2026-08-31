@@ -26,7 +26,6 @@ import {
 import {
   advanceHandledWatermark,
   claimReplyBurst,
-  releaseReplyBurst,
 } from "@/modules/debounce/watermark";
 import { settleFlowEvents } from "@/modules/flowlog/scheduled";
 import type { ClaimedJob } from "@/modules/scheduler/service";
@@ -715,19 +714,22 @@ describe.skipIf(!dbUp)("debounce", () => {
 
   // The claim's own table, decided in one place and asked here directly: the paths above prove the
   // gate consults it, this proves what it answers (issue #452).
-  test("the reply claim is monotonic, and its release is conditional", async () => {
+  test("the reply claim is monotonic and honours its handled ceiling", async () => {
     const convId = 892;
     await seedConversation(convId);
     const { id } = await suDb.conversation.findFirstOrThrow({
       where: { tenantId, chatwootConversationId: convId },
       select: { id: true },
     });
-    const claim = (toMessageId: number, requireUnhandled = false) =>
+    const claim = (
+      toMessageId: number,
+      maxHandledAllowed: number | null = null,
+    ) =>
       claimReplyBurst({
         tenantId,
         conversationDbId: id,
         toMessageId,
-        requireUnhandled,
+        maxHandledAllowed,
         base: appDb,
       });
     const stored = async () =>
@@ -738,49 +740,31 @@ describe.skipIf(!dbUp)("debounce", () => {
         })
       ).lastRepliedMessageId;
 
-    // Nothing claimed yet, then a burst ahead of it, then the same burst twice.
-    expect(await claim(10)).toEqual({ won: true, previous: null });
-    expect(await claim(20)).toEqual({ won: true, previous: 10 });
-    // A loser carries no `previous`: it displaced nothing, and a value it did not displace is
-    // exactly what a release must never restore.
+    // Nothing claimed yet, then a burst ahead of it, then the same burst twice, then one behind —
+    // the shape a flush retry and a second click both take.
+    expect(await claim(10)).toEqual({ won: true });
+    expect(await claim(20)).toEqual({ won: true });
     expect(await claim(20)).toEqual({ won: false, reason: "claimed" });
-    // And a burst BEHIND it, which is the shape the flush's retry and a second click both take.
     expect(await claim(15)).toEqual({ won: false, reason: "claimed" });
     expect(await stored()).toBe(20);
 
-    // Released by the holder: back to what it displaced, so the next attempt can take it.
-    await releaseReplyBurst({
-      tenantId,
-      conversationDbId: id,
-      toMessageId: 20,
-      previous: 10,
-      base: appDb,
-    });
-    expect(await stored()).toBe(10);
-
-    // Released by somebody the column has moved past: a no-op. Rolling this back would hand a burst
-    // the CURRENT holder claimed to a third poster.
-    expect(await claim(30)).toEqual({ won: true, previous: 10 });
-    await releaseReplyBurst({
-      tenantId,
-      conversationDbId: id,
-      toMessageId: 20,
-      previous: 10,
-      base: appDb,
-    });
-    expect(await stored()).toBe(30);
-
-    // AND THE WATERMARK IS THE SECOND QUESTION, settled under the same lock. A caller that must not
-    // answer what something else already handled (the direct turn, the flush) loses to the mark;
-    // the manual re-engage, which passes false, does not — the whole of issue #452 in one row.
+    // AND THE WATERMARK IS THE SECOND QUESTION, settled under the same lock. The ceiling is what
+    // separates the callers: a flush answering above the mark passes `target - 1` and loses to a
+    // skip; a re-engage passes the mark it read on the way IN, so what was already settled when the
+    // operator clicked does not refuse it, and what lands afterwards does.
     await advanceHandledWatermark({
       tenantId,
       conversationDbId: id,
       toMessageId: 40,
       base: appDb,
     });
-    expect(await claim(40, true)).toEqual({ won: false, reason: "handled" });
-    expect(await claim(40, false)).toEqual({ won: true, previous: 30 });
+    expect(await claim(30, 29)).toEqual({ won: false, reason: "handled" });
+    expect(await claim(30, 40)).toEqual({ won: true });
+    // A click that read the mark at 30 and found it at 40 by claim time: somebody settled this tail
+    // while the model was running.
+    expect(await claim(50, 30)).toEqual({ won: false, reason: "handled" });
+    // No ceiling at all: nothing about the watermark can refuse it.
+    expect(await claim(50, null)).toEqual({ won: true });
   });
 
   // A LOST WATERMARK WRITE MUST NOT COST A SECOND REPLY (issue #452). The claim is written
@@ -3445,12 +3429,11 @@ describe.skipIf(!dbUp)("debounce", () => {
       });
     });
 
-    // AN AMBIGUOUS SEND KEEPS THE CLAIM (issue #452). The template goes out through a raw
-    // `sendMessage` with no reconciliation, so a rejection here does not say whether Chatwoot
-    // accepted it first. Releasing the claim on any throw would hand this burst to the scheduler's
-    // retry, which would send the template a second time to a customer who may already have it.
-    // Only a throw that PROVES nothing was delivered releases; this one does not.
-    test("a send that cannot prove non-delivery keeps the claim", async () => {
+    // A FAILED SEND KEEPS THE CLAIM (issue #452). The template goes out through a raw `sendMessage`
+    // with no reconciliation, so a rejection here does not even say whether Chatwoot accepted it
+    // first — and the claim is taken before the send precisely so that the scheduler's retry cannot
+    // send it a second time to a customer who may already have it. The claim is never given back.
+    test("a send that fails keeps the claim, so the retry cannot duplicate it", async () => {
       const convId = 894;
       await seedConversation(convId);
       const verdict = JSON.stringify({
@@ -3483,11 +3466,11 @@ describe.skipIf(!dbUp)("debounce", () => {
         }),
       ).rejects.toThrow();
 
-      // Held, not given back: nothing here can say the customer did not get the template.
+      // Held: nothing here can say the customer did not get the template.
       expect(await replyClaimOf(convId)).toBe(1);
-      // And the watermark stays put, so the retry would have had a burst to re-answer had the
-      // claim been released — which is what makes this assertion about the claim and not about
-      // the burst being gone.
+      // And the watermark stays put, so the retry would have had a burst to re-answer had the claim
+      // been released — which is what makes this assertion about the claim and not about the burst
+      // being gone.
       expect(await watermarkOf(convId)).toBeNull();
     });
 
@@ -3560,10 +3543,12 @@ describe.skipIf(!dbUp)("debounce", () => {
       // "stale" says it should be: on a burst nothing answered, which the next flush re-coalesces.
       // That is the rule the outcome was written for; the old value was the CAS leaking through it.
       expect(await watermarkOf(862)).toBeNull();
-      // AND THE CLAIM WENT BACK with it. This is the window where a claim is taken and nothing is
-      // sent, so holding it would make the operator's re-engage of this very tail lose to a turn
-      // that stood down — the same shape as a failed send, reached by the other exit.
-      expect(await replyClaimOf(862)).toBeNull();
+      // The claim STAYS, and that is the contract rather than an oversight: it is taken the moment a
+      // turn commits to answering and never given back, so a burst claimed and then withdrawn is one
+      // nothing will answer again. Same trade the watermark's own CAS made before this change — a
+      // lost reply rather than a risked duplicate — and `lastError` plus the console badge are what
+      // surface it.
+      expect(await replyClaimOf(862)).toBe(1);
     });
   });
   // A turn that answers with BOTH an attachment and text, retired between the two. The image is with

@@ -175,18 +175,16 @@ export async function reengageConversation(
   // because the pre-check and the turn disagreeing is how a gate ends up refusing work that was
   // never going to happen (or letting through work it should have stopped).
   const authCfg = resolved.loaded.contactAuthConfig;
-  // THE WATERMARK AS THIS CALL FOUND IT, read before the round-trip below and used as the origin of
-  // the floor. Everything at or under it was settled by whatever went before — a human-owned
-  // stretch, an out-of-hours skip, a turn that ended without a reply — and that is precisely the
-  // tail this button exists to answer. Only the gate's own path needs it (see the floor below), so
-  // it is not read where nothing would consult it.
-  const floorAtEntry = authCfg.enabled
-    ? await readHandledWatermark({
-        tenantId,
-        conversationDbId: resolved.convDbId,
-        base,
-      })
-    : null;
+  // THE WATERMARK AS THIS CALL FOUND IT, read before the round-trip below and used twice: as the
+  // origin of the authorization floor, and as the ceiling this click's claim will accept. Everything
+  // at or under it was settled by whatever went before — a human-owned stretch, an out-of-hours
+  // skip, a turn that ended without a reply — and that is precisely the tail this button exists to
+  // answer. What moves the mark AFTER this read belongs to somebody else, on both counts.
+  const floorAtEntry = await readHandledWatermark({
+    tenantId,
+    conversationDbId: resolved.convDbId,
+    base,
+  });
   const selectPending = authCfg.enabled
     ? async (messages: ChatwootMessageRow[]) => {
         // With the gate on, the tail drops what something else handled DURING this call, re-read at
@@ -362,11 +360,16 @@ export async function reengageConversation(
       // authorization call between them is a round trip long enough for the tail to change.
       selectPending,
       // THE ONE CALLER THAT ANSWERS WHAT THE WATERMARK ALREADY COVERS, and this is issue #452 in
-      // one field: the tail is chosen from the last OUTGOING message, and a deliberate skip (a
+      // one line: the tail is chosen from the last OUTGOING message, and a deliberate skip (a
       // human-owned stretch, an out-of-hours silence, a turn that ended without a reply) advances
-      // the watermark past it without ever writing one of ours. Requiring the burst to be unhandled
-      // here would make the button a no-op on exactly the conversations it was written for.
-      claimRequiresUnhandled: false,
+      // the watermark past it without ever writing one of ours. A claim that refused a covered
+      // burst would make the button a no-op on exactly the conversations it was written for.
+      //
+      // The ceiling is the mark this call READ ON THE WAY IN, not "no ceiling": what was already
+      // settled when the operator clicked is the tail they are asking about, but a skip that lands
+      // WHILE the model runs settled it for somebody else, and this click is not entitled to
+      // answer over that.
+      claimHandledCeiling: () => floorAtEntry,
       label: "reengage",
     },
     base,

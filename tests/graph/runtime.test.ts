@@ -3031,12 +3031,13 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
   // the button on a column of its own — an operator clicking during a delivery got the customer two
   // answers.
   //
-  // Ordered rather than raced, and in the order that isolates the claim: the direct turn runs to
-  // completion inside the click's burst selection, so it has answered AND advanced the watermark
-  // before the click reaches its own gate. The click's tail was chosen before that and its supersede
-  // re-fetch sees nothing new, so the claim is the only thing left that can stop it — which is
-  // exactly the question. (The other order proves nothing: the click advances the watermark on its
-  // way out, and the direct turn's already-handled gate would stop it whatever the claim did.)
+  // Ordered rather than raced, and stopped at the ONE instant where the claim is the only thing that
+  // can answer: the direct turn runs to completion inside the click's burst selection, and then its
+  // watermark write is undone. That is a real state — the claim is written before the send and the
+  // watermark only after the turn returns, so every reply passes through it. Letting the watermark
+  // stand instead makes this pass with the claim GONE, because the click's handled ceiling refuses
+  // it on the mark alone. (The other order proves nothing either: the click advances the watermark
+  // on its way out, and the direct turn's own ceiling would stop it whatever the claim did.)
   test("issue #452: a direct turn completing inside an operator's click leaves one reply", async () => {
     await seedConversation(978, null);
     const inbox = await suDb.inbox.findFirstOrThrow({
@@ -3062,6 +3063,12 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         // result: the direct turn reads the thread through this same stub.
         if (fetches === 2 && !running) {
           running = true;
+          const before = (
+            await suDb.conversation.findUniqueOrThrow({
+              where: { id: conv.id },
+              select: { lastHandledMessageId: true },
+            })
+          ).lastHandledMessageId;
           inner.direct = await runAgentTurn({
             tenantId,
             instanceId,
@@ -3073,6 +3080,11 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
               makeClient: async () => client,
               checkpointer: new MemorySaver(),
             },
+          });
+          // Back to the instant between the direct turn's claim and its watermark write.
+          await suDb.conversation.update({
+            where: { id: conv.id },
+            data: { lastHandledMessageId: before },
           });
         }
         return {
@@ -3100,6 +3112,11 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(inner.direct).toBe("posted");
     expect(clicked.outcome).toBe("superseded");
     expect(sent.length).toBe(1);
+    const after = await suDb.conversation.findUniqueOrThrow({
+      where: { id: conv.id },
+      select: { lastHandledMessageId: true },
+    });
+    expect(after.lastHandledMessageId).toBeNull();
   });
 
   test("issue #49: a stale trigger loses the watermark CAS and does not double-post", async () => {

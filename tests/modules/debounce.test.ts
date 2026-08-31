@@ -879,10 +879,13 @@ describe.skipIf(!dbUp)("debounce", () => {
   // on a column of its own — and the two stop contending: an operator clicking while a retry of the
   // same failed burst is in flight gets the customer two replies.
   //
-  // Ordered deterministically instead of raced, and in the order that isolates the claim: the flush
-  // runs to completion inside the click's burst selection, so by the time the click reaches its post
-  // gate the flush has already answered AND advanced the watermark. The click's tail was chosen
-  // before that, so nothing but the claim can stop it — which is exactly the question this asks.
+  // Ordered deterministically instead of raced, and stopped at the ONE instant where the claim is
+  // the only thing that can answer: the flush runs to completion inside the click's burst selection,
+  // and then its watermark write is undone. That is a real state, not a contrivance — the claim is
+  // written before the send and the watermark only after the turn returns, so every reply passes
+  // through it, and a lost watermark write leaves the conversation there for good. Letting the
+  // flush's watermark stand instead makes the test pass with the claim GONE: the click's handled
+  // ceiling refuses it on the mark alone, and the mutation that drops the claim's CAS survives.
   test("a flush completing inside an operator's click leaves one reply", async () => {
     const convId = 891;
     await seedConversation(convId);
@@ -900,6 +903,12 @@ describe.skipIf(!dbUp)("debounce", () => {
         // The click's burst selection (its pre-fetch was #1): the tail is about to be chosen, and
         // the flush answers it and claims it before the click's own post gate is reached.
         if (fetches === 2) {
+          const before = (
+            await suDb.conversation.findUniqueOrThrow({
+              where: { id: convRow.id },
+              select: { lastHandledMessageId: true },
+            })
+          ).lastHandledMessageId;
           flushed = await flushDebounceJob({
             job: jobFor(convId),
             base: appDb,
@@ -908,6 +917,11 @@ describe.skipIf(!dbUp)("debounce", () => {
               makeClient: async () => client,
               checkpointer: new MemorySaver(),
             },
+          });
+          // Back to the instant between the flush's claim and its watermark write.
+          await suDb.conversation.update({
+            where: { id: convRow.id },
+            data: { lastHandledMessageId: before },
           });
         }
         return thread;
@@ -932,9 +946,11 @@ describe.skipIf(!dbUp)("debounce", () => {
     );
 
     expect(flushed).toEqual({ outcome: "done" });
-    // The flush took the claim; the click found the burst already answered and stood down.
+    // The flush took the claim; the click found the burst already claimed and stood down, with no
+    // watermark standing to refuse it on the flush's behalf.
     expect(clicked.outcome).toBe("superseded");
     expect(sent).toEqual([[convId, REPLY]]);
+    expect(await watermarkOf(convId)).toBeNull();
   });
 
   test("a flush retires the ledger row of a message it rescued", async () => {

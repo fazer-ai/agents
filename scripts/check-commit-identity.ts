@@ -77,12 +77,23 @@ function describeCommit(c: Commit): string {
 // `allowedLogins` carries the ONE login this check cannot know on its own: the author of the pull
 // request, whose own commits are theirs to sign. It is the caller's job to pass it, and passing
 // none is the right default everywhere except a PR.
+// `cap` is the size at which the LISTING itself stops being trustworthy: `pulls/{n}/commits` returns
+// at most 250 even paginated, so a longer PR would have commits nobody looked at while this job went
+// green. There is no partial answer to give — refuse, and say which commits were never seen.
 export function checkCommits(
   commits: readonly Commit[],
   allowedLogins: readonly string[] = [],
+  cap?: number,
 ): string[] {
   const problems: string[] = [];
   const allowed = [...OURS.map((o) => o.login), ...allowedLogins];
+
+  if (cap !== undefined && commits.length >= cap) {
+    problems.push(
+      `this pull request has ${commits.length} commits, and the API lists at most ${cap}.\n` +
+        "    Some commits were never checked, so this job cannot vouch for the branch. Split it.",
+    );
+  }
 
   for (const c of commits) {
     const byName = OURS.find((o) => same(o.name, c.name));
@@ -129,15 +140,20 @@ export function parseIdent(ident: string): Commit {
 // stdin, one commit per line, tab-separated: `sha \t name \t email [\t login]`. A fourth field turns
 // the ATTRIBUTION clause on; three fields is a hook, which cannot ask.
 export function parseLines(input: string): Commit[] {
-  return input
-    .split("\n")
-    .map((l) => l.trimEnd())
-    .filter((l) => l.length > 0)
-    .map((l) => {
-      const [sha = "-", name = "", email = "", ...rest] = l.split("\t");
-      const login = rest.length > 0 ? (rest[0] as string) : undefined;
-      return { sha, name, email, login };
-    });
+  return (
+    input
+      .split("\n")
+      // Only the carriage return, never `trimEnd`. An UNATTRIBUTED commit is `sha\tname\temail\t` with
+      // an empty fourth field, and trimming that trailing tab turns it into the three-field hook shape
+      // — silently skipping the attribution clause on exactly the commit it exists for.
+      .map((l) => l.replace(/\r$/, ""))
+      .filter((l) => l.trim().length > 0)
+      .map((l) => {
+        const [sha = "-", name = "", email = "", ...rest] = l.split("\t");
+        const login = rest.length > 0 ? (rest[0] as string) : undefined;
+        return { sha, name, email, login };
+      })
+  );
 }
 
 if (import.meta.main) {
@@ -148,10 +164,15 @@ if (import.meta.main) {
     )
     .filter(Boolean);
   const ident = args.find((a) => a.startsWith("--ident="));
+  const capArg = args.find((a) => a.startsWith("--cap="));
   const commits = ident
     ? [parseIdent(ident.slice("--ident=".length))]
     : parseLines(await Bun.stdin.text());
-  const problems = checkCommits(commits, allowedLogins);
+  const problems = checkCommits(
+    commits,
+    allowedLogins,
+    capArg ? Number(capArg.slice("--cap=".length)) : undefined,
+  );
   if (problems.length > 0) {
     console.error(
       "commit identity: refusing an identity this project does not commit under\n",

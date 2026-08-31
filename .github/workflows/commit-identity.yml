@@ -22,7 +22,14 @@ jobs:
   identity:
     runs-on: ubuntu-latest
     steps:
+      # The BASE revision, never the PR's merge ref. A fork PR owns its own tree, so a checkout of it
+      # would let the contributor replace `check-commit-identity.ts` with a no-op and make this gate
+      # succeed. Nothing from the PR's tree is needed here: the commits come from the API.
+      # (The workflow FILE is already safe — for `pull_request`, GitHub runs the base branch's copy.)
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -44,6 +51,9 @@ jobs:
           # `author.login` is empty when GitHub matches the address to no account — the script reads
           # that empty fourth field as UNATTRIBUTED and says so, rather than leaving it to the
           # ruleset's silent extra approval.
+          # `--cap=250` is the size at which this listing stops being trustworthy: the endpoint
+          # returns at most 250 commits even paginated, so beyond it the job would go green over
+          # commits nobody looked at. The script refuses instead of vouching for a partial answer.
           gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR}/commits" \
             --jq '.[] | [.sha, .commit.author.name, .commit.author.email, (.author.login // "")] | @tsv' \
-            | bun scripts/check-commit-identity.ts --also="${PR_AUTHOR}"
+            | bun scripts/check-commit-identity.ts --also="${PR_AUTHOR}" --cap=250

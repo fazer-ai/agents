@@ -126,6 +126,29 @@ describe("what a hook has to work with", () => {
   });
 });
 
+describe("the listing has to be complete to mean anything", () => {
+  // `pulls/{n}/commits` returns at most 250 even paginated, so at the cap the job would be vouching
+  // for commits it never saw.
+  test("refuses a PR at the API's listing cap", () => {
+    const many = Array.from({ length: 250 }, () =>
+      c("Gabriel Jablonski", "gabriel@fazer.ai", "gabrieljablonski"),
+    );
+    const problems = checkCommits(many, [], 250);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("at most 250");
+  });
+
+  test("says nothing about a PR below it", () => {
+    expect(
+      checkCommits(
+        [c("Gabriel Jablonski", "gabriel@fazer.ai", "gabrieljablonski")],
+        [],
+        250,
+      ),
+    ).toEqual([]);
+  });
+});
+
 describe("the wire format", () => {
   test("three fields leave the login absent, four supply it", () => {
     const parsed = parseLines(
@@ -138,5 +161,17 @@ describe("the wire format", () => {
 
   test("blank lines are not commits", () => {
     expect(parseLines("\n\n")).toEqual([]);
+  });
+
+  // `@tsv` writes an unattributed commit as a trailing TAB, and trimming it turns the line into the
+  // three-field hook shape — skipping the attribution clause on the very commit it exists for.
+  test("an empty fourth field survives, and is not an absent one", () => {
+    const parsed = parseLines("abc\tSome One\tnobody@example.com\t\n");
+    expect(parsed[0]?.login).toBe("");
+    expect(checkCommits(parsed)[0]).toContain("UNATTRIBUTED");
+  });
+
+  test("a carriage return is not part of the login", () => {
+    expect(parseLines("abc\tA\ta@b.c\trrmlima\r\n")[0]?.login).toBe("rrmlima");
   });
 });

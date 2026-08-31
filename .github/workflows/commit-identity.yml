@@ -1,0 +1,49 @@
+name: Commit identity on PR
+
+# The layer that always runs, and the only one that sees a fork's commits.
+#
+# The husky hooks are the fast half and they are not a net: `core.hooksPath` points at `.husky/_`,
+# which husky's `prepare` writes and nobody commits, so a hook exists only where an install ran —
+# the same silent gap `stale-base-guard.yml` was split out for. And `--author` is applied AFTER
+# pre-commit, where no hook can see it. This job reads the commits as they actually landed.
+#
+# It runs before install: the check is one API call and one script with no imports.
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  identity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+
+      - name: Refuse an identity this project does not commit under
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number || 0 }}
+          # The PR's own author, the one login this check cannot know on its own: a contributor's
+          # commits are theirs to sign.
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          set -euo pipefail
+          if [ "$PR" = "0" ]; then
+            echo "no pull request in context; nothing to check"
+            exit 0
+          fi
+          # `author.login` is empty when GitHub matches the address to no account — the script reads
+          # that empty fourth field as UNATTRIBUTED and says so, rather than leaving it to the
+          # ruleset's silent extra approval.
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR}/commits" \
+            --jq '.[] | [.sha, .commit.author.name, .commit.author.email, (.author.login // "")] | @tsv' \
+            | bun scripts/check-commit-identity.ts --also="${PR_AUTHOR}"

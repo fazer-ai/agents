@@ -257,6 +257,14 @@ function jobFor(
   };
 }
 
+async function replyClaimOf(convId: number): Promise<number | null> {
+  const row = await suDb.conversation.findFirstOrThrow({
+    where: { tenantId, chatwootConversationId: convId },
+    select: { lastRepliedMessageId: true },
+  });
+  return row.lastRepliedMessageId;
+}
+
 async function watermarkOf(convId: number): Promise<number | null> {
   const row = await suDb.conversation.findFirstOrThrow({
     where: { tenantId, chatwootConversationId: convId },
@@ -732,9 +740,11 @@ describe.skipIf(!dbUp)("debounce", () => {
     // Nothing claimed yet, then a burst ahead of it, then the same burst twice.
     expect(await claim(10)).toEqual({ won: true, previous: null });
     expect(await claim(20)).toEqual({ won: true, previous: 10 });
-    expect(await claim(20)).toEqual({ won: false, previous: 20 });
+    // A loser carries no `previous`: it displaced nothing, and a value it did not displace is
+    // exactly what a release must never restore.
+    expect(await claim(20)).toEqual({ won: false });
     // And a burst BEHIND it, which is the shape the flush's retry and a second click both take.
-    expect(await claim(15)).toEqual({ won: false, previous: 20 });
+    expect(await claim(15)).toEqual({ won: false });
     expect(await stored()).toBe(20);
 
     // Released by the holder: back to what it displaced, so the next attempt can take it.
@@ -3386,6 +3396,10 @@ describe.skipIf(!dbUp)("debounce", () => {
       // "stale" says it should be: on a burst nothing answered, which the next flush re-coalesces.
       // That is the rule the outcome was written for; the old value was the CAS leaking through it.
       expect(await watermarkOf(862)).toBeNull();
+      // AND THE CLAIM WENT BACK with it. This is the window where a claim is taken and nothing is
+      // sent, so holding it would make the operator's re-engage of this very tail lose to a turn
+      // that stood down — the same shape as a failed send, reached by the other exit.
+      expect(await replyClaimOf(862)).toBeNull();
     });
   });
   // A turn that answers with BOTH an attachment and text, retired between the two. The image is with

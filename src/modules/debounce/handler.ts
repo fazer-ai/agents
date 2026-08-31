@@ -59,12 +59,7 @@ import {
 } from "@/modules/spend-ceiling/service";
 import { readLastMessageId } from "./service";
 import { readDebounceConfig } from "./settings";
-import {
-  advanceHandledWatermark,
-  claimReplyBurst,
-  readHandledWatermark,
-  releaseReplyBurst,
-} from "./watermark";
+import { advanceHandledWatermark, readHandledWatermark } from "./watermark";
 
 // The DEBOUNCE flush: re-fetch the conversation from Chatwoot, coalesce the inbound messages past the
 // watermark into one turn, and answer once. Two re-fetches by design: the first builds the burst to
@@ -247,14 +242,9 @@ export async function coalesceAndRunTurn(
   const { client, pending, dropped, targetWatermark, lastMessageId, text } =
     burst;
 
-  // 2. Post gate: re-fetch to detect mid-turn arrivals (supersede), then claim the burst
-  //    monotonically so a concurrent poster cannot also send. Re-fetch failure is non-fatal.
-  //
-  //    Held here rather than returned, because the claim outlives the answer: the send is the next
-  //    thing that happens, and a turn that throws inside it has to give the claim back (below).
-  const claim: { held: { target: number; previous: number | null } | null } = {
-    held: null,
-  };
+  // 2. Post gate, first half: re-fetch to detect mid-turn arrivals (supersede). Re-fetch failure is
+  //    non-fatal. The second half — the monotonic claim that makes this exclusive with every other
+  //    posting path — is taken by `runLoadedTurn` off `claimReply` below.
   const shouldPost = async (): Promise<boolean> => {
     try {
       const latest = parseChatwootMessages(
@@ -276,14 +266,7 @@ export async function coalesceAndRunTurn(
         err(e),
       );
     }
-    const { won, previous } = await claimReplyBurst({
-      tenantId,
-      conversationDbId: convDbId,
-      toMessageId: targetWatermark,
-      base,
-    });
-    if (won) claim.held = { target: targetWatermark, previous };
-    return won;
+    return true;
   };
 
   // 3. Run the turn with the coalesced text. A thrown error bubbles to the caller. Share one turnId
@@ -309,44 +292,29 @@ export async function coalesceAndRunTurn(
       },
     );
   }
-  // A THROW GIVES THE CLAIM BACK, for the same reason it leaves the watermark alone: the burst was
-  // not consumed. The claim is taken immediately before the send, so a Chatwoot failure would
-  // otherwise leave a burst nothing answered marked as claimed, and the retry the scheduler runs —
-  // or the operator's next click, which is what this whole path exists for — would find it and
-  // stand down. The two writes move together: whatever the error path does not advance, it does not
-  // hold either.
-  let outcome: RunAgentTurnOutcome | "empty";
-  try {
-    outcome = await runLoadedTurn({
-      stillWanted: ctx.stillWanted,
-      loaded,
-      authContext: ctx.authContext,
-      tenantId,
-      instanceId,
-      conversationId,
-      agentBotId,
-      threadId,
-      turnId,
-      text,
-      // The id of the burst's most recent message, exposed to tools as {{message_id}}.
-      messageId: lastMessageId,
-      userSentAudio: pending.some((m) => m.attachmentTypes.includes("audio")),
-      base,
-      deps,
-      shouldPost,
-    });
-  } catch (e) {
-    if (claim.held) {
-      await releaseReplyBurst({
-        tenantId,
-        conversationDbId: convDbId,
-        toMessageId: claim.held.target,
-        previous: claim.held.previous,
-        base,
-      });
-    }
-    throw e;
-  }
+  const outcome = await runLoadedTurn({
+    stillWanted: ctx.stillWanted,
+    loaded,
+    authContext: ctx.authContext,
+    tenantId,
+    instanceId,
+    conversationId,
+    agentBotId,
+    threadId,
+    turnId,
+    text,
+    // The id of the burst's most recent message, exposed to tools as {{message_id}}.
+    messageId: lastMessageId,
+    userSentAudio: pending.some((m) => m.attachmentTypes.includes("audio")),
+    base,
+    deps,
+    shouldPost,
+    // The burst this turn is exclusive over, in the one column every posting path claims — which is
+    // what keeps this flush, a retry of it and an operator's re-engage of the same tail from each
+    // sending a reply (issue #452). `runLoadedTurn` also gives it back when the turn throws or
+    // stands down, so a failed send does not leave a burst nothing answered marked as claimed.
+    claimReply: { conversationDbId: convDbId, toMessageId: targetWatermark },
+  });
   // Every completed outcome except "superseded" consumed the burst: answered ("posted", including
   // the input-guardrail template which claims through the same gate), or deliberately dropped
   // (taken over mid-turn, empty reply, guardrail "silent"). Advance so the next flush cannot

@@ -32,7 +32,12 @@ import {
   observeBeforeClose,
   recordResolutionOrigin,
 } from "@/modules/conversations/record-resolution";
-import { advanceHandledWatermark } from "@/modules/debounce/watermark";
+import {
+  advanceHandledWatermark,
+  claimReplyBurst,
+  readHandledWatermark,
+  releaseReplyBurst,
+} from "@/modules/debounce/watermark";
 import {
   emitFlowEvent,
   type FlowContext,
@@ -217,9 +222,21 @@ export interface RunLoadedTurnParams {
   base?: PrismaClient;
   deps?: RuntimeDeps;
   // Optional last-moment gate, called AFTER the assignee re-check and BEFORE the post. Returning
-  // false suppresses the reply (outcome "superseded"). Used by the debounce flush to drop a reply
-  // when a newer message arrived mid-turn; the re-armed flush then answers the full burst.
+  // false suppresses the reply (outcome "superseded"). Used by the posting paths to drop a reply
+  // when a newer message arrived mid-turn; the re-armed flush then answers the full burst. It is
+  // the SUPERSEDE question only — the at-most-once claim is `claimReply` below, taken here rather
+  // than by each caller.
   shouldPost?: () => Promise<boolean>;
+  // WHICH BURST THIS TURN CLAIMS, and it is asked of every caller (nullable, never defaulted)
+  // because the answer is what makes two posting paths exclusive. `null` says this turn posts
+  // nothing anyone else could also post — the playground, and a direct turn with no mirrored
+  // conversation or no triggering message.
+  //
+  // Claimed HERE and not by the caller: the claim's own correctness is that ONE column decides for
+  // every path that sends, and a per-caller claim is how the flush and the manual re-engage came to
+  // contend on different rows and both answer the same burst (issue #452). Whoever adds the next
+  // posting path gets the protocol by construction, including the release.
+  claimReply: { conversationDbId: bigint; toMessageId: number } | null;
   // Whether the run that queued this turn is still wanted. Asked INSIDE the `ingest:` critical
   // section, and again immediately before each post — the two moments this function writes
   // something the customer or the next turn can see.
@@ -470,9 +487,72 @@ async function deliverPendingAttachments(
   return { sent, failed, calledOff: stopped };
 }
 
+// THE REPLY CLAIM'S WHOLE LIFECYCLE, wrapped around the turn because this is the tail every posting
+// path shares (issue #452): the direct webhook turn, the debounce flush and the manual re-engage all
+// arrive here, and at-most-once only holds while the three claim the same column.
+//
+// Taken immediately before the send, as the second half of the post gate, and GIVEN BACK on the two
+// exits that leave the burst unanswered:
+//
+//   - a throw (the send itself failed, or anything after the claim did), which is what makes an
+//     LLM/Chatwoot error retry against the same burst instead of standing down against a claim
+//     nothing ever answered;
+//   - "stale", where the run was called off between the claim and the send. Nothing was answered,
+//     so holding the claim would make the operator's next click on that unanswered tail lose to a
+//     turn that stood down — the very shape this issue is about, one incarnation further along.
+//     (The direct path advances the watermark on "stale" for reasons of its own, written where it
+//     does it; what governs whether a reply may follow a /reset is the episode fence, never this
+//     claim.)
+//
+// Every other outcome consumed the burst — "posted" answered it, "empty"/"blocked"/"taken-over"
+// dropped it deliberately and advance the watermark — so the claim stays where it is.
+export async function runLoadedTurn(
+  params: RunLoadedTurnParams,
+): Promise<RunAgentTurnOutcome> {
+  const target = params.claimReply;
+  if (!target) return runTurnBody(params);
+  const base = params.base ?? basePrisma;
+  const claim: { held: { previous: number | null } | null } = { held: null };
+  const release = async (): Promise<void> => {
+    if (!claim.held) return;
+    await releaseReplyBurst({
+      tenantId: params.tenantId,
+      conversationDbId: target.conversationDbId,
+      toMessageId: target.toMessageId,
+      previous: claim.held.previous,
+      base,
+    });
+    claim.held = null;
+  };
+  try {
+    const outcome = await runTurnBody({
+      ...params,
+      // The caller's supersede question first, then the claim: a burst a newer message superseded
+      // must not be claimed at all, or the re-armed flush that answers the full burst loses to a
+      // claim taken by the turn that stood down.
+      shouldPost: async () => {
+        if (params.shouldPost && !(await params.shouldPost())) return false;
+        const won = await claimReplyBurst({
+          tenantId: params.tenantId,
+          conversationDbId: target.conversationDbId,
+          toMessageId: target.toMessageId,
+          base,
+        });
+        if (won.won) claim.held = { previous: won.previous };
+        return won.won;
+      },
+    });
+    if (outcome === "stale") await release();
+    return outcome;
+  } catch (e) {
+    await release();
+    throw e;
+  }
+}
+
 // Builds the client + tools + graph from an already-loaded AgentConfig, invokes the thread, re-checks
 // the live assignee, optionally consults `shouldPost`, then posts via the bot token.
-export async function runLoadedTurn(
+async function runTurnBody(
   params: RunLoadedTurnParams,
 ): Promise<RunAgentTurnOutcome> {
   // Applied HERE, before anything reads the config, so the prompt the model is built on, the one
@@ -1707,10 +1787,16 @@ export async function runAgentTurn(
 
   // NOTE: Post gate, mirroring the debounce flush (issue #49): concurrent direct turns on the same
   // conversation (webhook deliveries are not serialized) each generate a reply — without this gate
-  // the STALE one posts too, answering a message the customer already moved past. Re-fetch to
-  // detect a newer incoming message (defer to its own turn), then advance the watermark via the
-  // monotonic CAS so a duplicate/stale claim can never double-post. Re-fetch failure is non-fatal
-  // (same contract as the flush); the CAS is the backstop.
+  // the STALE one posts too, answering a message the customer already moved past.
+  //
+  // TWO QUESTIONS, and the CAS this used to be was answering both with one write (issue #452).
+  // "Has a newer message arrived?" is the re-fetch. "Was this trigger already handled?" is the
+  // WATERMARK, read rather than advanced: a delivery arriving late for a message some earlier turn
+  // already answered or skipped finds the mark at or past its own id and stands down — that is what
+  // the losing CAS used to say, and it is a fact about the message, not a claim on it. The claim
+  // ("is anybody else answering this right now?") is `claimReply` below, taken by `runLoadedTurn` in
+  // the ONE column every posting path shares, which is what makes this turn and a manual re-engage
+  // of the same tail exclusive. Re-fetch failure is non-fatal (same contract as the flush).
   const triggerId = n.message?.id ?? null;
   const convDbId = loaded.conversationDbId;
   const shouldPost =
@@ -1738,12 +1824,20 @@ export async function runAgentTurn(
               e instanceof Error ? e.message : String(e),
             );
           }
-          return advanceHandledWatermark({
+          const handled = await readHandledWatermark({
             tenantId,
             conversationDbId: convDbId,
-            toMessageId: triggerId,
             base,
           });
+          if (handled !== null && handled >= triggerId) {
+            logger.info(
+              "direct turn: trigger %s already handled (conv=%s), deferring",
+              String(triggerId),
+              String(conversationId),
+            );
+            return false;
+          }
+          return true;
         }
       : undefined;
 
@@ -1778,8 +1872,16 @@ export async function runAgentTurn(
     base,
     deps: params.deps,
     shouldPost,
+    // The same id the supersede gate is written around: this turn answers ONE message, so that
+    // message is the burst it claims. Null where there is nothing to be exclusive about — no
+    // mirrored conversation (the playground), or no triggering message.
+    claimReply:
+      triggerId !== null && convDbId !== null
+        ? { conversationDbId: convDbId, toMessageId: triggerId }
+        : null,
   });
-  // NOTE: Watermark tail for the outcomes shouldPost's CAS did not cover ("posted" already advanced):
+  // NOTE: Watermark tail, now for every outcome including "posted" — the post gate claims in its own
+  // column and no longer advances this one on the way past (issue #452).
   // empty/blocked consumed the message, taken over hands it to the human — left alone the watermark
   // stays NULL forever, and the first flush after debounce is later enabled (or after an arm failure
   // fell back here) re-answers the whole recent page (issue #8). "superseded" stays put BY DESIGN:

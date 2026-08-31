@@ -65,35 +65,38 @@ export async function advanceHandledWatermark(
 // different rows and both send.
 //
 // Returns whether this call won, and the value it displaced — which the release below needs.
+//
+// ONE STATEMENT, and that is not tidiness: the displaced value has to be the one THIS update
+// displaced. Read separately, two claimants racing on different targets both read the pre-A value,
+// B commits over A, and B's release then restores a mark that predates A — handing a burst A
+// answered back to a later retry, which sends A's reply a second time. The self-join reads the row
+// as it was before the SET, in the same statement that takes the row lock, so there is no window to
+// read in.
 export async function claimReplyBurst(params: {
   tenantId: bigint;
   conversationDbId: bigint;
   toMessageId: number;
   base?: PrismaClient;
-}): Promise<{ won: boolean; previous: number | null }> {
+}): Promise<
+  { won: true; previous: number | null } | { won: false; previous?: never }
+> {
   const base = params.base ?? basePrisma;
   return runScopedOn(base, sysCtx(params.tenantId), async (db) => {
-    // Read and CAS inside one transaction: the update takes the row lock, so a concurrent claimant
-    // blocks on it and then re-evaluates against the committed value. The loser's `previous` is
-    // never used, and the winner's is the value its own update displaced.
-    const before = await db.conversation.findUnique({
-      where: { id: params.conversationDbId },
-      select: { lastRepliedMessageId: true },
-    });
-    const cas = await db.conversation.updateMany({
-      where: {
-        id: params.conversationDbId,
-        OR: [
-          { lastRepliedMessageId: null },
-          { lastRepliedMessageId: { lt: params.toMessageId } },
-        ],
-      },
-      data: { lastRepliedMessageId: params.toMessageId },
-    });
-    return {
-      won: cas.count > 0,
-      previous: before?.lastRepliedMessageId ?? null,
-    };
+    const rows = await db.$queryRaw<Array<{ previous: number | null }>>`
+      UPDATE "conversations" AS c
+         SET "last_replied_message_id" = ${params.toMessageId}
+        FROM "conversations" AS old
+       WHERE c."id" = ${params.conversationDbId}
+         AND old."id" = c."id"
+         AND (c."last_replied_message_id" IS NULL
+              OR c."last_replied_message_id" < ${params.toMessageId})
+   RETURNING old."last_replied_message_id" AS "previous"`;
+    // A LOSER HAS NO `previous`, and the type says so: it displaced nothing, and handing it the
+    // column's current value is what would let a release roll back somebody else's claim.
+    const row = rows[0];
+    return row === undefined
+      ? { won: false }
+      : { won: true, previous: row.previous };
   });
 }
 

@@ -8,7 +8,7 @@ import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { getCheckpointer } from "@/graph/checkpointer";
 import { DATA_FENCE } from "@/graph/nudge";
-import { customerFacingReply } from "@/graph/silence";
+import { customerFacingReply, proactiveReply } from "@/graph/silence";
 import { CONVERSATION_NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
 import {
   buildPlaygroundTrace,
@@ -47,7 +47,16 @@ function msgType(m: BaseMessage): string {
 // The turn's reply = the last AI message with non-empty text in the slice. (We can't use the
 // graph's lastAssistantText here: it returns the last message's content regardless of type, so a
 // silent follow-up slice — just the system nudge, no AI — would wrongly echo the nudge text.)
-function lastAi(messages: BaseMessage[]): { text: string; id?: string } {
+function lastAi(
+  messages: BaseMessage[],
+  // WHICH RULE sanitizes it, and it has to be the one the live run used. A follow-up's reply went
+  // out through `proactiveReply`, which strips a stray token from a real answer; an ordinary turn's
+  // went out through `customerFacingReply`, which deliberately keeps it (editing a customer-facing
+  // answer is the data loss `docs/graph.md` prohibits). Rebuilding both with the reactive rule
+  // showed a reopened follow-up a different reply from the one the operator was given, with the
+  // token back in it (round 22).
+  followup: boolean,
+): { text: string; id?: string } {
   // THE LAST AI MESSAGE, even when it is empty — not the last one that happens to have text. A turn
   // that ends in silence ends with an empty AI message (after `skip_reply`'s tool result), and an
   // EARLIER tool-calling AI message in the same slice can carry text; scanning past the empty one
@@ -67,7 +76,9 @@ function lastAi(messages: BaseMessage[]): { text: string; id?: string } {
         // sentinel-only turn is a silent turn, and letting the scan walk past it would render the
         // previous exchange's text as this turn's answer.
         return {
-          text: customerFacingReply(txt).text,
+          text: followup
+            ? proactiveReply(txt).text
+            : customerFacingReply(txt).text,
           id: typeof id === "string" ? id : undefined,
         };
       }
@@ -189,14 +200,18 @@ export function rebuildPlaygroundTurns(
       simulatedNames: simulated,
     });
     const sources = collectTraceSources(trace);
-    const reply = lastAi(slice);
-    if (ty === "human") {
-      const human = messages[i] as BaseMessage;
-      const raw = contentToText(human.content);
+    const human = ty === "human" ? (messages[i] as BaseMessage) : null;
+    const raw = human ? contentToText(human.content) : "";
+    // A slice is a FOLLOW-UP when its opening human turn carries the nudge fence, or when it is a
+    // system message at all (the legacy shape below). Decided before the reply is read, because it
+    // decides which rule reads it.
+    const isFollowup = human ? raw.includes(DATA_FENCE) : true;
+    const reply = lastAi(slice, isFollowup);
+    if (human) {
       // A proactive follow-up is now injected as a HUMAN turn (a SystemMessage would make strict
       // providers reject the call — see graph.ts). renderNudge always embeds DATA_FENCE, which can't
       // be forged from user input, so it cleanly distinguishes a nudge from a real user message.
-      if (raw.includes(DATA_FENCE)) {
+      if (isFollowup) {
         if (reply.text)
           turns.push({
             role: "assistant",

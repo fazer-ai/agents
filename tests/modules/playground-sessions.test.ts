@@ -5,6 +5,7 @@ import {
   SystemMessage,
   ToolMessage,
 } from "@langchain/core/messages";
+import { DATA_FENCE } from "@/graph/nudge";
 import { FOLLOWUP_SKIP_SENTINEL } from "@/graph/silence";
 import {
   applyTurnNotes,
@@ -90,6 +91,47 @@ describe("rebuildPlaygroundTurns", () => {
       audio: true,
     });
     expect(turns[1]).toMatchObject({ role: "assistant", text: "Claro!" });
+  });
+
+  // Round 22. The two rules are not interchangeable, and the rebuild used the reactive one for
+  // everything: a follow-up's reply went out through `proactiveReply`, which strips a stray token
+  // from a real answer, so reopening the session showed the operator a different reply from the one
+  // they were given — with the token back in it.
+  test("a reopened follow-up is sanitized by the rule that produced it", () => {
+    const reply = `${FOLLOWUP_SKIP_SENTINEL} Ainda precisa de algo?`;
+    // The legacy shape (a SystemMessage nudge)...
+    const legacy = rebuildPlaygroundTurns([
+      new SystemMessage("nudge…"),
+      new AIMessage(reply),
+    ]);
+    expect(legacy[0]).toMatchObject({
+      role: "assistant",
+      text: "Ainda precisa de algo?",
+      followup: true,
+    });
+    // ...and the current one, a human turn carrying the nudge fence.
+    const fenced = rebuildPlaygroundTurns([
+      new HumanMessage(`um evento aconteceu ${DATA_FENCE} dados`),
+      new AIMessage(reply),
+    ]);
+    expect(fenced[0]).toMatchObject({
+      role: "assistant",
+      text: "Ainda precisa de algo?",
+      followup: true,
+    });
+  });
+
+  // The control, and it is the whole reason the rules differ: an ORDINARY turn keeps the token,
+  // because editing a customer-facing answer is the data loss `docs/graph.md` prohibits.
+  test("a reopened ordinary turn still carries a stray token", () => {
+    const turns = rebuildPlaygroundTurns([
+      new HumanMessage("oi"),
+      new AIMessage(`${FOLLOWUP_SKIP_SENTINEL} Claro, posso ajudar.`),
+    ]);
+    expect(turns[1]).toMatchObject({
+      role: "assistant",
+      text: `${FOLLOWUP_SKIP_SENTINEL} Claro, posso ajudar.`,
+    });
   });
 
   test("a system nudge yields a follow-up reply; a silent one is skipped", () => {

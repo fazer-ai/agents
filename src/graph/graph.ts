@@ -369,8 +369,38 @@ export function buildAgentGraph({
     if (hardLimit) {
       onToolLimit?.({ maxToolCalls: max, toolCalls });
     }
+    // THE HARD LIMIT MUST NOT TALK A DECISION OUT OF ITSELF, and a PARALLEL batch is where it could.
+    // The hard-limit path invokes the RAW model with no tools bound, which exists to force a text
+    // answer — and round 18 made that batch non-terminal, so a model that chose silence and had a
+    // companion to inspect landed there and could be made to write. Round 9 already named that
+    // defect; this is the same one, arriving through the parallel door.
+    //
+    // So the budget stops the tools that ACT and leaves the one that does not: with `skip_reply`
+    // alone bound, the model sees the companion's result and either reaffirms silence (a batch that
+    // is nothing but the decision, which ends the turn) or answers, which is exactly what the
+    // customer needs when the companion failed. It cannot loop: the reaffirmation is terminal.
+    const silenceOnly =
+      hardLimit && staySilent
+        ? (tools ?? []).filter((t) => t.name === SKIP_REPLY_TOOL)
+        : [];
+    // What the HARD LIMIT invokes: the raw model, or the raw model with only that one tool bound.
+    const capped =
+      silenceOnly.length > 0
+        ? (model.bindTools?.(silenceOnly) ?? model)
+        : model;
+    const cappedFallback =
+      fallback && silenceOnly.length > 0
+        ? (fallback.model.bindTools?.(silenceOnly) ?? fallback.model)
+        : fallback?.model;
 
-    const messages = [new SystemMessage(prompt), ...history];
+    // SENT WITHOUT THE NARRATION, not merely persisted without it. The blanking above is a reducer
+    // update that lands AFTER this call, so a parallel batch's extra round would otherwise reach the
+    // model still carrying the sentence the customer never received — and the model can lean on it,
+    // or repeat it, in the answer that does go out (round 22).
+    const sent = narration.length
+      ? history.map((m) => narration.find((n) => n.id === m.id) ?? m)
+      : history;
+    const messages = [new SystemMessage(prompt), ...sent];
     // The SAME question, to the other provider, when there is one. Same messages and same prompt:
     // this is not a second, cheaper attempt, it is the attempt the customer is waiting for.
     const second =
@@ -378,7 +408,10 @@ export function buildAgentGraph({
         ? {
             labels: { provider: fallback.provider, model: fallback.modelId },
             run: () =>
-              (hardLimit ? fallback.model : fallbackLlm).invoke(messages, {
+              (hardLimit
+                ? (cappedFallback ?? fallback.model)
+                : fallbackLlm
+              ).invoke(messages, {
                 // Metadata rather than callbacks, and measured: metadata MERGES with the turn's and
                 // reaches the handlers it already had, while `callbacks` replaces them — which
                 // would have billed this call to the primary's name or dropped the Langfuse trace.
@@ -394,6 +427,7 @@ export function buildAgentGraph({
       try {
         return {
           messages: [
+            ...narration,
             await runModelCall(second.run, {
               primary: second.labels,
               onRetry: onModelRetry,
@@ -410,7 +444,7 @@ export function buildAgentGraph({
     }
 
     const response = await runModelCall(
-      () => (hardLimit ? model : llm).invoke(messages),
+      () => (hardLimit ? capped : llm).invoke(messages),
       {
         primary,
         onRetry: onModelRetry,

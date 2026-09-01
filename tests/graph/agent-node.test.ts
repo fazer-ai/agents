@@ -477,6 +477,192 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     expect(messages.some((m) => m.getType() === "tool")).toBe(true);
   });
 
+  // Round 22. At the hard limit the graph invokes the RAW model with no tools bound, to force a text
+  // answer — and round 18 made a parallel batch non-terminal, so a model that chose silence and had
+  // a companion to inspect landed exactly there. Round 9 already named that defect; this is the same
+  // one arriving through the parallel door. The budget stops the tools that ACT and leaves the one
+  // that does not, so the model can reaffirm silence after seeing the companion's result.
+  test("the hard limit leaves a silent turn the option to stay silent", async () => {
+    const skipTool = tool(
+      async () => `${SKIP_REPLY_ACK}. Produce no message now.`,
+      { name: SKIP_REPLY_TOOL, description: "skip", schema: z.object({}) },
+    );
+    const reactTool = tool(async () => "reacted with 👍", {
+      name: "react_to_message",
+      description: "react",
+      schema: z.object({}),
+    });
+    const boundAtLimit: string[][] = [];
+    class ReaffirmsSilence {
+      rawInvokes = 0;
+      rounds = 0;
+      // The raw path is what forces text, and it must NOT be what runs here.
+      async invoke(): Promise<AIMessage> {
+        this.rawInvokes++;
+        return new AIMessage("texto que o cliente não pediu");
+      }
+      bindTools(tls: unknown) {
+        const self = this;
+        const names = (tls as { name: string }[]).map((t) => t.name);
+        return {
+          async invoke(): Promise<AIMessage> {
+            self.rounds++;
+            if (self.rounds === 1) {
+              return new AIMessage({
+                content: "",
+                tool_calls: [
+                  { name: "react_to_message", args: {}, id: "c1" },
+                  { name: SKIP_REPLY_TOOL, args: {}, id: "c2" },
+                ],
+              });
+            }
+            // The round the hard limit runs: only the inert tool is on offer, and the model takes it.
+            boundAtLimit.push(names);
+            return new AIMessage({
+              content: "",
+              tool_calls: [{ name: SKIP_REPLY_TOOL, args: {}, id: "c3" }],
+            });
+          },
+        };
+      }
+    }
+    const model = new ReaffirmsSilence();
+    const hits: Array<{ maxToolCalls: number; toolCalls: number }> = [];
+    const graph = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
+      model: model as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer: new MemorySaver(),
+      tools: [skipTool, reactTool],
+      // Spent by the parallel batch itself.
+      maxToolCalls: 2,
+      onToolLimit: (info) => hits.push(info),
+    });
+    const result = await graph.invoke(
+      { messages: [new HumanMessage("👍")] },
+      { configurable: { thread_id: "hard-limit-parallel-silence" } },
+    );
+    expect(model.rawInvokes).toBe(0);
+    expect(boundAtLimit).toEqual([[SKIP_REPLY_TOOL]]);
+    expect(String(result.messages.at(-1)?.content ?? "")).toBe("");
+    expect(hits[0]).toEqual({ maxToolCalls: 2, toolCalls: 2 });
+  });
+
+  // ...and the same round may ANSWER instead, which is what the customer needs when the companion
+  // failed. The option is the point; the outcome is the model's.
+  test("the hard limit still lets that turn answer if it wants to", async () => {
+    const skipTool = tool(
+      async () => `${SKIP_REPLY_ACK}. Produce no message now.`,
+      { name: SKIP_REPLY_TOOL, description: "skip", schema: z.object({}) },
+    );
+    const reactTool = failableTool(async () => toolFailure("could not react"), {
+      name: "react_to_message",
+      description: "react",
+      schema: z.object({}),
+    });
+    class AnswersAfterAFailedReaction {
+      rounds = 0;
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("nunca deveria rodar cru");
+      }
+      bindTools(_tls: unknown) {
+        const self = this;
+        return {
+          async invoke(): Promise<AIMessage> {
+            self.rounds++;
+            if (self.rounds === 1) {
+              return new AIMessage({
+                content: "",
+                tool_calls: [
+                  { name: "react_to_message", args: {}, id: "c1" },
+                  { name: SKIP_REPLY_TOOL, args: {}, id: "c2" },
+                ],
+              });
+            }
+            return new AIMessage("Recebido, obrigado!");
+          },
+        };
+      }
+    }
+    const graph = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
+      model: new AnswersAfterAFailedReaction() as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer: new MemorySaver(),
+      tools: [skipTool, reactTool],
+      maxToolCalls: 2,
+    });
+    const result = await graph.invoke(
+      { messages: [new HumanMessage("👍")] },
+      { configurable: { thread_id: "hard-limit-parallel-answer" } },
+    );
+    expect(String(result.messages.at(-1)?.content ?? "")).toBe(
+      "Recebido, obrigado!",
+    );
+  });
+
+  // Round 22, the other half: the blanking is a reducer update that lands AFTER the model call, so
+  // the extra round a parallel batch buys would otherwise still be SENT the sentence the customer
+  // never received — and the model can lean on it, or repeat it, in the answer that does go out.
+  test("the extra round is not shown the narration it is about to lose", async () => {
+    const skipTool = tool(
+      async () => `${SKIP_REPLY_ACK}. Produce no message now.`,
+      { name: SKIP_REPLY_TOOL, description: "skip", schema: z.object({}) },
+    );
+    const reactTool = tool(async () => "reacted with 👍", {
+      name: "react_to_message",
+      description: "react",
+      schema: z.object({}),
+    });
+    const seenNarration: boolean[] = [];
+    class NarratesThenIsAskedAgain {
+      rounds = 0;
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("");
+      }
+      bindTools(_tls: unknown) {
+        const self = this;
+        return {
+          async invoke(messages: BaseMessage[]): Promise<AIMessage> {
+            self.rounds++;
+            if (self.rounds === 1) {
+              return new AIMessage({
+                id: "ai-sent-1",
+                content: "Só vou reagir e ficar quieto.",
+                tool_calls: [
+                  { name: "react_to_message", args: {}, id: "c1" },
+                  { name: SKIP_REPLY_TOOL, args: {}, id: "c2" },
+                ],
+              });
+            }
+            seenNarration.push(
+              messages.some((m) =>
+                JSON.stringify(m.content).includes("quieto"),
+              ),
+            );
+            return new AIMessage({
+              content: "",
+              tool_calls: [{ name: SKIP_REPLY_TOOL, args: {}, id: "c3" }],
+            });
+          },
+        };
+      }
+    }
+    const graph = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
+      model: new NarratesThenIsAskedAgain() as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer: new MemorySaver(),
+      tools: [skipTool, reactTool],
+      maxToolCalls: 10,
+    });
+    await graph.invoke(
+      { messages: [new HumanMessage("👍")] },
+      { configurable: { thread_id: "narration-not-sent" } },
+    );
+    expect(seenNarration).toEqual([false]);
+  });
+
   // The scope, pinned: a preamble beside an ORDINARY call is followed by a reply that may lean on
   // it, and rewriting the history of every tool-calling turn is a different change. Only the
   // decision to say nothing is rewritten here.

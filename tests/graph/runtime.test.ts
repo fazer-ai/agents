@@ -5496,6 +5496,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         computeConfigIssues({
           agentEnabled: true,
           modelProvider: "openai",
+          modelConfig: { provider: "openai", model: "gpt-4o-mini" },
           modelCredentialRef: "vault:1",
           savedModelProvider: "openai",
           sttEnabled: false,

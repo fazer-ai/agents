@@ -26,7 +26,7 @@ const SEVERITY: Record<ConfigIssueKey, ConfigIssueSeverity> = {
   // silence on every message rather than one feature going quiet.
   model: "blocking",
   // No provider at all: `parseModelConfig` refuses the bag and the turn never starts.
-  modelUnset: "blocking",
+  modelNotRunnable: "blocking",
   // openai-compatible with nowhere to dial: `createChatModel` throws instead of degrading.
   modelNoEndpoint: "blocking",
   // Fail-open: the analysis is skipped and every message is delivered as if it had been screened.

@@ -449,8 +449,10 @@ describe.skipIf(!dbUp)("agent configuration health", () => {
         unconfiguredAgent,
         { base: appDb },
       );
-      const unset = health.issues.find((i) => i.key === "modelUnset");
+      const unset = health.issues.find((i) => i.key === "modelNotRunnable");
       expect(unset?.severity).toBe("blocking");
+      // The sentence a caller acts on, not just the key.
+      expect(unset?.message).toContain("cannot be built");
       expect(health.healthy).toBe(false);
     });
 

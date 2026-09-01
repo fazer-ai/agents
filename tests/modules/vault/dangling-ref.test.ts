@@ -125,6 +125,7 @@ describe.skipIf(!dbUp)("a vault entry deleted out from under an agent", () => {
     const issues = computeConfigIssues({
       agentEnabled: true,
       modelProvider: "openai",
+      modelConfig: { provider: "openai", model: "gpt-4o-mini" },
       modelCredentialRef: ref(keyId),
       savedModelProvider: "openai",
       sttEnabled: false,

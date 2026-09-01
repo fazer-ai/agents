@@ -799,7 +799,7 @@
       "model": "O modelo não tem chave de API definida, então o agente não consegue responder.",
       "modelFallback": "Há um provedor reserva configurado, mas a configuração dele não roda, então um turno que o provedor principal derrubar continua sendo perdido. Confira o provedor, o modelo, a chave e o endpoint.",
       "modelNoEndpoint": "O modelo compatível com OpenAI está sem base URL, então não há endereço para chamar e o agente não consegue responder.",
-      "modelUnset": "Nenhum modelo está configurado, então o agente não consegue responder. Escolha um provedor e um modelo.",
+      "modelNotRunnable": "Esta configuração de modelo não pode ser montada, então o agente não consegue responder. Confira o provedor e o modelo.",
       "redirect": "O redirecionamento está ativado mas uma caixa de WhatsApp ou de chat do site não foi definida, então ele não vai rodar.",
       "stt": "A transcrição de voz está ligada, mas sem chave de API definida.",
       "tts": "As respostas em áudio estão ligadas, mas sem chave de API definida.",

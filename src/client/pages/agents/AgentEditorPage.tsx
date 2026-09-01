@@ -1872,7 +1872,7 @@ function AgentEditor() {
   // secrets is the common trigger; each issue deep-links to its tab + section, or to the vault fill
   // modal when pending. Per-issue messages (dynamic key by issue.key) registered for extraction:
   // t('editor.configIssue.model', 'The model has no API key set, so the agent cannot reply.')
-  // t('editor.configIssue.modelUnset', 'No model is configured, so the agent cannot reply. Pick a provider and a model.')
+  // t('editor.configIssue.modelNotRunnable', 'This model configuration cannot be built, so the agent cannot reply. Check the provider and the model.')
   // t('editor.configIssue.modelNoEndpoint', 'The OpenAI-compatible model has no base URL, so it cannot be reached and the agent cannot reply.')
   // t('editor.configIssue.stt', 'Voice transcription is on but has no API key set.')
   // t('editor.configIssue.tts', 'Audio replies are on but have no API key set.')
@@ -1951,6 +1951,10 @@ function AgentEditor() {
     // typed field. Read off the form rather than the row, like the pair above it — this half of
     // General is what the tab is about to save.
     modelBaseURL: modelCredBaseUrl ?? model.baseURL,
+    // The bag this tab would SAVE, so the runnability check judges what is about to be stored
+    // rather than a reconstruction of it. Built by the same function the save uses, which is what
+    // keeps the two from drifting.
+    modelConfig: buildModelConfig(),
     sttEnabled: stt.enabled,
     sttCredentialRef: stt.credentialRef,
     ttsMode: tts.mode,

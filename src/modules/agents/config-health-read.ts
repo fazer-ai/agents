@@ -219,6 +219,9 @@ export async function readAgentConfigHealth(
     modelProvider,
     modelCredentialRef,
     modelBaseURL,
+    // The stored bag, verbatim: an import writes whatever record the export carried
+    // (`agentExportSchema` takes an arbitrary one), so this is the only place its shape is judged.
+    modelConfig,
     savedModelProvider: modelProvider,
     savedModelBaseURL: modelBaseURL,
     savedModelCredentialRef: modelCredentialRef,

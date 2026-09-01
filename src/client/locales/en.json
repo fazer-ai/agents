@@ -796,7 +796,7 @@
       "model": "The model has no API key set, so the agent cannot reply.",
       "modelFallback": "A fallback provider is set but its configuration cannot run, so a turn the primary provider drops is still lost. Check its provider, model, key and endpoint.",
       "modelNoEndpoint": "The OpenAI-compatible model has no base URL, so it cannot be reached and the agent cannot reply.",
-      "modelUnset": "No model is configured, so the agent cannot reply. Pick a provider and a model.",
+      "modelNotRunnable": "This model configuration cannot be built, so the agent cannot reply. Check the provider and the model.",
       "redirect": "Redirect is on but a WhatsApp or website-chat inbox is not set, so it will not run.",
       "stt": "Voice transcription is on but has no API key set.",
       "tts": "Audio replies are on but have no API key set.",

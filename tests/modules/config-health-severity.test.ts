@@ -14,7 +14,7 @@ import {
 // served and a feature that is on does not run; advisory = nothing is off.
 const EXPECTED: Record<ConfigIssueKey, ConfigIssueSeverity> = {
   model: "blocking",
-  modelUnset: "blocking",
+  modelNotRunnable: "blocking",
   modelNoEndpoint: "blocking",
   guardrails: "blocking",
   guardrailsFailing: "blocking",

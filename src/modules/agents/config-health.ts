@@ -8,6 +8,7 @@ import {
   hasModelFallback,
   readModelFallbackConfig,
 } from "@/graph/fallback-settings";
+import { modelConfigSchema } from "@/graph/model-config";
 import { resolveModelOverride } from "@/graph/model-override";
 import { collectOversizedTextChanges } from "@/modules/agents/text-caps";
 import { readAvailabilityConfig } from "@/modules/availability/away";
@@ -25,13 +26,13 @@ import { resolveNormalizeModel } from "@/modules/tts/normalize-model";
 
 export type ConfigIssueKey =
   | "model"
-  // Two ways the PRIMARY model is unbuildable, which the credential check above cannot see because
-  // both are about a field that is not the credential. `createChatModel` throws on the second and
-  // `parseModelConfig` refuses the first, so either one is silence on every message — and both are
-  // storable: `modelConfig` may be `{}` by design (validateModelConfigForWrite, "unconfigured — the
-  // agent simply won't run until set"), and an openai-compatible bag with no endpoint passes every
-  // write boundary there is.
-  | "modelUnset"
+  // The PRIMARY model failing to BUILD, which the credential check above cannot see: it asks whether
+  // a configured provider has a key, and these are about the bag itself. Two keys because the fixes
+  // differ — one is the configuration, the other is an address — and both states are storable:
+  // `modelConfig` may be `{}` by design (validateModelConfigForWrite: "unconfigured — the agent
+  // simply won't run until set"), an import stores whatever record the export carried, and an
+  // openai-compatible bag with no endpoint passes every write boundary there is.
+  | "modelNotRunnable"
   | "modelNoEndpoint"
   | "stt"
   | "tts"
@@ -142,6 +143,16 @@ export interface ConfigHealthInput {
   // one provider that authenticates by URL rather than by key — so for it, this is the field a
   // missing-credential check would otherwise be standing in for.
   modelBaseURL?: string;
+  // The model bag AS IT WILL BE STORED, judged by the runtime's own schema rather than by a second
+  // reading of the same rules here. Required, and the compiler is the only thing that could catch a
+  // caller dropping it: a bag nobody validated is exactly the case this exists for.
+  //
+  // The three fields above are PROJECTIONS of this one, kept separate because the other checks
+  // consume them and one of them (the endpoint) is resolved against the vault rather than read off
+  // the bag. Both real callers derive all four from the same state — the editor from the form it is
+  // about to save, the server from the row — so a bag that disagrees with its own projections is not
+  // a state either of them can produce.
+  modelConfig: unknown;
   // The agent's own on/off, AS SAVED. Required rather than optional, and read by exactly one check:
   // the out-of-hours collision is the only line in this panel that claims something about what the
   // CUSTOMER receives. Every other line describes the configuration ("on, but no key"), which stays
@@ -333,27 +344,48 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
   // credential and nothing else: a ref that IS set is resolved by `loadAgentConfig` before the
   // provider is ever consulted, and a ref that does not resolve returns null for the whole agent,
   // which is silence on every message rather than one feature going quiet.
-  // NO MODEL AT ALL, which is a state this product produces on purpose: `modelConfig` may be `{}`
-  // ("unconfigured — the agent simply won't run until set"), and an agent created over REST or MCP
-  // without one lands exactly there. The credential check below cannot raise it, because it asks
-  // whether a CONFIGURED provider has a key — with no provider there is nothing to ask about, and
-  // the whole panel used to go quiet on the agent that answers nobody.
+  // CAN THIS MODEL BE BUILT AT ALL, asked of the two things that actually decide it at runtime
+  // rather than re-derived here. The credential check below answers a different question — does a
+  // configured provider have a key — and every state in this block passes it while the agent
+  // answers nobody.
+  //
+  // Both authorities are the runtime's own, and that is the whole design: a second copy of these
+  // rules is a second copy to drift. It is the same shape the three model OVERRIDES already use
+  // (they ask `resolveModelOverride`/`resolveNormalizeModel` and report `!runnable`); the primary
+  // model was the one that had nobody asking.
+  //
+  //   the schema     `parseModelConfig` runs this on every turn and THROWS. It covers the empty bag
+  //                  (`modelConfig` may be `{}` by design), a provider this build does not have, a
+  //                  missing `model` on a provider that requires one (openai-compatible is the only
+  //                  exemption), a malformed base URL, and `reasoningEffort` outside openai. An
+  //                  import is the common way in: `agentExportSchema` takes an arbitrary record and
+  //                  `importAgent` stores it as it came.
+  //   the endpoint   `createChatModel` throws for openai-compatible with nowhere to dial. The schema
+  //                  cannot judge this one, because the address is allowed to arrive on the
+  //                  CREDENTIAL instead of in the bag.
   const modelTarget = {
-    key: "modelUnset",
+    key: "modelNotRunnable",
     tab: "general",
     sectionId: "general-model",
   } as const;
-  if (!input.modelProvider) {
+  if (!modelConfigSchema.safeParse(input.modelConfig).success) {
     issues.push({ ...modelTarget });
   } else if (
     input.modelProvider === "openai-compatible" &&
-    !(input.modelBaseURL ?? "").trim() &&
+    // Not merely "is it blank": the schema's own `z.string().url()` accepts `llama:8080` (a valid
+    // URI with a `llama:` scheme), measured, so a bag can pass every write boundary and still name
+    // nowhere any client can dial. Same strictness the three overrides already apply, and for the
+    // same reason — this check exists FOR the bags nobody validated.
+    // Two failures, one consequence: nothing there, or something no client can dial. Both spelled
+    // out because `isValidHttpUrl` answers TRUE for the empty string on purpose — emptiness is the
+    // caller's own required-check, and this is that caller.
+    (!(input.modelBaseURL ?? "").trim() ||
+      !isValidHttpUrl(input.modelBaseURL ?? "")) &&
     // An endpoint can still ARRIVE on a credential the vault has not answered for yet, and calling
     // a runnable model broken is the false alarm the null-until-loaded rule exists to prevent. Same
     // wait the three overrides take, and for the same reason.
     !(known === null && Boolean(input.modelCredentialRef))
   ) {
-    // `createChatModel` throws here rather than degrading, so this is silence on every message.
     issues.push({ ...modelTarget, key: "modelNoEndpoint" });
   }
   push(

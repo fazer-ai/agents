@@ -458,7 +458,8 @@ describe("agentNode tool-call limit (soft+hard)", () => {
   // Round 17. `skip_reply` beside `react_to_message` is the documented way to answer with a reaction
   // ALONE — so the reaction IS the reply, and when it fails, ending the turn on the skip leaves the
   // customer with nothing at all. The model has to see that result and decide again, which is what
-  // every other failed tool call already gets.
+  // every other failed tool call already gets. (Round 18 widened the rule to every companion, for
+  // the reason below; this case is what made the question visible.)
   test("a companion tool that FAILED keeps the turn going", async () => {
     const skipTool = tool(
       async () => `${SKIP_REPLY_ACK}. Produce no message now.`,
@@ -512,9 +513,10 @@ describe("agentNode tool-call limit (soft+hard)", () => {
   });
 
   // ...and a companion the operator's own rule REFUSED is the same thing to the customer: the
-  // reaction did not happen, so ending on the skip leaves them with nothing. A refusal is not a
-  // failure — it carries no error status, deliberately, so it never pages — which is why it carries
-  // a marker instead.
+  // reaction did not happen, so ending on the skip leaves them with nothing. Round 17 read that off
+  // the RESULT; round 18 showed a result cannot answer it (a tool may decline through an ordinary
+  // success string), so the rule moved to the CALLS. This case is covered by the same rule now, and
+  // it stays because it is the shape an operator can actually configure.
   test("a companion tool that was REFUSED keeps the turn going", async () => {
     const skipTool = tool(
       async () => `${SKIP_REPLY_ACK}. Produce no message now.`,
@@ -573,9 +575,12 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     );
   });
 
-  // The control: the SAME batch with a reaction that worked ends silent, which is the documented
-  // shape. Without it the test above would pass on a rule that had simply stopped being terminal.
-  test("a companion tool that SUCCEEDED still ends the turn", async () => {
+  // The control, and round 18 changed what it controls FOR. A batch that called something else has
+  // produced information the model has not seen, so it decides again — whether that companion
+  // worked or not, because a tool can decline through a perfectly ordinary success result and no
+  // reader can tell. What the extra round must still deliver is SILENCE when the model asks for it
+  // alone: the decision is terminal there, and the raw model never speaks.
+  test("a companion that worked costs one round and still ends silent", async () => {
     const skipTool = tool(
       async () => `${SKIP_REPLY_ACK}. Produce no message now.`,
       { name: SKIP_REPLY_TOOL, description: "skip", schema: z.object({}) },
@@ -595,12 +600,20 @@ describe("agentNode tool-call limit (soft+hard)", () => {
         return {
           async invoke(): Promise<AIMessage> {
             self.rounds++;
+            if (self.rounds === 1) {
+              return new AIMessage({
+                content: "",
+                tool_calls: [
+                  { name: "react_to_message", args: {}, id: "c1" },
+                  { name: SKIP_REPLY_TOOL, args: {}, id: "c2" },
+                ],
+              });
+            }
+            // Having seen the reaction land, the model asks for silence ALONE — and that is the
+            // batch the turn may end on.
             return new AIMessage({
               content: "",
-              tool_calls: [
-                { name: "react_to_message", args: {}, id: "c1" },
-                { name: SKIP_REPLY_TOOL, args: {}, id: "c2" },
-              ],
+              tool_calls: [{ name: SKIP_REPLY_TOOL, args: {}, id: "c3" }],
             });
           },
         };
@@ -619,7 +632,7 @@ describe("agentNode tool-call limit (soft+hard)", () => {
       { messages: [new HumanMessage("👍")] },
       { configurable: { thread_id: "companion-ok" } },
     );
-    expect(model.rounds).toBe(1);
+    expect(model.rounds).toBe(2);
     expect(String(result.messages.at(-1)?.content ?? "")).toBe("");
   });
 
@@ -749,9 +762,12 @@ describe("agentNode tool-call limit (soft+hard)", () => {
       { messages: [new HumanMessage("ok")] },
       { configurable: { thread_id: "limit-parallel" } },
     );
-    // The batch was READ, not just its last result: the reaction landed after the skip and the turn
-    // still ended on the decision, in one round.
-    expect(model.boundSystemPrompts).toHaveLength(1);
+    // The batch was READ, not just its last result: the reaction landed AFTER the skip and the round
+    // that follows was still not told to answer the customer. Two rounds now, because a batch that
+    // called something else is not terminal (round 18) — which is exactly why reading the whole
+    // batch still matters: the wrap-up instruction would otherwise land on the round after a
+    // decision to stay quiet.
+    expect(model.boundSystemPrompts.length).toBeGreaterThanOrEqual(2);
     expect(
       model.boundSystemPrompts.some((p) =>
         p.includes("[Sistema] Você já usou"),

@@ -36,17 +36,6 @@ function sysCtx(tenantId: bigint): TenantContext {
 // timing out would otherwise watch every guarded tool go quiet with `info`/`ok` as the only trace.
 export type RefusalReason = "unmet" | "unreadable";
 
-// The `additional_kwargs` flag a refusal carries, so a reader can tell "the tool ran and said this"
-// from "the tool did not run". Exported because the reader is in another module and two copies of a
-// magic key is how one of them stops matching.
-export const PRECONDITION_REFUSED = "fazer_precondition_refused";
-
-export function wasPreconditionRefused(m: {
-  additional_kwargs?: Record<string, unknown>;
-}): boolean {
-  return m.additional_kwargs?.[PRECONDITION_REFUSED] === true;
-}
-
 export function guardedTool(
   inner: StructuredToolInterface,
   cond: ToolPrecondition,
@@ -99,13 +88,6 @@ export function guardedTool(
       content: refusal,
       tool_call_id: id,
       name: inner.name,
-      // MARKED, and not with `status: "error"`. The model is told the same sentence either way, and
-      // the status is what ToolFlowLogger reads to decide warn/error — a rule doing its job must not
-      // page (see `preconditionFlowEvent`). This rides in `additional_kwargs`, which no provider
-      // adapter forwards, and answers the one question a reader downstream has: the call did NOT
-      // happen. `graph.ts` asks it before letting `skip_reply` end a turn whose companion tool was
-      // refused, which would otherwise leave the customer with nothing (#455, review round 17).
-      additional_kwargs: { [PRECONDITION_REFUSED]: true },
     });
   }) as StructuredToolInterface["invoke"];
   return guarded;

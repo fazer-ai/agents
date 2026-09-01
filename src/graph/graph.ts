@@ -3,7 +3,6 @@ import {
   AIMessage,
   type BaseMessage,
   SystemMessage,
-  type ToolMessage,
 } from "@langchain/core/messages";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import {
@@ -24,8 +23,7 @@ import {
 } from "@/graph/model-limit";
 import { countMessageTokens } from "@/graph/token-count";
 import { USAGE_MODEL_METADATA_KEY } from "@/graph/usage";
-import { skipReplyRan } from "./silence";
-import { wasPreconditionRefused } from "./tools/precondition";
+import { SKIP_REPLY_TOOL, skipReplyRan } from "./silence";
 
 // The second provider as the graph needs it: the built model plus the two labels that name it on
 // the usage row and the flow trail. Built and bounded by `prepare.buildModelAndGraph`; the node only
@@ -113,16 +111,22 @@ function justDecidedToStaySilent(history: BaseMessage[]): boolean {
   return lastBatch(history).skipped;
 }
 
-// The AI message that REQUESTED the tool batch the history ends on, alongside whether that batch
-// says the model chose silence. One scan, because the two answers are about the same batch and a
-// second walk would be a second chance to disagree about where it starts.
+// The AI message that REQUESTED the tool batch the history ends on, alongside the two answers about
+// that batch. One scan, because both are about the same batch and a second walk would be a second
+// chance to disagree about where it starts.
+//
+//   `skipped` — the model chose silence, which is what suppresses the wrap-up instruction;
+//   `alone`   — the decision is ALL it did, which is what may end the turn.
+//
+// They are separate because the two questions have different answers on a PARALLEL batch, and
+// merging them is what rounds 17 and 18 of review kept finding.
 function lastBatch(history: BaseMessage[]): {
   skipped: boolean;
+  alone: boolean;
   caller: BaseMessage | null;
 } {
   let sawTool = false;
   let skipped = false;
-  let companionFailed = false;
   // The CONTIGUOUS batch, not the last message: a model can emit parallel calls (`skip_reply`
   // alongside `react_to_message`, which is the documented way to answer with a reaction alone), and
   // whichever result lands last is an ordering accident. Returning on the first `ToolMessage` read
@@ -137,26 +141,38 @@ function lastBatch(history: BaseMessage[]): {
       // end the turn with no text where the customer is waiting for one. `skipReplyRan` recognises
       // our no-op and nothing else, so anything unrecognised falls through to "answer them".
       if (skipReplyRan(m as Parameters<typeof skipReplyRan>[0])) skipped = true;
-      // ...AND THE COMPANION HAS TO HAVE HAPPENED. `skip_reply` beside `react_to_message` is the
-      // documented way to answer with a reaction alone, so the reaction IS the reply — and when it
-      // failed or was refused, ending the turn on the skip leaves the customer with nothing at all.
-      // The model has to see that result and decide again, which is what every other failed tool
-      // call already gets.
-      else if (
-        (m as ToolMessage).status === "error" ||
-        wasPreconditionRefused(m as ToolMessage)
-      ) {
-        companionFailed = true;
-      }
       continue;
     }
     // The batch ends at the AI message that requested it — anything before is an earlier round.
-    if (sawTool) {
-      return { skipped: skipped && !companionFailed, caller: m ?? null };
-    }
-    if (t === "human") return { skipped: false, caller: null };
+    if (sawTool) return { skipped, alone: onlySkipped(m), caller: m ?? null };
+    if (t === "human") return { skipped: false, alone: false, caller: null };
   }
-  return { skipped: false, caller: null };
+  return { skipped: false, alone: false, caller: null };
+}
+
+// WHETHER THE DECISION WAS THE WHOLE OF WHAT THE MODEL DID, read off the CALLS rather than off their
+// results — and that is the shape rounds 17 and 18 arrived at from opposite ends.
+//
+// Round 17 asked whether the companion SUCCEEDED, and answered it from the result: an error status,
+// or a precondition refusal. Round 18 showed why that cannot be answered there. A tool can decline
+// through a perfectly ordinary success result, because business-level refusals are normal operation
+// and `failure.ts` forbids them from using `toolFailure`: `react_to_message` says so when the last
+// message is itself a reaction, `send_image` when the host is not allowed. Telling those apart from
+// a tool that really acted needs a per-tool contract about what "did nothing" looks like — a
+// taxonomy every future tool would have to join, and would silently fail to.
+//
+// So the question is asked of the batch instead, and answered conservatively, the way
+// `actedOnTheWorld` answers its own: a batch that called ANYTHING else produced information the
+// model has not seen, so it decides again. Only a batch that is nothing but this decision may end
+// the turn on it.
+//
+// THE COST, said out loud: the documented `react_to_message` + `skip_reply` batch now takes one more
+// model round, on which the model sees the reaction's result and either calls `skip_reply` alone
+// (terminal) or answers. That is the point — when the reaction did not happen, answering is exactly
+// what the customer needs.
+function onlySkipped(caller: BaseMessage | undefined): boolean {
+  const calls = (caller as AIMessage | undefined)?.tool_calls ?? [];
+  return calls.length > 0 && calls.every((c) => c.name === SKIP_REPLY_TOOL);
 }
 
 // WHAT THE MODEL WROTE BESIDE THE DECISION, taken back out. A model can put text in the very message
@@ -318,15 +334,22 @@ export function buildAgentGraph({
     // nothing. The hard limit keeps its callback because the calls still COUNTED, which is what
     // bounds a model that loops on skip_reply; what it no longer does is force a TEXT answer out of
     // a turn that chose not to give one (round 9 found that half, round 11 the other).
-    if (staySilent) {
+    // Terminal only when the decision was ALL the model did (see `onlySkipped`). `staySilent` alone
+    // still suppresses the wrap-up instruction below: the model just chose silence either way.
+    if (staySilent && lastBatch(history).alone) {
       if (hardLimit) onToolLimit?.({ maxToolCalls: max, toolCalls });
       return { messages: [...silenceNarration(history), new AIMessage("")] };
     }
-    // No `staySilent` term here: the branch above already returned on it. The wrap-up instruction
-    // ("Conclua agora: responda ao cliente") is the exact opposite of what the model just chose, and
-    // the reason it cannot land any more is that there is no round after the decision at all.
+    // `staySilent` is back in this condition, and round 18 is why it had to be. It left when the
+    // branch above returned on `staySilent` alone — no round after the decision, so nothing to
+    // instruct — and now that branch also asks whether the decision stood alone. On a PARALLEL batch
+    // there IS a round after it, and "Conclua agora: responda ao cliente" is the exact opposite of
+    // what the model just chose. Measured by the round-7 test, not by reading.
     const softLimit =
-      hasTools && !hardLimit && toolCalls >= Math.max(1, max - 2);
+      hasTools &&
+      !hardLimit &&
+      !staySilent &&
+      toolCalls >= Math.max(1, max - 2);
 
     let prompt = systemPrompt;
     if (softLimit) {

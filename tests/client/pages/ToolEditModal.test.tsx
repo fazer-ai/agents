@@ -482,3 +482,18 @@ describe("templateSaveProblem agrees with the service, shape for shape", () => {
     expect(consoleSaysOk).toBe(serverSaysOk);
   });
 });
+
+// Round 13 of review. The server refuses a declared template it would not honour (400), so a Test
+// button that ignores the same check spends a REAL request against the operator's provider to be
+// told what the box on screen already knew. Asserted at the source because the alternative is
+// mounting the whole editor to read one `disabled`.
+test("the Test button is gated on the same template check Save is", async () => {
+  const src = await Bun.file(
+    "src/client/pages/resources/ToolEditModal.tsx",
+  ).text();
+  const button = src.slice(src.indexOf("tools.testOpen") - 900);
+  const disabled = button.slice(0, button.indexOf("onClick={openTest}"));
+  expect(disabled).toContain("templateDeclProblem");
+  // And it is the READER's verdict both places, never a second phrasing of the rule.
+  expect(src).toMatch(/templateDeclProblem\s*=\s*useMemo/);
+});

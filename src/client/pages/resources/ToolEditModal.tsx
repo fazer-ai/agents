@@ -1725,7 +1725,15 @@ export function ToolEditModal({
                   variant="secondary"
                   size="sm"
                   className="self-start"
-                  disabled={!form.urlTemplate.trim() || urlTemplateInvalid}
+                  // Same gate Save carries, and for a sharper reason: the server refuses a
+                  // declared template it would not honour, so leaving this enabled spends a REAL
+                  // request against the provider to come back with a 400 the box above already
+                  // knows about.
+                  disabled={
+                    !form.urlTemplate.trim() ||
+                    urlTemplateInvalid ||
+                    templateDeclProblem !== null
+                  }
                   onClick={openTest}
                 >
                   {t("tools.testOpen", "Send a test request")}

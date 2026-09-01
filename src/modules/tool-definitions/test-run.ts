@@ -37,7 +37,9 @@ import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
 import { resolveInjectableCredential } from "@/modules/vault/injectable";
 import { formatVaultRef, readVaultRefId } from "@/modules/vault/service";
+import { unsupportedBodyShape } from "./body-shape";
 import { CONTEXT_VAR_NAMES } from "./normalize";
+import { readResponseTemplateResult } from "./response-template";
 import { DEFAULT_HTTP_METHOD, readHttpMethod } from "./service";
 
 // What the operator gets back to paste into the sample field, and it is the RAW response, not the
@@ -133,6 +135,24 @@ export async function runToolTest(
       400,
     );
   }
+  // The other two gates the WRITE path runs, called rather than restated. This endpoint's whole
+  // argument for existing is that it does what saving the definition and calling it does, so a
+  // shape the save refuses must not be previewed here as a finished thing — the operator would be
+  // reading a request they can never ship. Both refusals happen BEFORE anything goes out.
+  //
+  // The body first, because it is the one that reaches the provider: `parseBody` reads a fixed set
+  // of keys and ignores every other, so an unsupported shape does not fail — it sends a DIFFERENT
+  // payload, assembled from the field names, looking plausible (issue #150).
+  const badBody = unsupportedBodyShape(d.body);
+  if (badBody) throw new AppError(badBody, 400);
+  // Then the response template, the one that reaches the screen. A declared template the reader
+  // would not honour used to arrive here as "no template", so the run went out and reported the RAW
+  // body as the model's text: a preview of a definition that cannot be saved, and the preview is
+  // the whole point of the screen. Judged by the same reader the write schema refines with, which
+  // is also why an undeclared shape (a legacy JSON Schema someone wrote through MCP) still passes.
+  const tpl = readResponseTemplateResult(d.outputSchema);
+  if (tpl.declared && !tpl.ok) throw new AppError(tpl.problem, 400);
+
   const credentialRef = d.credentialRef || null;
   // The credential's own metadata, read where the turn reads it, so a typed credential auto-injects
   // here the way it will in production. A ref naming nothing yields no metadata, which is the same

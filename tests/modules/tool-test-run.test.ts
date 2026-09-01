@@ -316,6 +316,111 @@ describe("runToolTest — the same request the saved tool would make", () => {
     expect(seen.url).toBeUndefined();
   });
 
+  // Round 13 of review. The whole argument for this endpoint existing is that it does what saving
+  // the definition and calling it does — so every shape the WRITE path refuses has to be refused
+  // here too, or the screen previews a definition the operator cannot save. Three writers already
+  // share the method vocabulary (above); these are the other two gates the write path runs.
+  test.each([
+    // A plain JSON object authored as if it were the payload. `parseBody` reads a fixed set of keys
+    // and ignores the rest, so the request goes out assembled from the field names instead.
+    [{ contact: { email: "{{cnpj}}" } }, /must declare a mode/],
+    // The half-conversion: a mode that a mode-only check accepts, with the author's keys alongside.
+    [{ mode: "raw", raw: "{}", contact: "{{cnpj}}" }, /dropped/],
+    [{ mode: "kv", rows: [{ key: "", value: "x" }] }, /rows/],
+  ])("a body the save refuses is refused here too, %#", async (body, why) => {
+    const seen: Seen = {};
+    const err = await runToolTest(
+      ctx,
+      {
+        definition: { ...base, body: body as Record<string, unknown> },
+        args: { cnpj: "1" },
+      },
+      noDb,
+      { fetchImpl: stub(seen, 200) },
+    ).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(AppError);
+    expect((err as AppError).statusCode).toBe(400);
+    expect(String((err as AppError).message)).toMatch(why as RegExp);
+    // And nothing went out: a body the operator cannot save must not reach the provider even once.
+    expect(seen.url).toBeUndefined();
+  });
+
+  test("a declared template the save refuses is refused here too", async () => {
+    const seen: Seen = {};
+    const err = await runToolTest(
+      ctx,
+      {
+        definition: {
+          ...base,
+          // Unmatched delimiter: the write schema refuses it, and the reader used to answer
+          // "no template" — so the run went out and reported the RAW body as the model's text,
+          // previewing a definition that cannot be saved as though it were the finished thing.
+          outputSchema: { mode: "template", template: "{{razao_social} — ok" },
+        },
+        args: { cnpj: "1" },
+      },
+      noDb,
+      { fetchImpl: stub(seen, 200) },
+    ).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(AppError);
+    expect((err as AppError).statusCode).toBe(400);
+    expect(String((err as AppError).message)).toMatch(/unmatched delimiter/);
+    expect(seen.url).toBeUndefined();
+  });
+
+  // The two below are fences, not fixes: both were already green. They pin the OTHER half of the
+  // parity — that the gates added above refuse no more than the write path does, and that the
+  // authoring shapes the save canonicalizes already reach the provider canonicalized here.
+  test("but a legacy JSON Schema in outputSchema is let through, as the save lets it", async () => {
+    // The column has been writable through MCP since it existed, unvalidated and read nowhere, so a
+    // row may hold a real JSON Schema. The write schema judges only `mode: "template"`; refusing
+    // more HERE would make the test stricter than the save, which is the same divergence upside
+    // down.
+    const seen: Seen = {};
+    const r = await runToolTest(
+      ctx,
+      {
+        definition: {
+          ...base,
+          outputSchema: {
+            type: "object",
+            properties: { a: { type: "string" } },
+          },
+        },
+        args: { cnpj: "1" },
+      },
+      noDb,
+      { fetchImpl: stub(seen, 200) },
+    );
+    expect(seen.url).toBeDefined();
+    expect(r.status).toBe(200);
+  });
+
+  test("the authoring shapes the save canonicalizes are canonicalized here too", async () => {
+    const seen: Seen = {};
+    await runToolTest(
+      ctx,
+      {
+        definition: {
+          // Single-brace, which `createToolDefinition` rewrites before storing. Left alone here the
+          // test issues a URL with a literal `{cnpj}` in it while the saved tool interpolates —
+          // two different requests from one screen.
+          urlTemplate: `https://${PUBLIC}/v1/cnpj/{cnpj}`,
+          allowedHosts: [PUBLIC],
+          inputSchema: {
+            type: "object",
+            properties: { cnpj: { type: "string" } },
+            required: ["cnpj"],
+          },
+        },
+        args: { cnpj: "27865757000102" },
+      },
+      noDb,
+      { fetchImpl: stub(seen, 200) },
+    );
+    expect(seen.url).toBe(`https://${PUBLIC}/v1/cnpj/27865757000102`);
+  });
+
   test("a host off the allowlist is refused the same way", async () => {
     const err = await runToolTest(
       ctx,

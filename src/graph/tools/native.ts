@@ -66,7 +66,14 @@ import {
 // ToolCtx (the conversation + a ready client); the runtime resolves the per-agent allowlist
 // (fail-closed: a tool not in the allowlist is never exposed to the model).
 
-export { NATIVE_TOOL_NAMES, type NativeToolName } from "./catalog";
+import { HANDOFF_DONE_PREFIX, HANDOFF_TOOL_NAME } from "./catalog";
+
+export {
+  HANDOFF_DONE_PREFIX,
+  HANDOFF_TOOL_NAME,
+  NATIVE_TOOL_NAMES,
+  type NativeToolName,
+} from "./catalog";
 
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
@@ -389,10 +396,12 @@ function handoffTool(ctx: ToolCtx) {
           err: e,
         });
       }
-      return `Handed off to a human (status set to open).${assigned} The bot will stay silent now.`;
+      return `${HANDOFF_DONE_PREFIX} (status set to open).${assigned} The bot will stay silent now.`;
     },
     {
-      name: "handoff_to_human",
+      // From the catalog, because the hand-back decision matches results by this exact name
+      // (../handback.ts). Spelled here as a literal, a rename would leave that match silently false.
+      name: HANDOFF_TOOL_NAME,
       description: withOperatorNote(
         baseDescription,
         ctx,

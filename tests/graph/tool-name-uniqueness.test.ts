@@ -65,6 +65,33 @@ describe("dropDuplicateToolNames", () => {
     expect(r.dropped).toEqual(["lookup", "lookup"]);
   });
 
+  // A NATIVE NAME IS RESERVED EVEN WHEN NO NATIVE CLAIMS IT (issue #457, review round 5). Ordering
+  // defends only the names actually built, and `buildNativeTools` drops the ones outside the agent's
+  // allowlist — so on an agent with the transfer tool turned off, the name was simply free, and an
+  // HTTP or toolpack tool could answer as `handoff_to_human`. The hand-back decision reads a result
+  // under that name as a transfer that happened, and tool preconditions restrict rules to native
+  // names on the same argument; both need the name reserved, not merely first.
+  test("a reserved native name is refused to another source that claims it", () => {
+    const r = dropDuplicateToolNames(
+      [t("crm_lookup", "http"), t("handoff_to_human", "http")],
+      ["handoff_to_human", "private_note"],
+    );
+    expect(names(r.tools)).toEqual(["crm_lookup"]);
+    expect(r.dropped).toEqual(["handoff_to_human"]);
+  });
+
+  // And the reservation covers only what the natives did NOT build: a native that IS in the toolset
+  // keeps its own name, which is the ordering rule doing its job.
+  test("a native that was built keeps its name", () => {
+    const r = dropDuplicateToolNames(
+      [t("handoff_to_human", "native"), t("handoff_to_human", "http")],
+      ["private_note"],
+    );
+    expect(r.tools).toHaveLength(1);
+    expect(r.tools[0]?.description).toBe("native");
+    expect(r.dropped).toEqual(["handoff_to_human"]);
+  });
+
   test("an empty toolset is not a special case", () => {
     const r = dropDuplicateToolNames([]);
     expect(r.tools).toEqual([]);

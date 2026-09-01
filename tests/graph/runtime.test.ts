@@ -1,7 +1,12 @@
 import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { rm } from "node:fs/promises";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
-import { AIMessage, type BaseMessage } from "@langchain/core/messages";
+import {
+  AIMessage,
+  type BaseMessage,
+  HumanMessage,
+  ToolMessage,
+} from "@langchain/core/messages";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
 import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -18,12 +23,19 @@ import {
 } from "@/graph/inflight";
 import { ingestMessageIntoThread } from "@/graph/ingest";
 import { armIngest } from "@/graph/ingest-job";
-import { isConversationDivider, stampedConversationId } from "@/graph/markers";
+import {
+  HUMAN_HANDBACK_NOTE,
+  humanAgentMessage,
+  humanHandbackMessage,
+  isConversationDivider,
+  stampedConversationId,
+} from "@/graph/markers";
 import type { ResolvedModelConfig } from "@/graph/models";
 import { FOLLOWUP_SKIP_SENTINEL } from "@/graph/nudge";
 import { runAgentTurn } from "@/graph/runtime";
 import { clearTurnOwning, markTurnOwning } from "@/graph/thread-claim";
-import { buildThreadStateGraph } from "@/graph/thread-state";
+import { buildThreadStateGraph, THREAD_STATE_NODE } from "@/graph/thread-state";
+import { HANDOFF_DONE_PREFIX } from "@/graph/tools/catalog";
 import type { TenantContext } from "@/lib/tenancy";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
@@ -247,6 +259,23 @@ async function threadChannel(
   const i = scope?.instanceId ?? instanceId;
   const state = await buildThreadStateGraph(checkpointer).getState({
     configurable: { thread_id: `${t}:${i}:${convId}` },
+  });
+  const messages = ((state.values as { messages?: BaseMessage[] })?.messages ??
+    []) as BaseMessage[];
+  return messages.map((m) => [
+    m.getType(),
+    typeof m.content === "string" ? m.content : JSON.stringify(m.content),
+  ]);
+}
+
+// The same read as `threadChannel`, by explicit thread key: the per-contact-inbox thread has a
+// different one, and the tests that care about continuity across conversations address it directly.
+async function threadOf(
+  checkpointer: MemorySaver,
+  threadId: string,
+): Promise<Array<[string, string]>> {
+  const state = await buildThreadStateGraph(checkpointer).getState({
+    configurable: { thread_id: threadId },
   });
   const messages = ((state.values as { messages?: BaseMessage[] })?.messages ??
     []) as BaseMessage[];
@@ -3421,6 +3450,467 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       ["toggleStatus", 9701, "open"],
       ["sendMessage", 9701, "Um humano já te atende."],
     ]);
+  });
+
+  // THE END OF THE HUMAN STRETCH GETS WRITTEN DOWN, and until this it never was (issue #457). The
+  // agent's own transfer turn and every message the person sent stay in the thread; the return
+  // leaves no trace at all, so an operator prompt like "após transferir, não responda mais" goes on
+  // applying to a condition that ended. Measured live: one model went silent (`outcome=empty`, the
+  // reported symptom) and another sent the silence to the customer as text.
+  //
+  // The note has to land BEFORE the customer's message, which is why it is written here and not
+  // when ownership changed: the model reads the thread in order, and a hand-back announced after
+  // the question it is meant to unblock announces nothing.
+  test("issue #457: the turn after a hand-back writes the note, before the customer's message", async () => {
+    // ON A CONTACT-INBOX THREAD, which is the shape this situation has: the message that OPENS the
+    // human stretch is folded in by continuous ingestion, and that path is keyed by contact inbox.
+    const contactInboxId = 7457;
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: 982,
+        contactInboxId,
+        status: "pending",
+        threadId: `${tenantId}:${instanceId}:${982}`,
+        lastEventAt: new Date(),
+      },
+    });
+    const checkpointer = new MemorySaver();
+    const threadId = contactInboxThreadId(tenantId, instanceId, contactInboxId);
+    // The thread as a handed-off conversation leaves it: the agent's own transfer call, and the
+    // person's reply folded in beside it. Nothing here says that stretch ended, which is the defect.
+    await buildThreadStateGraph(checkpointer).updateState(
+      { configurable: { thread_id: threadId } },
+      {
+        messages: [
+          new HumanMessage("quero falar com uma pessoa"),
+          new AIMessage({
+            content: "",
+            tool_calls: [{ name: "handoff_to_human", args: {}, id: "h1" }],
+          }),
+          new ToolMessage({
+            content: `${HANDOFF_DONE_PREFIX} (status set to open).`,
+            tool_call_id: "h1",
+            name: "handoff_to_human",
+          }),
+          humanAgentMessage(982, "Oi, aqui é a Ana. Já estou vendo."),
+        ],
+      },
+      THREAD_STATE_NODE,
+    );
+
+    const sent: Array<[number, string]> = [];
+    const client = {
+      getMessages: async () => ({
+        payload: [
+          {
+            id: 1,
+            content: "e aí, conseguiram ver?",
+            message_type: 0,
+            private: false,
+          },
+        ],
+      }),
+      sendMessage: async (conversationId: number, content: string) => {
+        sent.push([conversationId, content]);
+        return {};
+      },
+      toggleTyping: async () => ({}),
+    } as unknown as ChatwootClient;
+
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({
+        conversationId: 982,
+        contactInboxId,
+        message: {
+          id: 1,
+          content: "e aí, conseguiram ver?",
+          messageType: "incoming",
+          private: false,
+        },
+      }),
+      base: appDb,
+      deps: {
+        makeModel: fakeModel,
+        makeClient: async () => client,
+        checkpointer,
+      },
+    });
+    expect(outcome).toBe("posted");
+
+    const channel = await threadOf(checkpointer, threadId);
+    const note = channel.findIndex(([, text]) => text === HUMAN_HANDBACK_NOTE);
+    const question = channel.findIndex(([, text]) =>
+      text.includes("conseguiram ver?"),
+    );
+    expect(note).toBeGreaterThanOrEqual(0);
+    expect(note).toBeLessThan(question);
+    // ONE note, not one per turn: the note itself is what says the announcement already happened.
+    expect(
+      channel.filter(([, text]) => text === HUMAN_HANDBACK_NOTE).length,
+    ).toBe(1);
+  });
+
+  // DEFERRED WHILE AN OLDER INVOKE IS READING, the same rule the divider follows: that invoke saves
+  // the channel it LOADED, so a note appended beside it is erased — and an erased note is the bug
+  // back, silently. Deferring costs nothing because the decision is derived: the next turn asks the
+  // same question of the same thread.
+  test("issue #457: while another invoke is reading, the note rides in this turn's own invoke", async () => {
+    const contactInboxId = 7459;
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: 984,
+        contactInboxId,
+        status: "pending",
+        threadId: `${tenantId}:${instanceId}:${984}`,
+        lastEventAt: new Date(),
+      },
+    });
+    const checkpointer = new MemorySaver();
+    const threadId = contactInboxThreadId(tenantId, instanceId, contactInboxId);
+    await buildThreadStateGraph(checkpointer).updateState(
+      { configurable: { thread_id: threadId } },
+      {
+        messages: [
+          new ToolMessage({
+            content: `${HANDOFF_DONE_PREFIX} (status set to open).`,
+            tool_call_id: "h1",
+            name: "handoff_to_human",
+          }),
+        ],
+      },
+      THREAD_STATE_NODE,
+    );
+    // Another invoke is already reading this channel.
+    const owner = {
+      tenantId,
+      instanceId,
+      contactInboxId,
+      graphThreadId: threadId,
+    };
+    await markTurnOwning(owner, appDb);
+
+    const client = {
+      getMessages: async () => ({
+        payload: [{ id: 1, content: "e aí?", message_type: 0, private: false }],
+      }),
+      sendMessage: async () => ({}),
+      toggleTyping: async () => ({}),
+    } as unknown as ChatwootClient;
+    const model = new CaptureReplyModel(REPLY);
+    await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 984, contactInboxId }),
+      base: appDb,
+      deps: {
+        makeModel: () => model as never,
+        makeClient: async () => client,
+        checkpointer,
+      },
+    });
+
+    // THE CORRECTION IS NOT WHAT WAS DEFERRED, the durable append is. This turn is the one that
+    // would otherwise read a transfer with no ending, and the customer waiting for it is the one the
+    // issue is about — so the note goes into the invoke's own input instead of beside an older
+    // invoke that would erase it.
+    const seen = (model.seen.at(-1) ?? []) as Array<{ content?: unknown }>;
+    expect(seen.some((m) => String(m.content) === HUMAN_HANDBACK_NOTE)).toBe(
+      true,
+    );
+    // Once, and BEFORE the customer's message: the order is what the model has to read it in.
+    const channel = await threadOf(checkpointer, threadId);
+    const noteAt = channel.findIndex(([, t]) => t === HUMAN_HANDBACK_NOTE);
+    const customerAt = channel.findIndex(([, t]) => t.includes("oi"));
+    expect(noteAt).toBeGreaterThanOrEqual(0);
+    expect(customerAt).toBeGreaterThanOrEqual(0);
+    expect(noteAt).toBeLessThan(customerAt);
+    expect(channel.filter(([, t]) => t === HUMAN_HANDBACK_NOTE)).toHaveLength(
+      1,
+    );
+    // AND IT WAS NOT APPENDED BESIDE THE OLDER INVOKE: a durable `updateState` writes the note in a
+    // checkpoint of its own, before the customer's message exists. Carried by the invoke, the two
+    // enter together — so the first checkpoint that has the note has the customer's message too.
+    const withNote: string[][] = [];
+    for await (const cp of checkpointer.list({
+      configurable: { thread_id: threadId },
+    })) {
+      const texts = (
+        ((cp.checkpoint.channel_values as { messages?: BaseMessage[] })
+          ?.messages ?? []) as BaseMessage[]
+      ).map((m) => String(m.content));
+      if (texts.includes(HUMAN_HANDBACK_NOTE)) withNote.push(texts);
+    }
+    // `list` reads newest-first, so the oldest checkpoint carrying the note is the last one.
+    expect(withNote.at(-1)?.some((t) => t.includes("oi"))).toBe(true);
+  });
+
+  // TWO TURNS, ONE NOTE (issue #457, review round 10). The turn that defers can be beaten to the
+  // append by the very invoke it deferred to: that one finishes, writes the note, and this turn would
+  // then carry a second copy into its own invoke. The question is re-asked of the thread as it is
+  // immediately before the invoke, so a note already there is a note not carried.
+  test("issue #457: a note appended while we deferred is not carried a second time", async () => {
+    const contactInboxId = 7462;
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: 988,
+        contactInboxId,
+        status: "pending",
+        threadId: `${tenantId}:${instanceId}:${988}`,
+        lastEventAt: new Date(),
+      },
+    });
+    const checkpointer = new MemorySaver();
+    const threadId = contactInboxThreadId(tenantId, instanceId, contactInboxId);
+    await buildThreadStateGraph(checkpointer).updateState(
+      { configurable: { thread_id: threadId } },
+      {
+        messages: [
+          new ToolMessage({
+            content: `${HANDOFF_DONE_PREFIX} (status set to open).`,
+            tool_call_id: "h1",
+            name: "handoff_to_human",
+          }),
+        ],
+      },
+      THREAD_STATE_NODE,
+    );
+    const owner = {
+      tenantId,
+      instanceId,
+      contactInboxId,
+      graphThreadId: threadId,
+    };
+    await markTurnOwning(owner, appDb);
+
+    // THE OTHER INVOKE, landing between this turn's decision and its invoke: the first read that
+    // sees the handoff with no note is the decision's own, and the append follows it.
+    let injected = false;
+    const original = checkpointer.getTuple.bind(checkpointer);
+    checkpointer.getTuple = async (config) => {
+      const tuple = await original(config);
+      if (!injected) {
+        const texts = (
+          ((tuple?.checkpoint.channel_values as { messages?: BaseMessage[] })
+            ?.messages ?? []) as BaseMessage[]
+        ).map((m) => String(m.content));
+        if (
+          texts.some((t) => t.includes(HANDOFF_DONE_PREFIX)) &&
+          !texts.includes(HUMAN_HANDBACK_NOTE)
+        ) {
+          injected = true;
+          await buildThreadStateGraph(checkpointer).updateState(
+            { configurable: { thread_id: threadId } },
+            { messages: [humanHandbackMessage(988)] },
+            THREAD_STATE_NODE,
+          );
+        }
+      }
+      return tuple;
+    };
+
+    const client = {
+      getMessages: async () => ({
+        payload: [{ id: 1, content: "e aí?", message_type: 0, private: false }],
+      }),
+      sendMessage: async () => ({}),
+      toggleTyping: async () => ({}),
+    } as unknown as ChatwootClient;
+    await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 988, contactInboxId }),
+      base: appDb,
+      deps: {
+        makeModel: fakeModel,
+        makeClient: async () => client,
+        checkpointer,
+      },
+    });
+    expect(injected).toBe(true);
+    const channel = await threadOf(checkpointer, threadId);
+    expect(channel.filter(([, t]) => t === HUMAN_HANDBACK_NOTE)).toHaveLength(
+      1,
+    );
+  });
+
+  // THE CONVERSATION-KEYED FALLBACK THREAD is a path the runtime supports, and a successful handoff
+  // is written there by the turn's own invoke like anywhere else — so leaving it out would leave
+  // this issue unfixed on it.
+  test("issue #457: a conversation-keyed thread gets the note too", async () => {
+    await seedConversation(985, null);
+    const checkpointer = new MemorySaver();
+    const threadId = `${tenantId}:${instanceId}:985`;
+    await buildThreadStateGraph(checkpointer).updateState(
+      { configurable: { thread_id: threadId } },
+      {
+        messages: [
+          new ToolMessage({
+            content: `${HANDOFF_DONE_PREFIX} (status set to open).`,
+            tool_call_id: "h1",
+            name: "handoff_to_human",
+          }),
+        ],
+      },
+      THREAD_STATE_NODE,
+    );
+    const client = {
+      getMessages: async () => ({
+        payload: [{ id: 1, content: "e aí?", message_type: 0, private: false }],
+      }),
+      sendMessage: async () => ({}),
+      toggleTyping: async () => ({}),
+    } as unknown as ChatwootClient;
+    await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 985 }),
+      base: appDb,
+      deps: {
+        makeModel: fakeModel,
+        makeClient: async () => client,
+        checkpointer,
+      },
+    });
+    const channel = await threadOf(checkpointer, threadId);
+    expect(channel.some(([, text]) => text === HUMAN_HANDBACK_NOTE)).toBe(true);
+  });
+
+  // A TAKEOVER INSIDE THE WINDOW (issue #457, review round 7), on the reactive turn this time. The
+  // receiver's gate proved bot ownership before this turn was queued, and the note is written after
+  // the toolset is built, after the ingestion drain, and after a claim that WAITS. A person taking
+  // the conversation over in there leaves the gate's answer stale, and the note would announce that
+  // a human attendance ended while the human is in it — which the post-generation recheck can
+  // suppress the SEND for and never unwrite.
+  test("issue #457: a takeover after the gate stops the note", async () => {
+    const contactInboxId = 7461;
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: 987,
+        contactInboxId,
+        status: "pending",
+        threadId: `${tenantId}:${instanceId}:${987}`,
+        lastEventAt: new Date(),
+      },
+    });
+    const checkpointer = new MemorySaver();
+    const threadId = contactInboxThreadId(tenantId, instanceId, contactInboxId);
+    await buildThreadStateGraph(checkpointer).updateState(
+      { configurable: { thread_id: threadId } },
+      {
+        messages: [
+          new ToolMessage({
+            content: `${HANDOFF_DONE_PREFIX} (status set to open).`,
+            tool_call_id: "h1",
+            name: "handoff_to_human",
+          }),
+        ],
+      },
+      THREAD_STATE_NODE,
+    );
+    // The person takes it over between the gate and the write: every ownership-shaped read from here
+    // on answers "a human has it".
+    const brittle = appDb.$extends({
+      query: {
+        conversation: {
+          async findUnique({ args, query }) {
+            const sel = args.select as Record<string, unknown> | undefined;
+            const isOwnershipRead =
+              !!sel &&
+              sel.assigneeType === true &&
+              sel.assigneeId === true &&
+              sel.status === true;
+            const row = await query(args);
+            if (!isOwnershipRead || row === null) return row;
+            return { ...(row as object), assigneeType: "User", status: "open" };
+          },
+        },
+      },
+    }) as unknown as typeof appDb;
+    const client = {
+      getMessages: async () => ({
+        payload: [{ id: 1, content: "e aí?", message_type: 0, private: false }],
+      }),
+      sendMessage: async () => ({}),
+      toggleTyping: async () => ({}),
+    } as unknown as ChatwootClient;
+    await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 987, contactInboxId }),
+      base: brittle,
+      deps: {
+        makeModel: fakeModel,
+        makeClient: async () => client,
+        checkpointer,
+      },
+    });
+    const channel = await threadOf(checkpointer, threadId);
+    expect(channel.some(([, text]) => text === HUMAN_HANDBACK_NOTE)).toBe(
+      false,
+    );
+  });
+
+  // The control, and it is what makes the test above about the human stretch rather than about every
+  // turn: an ordinary conversation nobody handed over says nothing about a human attendance.
+  test("issue #457: a turn on a conversation nobody handed over writes no note", async () => {
+    const contactInboxId = 7458;
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: 983,
+        contactInboxId,
+        status: "pending",
+        threadId: `${tenantId}:${instanceId}:${983}`,
+        lastEventAt: new Date(),
+      },
+    });
+    const sent: Array<[number, string]> = [];
+    const client = {
+      getMessages: async () => ({
+        payload: [{ id: 1, content: "oi", message_type: 0, private: false }],
+      }),
+      sendMessage: async (conversationId: number, content: string) => {
+        sent.push([conversationId, content]);
+        return {};
+      },
+      toggleTyping: async () => ({}),
+    } as unknown as ChatwootClient;
+    const checkpointer = new MemorySaver();
+    await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 983, contactInboxId }),
+      base: appDb,
+      deps: {
+        makeModel: fakeModel,
+        makeClient: async () => client,
+        checkpointer,
+      },
+    });
+    const channel = await threadOf(
+      checkpointer,
+      contactInboxThreadId(tenantId, instanceId, contactInboxId),
+    );
+    expect(channel.some(([, text]) => text === HUMAN_HANDBACK_NOTE)).toBe(
+      false,
+    );
   });
 
   // ONE CLAIM FOR EVERY POSTING PATH (issue #452). This direct turn and a manual re-engage of the

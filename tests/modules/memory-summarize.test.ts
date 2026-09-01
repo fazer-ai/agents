@@ -12,7 +12,9 @@ import {
   CONVERSATION_DIVIDER,
   conversationDividerMessage,
   HUMAN_AGENT_NOTE,
+  HUMAN_HANDBACK_NOTE,
   humanAgentMessage,
+  humanHandbackMessage,
   MEMORY_HEAD_OPEN,
   memoryHeadMessage,
   nudgeMessage,
@@ -148,6 +150,34 @@ describe("renderTranscript", () => {
     );
     // The note is scaffolding for the live model, not something the summarizer should remember.
     expect(t).not.toContain(HUMAN_AGENT_NOTE);
+  });
+
+  // The hand-back note is the system telling the LIVE model that a stretch ended (issue #457). It is
+  // not dialogue and nobody said it, so the permanent memory of the attendance drops it — left in, it
+  // would render as `cliente:`, which is #187 again with the system's own words filed as the
+  // contact's.
+  test("the hand-back note is dropped, not attributed to anybody", () => {
+    const t = renderTranscript([
+      new HumanMessage("quanto fica o plano anual?"),
+      humanAgentMessage(42, "Fecho o anual por R$ 1.200."),
+      humanHandbackMessage(42),
+      new HumanMessage("e o mensal?"),
+    ]);
+    expect(t).toBe(
+      [
+        "cliente: quanto fica o plano anual?",
+        "atendente: Fecho o anual por R$ 1.200.",
+        "cliente: e o mensal?",
+      ].join("\n"),
+    );
+    expect(t).not.toContain(HUMAN_HANDBACK_NOTE);
+  });
+
+  // Same rule as the note above it, and for the same reason: a customer who types the sentence keeps
+  // every word of it, because what decides attribution is the marker and never the text.
+  test("a customer typing the hand-back note verbatim is still the customer", () => {
+    const t = renderTranscript([new HumanMessage(HUMAN_HANDBACK_NOTE)]);
+    expect(t).toBe(`cliente: ${HUMAN_HANDBACK_NOTE}`);
   });
 
   // What decides attribution is metadata a chat cannot carry. This repo is public, so "a customer

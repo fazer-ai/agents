@@ -170,8 +170,9 @@ export function unmetPreconditionMessage(
 // must not have.
 //
 // Measured, per source:
-//   - NATIVE: the name IS the identity. `handoff_to_human` is not renameable, not namespaced, and
-//     `dropDuplicateToolNames` puts natives first, so no other source can take the name from one.
+//   - NATIVE: the name IS the identity. `handoff_to_human` is not renameable, not namespaced, and the
+//     assembly reserves every native name — the built ones win by order, the ones an allowlist left
+//     out are reserved outright (../../graph/tools/unique-names.ts) — so no other source can take it.
 //   - HTTP: `ToolDefinition.name` is normalized on write and `@@unique([tenantId, name])`. Stable
 //     today, but a rename is a plain PATCH away and nothing would carry the rule across it.
 //   - MCP: `mcp__<slug>__<tool>`, where the slug is derived from the connection's display name —

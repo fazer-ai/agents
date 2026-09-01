@@ -54,3 +54,22 @@ export const CONVERSATION_NATIVE_TOOL_NAMES = NATIVE_TOOL_NAMES.filter(
 
 export const RAG_TOOL_NAMES = ["search_knowledge", "suggest_kb_entry"] as const;
 export type RagToolName = (typeof RAG_TOOL_NAMES)[number];
+
+// WHAT A SUCCESSFUL `handoff_to_human` LEAVES IN THE THREAD, named here because two places compare
+// against it and a second spelling is how a comparison goes quietly false (issue #457).
+//
+// The tool's model-facing return is the only trace in the channel that separates a transfer that
+// HAPPENED from one that did not: the AI message carrying the call is checkpointed before the tool
+// runs, so it is written just as much when `toggleStatus` throws and when an operator's precondition
+// refuses the call — and both of those leave the conversation bot-owned, with nothing to announce
+// the end of. The hand-back decision (../handback.ts) matches this prefix on the TOOL RESULT.
+export const HANDOFF_DONE_PREFIX = "Handed off to a human";
+
+// The tool that produces it, named here for the same reason. A result is only that tool's result if
+// the tool node says so, and the NAME is the identity for a native: `handoff_to_human` is not
+// renameable and not namespaced, and the assembly RESERVES every native name — including the ones
+// this agent's allowlist left unbuilt (../tools/unique-names.ts), which is the half ordering alone
+// could not defend. See ../../modules/agents/tool-preconditions.ts, which restricts preconditions to
+// this same set on exactly that argument. Without the name, any enabled external tool that happened
+// to return text opening with the prefix above would announce a hand-back that never happened.
+export const HANDOFF_TOOL_NAME = "handoff_to_human";

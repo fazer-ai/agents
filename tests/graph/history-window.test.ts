@@ -6,6 +6,7 @@ import {
   ToolMessage,
 } from "@langchain/core/messages";
 import { selectHistoryWindow } from "@/graph/history-window";
+import { HUMAN_HANDBACK_NOTE, humanHandbackMessage } from "@/graph/markers";
 
 // Decision table for the history ceiling. The counter is synthetic on purpose: what is under test
 // is the RULE (where the window opens and what it is never allowed to drop), not the tokenizer,
@@ -112,6 +113,42 @@ describe("selectHistoryWindow", () => {
       expect(kept).toContain(history[LAST_HUMAN] as BaseMessage);
       expect(kept.at(-1)).toBe(history.at(-1) as BaseMessage);
     }
+  });
+
+  // INVARIANT 5 (issue #457): a hand-back note sits immediately before the customer's message and is
+  // a human message like any other here, so a turn whose own message eats the budget opens on the
+  // customer and leaves the note behind. That loss is PERMANENT — the note is in the thread, so the
+  // decision that writes it reads it as already announced and never writes another — and the turn
+  // answers from the transfer context, which is the silence the note exists to end.
+  test("a hand-back note before the opener travels with it", () => {
+    const history = [
+      new HumanMessage("velho"),
+      new AIMessage("resposta velha"),
+      humanHandbackMessage(42),
+      new HumanMessage("um texto enorme colado pelo cliente"),
+    ];
+    // A budget of one message: only the customer's own fits.
+    const window = selectHistoryWindow(history, EACH, count);
+    expect(window.kept).toHaveLength(2);
+    expect(String(window.kept[0]?.content)).toBe(HUMAN_HANDBACK_NOTE);
+    expect(String(window.kept[1]?.content)).toBe(
+      "um texto enorme colado pelo cliente",
+    );
+  });
+
+  // And it is the NOTE that earns the exception, not "whatever precedes the opener": an ordinary
+  // message there is dropped like any other, which is what the ceiling is for.
+  test("an ordinary message before the opener is still dropped", () => {
+    const history = [
+      new HumanMessage("velho"),
+      new AIMessage("resposta velha"),
+      new HumanMessage("um texto enorme colado pelo cliente"),
+    ];
+    const window = selectHistoryWindow(history, EACH, count);
+    expect(window.kept).toHaveLength(1);
+    expect(String(window.kept[0]?.content)).toBe(
+      "um texto enorme colado pelo cliente",
+    );
   });
 
   test("counts each message once instead of re-counting the whole prefix", () => {

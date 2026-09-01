@@ -22,11 +22,24 @@ import type { FlowEvent } from "@/modules/flowlog/service";
 //
 // EARLIER WINS, and the order the toolset is built in is the precedence. That order puts the native
 // tools first, which is the half that matters: they are the ones the operator cannot rename.
-export function dropDuplicateToolNames(tools: StructuredToolInterface[]): {
+//
+// AND A NATIVE NAME IS RESERVED EVEN WHEN THE NATIVE IS NOT BUILT (issue #457, review round 5).
+// Ordering only defends a name the native tool actually claims this turn, and `buildNativeTools`
+// drops the ones outside the agent's allowlist — so an agent with `handoff_to_human` turned off left
+// the name free for an HTTP or toolpack tool to answer under. The rest of the repo already reasons
+// as if that could not happen: tool preconditions restrict rules to native names on the argument
+// that a native's name IS its identity, and the hand-back decision reads a `handoff_to_human` result
+// as a transfer that really happened (../handback.ts). `reserved` is what makes that argument true
+// unconditionally rather than only while the native is granted. The name is reported as dropped like
+// any other collision, so the operator sees it in the Logs page instead of guessing.
+export function dropDuplicateToolNames(
+  tools: StructuredToolInterface[],
+  reserved: readonly string[] = [],
+): {
   tools: StructuredToolInterface[];
   dropped: string[];
 } {
-  const seen = new Set<string>();
+  const seen = new Set<string>(reserved);
   const kept: StructuredToolInterface[] = [];
   const dropped: string[] = [];
   for (const tool of tools) {

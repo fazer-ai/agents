@@ -19,7 +19,12 @@ import { type BaseMessage, HumanMessage } from "@langchain/core/messages";
 // words would be deleted without ever having been summarized. Metadata cannot be typed into a chat.
 
 const MARKER_KWARG = "fazerMarker";
-type SystemMarker = "divider" | "memory_head" | "nudge" | "human_agent";
+type SystemMarker =
+  | "divider"
+  | "memory_head"
+  | "nudge"
+  | "human_agent"
+  | "human_handback";
 
 function hasMarker(message: BaseMessage, marker: SystemMarker): boolean {
   return message.additional_kwargs?.[MARKER_KWARG] === marker;
@@ -104,14 +109,40 @@ export function conversationDividerMessage(
   });
 }
 
+// WHETHER THE ATTENDANCE THIS HEAD REPLACED ENDED OWING A HAND-BACK (issue #457, review round 8).
+//
+// Compaction replaces a closed attendance with its summary, and with it the two things the hand-back
+// decision reads: the handoff's tool result and the human agent's messages. A conversation RESOLVED
+// while a person still held it is exactly that case — the next turn on the thread would find no
+// evidence, ask nothing, and the agent would go back to the silence this whole feature exists to
+// end. Carried as METADATA and not as prose, for the reason the marker block above gives: the
+// summary text is model-written, and nothing decides anything from model-written text.
+//
+// It rides on the head rather than as a message of its own, because a note here would be written
+// while the person may still hold the conversation — the note is a claim about NOW, and only a turn
+// under its ownership guard may make it. This says something weaker and durable: what the summarized
+// stretch ended in.
+const HANDOFF_OPEN_KWARG = "fazerHandoffOpen";
+
 // `id` reuses the id of the message the head replaces, which is what keeps it at the front of the
 // channel (the reducer replaces a same-id message in place and appends an unknown-id one at the end).
-export function memoryHeadMessage(content: string, id?: string): HumanMessage {
+export function memoryHeadMessage(
+  content: string,
+  id?: string,
+  endedInHumanAttendance = false,
+): HumanMessage {
   return new HumanMessage({
     ...(id ? { id } : {}),
     content,
-    additional_kwargs: { [MARKER_KWARG]: "memory_head" satisfies SystemMarker },
+    additional_kwargs: {
+      [MARKER_KWARG]: "memory_head" satisfies SystemMarker,
+      ...(endedInHumanAttendance ? { [HANDOFF_OPEN_KWARG]: true } : {}),
+    },
   });
+}
+
+export function endedInHumanAttendance(message: BaseMessage): boolean {
+  return message.additional_kwargs?.[HANDOFF_OPEN_KWARG] === true;
 }
 
 // A proactive nudge is injected into the thread as a HUMAN turn — a SystemMessage would make strict
@@ -169,6 +200,39 @@ export function humanAgentMessage(
       ...(conversationId === null ? {} : conversationStamp(conversationId)),
     },
   });
+}
+
+// THE END OF THE HUMAN STRETCH, and it exists because only the START of one was ever written down
+// (issue #457). The note above marks a person answering; the agent's own transfer turn sits in the
+// thread above that; and when the conversation comes back, nothing anywhere says so. An operator
+// prompt as ordinary as "após transferir, não responda mais" then keeps applying to a stretch that
+// ended, forever — measured live against two models: one turned silent (`outcome=empty`) and the
+// other wrote the silence out loud, sending "(Silêncio, pois a conversa agora é entre você e o
+// atendente humano.)" to the customer.
+//
+// IT STATES A FACT AND ORDERS NOTHING, which is the whole design and was measured against the
+// alternative. A note telling the model it is "responsible for replying from here" also works, and
+// it makes the product overrule an operator's own prompt — a much bigger decision than this issue
+// asks for. Stating what changed is enough: the operator's rule stays in force, and what the model
+// learns is that the condition it hangs on stopped being true.
+export const HUMAN_HANDBACK_NOTE =
+  "(Contexto do sistema: o atendimento humano terminou e a conversa voltou para o agente virtual.)";
+
+// Stamped like every other message we write, and for the reason `nudgeMessage` states: this can be
+// the first thing written in a new attendance (a hand-back that lands before the customer speaks
+// again), and an unstamped one leaves the cut reading the previous attendance as still current.
+export function humanHandbackMessage(conversationId: number): HumanMessage {
+  return new HumanMessage({
+    content: HUMAN_HANDBACK_NOTE,
+    additional_kwargs: {
+      [MARKER_KWARG]: "human_handback" satisfies SystemMarker,
+      ...conversationStamp(conversationId),
+    },
+  });
+}
+
+export function isHumanHandback(message: BaseMessage): boolean {
+  return hasMarker(message, "human_handback");
 }
 
 export function isConversationDivider(message: BaseMessage): boolean {

@@ -2276,6 +2276,8 @@
     "testOpen": "Send a test request",
     "testOpenHint": "Runs this tool once against the real API and fills the sample above with the answer.",
     "testRun": "Send request",
+    "testSendEmpty": "Left out. Send an empty string instead?",
+    "testSendingEmpty": "Sending an empty string. Leave out instead?",
     "testSize": "{{chars}} characters",
     "testStatus": "HTTP {{status}} in {{ms}} ms",
     "testTitle": "Test this tool",

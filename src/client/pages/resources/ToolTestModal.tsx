@@ -149,12 +149,31 @@ export type ArgProblem =
   | { kind: "type"; got: Extract<CoercedArg, { ok: false }> };
 
 export function argProblem(
-  field: Pick<ToolTestField, "type" | "itemType" | "required">,
+  field: Pick<ToolTestField, "type" | "itemType" | "required" | "enumValues">,
   raw: string,
 ): ArgProblem | null {
-  if (raw === "") return field.required ? { kind: "missing" } : null;
+  // A REQUIRED string field cannot be omitted, so a blank box there is not "nothing" — the empty
+  // string is the only thing it can mean, and the declared schema takes it. Reporting it missing
+  // was a dead end: the field could not be submitted at all, for a value a real tool call can
+  // carry (a PATCH that clears a provider field).
+  if (raw === "") {
+    if (!field.required) return null;
+    return fieldTakesEmptyString(field) ? null : { kind: "missing" };
+  }
   const got = coerceTestArg(field, raw);
   return got.ok ? null : { kind: "type", got };
+}
+
+// Whether the empty string is a VALUE for this field rather than the absence of one. String, and an
+// enum with no declared values, which `zodFor` reads as a free string. Everything else refuses it:
+// `Number("")` is not an integer, `""` is neither `true` nor `false`, and it parses as no object.
+export function fieldTakesEmptyString(
+  field: Pick<ToolTestField, "type" | "enumValues">,
+): boolean {
+  return (
+    field.type === "string" ||
+    (field.type === "enum" && (field.enumValues?.length ?? 0) === 0)
+  );
 }
 
 type TestResult = NonNullable<
@@ -173,6 +192,11 @@ export function ToolTestModal({
 }) {
   const { t } = useTranslation();
   const [values, setValues] = useState<Record<string, string>>({});
+  // Which blank boxes are an empty STRING rather than a field left out. A text input renders the two
+  // identically, and they are different requests: the model omits an optional argument it has
+  // nothing to say about, and sends `""` when it means to clear something. Required string fields
+  // do not need a mark — they cannot be omitted, so blank can only be the empty string there.
+  const [sendEmpty, setSendEmpty] = useState<Record<string, boolean>>({});
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<TestResult | null>(null);
@@ -204,6 +228,7 @@ export function ToolTestModal({
     // The component outlives the dialog: a previous run's answer must not read as this one's.
     sessionRef.current += 1;
     setValues({});
+    setSendEmpty({});
     setError(null);
     setResult(null);
     setRunning(false);
@@ -232,7 +257,13 @@ export function ToolTestModal({
           setError(problemText(f.name, problem));
           return;
         }
-        if (v === "") continue;
+        if (v === "") {
+          // Blank: the empty string when the field cannot be omitted, or when the operator said so.
+          if (fieldTakesEmptyString(f) && (f.required || sendEmpty[f.name])) {
+            args[f.name] = "";
+          }
+          continue;
+        }
         const coerced = coerceTestArg(f, v);
         if (!coerced.ok) return;
         args[f.name] = coerced.value;
@@ -278,6 +309,11 @@ export function ToolTestModal({
     }
   }
 
+  // The conversation placeholders are appended below with a synthetic `type: "string"`, and they
+  // are interpolated as text with no schema behind them, so the empty-string question does not
+  // arise for them.
+  const isContext = (name: string) =>
+    (target?.contextNames ?? []).includes(name);
   const fields: (ToolTestField & { hint: string })[] = target
     ? [
         ...target.aiFields.map((f) => ({ ...f, hint: f.description })),
@@ -392,7 +428,39 @@ export function ToolTestModal({
                     }
                   />
                 ) : (
-                  <Input value={value} onChange={(e) => set(e.target.value)} />
+                  <div className="flex flex-col gap-1">
+                    <Input
+                      value={value}
+                      onChange={(e) => set(e.target.value)}
+                    />
+                    {/* Only while the box is blank AND the field is optional: filled, there is
+                        nothing to disambiguate, and required cannot be omitted at all. */}
+                    {value === "" &&
+                      !f.required &&
+                      fieldTakesEmptyString(f) &&
+                      !isContext(f.name) && (
+                        <button
+                          type="button"
+                          className="self-start text-text-secondary text-xs underline"
+                          onClick={() =>
+                            setSendEmpty((m) => ({
+                              ...m,
+                              [f.name]: !m[f.name],
+                            }))
+                          }
+                        >
+                          {sendEmpty[f.name]
+                            ? t(
+                                "tools.testSendingEmpty",
+                                "Sending an empty string. Leave out instead?",
+                              )
+                            : t(
+                                "tools.testSendEmpty",
+                                "Left out. Send an empty string instead?",
+                              )}
+                        </button>
+                      )}
+                  </div>
                 )}
               </FormField>
             );

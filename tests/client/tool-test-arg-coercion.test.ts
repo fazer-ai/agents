@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   argProblem,
   coerceTestArg,
+  fieldTakesEmptyString,
   fieldUsesPicker,
 } from "@/client/pages/resources/ToolTestModal";
 import { parseToolInputSchema } from "@/graph/tools/http";
@@ -93,10 +94,12 @@ describe("coerceTestArg", () => {
 
 describe("argProblem", () => {
   test("a required field left blank is a problem, an optional one is not", () => {
-    expect(argProblem({ type: "string", required: true }, "")).toEqual({
+    // On a type the empty string cannot satisfy. For a STRING it is a value, not a gap — see the
+    // "the empty string, where the schema takes it" block below.
+    expect(argProblem({ type: "integer", required: true }, "")).toEqual({
       kind: "missing",
     });
-    expect(argProblem({ type: "string", required: false }, "")).toBeNull();
+    expect(argProblem({ type: "integer", required: false }, "")).toBeNull();
   });
 
   test("and the runtime agrees: the declared schema refuses the blank one", () => {
@@ -135,5 +138,38 @@ describe("fieldUsesPicker", () => {
       tier: { type: "enum", enumValues: [], required: true },
     });
     expect(schema.safeParse({ tier: "anything at all" }).success).toBe(true);
+  });
+});
+
+// Round 11 of review. An empty string is a VALUE for a string field — a PATCH that clears a
+// provider field sends exactly that — and the dialog read every blank box as "nothing". A required
+// string field could therefore not be submitted at all.
+describe("the empty string, where the schema takes it", () => {
+  test.each([
+    [{ type: "string" }, true],
+    // `zodFor`: an enum with no declared values falls back to a free string.
+    [{ type: "enum", enumValues: [] }, true],
+    [{ type: "enum", enumValues: ["a"] }, false],
+    [{ type: "integer" }, false],
+    [{ type: "number" }, false],
+    [{ type: "boolean" }, false],
+    [{ type: "array" }, false],
+    [{ type: "object" }, false],
+  ])("%p takes an empty string: %p", (field, expected) => {
+    expect(fieldTakesEmptyString(field as never)).toBe(expected);
+    // And the runtime agrees, which is the control: the same declaration through its own reader.
+    const schema = parseToolInputSchema({
+      q: { ...(field as object), required: true },
+    });
+    expect(schema.safeParse({ q: "" }).success).toBe(expected);
+  });
+
+  test("a required string left blank is a value, not a missing field", () => {
+    // It used to be a dead end: reported missing, Send disabled, and no way to say "".
+    expect(argProblem({ type: "string", required: true }, "")).toBeNull();
+    // A required integer left blank is still missing — "" is not an integer.
+    expect(argProblem({ type: "integer", required: true }, "")).toEqual({
+      kind: "missing",
+    });
   });
 });

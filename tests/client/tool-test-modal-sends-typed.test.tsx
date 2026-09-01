@@ -201,8 +201,10 @@ test("a required field left blank stops the send and says which field", () => {
   mount(sent, {
     target: {
       ...TARGET,
+      // An INTEGER, because a required string left blank is the empty string rather than a gap
+      // (round 11); this fence is about the type where blank really is nothing.
       aiFields: [
-        { name: "cnpj", description: "", required: true, type: "string" },
+        { name: "cnpj", description: "", required: true, type: "integer" },
       ],
     },
   });
@@ -299,4 +301,42 @@ test("no way out while a request is in flight, and no second send", async () => 
   await new Promise((r) => setTimeout(r, 20));
   expect(calls).toBe(1);
   hold.release?.();
+});
+
+// Round 11 of review, the adoption half: the table above proves the rule, and this proves the
+// dialog follows it — the same gap round 1 found in the coercion.
+test("an empty string reaches the wire when the field takes one", async () => {
+  const sent: { body?: unknown } = {};
+  mount(sent, {
+    target: {
+      ...TARGET,
+      aiFields: [
+        // Required: blank can only mean "", because it cannot be omitted.
+        { name: "note", description: "", required: true, type: "string" },
+        // Optional: blank means left out until the operator says otherwise.
+        { name: "tag", description: "", required: false, type: "string" },
+      ],
+    },
+  });
+  const button = screen.getByText("Send request").closest("button");
+  expect(button?.hasAttribute("disabled")).toBe(false);
+  fireEvent.click(screen.getByText("Send request"));
+  await waitFor(() => expect(sent.body).toBeDefined());
+  expect((sent.body as { args: unknown }).args).toEqual({ note: "" });
+});
+
+test("and an optional field says so explicitly, because a blank box cannot", async () => {
+  const sent: { body?: unknown } = {};
+  mount(sent, {
+    target: {
+      ...TARGET,
+      aiFields: [
+        { name: "tag", description: "", required: false, type: "string" },
+      ],
+    },
+  });
+  fireEvent.click(screen.getByText(/Send an empty string instead/));
+  fireEvent.click(screen.getByText("Send request"));
+  await waitFor(() => expect(sent.body).toBeDefined());
+  expect((sent.body as { args: unknown }).args).toEqual({ tag: "" });
 });

@@ -2284,6 +2284,8 @@
     "testOpen": "Enviar uma requisição de teste",
     "testOpenHint": "Executa esta ferramenta uma vez contra a API real e preenche o exemplo acima com a resposta.",
     "testRun": "Enviar requisição",
+    "testSendEmpty": "Fora da chamada. Mandar uma string vazia?",
+    "testSendingEmpty": "Mandando uma string vazia. Deixar fora da chamada?",
     "testSize": "{{chars}} caracteres",
     "testStatus": "HTTP {{status}} em {{ms}} ms",
     "testTitle": "Testar esta ferramenta",

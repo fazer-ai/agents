@@ -361,3 +361,40 @@ test("and an optional field says so explicitly, because a blank box cannot", asy
   await waitFor(() => expect(sent.body).toBeDefined());
   expect((sent.body as { args: unknown }).args).toEqual({ tag: "" });
 });
+
+// Round 16 of review, finding 2. A tool may declare an input field named after a conversation
+// placeholder, and the runtime has an explicit precedence for that name: AI input, then a fixed
+// value, then context (`valueLookup` in graph/tools/http.ts). So the case worth testing is the
+// second one — the model omits the optional argument and context supplies the fallback — and the
+// dialog could not express it: both rows were keyed and indexed by the bare name, so one box fed
+// both halves and the same string went out in `args` AND in `context`.
+test("an AI field and a context variable of the same name are two boxes", async () => {
+  const sent: { body?: unknown } = {};
+  mount(sent, {
+    target: {
+      ...TARGET,
+      definition: {
+        ...TARGET.definition,
+        urlTemplate: "https://api.example.com/x/{{contact_id}}",
+      },
+      aiFields: [
+        {
+          name: "contact_id",
+          description: "",
+          required: false,
+          type: "string",
+        },
+      ],
+      contextNames: ["contact_id"],
+    },
+  });
+  const boxes = screen.getAllByRole("textbox");
+  expect(boxes).toHaveLength(2);
+  // Leave the AI box blank — the model omitting it — and give context its own value.
+  fireEvent.change(boxes[1] as HTMLElement, { target: { value: "42" } });
+  fireEvent.click(screen.getByText("Send request"));
+  await waitFor(() => expect(sent.body).toBeDefined());
+  const body = sent.body as { args: unknown; context: unknown };
+  expect(body.args).toEqual({});
+  expect(body.context).toEqual({ contact_id: "42" });
+});

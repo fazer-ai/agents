@@ -250,7 +250,7 @@ export function ToolTestModal({
     try {
       const args: Record<string, unknown> = {};
       for (const f of target.aiFields) {
-        const v = values[f.name] ?? "";
+        const v = values[`ai:${f.name}`] ?? "";
         // Guarded by the disabled button too; kept here because the button is not the only way a
         // value can be stale by the time this runs.
         const problem = argProblem(f, v);
@@ -260,7 +260,10 @@ export function ToolTestModal({
         }
         if (v === "") {
           // Blank: the empty string when the field cannot be omitted, or when the operator said so.
-          if (fieldTakesEmptyString(f) && (f.required || sendEmpty[f.name])) {
+          if (
+            fieldTakesEmptyString(f) &&
+            (f.required || sendEmpty[`ai:${f.name}`])
+          ) {
             args[f.name] = "";
           }
           continue;
@@ -271,7 +274,7 @@ export function ToolTestModal({
       }
       const context: Record<string, string> = {};
       for (const name of target.contextNames) {
-        const v = values[name];
+        const v = values[`ctx:${name}`];
         if (v !== undefined && v !== "") context[name] = v;
       }
       const { data, error: err } = await api.api.v1.tools.test.post({
@@ -310,16 +313,22 @@ export function ToolTestModal({
     }
   }
 
-  // The conversation placeholders are appended below with a synthetic `type: "string"`, and they
-  // are interpolated as text with no schema behind them, so the empty-string question does not
-  // arise for them.
-  const isContext = (name: string) =>
-    (target?.contextNames ?? []).includes(name);
-  const fields: (ToolTestField & { hint: string })[] = target
+  // A row's identity is its ORIGIN plus its name, never the name alone. The two halves can collide:
+  // a tool may declare an input field called `contact_id`, and the runtime resolves that name with
+  // an explicit precedence — AI input, then a fixed value, then context (`valueLookup` in
+  // graph/tools/http.ts). Keyed by the bare name, the two rows shared one React key and one box, so
+  // the case that precedence exists FOR — the model omits the optional argument and context fills
+  // it in — could not be expressed here at all, and the same string went out in both halves.
+  const fields: (ToolTestField & { hint: string; slot: string })[] = target
     ? [
-        ...target.aiFields.map((f) => ({ ...f, hint: f.description })),
+        ...target.aiFields.map((f) => ({
+          ...f,
+          hint: f.description,
+          slot: `ai:${f.name}`,
+        })),
         ...target.contextNames.map((name) => ({
           name,
+          slot: `ctx:${name}`,
           description: "",
           required: false,
           // A context placeholder is interpolated as text whatever it names, so it has no declared
@@ -339,7 +348,7 @@ export function ToolTestModal({
     ? target.aiFields
         .map((f) => ({
           field: f,
-          problem: argProblem(f, values[f.name] ?? ""),
+          problem: argProblem(f, values[`ai:${f.name}`] ?? ""),
         }))
         .filter(
           (x): x is { field: ToolTestField; problem: ArgProblem } =>
@@ -391,10 +400,12 @@ export function ToolTestModal({
           </p>
         ) : (
           fields.map((f) => {
-            const value = values[f.name] ?? "";
+            const value = values[f.slot] ?? "";
             const set = (next: string) =>
-              setValues((v) => ({ ...v, [f.name]: next }));
-            const bad = problems.find((b) => b.field.name === f.name);
+              setValues((v) => ({ ...v, [f.slot]: next }));
+            const bad = f.slot.startsWith("ai:")
+              ? problems.find((b) => b.field.name === f.name)
+              : undefined;
             const picker = fieldUsesPicker(f);
             // The blank box is ambiguous only here: an optional string the operator may either omit
             // or send as "". Filled, there is nothing to disambiguate; required cannot be omitted at
@@ -403,10 +414,10 @@ export function ToolTestModal({
               value === "" &&
               !f.required &&
               fieldTakesEmptyString(f) &&
-              !isContext(f.name);
+              f.slot.startsWith("ai:");
             return (
               <FormField
-                key={f.name}
+                key={f.slot}
                 label={f.name}
                 description={f.hint}
                 group={picker}
@@ -448,7 +459,7 @@ export function ToolTestModal({
                       // scan for.
                       placeholder={
                         canSendEmpty
-                          ? sendEmpty[f.name]
+                          ? sendEmpty[f.slot]
                             ? t("tools.testEmptyString", 'goes in empty: ""')
                             : t(
                                 "tools.testNotSent",
@@ -462,9 +473,9 @@ export function ToolTestModal({
                     {canSendEmpty && (
                       <SwitchField
                         className="self-start text-xs"
-                        checked={sendEmpty[f.name] ?? false}
+                        checked={sendEmpty[f.slot] ?? false}
                         onCheckedChange={(on) =>
-                          setSendEmpty((m) => ({ ...m, [f.name]: on }))
+                          setSendEmpty((m) => ({ ...m, [f.slot]: on }))
                         }
                         label={t(
                           "tools.testSendEmpty",

@@ -225,23 +225,50 @@ export function contextNamesReferencedBy(
       : {},
   );
   const found = new Set<string>();
-  const walk = (node: unknown): void => {
-    if (typeof node === "string") {
-      for (const m of node.matchAll(new RegExp(TOOL_TOKEN_SOURCE, "g"))) {
-        const name = m[1] as string;
-        if (NATIVE_VAR_NAMES.has(name)) found.add(name);
-      }
-      return;
-    }
-    if (Array.isArray(node)) {
-      for (const v of node) walk(v);
-      return;
-    }
-    if (node && typeof node === "object") {
-      for (const v of Object.values(node)) walk(v);
+  const scan = (node: unknown): void => {
+    if (typeof node !== "string") return;
+    for (const m of node.matchAll(new RegExp(TOOL_TOKEN_SOURCE, "g"))) {
+      const name = m[1] as string;
+      if (NATIVE_VAR_NAMES.has(name)) found.add(name);
     }
   };
-  walk(shapes);
+  // THE STRINGS THE RUNTIME INTERPOLATES, and only those. This was a generic deep walk, which is
+  // one line shorter and asks a different question: it found `{{contact_name}}` inside a field's
+  // DESCRIPTION (prose written for the model) and inside a NESTED header or query value, neither of
+  // which `buildHttpTool` ever interpolates — `headers[k] = interpolate(String(v), …)` turns a
+  // nested object into `[object Object]` on the way out, placeholder and all. The cost of the extra
+  // names lands on the operator: a box for a value that will not be used whatever they type in it.
+  // The list below pairs site for site with `graph/tools/http.ts`, and the test proves the pairing
+  // against the runtime rather than against this comment.
+  scan(shapes.urlTemplate);
+  for (const bag of [shapes.headers, shapes.query]) {
+    if (!bag || typeof bag !== "object" || Array.isArray(bag)) continue;
+    // Top level only, and `String(v)` because that is what the runtime does with a non-string.
+    for (const v of Object.values(bag)) scan(typeof v === "string" ? v : null);
+  }
+  const body = shapes.body;
+  if (body && typeof body === "object" && !Array.isArray(body)) {
+    const bag = body as Record<string, unknown>;
+    if (bag.mode === "raw") scan(bag.raw);
+    if (bag.mode === "kv" && Array.isArray(bag.rows)) {
+      for (const row of bag.rows) {
+        if (row && typeof row === "object") {
+          scan((row as Record<string, unknown>).value);
+        }
+      }
+    }
+  }
+  // A legacy FIXED field's value is a template the runtime resolves (`fixedValues`); every other
+  // key of a field declaration — type, description, enum — is metadata it never reads as one.
+  const schema = shapes.inputSchema;
+  if (schema && typeof schema === "object" && !Array.isArray(schema)) {
+    for (const field of Object.values(schema as Record<string, unknown>)) {
+      if (field && typeof field === "object" && !Array.isArray(field)) {
+        const f = field as Record<string, unknown>;
+        if (f.source === "fixed") scan(f.value);
+      }
+    }
+  }
   return [...found];
 }
 function isKnownToolToken(

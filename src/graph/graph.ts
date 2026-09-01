@@ -228,21 +228,24 @@ function textlessResponseMetadata(
 ): Record<string, unknown> | undefined {
   const output = meta?.output;
   if (!meta || !Array.isArray(output)) return meta;
-  return {
-    ...meta,
-    output: output.map((item) => {
-      const it = item as { content?: unknown };
-      if (!Array.isArray(it?.content)) return item;
-      return {
-        ...(item as object),
-        content: (it.content as unknown[]).filter(
-          (part) =>
-            (part as { type?: unknown })?.type !== "output_text" &&
-            (part as { type?: unknown })?.type !== "text",
-        ),
-      };
-    }),
-  };
+  const rewritten = output.flatMap((item) => {
+    const it = item as { content?: unknown };
+    if (!Array.isArray(it?.content)) return [item];
+    const before = it.content as unknown[];
+    const after = before.filter(
+      (part) =>
+        (part as { type?: unknown })?.type !== "output_text" &&
+        (part as { type?: unknown })?.type !== "text",
+    );
+    // AN ITEM THAT WAS NOTHING BUT TEXT GOES WITH IT. Left behind with an empty content array it is
+    // the Responses API's own version of Anthropic's empty text block: the replay is rejected and
+    // the round a companion bought fails instead of running. Dropped only when the filter emptied
+    // it — an item that ARRIVED empty is the provider's own and not this rule's to remove
+    // (round 28).
+    if (before.length > 0 && after.length === 0) return [];
+    return [{ ...(item as object), content: after }];
+  });
+  return { ...meta, output: rewritten };
 }
 
 function silenceNarration(history: BaseMessage[]): BaseMessage[] {

@@ -767,6 +767,9 @@ describe("agentNode tool-call limit (soft+hard)", () => {
                       ],
                     },
                     { type: "function_call", name: SKIP_REPLY_TOOL, id: "fc1" },
+                    // An item that ARRIVED empty is the provider's own: the filter removed nothing
+                    // from it, so it is not this rule's to drop.
+                    { type: "message", role: "assistant", content: [] },
                   ],
                 },
               });
@@ -803,12 +806,15 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     const out = rewritten.response_metadata?.output as Array<
       Record<string, unknown>
     >;
+    // The message item was nothing but text, so it goes with the text: left behind with an empty
+    // content array it is the Responses API's own version of the empty text block, and the replay is
+    // rejected. `reasoning` and `function_call` carry state the provider needs back and stay.
     expect(out.map((o) => o.type)).toEqual([
       "reasoning",
-      "message",
       "function_call",
+      "message",
     ]);
-    expect(out[1]?.content).toEqual([]);
+    expect(out[2]?.content).toEqual([]);
     expect(JSON.stringify(rewritten)).not.toContain("Vou só reagir");
   });
 

@@ -43,6 +43,13 @@ export interface CustomerFacingReply {
   // on the reactive one a customer is waiting, so silence with no trace reads to the operator like
   // the agent ignoring them.
   bySentinel: boolean;
+  // The model WROTE something, whether or not any of it is deliverable. The distinction the rules
+  // above erase on purpose — every kind of silence comes out as `text: ""` — and the one a caller
+  // needs to ask "is there anything in the thread that nobody received": a turn that wrote the token,
+  // or a narrated "(nada a fazer)", left words behind; one that produced an empty message did not.
+  // Kept here rather than re-read from the message, because a second reader of the model's final text
+  // is exactly what `tests/graph/silence.test.ts` fences against.
+  wroteText: boolean;
 }
 
 // THE REACTIVE RULE, and the narrower of the two on purpose. Nothing in an ordinary turn's prompt
@@ -53,6 +60,7 @@ export interface CustomerFacingReply {
 export function customerFacingReply(raw: string): CustomerFacingReply {
   const trimmed = raw.trim();
   const carriesToken = trimmed.includes(SENTINEL);
+  const wroteText = trimmed.length > 0;
   // "Reduces ENTIRELY to the marker" is the whole test, and it is deliberately not a strip of the
   // token wherever it appears. `docs/graph.md` rejects that shape — the citation-marker precedent —
   // because editing a real answer to remove a substring trades a rare cosmetic leak for silent data
@@ -73,6 +81,7 @@ export function customerFacingReply(raw: string): CustomerFacingReply {
     text: silent ? "" : trimmed,
     bySentinel: silent && trimmed.length > 0,
     carriesToken: !silent && carriesToken,
+    wroteText,
   };
 }
 
@@ -107,6 +116,7 @@ export function proactiveReply(raw: string): CustomerFacingReply {
         .replace(/^["'`]+|["'`]+$/g, "")
         .includes(SENTINEL),
       carriesToken: false,
+      wroteText: raw.trim().length > 0,
     };
   }
   // A real follow-up still loses a stray token, and that asymmetry with the reactive rule is
@@ -149,7 +159,17 @@ export function withFollowupSilenceChannel<T extends FollowupSilenceConfig>(
   // `skip_reply` — and `dropDuplicateToolNames` puts natives FIRST, so granting ours would evict
   // theirs from every follow-up turn. A tool the operator built, silently gone, to install a channel
   // they never asked for. Those agents keep the sentinel.
-  if (out.httpToolDefs?.some((d) => d.name === SKIP_REPLY_TOOL)) return out;
+  //
+  // ONLY WHEN THEIRS ACTUALLY WINS, which is when the native is not already granted. With the native
+  // in the allowlist it wins the name anyway, so returning early there protected nothing and skipped
+  // the precondition cleanup below — leaving a fail-closed guard on the very call the directive
+  // depends on, which is the leak by the third road all over again (round 15).
+  if (
+    !inertToolsFor(out).has(SKIP_REPLY_TOOL) &&
+    out.httpToolDefs?.some((d) => d.name === SKIP_REPLY_TOOL)
+  ) {
+    return out;
+  }
   // NOTHING ELSE IS ASKED HERE, and round 12 is why. Granting used to be gated on whether any source
   // was CONFIGURED, which is not the same question as whether any tool gets BUILT: an MCP server
   // that is down is configured and yields nothing, and the grant then handed a lone function schema

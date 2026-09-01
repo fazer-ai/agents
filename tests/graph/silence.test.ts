@@ -77,6 +77,10 @@ describe("customerFacingReply — the REACTIVE rule", () => {
       // The contract the repeated-sentinel case used to fall through: emptiness and silence are one
       // decision, so a caller can never see silent=false with nothing to send.
       expect(out.silent).toBe(out.text.length === 0);
+      // ...and the one thing the rules erase on purpose: EVERY kind of silence comes out as `text:
+      // ""`, so a caller asking "is there anything in the thread nobody received" needs the raw
+      // answer kept separately (round 15). It is about the model's words, never about ours.
+      expect(out.wroteText).toBe(raw.trim().length > 0);
     });
   }
 
@@ -92,6 +96,27 @@ describe("customerFacingReply — the REACTIVE rule", () => {
     // Silence is not "carrying": there is no reply left to carry anything.
     expect(customerFacingReply(S).carriesToken).toBe(false);
     expect(customerFacingReply("Olá").carriesToken).toBe(false);
+  });
+
+  // The pair `wroteText` exists for, spelled out: both are silence, and only one left words behind.
+  test("a turn that wrote the token is not a turn that wrote nothing", () => {
+    expect(customerFacingReply(S)).toMatchObject({
+      silent: true,
+      wroteText: true,
+    });
+    expect(customerFacingReply("")).toMatchObject({
+      silent: true,
+      wroteText: false,
+    });
+    expect(proactiveReply(S)).toMatchObject({ silent: true, wroteText: true });
+    expect(proactiveReply("(vazio)")).toMatchObject({
+      silent: true,
+      wroteText: true,
+    });
+    expect(proactiveReply("  \n ")).toMatchObject({
+      silent: true,
+      wroteText: false,
+    });
   });
 
   test("silence by token is distinguishable from an empty answer", () => {
@@ -497,6 +522,21 @@ describe("withFollowupSilenceChannel", () => {
       httpToolDefs: [{ name: SKIP_REPLY_TOOL }],
     };
     expect(withFollowupSilenceChannel(cfg)).toBe(cfg);
+  });
+
+  // Round 15. The guard fired on the NAME alone, including when the native was granted — and then
+  // natives win the name anyway, so it protected nothing and skipped the precondition cleanup below
+  // it, leaving a fail-closed guard on the very call the directive depends on.
+  test("with the native already granted, theirs never wins and cleanup still runs", () => {
+    const out = withFollowupSilenceChannel({
+      nativeToolsAllow: [SKIP_REPLY_TOOL, "private_note"],
+      httpToolDefs: [{ name: SKIP_REPLY_TOOL }],
+      toolPreconditions: {
+        [SKIP_REPLY_TOOL]: { kind: "attribute", key: "cpf" },
+      } as Record<string, unknown>,
+    });
+    expect(out.toolPreconditions).toEqual({});
+    expect(out.nativeToolsAllow).toEqual([SKIP_REPLY_TOOL, "private_note"]);
   });
 
   test("a custom tool under any OTHER name is no obstacle", () => {

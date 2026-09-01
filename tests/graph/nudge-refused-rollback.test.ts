@@ -15,6 +15,7 @@ import { clearTurnInFlight, markTurnInFlight } from "@/graph/inflight";
 import { isNudgeTurn, nudgeMessage } from "@/graph/markers";
 import { runAgentNudge } from "@/graph/nudge";
 import { type RollbackPlan, undoRefusedTurn } from "@/graph/refused-turn";
+import { FOLLOWUP_SKIP_SENTINEL } from "@/graph/silence";
 import {
   claimIngestWrite,
   clearTurnOwning,
@@ -580,6 +581,80 @@ describe.skipIf(!dbUp)(
       const after = await channel(checkpointer, graphThreadId);
       expect(after.some((m) => isNudgeTurn(m))).toBe(true);
       expect(after.map(textOf).join("\n")).toContain("ainda precisa de ajuda");
+    });
+
+    // Round 15, and the LAST place issue #454's own defect survived. An agent that can bind no tool
+    // is told to say nothing with the token, and a follow-up that does so ends "silent" — not
+    // refused, so it never passed through the rollback. The token stayed in the shared contact-inbox
+    // thread, the next ordinary turn read it as something the customer was told, and reproducing it
+    // now costs that customer their answer entirely (the reactive rule reads a reply that is only
+    // the token as silence).
+    test("a silent follow-up leaves its own token out of the thread", async () => {
+      const contactInboxId = 7259;
+      await seedConv(9259, contactInboxId);
+      const graphThreadId = contactInboxThreadId(
+        tenantId,
+        instanceId,
+        contactInboxId,
+      );
+      const checkpointer = new MemorySaver();
+      await seedHistory(checkpointer, graphThreadId);
+      const s = stub();
+      const outcome = await runAgentNudge({
+        tenantId,
+        threadId: `${tenantId}:${instanceId}:9259`,
+        nudge: { source: "followup", kind: "inactivity", step: 1 },
+        base: appDb,
+        deps: {
+          makeModel: () => new RetiringModel(() => {}, FOLLOWUP_SKIP_SENTINEL),
+          makeClient: s.makeClient,
+          checkpointer,
+          persistUsage: async () => {},
+        },
+      });
+      expect(outcome).toBe("silent");
+      expect(s.messages).toEqual([]);
+      const after = await channel(checkpointer, graphThreadId);
+      // Positive control: a probe that found nothing measured nothing. The attendance that was
+      // already there is not this turn's to take.
+      expect(after.map(textOf)).toContain("bom dia");
+      expect(
+        after.filter((m) => textOf(m).includes(FOLLOWUP_SKIP_SENTINEL)),
+      ).toEqual([]);
+      // The directive goes with it: this process wrote it, the customer never saw either half, and
+      // leaving a nudge marker with no answer is a turn the next reader cannot make sense of.
+      expect(after.some((m) => isNudgeTurn(m))).toBe(false);
+    });
+
+    // The scope, pinned. A turn that produced no text at all left nothing to be read as something
+    // said, so it pays no checkpointer round trip — and the history keeps what it had.
+    test("a follow-up that wrote nothing at all is not rolled back", async () => {
+      const contactInboxId = 7260;
+      await seedConv(9260, contactInboxId);
+      const graphThreadId = contactInboxThreadId(
+        tenantId,
+        instanceId,
+        contactInboxId,
+      );
+      const checkpointer = new MemorySaver();
+      await seedHistory(checkpointer, graphThreadId);
+      const s = stub();
+      const outcome = await runAgentNudge({
+        tenantId,
+        threadId: `${tenantId}:${instanceId}:9260`,
+        nudge: { source: "followup", kind: "inactivity", step: 1 },
+        base: appDb,
+        deps: {
+          makeModel: () => new RetiringModel(() => {}, ""),
+          makeClient: s.makeClient,
+          checkpointer,
+          persistUsage: async () => {},
+        },
+      });
+      expect(outcome).toBe("silent");
+      expect(s.messages).toEqual([]);
+      const after = await channel(checkpointer, graphThreadId);
+      expect(after.some((m) => isNudgeTurn(m))).toBe(true);
     });
 
     test("a turn that reached the customer stays in the history, where it belongs", async () => {

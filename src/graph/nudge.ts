@@ -1409,6 +1409,57 @@ export async function runAgentNudge(
     return outcome;
   };
 
+  // SILENCE IS NOT A REFUSAL, and it still leaves words behind. `refuse` above is for a turn the
+  // customer got none of because something stopped it; this is a turn that concluded correctly, as
+  // silence — and the model may have written the SENTINEL, or a narrated "(nada a fazer)", to say so.
+  // Nothing of that reached anyone, and the memory thread is shared per contact-inbox, so the next
+  // ordinary turn reads it as a sentence the customer was told and can reproduce it: issue #454's own
+  // defect, surviving in the one place the tool channel does not reach.
+  //
+  // It reaches here for the tool-less agents alone, which is what makes it the LAST residue rather
+  // than the main one: every agent that can bind a tool says nothing by calling `skip_reply`, whose
+  // call leaves no imitable text. Those that cannot are told to use the token, and this takes the
+  // token back out.
+  //
+  // Nothing to take back when the model produced no text at all — `planTurnRollback` would still
+  // remove the directive, but a turn that wrote nothing left nothing to be read as something said,
+  // and paying a checkpointer round trip for it on every silent follow-up is the cost this avoids.
+  const takeBackUndeliveredSilence = async (
+    wroteText: boolean,
+  ): Promise<void> => {
+    if (!wroteText) return;
+    const plan = await undoRefusedTurn({
+      inertTools: inertToolsFor(nudgeCfg),
+      checkpointer,
+      graphThreadId,
+      produced: result.messages,
+      kind: "proactive",
+      owner: graphOwner,
+      base,
+    }).catch((err) => {
+      logger.warn(
+        { err, conversationId: String(conversationId) },
+        "agentNudge: could not take back a silent turn's own words",
+      );
+      return null;
+    });
+    if (plan?.action === "remove") {
+      logger.info(
+        "agentNudge took a silent turn's own words back out: conv=%s messages=%d",
+        String(conversationId),
+        plan.ids.length,
+      );
+    } else if (plan) {
+      // Named rather than silent, for the reason `refuse` names its own miss: the history still holds
+      // words nobody received, and the next turn will read them.
+      logger.warn(
+        "agentNudge could not take a silent turn's words back out: conv=%s reason=%s",
+        String(conversationId),
+        plan.reason,
+      );
+    }
+  };
+
   // Silence via the explicit sentinel / narrated-emptiness guard (never post that), else strip any
   // stray sentinel occurrence from a real reply so it can't leak into the customer message.
   const drafted = proactiveReply(lastAssistantText(result.messages));
@@ -1499,6 +1550,7 @@ export async function runAgentNudge(
     // Keyed on the TRANSFER, not on the suppression: a conversation the human queue now owns is not
     // ours to close, even when the closing line never made it out.
     await applyPostActions({ canMessage: canMessagePost });
+    await takeBackUndeliveredSilence(drafted.wroteText);
     return "silent";
   }
 

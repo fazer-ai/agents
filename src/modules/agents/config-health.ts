@@ -25,6 +25,14 @@ import { resolveNormalizeModel } from "@/modules/tts/normalize-model";
 
 export type ConfigIssueKey =
   | "model"
+  // Two ways the PRIMARY model is unbuildable, which the credential check above cannot see because
+  // both are about a field that is not the credential. `createChatModel` throws on the second and
+  // `parseModelConfig` refuses the first, so either one is silence on every message — and both are
+  // storable: `modelConfig` may be `{}` by design (validateModelConfigForWrite, "unconfigured — the
+  // agent simply won't run until set"), and an openai-compatible bag with no endpoint passes every
+  // write boundary there is.
+  | "modelUnset"
+  | "modelNoEndpoint"
   | "stt"
   | "tts"
   | "ttsNormalize"
@@ -129,6 +137,11 @@ export interface ConfigHealthInput {
   // which is a question about what the General tab is about to save.
   modelProvider: string;
   modelCredentialRef: string;
+  // The endpoint that model would DIAL, with the credential's own base URL winning over the typed
+  // field exactly as `loadAgentConfig` reads it. Only openai-compatible needs one, and it is the
+  // one provider that authenticates by URL rather than by key — so for it, this is the field a
+  // missing-credential check would otherwise be standing in for.
+  modelBaseURL?: string;
   // The agent's own on/off, AS SAVED. Required rather than optional, and read by exactly one check:
   // the out-of-hours collision is the only line in this panel that claims something about what the
   // CUSTOMER receives. Every other line describes the configuration ("on, but no key"), which stays
@@ -320,6 +333,29 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
   // credential and nothing else: a ref that IS set is resolved by `loadAgentConfig` before the
   // provider is ever consulted, and a ref that does not resolve returns null for the whole agent,
   // which is silence on every message rather than one feature going quiet.
+  // NO MODEL AT ALL, which is a state this product produces on purpose: `modelConfig` may be `{}`
+  // ("unconfigured — the agent simply won't run until set"), and an agent created over REST or MCP
+  // without one lands exactly there. The credential check below cannot raise it, because it asks
+  // whether a CONFIGURED provider has a key — with no provider there is nothing to ask about, and
+  // the whole panel used to go quiet on the agent that answers nobody.
+  const modelTarget = {
+    key: "modelUnset",
+    tab: "general",
+    sectionId: "general-model",
+  } as const;
+  if (!input.modelProvider) {
+    issues.push({ ...modelTarget });
+  } else if (
+    input.modelProvider === "openai-compatible" &&
+    !(input.modelBaseURL ?? "").trim() &&
+    // An endpoint can still ARRIVE on a credential the vault has not answered for yet, and calling
+    // a runnable model broken is the false alarm the null-until-loaded rule exists to prevent. Same
+    // wait the three overrides take, and for the same reason.
+    !(known === null && Boolean(input.modelCredentialRef))
+  ) {
+    // `createChatModel` throws here rather than degrading, so this is silence on every message.
+    issues.push({ ...modelTarget, key: "modelNoEndpoint" });
+  }
   push(
     { key: "model", tab: "general", sectionId: "general-model" },
     credIssue(

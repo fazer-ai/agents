@@ -1,5 +1,6 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import type { Locale } from "@/api/lib/i18n";
+import logger from "@/api/lib/logger";
 import { canonicalVaultRef, formatVaultRef } from "@/client/lib/credentialRef";
 import { readModelFallbackConfig } from "@/graph/fallback-settings";
 import { requireDbId } from "@/lib/db-id";
@@ -17,7 +18,7 @@ import {
 import { getAgent, getAgentToolSelections } from "@/modules/agents/service";
 import { readSchedule } from "@/modules/business-hours/service";
 import { readChannelRedirectConfig } from "@/modules/channel-redirect/service";
-import { listOutOfOfficeInboxes } from "@/modules/chatwoot/management";
+import { readOutOfOfficeInboxes } from "@/modules/chatwoot/management";
 import { readContactAuthConfig } from "@/modules/contact-auth/settings";
 import {
   GUARDRAIL_HEALTH_WINDOW_HOURS,
@@ -74,7 +75,12 @@ export interface AgentConfigHealthIssue {
 // asked for the cheap variant. One word for both, because the consequence is the same: this is the
 // list of things a clean answer is not vouching for. Both of them fail as an EMPTY result, which
 // reads exactly like "nothing to report", so a caller acting on a clean answer has to be told.
-export type UncheckedCheck = "chatwootOutOfOffice" | "guardrailHealth";
+// "configHealth" is the whole reading, and it appears only on the write path: there the reading is a
+// courtesy attached to an operation that already succeeded, so it is allowed to be absent.
+export type UncheckedCheck =
+  | "chatwootOutOfOffice"
+  | "guardrailHealth"
+  | "configHealth";
 
 export interface AgentConfigHealth {
   agentId: string;
@@ -171,10 +177,19 @@ export async function readAgentConfigHealth(
   const unchecked: UncheckedCheck[] = [];
   const [outOfOffice, guardrailHealth] = await Promise.all([
     live
-      ? listOutOfOfficeInboxes(ctx, agentId, {}, base).catch(() => {
-          unchecked.push("chatwootOutOfOffice");
-          return [] as { id: string; name: string }[];
-        })
+      ? readOutOfOfficeInboxes(ctx, agentId, {}, base)
+          .then((r) => {
+            // A per-account failure is absorbed INSIDE that reader — it answers with a short list,
+            // not a rejection — so the catch below never sees the case this field exists to report.
+            // The count is what makes "no inbox answers out of hours" distinguishable from "the
+            // server that would have said so is down".
+            if (r.unreachable > 0) unchecked.push("chatwootOutOfOffice");
+            return r.inboxes;
+          })
+          .catch(() => {
+            unchecked.push("chatwootOutOfOffice");
+            return [] as { id: string; name: string }[];
+          })
       : Promise.resolve([] as { id: string; name: string }[]),
     // Only asked when the screen is on: with guardrails off there is no count to interpret, and the
     // editor does not ask either. That case is NOT unchecked — there is nothing to check.
@@ -203,6 +218,7 @@ export async function readAgentConfigHealth(
     // about the row rather than about a form.
     modelProvider,
     modelCredentialRef,
+    modelBaseURL,
     savedModelProvider: modelProvider,
     savedModelBaseURL: modelBaseURL,
     savedModelCredentialRef: modelCredentialRef,
@@ -306,7 +322,9 @@ export async function readAgentConfigHealth(
 // Always present, even when everything is fine: a field that disappears when healthy cannot be told
 // apart from a tool that never checked.
 export interface ConfigHealthAfterWrite {
-  healthy: boolean;
+  // `null` when the reading itself could not be taken. Not `false`: nothing was found to be wrong,
+  // nobody looked. `unchecked` then carries "configHealth" and the lists are empty.
+  healthy: boolean | null;
   counts: Record<ConfigIssueSeverity, number>;
   issues: AgentConfigHealthIssue[];
   unchecked: UncheckedCheck[];
@@ -320,17 +338,41 @@ export async function configHealthAfterWrite(
   agentId: bigint | string,
   base?: PrismaClient,
 ): Promise<{ configHealth: ConfigHealthAfterWrite }> {
-  const id = typeof agentId === "bigint" ? agentId : requireDbId(agentId);
-  const health = await readAgentConfigHealth(ctx, id, {
-    ...(base ? { base } : {}),
-    live: false,
-  });
-  return {
-    configHealth: {
-      healthy: health.healthy,
-      counts: health.counts,
-      issues: health.issues.filter((i) => i.severity !== "advisory"),
-      unchecked: health.unchecked,
-    },
-  };
+  try {
+    const id = typeof agentId === "bigint" ? agentId : requireDbId(agentId);
+    const health = await readAgentConfigHealth(ctx, id, {
+      ...(base ? { base } : {}),
+      live: false,
+    });
+    return {
+      configHealth: {
+        healthy: health.healthy,
+        counts: health.counts,
+        issues: health.issues.filter((i) => i.severity !== "advisory"),
+        unchecked: health.unchecked,
+      },
+    };
+  } catch (e) {
+    // BEST-EFFORT, AND THE ASYMMETRY IS THE WHOLE POINT. Every caller runs this AFTER its mutation
+    // has committed, so a throw here would replace a successful apply with an error — and the client
+    // reading that error is an automated one whose next move is to retry, which duplicates a create,
+    // a clone or an import, or applies an update twice. A reading nobody could take is worth less
+    // than the write it would undo, so it is reported as absent rather than raised.
+    //
+    // Absent, not clean: `healthy: null` plus "configHealth" in `unchecked` says what the rest of
+    // this field says everywhere else — this answer does not vouch for that.
+    logger.warn(
+      "config health after write could not be read (agent=%s): %s",
+      String(agentId),
+      e instanceof Error ? e.message : String(e),
+    );
+    return {
+      configHealth: {
+        healthy: null,
+        counts: { blocking: 0, degraded: 0, advisory: 0 },
+        issues: [],
+        unchecked: ["configHealth"],
+      },
+    };
+  }
 }

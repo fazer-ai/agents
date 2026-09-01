@@ -56,6 +56,8 @@ let healthyAgent = 0n;
 let degradedAgent = 0n;
 let failingAgent = 0n;
 let ragAgent = 0n;
+let unconfiguredAgent = 0n;
+let chatwootAgent = 0n;
 let otherAgent = 0n;
 let pendingRef = "";
 let liveRef = "";
@@ -260,6 +262,66 @@ describe.skipIf(!dbUp)("agent configuration health", () => {
         enabledTools: [],
       },
     });
+    // `modelConfig: {}` is storable BY DESIGN (validateModelConfigForWrite: "unconfigured — the agent
+    // simply won't run until set"), and an agent created over REST or MCP without one lands exactly
+    // there. Nothing else is on, so this row answers one question: does a reading that finds no
+    // problems mean the agent works.
+    unconfiguredAgent = (
+      await suDb.agent.create({
+        data: {
+          tenantId,
+          name: "Unconfigured",
+          systemPrompt: "x",
+          modelConfig: {},
+          settings: { stt: { enabled: false } },
+        },
+        select: { id: true },
+      })
+    ).id;
+    // An agent bound to an inbox on a Chatwoot nobody can reach. The reader absorbs that failure per
+    // account and answers with a SHORT LIST, which is indistinguishable from "no inbox answers out
+    // of hours" — the exact case `unchecked` exists to name.
+    const deployment = await suDb.chatwootDeployment.create({
+      data: {
+        tenantId,
+        baseUrl: `http://127.0.0.1:9/p${process.pid}`,
+        adminToken: encryptJson("nope"),
+      },
+    });
+    const cwInstance = await suDb.chatwootInstance.create({
+      data: {
+        tenantId,
+        deploymentId: deployment.id,
+        accountId: 1,
+        serverKey: `http://127.0.0.1:9/p${process.pid}`,
+        accountName: "unreachable",
+      },
+    });
+    chatwootAgent = (
+      await suDb.agent.create({
+        data: {
+          tenantId,
+          name: "Bound to a dead Chatwoot",
+          systemPrompt: "x",
+          modelConfig: {
+            provider: "openai",
+            model: "gpt-4o-mini",
+            credentialRef: liveRef,
+          },
+          settings: { stt: { enabled: false } },
+        },
+        select: { id: true },
+      })
+    ).id;
+    await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: cwInstance.id,
+        chatwootInboxId: 4242,
+        name: "mirror",
+        agentId: chatwootAgent,
+      },
+    });
     otherAgent = (
       await suDb.agent.create({
         data: {
@@ -278,6 +340,9 @@ describe.skipIf(!dbUp)("agent configuration health", () => {
       if (!tid) continue;
       for (const table of [
         "execution_logs",
+        "inboxes",
+        "chatwoot_instances",
+        "chatwoot_deployments",
         "audit_logs",
         "agents",
         "vault_entries",
@@ -373,6 +438,33 @@ describe.skipIf(!dbUp)("agent configuration health", () => {
       // same key from the same line.
       expect(embedding?.pending).toBeUndefined();
       expect(embedding?.unresolved).toBeUndefined();
+    });
+
+    // The line `healthy` draws, tested from the side that makes it dangerous: a reading with nothing
+    // to report on an agent that answers nobody. The credential check cannot raise this — it asks
+    // whether a CONFIGURED provider has a key, and there is no provider to ask about.
+    test("an agent with no model at all is not healthy", async () => {
+      const health = await readAgentConfigHealth(
+        ctx(tenantId),
+        unconfiguredAgent,
+        { base: appDb },
+      );
+      const unset = health.issues.find((i) => i.key === "modelUnset");
+      expect(unset?.severity).toBe("blocking");
+      expect(health.healthy).toBe(false);
+    });
+
+    // A per-account failure is absorbed INSIDE the reader, so the outer catch never sees it and the
+    // list comes back short rather than rejected. Without the count travelling out of that reader,
+    // this call would report a complete, clean answer about a server it never reached.
+    test("a Chatwoot it could not reach lands in unchecked, not in silence", async () => {
+      const health = await readAgentConfigHealth(ctx(tenantId), chatwootAgent, {
+        base: appDb,
+      });
+      expect(health.unchecked).toContain("chatwootOutOfOffice");
+      expect(health.issues.some((i) => i.key.startsWith("outOfHours"))).toBe(
+        false,
+      );
     });
 
     test("an agent with nothing wrong comes back healthy and empty", async () => {
@@ -484,6 +576,22 @@ describe.skipIf(!dbUp)("agent configuration health", () => {
       expect(noUrl?.severity).toBe("blocking");
       // A write never waits on Chatwoot, and says so rather than implying it looked.
       expect(health.unchecked).toContain("chatwootOutOfOffice");
+    });
+
+    // The write has already COMMITTED by the time this runs, so a rejection here would replace a
+    // successful apply with an error — and the client reading that error retries, duplicating a
+    // create, a clone or an import. Driven through the failure the reviewer named (an agent read
+    // that rejects), which is what an id nobody can resolve produces.
+    test("a health read that fails does not turn a successful write into an error", async () => {
+      const after = await configHealthAfterWrite(
+        ctx(tenantId),
+        99_999_999_999n,
+        appDb,
+      );
+      expect(after.configHealth.healthy).toBeNull();
+      expect(after.configHealth.unchecked).toContain("configHealth");
+      // Absent, never clean: an empty issue list next to `healthy: null` says nobody looked.
+      expect(after.configHealth.issues).toEqual([]);
     });
 
     test("advisory issues are counted but do not ride along on a write", async () => {

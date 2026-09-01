@@ -25,6 +25,10 @@ const SEVERITY: Record<ConfigIssueKey, ConfigIssueSeverity> = {
   // `loadAgentConfig` returns null for the whole agent when the model cannot be built, which is
   // silence on every message rather than one feature going quiet.
   model: "blocking",
+  // No provider at all: `parseModelConfig` refuses the bag and the turn never starts.
+  modelUnset: "blocking",
+  // openai-compatible with nowhere to dial: `createChatModel` throws instead of degrading.
+  modelNoEndpoint: "blocking",
   // Fail-open: the analysis is skipped and every message is delivered as if it had been screened.
   guardrails: "blocking",
   // The same consequence, except measured rather than deduced: those turns already went out

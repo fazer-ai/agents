@@ -40,8 +40,64 @@ describe("computeConfigIssues", () => {
       ...base,
       modelProvider: "openai-compatible",
       modelCredentialRef: "",
+      // The endpoint IS the authentication for this provider, so the case being isolated here (no
+      // credential is fine) only exists once there is somewhere to dial.
+      modelBaseURL: "http://llama:8080/v1",
     });
     expect(issues).toEqual([]);
+  });
+
+  // No provider at all. Storable on purpose — `validateModelConfigForWrite` lets `modelConfig` be
+  // `{}` — so an agent created over REST or MCP without one lands here, and the credential check
+  // above cannot see it: it asks whether a CONFIGURED provider has a key.
+  test("flags an agent with no model configured at all", () => {
+    expect(
+      computeConfigIssues({
+        ...base,
+        modelProvider: "",
+        modelCredentialRef: "",
+      }),
+    ).toEqual([
+      { key: "modelUnset", tab: "general", sectionId: "general-model" },
+    ]);
+  });
+
+  test("flags an openai-compatible model with nowhere to dial", () => {
+    expect(
+      computeConfigIssues({
+        ...base,
+        modelProvider: "openai-compatible",
+        modelCredentialRef: "",
+        modelBaseURL: "",
+      }),
+    ).toEqual([
+      { key: "modelNoEndpoint", tab: "general", sectionId: "general-model" },
+    ]);
+  });
+
+  // The endpoint can arrive ON the credential, and the vault answers a request after the first
+  // paint. Announcing a runnable model as broken for that one paint is the false alarm the
+  // null-until-loaded rule exists to prevent — the same wait the three model overrides take.
+  test("waits for the vault when a credential could still carry the endpoint", () => {
+    expect(
+      computeConfigIssues({
+        ...base,
+        modelProvider: "openai-compatible",
+        modelCredentialRef: "vault:1",
+        modelBaseURL: "",
+        knownRefs: null,
+      }),
+    ).toEqual([]);
+    // …and says it once the vault has answered and no endpoint came with it.
+    expect(
+      computeConfigIssues({
+        ...base,
+        modelProvider: "openai-compatible",
+        modelCredentialRef: "vault:1",
+        modelBaseURL: "",
+        knownRefs: new Set(["vault:1"]),
+      }).map((i) => i.key),
+    ).toEqual(["modelNoEndpoint"]);
   });
 
   test("flags STT/TTS/vision enabled without a credential, each to its behavior section", () => {
@@ -961,7 +1017,14 @@ describe("computeConfigIssues — noncanonical ref spellings", () => {
 // it before it looks at the provider, and returns null for the whole agent when it cannot, so the
 // agent goes silent on every message.
 describe("computeConfigIssues — an openai-compatible model with a ref of its own", () => {
-  const compat = { ...base, modelProvider: "openai-compatible" };
+  // WITH an endpoint, because this block is about the CREDENTIAL and the endpoint is now its own
+  // check: `createChatModel` throws on an openai-compatible bag with nowhere to dial, so a fixture
+  // without one would raise `modelNoEndpoint` on every case here and stop isolating what it means to.
+  const compat = {
+    ...base,
+    modelProvider: "openai-compatible",
+    modelBaseURL: "http://llama:8080/v1",
+  };
 
   test("still raises nothing when no credential is set", () => {
     expect(

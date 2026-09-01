@@ -726,12 +726,19 @@ export async function listInboxes(
 // down is not evidence that anything is misconfigured, and this is a warning nobody is waiting on. The
 // same call answers "checked, all clear" and "could not check" with an empty list on purpose — both
 // render as silence, so a status field here would exist only to be ignored.
-export async function listOutOfOfficeInboxes(
+// The reading, WITH what it could not read. Every account this walks is asked over the network and
+// each failure is absorbed per account (below), so the list alone cannot distinguish "no inbox
+// answers out of hours" from "the server that would have said so is down" — and both come back as
+// the same short list. The editor is content with that (a warning invented by an outage is worse
+// than one that arrives a page load late), but a caller that reports its own coverage is not: it has
+// to name the account it never heard from. Hence the count, and `listOutOfOfficeInboxes` right below
+// as the projection for everyone who does not care.
+export async function readOutOfOfficeInboxes(
   ctx: TenantContext,
   agentId: bigint,
   deps: LoadChatwootClientDeps = {},
   base: PrismaClient = basePrisma,
-): Promise<{ id: string; name: string }[]> {
+): Promise<{ inboxes: { id: string; name: string }[]; unreachable: number }> {
   if (ctx.tenantId === null) throw new AppError("tenant required", 400);
   const tenantId = ctx.tenantId;
   const bound = await runScopedOn(base, ctx, (db) =>
@@ -751,44 +758,57 @@ export async function listOutOfOfficeInboxes(
   // being healthy would not help, it would just be answered late. Unbounded on purpose: the fan-out
   // is the number of Chatwoot accounts the operator connected, a small number they chose, not
   // anything that grows with traffic.
-  const armedByInstance = new Map(
-    (
-      await Promise.all(
-        [...new Set(bound.map((b) => b.chatwootInstanceId))].map(
-          async (instanceId) => {
-            try {
-              const client = await loadChatwootClient(tenantId, instanceId, {
-                base,
-                makeClient: deps.makeClient,
-              });
-              const armed = new Map<number, string>();
-              for (const remote of parseInboxList(await client.listInboxes())) {
-                if (chatwootAutoRepliesOutOfHours(remote)) {
-                  armed.set(remote.chatwootInboxId, remote.name);
-                }
-              }
-              return [instanceId, armed] as const;
-            } catch {
-              // unreachable / unauthorized — say nothing about this account's inboxes, and do not
-              // let it decide the answer for the others
-              return null;
+  const perInstance = await Promise.all(
+    [...new Set(bound.map((b) => b.chatwootInstanceId))].map(
+      async (instanceId) => {
+        try {
+          const client = await loadChatwootClient(tenantId, instanceId, {
+            base,
+            makeClient: deps.makeClient,
+          });
+          const armed = new Map<number, string>();
+          for (const remote of parseInboxList(await client.listInboxes())) {
+            if (chatwootAutoRepliesOutOfHours(remote)) {
+              armed.set(remote.chatwootInboxId, remote.name);
             }
-          },
-        ),
-      )
-    ).filter((entry) => entry !== null),
+          }
+          return [instanceId, armed] as const;
+        } catch {
+          // unreachable / unauthorized — say nothing about this account's inboxes, and do not let it
+          // decide the answer for the others. Counted rather than merely dropped: see the header.
+          return null;
+        }
+      },
+    ),
+  );
+  const armedByInstance = new Map(
+    perInstance.filter((entry) => entry !== null),
   );
 
   // Chatwoot's name, not the mirror's: this reading exists because the mirror can be stale, and the
   // inbox the operator has to go find is the one named on the other side.
-  const out: { id: string; name: string }[] = [];
+  const inboxes: { id: string; name: string }[] = [];
   for (const row of bound) {
     const name = armedByInstance
       .get(row.chatwootInstanceId)
       ?.get(row.chatwootInboxId);
-    if (name !== undefined) out.push({ id: String(row.id), name });
+    if (name !== undefined) inboxes.push({ id: String(row.id), name });
   }
-  return out;
+  return {
+    inboxes,
+    unreachable: perInstance.filter((entry) => entry === null).length,
+  };
+}
+
+// The same reading for a caller that has nowhere to put the failure count: the editor's panel, whose
+// rule is that an unreachable Chatwoot reports no inboxes rather than a warning it cannot act on.
+export async function listOutOfOfficeInboxes(
+  ctx: TenantContext,
+  agentId: bigint,
+  deps: LoadChatwootClientDeps = {},
+  base: PrismaClient = basePrisma,
+): Promise<{ id: string; name: string }[]> {
+  return (await readOutOfOfficeInboxes(ctx, agentId, deps, base)).inboxes;
 }
 
 export type { WidgetHealth, WidgetHealthStatus };

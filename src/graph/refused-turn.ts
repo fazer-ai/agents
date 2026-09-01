@@ -2,6 +2,7 @@ import type { AIMessage, BaseMessage } from "@langchain/core/messages";
 import { RemoveMessage } from "@langchain/core/messages";
 import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import type { PrismaClient } from "@/../generated/prisma/client";
+import logger from "@/api/lib/logger";
 import { withKeyedQueue } from "@/lib/locks";
 import {
   clearTurnInFlight,
@@ -311,7 +312,22 @@ export async function undoRefusedTurn(params: {
       clearTurnInFlight(graphThreadId);
       // Released on every exit, including a throw: a claim left behind defers every append on this
       // thread until its lease runs out.
-      if (write && owner && base) await releaseIngestWrite(owner, base, write);
+      //
+      // ...and BEST-EFFORT, the way ingestion releases its own. A transient failure here would
+      // otherwise throw out of a `finally` that runs after the rollback already succeeded, turning a
+      // clean removal into an error the caller reports — and the claim would be stranded either way,
+      // since the release stops the lease renewal before it touches the database. The lease is the
+      // recovery path; what this owes is a name in the log (round 21).
+      if (write && owner && base) {
+        try {
+          await releaseIngestWrite(owner, base, write);
+        } catch (err) {
+          logger.warn(
+            { err, thread: graphThreadId },
+            "failed to release the durable ingest write claim after a rollback; its lease will expire",
+          );
+        }
+      }
     }
   });
 }

@@ -10,6 +10,7 @@ import { tool } from "@langchain/core/tools";
 import { MemorySaver } from "@langchain/langgraph";
 import { z } from "zod";
 import { buildAgentGraph } from "@/graph/graph";
+import { contentToText } from "@/graph/message-text";
 import { SKIP_REPLY_ACK, SKIP_REPLY_TOOL } from "@/graph/silence";
 import { buildThreadStateGraph } from "@/graph/thread-state";
 import { failableTool, toolFailure } from "@/graph/tools/failure";
@@ -399,6 +400,11 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     const rewritten = messages.find((m) => m.id === "ai-skip-1") as AIMessage;
     expect(rewritten.response_metadata?.finish_reason).toBe("tool_calls");
     expect(rewritten.usage_metadata?.total_tokens).toBe(30);
+    // AN EMPTY BLOCK LIST, never `""`. This message keeps its tool calls, so it stays in the history
+    // the model is sent — and `@langchain/anthropic` renders string content as a text block, which
+    // Anthropic refuses when empty. An empty list renders no text block at all.
+    expect(rewritten.content).toEqual([]);
+    expect(contentToText(rewritten.content)).toBe("");
   });
 
   // Round 20, and it is where rounds 13 and 18 meet. A PARALLEL batch is not terminal, so the

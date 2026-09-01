@@ -203,7 +203,12 @@ function silenceNarration(history: BaseMessage[]): BaseMessage[] {
   return [
     new AIMessage({
       id: ai.id,
-      content: "",
+      // AN EMPTY ARRAY, never `""`. This message KEEPS its tool calls, so `isEmptyAssistantTurn`
+      // rightly leaves it in the history the model is sent — and `@langchain/anthropic` renders
+      // string content as a text block, which Anthropic refuses when it is empty ("text content
+      // blocks must be non-empty"). An empty block LIST renders no text block at all, which is the
+      // shape a tool-call-only message has anyway. `contentToText` reads both as "" (round 21).
+      content: [],
       tool_calls: ai.tool_calls ?? [],
       additional_kwargs: ai.additional_kwargs,
       response_metadata: ai.response_metadata,

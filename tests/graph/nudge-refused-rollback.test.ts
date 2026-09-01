@@ -556,6 +556,87 @@ describe.skipIf(!dbUp)(
       await releaseIngestWrite(owner, appDb, again);
     });
 
+    // Round 21. The release runs in a `finally` that fires AFTER the removal has already been
+    // written, and it stops the lease renewal before it touches the database — so a transient
+    // failure there strands the claim either way, and throwing on top of it turns a clean rollback
+    // into an error the caller reports. Ingestion catches its own for the same reason; this catches
+    // its own too, and owes a line in the log.
+    test("a release that fails does not turn a clean rollback into an error", async () => {
+      const contactInboxId = 7262;
+      await seedConv(9262, contactInboxId);
+      const graphThreadId = contactInboxThreadId(
+        tenantId,
+        instanceId,
+        contactInboxId,
+      );
+      const owner = { tenantId, instanceId, contactInboxId, graphThreadId };
+      const checkpointer = new MemorySaver();
+      await seedHistory(checkpointer, graphThreadId);
+      const produced = [
+        nudgeMessage("An external system event just occurred.", 9262),
+        new AIMessage({ id: "rb-z1", content: "Oi, ainda precisa de ajuda?" }),
+      ];
+      await buildThreadStateGraph(checkpointer).updateState(
+        { configurable: { thread_id: graphThreadId } },
+        { messages: produced },
+        THREAD_STATE_NODE,
+      );
+      // The `agent_threads` row has to EXIST first, or the claim falls to its insert path and spends
+      // a second transaction — which the proxy below would then fail, testing the claim instead of
+      // the release. A turn claim taken and released leaves the row behind with no holders.
+      await clearTurnOwning(owner, appDb, await markTurnOwning(owner, appDb));
+      // With the row there, the claim spends ONE scoped transaction and the release spends the next. Failing from the second on is therefore
+      // "the claim worked, the release did not", and the count is asserted so a change in either
+      // one's shape shows up here instead of silently testing nothing.
+      let scoped = 0;
+      const flaky = new Proxy(appDb, {
+        get(target, prop, receiver) {
+          if (prop !== "$extends") return Reflect.get(target, prop, receiver);
+          return (...args: unknown[]) => {
+            const ext = (
+              target as unknown as { $extends: (...a: unknown[]) => object }
+            ).$extends(...args);
+            return new Proxy(ext, {
+              get(et, ep, er) {
+                if (ep !== "$transaction") return Reflect.get(et, ep, er);
+                return async (...targs: unknown[]) => {
+                  scoped++;
+                  if (scoped > 1) throw new Error("db is down");
+                  return (
+                    et as unknown as {
+                      $transaction: (...a: unknown[]) => Promise<unknown>;
+                    }
+                  ).$transaction(...targs);
+                };
+              },
+            });
+          };
+        },
+      }) as typeof appDb;
+
+      const plan = await undoRefusedTurn({
+        checkpointer,
+        graphThreadId,
+        produced,
+        kind: "proactive",
+        owner,
+        base: flaky,
+      });
+      expect(plan.action).toBe("remove");
+      expect(scoped).toBeGreaterThanOrEqual(2);
+      const after = await channel(checkpointer, graphThreadId);
+      expect(after.map(textOf).join("\n")).not.toContain(
+        "ainda precisa de ajuda",
+      );
+      // The stranded claim is real and is the lease's problem, not this call's: released by hand so
+      // the next test on this thread is not blocked by it.
+      await appDb.$executeRawUnsafe(
+        `UPDATE agent_threads SET ingest_write_until = NULL, ingest_write_token = NULL
+           WHERE tenant_id = ${tenantId} AND chatwoot_instance_id = ${instanceId}
+             AND contact_inbox_id = ${contactInboxId}`,
+      );
+    });
+
     // THE WIRING, which the two tests above do not touch: they call `undoRefusedTurn` directly, so a
     // caller that stopped passing its owner would leave them both green. Same scenario, driven
     // through the real `runAgentNudge`.

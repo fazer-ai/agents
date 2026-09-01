@@ -1551,7 +1551,7 @@ async function runTurnBody(
     // something the agent wrote for the customer.
     const drafted = customerFacingReply(lastAssistantText(result.messages));
     let reply = drafted.text;
-    // Silence the operator can explain. `skip_reply` records itself in the timeline, and a turn that
+    // NOTE: Silence the operator can explain. `skip_reply` records itself in the timeline, and a turn that
     // went quiet because the model emitted the token would otherwise be indistinguishable from the
     // agent ignoring a customer who is waiting.
     if (drafted.bySentinel) {
@@ -1572,7 +1572,7 @@ async function runTurnBody(
       // stayed in the channel with the test green on everything else.
       silenceProduced = result.messages as BaseMessage[];
     }
-    // The other half, and it exists because the rule REFUSES to edit the token out of a real answer
+    // NOTE: The other half, and it exists because the rule REFUSES to edit the token out of a real answer
     // (that is the data loss `docs/graph.md` prohibits). So the reply goes out carrying it, and the
     // operator hears about it here rather than from the customer — a cosmetic leak that is reported
     // is a different thing from one that is silent.
@@ -1924,7 +1924,7 @@ async function runTurnBody(
         );
       }
     }
-    // LAST, and the order is the whole point. `undoRefusedTurn` stands down while the GRAPH thread is
+    // NOTE: LAST, and the order is the whole point. `undoRefusedTurn` stands down while the GRAPH thread is
     // in flight, and there are two claims on this turn: `markTurnInFlight(threadId)` cleared at the
     // top of this block, and the durable one `markTurnOwning` takes on `graphThreadId` — which is a
     // DIFFERENT key whenever the conversation has a contact-inbox, i.e. the normal case. Released

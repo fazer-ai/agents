@@ -1111,6 +1111,174 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     expect(seen).toEqual(seen.map(() => 0));
   });
 
+  // Round 31, the half the filter above got wrong. "No text" and "empty" are not the same question:
+  // a provider can return a turn whose whole content is a non-text block — Anthropic's signed
+  // `thinking`, an image — with no tool calls and no text at all. Classifying that as an empty turn
+  // deletes provider-native output from every later prompt, and it deletes exactly what
+  // `silenceNarration` above takes such care to keep.
+  test("a turn whose only content is a non-text block still reaches the model", async () => {
+    const seen: number[] = [];
+    class RecordsThinkingTurns {
+      round = 0;
+      async invoke(messages: BaseMessage[]): Promise<AIMessage> {
+        seen.push(
+          messages.filter(
+            (m) =>
+              Array.isArray(m.content) &&
+              m.content.some(
+                (b) => (b as { type?: unknown }).type === "thinking",
+              ),
+          ).length,
+        );
+        this.round++;
+        // NOTE: The first turn answers with reasoning alone: no text, no tool calls.
+        if (this.round === 1)
+          return new AIMessage({
+            content: [
+              { type: "thinking", thinking: "pensando", signature: "sig-abc" },
+            ],
+          });
+        return new AIMessage("Oi de novo!");
+      }
+    }
+    const checkpointer = new MemorySaver();
+    const graph = buildAgentGraph({
+      primary: { provider: "anthropic", model: "test-model" },
+      model: new RecordsThinkingTurns() as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer,
+      tools: [],
+      maxToolCalls: 10,
+    });
+    const cfg = { configurable: { thread_id: "thinking-only-turn" } };
+    await graph.invoke({ messages: [new HumanMessage("ok")] }, cfg);
+    await graph.invoke({ messages: [new HumanMessage("e aí?")] }, cfg);
+    // The first round saw none because none existed yet; the second must see the one the first left.
+    expect(seen).toEqual([0, 1]);
+  });
+
+  // Same round, the other record the filter was erasing. A call the adapter could not parse arrives
+  // as `invalid_tool_calls` with nothing in `content`, and it is what the model asked for: dropping
+  // it hands the next round a history in which the malformed call never happened.
+  test("a turn whose only record is an unparseable call still reaches the model", async () => {
+    const seen: number[] = [];
+    class RecordsInvalidCallTurns {
+      round = 0;
+      async invoke(messages: BaseMessage[]): Promise<AIMessage> {
+        seen.push(
+          messages.filter(
+            (m) => ((m as AIMessage).invalid_tool_calls?.length ?? 0) > 0,
+          ).length,
+        );
+        this.round++;
+        if (this.round === 1) {
+          return new AIMessage({
+            content: "",
+            invalid_tool_calls: [
+              { name: "consultar", args: "{não é json", id: "b1", error: "x" },
+            ],
+          });
+        }
+        return new AIMessage("Oi de novo!");
+      }
+    }
+    const checkpointer = new MemorySaver();
+    const graph = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
+      model: new RecordsInvalidCallTurns() as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer,
+      tools: [],
+      maxToolCalls: 10,
+    });
+    const cfg = { configurable: { thread_id: "invalid-call-only-turn" } };
+    await graph.invoke({ messages: [new HumanMessage("ok")] }, cfg);
+    await graph.invoke({ messages: [new HumanMessage("e aí?")] }, cfg);
+    expect(seen).toEqual([0, 1]);
+  });
+
+  // The other side of the same guard: a block list is not automatically output. A provider that
+  // answers with an empty string in block form produces a list of nothing but empty text, and that
+  // IS the absence the filter exists for — asking `Array.isArray` alone, without asking what the
+  // list holds, would keep it.
+  test("a turn whose blocks are nothing but empty text never reaches the model", async () => {
+    const seen: number[] = [];
+    class RecordsBlockListTurns {
+      round = 0;
+      async invoke(messages: BaseMessage[]): Promise<AIMessage> {
+        seen.push(
+          messages.filter(
+            (m) => m.getType() === "ai" && Array.isArray(m.content),
+          ).length,
+        );
+        this.round++;
+        if (this.round === 1) {
+          return new AIMessage({ content: [{ type: "text", text: "" }] });
+        }
+        return new AIMessage("Oi de novo!");
+      }
+    }
+    const checkpointer = new MemorySaver();
+    const graph = buildAgentGraph({
+      primary: { provider: "anthropic", model: "test-model" },
+      model: new RecordsBlockListTurns() as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer,
+      tools: [],
+      maxToolCalls: 10,
+    });
+    const cfg = { configurable: { thread_id: "empty-block-list-turn" } };
+    await graph.invoke({ messages: [new HumanMessage("ok")] }, cfg);
+    await graph.invoke({ messages: [new HumanMessage("e aí?")] }, cfg);
+    expect(seen).toEqual([0, 0]);
+  });
+
+  // And the filter answers "is this an EMPTY ASSISTANT turn", so the type is load-bearing. A tool
+  // that returns an empty string produces a `ToolMessage` with no content at all; reading that as an
+  // empty turn drops it and orphans the `tool_call_id` the call before it opened, which every
+  // provider rejects.
+  test("a tool result that came back empty still reaches the model", async () => {
+    const emptyTool = tool(async () => "", {
+      name: "consultar",
+      description: "consulta",
+      schema: z.object({}),
+    });
+    const seen: number[] = [];
+    class RecordsToolMessages {
+      round = 0;
+      bindTools(_tools: unknown) {
+        const self = this;
+        return {
+          async invoke(messages: BaseMessage[]): Promise<AIMessage> {
+            seen.push(messages.filter((m) => m.getType() === "tool").length);
+            self.round++;
+            if (self.round === 1) {
+              return new AIMessage({
+                content: "",
+                tool_calls: [{ name: "consultar", args: {}, id: "t1" }],
+              });
+            }
+            return new AIMessage("Pronto!");
+          },
+        };
+      }
+    }
+    const graph = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
+      model: new RecordsToolMessages() as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer: new MemorySaver(),
+      tools: [emptyTool],
+      maxToolCalls: 10,
+    });
+    await graph.invoke(
+      { messages: [new HumanMessage("ok")] },
+      { configurable: { thread_id: "empty-tool-result" } },
+    );
+    // The round after the call must carry the result, empty body and all.
+    expect(seen).toEqual([0, 1]);
+  });
+
   // Round 7: parallel tool calls. `skip_reply` alongside `react_to_message` is the documented way to
   // answer with a reaction alone, and whichever result lands last is an ordering accident — reading
   // only the last one made the wrap-up instruction depend on it.

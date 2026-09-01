@@ -9,6 +9,7 @@ import {
   type Tool,
   templatePreviewFor,
   templateSaveProblem,
+  testFieldsFrom,
 } from "@/client/pages/resources/ToolEditModal";
 import { buildHttpTool } from "@/graph/tools/http";
 import { MAX_TEMPLATE_CHARS } from "@/modules/tool-definitions/response-template";
@@ -519,4 +520,92 @@ test("the preview names WHY the template did not apply, one branch per reason", 
   );
   // And never on the negation of "it rendered", which is what made one sentence cover two causes.
   expect(src).not.toContain("!templatePreview.projected");
+});
+
+// Round 17 of review, finding 1. The dialog runs the definition `payloadOf` produced, and it was
+// handed its list of boxes from a DIFFERENT source: the raw form rows. Those disagree wherever two
+// rows trim to one name — which the editor permits — because `schemaFromAiFields` writes an object,
+// so the last declaration wins there while the dialog rendered both. Two boxes on one `ai:<name>`
+// slot means an earlier row's `required`, or its type, judging a value the saved definition never
+// declares: Send disabled, or a value validated against a schema that will not exist.
+test("the test dialog's boxes come from the definition it will send", () => {
+  const form = formFromTool(legacyTool());
+  const withDupes = {
+    ...form,
+    aiFields: [
+      {
+        _id: "a",
+        name: "qty",
+        type: "integer" as const,
+        required: true,
+        description: "first",
+        enumValues: [] as string[],
+        itemType: "string" as const,
+      },
+      {
+        // Same name once trimmed. `payloadOf` keeps this one.
+        _id: "b",
+        name: "  qty  ",
+        type: "string" as const,
+        required: false,
+        description: "second",
+        enumValues: [] as string[],
+        itemType: "string" as const,
+      },
+    ],
+  };
+  const payload = payloadOf(withDupes as never);
+  const schema = payload?.inputSchema as Record<string, unknown>;
+  expect(Object.keys(schema)).toEqual(["qty"]);
+  const fields = testFieldsFrom(schema);
+  expect(fields).toHaveLength(1);
+  expect(fields[0]).toMatchObject({
+    name: "qty",
+    type: "string",
+    required: false,
+    description: "second",
+  });
+});
+
+test("a legacy fixed field gets no box: it is not the model's to supply", () => {
+  // `testFieldsFrom` reads `inputSchema`, and a STORED one can carry `source: "fixed"` entries —
+  // the legacy placement shape the editor renders as literal rows instead. The runtime leaves them
+  // out of the schema it validates against (`parseToolInputSchema` keeps `source === "ai"` only),
+  // so a box here would collect a value the model never sends and the request never carries.
+  expect(
+    testFieldsFrom({
+      qty: { type: "integer", required: true },
+      api_version: { source: "fixed", value: "2024-01" },
+    }),
+  ).toEqual([
+    { name: "qty", description: "", required: true, type: "integer" },
+  ]);
+});
+
+test("and the dialog is built from that reader, not from the form rows", async () => {
+  const src = await Bun.file(
+    "src/client/pages/resources/ToolEditModal.tsx",
+  ).text();
+  expect(src).toMatch(/aiFields: testFieldsFrom\(/);
+  // The form rows are what disagreed with the payload; naming them here again would be the defect.
+  expect(src).not.toMatch(/aiFields: form\.aiFields/);
+});
+
+// Finding 2 of the same round. A relative urlTemplate with no credential base is refused by
+// `buildHttpTool` before a request goes out, and Save already knows: `urlTemplateInvalid` is
+// deliberately false for that shape because `relativeWithoutBase` carries it separately. The test
+// button read only the first half, so it spent a real round trip to be told what the form knew.
+test("the Test button carries the whole URL gate Save does", async () => {
+  const src = await Bun.file(
+    "src/client/pages/resources/ToolEditModal.tsx",
+  ).text();
+  const at = src.indexOf("tools.testOpen");
+  const disabled = src.slice(at - 1200, at).slice(-900);
+  for (const cond of [
+    "urlTemplateInvalid",
+    "relativeWithoutBase",
+    "templateDeclProblem",
+  ]) {
+    expect(disabled).toContain(cond);
+  }
 });

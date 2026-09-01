@@ -47,7 +47,11 @@ import {
   unmatchedTemplateDelimiter,
   unusableTemplateTokens,
 } from "@/modules/tool-definitions/response-template";
-import { ToolTestModal, type ToolTestTarget } from "./ToolTestModal";
+import {
+  type ToolTestField,
+  ToolTestModal,
+  type ToolTestTarget,
+} from "./ToolTestModal";
 import { fieldTypeLabels } from "./toolFieldTypes";
 
 type ToolsData = Awaited<ReturnType<typeof api.api.v1.tools.get>>["data"];
@@ -348,6 +352,44 @@ function schemaFromAiFields(rows: AiFieldRow[]): Record<string, unknown> {
     }
     if (r.type === "array") spec.itemType = r.itemType;
     out[name] = spec;
+  }
+  return out;
+}
+
+// The boxes the test dialog collects, read back off the definition it is about to run. Not built
+// from the form rows: `schemaFromAiFields` above writes an OBJECT, so two rows that trim to one name
+// collapse to the last, and the dialog rendered both — two controls on one slot, with the losing
+// row's `required` or type judging a value the saved definition never declares. Reading the payload
+// is what makes "this dialog tests what Save would send" true of the fields too, not only the URL.
+export function testFieldsFrom(schema: unknown): ToolTestField[] {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return [];
+  const out: ToolTestField[] = [];
+  for (const [name, raw] of Object.entries(schema as Record<string, unknown>)) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+    const spec = raw as Record<string, unknown>;
+    // A fixed field is not the model's to supply, and `parseToolInputSchema` leaves it out of the
+    // schema the runtime validates against, so it gets no box either.
+    if (spec.source === "fixed") continue;
+    const type = typeof spec.type === "string" ? spec.type : "string";
+    out.push({
+      name,
+      description: typeof spec.description === "string" ? spec.description : "",
+      required: spec.required === true,
+      // The declared type travels with the field: the runtime validates the argument against it
+      // before the request goes out, so a dialog that only collected text would fail every
+      // non-string field on the schema instead of reaching the API.
+      type,
+      ...(type === "enum" && Array.isArray(spec.enumValues)
+        ? {
+            enumValues: spec.enumValues.filter(
+              (v): v is string => typeof v === "string",
+            ),
+          }
+        : {}),
+      ...(type === "array" && typeof spec.itemType === "string"
+        ? { itemType: spec.itemType }
+        : {}),
+    });
   }
   return out;
 }
@@ -1149,19 +1191,9 @@ export function ToolEditModal({
     }
     testModal.open({
       definition: payload as unknown as Record<string, unknown>,
-      aiFields: form.aiFields
-        .filter((f) => f.name.trim())
-        .map((f) => ({
-          name: f.name.trim(),
-          description: f.description,
-          required: f.required,
-          // The declared type travels with the field: the runtime validates the argument against it
-          // before the request goes out, so a dialog that only collected text would fail every
-          // non-string field on the schema instead of reaching the API.
-          type: f.type,
-          ...(f.type === "enum" ? { enumValues: f.enumValues } : {}),
-          ...(f.type === "array" ? { itemType: f.itemType } : {}),
-        })),
+      aiFields: testFieldsFrom(
+        (payload as Record<string, unknown>).inputSchema,
+      ),
       contextNames: referencedContextNames,
     });
   }
@@ -1767,6 +1799,11 @@ export function ToolEditModal({
                   disabled={
                     !form.urlTemplate.trim() ||
                     urlTemplateInvalid ||
+                    // Deliberately separate from `urlTemplateInvalid`, which is false for a
+                    // relative template on purpose. `buildHttpTool` refuses that shape before a
+                    // request goes out, so without this the button spends a real round trip to be
+                    // told what the form already knows — and Save has always known it.
+                    relativeWithoutBase ||
                     templateDeclProblem !== null
                   }
                   onClick={openTest}

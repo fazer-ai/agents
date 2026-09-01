@@ -101,8 +101,12 @@ async function driveDownload(
   const doFetch = ctx.fetchImpl ?? fetch;
   // Byte-capped ON THE READ. `arrayBuffer()` buffered the whole body and then refused it for being
   // too large, so a 5 GB file in the connected account was 5 GB of resident memory on its way to a
-  // refusal (#464). The Content-Length check below stays: it costs nothing and refuses before the
-  // first byte when the server is honest about the size.
+  // refusal (#464).
+  //
+  // And the two cheap refusals still happen BEFORE a byte is read, which is what `readWhen` is for:
+  // an honest server that declares 500 MB is turned down without pulling fifteen of them first (on
+  // a slow link that read could spend the whole budget and turn "that file is too large" into a
+  // generic download failure), and a non-2xx body is an error page nothing here reads.
   const { res, body } = await fetchBoundedBytes(
     url,
     {
@@ -117,12 +121,18 @@ async function driveDownload(
       timeoutMs: TIMEOUT_MS,
       maxBytes: MAX_DOWNLOAD_BYTES,
       fetchImpl: doFetch,
+      readWhen: (r) =>
+        r.status >= 200 &&
+        r.status < 300 &&
+        Number(r.headers.get("content-length") ?? "0") <= MAX_DOWNLOAD_BYTES,
     },
   );
   if (res.status < 200 || res.status >= 300)
     return { status: res.status, bytes: null, tooLarge: false };
-  const declared = Number(res.headers.get("content-length") ?? "0");
-  if (declared > MAX_DOWNLOAD_BYTES || body.tooLarge)
+  // A 2xx whose body was not read means the predicate refused it, and at a 2xx the only thing it
+  // looks at is the declared size. `tooLarge` covers the server that understated it: the cap
+  // catches that one on the way in.
+  if (body === null || body.tooLarge)
     return { status: res.status, bytes: null, tooLarge: true };
   return {
     status: res.status,

@@ -195,10 +195,23 @@ export async function readCappedBytes(
 export async function fetchBoundedBytes(
   url: string,
   init: RequestInit,
-  opts: { timeoutMs: number; maxBytes: number; fetchImpl?: typeof fetch },
-): Promise<{ res: Response; body: OutboundBytes }> {
-  const { res, value } = await bounded(url, init, opts, (r) =>
-    readCappedBytes(r, opts.maxBytes),
-  );
+  opts: {
+    timeoutMs: number;
+    maxBytes: number;
+    fetchImpl?: typeof fetch;
+    // Asked once the headers are in and BEFORE a byte of the body is read. `false` cancels the
+    // stream and returns a null body: a download the status or the declared size already rules out
+    // must not be pulled first, or a caller that refuses a 500 MB file spends `maxBytes` and its
+    // whole budget discovering what Content-Length said up front.
+    readWhen?: (res: Response) => boolean;
+  },
+): Promise<{ res: Response; body: OutboundBytes | null }> {
+  const { res, value } = await bounded(url, init, opts, async (r) => {
+    if (opts.readWhen && !opts.readWhen(r)) {
+      await r.body?.cancel().catch(() => undefined);
+      return null;
+    }
+    return readCappedBytes(r, opts.maxBytes);
+  });
   return { res, body: value };
 }

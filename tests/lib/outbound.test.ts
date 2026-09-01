@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   fetchBounded,
+  fetchBoundedBytes,
   MAX_OUTBOUND_BODY_CHARS,
   OutboundTimeoutError,
   readCappedBody,
@@ -134,6 +135,64 @@ describe("readCappedBytes", () => {
     const got = await readCappedBytes(new Response(null, { status: 204 }), 10);
     expect(got.tooLarge).toBe(false);
     expect(got.bytes.byteLength).toBe(0);
+  });
+});
+
+describe("fetchBoundedBytes", () => {
+  function pullCounter() {
+    const seen = { pulled: 0, cancelled: false };
+    const res = new Response(
+      new ReadableStream({
+        pull(c) {
+          seen.pulled += 1;
+          c.enqueue(new Uint8Array(64));
+        },
+        cancel() {
+          seen.cancelled = true;
+        },
+      }),
+      { status: 200, headers: { "content-length": "999999999" } },
+    );
+    return { seen, res };
+  }
+
+  test("a `readWhen` that says no cancels the body instead of reading it", async () => {
+    // The decision is made on the HEADERS. A caller that will refuse a download for its declared
+    // size must not spend the cap — and, on a slow link, its whole budget — discovering what the
+    // headers already said.
+    const { seen, res } = pullCounter();
+    const { body } = await fetchBoundedBytes(
+      "https://8.8.8.8/x",
+      {},
+      {
+        timeoutMs: 5_000,
+        maxBytes: 4_096,
+        readWhen: () => false,
+        fetchImpl: (async () => res) as unknown as typeof fetch,
+      },
+    );
+    expect(body).toBeNull();
+    expect(seen.cancelled).toBe(true);
+    // A stream fills its own queue once before anyone reads it; reading to the cap would take 64.
+    expect(seen.pulled).toBeLessThanOrEqual(1);
+  });
+
+  test("and one that says yes reads as usual", async () => {
+    const { body } = await fetchBoundedBytes(
+      "https://8.8.8.8/x",
+      {},
+      {
+        timeoutMs: 5_000,
+        maxBytes: 4_096,
+        readWhen: () => true,
+        fetchImpl: (async () =>
+          new Response(new Uint8Array([7, 8, 9]), {
+            status: 200,
+          })) as unknown as typeof fetch,
+      },
+    );
+    expect(body?.tooLarge).toBe(false);
+    expect(Array.from(body?.bytes ?? [])).toEqual([7, 8, 9]);
   });
 });
 

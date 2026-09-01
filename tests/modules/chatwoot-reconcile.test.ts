@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
+import { setPublisher } from "@/api/features/realtime/realtime.service";
 import { reconcileMirrorFromLive } from "@/modules/chatwoot/reconcile";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
@@ -244,11 +245,25 @@ describe.skipIf(!dbUp)("reconcileMirrorFromLive", () => {
     });
     // Our own read is older than that write — a GET issued before it committed comes back with
     // exactly this — so the refusal is what describes the source now.
-    const result = await applyFor(
-      id,
-      { status: "open", updatedAt: T + 1 },
-      until,
-    );
+    // A subscriber, because a durable event with nobody listening writes no row: this asserts the
+    // integration side of the announcement, not only the console's.
+    await suDb.webhookSubscription.create({
+      data: {
+        tenantId,
+        url: "https://sub.example/hook",
+        events: ["conversation.status_changed"],
+      },
+    });
+    const published: Record<string, unknown>[] = [];
+    setPublisher((_topic, data) => {
+      published.push(JSON.parse(String(data)));
+    });
+    let result: Awaited<ReturnType<typeof applyFor>>;
+    try {
+      result = await applyFor(id, { status: "open", updatedAt: T + 1 }, until);
+    } finally {
+      setPublisher(() => undefined);
+    }
     const row = await readRow(id);
     expect(row.status).toBe("pending");
     expect(row.chatwootStatusAt).toBe(T + 9);
@@ -257,6 +272,19 @@ describe.skipIf(!dbUp)("reconcileMirrorFromLive", () => {
     // the evidence goes with the answer.
     expect(row.statusClaimStampedAt).toBe(T + 1);
     expect(row.statusClaimRefusedAt).toBeNull();
+    // AND IT IS ANNOUNCED, because nothing else will: the webhook that carried this transition was
+    // acknowledged with its status refused, so the mirror said nothing, and the last thing every open
+    // console heard was the claim's own `open`.
+    expect(
+      published.filter(
+        (e) => e.type === "conversation" && e.status === "pending",
+      ).length,
+    ).toBe(1);
+    const emitted = await suDb.outboundWebhookDelivery.findMany({
+      where: { tenantId, event: "conversation.status_changed" },
+      select: { id: true },
+    });
+    expect(emitted.length).toBe(1);
   });
 
   test("a version refused behind ours was a stale snapshot, and goes", async () => {

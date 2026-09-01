@@ -8,6 +8,7 @@ import {
   normalizeChatwootEvent,
   shouldBotHandle,
 } from "@/modules/chatwoot/normalize";
+import { STATUS_CLAIM_TTL_MS } from "@/modules/chatwoot/status-claim";
 import {
   claimOpenForHumanQueue,
   processChatwootDelivery,
@@ -1212,27 +1213,37 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
           assigneeType: "AgentBot",
           assigneeId: OUR_BOT,
         },
-        claimUntil: new Date(Date.now() + 45_000),
         base: appDb,
       });
     // A holder rather than a `let`, so the control-flow analysis does not narrow the answer to the
     // `null` it starts on: the only writer is the callback below.
-    const claimed: { won: boolean | null } = { won: null };
+    const claimed: { until: Date | null } = { until: null };
     let running: Promise<void> | null = null;
+    const startedAt = Date.now();
     await suDb.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`${tenantId}:${instanceId}:${conv}`})::bigint)`;
       running = claim().then((v) => {
-        claimed.won = v;
+        claimed.until = v;
       });
-      // Long enough for an unlocked write to have finished several times over, and it cannot go flaky
-      // in the direction that matters: a slow machine only delays the claim further.
-      await Bun.sleep(150);
-      expect(claimed.won).toBeNull();
+      // Long enough for an unlocked write to have finished several times over, and to separate the
+      // two candidate start points for the deadline below. It cannot go flaky in the direction that
+      // matters: a slow machine only delays the claim further.
+      await Bun.sleep(400);
+      expect(claimed.until).toBeNull();
       expect((await convRow(conv))?.status).toBe("pending");
     });
     await running;
-    expect(claimed.won).toBe(true);
-    expect((await convRow(conv))?.status).toBe("open");
+    // The deadline the claim answers with is the one it WROTE, and it is stamped past the wait: the
+    // countdown is the fence's, not the queue's.
+    const row = await convRow(conv);
+    expect(row?.status).toBe("open");
+    // The deadline the claim answers with is the one it WROTE...
+    expect(claimed.until?.getTime()).toBe(row?.statusClaimUntil?.getTime());
+    // ...and the countdown starts past the wait, not at the call: a deadline stamped before the lock
+    // would land at `startedAt + TTL` and spend the queueing on the fence it promises.
+    expect(claimed.until?.getTime() ?? 0).toBeGreaterThan(
+      startedAt + STATUS_CLAIM_TTL_MS + 100,
+    );
   });
 
   // ISSUE #468, ROUND 3. The claim cannot tell a conversation event frozen BEFORE our write from one

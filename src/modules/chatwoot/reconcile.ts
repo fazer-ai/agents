@@ -1,7 +1,10 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
+import { broadcastConversationEvent } from "@/api/features/realtime/realtime.service";
+import logger from "@/api/lib/logger";
 import { withEntityLock } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clearsResolutionOrigin } from "@/modules/conversations/resolution-origin";
+import { emitOutbound } from "@/modules/webhooks/outbound/service";
 import type { LiveConversationState } from "./normalize";
 import { statusClaimDeferredWins, statusClaimVerdict } from "./status-claim";
 
@@ -111,6 +114,10 @@ export async function reconcileMirrorFromLive(
         const current = await db.conversation.findUnique({
           where,
           select: {
+            // The mirror's own row id, which is what a console and an outbound consumer name this
+            // conversation by — needed only on the deferred path below, which is the one write here
+            // that no webhook will announce.
+            id: true,
             status: true,
             assigneeType: true,
             assigneeId: true,
@@ -304,6 +311,39 @@ export async function reconcileMirrorFromLive(
         };
         if (Object.keys(data).length === 0) return;
         await db.conversation.update({ where, data });
+        // NOTE: THE DEFERRED TRANSITION IS ANNOUNCED HERE, because nothing else will. The webhook that
+        // carried it was acknowledged with its status refused, so the mirror emitted nothing and the
+        // consoles were last told `open` by the claim itself; a status the database alone knows about
+        // leaves every open page and every outbound consumer on the wrong state until some later
+        // event happens to correct it (issue #468, round 9). Every OTHER write on this path either
+        // agrees with what the source already announced or is announced by its own caller.
+        if (
+          deferredWins &&
+          nextStatus !== null &&
+          nextStatus !== current.status
+        ) {
+          broadcastConversationEvent(tenantId, {
+            conversationId: String(current.id),
+            status: nextStatus,
+            assigneeId: current.assigneeId,
+            assigneeType: current.assigneeType,
+            lastEventAt: nextEventAt ? nextEventAt.toISOString() : null,
+          });
+          try {
+            await emitOutbound(db, tenantId, "conversation.status_changed", {
+              conversation_id: String(current.id),
+              inbox_id: null,
+              status: nextStatus,
+              previous_status: current.status,
+              assignee_type: current.assigneeType,
+            });
+          } catch (err) {
+            logger.warn(
+              "outbound emit failed (event=conversation.status_changed): %s",
+              err instanceof Error ? err.message : String(err),
+            );
+          }
+        }
         result.state = {
           status: nextStatus ?? current.status,
           assigneeId: assigneeOrdered ? live.assigneeId : current.assigneeId,

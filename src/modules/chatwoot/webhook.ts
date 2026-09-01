@@ -1264,6 +1264,9 @@ async function conversationOwnershipNow(p: {
  * this delivery decided about (issue #430), and announce the claim in the same statement (issue
  * #436). Answers whether the claim was taken.
  *
+ * Answers with the deadline it wrote, which is the caller's proof it holds this claim and the value
+ * its reconcile passes back as `ownsStatusClaim`. Null when the compare-and-swap lost.
+ *
  * Exported for the test that pins the lock below; the call site is the human-reply gate, which has
  * asked Chatwoot first and is about to toggle.
  */
@@ -1277,10 +1280,9 @@ export async function claimOpenForHumanQueue(p: {
     assigneeType: string | null;
     assigneeId: number | null;
   };
-  claimUntil: Date;
   base: PrismaClient;
-}): Promise<boolean> {
-  const { count } = await runScopedOn(p.base, sysCtx(p.tenantId), (db) =>
+}): Promise<Date | null> {
+  return runScopedOn(p.base, sysCtx(p.tenantId), (db) =>
     // UNDER THE CONVERSATION'S OWN LOCK, the same one `mirrorChatwootEvent` and
     // `reconcileMirrorFromLive` take, because the compare-and-swap alone does not order this against
     // a transaction that has ALREADY READ the row and has not written yet. That mirror would then
@@ -1291,8 +1293,13 @@ export async function claimOpenForHumanQueue(p: {
     withEntityLock(
       db,
       `${p.tenantId}:${p.instanceId}:${p.conversationId}`,
-      () =>
-        db.conversation.updateMany({
+      async () => {
+        // THE COUNTDOWN STARTS HERE, past the lock and the connection, because everything before this
+        // point is queueing rather than fencing: a deadline stamped ahead of it spends part of the
+        // window on the wait and reports a fence it is no longer giving (issue #468, round 9). The TTL
+        // is sized off the round trips that follow, and they all follow this line.
+        const claimUntil = statusClaimDeadline(new Date());
+        const { count } = await db.conversation.updateMany({
           where: {
             tenantId: p.tenantId,
             chatwootInstanceId: p.instanceId,
@@ -1304,7 +1311,7 @@ export async function claimOpenForHumanQueue(p: {
           },
           data: {
             status: "open",
-            statusClaimUntil: p.claimUntil,
+            statusClaimUntil: claimUntil,
             // The status this write replaced, which the predicate above pins to `pending`, and the two
             // columns the claim starts EMPTY: the source has stamped no version for this transition
             // yet, and nothing has been refused on its account. A stale pair from an earlier claim
@@ -1313,10 +1320,11 @@ export async function claimOpenForHumanQueue(p: {
             statusClaimStampedAt: null,
             statusClaimRefusedAt: null,
           },
-        }),
+        });
+        return count > 0 ? claimUntil : null;
+      },
     ),
   );
-  return count > 0;
 }
 
 async function openForHumanQueue(p: {
@@ -4376,19 +4384,17 @@ export async function processChatwootDelivery(
             // how long it refuses that status, and ../../modules/chatwoot/status-claim.ts holds why
             // it can be neither a version nor a permanent flag.
             //
-            const claimUntil = statusClaimDeadline(new Date());
-            const won = await claimOpenForHumanQueue({
+            const claimUntil = await claimOpenForHumanQueue({
               tenantId: params.tenantId,
               instanceId: params.instanceId,
               conversationId,
               seen: now,
-              claimUntil,
               base,
             });
             // A LOST CAS IS A CLOSED FENCE, reported by the shared unit exactly like an ownership
             // refusal, because that is what it is: something newer than the state this delivery
             // decided on now holds the row.
-            if (!won) return false;
+            if (claimUntil === null) return false;
             claimHeld = claimUntil;
             // AND THE CONSOLES HEAR ABOUT IT, from the write that happened rather than from the
             // call that may not. This delivery already broadcast the mirror's post-write snapshot

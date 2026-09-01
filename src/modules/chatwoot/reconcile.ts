@@ -251,6 +251,20 @@ export async function reconcileMirrorFromLive(
             ? live.status
             : null;
         const nextStatusAt = deferredWins ? deferredAt : liveVersion;
+        // NOTE: The assignee this call leaves behind, computed once for the same reason as the status
+        // above: the row, the answer the caller broadcasts and the durable event have to agree about
+        // who holds this conversation. They can differ from the stored trio on the deferred path too
+        // — the refused status event and the owner's GET are two different readings, and the GET may
+        // have seen an assignment the other one did not carry (issue #468, round 11).
+        const nextAssigneeId = assigneeOrdered
+          ? live.assigneeId
+          : current.assigneeId;
+        const nextAssigneeType = assigneeOrdered
+          ? live.assigneeType
+          : current.assigneeType;
+        const nextAssigneeName = assigneeOrdered
+          ? live.assigneeName
+          : current.assigneeName;
         const data = {
           ...(nextStatus !== null && nextStatus !== current.status
             ? { status: nextStatus }
@@ -291,13 +305,13 @@ export async function reconcileMirrorFromLive(
             ? { resolvedBy: null, resolvedByAt: null }
             : {}),
           ...(assigneeOrdered &&
-          (live.assigneeType !== current.assigneeType ||
-            live.assigneeId !== current.assigneeId ||
-            live.assigneeName !== current.assigneeName)
+          (nextAssigneeType !== current.assigneeType ||
+            nextAssigneeId !== current.assigneeId ||
+            nextAssigneeName !== current.assigneeName)
             ? {
-                assigneeType: live.assigneeType,
-                assigneeId: live.assigneeId,
-                assigneeName: live.assigneeName,
+                assigneeType: nextAssigneeType,
+                assigneeId: nextAssigneeId,
+                assigneeName: nextAssigneeName,
               }
             : {}),
           ...(advancesActivity ? { lastEventAt: nextEventAt } : {}),
@@ -336,8 +350,8 @@ export async function reconcileMirrorFromLive(
           announce = {
             conversationId: String(current.id),
             status: nextStatus,
-            assigneeId: current.assigneeId,
-            assigneeType: current.assigneeType,
+            assigneeId: nextAssigneeId,
+            assigneeType: nextAssigneeType,
             lastEventAt: nextEventAt ? nextEventAt.toISOString() : null,
           };
           try {
@@ -347,7 +361,7 @@ export async function reconcileMirrorFromLive(
                 current.inboxId != null ? String(current.inboxId) : null,
               status: nextStatus,
               previous_status: current.status,
-              assignee_type: current.assigneeType,
+              assignee_type: nextAssigneeType,
             });
           } catch (err) {
             logger.warn(
@@ -358,13 +372,9 @@ export async function reconcileMirrorFromLive(
         }
         result.state = {
           status: nextStatus ?? current.status,
-          assigneeId: assigneeOrdered ? live.assigneeId : current.assigneeId,
-          assigneeType: assigneeOrdered
-            ? live.assigneeType
-            : current.assigneeType,
-          assigneeName: assigneeOrdered
-            ? live.assigneeName
-            : current.assigneeName,
+          assigneeId: nextAssigneeId,
+          assigneeType: nextAssigneeType,
+          assigneeName: nextAssigneeName,
           lastEventAt: nextEventAt,
         };
       },

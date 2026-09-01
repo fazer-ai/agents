@@ -254,6 +254,11 @@ describe.skipIf(!dbUp)("reconcileMirrorFromLive", () => {
       // one write were refused and acknowledged, and Chatwoot never sends them again.
       statusClaimRefusedAt: T + 9,
       chatwootStatusAt: T,
+      // ...and the assignee our own GET came back with is news too: the refused status event and this
+      // read are two different readings, and only one of them carried `meta`.
+      assigneeType: "AgentBot",
+      assigneeId: 1,
+      chatwootAssigneeAt: T,
     });
     // Our own read is older than that write — a GET issued before it committed comes back with
     // exactly this — so the refusal is what describes the source now.
@@ -290,7 +295,12 @@ describe.skipIf(!dbUp)("reconcileMirrorFromLive", () => {
     try {
       result = await applyFor(
         id,
-        { status: "open", updatedAt: T + 1 },
+        {
+          status: "open",
+          assigneeType: "User",
+          assigneeId: 7,
+          updatedAt: T + 1,
+        },
         until,
         traced,
       );
@@ -314,6 +324,12 @@ describe.skipIf(!dbUp)("reconcileMirrorFromLive", () => {
       ).length,
     ).toBe(1);
     expect(order).toEqual(["enqueued", "broadcast"]);
+    // Both announcements carry the assignee this call LEFT, not the one it found: the row, the answer
+    // and the event have to agree about who holds the conversation.
+    expect(row.assigneeType).toBe("User");
+    const event = published.find((e) => e.status === "pending");
+    expect(event?.assigneeType).toBe("User");
+    expect(event?.assigneeId).toBe(7);
     const emitted = await suDb.outboundWebhookDelivery.findMany({
       where: { tenantId, event: "conversation.status_changed" },
       select: { payload: true },
@@ -321,10 +337,11 @@ describe.skipIf(!dbUp)("reconcileMirrorFromLive", () => {
     expect(emitted.length).toBe(1);
     // The inbox travels with the event: subscribers route and filter on it, and this path is not the
     // one that gets to be the exception.
-    expect(
-      (emitted[0]?.payload as { data?: { inbox_id?: unknown } } | null)?.data
-        ?.inbox_id,
-    ).toBe(String(inboxRowId));
+    const payload = emitted[0]?.payload as {
+      data?: { inbox_id?: unknown; assignee_type?: unknown };
+    } | null;
+    expect(payload?.data?.inbox_id).toBe(String(inboxRowId));
+    expect(payload?.data?.assignee_type).toBe("User");
   });
 
   test("a version refused behind ours was a stale snapshot, and goes", async () => {

@@ -507,6 +507,82 @@ describe.skipIf(!dbUp)("playground", () => {
     }
   });
 
+  // Round 16, the playground twin of round 15's fix. An agent that can bind no tool is told to say
+  // nothing with the token, and emptying the REPLY does not empty the THREAD — a playground session
+  // is multi-turn on one thread, so the next simulated turn reads the token back as a sentence the
+  // customer was told, which is precisely what production stopped doing.
+  test("a silent simulated follow-up leaves its token out of the thread", async () => {
+    const grant = await suDb.agentToolSelection.create({
+      data: {
+        tenantId,
+        agentId: agentOk,
+        source: "NATIVE",
+        enabledTools: [],
+        knowledgeBaseIds: [],
+      },
+      select: { id: true },
+    });
+    const checkpointer = new MemorySaver();
+    try {
+      const r = await runPlaygroundFollowup({
+        ctx: ctx(tenantId),
+        agentId: agentOk,
+        base: appDb,
+        deps: {
+          makeModel: () =>
+            new FakeListChatModel({ responses: [FOLLOWUP_SKIP_SENTINEL] }),
+          checkpointer,
+        },
+      });
+      expect(r.silent).toBe(true);
+      const after = await threadMessages(checkpointer, r.threadId);
+      // The ASSISTANT turn whose whole content is the token — the one a later turn imitates — is
+      // gone.
+      expect(after.filter((m) => m.getType() === "ai")).toEqual([]);
+      // The directive stays, and that is the reactive plan's shape rather than a judgement about it:
+      // `nudgeMessage` stamps a conversation id and this path has none, so the proactive plan finds
+      // no marker to cut at. It is a human-role instruction, not an assistant turn to copy, and it
+      // already survives every simulated follow-up.
+      expect(after.filter((m) => m.getType() === "human")).toHaveLength(1);
+    } finally {
+      await suDb.agentToolSelection.delete({ where: { id: grant.id } });
+    }
+  });
+
+  // The scope, pinned exactly as production pins it: a follow-up that produced no text at all left
+  // nothing to be read as something said, so it pays no round trip and its turn stands. The two
+  // paths agreeing on this is the playground's whole claim.
+  test("a simulated follow-up that wrote nothing is not rolled back", async () => {
+    const checkpointer = new MemorySaver();
+    const r = await runPlaygroundFollowup({
+      ctx: ctx(tenantId),
+      agentId: agentOk,
+      base: appDb,
+      deps: {
+        makeModel: () => new FakeListChatModel({ responses: [""] }),
+        checkpointer,
+      },
+    });
+    expect(r.silent).toBe(true);
+    const after = await threadMessages(checkpointer, r.threadId);
+    expect(after.filter((m) => m.getType() === "ai")).toHaveLength(1);
+  });
+
+  // Positive control: a follow-up that really answered keeps its turn, or the assertion above would
+  // pass on a rollback that eats every simulated follow-up.
+  test("a simulated follow-up that answered keeps its turn in the thread", async () => {
+    const checkpointer = new MemorySaver();
+    const r = await runPlaygroundFollowup({
+      ctx: ctx(tenantId),
+      agentId: agentOk,
+      base: appDb,
+      deps: { makeModel: fakeModel, checkpointer },
+    });
+    expect(r.reply).toBe(REPLY);
+    const after = await threadMessages(checkpointer, r.threadId);
+    expect(after.map((m) => String(m.content))).toContain(REPLY);
+  });
+
   // Round 12, the WIRING of the same rule production applies (`tests/graph/silence.test.ts` proves
   // the rule). A source that yields nothing leaves the granted channel as the WHOLE toolset, and
   // binding one lone schema at an endpoint that refuses them costs the entire follow-up. This model

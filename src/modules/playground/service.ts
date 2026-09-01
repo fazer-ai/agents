@@ -1145,7 +1145,46 @@ export async function runPlaygroundFollowup(
   }
   // Same silence contract as production (runAgentNudge): the skip sentinel / narrated-emptiness is
   // "stayed silent", and a stray sentinel is stripped so it never shows in the simulated reply.
-  const drafted = proactiveReply(lastAssistantText(result.messages)).text;
+  const draftedNudge = proactiveReply(lastAssistantText(result.messages));
+  const drafted = draftedNudge.text;
+  // ...and the same rule production applies one line later (`takeBackUndeliveredSilence`): a silent
+  // follow-up that WROTE something left it in the thread, and this playground session is multi-turn
+  // on one thread, so the next simulated turn reads the token back as a sentence the customer was
+  // told. It reaches here only for the agents that cannot bind a tool — everyone else says nothing by
+  // calling `skip_reply`, which leaves no imitable text. Inline rather than armed for later, unlike
+  // the inbox: no claim is held on this thread, so the rollback is free to read it now.
+  //
+  // THE REACTIVE PLAN, and the difference from production is not a choice about what should go. The
+  // proactive plan finds its slice by the nudge MARKER, and this path builds its directive with a
+  // plain `HumanMessage` — `nudgeMessage` stamps a conversation id, and there is no conversation
+  // here. So the proactive plan answers `no-turn-found` and removes nothing. The reactive plan names
+  // the removable part directly: the trailing run of assistant messages, which is exactly the
+  // sentinel answer. The directive stays, as it already does after every simulated follow-up; it is
+  // a human-role instruction, not an assistant turn for the model to imitate. Marking it would be a
+  // fidelity change with its own readers (the trace, `isNudgeTurn`), on a path this issue is not
+  // about.
+  if (draftedNudge.silent && draftedNudge.wroteText) {
+    try {
+      const plan = await undoRefusedTurn({
+        checkpointer: params.deps?.checkpointer ?? (await getCheckpointer()),
+        graphThreadId: threadId,
+        produced: result.messages as BaseMessage[],
+        kind: "reactive",
+      });
+      if (plan.action !== "remove") {
+        logger.warn(
+          "playground could not take a silent follow-up's words back out: thread=%s reason=%s",
+          threadId,
+          plan.reason,
+        );
+      }
+    } catch (err) {
+      logger.warn(
+        { err, threadId },
+        "playground: could not take a silent follow-up's words back out",
+      );
+    }
+  }
   // OUTPUT direction only, exactly as the inbox's proactive path (issue #160): a follow-up answers
   // no question, so there is no customer message for the relevance check to judge, and the gate
   // drops that check structurally when none is passed. A `silent` verdict reads as silence here for

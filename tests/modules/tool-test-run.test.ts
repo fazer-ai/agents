@@ -294,6 +294,10 @@ describe("runToolTest — the same request the saved tool would make", () => {
     expect(src).toMatch(
       /timeoutMs:\s*(?:deps\.timeoutMs\s*\?\?\s*)?DEFAULT_HTTP_TOOL_TIMEOUT_MS/,
     );
+    // The second deadline, the one covering the body, reads the same constant.
+    expect(src).toMatch(
+      /setTimeout\([\s\S]{0,400}deps\.timeoutMs \?\? DEFAULT_HTTP_TOOL_TIMEOUT_MS/,
+    );
     expect(src).not.toMatch(/timeoutMs:\s*\d/);
     expect(src).not.toMatch(/TIMEOUT_MS\s*=\s*\d/);
   });
@@ -562,4 +566,83 @@ describe("runToolTest — what kind of failure it was", () => {
     const got = await statusOf({ fetchImpl: stub({}, 200) }, definition);
     expect(got.status).toBe(400);
   });
+});
+
+// Round 9 of review. `buildHttpTool` clears its abort timer the instant `fetch` resolves and reads
+// the body afterwards, so a provider that answers at once and then never finishes the body leaves
+// `res.text()` pending with no upper bound at all — measured under a 300ms bound, still hanging at
+// 3,001ms. Mid-turn that is its own defect, and out of this change's scope: closing it makes the
+// budget cover the whole exchange for every HTTP tool, which is a decision about a default rather
+// than a bug fix.
+//
+// Here it could not be left, and round 8 is why: every way of closing the dialog is blocked while a
+// request is in flight, so the operator would have a spinner and no exit, and the 504 this endpoint
+// advertises would never be sent.
+describe("runToolTest — the deadline covers the body, not just the headers", () => {
+  test("a body that never ends is a 504 rather than a hang", async () => {
+    const t0 = Date.now();
+    const err = await runToolTest(
+      ctx,
+      {
+        definition: {
+          ...base,
+          urlTemplate: `https://${PUBLIC}/v1/x`,
+          inputSchema: {},
+        } as never,
+      },
+      noDb,
+      {
+        timeoutMs: 200,
+        fetchImpl: (async (_u: string, init: RequestInit) =>
+          new Response(
+            new ReadableStream({
+              start(c) {
+                c.enqueue(new TextEncoder().encode('{"a":'));
+                // Never closed. Only an abort ends this.
+                init.signal?.addEventListener("abort", () =>
+                  c.error(new Error("aborted")),
+                );
+              },
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          )) as unknown as typeof fetch,
+      },
+    ).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(AppError);
+    expect((err as AppError).statusCode).toBe(504);
+    // And it really aborted rather than merely giving up on the promise: the answer arrives at the
+    // deadline, not at the end of the test.
+    expect(Date.now() - t0).toBeLessThan(3000);
+  }, 10_000);
+
+  test("a body that ends in time is untouched by it", async () => {
+    const r = await runToolTest(
+      ctx,
+      {
+        definition: {
+          ...base,
+          urlTemplate: `https://${PUBLIC}/v1/x`,
+          inputSchema: {},
+        } as never,
+      },
+      noDb,
+      {
+        timeoutMs: 2_000,
+        fetchImpl: (async () =>
+          new Response(
+            new ReadableStream({
+              start(c) {
+                c.enqueue(new TextEncoder().encode('{"a":'));
+                setTimeout(() => {
+                  c.enqueue(new TextEncoder().encode("1}"));
+                  c.close();
+                }, 50);
+              },
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          )) as unknown as typeof fetch,
+      },
+    );
+    expect(r.raw).toBe('{"a":1}');
+  }, 10_000);
 });

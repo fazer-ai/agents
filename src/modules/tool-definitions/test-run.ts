@@ -178,6 +178,11 @@ export async function runToolTest(
 
   const notes: ToolTestNote[] = [];
   let seen: { status: number; body: Promise<string> } | null = null;
+  // Set by the deadline below, and READ in the catch, because the name of the error cannot tell.
+  // Aborting a body mid-read surfaces as `EncodingError` — the same shape a provider that really
+  // broke its stream produces — so without this flag our own timeout would be reported as the
+  // provider's fault, 502 instead of 504.
+  let timedOut = false;
   const doFetch = deps.fetchImpl ?? fetch;
   const tool = buildHttpTool(def, {
     // Wrapped so that a failure to READ the credential is not read as a failure of the definition.
@@ -217,7 +222,31 @@ export async function runToolTest(
     // untouched also means there is no reconstructed Response to get wrong: a 204 or a 304 stays
     // exactly the object the runtime would have read.
     fetchImpl: (async (url: string, init: RequestInit) => {
-      const res = await doFetch(url, init);
+      // A SECOND DEADLINE, over the whole exchange, because the runtime's covers only the headers.
+      // `buildHttpTool` clears its abort timer the instant `fetch` resolves, so a provider that
+      // answers at once and then never finishes the body leaves `res.text()` pending forever —
+      // measured: under a 300ms bound the call was still hanging at 3,001ms, and there is no
+      // upper bound at all. Mid-turn that is a defect of its own, and not one to close from here:
+      // moving that `clearTimeout` after the body read turns the budget into the whole exchange for
+      // every HTTP tool in every deployment, which would start failing a provider that legitimately
+      // streams a large body slowly, and there is no per-tool override to raise. HERE it is worse
+      // than a hang, because round 8 blocked every way of closing the dialog while a request is in
+      // flight, so the operator would be left with a spinner and no exit and the endpoint would
+      // never answer the 504 it advertises.
+      //
+      // Armed on a controller of ours and cleared once the body is in, so the abort really does
+      // cancel the request rather than just abandoning the promise.
+      const ctrl = new AbortController();
+      const relay = () =>
+        ctrl.abort((init.signal as AbortSignal | undefined)?.reason);
+      init.signal?.addEventListener("abort", relay);
+      const deadline = setTimeout(() => {
+        timedOut = true;
+        ctrl.abort(
+          new DOMException("The operation was aborted.", "AbortError"),
+        );
+      }, deps.timeoutMs ?? DEFAULT_HTTP_TOOL_TIMEOUT_MS);
+      const res = await doFetch(url, { ...init, signal: ctrl.signal });
       // `.catch` rather than a bare promise: when the runtime aborts, this rejects too, and an
       // unobserved rejection would be a crash rather than a refusal. The value is read only on the
       // path where the call succeeded.
@@ -226,7 +255,15 @@ export async function runToolTest(
         body: res
           .clone()
           .text()
-          .catch(() => ""),
+          .catch(() => "")
+          // Cleanup with no observable behaviour: firing the abort on a finished request is a
+          // no-op and nobody reads `timedOut` after the return, so a mutation battery cannot tell
+          // this block from an empty one. It is here so the process is not left holding a ten-second
+          // timer and a listener on someone else's signal — not because a test would catch it.
+          .finally(() => {
+            clearTimeout(deadline);
+            init.signal?.removeEventListener("abort", relay);
+          }),
       };
       return res;
     }) as unknown as typeof fetch,
@@ -248,10 +285,12 @@ export async function runToolTest(
   //
   //   AppError        the definition's own refusals, already carrying 400 (SsrfError is one of
   //                   these), plus the credential read above, which carries 500. Kept as sent.
-  //   AbortError      the provider did not answer inside the runtime's bound -> 504.
-  //   anything else   DNSException (`getaddrinfo ENOTFOUND`), EncodingError (a body that stopped
-  //                   mid-stream), TLS -> 502. The message travels either way, because it is the
-  //                   only thing that says what to do next.
+  //   AbortError      the provider did not answer inside the runtime's bound -> 504. So is
+  //                   anything at all once `timedOut` is set, because aborting a body mid-read
+  //                   surfaces as EncodingError, which is the same shape as the line below.
+  //   anything else   DNSException (`getaddrinfo ENOTFOUND`), EncodingError (a body the provider
+  //                   really did break), TLS -> 502. The message travels either way, because it is
+  //                   the only thing that says what to do next.
   let out: unknown;
   try {
     out = await tool.invoke(input.args ?? {});
@@ -262,7 +301,8 @@ export async function runToolTest(
       throw new AppError(err.message, 400);
     }
     const message = err instanceof Error ? err.message : String(err);
-    const aborted = err instanceof Error && err.name === "AbortError";
+    const aborted =
+      timedOut || (err instanceof Error && err.name === "AbortError");
     throw new AppError(
       aborted
         ? `the provider did not answer within ${DEFAULT_HTTP_TOOL_TIMEOUT_MS / 1000}s: ${message}`

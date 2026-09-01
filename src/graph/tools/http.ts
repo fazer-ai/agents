@@ -76,6 +76,11 @@ export interface HttpToolDef {
   outputSchema?: unknown;
 }
 
+// How long a tool call waits before it is aborted, when the caller names nothing. EXPORTED
+// because a caller that is MORE patient than this reports a success the runtime would never
+// have: an endpoint answering in 12s reads as fine and then aborts on every turn.
+export const DEFAULT_HTTP_TOOL_TIMEOUT_MS = 10_000;
+
 export interface HttpToolDeps {
   // Resolves a vault secret by reference (a short scoped DB read; no network). Returns null when
   // the credential is missing.
@@ -533,7 +538,7 @@ export function buildHttpTool(
   const isBodyMethod =
     method === "POST" || method === "PUT" || method === "PATCH";
   const doFetch = deps.fetchImpl ?? fetch;
-  const timeoutMs = deps.timeoutMs ?? 10_000;
+  const timeoutMs = deps.timeoutMs ?? DEFAULT_HTTP_TOOL_TIMEOUT_MS;
   const maxChars = deps.maxResponseChars ?? 4000;
   const expectedStatuses = normalizeExpectedStatuses(def.expectedStatuses);
 

@@ -113,6 +113,58 @@ const TOOL_TOKEN_SOURCE = "\\{\\{\\s*([a-zA-Z0-9_]+)\\s*\\}\\}";
 // valid var, not a typo) when it names a declared AI field, one of these, or {{secret}} (only when
 // a credential is selected).
 const NATIVE_VAR_NAMES = new Set<string>(CONTEXT_VAR_NAMES);
+
+// The conversation placeholders a definition actually writes, read off the NORMALIZED shapes rather
+// than off what the operator typed, because those are two different texts. An OpenAPI-style
+// `{contact_id}` is a supported way to write a placeholder — the whole point of
+// `normalizeToolShapes` — and the runtime rewrites it to `{{contact_id}}` before interpolating, at
+// write time AND at build time. A scan that knew only the double-brace form found nothing to ask
+// for, and the test run then refused for a context value the dialog never offered a box to fill.
+// Running the runtime's own normalizer here is what makes the two unable to answer differently, and
+// it also reaches the placeholders inside fixed field values, which the hand-listed set of form
+// strings it replaced had no entry for.
+//
+// Exported and pure so that agreement is a test rather than a claim.
+export function contextNamesReferencedBy(
+  payload: {
+    urlTemplate?: unknown;
+    query?: unknown;
+    headers?: unknown;
+    body?: unknown;
+    inputSchema?: unknown;
+  } | null,
+): string[] {
+  const { shapes } = normalizeToolShapes(
+    payload
+      ? {
+          urlTemplate: payload.urlTemplate as string | undefined,
+          query: payload.query,
+          headers: payload.headers,
+          body: payload.body,
+          inputSchema: payload.inputSchema,
+        }
+      : {},
+  );
+  const found = new Set<string>();
+  const walk = (node: unknown): void => {
+    if (typeof node === "string") {
+      for (const m of node.matchAll(new RegExp(TOOL_TOKEN_SOURCE, "g"))) {
+        const name = m[1] as string;
+        if (NATIVE_VAR_NAMES.has(name)) found.add(name);
+      }
+      return;
+    }
+    if (Array.isArray(node)) {
+      for (const v of node) walk(v);
+      return;
+    }
+    if (node && typeof node === "object") {
+      for (const v of Object.values(node)) walk(v);
+    }
+  };
+  walk(shapes);
+  return [...found];
+}
 function isKnownToolToken(
   name: string,
   params: string[],
@@ -878,35 +930,14 @@ export function ToolEditModal({
   const aiFieldNames = form.aiFields.map((f) => f.name.trim()).filter(Boolean);
   const isWriteMethod =
     form.method === "POST" || form.method === "PUT" || form.method === "PATCH";
-  // The conversation placeholders this definition actually writes. A test run has no conversation,
-  // so these are the values nobody can supply but the operator — and offering the whole catalog
-  // would ask them to fill ten boxes for a tool that references one.
-  const referencedContextNames = useMemo(() => {
-    const written = [
-      form.urlTemplate,
-      form.headersMode === "raw" ? form.headersRaw : "",
-      form.bodyMode === "raw" && isWriteMethod ? form.bodyRaw : "",
-      ...form.queryRows.map((r) => r.value),
-      ...form.headerRows.map((r) => r.value),
-      ...(isWriteMethod ? form.bodyRows.map((r) => r.value) : []),
-    ].join("\n");
-    const found = new Set<string>();
-    for (const m of written.matchAll(new RegExp(TOOL_TOKEN_SOURCE, "g"))) {
-      const name = m[1] as string;
-      if (NATIVE_VAR_NAMES.has(name)) found.add(name);
-    }
-    return [...found];
-  }, [
-    form.urlTemplate,
-    form.headersMode,
-    form.headersRaw,
-    form.bodyMode,
-    form.bodyRaw,
-    form.queryRows,
-    form.headerRows,
-    form.bodyRows,
-    isWriteMethod,
-  ]);
+  // A test run has no conversation, so these are the values nobody can supply but the operator —
+  // and offering the whole catalog would ask them to fill ten boxes for a tool that references one.
+  const referencedContextNames = useMemo(
+    // Null only when the headers are unparseable, and `openTest` refuses on that before this list
+    // is ever read.
+    () => contextNamesReferencedBy(payloadOf(form)),
+    [form],
+  );
 
   const refusal = useFieldRefusal(
     modal.isOpen

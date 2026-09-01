@@ -22,7 +22,11 @@
 
 import type { PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
-import { buildHttpTool, type HttpToolDef } from "@/graph/tools/http";
+import {
+  buildHttpTool,
+  DEFAULT_HTTP_TOOL_TIMEOUT_MS,
+  type HttpToolDef,
+} from "@/graph/tools/http";
 import {
   isExpectedResult,
   normalizeExpectedStatuses,
@@ -33,7 +37,7 @@ import { clipText } from "@/lib/text";
 import { resolveInjectableCredential } from "@/modules/vault/injectable";
 import { formatVaultRef, readVaultRefId } from "@/modules/vault/service";
 import { CONTEXT_VAR_NAMES } from "./normalize";
-import { readHttpMethod } from "./service";
+import { DEFAULT_HTTP_METHOD, readHttpMethod } from "./service";
 
 // What the operator gets back to paste into the sample field, and it is the RAW response, not the
 // clipped one the model sees: the whole point is to pick paths out of it, including the ones past
@@ -41,9 +45,10 @@ import { readHttpMethod } from "./service";
 // measured against is 8kB.
 const MAX_RAW_CHARS = 100_000;
 
-// Shorter patience than a turn's 10s default, because somebody is watching a modal rather than a
-// conversation, and a request slower than this is a finding rather than a result.
-const TEST_TIMEOUT_MS = 15_000;
+// The RUNTIME'S patience, not a friendlier one. A test more patient than a turn answers the wrong
+// question: an endpoint that takes 12s would report a clean 200 here and abort on every real
+// call, and the operator would have measured the one number this screen exists to show them.
+// Imported rather than restated so the two cannot drift.
 
 export interface ToolTestInput {
   // The definition being edited, unsaved. Same field names the write body uses.
@@ -114,7 +119,7 @@ export async function runToolTest(
   // or a `CONNECT` — which is a capability that saving the definition and calling it does not give
   // them, and "adds no capability over what you can already do" is the whole argument for this
   // endpoint existing.
-  const method = readHttpMethod(d.method ?? "GET");
+  const method = readHttpMethod(d.method ?? DEFAULT_HTTP_METHOD);
   if (method === null) {
     throw new AppError(
       `method must be one of GET, POST, PUT, PATCH, DELETE (got ${String(d.method)})`,
@@ -158,7 +163,7 @@ export async function runToolTest(
   const tool = buildHttpTool(def, {
     resolveCredential: (ref) =>
       resolveInjectableCredential(base, tenantId, ref),
-    timeoutMs: TEST_TIMEOUT_MS,
+    timeoutMs: DEFAULT_HTTP_TOOL_TIMEOUT_MS,
     context,
     onSideEffectError: (e) =>
       notes.push({
@@ -181,16 +186,38 @@ export async function runToolTest(
   });
 
   const startedAt = Date.now();
-  const out = await tool.invoke(input.args ?? {});
+  // WHY THE REFUSALS ARE CAUGHT HERE. `buildHttpTool` has no outer catch: a host off the allowlist,
+  // a URL the SSRF guard blocks, a name with no value, an argument the declared type refuses — each
+  // THROWS out of `invoke` rather than coming back as a refusal string. Mid-turn LangGraph catches
+  // those and hands the model the message; there is no LangGraph here, so an uncaught one reaches
+  // Elysia with no status and surfaces as a 500, which reads as "the console is broken" for what is
+  // in every case the operator's own definition to fix. Measured: a required field left blank threw
+  // `ToolInputParsingException`, whose message names the field, under a generic 500 that did not.
+  //
+  // The rule is the one the `!captured` branch below already used, now covering both shapes of the
+  // same event: nothing went out, so the reason is the caller's, and it travels with a 400.
+  //
+  // 400 for EVERY throw, with no `instanceof AppError` passthrough above it, and that is a claim
+  // about the code rather than a shortcut: every AppError raised inside `buildHttpTool` is already
+  // a 400 (the allowlist, both invalid-urlTemplate paths, the unfilled placeholders), the SSRF
+  // guard raises an `SsrfError` that is not one, and `resolveInjectableCredential` throws nothing
+  // at all — it returns null. A passthrough branch would therefore have been an identity no test
+  // could tell either way, which is the shape review round 1 already removed once from `http.ts`.
+  // If a non-400 AppError is ever raised in there, this is the line that has to learn about it.
+  let out: unknown;
+  try {
+    out = await tool.invoke(input.args ?? {});
+  } catch (err) {
+    throw new AppError(err instanceof Error ? err.message : String(err), 400);
+  }
   const durationMs = Date.now() - startedAt;
   const captured = seen as { status: number; body: string } | null;
 
   const message = out as { content?: unknown; status?: unknown };
   const modelText = String(message?.content ?? out);
   if (!captured) {
-    // Nothing went out: a placeholder with no value, a host off the allowlist, a credential that did
-    // not resolve. `buildHttpTool` already put the reason in what it returned, so hand that over
-    // rather than inventing a second sentence for the same refusal.
+    // Nothing went out and nothing threw: a refusal `buildHttpTool` chose to RETURN. It already put
+    // the reason in what it returned, so hand that over rather than inventing a second sentence.
     throw new AppError(modelText, 400);
   }
 

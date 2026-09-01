@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { coerceTestArg } from "@/client/pages/resources/ToolTestModal";
+import {
+  argProblem,
+  coerceTestArg,
+  fieldUsesPicker,
+} from "@/client/pages/resources/ToolTestModal";
 import { parseToolInputSchema } from "@/graph/tools/http";
 
 // Round 1 of review, finding 1. The test dialog collects text and the runtime validates the
@@ -80,5 +84,56 @@ describe("coerceTestArg", () => {
     // And the control the other way: the raw strings this dialog used to send do NOT pass, which is
     // the defect being fixed rather than a property of the fix.
     expect(parseToolInputSchema(declared).safeParse(typed).success).toBe(false);
+  });
+});
+
+// Round 2 of review. Two questions the dialog answered on its own and the runtime answers
+// differently, both proven against `parseToolInputSchema`/`zodFor` rather than against my reading
+// of them.
+
+describe("argProblem", () => {
+  test("a required field left blank is a problem, an optional one is not", () => {
+    expect(argProblem({ type: "string", required: true }, "")).toEqual({
+      kind: "missing",
+    });
+    expect(argProblem({ type: "string", required: false }, "")).toBeNull();
+  });
+
+  test("and the runtime agrees: the declared schema refuses the blank one", () => {
+    // The proof that "required means required" is not this file's opinion. The same declaration
+    // through the runtime's own reader rejects an absent value and accepts an absent optional one.
+    const req = parseToolInputSchema({ q: { type: "string", required: true } });
+    const opt = parseToolInputSchema({
+      q: { type: "string", required: false },
+    });
+    expect(req.safeParse({}).success).toBe(false);
+    expect(opt.safeParse({}).success).toBe(true);
+  });
+
+  test("a value the type refuses is reported as the type problem, not as missing", () => {
+    const p = argProblem({ type: "integer", required: true }, "3.5");
+    expect(p?.kind).toBe("type");
+    expect(p?.kind === "type" && p.got.reason).toBe("integer");
+  });
+});
+
+describe("fieldUsesPicker", () => {
+  test.each([
+    [{ type: "boolean" }, true],
+    [{ type: "enum", enumValues: ["gold", "silver"] }, true],
+    // An enum with no declared values is legal, and `zodFor` reads it as a FREE STRING. A picker
+    // built from that list offers "Leave out" and nothing else, so the field could never be filled.
+    [{ type: "enum", enumValues: [] }, false],
+    [{ type: "enum" }, false],
+    [{ type: "string" }, false],
+  ])("%p -> %p", (field, expected) => {
+    expect(fieldUsesPicker(field as never)).toBe(expected);
+  });
+
+  test("and an empty enum really is a free string to the runtime", () => {
+    const schema = parseToolInputSchema({
+      tier: { type: "enum", enumValues: [], required: true },
+    });
+    expect(schema.safeParse({ tier: "anything at all" }).success).toBe(true);
   });
 });

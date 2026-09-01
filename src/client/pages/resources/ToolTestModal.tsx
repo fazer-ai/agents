@@ -1,5 +1,5 @@
 import { AlertTriangle, Check } from "lucide-react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Button,
@@ -124,6 +124,39 @@ export function coerceTestArg(
   }
 }
 
+// An enum with no declared values is a legal field, and the runtime deliberately reads it as a free
+// string (`zodFor`: "z.enum requires a non-empty tuple; an enum with no values falls back to a free
+// string"). A picker built from that empty list offers only "Leave out", so the field could be
+// declared and never filled. Whether this dialog shows a picker follows the runtime's own question:
+// are there values to pick?
+export function fieldUsesPicker(
+  field: Pick<ToolTestField, "type" | "enumValues">,
+): boolean {
+  return (
+    field.type === "boolean" ||
+    (field.type === "enum" && (field.enumValues?.length ?? 0) > 0)
+  );
+}
+
+// What is wrong with one box, in the order the runtime would find it. A required field left blank is
+// a problem too, and it used to be the silent one: the box was skipped, `args` went out without it,
+// and the DECLARED schema refused the call before the request — with the send button enabled the
+// whole time, so the first thing the operator learned was a failed run.
+//
+// Exported and pure for the same reason `coerceTestArg` is: the table is then a test, not a claim.
+export type ArgProblem =
+  | { kind: "missing" }
+  | { kind: "type"; got: Extract<CoercedArg, { ok: false }> };
+
+export function argProblem(
+  field: Pick<ToolTestField, "type" | "itemType" | "required">,
+  raw: string,
+): ArgProblem | null {
+  if (raw === "") return field.required ? { kind: "missing" } : null;
+  const got = coerceTestArg(field, raw);
+  return got.ok ? null : { kind: "type", got };
+}
+
 type TestResult = NonNullable<
   Awaited<ReturnType<typeof api.api.v1.tools.test.post>>["data"]
 >["result"];
@@ -141,6 +174,12 @@ export function ToolTestModal({
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<TestResult | null>(null);
 
+  // One request belongs to one opening of this dialog. Without the token, a slow run whose modal was
+  // dismissed (X, Escape, outside click — none of which is disabled) still lands: it writes its
+  // result into the NEXT session, hands the parent editor a sample from a definition that is no
+  // longer on screen, and clears a `running` that belongs to another request
+  // (`docs/modals.md`, "Drop stale responses with a session token").
+  const sessionRef = useRef(0);
   const target = modal.payload;
   const typeLabels = fieldTypeLabels(t);
   // The refused type, named the way the tab where it was CHOSEN names it. Reporting the raw
@@ -150,37 +189,49 @@ export function ToolTestModal({
     bad.itemType
       ? `${typeLabels[bad.reason] ?? bad.reason} (${typeLabels[bad.itemType] ?? bad.itemType})`
       : (typeLabels[bad.reason] ?? bad.reason);
+  const problemText = (field: string, problem: ArgProblem) =>
+    problem.kind === "missing"
+      ? t("tools.testMissingArg", '"{{field}}" is required.', { field })
+      : t("tools.testBadArg", '"{{field}}" has to be: {{type}}.', {
+          field,
+          type: typeText(problem.got),
+        });
 
   useOnModalOpen(modal, () => {
     // The component outlives the dialog: a previous run's answer must not read as this one's.
+    sessionRef.current += 1;
     setValues({});
     setError(null);
     setResult(null);
     setRunning(false);
+    // Bumped on CLOSE as well, not only on the next open: a dialog dismissed and never reopened
+    // still has a request in flight, and its `onResponse` would overwrite the sample of whatever the
+    // editor moved on to.
+    return () => {
+      sessionRef.current += 1;
+    };
   });
 
   async function run() {
     if (!target) return;
+    const session = sessionRef.current;
     setError(null);
     setResult(null);
     setRunning(true);
     try {
       const args: Record<string, unknown> = {};
       for (const f of target.aiFields) {
-        const v = values[f.name];
-        if (v === undefined || v === "") continue;
-        const coerced = coerceTestArg(f, v);
+        const v = values[f.name] ?? "";
         // Guarded by the disabled button too; kept here because the button is not the only way a
         // value can be stale by the time this runs.
-        if (!coerced.ok) {
-          setError(
-            t("tools.testBadArg", '"{{field}}" has to be: {{type}}.', {
-              field: f.name,
-              type: typeText(coerced),
-            }),
-          );
+        const problem = argProblem(f, v);
+        if (problem) {
+          setError(problemText(f.name, problem));
           return;
         }
+        if (v === "") continue;
+        const coerced = coerceTestArg(f, v);
+        if (!coerced.ok) return;
         args[f.name] = coerced.value;
       }
       const context: Record<string, string> = {};
@@ -193,6 +244,8 @@ export function ToolTestModal({
         args,
         context,
       });
+      // Everything past the await belongs to the opening that started it, or to nobody.
+      if (sessionRef.current !== session) return;
       if (err || !data) {
         // The server's own sentence when it sent one: this endpoint's refusals are the operator's
         // to act on (a host off the allowlist, a placeholder with no value, a credential that did
@@ -208,9 +261,10 @@ export function ToolTestModal({
       // provider's own body, including the parts the clip would have removed.
       onResponse(data.result.raw);
     } catch {
+      if (sessionRef.current !== session) return;
       setError(t("tools.testFailed", "The request could not run."));
     } finally {
-      setRunning(false);
+      if (sessionRef.current === session) setRunning(false);
     }
   }
 
@@ -231,17 +285,19 @@ export function ToolTestModal({
         })),
       ]
     : [];
-  // Which boxes hold something the declared type cannot take. Computed for the render as well as
-  // the send, so the operator sees it before pressing the button instead of reading a schema error
-  // out of a failed call.
-  const badArgs = target
+  // Which boxes the runtime would refuse: a value its declared type cannot take, or a required field
+  // left blank. Computed for the render as well as the send, so the operator reads it under the
+  // field instead of reading a schema error out of a failed call.
+  const problems = target
     ? target.aiFields
-        .filter((f) => (values[f.name] ?? "") !== "")
         .map((f) => ({
           field: f,
-          got: coerceTestArg(f, values[f.name] ?? ""),
+          problem: argProblem(f, values[f.name] ?? ""),
         }))
-        .filter((x) => !x.got.ok)
+        .filter(
+          (x): x is { field: ToolTestField; problem: ArgProblem } =>
+            x.problem !== null,
+        )
     : [];
 
   return (
@@ -257,7 +313,7 @@ export function ToolTestModal({
             <Button
               onClick={run}
               loading={running}
-              disabled={badArgs.length > 0}
+              disabled={problems.length > 0}
             >
               {t("tools.testRun", "Send request")}
             </Button>
@@ -284,34 +340,25 @@ export function ToolTestModal({
             const value = values[f.name] ?? "";
             const set = (next: string) =>
               setValues((v) => ({ ...v, [f.name]: next }));
-            const bad = badArgs.find((b) => b.field.name === f.name);
+            const bad = problems.find((b) => b.field.name === f.name);
+            const picker = fieldUsesPicker(f);
             return (
               <FormField
                 key={f.name}
                 label={f.name}
                 description={f.hint}
-                group={f.type === "boolean" || f.type === "enum"}
-                error={
-                  bad && !bad.got.ok
-                    ? t(
-                        "tools.testBadArg",
-                        '"{{field}}" has to be: {{type}}.',
-                        {
-                          field: f.name,
-                          type: typeText(bad.got),
-                        },
-                      )
-                    : undefined
-                }
+                group={picker}
+                error={bad ? problemText(f.name, bad.problem) : undefined}
               >
-                {f.type === "boolean" || f.type === "enum" ? (
+                {picker ? (
                   <Select value={value} onChange={(e) => set(e.target.value)}>
                     <option value="">
                       {t("tools.testUnset", "Leave out")}
                     </option>
                     {(f.type === "boolean"
                       ? ["true", "false"]
-                      : (f.enumValues ?? [])
+                      : // `fieldUsesPicker` already established this list is non-empty.
+                        (f.enumValues ?? [])
                     ).map((opt) => (
                       <option key={opt} value={opt}>
                         {opt}

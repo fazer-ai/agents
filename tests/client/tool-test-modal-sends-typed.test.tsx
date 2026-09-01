@@ -2,6 +2,7 @@
 
 import { afterEach, expect, test } from "bun:test";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -58,10 +59,19 @@ const TARGET: ToolTestTarget = {
   contextNames: [],
 };
 
-function mount(sent: { body?: unknown }) {
+function mount(
+  sent: { body?: unknown },
+  opts: { target?: ToolTestTarget; hold?: { release?: () => void } } = {},
+) {
   globalThis.fetch = (async (_i: RequestInfo | URL, init?: RequestInit) => {
     if ((init?.method ?? "GET").toUpperCase() === "POST") {
       sent.body = JSON.parse(String(init?.body ?? "{}"));
+      const hold = opts.hold;
+      if (hold) {
+        await new Promise<void>((r) => {
+          hold.release = r;
+        });
+      }
       return new Response(
         JSON.stringify({
           instance: {},
@@ -85,19 +95,35 @@ function mount(sent: { body?: unknown }) {
     });
   }) as typeof fetch;
 
+  const seenSamples: string[] = [];
+  let controller: { open: () => void; close: () => void } | null = null;
   function Harness() {
     const modal = useModalController<ToolTestTarget>();
+    controller = {
+      open: () => modal.open(opts.target ?? TARGET),
+      close: () => modal.close(),
+    };
     return (
       <ToastProvider>
-        <button type="button" onClick={() => modal.open(TARGET)}>
+        <button type="button" onClick={() => modal.open(opts.target ?? TARGET)}>
           open
         </button>
-        <ToolTestModal modal={modal} onResponse={() => {}} />
+        <ToolTestModal
+          modal={modal}
+          onResponse={(raw) => seenSamples.push(raw)}
+        />
       </ToastProvider>
     );
   }
   render(<Harness />);
   fireEvent.click(screen.getByText("open"));
+  return {
+    samples: seenSamples,
+    reopen: () => {
+      act(() => controller?.close());
+      act(() => controller?.open());
+    },
+  };
 }
 
 // FormField renders a <label> for a single control and a role="group" for the boolean/enum picker,
@@ -153,4 +179,65 @@ test("a value the declared type cannot take is not sent at all", async () => {
   expect(sent.body).toBeUndefined();
   // The type is named the way the field editor names it, not by its wire keyword.
   expect(screen.getByText(/has to be: Integer/)).toBeDefined();
+});
+
+// Round 2 of review. Three ways the dialog could be filled in and still not run, or run and answer
+// for the wrong session.
+
+test("a required field left blank stops the send and says which field", () => {
+  const sent: { body?: unknown } = {};
+  mount(sent, {
+    target: {
+      ...TARGET,
+      aiFields: [
+        { name: "cnpj", description: "", required: true, type: "string" },
+      ],
+    },
+  });
+  // Blank required used to be the SILENT one: the box was skipped, `args` went out without it, and
+  // the declared schema refused the call before the request — with the button enabled the whole
+  // time, so the first thing the operator learned was a failed run.
+  const button = screen.getByText("Send request").closest("button");
+  expect(button?.hasAttribute("disabled")).toBe(true);
+  expect(screen.getByText(/"cnpj" is required/)).toBeDefined();
+  fireEvent.click(screen.getByText("Send request"));
+  expect(sent.body).toBeUndefined();
+});
+
+test("an enum with no declared values takes typed text, because the runtime does", async () => {
+  const sent: { body?: unknown } = {};
+  mount(sent, {
+    target: {
+      ...TARGET,
+      aiFields: [
+        // Legal, and `zodFor` reads it as a free string. A picker built from the empty list would
+        // offer "Leave out" and nothing else, so this field could be declared and never filled.
+        { name: "tier", description: "", required: false, type: "enum" },
+      ],
+    },
+  });
+  fill("tier", "platinum");
+  fireEvent.click(screen.getByText("Send request"));
+  await waitFor(() => expect(sent.body).toBeDefined());
+  expect((sent.body as { args: unknown }).args).toEqual({ tier: "platinum" });
+});
+
+test("a response from a dismissed session never lands on the next one", async () => {
+  const sent: { body?: unknown } = {};
+  const hold: { release?: () => void } = {};
+  const { samples, reopen } = mount(sent, { hold });
+  fireEvent.click(screen.getByText("Send request"));
+  await waitFor(() => expect(hold.release).toBeDefined());
+  // Dismissed mid-flight (X, Escape and outside click are all live while running) and reopened.
+  reopen();
+  await act(async () => {
+    hold.release?.();
+    await Promise.resolve();
+  });
+  await new Promise((r) => setTimeout(r, 20));
+  // The first run's answer belongs to the opening that asked for it, or to nobody: it must not fill
+  // the parent editor's sample with a response to a definition that is no longer on screen, and it
+  // must not paint a result under a form the operator has just cleared.
+  expect(samples).toEqual([]);
+  expect(screen.queryByText(/HTTP 200 in/)).toBeNull();
 });

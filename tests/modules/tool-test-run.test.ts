@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import type { PrismaClient } from "@/../generated/prisma/client";
+import { AppError } from "@/lib/errors";
 import type { TenantContext } from "@/lib/tenancy";
+import { DEFAULT_HTTP_METHOD } from "@/modules/tool-definitions/service";
 import { runToolTest } from "@/modules/tool-definitions/test-run";
 
 // The editor's one-shot run of an unsaved definition (issue #456). What is worth pinning here is
@@ -252,5 +254,71 @@ describe("runToolTest — the method vocabulary is the write schema's", () => {
       );
       expect((seen.init as RequestInit).method).toBe(method.toUpperCase());
     }
+  });
+});
+
+// Round 2 of review. Three ways this endpoint answered a different question from the one the
+// operator was asking, each of them a divergence from the runtime rather than a bug of its own.
+describe("runToolTest — the same request the saved tool would make", () => {
+  test("a definition with no method is tested as the method it would be SAVED as", async () => {
+    const seen: Seen = {};
+    await runToolTest(
+      ctx,
+      {
+        // No `method`, which the write body allows: `createToolDefinition` fills it in.
+        definition: {
+          urlTemplate: `https://${PUBLIC}/v1/x`,
+          allowedHosts: [PUBLIC],
+          inputSchema: {},
+        },
+      },
+      noDb,
+      { fetchImpl: stub(seen, 200) },
+    );
+    // Not "POST" spelled again here: the CONSTANT the writer defaults to. Two literals is how the
+    // test ran as a GET and the save stored a POST in the first place.
+    expect((seen.init as RequestInit).method).toBe(DEFAULT_HTTP_METHOD);
+  });
+
+  test("waits no longer than a turn does", async () => {
+    // A test more patient than the runtime reports a clean 200 for an endpoint that aborts on every
+    // real call, which is the one number this screen exists to show. Proven at the source because
+    // the alternative is a test that sits for ten seconds: what has to hold is that the file names
+    // no timeout of its own.
+    const src = await Bun.file(
+      "src/modules/tool-definitions/test-run.ts",
+    ).text();
+    expect(src).toContain("timeoutMs: DEFAULT_HTTP_TOOL_TIMEOUT_MS");
+    expect(src).not.toMatch(/timeoutMs:\s*\d/);
+    expect(src).not.toMatch(/TIMEOUT_MS\s*=\s*\d/);
+  });
+
+  test("a required field left blank is refused as a bad request, naming the field", async () => {
+    const seen: Seen = {};
+    const err = await runToolTest(ctx, { definition: base, args: {} }, noDb, {
+      fetchImpl: stub(seen, 200),
+    }).catch((e: unknown) => e);
+    // The declared schema throws out of `invoke` rather than returning a refusal, and that throw
+    // carries no status: uncaught, the console reads a 500 for its own operator's blank box, with
+    // the sentence that names the box swallowed on the way.
+    expect(err).toBeInstanceOf(AppError);
+    expect((err as AppError).statusCode).toBe(400);
+    expect(String((err as AppError).message)).toMatch(/cnpj/);
+    expect(seen.url).toBeUndefined();
+  });
+
+  test("a host off the allowlist is refused the same way", async () => {
+    const err = await runToolTest(
+      ctx,
+      {
+        definition: { ...base, allowedHosts: ["example.com"] },
+        args: { cnpj: "1" },
+      },
+      noDb,
+      { fetchImpl: stub({}, 200) },
+    ).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(AppError);
+    expect((err as AppError).statusCode).toBe(400);
+    expect(String((err as AppError).message)).toMatch(/not in allowlist/);
   });
 });

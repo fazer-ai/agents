@@ -33,6 +33,13 @@ import { normalizeToolShapes } from "./normalize";
 export const HTTP_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
 export type HttpToolMethod = (typeof HTTP_METHODS)[number];
 
+// The method a definition takes when its author named none. EXPORTED for the same reason the
+// list is: the create path defaulted here and the editor's test run defaulted to GET, so a
+// definition with no method was TESTED as a GET and SAVED as a POST — two different requests
+// from one screen, which is exactly what an endpoint justified by "it does what saving does"
+// cannot do.
+export const DEFAULT_HTTP_METHOD: HttpToolMethod = "POST";
+
 // The method a caller sent, or null when it is not one of the five. Uppercases first, because the
 // runtime does (`def.method.toUpperCase()`) and a hand-written `get` is the same request.
 export function readHttpMethod(raw: unknown): HttpToolMethod | null {
@@ -378,7 +385,7 @@ export async function createToolDefinition(
         name: data.name,
         label: data.label,
         description: data.description ?? null,
-        method: data.method ?? "POST",
+        method: data.method ?? DEFAULT_HTTP_METHOD,
         urlTemplate: (shapes.urlTemplate ?? data.urlTemplate) as string,
         allowedHosts: data.allowedHosts,
         headers: (shapes.headers ?? {}) as Prisma.InputJsonValue,

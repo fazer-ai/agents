@@ -272,9 +272,13 @@ export const toolsController = new Elysia({
       requireRole: "TENANT_ADMIN",
       detail: doc(
         "Test a tool definition",
-        "Issues one real request for the supplied (unsaved) HTTP tool definition and returns the provider's raw response alongside the exact text the model would receive. Adds no capability over saving the tool and calling it: the same allowlist, SSRF guard, redirect refusal and timeout apply. The request headers are never echoed back, and no appointment is registered.",
+        "Issues one real request for the supplied (unsaved) HTTP tool definition and returns the provider's raw response alongside the exact text the model would receive. Adds no capability over saving the tool and calling it: the same allowlist, SSRF guard, redirect refusal and timeout apply. The request headers are never echoed back, and no appointment is registered. A definition this endpoint refuses answers 400; a provider that cannot be reached answers 502, and one that does not answer within the runtime's timeout answers 504.",
       ),
-      response: errors(400, 401, 403, 404, 422),
+      // 502 and 504 are ROUTINE here, not exceptional: this endpoint's whole job is to call a
+      // third-party API the operator has just typed the address of, so a name that does not resolve
+      // and a provider that does not answer are among its ordinary outcomes. A contract that
+      // described only 4xx would have generated clients treating them as protocol violations.
+      response: errors(400, 401, 403, 404, 422, 502, 504),
       body: t.Object({
         definition: t.Object({
           name: t.Optional(t.String()),

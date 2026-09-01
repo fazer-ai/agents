@@ -66,10 +66,12 @@ function mount(
     hold?: { release?: () => void };
     clipped?: boolean;
     status?: number;
+    onCall?: () => void;
   } = {},
 ) {
   globalThis.fetch = (async (_i: RequestInfo | URL, init?: RequestInit) => {
     if ((init?.method ?? "GET").toUpperCase() === "POST") {
+      opts.onCall?.();
       sent.body = JSON.parse(String(init?.body ?? "{}"));
       const hold = opts.hold;
       if (hold) {
@@ -273,4 +275,28 @@ test("a usable response is handed over with the status it came back under", asyn
   // The status travels because the runtime projects the template on 2xx alone — see the preview
   // test in tests/client/pages/ToolEditModal.test.tsx.
   expect(statuses).toEqual([404]);
+});
+
+// Round 8 of review, finding 1. The session token makes a LATE answer harmless; it does not un-send
+// the request. A test of a POST is a real write on the provider's side, so a dialog that can be
+// dismissed mid-flight and reopened runs the operation twice, with the first result deliberately
+// dropped so nothing on screen says it happened.
+test("no way out while a request is in flight, and no second send", async () => {
+  const sent: { body?: unknown } = {};
+  const hold: { release?: () => void } = {};
+  let calls = 0;
+  const { reopen } = mount(sent, { hold, onCall: () => calls++ });
+  fireEvent.click(screen.getByText("Send request"));
+  await waitFor(() => expect(hold.release).toBeDefined());
+  expect(calls).toBe(1);
+  // Every user-driven close: Escape, the overlay, the X. `disabled` on Cancel covers none of them.
+  fireEvent.keyDown(document, { key: "Escape" });
+  await new Promise((r) => setTimeout(r, 20));
+  expect(screen.queryByText("Send request")).not.toBeNull();
+  // And the close that would have led to the second write does not happen, so reopening cannot
+  // start one either.
+  reopen();
+  await new Promise((r) => setTimeout(r, 20));
+  expect(calls).toBe(1);
+  hold.release?.();
 });

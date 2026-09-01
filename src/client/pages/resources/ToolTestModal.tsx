@@ -315,6 +315,13 @@ export function ToolTestModal({
       modal={modal}
       size="lg"
       title={t("tools.testTitle", "Test this tool")}
+      // NO WAY OUT WHILE A REQUEST IS IN FLIGHT, and the session token is not a substitute for this.
+      // The token makes a late answer harmless; it does not un-send the request. A test of a POST or
+      // a PATCH is a real write on the provider's side, so dismissing with Escape (or the overlay,
+      // or the X — none of which the disabled Cancel button covers) and pressing send again runs the
+      // operation TWICE, with the first result deliberately dropped so nothing on screen says it
+      // happened. `docs/modals.md`: guard user-driven close while loading AND disable the buttons.
+      onCloseRequest={running ? () => {} : undefined}
       footer={
         <div className="flex items-center justify-between gap-2">
           <span className="text-error text-xs">{error}</span>

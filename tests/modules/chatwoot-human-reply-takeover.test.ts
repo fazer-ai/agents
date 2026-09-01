@@ -8,7 +8,10 @@ import {
   normalizeChatwootEvent,
   shouldBotHandle,
 } from "@/modules/chatwoot/normalize";
-import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
+import {
+  claimOpenForHumanQueue,
+  processChatwootDelivery,
+} from "@/modules/chatwoot/webhook";
 import { isFollowUpLive } from "@/modules/followups/eligibility";
 import { POLL_DEADLINE_MS } from "@/tests/utils/poll";
 import { seedChatwootInstance } from "../utils/chatwoot";
@@ -1190,12 +1193,54 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     expect(turnsRan).toBe(before + 1);
   });
 
-  // ISSUE #468, ROUND 3.  // ISSUE #468, ROUND 3. The claim cannot tell a conversation event frozen BEFORE our write from one
-  // committed after it, so it refuses both — and refusing a real hand-back would lose it, since we
-  // ack the event and Chatwoot never redelivers. What keeps that from being a hole is that the
-  // refusal KEEPS the version: nothing older can overwrite what it announced (our own reconcile's
-  // snapshot included), and the mark it leaves ends the claim's ordered half, so the companion event
-  // Chatwoot dispatches for the same write lands.
+  // ISSUE #468, ROUND 8. The compare-and-swap orders this write against one that has already
+  // COMMITTED. It says nothing about a `mirrorChatwootEvent` transaction that has already READ the
+  // row — with no claim on it — and has not written yet: that one commits its own decision straight
+  // over the `open`, and the agent answers over the person. The lock is what orders those two, and it
+  // is the same lock the mirror and the reconcile take.
+  test("the claim waits for whoever holds the conversation", async () => {
+    const conv = 8568;
+    await deliver(conv, { ...customerSays("oi") });
+    const seeded = await convRow(conv);
+    const claim = () =>
+      claimOpenForHumanQueue({
+        tenantId,
+        instanceId,
+        conversationId: conv,
+        seen: {
+          statusAt: seeded?.chatwootStatusAt ?? null,
+          assigneeType: "AgentBot",
+          assigneeId: OUR_BOT,
+        },
+        claimUntil: new Date(Date.now() + 45_000),
+        base: appDb,
+      });
+    // A holder rather than a `let`, so the control-flow analysis does not narrow the answer to the
+    // `null` it starts on: the only writer is the callback below.
+    const claimed: { won: boolean | null } = { won: null };
+    let running: Promise<void> | null = null;
+    await suDb.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`${tenantId}:${instanceId}:${conv}`})::bigint)`;
+      running = claim().then((v) => {
+        claimed.won = v;
+      });
+      // Long enough for an unlocked write to have finished several times over, and it cannot go flaky
+      // in the direction that matters: a slow machine only delays the claim further.
+      await Bun.sleep(150);
+      expect(claimed.won).toBeNull();
+      expect((await convRow(conv))?.status).toBe("pending");
+    });
+    await running;
+    expect(claimed.won).toBe(true);
+    expect((await convRow(conv))?.status).toBe("open");
+  });
+
+  // ISSUE #468, ROUND 3. The claim cannot tell a conversation event frozen BEFORE our write from one
+  // committed after it — the version that would separate them is our own transition's, which the
+  // toggle does not render — so it refuses both, and refusing a real hand-back would lose it, since
+  // we ack the event and Chatwoot never redelivers. What keeps that from being a hole is that the
+  // refusal is DEFERRED rather than dropped: it keeps its version, and the reconcile that finally
+  // learns ours adjudicates the two. Ahead of ours, it was a write committed after our own.
   //
   // The live read is pinned to a version below the hand-back's, which is what a GET issued before it
   // committed comes back with.
@@ -1226,8 +1271,8 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     }
     const row = await convRow(conv);
     expect(row?.status).toBe("pending");
-    // The mark is the hand-back's, not the reconcile's: the older snapshot lost on a version the
-    // REFUSAL is what put there.
+    // The mark is the hand-back's, not the reconcile's: the adjudication wrote the version the
+    // refusal had kept, over the older one our own read came back with.
     expect(row?.chatwootStatusAt ?? 0).toBeGreaterThan(pinned);
   });
 

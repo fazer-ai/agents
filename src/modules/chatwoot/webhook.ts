@@ -20,7 +20,7 @@ import { loadAgentConfig } from "@/graph/prepare";
 import { type RuntimeDeps, runAgentTurn } from "@/graph/runtime";
 import { threadBusyForResetOn, turnOwnsThread } from "@/graph/thread-claim";
 import { AppError, UnauthorizedError } from "@/lib/errors";
-import { withKeyedQueue } from "@/lib/locks";
+import { withEntityLock, withKeyedQueue } from "@/lib/locks";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { shouldRunReset } from "@/modules/agents/test-mode";
 import { cancelThreadAppointments } from "@/modules/appointments/reminders";
@@ -1259,6 +1259,66 @@ async function conversationOwnershipNow(p: {
 // trip; asking first and building second puts that trip BETWEEN the answer and the write it guards,
 // which is the window the fence exists to close. Nothing is written while the client is built, so
 // moving it ahead costs nothing.
+/**
+ * The takeover's own write: claim the mirrored row `open` for the human queue, if it is still the row
+ * this delivery decided about (issue #430), and announce the claim in the same statement (issue
+ * #436). Answers whether the claim was taken.
+ *
+ * Exported for the test that pins the lock below; the call site is the human-reply gate, which has
+ * asked Chatwoot first and is about to toggle.
+ */
+export async function claimOpenForHumanQueue(p: {
+  tenantId: bigint;
+  instanceId: bigint;
+  conversationId: number;
+  /** The row this delivery decided about, which the compare-and-swap pins. */
+  seen: {
+    statusAt: number | null;
+    assigneeType: string | null;
+    assigneeId: number | null;
+  };
+  claimUntil: Date;
+  base: PrismaClient;
+}): Promise<boolean> {
+  const { count } = await runScopedOn(p.base, sysCtx(p.tenantId), (db) =>
+    // UNDER THE CONVERSATION'S OWN LOCK, the same one `mirrorChatwootEvent` and
+    // `reconcileMirrorFromLive` take, because the compare-and-swap alone does not order this against
+    // a transaction that has ALREADY READ the row and has not written yet. That mirror would then
+    // commit its decision — computed from a row with no claim on it — straight over this `open`, and
+    // the agent answers over the person (issue #468, round 8). The predicate is what orders it
+    // against a write that has already committed; the lock is what orders it against one that has
+    // not. Safe to hold here and nowhere near the toggle: this is one statement and no round trip.
+    withEntityLock(
+      db,
+      `${p.tenantId}:${p.instanceId}:${p.conversationId}`,
+      () =>
+        db.conversation.updateMany({
+          where: {
+            tenantId: p.tenantId,
+            chatwootInstanceId: p.instanceId,
+            chatwootConversationId: p.conversationId,
+            status: "pending",
+            chatwootStatusAt: p.seen.statusAt,
+            assigneeType: p.seen.assigneeType,
+            assigneeId: p.seen.assigneeId,
+          },
+          data: {
+            status: "open",
+            statusClaimUntil: p.claimUntil,
+            // The status this write replaced, which the predicate above pins to `pending`, and the two
+            // columns the claim starts EMPTY: the source has stamped no version for this transition
+            // yet, and nothing has been refused on its account. A stale pair from an earlier claim
+            // would otherwise be read as this one's (../../modules/chatwoot/status-claim.ts).
+            statusClaimFrom: "pending",
+            statusClaimStampedAt: null,
+            statusClaimRefusedAt: null,
+          },
+        }),
+    ),
+  );
+  return count > 0;
+}
+
 async function openForHumanQueue(p: {
   // Names the caller in every line this writes; it is what an operator reads to know which path
   // handed the conversation over.
@@ -4316,40 +4376,19 @@ export async function processChatwootDelivery(
             // how long it refuses that status, and ../../modules/chatwoot/status-claim.ts holds why
             // it can be neither a version nor a permanent flag.
             //
-            const claimedAt = new Date();
-            const claimUntil = statusClaimDeadline(claimedAt);
-            const { count } = await runScopedOn(
+            const claimUntil = statusClaimDeadline(new Date());
+            const won = await claimOpenForHumanQueue({
+              tenantId: params.tenantId,
+              instanceId: params.instanceId,
+              conversationId,
+              seen: now,
+              claimUntil,
               base,
-              sysCtx(params.tenantId),
-              (db) =>
-                db.conversation.updateMany({
-                  where: {
-                    tenantId: params.tenantId,
-                    chatwootInstanceId: params.instanceId,
-                    chatwootConversationId: conversationId,
-                    status: "pending",
-                    chatwootStatusAt: now.statusAt,
-                    assigneeType: now.assigneeType,
-                    assigneeId: now.assigneeId,
-                  },
-                  data: {
-                    status: "open",
-                    statusClaimUntil: claimUntil,
-                    // The status this write replaced, which the predicate above pins to `pending`,
-                    // and the two columns the claim starts EMPTY: the source has stamped no version
-                    // for this transition yet, and nothing has been refused on its account. A stale
-                    // pair from an earlier claim would otherwise be read as this one's
-                    // (../../modules/chatwoot/status-claim.ts).
-                    statusClaimFrom: "pending",
-                    statusClaimStampedAt: null,
-                    statusClaimRefusedAt: null,
-                  },
-                }),
-            );
+            });
             // A LOST CAS IS A CLOSED FENCE, reported by the shared unit exactly like an ownership
             // refusal, because that is what it is: something newer than the state this delivery
             // decided on now holds the row.
-            if (count === 0) return false;
+            if (!won) return false;
             claimHeld = claimUntil;
             // AND THE CONSOLES HEAR ABOUT IT, from the write that happened rather than from the
             // call that may not. This delivery already broadcast the mirror's post-write snapshot

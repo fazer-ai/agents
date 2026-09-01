@@ -2,6 +2,7 @@ import type { StructuredToolInterface } from "@langchain/core/tools";
 import { z } from "zod";
 import logger from "@/api/lib/logger";
 import { failableTool, toolFailure } from "@/graph/tools/failure";
+import { fetchBounded, fetchBoundedBytes } from "@/lib/outbound";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import {
   type IntegrationSelection,
@@ -62,10 +63,11 @@ async function driveFetch(
   const assertSafe = ctx.assertSafe ?? assertSafeOutboundUrl;
   await assertSafe(url);
   const doFetch = ctx.fetchImpl ?? fetch;
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
-  try {
-    const res = await doFetch(url, {
+  // The cap is on what is READ, not a slice of what was already read: `.text()` buffers the whole
+  // body before any limit applies (#464).
+  const { res, body } = await fetchBounded(
+    url,
+    {
       method: init.method,
       headers: {
         Authorization: `Bearer ${init.token}`,
@@ -74,19 +76,16 @@ async function driveFetch(
       },
       body: init.body !== undefined ? JSON.stringify(init.body) : undefined,
       redirect: "error",
-      signal: ctrl.signal,
-    });
-    const text = (await res.text()).slice(0, MAX_RESPONSE_CHARS);
-    let json: unknown = null;
-    try {
-      json = JSON.parse(text);
-    } catch {
-      // non-JSON body → leave json null; the caller surfaces a generic error
-    }
-    return { status: res.status, json };
-  } finally {
-    clearTimeout(timer);
+    },
+    { timeoutMs: TIMEOUT_MS, cap: MAX_RESPONSE_CHARS, fetchImpl: doFetch },
+  );
+  let json: unknown = null;
+  try {
+    json = JSON.parse(body.text);
+  } catch {
+    // non-JSON body → leave json null; the caller surfaces a generic error
   }
+  return { status: res.status, json };
 }
 
 // Binary download (alt=media or /export). Byte-capped: refuses past MAX_DOWNLOAD_BYTES via the
@@ -100,30 +99,46 @@ async function driveDownload(
   const assertSafe = ctx.assertSafe ?? assertSafeOutboundUrl;
   await assertSafe(url);
   const doFetch = ctx.fetchImpl ?? fetch;
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
-  try {
-    const res = await doFetch(url, {
+  // Byte-capped ON THE READ. `arrayBuffer()` buffered the whole body and then refused it for being
+  // too large, so a 5 GB file in the connected account was 5 GB of resident memory on its way to a
+  // refusal (#464).
+  //
+  // And the two cheap refusals still happen BEFORE a byte is read, which is what `readWhen` is for:
+  // an honest server that declares 500 MB is turned down without pulling fifteen of them first (on
+  // a slow link that read could spend the whole budget and turn "that file is too large" into a
+  // generic download failure), and a non-2xx body is an error page nothing here reads.
+  const { res, body } = await fetchBoundedBytes(
+    url,
+    {
       method: "GET",
       headers: {
         Authorization: `Bearer ${token}`,
         "User-Agent": "agents",
       },
       redirect: "error",
-      signal: ctrl.signal,
-    });
-    if (res.status < 200 || res.status >= 300)
-      return { status: res.status, bytes: null, tooLarge: false };
-    const declared = Number(res.headers.get("content-length") ?? "0");
-    if (declared > MAX_DOWNLOAD_BYTES)
-      return { status: res.status, bytes: null, tooLarge: true };
-    const bytes = await res.arrayBuffer();
-    if (bytes.byteLength > MAX_DOWNLOAD_BYTES)
-      return { status: res.status, bytes: null, tooLarge: true };
-    return { status: res.status, bytes, tooLarge: false };
-  } finally {
-    clearTimeout(timer);
-  }
+    },
+    {
+      timeoutMs: TIMEOUT_MS,
+      maxBytes: MAX_DOWNLOAD_BYTES,
+      fetchImpl: doFetch,
+      readWhen: (r) =>
+        r.status >= 200 &&
+        r.status < 300 &&
+        Number(r.headers.get("content-length") ?? "0") <= MAX_DOWNLOAD_BYTES,
+    },
+  );
+  if (res.status < 200 || res.status >= 300)
+    return { status: res.status, bytes: null, tooLarge: false };
+  // A 2xx whose body was not read means the predicate refused it, and at a 2xx the only thing it
+  // looks at is the declared size. `tooLarge` covers the server that understated it: the cap
+  // catches that one on the way in.
+  if (body === null || body.tooLarge)
+    return { status: res.status, bytes: null, tooLarge: true };
+  return {
+    status: res.status,
+    bytes: body.bytes.buffer as ArrayBuffer,
+    tooLarge: false,
+  };
 }
 
 async function resolveToken(

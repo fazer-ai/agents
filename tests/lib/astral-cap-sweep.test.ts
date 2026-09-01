@@ -430,20 +430,13 @@ const BARE_SLICES: Record<
   "src/modules/flowlog/settings.ts": [1, "fixed-format"],
   "src/modules/followups/settings.ts": [1, "array"],
   "src/modules/images/fetch.ts": [1, "array"],
-  // The five response-body caps below all feed `JSON.parse` and nothing else. When one of them
-  // fires the document is truncated mid-structure and the parse fails either way, so routing the
-  // cut would change nothing about what anyone sees.
-  "src/modules/integrations/google-calendar.service.ts": [1, "parse-only"],
-  "src/modules/integrations/google-drive.service.ts": [1, "parse-only"],
-  "src/modules/integrations/toolpacks/asaas.ts": [
-    2,
-    "parse-only + fixed-format",
-  ],
+  // The response-body caps that used to sit here are gone: they were a `.slice()` applied to a body
+  // `.text()` had already buffered whole, and #464 replaced them with a cap on the READ
+  // (`lib/outbound.ts`, which cuts through `clipText` like every other cap).
+  "src/modules/integrations/toolpacks/asaas.ts": [1, "fixed-format"],
   // The refusal a calendar write answers with lists the nearest bookable slots; the cut bounds that
   // LIST, and each entry is a slot object this code built, never received text.
   "src/modules/integrations/toolpacks/calendar-slots.ts": [1, "array"],
-  "src/modules/integrations/toolpacks/google-calendar.ts": [1, "parse-only"],
-  "src/modules/integrations/toolpacks/google-drive.ts": [1, "parse-only"],
   // Zod issue PATHS, which name our own schema's keys, never the received values.
   "src/modules/integrations/mappers.ts": [1, "ascii"],
   "src/modules/mcp/write-agents.ts": [1, "array"],

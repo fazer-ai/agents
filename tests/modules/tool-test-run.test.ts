@@ -281,7 +281,7 @@ describe("runToolTest — the same request the saved tool would make", () => {
     expect((seen.init as RequestInit).method).toBe(DEFAULT_HTTP_METHOD);
   });
 
-  test("waits no longer than a turn does", async () => {
+  test("waits no longer than a turn does, and keeps no clock of its own", async () => {
     // A test more patient than the runtime reports a clean 200 for an endpoint that aborts on every
     // real call, which is the one number this screen exists to show. Proven at the source because
     // the alternative is a test that sits for ten seconds: what has to hold is that the file names
@@ -294,10 +294,11 @@ describe("runToolTest — the same request the saved tool would make", () => {
     expect(src).toMatch(
       /timeoutMs:\s*(?:deps\.timeoutMs\s*\?\?\s*)?DEFAULT_HTTP_TOOL_TIMEOUT_MS/,
     );
-    // The second deadline, the one covering the body, reads the same constant.
-    expect(src).toMatch(
-      /setTimeout\([\s\S]{0,400}deps\.timeoutMs \?\? DEFAULT_HTTP_TOOL_TIMEOUT_MS/,
-    );
+    // AND NO DEADLINE AT ALL, which is the half #464 changed. This file used to arm a second one
+    // over the body because the runtime's bound covered only the headers; the runtime covers the
+    // whole exchange now, so a timer here would be a second answer to the same question — the
+    // exact divergence between console and runtime this screen exists to not have.
+    expect(src).not.toMatch(/setTimeout\(/);
     expect(src).not.toMatch(/timeoutMs:\s*\d/);
     expect(src).not.toMatch(/TIMEOUT_MS\s*=\s*\d/);
   });
@@ -440,11 +441,12 @@ describe("runToolTest — the same request the saved tool would make", () => {
 // Round 3 of review, findings 1 and 2. The wrapper that captures the raw body sat between the
 // runtime and the network, and both of the ways it could be noticed are timing rather than content.
 describe("runToolTest — the capture wrapper is invisible to the runtime", () => {
-  test("a body that arrives after the headers is not put back under the abort timer", async () => {
-    // The runtime clears its timer the instant `fetch` resolves and reads the body afterwards, so
-    // the bound is on the HEADERS. Reading the body inside the wrapper moved it back under the
-    // armed timer: measured at a 300ms timeout against a provider that answers at once and streams
-    // its body 800ms later, the runtime returned the body and this aborted.
+  test("a body that arrives after the bound ends the call, wrapper or no wrapper", async () => {
+    // This test used to assert the opposite, and that is the whole point of #464. The runtime
+    // cleared its timer the instant `fetch` resolved and read the body afterwards, so its bound was
+    // on the HEADERS: the same definition against the same provider returned `HTTP 200 {"a":1}` in
+    // production and "The operation was aborted." on the screen built to preview it. There is one
+    // bound now, over the whole exchange, so both sides end together and the clone ends with them.
     //
     // Written with a short timeout on `buildHttpTool` rather than through `runToolTest`, because
     // the real bound is ten seconds and the property is the ORDERING, not the number.
@@ -507,8 +509,13 @@ describe("runToolTest — the capture wrapper is invisible to the runtime", () =
         fetchImpl: wrapper,
       },
     );
-    expect(String(await tool.invoke({}))).toBe('HTTP 200\n{"a":1}');
-    expect(await (captured as unknown as Promise<string>)).toBe('{"a":1}');
+    // The body is 400ms behind a 150ms bound, so the bound is what answers.
+    const err = (await tool.invoke({}).catch((e: unknown) => e)) as Error;
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).toMatch(/did not answer within 0\.15s/);
+    // And the clone dies with it rather than outliving the call it was cloned from — which is what
+    // makes the capture invisible: it can no longer answer for a request the runtime refused.
+    expect(await (captured as unknown as Promise<string>)).toBe("");
   });
 
   test("and the streamed body still reaches the operator whole", async () => {

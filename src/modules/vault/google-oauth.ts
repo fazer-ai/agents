@@ -2,6 +2,7 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import basePrisma from "@/api/lib/prisma";
 import { AppError } from "@/lib/errors";
+import { fetchBounded, fetchBoundedNoBody } from "@/lib/outbound";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import {
   buildOAuthCallbackHtml,
@@ -206,20 +207,25 @@ function emailFromIdToken(idToken: string | undefined): string {
 async function postToken(
   body: Record<string, string>,
 ): Promise<GoogleTokenResponse> {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), TOKEN_TIMEOUT_MS);
-  let res: Response;
-  try {
-    res = await fetch(TOKEN_ENDPOINT, {
+  // One bound over the whole exchange, body included. Reading the body after the timer was cleared
+  // is what #464 measured in the HTTP tool: the bound covers the headers and nothing ends a body
+  // that stalls.
+  const { res, body: responseBody } = await fetchBounded(
+    TOKEN_ENDPOINT,
+    {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams(body).toString(),
-      signal: ctrl.signal,
-    });
-  } finally {
-    clearTimeout(timer);
+    },
+    { timeoutMs: TOKEN_TIMEOUT_MS },
+  );
+  let json: GoogleTokenResponse = {} as GoogleTokenResponse;
+  try {
+    json = JSON.parse(responseBody.text) as GoogleTokenResponse;
+  } catch {
+    // A body that is not JSON leaves the status as the only thing that says what happened, which
+    // is what `res.json().catch(() => ({}))` did here before.
   }
-  const json = (await res.json().catch(() => ({}))) as GoogleTokenResponse;
   if (!res.ok || json.error) {
     throw new AppError(
       `google token endpoint error: ${json.error ?? res.status}`,
@@ -283,18 +289,18 @@ export async function exchangeCodeForTokens(params: {
 // Best-effort: a failed revoke must never block disconnect (the credential is removed regardless).
 export async function revokeGoogleToken(refreshToken: string): Promise<void> {
   try {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), TOKEN_TIMEOUT_MS);
-    try {
-      await fetch(REVOKE_ENDPOINT, {
+    // NO BODY, and that is the point rather than an omission: nothing here reads Google's answer,
+    // the disconnect AWAITS this call before removing the local tokens, and a revoke that answers
+    // its headers and then stalls its body would hold that disconnect for the whole budget.
+    await fetchBoundedNoBody(
+      REVOKE_ENDPOINT,
+      {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({ token: refreshToken }).toString(),
-        signal: ctrl.signal,
-      });
-    } finally {
-      clearTimeout(timer);
-    }
+      },
+      { timeoutMs: TOKEN_TIMEOUT_MS },
+    );
   } catch {
     // swallow — disconnect proceeds regardless.
   }

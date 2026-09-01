@@ -33,8 +33,12 @@ import {
   normalizeExpectedStatuses,
 } from "@/graph/tools/http-status";
 import { AppError } from "@/lib/errors";
+import {
+  type OutboundBody,
+  OutboundTimeoutError,
+  readCappedBody,
+} from "@/lib/outbound";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
-import { clipText } from "@/lib/text";
 import { resolveInjectableCredential } from "@/modules/vault/injectable";
 import { formatVaultRef, readVaultRefId } from "@/modules/vault/service";
 import { unsupportedBodyShape } from "./body-shape";
@@ -46,6 +50,11 @@ import { DEFAULT_HTTP_METHOD, readHttpMethod } from "./service";
 // clipped one the model sees: the whole point is to pick paths out of it, including the ones past
 // the clip. Bounded because it crosses the wire into a browser; the response this feature was
 // measured against is 8kB.
+//
+// A DISPLAY bound, and deliberately tighter than the runtime's MAX_OUTBOUND_BODY_CHARS, which is
+// how much of a body can be READ and therefore how much a response template can address. The two
+// are not in competition: `modelText` below comes from the runtime itself, so what this screen
+// says the model gets is what the model gets, whatever this number is.
 const MAX_RAW_CHARS = 100_000;
 
 // The RUNTIME'S patience, not a friendlier one. A test more patient than a turn answers the wrong
@@ -197,12 +206,7 @@ export async function runToolTest(
   }
 
   const notes: ToolTestNote[] = [];
-  let seen: { status: number; body: Promise<CappedBody> } | null = null;
-  // Set by the deadline below, and READ in the catch, because the name of the error cannot tell.
-  // Aborting a body mid-read surfaces as `EncodingError` — the same shape a provider that really
-  // broke its stream produces — so without this flag our own timeout would be reported as the
-  // provider's fault, 502 instead of 504.
-  let timedOut = false;
+  let seen: { status: number; body: Promise<OutboundBody> } | null = null;
   const doFetch = deps.fetchImpl ?? fetch;
   const tool = buildHttpTool(def, {
     // Wrapped so that a failure to READ the credential is not read as a failure of the definition.
@@ -232,66 +236,27 @@ export async function runToolTest(
     // The raw body is taken HERE, on the way in, because everything downstream of this point is the
     // model's view: rendered, clipped, prefixed. The operator needs the provider's own answer.
     //
-    // From a CLONE, and not awaited before returning, because both halves of that are timing. The
-    // runtime clears its abort timer the instant `fetch` resolves and reads the body afterwards, so
-    // production bounds the wait for HEADERS and not for the body. Reading here, inside the call,
-    // put the body read back under the armed timer: measured against a provider that answers at
-    // once and streams its body 800ms later with a 300ms timeout, the runtime returns `HTTP 200
-    // {"a":1}` and this returned "The operation was aborted." — the same definition, against the
-    // same provider, behaving differently on the screen built to preview it. Returning `res`
-    // untouched also means there is no reconstructed Response to get wrong: a 204 or a 304 stays
-    // exactly the object the runtime would have read.
+    // From a CLONE, and not awaited before returning: awaiting it would hold the runtime's own read
+    // behind this one. Returning `res` untouched also means there is no reconstructed Response to
+    // get wrong — a 204 or a 304 stays exactly the object the runtime would have read.
+    //
+    // AND NO DEADLINE OF ITS OWN, not any more. Until #464 this wrapper armed a second one, because
+    // the runtime's bound covered only the headers and a body that never ended left this dialog
+    // with a spinner and no exit — round 8 blocked every way of closing it while a request is in
+    // flight. `fetchBounded` now covers the whole exchange for every caller, and the clone errors
+    // under the same abort, so a timer here would be a second answer to a question the runtime
+    // already answers. That is the divergence this screen exists to not have.
     fetchImpl: (async (url: string, init: RequestInit) => {
-      // A SECOND DEADLINE, over the whole exchange, because the runtime's covers only the headers.
-      // `buildHttpTool` clears its abort timer the instant `fetch` resolves, so a provider that
-      // answers at once and then never finishes the body leaves `res.text()` pending forever —
-      // measured: under a 300ms bound the call was still hanging at 3,001ms, and there is no
-      // upper bound at all. Mid-turn that is a defect of its own, and not one to close from here:
-      // moving that `clearTimeout` after the body read turns the budget into the whole exchange for
-      // every HTTP tool in every deployment, which would start failing a provider that legitimately
-      // streams a large body slowly, and there is no per-tool override to raise. HERE it is worse
-      // than a hang, because round 8 blocked every way of closing the dialog while a request is in
-      // flight, so the operator would be left with a spinner and no exit and the endpoint would
-      // never answer the 504 it advertises.
-      //
-      // Armed on a controller of ours and cleared once the body is in, so the abort really does
-      // cancel the request rather than just abandoning the promise.
-      const ctrl = new AbortController();
-      const relay = () =>
-        ctrl.abort((init.signal as AbortSignal | undefined)?.reason);
-      init.signal?.addEventListener("abort", relay);
-      const deadline = setTimeout(() => {
-        timedOut = true;
-        ctrl.abort(
-          new DOMException("The operation was aborted.", "AbortError"),
-        );
-      }, deps.timeoutMs ?? DEFAULT_HTTP_TOOL_TIMEOUT_MS);
-      // The cleanup below hangs off the BODY promise, which does not exist yet: a fetch that
-      // rejects before returning a response (a refused connection, a TLS failure) would leave the
-      // timer, the controller and the listener alive for the whole budget, once per failed test.
-      let res: Response;
-      try {
-        res = await doFetch(url, { ...init, signal: ctrl.signal });
-      } catch (err) {
-        clearTimeout(deadline);
-        init.signal?.removeEventListener("abort", relay);
-        throw err;
-      }
-      // `.catch` rather than a bare promise: when the runtime aborts, this rejects too, and an
-      // unobserved rejection would be a crash rather than a refusal. The value is read only on the
-      // path where the call succeeded.
+      const res = await doFetch(url, init);
+      // `.catch` rather than a bare promise: when the runtime's bound cuts the exchange this
+      // rejects too, and an unobserved rejection would be a crash rather than a refusal. The value
+      // is read only on the path where the call succeeded.
       seen = {
         status: res.status,
-        body: cappedText(res.clone(), MAX_RAW_CHARS)
-          .catch(() => ({ text: "", chars: 0 }))
-          // Cleanup with no observable behaviour: firing the abort on a finished request is a
-          // no-op and nobody reads `timedOut` after the return, so a mutation battery cannot tell
-          // this block from an empty one. It is here so the process is not left holding a ten-second
-          // timer and a listener on someone else's signal — not because a test would catch it.
-          .finally(() => {
-            clearTimeout(deadline);
-            init.signal?.removeEventListener("abort", relay);
-          }),
+        body: readCappedBody(res.clone(), MAX_RAW_CHARS).catch(() => ({
+          text: "",
+          chars: 0,
+        })),
       };
       return res;
     }) as unknown as typeof fetch,
@@ -329,17 +294,27 @@ export async function runToolTest(
       throw new AppError(err.message, 400);
     }
     const message = err instanceof Error ? err.message : String(err);
-    const aborted =
-      timedOut || (err instanceof Error && err.name === "AbortError");
+    // `OutboundTimeoutError` is the runtime saying the bound was ITS doing, which is the one thing
+    // the error's name cannot say: a body cut mid-read surfaces as `EncodingError`, the same shape
+    // a provider that really broke its stream produces. Its message already names the bound it
+    // used — the real one, which a test may have shortened — so it travels as written.
+    const timedOut =
+      err instanceof OutboundTimeoutError ||
+      (err instanceof Error && err.name === "AbortError");
     throw new AppError(
-      aborted
-        ? `the provider did not answer within ${DEFAULT_HTTP_TOOL_TIMEOUT_MS / 1000}s: ${message}`
-        : message,
-      aborted ? 504 : 502,
+      err instanceof OutboundTimeoutError
+        ? message
+        : timedOut
+          ? `the provider did not answer within ${DEFAULT_HTTP_TOOL_TIMEOUT_MS / 1000}s: ${message}`
+          : message,
+      timedOut ? 504 : 502,
     );
   }
   const durationMs = Date.now() - startedAt;
-  const captured = seen as { status: number; body: Promise<CappedBody> } | null;
+  const captured = seen as {
+    status: number;
+    body: Promise<OutboundBody>;
+  } | null;
 
   const message = out as { content?: unknown; status?: unknown };
   const modelText = String(message?.content ?? out);
@@ -369,42 +344,6 @@ export async function runToolTest(
       ),
     notes,
   };
-}
-
-interface CappedBody {
-  // The prefix that crosses the wire, already capped.
-  text: string;
-  // How long the WHOLE response was, which is what tells the operator it was cut.
-  chars: number;
-}
-
-// Read a response body keeping only the first `cap` characters, and counting the rest.
-//
-// `.text()` would buffer the whole thing before the cap is applied, which is a second complete copy
-// of the response alongside the one `buildHttpTool` is already holding — so a provider answering
-// with a few hundred megabytes could take the process down over an endpoint that returns 100,000
-// characters. The count still has to be exact, because "this response is too large to bring back as
-// a sample" is decided on it, so the stream is drained to the end and only the prefix is retained.
-async function cappedText(res: Response, cap: number): Promise<CappedBody> {
-  const stream = res.body;
-  if (!stream) return { text: "", chars: 0 };
-  const reader = stream.getReader();
-  const decoder = new TextDecoder();
-  let kept = "";
-  let chars = 0;
-  const take = (chunk: string) => {
-    chars += chunk.length;
-    // Overshoots by at most one chunk, which the clip below trims; the point is the bound, not the
-    // exact byte.
-    if (kept.length < cap) kept += chunk;
-  };
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    take(decoder.decode(value, { stream: true }));
-  }
-  take(decoder.decode());
-  return { text: clipText(kept, cap), chars };
 }
 
 async function readCredentialMeta(

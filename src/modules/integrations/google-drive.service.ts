@@ -1,6 +1,7 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import { AppError, NotFoundError } from "@/lib/errors";
+import { fetchBounded } from "@/lib/outbound";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { ensureFreshGoogleAccessToken } from "@/modules/vault/google-oauth";
@@ -102,29 +103,26 @@ export async function listCredentialDriveFolders(
   const assertSafe = deps.assertSafe ?? assertSafeOutboundUrl;
   await assertSafe(GDRIVE_FOLDER_LIST_URL);
   const doFetch = deps.fetchImpl ?? fetch;
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
-  let status: number;
-  let json: unknown = null;
-  try {
-    const res = await doFetch(GDRIVE_FOLDER_LIST_URL, {
+  // The cap is on what is READ, not a slice of what was already read: `.text()` buffers the whole
+  // body before any limit applies (#464).
+  const { res, body } = await fetchBounded(
+    GDRIVE_FOLDER_LIST_URL,
+    {
       method: "GET",
       headers: {
         Authorization: `Bearer ${token}`,
         "User-Agent": "agents",
       },
       redirect: "error",
-      signal: ctrl.signal,
-    });
-    status = res.status;
-    const text = (await res.text()).slice(0, MAX_RESPONSE_CHARS);
-    try {
-      json = JSON.parse(text);
-    } catch {
-      // non-JSON → handled below
-    }
-  } finally {
-    clearTimeout(timer);
+    },
+    { timeoutMs: TIMEOUT_MS, cap: MAX_RESPONSE_CHARS, fetchImpl: doFetch },
+  );
+  const status = res.status;
+  let json: unknown = null;
+  try {
+    json = JSON.parse(body.text);
+  } catch {
+    // non-JSON → handled below
   }
   if (status < 200 || status >= 300) {
     // 403 here is almost always an insufficient OAuth scope: the connected account lacks Drive read

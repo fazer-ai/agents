@@ -279,6 +279,87 @@ describe("google drive toolpack — send file", () => {
     });
   });
 
+  test("a file whose declared size is over the cap is refused without reading a byte", async () => {
+    // Review round 1 of #464. Capping the READ made the Content-Length check happen after 15 MB had
+    // already been pulled, and on a slow link that read can spend the whole 12s budget — turning
+    // "that file is too large" into a generic download failure for a file the headers already ruled
+    // out. What is asserted is that the producer is never pulled.
+    let pulled = 0;
+    const { impl } = routerFetch((url: string) => {
+      if (!url.includes("alt=media") && !url.includes("/export"))
+        return json(200, {
+          name: "big.bin",
+          mimeType: "application/octet-stream",
+        });
+      return new Response(
+        new ReadableStream({
+          pull(c) {
+            pulled += 1;
+            c.enqueue(new Uint8Array(64 * 1024));
+          },
+        }),
+        {
+          status: 200,
+          headers: { "content-length": String(500 * 1024 * 1024) },
+        },
+      );
+    });
+    const cw = fakeChatwoot();
+    const tool = sendTool(baseCtx({ fetchImpl: impl, chatwoot: cw.chatwoot }));
+    const out = (await tool?.invoke({ fileId: "f1" })) as string;
+    expect(out).toContain("too large");
+    // A stream fills its own queue once before anyone reads it, so ONE pull is the source's doing
+    // and not ours. Reading to the 15 MB cap would take 240 of these.
+    expect(pulled).toBeLessThanOrEqual(1);
+    expect(cw.sent).toHaveLength(0);
+  });
+
+  test("a non-2xx download does not have its error page read", async () => {
+    // Same reason, the other cheap refusal: nothing here reads a Drive error page, so pulling one
+    // is a read the bound has to cover for no one's benefit.
+    let pulled = 0;
+    const { impl } = routerFetch((url: string) => {
+      if (!url.includes("alt=media") && !url.includes("/export"))
+        return json(200, {
+          name: "gone.bin",
+          mimeType: "application/octet-stream",
+        });
+      return new Response(
+        new ReadableStream({
+          pull(c) {
+            pulled += 1;
+            c.enqueue(new Uint8Array(1024));
+          },
+        }),
+        { status: 500 },
+      );
+    });
+    const cw = fakeChatwoot();
+    const tool = sendTool(baseCtx({ fetchImpl: impl, chatwoot: cw.chatwoot }));
+    const out = (await tool?.invoke({ fileId: "f1" })) as string;
+    expect(out).toContain("HTTP 500");
+    expect(pulled).toBeLessThanOrEqual(1);
+  });
+
+  test("a file over the cap is refused, even when the server understates its size", async () => {
+    // The refusal path had no test at all. It also had no BOUND: `arrayBuffer()` buffered the whole
+    // body and `byteLength` refused it afterwards, so an honest Content-Length was the only thing
+    // keeping a large file out of memory (#464). What is asserted here is the refusal; that the
+    // read now stops at the cap is asserted on the reader itself, in tests/lib/outbound.test.ts,
+    // where the producer can be watched.
+    const OVER = 15 * 1024 * 1024 + 1;
+    const { impl } = routerFetch((url: string) =>
+      url.includes("alt=media") || url.includes("/export")
+        ? binaryResponse(OVER, 10)
+        : json(200, { name: "big.bin", mimeType: "application/octet-stream" }),
+    );
+    const cw = fakeChatwoot();
+    const tool = sendTool(baseCtx({ fetchImpl: impl, chatwoot: cw.chatwoot }));
+    const out = (await tool?.invoke({ fileId: "f1" })) as string;
+    expect(out).toContain("too large");
+    expect(cw.sent).toHaveLength(0);
+  });
+
   test("Google-apps doc is exported to PDF (name + mime adjusted)", async () => {
     const { impl, calls } = routerFetch(
       driveHandler(

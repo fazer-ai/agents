@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
-import type { BaseMessage } from "@langchain/core/messages";
+import { BaseChatModel } from "@langchain/core/language_models/chat_models";
+import { AIMessage, type BaseMessage } from "@langchain/core/messages";
+import type { ChatResult } from "@langchain/core/outputs";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
 import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -455,6 +456,59 @@ describe.skipIf(!dbUp)("playground", () => {
     expect(r.threadId.startsWith(`${tenantId}:playground:${agentOk}:`)).toBe(
       true,
     );
+  });
+
+  // Round 12, the WIRING of the same rule production applies (`tests/graph/silence.test.ts` proves
+  // the rule). A source that yields nothing leaves the granted channel as the WHOLE toolset, and
+  // binding one lone schema at an endpoint that refuses them costs the entire follow-up. This model
+  // IS such an endpoint: `bindTools` throws.
+  test("a tool-less agent's simulated follow-up binds nothing either", async () => {
+    const grant = await suDb.agentToolSelection.create({
+      data: {
+        tenantId,
+        agentId: agentOk,
+        source: "NATIVE",
+        enabledTools: [],
+        knowledgeBaseIds: [],
+      },
+      select: { id: true },
+    });
+    let bound = 0;
+    class SchemaRefusingModel extends BaseChatModel {
+      _llmType() {
+        return "schema-refusing";
+      }
+      override bindTools(_tools: unknown): never {
+        bound++;
+        throw new Error("400 this endpoint does not support function calling");
+      }
+      async _generate(): Promise<ChatResult> {
+        return {
+          generations: [
+            {
+              text: FOLLOWUP_SKIP_SENTINEL,
+              message: new AIMessage(FOLLOWUP_SKIP_SENTINEL),
+            },
+          ],
+        };
+      }
+    }
+    try {
+      const r = await runPlaygroundFollowup({
+        ctx: ctx(tenantId),
+        agentId: agentOk,
+        base: appDb,
+        deps: {
+          makeModel: () => new SchemaRefusingModel({}),
+          checkpointer: new MemorySaver(),
+        },
+      });
+      expect(bound).toBe(0);
+      expect(r.silent).toBe(true);
+      expect(r.reply).toBe("");
+    } finally {
+      await suDb.agentToolSelection.delete({ where: { id: grant.id } });
+    }
   });
 
   test("a follow-up with an empty model reply is reported as silent", async () => {

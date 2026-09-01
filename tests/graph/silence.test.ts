@@ -5,7 +5,6 @@ import { AIMessage, ToolMessage } from "@langchain/core/messages";
 import {
   customerFacingReply,
   FOLLOWUP_SKIP_SENTINEL,
-  type FollowupSilenceConfig,
   followupSilenceChannel,
   inertToolsFor,
   isNudgeSilent,
@@ -14,6 +13,7 @@ import {
   SKIP_REPLY_TOOL,
   skipReplyRan,
   withFollowupSilenceChannel,
+  withoutLoneSilenceTool,
 } from "@/graph/silence";
 import { buildNativeTools } from "@/graph/tools/native";
 import { unmetPreconditionMessage } from "@/modules/agents/tool-preconditions";
@@ -215,6 +215,51 @@ describe("followupSilenceChannel — what the directive may ASK for", () => {
   });
 });
 
+describe("withoutLoneSilenceTool — our tool is never the only one", () => {
+  const t = (name: string) => ({ name });
+
+  // Round 12, the defect. A source that is configured and yields nothing (an MCP server that is
+  // down) left the grant handing a lone function schema to an endpoint that had been running
+  // tool-less on the sentinel: the whole follow-up fails at the provider instead of one token
+  // leaking. Only the assembled list can tell the two apart.
+  test("a toolset that is nothing but the channel is a tool-less agent", () => {
+    expect(withoutLoneSilenceTool([t(SKIP_REPLY_TOOL)])).toEqual([]);
+  });
+
+  test("anything else beside it, and it stays", () => {
+    expect(
+      withoutLoneSilenceTool([t(SKIP_REPLY_TOOL), t("cep")]).map((x) => x.name),
+    ).toEqual([SKIP_REPLY_TOOL, "cep"]);
+    expect(
+      withoutLoneSilenceTool([t("cep"), t(SKIP_REPLY_TOOL)]).map((x) => x.name),
+    ).toEqual(["cep", SKIP_REPLY_TOOL]);
+  });
+
+  test("a lone tool that is somebody else's is not ours to remove", () => {
+    expect(withoutLoneSilenceTool([t("cep")]).map((x) => x.name)).toEqual([
+      "cep",
+    ]);
+  });
+
+  test("an empty toolset stays empty", () => {
+    expect(withoutLoneSilenceTool([])).toEqual([]);
+  });
+
+  // The pair, again as one obligation: what the drop leaves is what the directive may ask for.
+  test("what the drop leaves is what the channel answers", () => {
+    const granted = withFollowupSilenceChannel({
+      nativeToolsAllow: [] as string[],
+    });
+    const built = withoutLoneSilenceTool([{ name: SKIP_REPLY_TOOL }]);
+    expect(followupSilenceChannel(granted, built)).toBe("sentinel");
+    const withOther = withoutLoneSilenceTool([
+      { name: SKIP_REPLY_TOOL },
+      { name: "cep" },
+    ]);
+    expect(followupSilenceChannel(granted, withOther)).toBe("tool");
+  });
+});
+
 describe("skipReplyRan — the ACK is the identity, not the name", () => {
   const msg = (name: string, content: string) =>
     new ToolMessage({ content, tool_call_id: "c1", name });
@@ -395,53 +440,34 @@ describe("withFollowupSilenceChannel", () => {
     ).toBe(allow);
   });
 
-  // Review round 7. Revoking EVERY tool is how a tool-less deployment is configured (a plain chat
-  // model, or an `openai-compatible` endpoint that answers 400 to any function schema). Forcing one
-  // tool back in would make every follow-up call `bindTools` and fail at the provider — a token that
-  // leaks traded for a follow-up that never runs.
-  test("an agent that revoked every tool keeps zero", () => {
-    const cfg = { nativeToolsAllow: [] as string[] };
-    expect(withFollowupSilenceChannel(cfg)).toBe(cfg);
+  // Review round 12. Granting used to be gated on whether any source was CONFIGURED, which is not
+  // the same question as whether any tool gets BUILT. The gate is gone: this grants, and the
+  // assembled list decides (`withoutLoneSilenceTool`).
+  test("natives revoked is no longer a reason to withhold the channel", () => {
+    expect(
+      withFollowupSilenceChannel({ nativeToolsAllow: [] as string[] })
+        .nativeToolsAllow,
+    ).toEqual([SKIP_REPLY_TOOL]);
   });
 
-  // Review round 10. `nativeToolsAllow: []` revokes the NATIVES; every other source is assembled
-  // independently, so an agent with one HTTP tool and no natives already binds a schema on every
-  // reactive turn. Left on the sentinel it kept persisting `[[SKIP]]` in the shared thread — the
-  // source this PR removes, alive for a whole class of agent. One row per source, because a check
-  // that forgets one is exactly how this came back.
-  const sources: Array<[string, Partial<FollowupSilenceConfig>]> = [
-    ["an HTTP tool", { httpToolDefs: [{ name: "cep" }] }],
-    ["an MCP server", { mcpSelections: [{ connectionId: 1n }] }],
-    ["a toolpack", { integrationSelections: [{ catalogType: "x" }] }],
-    ["a document template", { documentSelections: [{ slug: "recibo" }] }],
-    ["a knowledge base", { ragConfig: { knowledgeBaseIds: [1n] } }],
-  ];
-  for (const [what, extra] of sources) {
-    test(`natives revoked but ${what} is configured still gets the tool`, () => {
-      expect(
-        withFollowupSilenceChannel({
-          nativeToolsAllow: [] as string[],
-          ...extra,
-        }).nativeToolsAllow,
-      ).toEqual([SKIP_REPLY_TOOL]);
-    });
-  }
-
-  test("an empty source is not a source", () => {
+  // ...with one exception, and it is about somebody else's property. `toolDefinitionCreateSchema`
+  // reserves no native name, and `dropDuplicateToolNames` puts natives FIRST — so granting ours to
+  // an agent that runs a custom HTTP tool under this name would evict theirs from every follow-up.
+  test("an operator's own tool keeps the name, and the agent keeps the sentinel", () => {
     const cfg = {
       nativeToolsAllow: [] as string[],
-      httpToolDefs: [],
-      mcpSelections: [],
-      integrationSelections: [],
-      documentSelections: [],
-      ragConfig: { knowledgeBaseIds: [] },
+      httpToolDefs: [{ name: SKIP_REPLY_TOOL }],
     };
     expect(withFollowupSilenceChannel(cfg)).toBe(cfg);
   });
 
-  test("an undefined allowlist already means every tool", () => {
-    const cfg = { nativeToolsAllow: undefined };
-    expect(withFollowupSilenceChannel(cfg)).toBe(cfg);
+  test("a custom tool under any OTHER name is no obstacle", () => {
+    expect(
+      withFollowupSilenceChannel({
+        nativeToolsAllow: [] as string[],
+        httpToolDefs: [{ name: "cep" }],
+      }).nativeToolsAllow,
+    ).toEqual([SKIP_REPLY_TOOL]);
   });
 
   // Granting is only half. A precondition on the tool is fail-closed and refuses the very call the

@@ -24,7 +24,9 @@ import {
   customerFacingReply,
   followupSilenceChannel,
   proactiveReply,
+  SKIP_REPLY_TOOL,
   withFollowupSilenceChannel,
+  withoutLoneSilenceTool,
 } from "@/graph/silence";
 import { ToolFlowLogger } from "@/graph/tool-flowlog";
 import {
@@ -203,6 +205,13 @@ export function applyToolMocks(
   mocks: Record<string, string> | undefined,
 ): StructuredToolInterface[] {
   const names = new Set(Object.keys(mocks ?? {}));
+  // THE PROTOCOL TOOL IS NOT THE OPERATOR'S TO MOCK, the same exemption and the same reason
+  // `buildSimulatedNativeTools` already makes for it: its RETURN is the whole tool. The runtime
+  // recognises silence by that acknowledgement (`skipReplyRan`), so a canned result under this name
+  // is not read as a decision to stay quiet — the graph asks the model again and the simulation
+  // writes a follow-up production would have stayed silent on, which is the one decision the
+  // playground exists to show (round 12).
+  names.delete(SKIP_REPLY_TOOL);
   if (names.size === 0) return tools;
   return tools.map((tl) =>
     names.has(tl.name)
@@ -339,6 +348,11 @@ async function buildPlaygroundGraph(params: {
     dropped: number;
     tokens: number;
   }) => void;
+  // This build is for a simulated FOLLOW-UP, whose config was widened with the silence channel. Only
+  // that path may take the protocol tool back out when it turns out to be the whole toolset — on a
+  // reactive turn an agent granted `skip_reply` and nothing else is the operator's own choice, and
+  // it is how their agent answers "ok" with silence.
+  silenceProtocol?: boolean;
 }) {
   const { ctx, agentId, threadId, base } = params;
   const tenantId = ctx.tenantId as bigint;
@@ -359,10 +373,19 @@ async function buildPlaygroundGraph(params: {
     flow: params.flow,
   });
   const toolMocks = params.overrides?.toolMocks;
-  const tools = applyToolMocks(rawTools, toolMocks);
+  const tools = params.silenceProtocol
+    ? // Same rule production applies, on the same list: a toolset that is nothing but the protocol
+      // tool belongs to an agent that is tool-less in practice, and binding it here would simulate a
+      // follow-up production never runs.
+      withoutLoneSilenceTool(applyToolMocks(rawTools, toolMocks))
+    : applyToolMocks(rawTools, toolMocks);
   // Trace labels: which tool names are mocked (operator) vs simulated (conversation natives that the
   // agent actually has, minus any the operator mocked — the mock takes precedence).
-  const mockedNames = new Set(Object.keys(toolMocks ?? {}));
+  // `skip_reply` is never among them: `applyToolMocks` refuses it, and a label saying otherwise
+  // would tell the operator a mock applied that did not.
+  const mockedNames = new Set(
+    Object.keys(toolMocks ?? {}).filter((n) => n !== SKIP_REPLY_TOOL),
+  );
   const toolNames = new Set(tools.map((tl) => tl.name));
   const simulatedNames = new Set(
     [
@@ -549,6 +572,7 @@ export async function runPlaygroundTurn(
       turnId,
       flow,
       loaded: loadedConfig,
+      silenceProtocol: true,
       onModelRetry: ({ attempt, provider, model }) =>
         emitFlowEvent(flow, {
           stage: "generate",
@@ -986,6 +1010,7 @@ export async function runPlaygroundFollowup(
       turnId,
       flow,
       loaded: loadedConfig,
+      silenceProtocol: true,
       onModelRetry: ({ attempt, provider, model }) =>
         emitFlowEvent(flow, {
           stage: "generate",

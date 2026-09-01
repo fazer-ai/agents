@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { ToolMessage } from "@langchain/core/messages";
+import { SKIP_REPLY_TOOL, skipReplyRan } from "@/graph/silence";
 import { buildSimulatedNativeTools } from "@/graph/tools/native";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { applyToolMocks } from "@/modules/playground/service";
@@ -87,5 +89,39 @@ describe("applyToolMocks (P4)", () => {
     const untouched = applyToolMocks(base, {});
     const calc2 = untouched.find((t) => t.name === "calculator");
     expect(String(await calc2?.invoke({ expression: "2 + 2" }))).toContain("4");
+  });
+
+  // Round 12, and the same exemption as the test at the top of this block, one layer over. The
+  // runtime recognises silence by this tool's own acknowledgement (`skipReplyRan`), so a canned
+  // result under its name is not a decision to stay quiet: the graph asks the model again and the
+  // simulation writes a follow-up production would have suppressed. The protocol is not the
+  // operator's to mock.
+  test("a mock on skip_reply is refused; its neighbours still take one", async () => {
+    const base = buildSimulatedNativeTools(
+      { client: explodingClient, conversationId: 0 },
+      [SKIP_REPLY_TOOL, "calculator"],
+    );
+    const mocked = applyToolMocks(base, {
+      [SKIP_REPLY_TOOL]: "vou responder sim",
+      calculator: "MOCKED RESULT",
+    });
+    const skip = mocked.find((t) => t.name === SKIP_REPLY_TOOL);
+    const out = String(await skip?.invoke({}));
+    expect(out).not.toBe("vou responder sim");
+    expect(
+      skipReplyRan(
+        new ToolMessage({
+          content: out,
+          tool_call_id: "c1",
+          name: SKIP_REPLY_TOOL,
+        }),
+      ),
+    ).toBe(true);
+    // Positive control: the mock machinery still works, so the assertion above is about the
+    // exemption and not about mocks having quietly stopped applying.
+    const calc = mocked.find((t) => t.name === "calculator");
+    expect(String(await calc?.invoke({ expression: "2 + 2" }))).toBe(
+      "MOCKED RESULT",
+    );
   });
 });

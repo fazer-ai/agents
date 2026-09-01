@@ -3635,6 +3635,70 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(s.notes).toEqual([]);
   });
 
+  // Round 12, and it is the WIRING of the rule, not the rule: `tests/graph/silence.test.ts` proves
+  // `withoutLoneSilenceTool` in isolation, and this proves the follow-up applies it.
+  //
+  // The defect it stands on: granting the channel used to be gated on whether a source was
+  // CONFIGURED, and a source can be configured and yield nothing (an MCP server that is down). The
+  // grant then handed a lone function schema to an endpoint that had been running tool-less on the
+  // sentinel, and the whole follow-up fails at the provider — a token that leaks traded for a
+  // follow-up that never runs. The model here IS such an endpoint: `bindTools` throws.
+  test("a tool-less agent's follow-up binds nothing and stays silent", async () => {
+    await seedConv(9074, null);
+    const agent = await suDb.agent.findFirstOrThrow({
+      where: { tenantId },
+      select: { id: true },
+    });
+    // A NATIVE grant row with an empty list is how "every native revoked" is really configured — the
+    // absence of a row means ALL of them, so writing settings would have configured nothing.
+    const grant = await suDb.agentToolSelection.create({
+      data: {
+        tenantId,
+        agentId: agent.id,
+        source: "NATIVE",
+        enabledTools: [],
+        knowledgeBaseIds: [],
+      },
+      select: { id: true },
+    });
+    const s = stub();
+    let bound = 0;
+    class SchemaRefusingModel extends BaseChatModel {
+      _llmType() {
+        return "schema-refusing";
+      }
+      override bindTools(_tools: unknown): never {
+        bound++;
+        throw new Error("400 this endpoint does not support function calling");
+      }
+      async _generate(): Promise<ChatResult> {
+        const text = FOLLOWUP_SKIP_SENTINEL;
+        return {
+          generations: [{ text, message: new AIMessage(text) }],
+        };
+      }
+    }
+    try {
+      const outcome = await runAgentNudge({
+        tenantId,
+        threadId: `${tenantId}:${instanceId}:9074`,
+        nudge: { source: "followup", kind: "inactivity" },
+        base: appDb,
+        deps: {
+          makeModel: () => new SchemaRefusingModel({}),
+          makeClient: s.makeClient,
+          checkpointer: new MemorySaver(),
+          persistUsage: async () => {},
+        },
+      });
+      expect(bound).toBe(0);
+      expect(outcome).toBe("silent");
+      expect(s.messages).toEqual([]);
+    } finally {
+      await suDb.agentToolSelection.delete({ where: { id: grant.id } });
+    }
+  });
+
   test("narrated-emptiness reply does not leak to the customer", async () => {
     await seedConv(905, null);
     const s = stub();

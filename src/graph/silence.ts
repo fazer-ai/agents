@@ -123,31 +123,13 @@ export function proactiveReply(raw: string): CustomerFacingReply {
   };
 }
 
-// What deciding the channel needs to read. Only the tool SOURCES: whether each one yields a tool is
-// `buildToolset`'s answer, and `followupSilenceChannel` asks it directly of the assembled list.
+// What granting the channel needs to read. Which tools a source actually YIELDS is `buildToolset`'s
+// answer and nothing here can anticipate it — `withoutLoneSilenceTool` asks the assembled list
+// instead, afterwards.
 export interface FollowupSilenceConfig {
   nativeToolsAllow?: string[];
   toolPreconditions?: Record<string, unknown>;
-  httpToolDefs?: unknown[];
-  mcpSelections?: unknown[];
-  integrationSelections?: unknown[];
-  documentSelections?: unknown[];
-  ragConfig?: { knowledgeBaseIds?: unknown[] };
-}
-
-// Whether ANY source would put a tool in this turn's toolset, native or not. A CONFIGURED source is
-// the question, not an assembled one: this runs before `buildToolset` and its answer decides whether
-// the tool is granted at all. The two can differ in one direction only — a source configured that
-// yields nothing (an MCP server that is down) — and `followupSilenceChannel` catches that afterwards
-// by reading the toolset that actually got built, which is why the grant may be generous here.
-function configuresAnyTool(cfg: FollowupSilenceConfig): boolean {
-  return (
-    (cfg.httpToolDefs?.length ?? 0) > 0 ||
-    (cfg.mcpSelections?.length ?? 0) > 0 ||
-    (cfg.integrationSelections?.length ?? 0) > 0 ||
-    (cfg.documentSelections?.length ?? 0) > 0 ||
-    (cfg.ragConfig?.knowledgeBaseIds?.length ?? 0) > 0
-  );
+  httpToolDefs?: { name: string }[];
 }
 
 // The follow-up's silence CHANNEL, as one rule rather than one copy per caller.
@@ -162,20 +144,18 @@ export function withFollowupSilenceChannel<T extends FollowupSilenceConfig>(
   cfg: T,
 ): T {
   let out = cfg;
-  // AN AGENT WITH NO TOOLS AT ALL IS LEFT ALONE, and that is not an oversight. A toolset that is
-  // empty is how a tool-less deployment is configured — a plain chat model, or an
-  // `openai-compatible` endpoint that answers 400 to any function schema. Forcing one tool back in
-  // would make every follow-up call `bindTools` and fail at the provider, trading a token that leaks
-  // for a follow-up that never runs. Those agents keep the sentinel as their silence channel;
-  // `renderNudge` asks for whichever one they have.
-  //
-  // EMPTY MEANS EVERY SOURCE, not `nativeToolsAllow` alone, and round 10 of review is why: revoking
-  // the natives disables exactly the natives, while HTTP, MCP, toolpack, document and RAG tools are
-  // assembled independently (`buildToolset`). An agent with an HTTP tool and no natives already
-  // binds a schema on every reactive turn, so the provider argument above does not apply to it — and
-  // keying on the native list alone left that agent on the sentinel, persisting `[[SKIP]]` in the
-  // shared thread: the exact source this PR exists to remove, kept alive for a whole class of agent.
-  if (out.nativeToolsAllow?.length === 0 && !configuresAnyTool(out)) return out;
+  // THE NAME IS NOT TAKEN FROM A TOOL THE OPERATOR ALREADY HAS. `toolDefinitionCreateSchema` reserves
+  // no native names, so an agent with natives revoked can legitimately run a custom HTTP tool called
+  // `skip_reply` — and `dropDuplicateToolNames` puts natives FIRST, so granting ours would evict
+  // theirs from every follow-up turn. A tool the operator built, silently gone, to install a channel
+  // they never asked for. Those agents keep the sentinel.
+  if (out.httpToolDefs?.some((d) => d.name === SKIP_REPLY_TOOL)) return out;
+  // NOTHING ELSE IS ASKED HERE, and round 12 is why. Granting used to be gated on whether any source
+  // was CONFIGURED, which is not the same question as whether any tool gets BUILT: an MCP server
+  // that is down is configured and yields nothing, and the grant then handed a lone function schema
+  // to an endpoint that had been running tool-less on the sentinel — the whole follow-up fails at
+  // the provider instead of one token leaking. Only the assembled list can answer that, so it is
+  // answered there (`withoutLoneSilenceTool`) and this grants freely.
   // GRANTED. undefined ⇒ every native tool is allowed, so there is nothing to widen.
   if (out.nativeToolsAllow && !out.nativeToolsAllow.includes(SKIP_REPLY_TOOL)) {
     out = {
@@ -251,4 +231,20 @@ export function skipReplyRan(m: {
 }): boolean {
   if (m.getType() !== "tool" || m.name !== SKIP_REPLY_TOOL) return false;
   return contentToText(m.content).trimStart().startsWith(SKIP_REPLY_ACK);
+}
+
+// OUR PROTOCOL TOOL IS NEVER THE ONLY TOOL A FOLLOW-UP BINDS, asked of the toolset that was actually
+// built. A list holding nothing but `skip_reply` means every other source yielded nothing, so this
+// agent is tool-less in practice — and a tool-less deployment is a real configuration (a plain chat
+// model, or an `openai-compatible` endpoint that answers 400 to any function schema). Binding one
+// no-op tool there trades a token that leaks for a follow-up that never runs, so the tool comes back
+// out and `followupSilenceChannel` then answers `sentinel` on its own.
+//
+// FOLLOW-UP ONLY, and the scope is the point: an operator who granted `skip_reply` and nothing else
+// gets exactly that on a REACTIVE turn, which is how their agent answers "ok" and "obrigado" with
+// silence. This rule belongs to the path that adds the tool, not to every path that binds one.
+export function withoutLoneSilenceTool<T extends { name: string }>(
+  tools: T[],
+): T[] {
+  return tools.length === 1 && tools[0]?.name === SKIP_REPLY_TOOL ? [] : tools;
 }

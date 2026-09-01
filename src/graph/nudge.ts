@@ -70,6 +70,7 @@ import {
   isNudgeSilent,
   proactiveReply,
   withFollowupSilenceChannel,
+  withoutLoneSilenceTool,
 } from "./silence";
 
 export { FOLLOWUP_SKIP_SENTINEL, isNudgeSilent };
@@ -874,24 +875,30 @@ export async function runAgentNudge(
   // silence channel, which is the leak above; leaving it revocable now would leave the model with no
   // channel at all, and a follow-up with nothing to say would have to say something.
   const nudgeCfg: AgentConfig = withFollowupSilenceChannel(cfg);
-  const tools = await buildToolset(
-    nudgeCfg,
-    {
-      tenantId,
-      instanceId,
-      base,
-      client,
-      conversationId,
-      threadId: params.threadId,
-      // NOTE: The live probe's answer where this path has one, the mirror's otherwise. resolve_conversation
-      // runs immediately on a nudge turn (no turnState), so this is what tells its close apart from
-      // one that had already happened — but only as a FALLBACK: this snapshot is taken before
-      // `graph.invoke`, and the tool fires during a model call that can run for a minute, so the
-      // tool re-reads the live state itself and falls back here only when that read fails.
-      observed: { status: loaded.status, statusAt: loaded.statusAt },
-      handoffState,
-    },
-    { buildNativeTools, mcp: params.deps?.mcp, flow },
+  // ...and taken back out when it turns out to be the whole toolset: an agent whose other sources
+  // yielded nothing is tool-less in practice, and binding one no-op tool at a provider that refuses
+  // schemas costs the entire follow-up (round 12). `followupSilenceChannel` then reads `sentinel`
+  // off this same list, so the directive and the binding cannot disagree.
+  const tools = withoutLoneSilenceTool(
+    await buildToolset(
+      nudgeCfg,
+      {
+        tenantId,
+        instanceId,
+        base,
+        client,
+        conversationId,
+        threadId: params.threadId,
+        // NOTE: The live probe's answer where this path has one, the mirror's otherwise. resolve_conversation
+        // runs immediately on a nudge turn (no turnState), so this is what tells its close apart from
+        // one that had already happened — but only as a FALLBACK: this snapshot is taken before
+        // `graph.invoke`, and the tool fires during a model call that can run for a minute, so the
+        // tool re-reads the live state itself and falls back here only when that read fails.
+        observed: { status: loaded.status, statusAt: loaded.statusAt },
+        handoffState,
+      },
+      { buildNativeTools, mcp: params.deps?.mcp, flow },
+    ),
   );
 
   // 3. Model + graph + callbacks (node="nudge").

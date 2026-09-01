@@ -16,6 +16,10 @@ import {
   withoutLoneSilenceTool,
 } from "@/graph/silence";
 import { buildNativeTools } from "@/graph/tools/native";
+import {
+  PRECONDITION_REFUSED,
+  wasPreconditionRefused,
+} from "@/graph/tools/precondition";
 import { unmetPreconditionMessage } from "@/modules/agents/tool-preconditions";
 
 const S = FOLLOWUP_SKIP_SENTINEL;
@@ -345,6 +349,26 @@ describe("skipReplyRan — the ACK is the identity, not the name", () => {
     });
     expect(refusal).toContain(SKIP_REPLY_TOOL);
     expect(skipReplyRan(msg(SKIP_REPLY_TOOL, refusal))).toBe(false);
+  });
+
+  // The refusal marker the batch reader needs: `graph.ts` asks whether a COMPANION tool ran, and a
+  // precondition refusal looks like an ordinary result to everything else on purpose.
+  test("a refusal carries a marker a reader can find, without a failure status", () => {
+    const m = new ToolMessage({
+      content: "x",
+      tool_call_id: "c1",
+      name: "react_to_message",
+      additional_kwargs: { [PRECONDITION_REFUSED]: true },
+    });
+    expect(wasPreconditionRefused(m)).toBe(true);
+    // NOT a failure status: the flow log reads that to decide warn/error, and a rule doing its job
+    // must not page.
+    expect(m.status).not.toBe("error");
+    expect(
+      wasPreconditionRefused(
+        new ToolMessage({ content: "x", tool_call_id: "c1" }),
+      ),
+    ).toBe(false);
   });
 
   test("another tool's result is not silence, whatever it says", () => {

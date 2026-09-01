@@ -3,6 +3,7 @@ import {
   AIMessage,
   type BaseMessage,
   SystemMessage,
+  type ToolMessage,
 } from "@langchain/core/messages";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import {
@@ -24,6 +25,7 @@ import {
 import { countMessageTokens } from "@/graph/token-count";
 import { USAGE_MODEL_METADATA_KEY } from "@/graph/usage";
 import { skipReplyRan } from "./silence";
+import { wasPreconditionRefused } from "./tools/precondition";
 
 // The second provider as the graph needs it: the built model plus the two labels that name it on
 // the usage row and the flow trail. Built and bounded by `prepare.buildModelAndGraph`; the node only
@@ -120,6 +122,7 @@ function lastBatch(history: BaseMessage[]): {
 } {
   let sawTool = false;
   let skipped = false;
+  let companionFailed = false;
   // The CONTIGUOUS batch, not the last message: a model can emit parallel calls (`skip_reply`
   // alongside `react_to_message`, which is the documented way to answer with a reaction alone), and
   // whichever result lands last is an ordering accident. Returning on the first `ToolMessage` read
@@ -134,10 +137,23 @@ function lastBatch(history: BaseMessage[]): {
       // end the turn with no text where the customer is waiting for one. `skipReplyRan` recognises
       // our no-op and nothing else, so anything unrecognised falls through to "answer them".
       if (skipReplyRan(m as Parameters<typeof skipReplyRan>[0])) skipped = true;
+      // ...AND THE COMPANION HAS TO HAVE HAPPENED. `skip_reply` beside `react_to_message` is the
+      // documented way to answer with a reaction alone, so the reaction IS the reply — and when it
+      // failed or was refused, ending the turn on the skip leaves the customer with nothing at all.
+      // The model has to see that result and decide again, which is what every other failed tool
+      // call already gets.
+      else if (
+        (m as ToolMessage).status === "error" ||
+        wasPreconditionRefused(m as ToolMessage)
+      ) {
+        companionFailed = true;
+      }
       continue;
     }
     // The batch ends at the AI message that requested it — anything before is an earlier round.
-    if (sawTool) return { skipped, caller: m ?? null };
+    if (sawTool) {
+      return { skipped: skipped && !companionFailed, caller: m ?? null };
+    }
     if (t === "human") return { skipped: false, caller: null };
   }
   return { skipped: false, caller: null };
@@ -179,6 +195,25 @@ function silenceNarration(history: BaseMessage[]): BaseMessage[] {
       ...(ai.name ? { name: ai.name } : {}),
     }),
   ];
+}
+
+// An assistant turn that said nothing and did nothing, which is what a silent turn leaves behind —
+// the terminal marker below, and, before this file ever wrote one, the empty message a model returns
+// when it is told to produce none. It carries no information for the next turn, and it is not free
+// to keep: `@langchain/anthropic` renders string content as a text block, and Anthropic refuses a
+// text block that is empty ("text content blocks must be non-empty"), so a thread that accumulated
+// one would stop answering entirely on the providers that check. Dropped from what the model is
+// SENT, never from the channel — the marker is what keeps `lastAssistantText` reading "" instead of
+// the skip tool's acknowledgement, which would otherwise be delivered to the customer as the reply.
+//
+// A message with tool_calls is not this, whatever its content: it is the call, and removing it
+// orphans every `tool_call_id` after it.
+function isEmptyAssistantTurn(m: BaseMessage): boolean {
+  return (
+    m.getType() === "ai" &&
+    ((m as AIMessage).tool_calls?.length ?? 0) === 0 &&
+    contentToText(m.content).trim() === ""
+  );
 }
 
 // Applies the per-agent history ceiling, if there is one. Best-effort: trimming is an optimization
@@ -256,7 +291,9 @@ export function buildAgentGraph({
     // system message that leaked into the history (e.g. a proactive nudge persisted as a
     // SystemMessage by an older build). Providers like Google reject a second one outright with
     // "System messages are only permitted as the first passed message".
-    const full = state.messages.filter((m) => m.getType() !== "system");
+    const full = state.messages.filter(
+      (m) => m.getType() !== "system" && !isEmptyAssistantTurn(m),
+    );
 
     // NOTE: Bound the history BEFORE the tool-call budget below, so both read the same window. The
     // window always keeps the last human message and everything after it, so the tool count is not

@@ -12,6 +12,8 @@ import { z } from "zod";
 import { buildAgentGraph } from "@/graph/graph";
 import { SKIP_REPLY_ACK, SKIP_REPLY_TOOL } from "@/graph/silence";
 import { buildThreadStateGraph } from "@/graph/thread-state";
+import { failableTool, toolFailure } from "@/graph/tools/failure";
+import { guardedTool } from "@/graph/tools/precondition";
 import { unmetPreconditionMessage } from "@/modules/agents/tool-preconditions";
 
 // Records the messages handed to the model on each invoke (the only thing agentNode does with it).
@@ -451,6 +453,244 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     expect(
       messages.filter((m) => JSON.stringify(m.content).includes("verificar")),
     ).not.toEqual([]);
+  });
+
+  // Round 17. `skip_reply` beside `react_to_message` is the documented way to answer with a reaction
+  // ALONE — so the reaction IS the reply, and when it fails, ending the turn on the skip leaves the
+  // customer with nothing at all. The model has to see that result and decide again, which is what
+  // every other failed tool call already gets.
+  test("a companion tool that FAILED keeps the turn going", async () => {
+    const skipTool = tool(
+      async () => `${SKIP_REPLY_ACK}. Produce no message now.`,
+      { name: SKIP_REPLY_TOOL, description: "skip", schema: z.object({}) },
+    );
+    const reactTool = failableTool(
+      async () => toolFailure("could not react: the message is a reaction"),
+      { name: "react_to_message", description: "react", schema: z.object({}) },
+    );
+    class SkipsWithABrokenReaction {
+      rounds = 0;
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("");
+      }
+      bindTools(_tools: unknown) {
+        const self = this;
+        return {
+          async invoke(): Promise<AIMessage> {
+            self.rounds++;
+            if (self.rounds === 1) {
+              return new AIMessage({
+                content: "",
+                tool_calls: [
+                  { name: "react_to_message", args: {}, id: "c1" },
+                  { name: SKIP_REPLY_TOOL, args: {}, id: "c2" },
+                ],
+              });
+            }
+            return new AIMessage("Recebido, obrigado!");
+          },
+        };
+      }
+    }
+    const model = new SkipsWithABrokenReaction();
+    const graph = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
+      model: model as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer: new MemorySaver(),
+      tools: [skipTool, reactTool],
+      maxToolCalls: 10,
+    });
+    const result = await graph.invoke(
+      { messages: [new HumanMessage("👍")] },
+      { configurable: { thread_id: "companion-failed" } },
+    );
+    expect(model.rounds).toBe(2);
+    expect(String(result.messages.at(-1)?.content ?? "")).toBe(
+      "Recebido, obrigado!",
+    );
+  });
+
+  // ...and a companion the operator's own rule REFUSED is the same thing to the customer: the
+  // reaction did not happen, so ending on the skip leaves them with nothing. A refusal is not a
+  // failure — it carries no error status, deliberately, so it never pages — which is why it carries
+  // a marker instead.
+  test("a companion tool that was REFUSED keeps the turn going", async () => {
+    const skipTool = tool(
+      async () => `${SKIP_REPLY_ACK}. Produce no message now.`,
+      { name: SKIP_REPLY_TOOL, description: "skip", schema: z.object({}) },
+    );
+    const reactTool = guardedTool(
+      tool(async () => "reacted with 👍", {
+        name: "react_to_message",
+        description: "react",
+        schema: z.object({}),
+      }),
+      { kind: "attribute", scope: "conversation", key: "cpf" },
+      // No attributes at all, so the condition is unmet.
+      async () => ({ conversationAttributes: {}, contactAttributes: {} }),
+    );
+    class SkipsWithARefusedReaction {
+      rounds = 0;
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("");
+      }
+      bindTools(_tools: unknown) {
+        const self = this;
+        return {
+          async invoke(): Promise<AIMessage> {
+            self.rounds++;
+            if (self.rounds === 1) {
+              return new AIMessage({
+                content: "",
+                tool_calls: [
+                  { name: "react_to_message", args: {}, id: "c1" },
+                  { name: SKIP_REPLY_TOOL, args: {}, id: "c2" },
+                ],
+              });
+            }
+            return new AIMessage("Me confirma seu CPF?");
+          },
+        };
+      }
+    }
+    const model = new SkipsWithARefusedReaction();
+    const graph = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
+      model: model as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer: new MemorySaver(),
+      tools: [skipTool, reactTool],
+      maxToolCalls: 10,
+    });
+    const result = await graph.invoke(
+      { messages: [new HumanMessage("👍")] },
+      { configurable: { thread_id: "companion-refused" } },
+    );
+    expect(model.rounds).toBe(2);
+    expect(String(result.messages.at(-1)?.content ?? "")).toBe(
+      "Me confirma seu CPF?",
+    );
+  });
+
+  // The control: the SAME batch with a reaction that worked ends silent, which is the documented
+  // shape. Without it the test above would pass on a rule that had simply stopped being terminal.
+  test("a companion tool that SUCCEEDED still ends the turn", async () => {
+    const skipTool = tool(
+      async () => `${SKIP_REPLY_ACK}. Produce no message now.`,
+      { name: SKIP_REPLY_TOOL, description: "skip", schema: z.object({}) },
+    );
+    const reactTool = tool(async () => "reacted with 👍", {
+      name: "react_to_message",
+      description: "react",
+      schema: z.object({}),
+    });
+    class SkipsWithAReaction {
+      rounds = 0;
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("nunca deveria falar");
+      }
+      bindTools(_tools: unknown) {
+        const self = this;
+        return {
+          async invoke(): Promise<AIMessage> {
+            self.rounds++;
+            return new AIMessage({
+              content: "",
+              tool_calls: [
+                { name: "react_to_message", args: {}, id: "c1" },
+                { name: SKIP_REPLY_TOOL, args: {}, id: "c2" },
+              ],
+            });
+          },
+        };
+      }
+    }
+    const model = new SkipsWithAReaction();
+    const graph = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
+      model: model as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer: new MemorySaver(),
+      tools: [skipTool, reactTool],
+      maxToolCalls: 10,
+    });
+    const result = await graph.invoke(
+      { messages: [new HumanMessage("👍")] },
+      { configurable: { thread_id: "companion-ok" } },
+    );
+    expect(model.rounds).toBe(1);
+    expect(String(result.messages.at(-1)?.content ?? "")).toBe("");
+  });
+
+  // Round 17, the other half. The terminal marker is an EMPTY assistant message, and it stays in the
+  // channel on purpose — it is what keeps `lastAssistantText` reading "" instead of the skip tool's
+  // acknowledgement, which would otherwise go to the customer as the reply. What it must not do is
+  // reach the provider: `@langchain/anthropic` renders string content as a text block and Anthropic
+  // refuses an empty one, so a thread that accumulated one would stop answering entirely.
+  test("the empty turn stays in the channel and never reaches the model", async () => {
+    const skipTool = tool(
+      async () => `${SKIP_REPLY_ACK}. Produce no message now.`,
+      { name: SKIP_REPLY_TOOL, description: "skip", schema: z.object({}) },
+    );
+    const seen: number[] = [];
+    class CountsEmptyAssistantTurns {
+      round = 0;
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("");
+      }
+      bindTools(_tools: unknown) {
+        const self = this;
+        return {
+          async invoke(messages: BaseMessage[]): Promise<AIMessage> {
+            seen.push(
+              messages.filter(
+                (m) =>
+                  m.getType() === "ai" &&
+                  ((m as AIMessage).tool_calls?.length ?? 0) === 0 &&
+                  String(m.content).trim() === "",
+              ).length,
+            );
+            self.round++;
+            if (self.round === 1) {
+              return new AIMessage({
+                content: "",
+                tool_calls: [{ name: SKIP_REPLY_TOOL, args: {}, id: "c1" }],
+              });
+            }
+            return new AIMessage("Oi de novo!");
+          },
+        };
+      }
+    }
+    const checkpointer = new MemorySaver();
+    const graph = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
+      model: new CountsEmptyAssistantTurns() as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer,
+      tools: [skipTool],
+      maxToolCalls: 10,
+    });
+    const cfg = { configurable: { thread_id: "empty-turn-filtered" } };
+    await graph.invoke({ messages: [new HumanMessage("ok")] }, cfg);
+    // A SECOND customer turn on the same thread, which is where the invalid history would land.
+    await graph.invoke({ messages: [new HumanMessage("e aí?")] }, cfg);
+    // The channel kept it...
+    const state = await buildThreadStateGraph(checkpointer).getState(cfg);
+    const messages = ((state.values as { messages?: BaseMessage[] })
+      ?.messages ?? []) as BaseMessage[];
+    expect(
+      messages.filter(
+        (m) =>
+          m.getType() === "ai" &&
+          ((m as AIMessage).tool_calls?.length ?? 0) === 0 &&
+          String(m.content).trim() === "",
+      ).length,
+    ).toBeGreaterThan(0);
+    // ...and the model never saw one, on any round.
+    expect(seen.length).toBeGreaterThanOrEqual(2);
+    expect(seen).toEqual(seen.map(() => 0));
   });
 
   // Round 7: parallel tool calls. `skip_reply` alongside `react_to_message` is the documented way to

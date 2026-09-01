@@ -7,6 +7,7 @@ import {
   renderResponseTemplate,
   templateLeaves,
   templateTokens,
+  unmatchedTemplateDelimiter,
   unusableTemplateTokens,
 } from "@/modules/tool-definitions/response-template";
 import { toolDefinitionCreateSchema } from "@/modules/tool-definitions/service";
@@ -259,5 +260,36 @@ describe("templateLeaves", () => {
       expect(rendered.missing).toEqual([]);
       if (leaf.value !== "") expect(rendered.text).toBe(leaf.value);
     }
+  });
+});
+
+// Round 4 of review, finding 2. A `{{` or `}}` that is not part of a token is invisible to the token
+// scan — `{{a}` matches nothing, so it is not an unusable TOKEN, it is not a token at all — and the
+// declaration was accepted, stored, and put in front of the model verbatim.
+describe("unmatchedTemplateDelimiter", () => {
+  test.each([
+    ["Name: {{data.name}", "{{data.name}"],
+    ["Name: {data.name}}", "}}"],
+    ["ok {{a}} and {{ left over", "{{ left over"],
+    ["{{a}} }}", "}}"],
+  ])("%p is refused, pointing at %p", (template, near) => {
+    expect(unmatchedTemplateDelimiter(template)).toBe(near);
+    const read = readResponseTemplateResult({ mode: "template", template });
+    expect(read.declared && read.ok).toBe(false);
+    expect(read.declared && !read.ok ? read.problem : "").toContain(
+      "unmatched delimiter",
+    );
+  });
+
+  test.each([
+    "Name: {{data.name}}",
+    // A single brace is not this vocabulary's, so it is content and stays content.
+    'A JSON body looks like { "a": 1 }',
+    "Nothing to interpolate here.",
+    "{{a}} {{b.0.c}}",
+  ])("%p is left alone", (template) => {
+    expect(unmatchedTemplateDelimiter(template)).toBeNull();
+    const read = readResponseTemplateResult({ mode: "template", template });
+    expect(read.declared && read.ok).toBe(true);
   });
 });

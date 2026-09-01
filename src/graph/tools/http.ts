@@ -20,6 +20,7 @@ import {
   MODEL_RESPONSE_CHAR_LIMIT,
   readResponseTemplate,
   renderResponseTemplate,
+  templateTokens,
 } from "@/modules/tool-definitions/response-template";
 import { resolveSecretInjection } from "@/modules/vault/secret-types";
 import { normalizeToolName } from "./toolName";
@@ -484,6 +485,14 @@ function projectResponse(
       detail,
       err,
     });
+  // A template with no tokens says the same thing whatever the body is — "Done.", a fixed
+  // instruction — and it is a declaration the reader accepts on purpose. Rendering it needs no body,
+  // so it must not be gated on the body PARSING: the endpoint that most wants a constant answer is
+  // the one that returns 204 with nothing in it, and there the parse fails and the model was handed
+  // `HTTP 204\n` — an empty result where the operator had written the whole answer.
+  if (templateTokens(tpl.template).length === 0) {
+    return renderResponseTemplate(tpl, undefined).text;
+  }
   let body: unknown;
   try {
     body = JSON.parse(rawBody);

@@ -3,12 +3,14 @@
 import { describe, expect, test } from "bun:test";
 import {
   formFromTool,
+  outputSchemaForm,
   parseExpectedStatuses,
   payloadOf,
   type Tool,
   templatePreviewFor,
 } from "@/client/pages/resources/ToolEditModal";
 import { buildHttpTool } from "@/graph/tools/http";
+import { toolDefinitionCreateSchema } from "@/modules/tool-definitions/service";
 
 // NOTE: formFromTool is pure over its argument; these tests exercise the legacy load path without
 // rendering the modal.
@@ -262,5 +264,70 @@ describe("templatePreviewFor", () => {
     expect(preview?.text).toContain("…[truncated]");
     // Not "clipped somehow": clipped to the same string, by the same rule.
     expect(preview?.text).toBe(await runtimeText(502, big));
+  });
+});
+
+// Round 4 of review, finding 3. `outputSchema` accepted anything before this feature validated it
+// (MCP `tool_create` passed it through), so a row can hold `{mode:"template", template:42}`: a
+// declaration the reader refuses. Keeping it verbatim meant the editor showed an empty box, resent
+// the broken object on every save, and the service refinement — new in this same change — rejected
+// it. The operator could then edit nothing about that tool, and nothing said why.
+describe("outputSchemaForm", () => {
+  test("a broken template declaration is dropped, with the reader's own reason", () => {
+    const got = outputSchemaForm({ mode: "template", template: 42 });
+    expect(got.outputTemplate).toBe("");
+    // The resend is what locked the tool.
+    expect(got.outputSchemaOther).toBeNull();
+    expect(got.outputSchemaProblem).toContain("must be a string");
+  });
+
+  test("and the save that follows is one the service accepts", () => {
+    const form = formFromTool(
+      legacyTool({
+        outputSchema: { mode: "template", template: 42 },
+      } as never),
+    );
+    const sent = payloadOf(form)?.outputSchema;
+    expect(sent).toEqual({});
+    // Not this file's opinion of "accepts": the service's own schema.
+    expect(
+      toolDefinitionCreateSchema.safeParse({
+        name: "t",
+        label: "T",
+        urlTemplate: "https://api.example.com/x",
+        allowedHosts: ["api.example.com"],
+        outputSchema: sent,
+      }).success,
+    ).toBe(true);
+    expect(
+      toolDefinitionCreateSchema.safeParse({
+        name: "t",
+        label: "T",
+        urlTemplate: "https://api.example.com/x",
+        allowedHosts: ["api.example.com"],
+        outputSchema: { mode: "template", template: 42 },
+      }).success,
+    ).toBe(false);
+  });
+
+  test("a legacy JSON Schema is NOT a template declaration, and survives untouched", () => {
+    // The other side of the same fork: this one has to come back out of a save that never showed it.
+    const legacy = { type: "object", properties: { id: { type: "string" } } };
+    const got = outputSchemaForm(legacy);
+    expect(got.outputTemplate).toBe("");
+    expect(got.outputSchemaOther).toEqual(legacy);
+    expect(got.outputSchemaProblem).toBeNull();
+    const form = formFromTool(legacyTool({ outputSchema: legacy } as never));
+    expect(payloadOf(form)?.outputSchema).toEqual(legacy);
+  });
+
+  test("a readable template is the box's content and nothing is held back", () => {
+    const got = outputSchemaForm({
+      mode: "template",
+      template: "Name: {{data.name}}",
+    });
+    expect(got.outputTemplate).toBe("Name: {{data.name}}");
+    expect(got.outputSchemaOther).toBeNull();
+    expect(got.outputSchemaProblem).toBeNull();
   });
 });

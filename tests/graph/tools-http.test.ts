@@ -1315,3 +1315,88 @@ describe("response template (#456)", () => {
     expect(notes[0]?.detail).toMatchObject({ templated: true, limit: 50 });
   });
 });
+
+// Round 4 of review, finding 1. A template with no tokens says the same thing whatever the body is,
+// and the reader accepts one on purpose. Rendering it was gated on the body PARSING as JSON, so the
+// endpoint that most wants a constant answer — the one that returns 204 with nothing in it — was
+// the one that did not get it.
+describe("a response template with no tokens does not need a body", () => {
+  async function modelText(status: number, body: string | null) {
+    const tool = buildHttpTool(
+      {
+        name: "done",
+        method: "POST",
+        urlTemplate: "https://8.8.8.8/v1/x",
+        allowedHosts: ["8.8.8.8"],
+        headers: {},
+        inputSchema: {},
+        expectedStatuses: [],
+        credentialRef: null,
+        credentialKind: null,
+        credentialParamName: null,
+        credentialBaseUrl: null,
+        ackMessage: null,
+        outputSchema: {
+          mode: "template",
+          template: "Done. The booking is confirmed.",
+        },
+      },
+      {
+        resolveCredential: async () => null,
+        fetchImpl: (async () =>
+          new Response(body, { status })) as unknown as typeof fetch,
+      },
+    );
+    return String(await tool.invoke({}));
+  }
+
+  test("a 204 with no body still hands the model the operator's own text", async () => {
+    // Before this, the model got `HTTP 204\n` — an empty result where the whole answer was written.
+    expect(await modelText(204, null)).toBe(
+      "HTTP 204\nDone. The booking is confirmed.",
+    );
+  });
+
+  test.each([
+    ["plain text", "OK"],
+    ["an empty 200", ""],
+    ["JSON", '{"id":7}'],
+  ])("and so does %s", async (_label, body) => {
+    expect(await modelText(200, body)).toBe(
+      "HTTP 200\nDone. The booking is confirmed.",
+    );
+  });
+
+  test("a template WITH a token still falls back to the raw body when it is not JSON", async () => {
+    // The other half of the gate is untouched: a token needs a body to resolve against, and an
+    // empty render would be worse than the body it replaced.
+    const warns: string[] = [];
+    const tool = buildHttpTool(
+      {
+        name: "lookup",
+        method: "GET",
+        urlTemplate: "https://8.8.8.8/v1/x",
+        allowedHosts: ["8.8.8.8"],
+        headers: {},
+        inputSchema: {},
+        expectedStatuses: [],
+        credentialRef: null,
+        credentialKind: null,
+        credentialParamName: null,
+        credentialBaseUrl: null,
+        ackMessage: null,
+        outputSchema: { mode: "template", template: "Name: {{name}}" },
+      },
+      {
+        resolveCredential: async () => null,
+        onSideEffectError: (e) => warns.push(e.phase),
+        fetchImpl: (async () =>
+          new Response("not json at all", {
+            status: 200,
+          })) as unknown as typeof fetch,
+      },
+    );
+    expect(String(await tool.invoke({}))).toBe("HTTP 200\nnot json at all");
+    expect(warns).toContain("response_template");
+  });
+});

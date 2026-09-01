@@ -78,6 +78,24 @@ export function unusableTemplateTokens(template: string): string[] {
   return templateTokens(template).filter((t) => !isUsablePath(t));
 }
 
+// A `{{` or a `}}` that is not part of a token, which is a typo the token scan cannot see: `{{a}`
+// matches nothing, so it is not an unusable TOKEN, it is not a token at all. Before this, that
+// declaration was accepted, stored, and the runtime then put `Name: {{data.name}` in front of the
+// model verbatim — the same silent mis-aim as a well-formed path pointing at nothing, which is the
+// defect this whole section exists to remove.
+//
+// The rule is "what is left after the real tokens are gone", because that is the only way to tell
+// `{{a}} }}` (a token and a stray) from `{{a}}`. It costs the ability to write a literal `{{` in a
+// template, and that is the right trade: this is markdown for a model, and a stray double brace is
+// a typo far more often than it is content. Returns the offending fragment, so the message can
+// point at it rather than say "somewhere".
+export function unmatchedTemplateDelimiter(template: string): string | null {
+  const rest = template.replace(TOKEN, "");
+  const at = rest.search(/\{\{|\}\}/);
+  if (at === -1) return null;
+  return rest.slice(at, at + 24);
+}
+
 // A value the model may be shown. WIDER than the appointment reader's rule, and the difference is
 // the point: `"active": false` is an answer, and rendering it as absent would hand the model a
 // blank where the API said no. The empty string is admitted here too and handled by the renderer,
@@ -154,6 +172,12 @@ export function readResponseTemplateResult(raw: unknown): ResponseTemplateRead {
   if (bad !== null) {
     return fail(
       `outputSchema.template contains characters that cannot be stored: ${bad}`,
+    );
+  }
+  const stray = unmatchedTemplateDelimiter(template);
+  if (stray !== null) {
+    return fail(
+      `outputSchema.template has an unmatched delimiter near "${stray}"; a field is written {{path}}, and a stray {{ or }} would reach the model as literal text`,
     );
   }
   const unusable = unusableTemplateTokens(template);

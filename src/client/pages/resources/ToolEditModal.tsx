@@ -39,9 +39,10 @@ import {
 } from "@/modules/tool-definitions/normalize";
 import {
   MODEL_RESPONSE_CHAR_LIMIT,
-  readResponseTemplate,
+  readResponseTemplateResult,
   renderResponseTemplate,
   templateLeaves,
+  unmatchedTemplateDelimiter,
   unusableTemplateTokens,
 } from "@/modules/tool-definitions/response-template";
 import { ToolTestModal, type ToolTestTarget } from "./ToolTestModal";
@@ -318,6 +319,7 @@ function emptyForm() {
     // nowhere, so a row may hold a JSON Schema someone still reads back — and a form that renders
     // nothing for it would send `{}` on the next save.
     outputSchemaOther: null as Record<string, unknown> | null,
+    outputSchemaProblem: null as string | null,
     apptAction: "" as "" | "book" | "cancel",
     apptProvider: "",
     apptIdPath: "",
@@ -528,12 +530,30 @@ export function formFromTool(tool: Tool) {
 // The stored `outputSchema`, split into the part this form edits and the part it must not lose. The
 // same reader the runtime uses decides which is which, so a declaration the runtime would ignore
 // shows here as no template rather than as text in a box that does nothing.
-function outputSchemaForm(raw: unknown) {
-  const tpl = readResponseTemplate(raw);
+//
+// THREE OUTCOMES, not two, and the third is a lockout. `mode:"template"` with a template the reader
+// refuses (`{mode:"template", template:42}`, which MCP could store before this feature validated
+// the column) used to fall through to "keep it verbatim": the editor showed an empty box, resent
+// the broken object on every save, and the service refinement — new in this same change — rejected
+// it. The operator could then not edit the tool's URL, its headers, anything, and nothing on screen
+// said why. `outputSchemaOther` is for a legacy schema that is NOT a template declaration (a real
+// JSON Schema, which must survive an edit that never showed it); a declaration that IS one and is
+// broken is dropped, and `outputSchemaProblem` carries the reader's own sentence so the operator
+// reads what was discarded rather than discovering it.
+export function outputSchemaForm(raw: unknown) {
+  const read = readResponseTemplateResult(raw);
   const isBag = !!raw && typeof raw === "object" && !Array.isArray(raw);
+  if (read.declared) {
+    return {
+      outputTemplate: read.ok ? read.template : "",
+      outputSchemaOther: null as Record<string, unknown> | null,
+      outputSchemaProblem: read.ok ? null : read.problem,
+    };
+  }
   return {
-    outputTemplate: tpl?.template ?? "",
-    outputSchemaOther: tpl || !isBag ? null : (raw as Record<string, unknown>),
+    outputTemplate: "",
+    outputSchemaOther: isBag ? (raw as Record<string, unknown>) : null,
+    outputSchemaProblem: null as string | null,
   };
 }
 
@@ -1183,6 +1203,12 @@ export function ToolEditModal({
     [form.outputTemplate, sample, sampleParse, sampleStatus],
   );
   const badTemplateTokens = unusableTemplateTokens(form.outputTemplate);
+  // A `{{` or `}}` that is not part of a token: `{{a}` is not an unusable token, it is not a token,
+  // so the scan above sees nothing and the runtime would put the typo in front of the model
+  // verbatim. Same gate, because it is the same defect.
+  const strayTemplateDelimiter = unmatchedTemplateDelimiter(
+    form.outputTemplate,
+  );
   const apptIdPathInvalid = apptOn && !isUsablePath(form.apptIdPath.trim());
   const apptStartPathInvalid =
     form.apptAction === "book" && !isUsablePath(form.apptStartPath.trim());
@@ -1210,6 +1236,7 @@ export function ToolEditModal({
     !apptProviderInvalid &&
     !apptOffsetsInvalid &&
     badTemplateTokens.length === 0 &&
+    strayTemplateDelimiter === null &&
     !ackInvalid;
   // NOTE: baseline is captured on open (create defaults / loaded tool); null while never opened or
   // while the edit fetch is in flight.
@@ -1706,7 +1733,10 @@ export function ToolEditModal({
                   placeholder={
                     "**{{razao_social}}** — {{municipio}}\nSituação: {{descricao_situacao_cadastral}}"
                   }
-                  error={badTemplateTokens.length > 0}
+                  error={
+                    badTemplateTokens.length > 0 ||
+                    strayTemplateDelimiter !== null
+                  }
                   errorMessage={
                     badTemplateTokens.length > 0
                       ? t(
@@ -1718,7 +1748,13 @@ export function ToolEditModal({
                               .join(", "),
                           },
                         )
-                      : undefined
+                      : strayTemplateDelimiter !== null
+                        ? t(
+                            "tools.outputTemplateStrayBrace",
+                            'There is an unmatched brace near "{{stray}}". A field takes two braces on each side, and a stray one would reach the agent as literal text.',
+                            { stray: strayTemplateDelimiter },
+                          )
+                        : undefined
                   }
                 />
               </FormField>
@@ -1753,6 +1789,15 @@ export function ToolEditModal({
                     {templatePreview.text}
                   </pre>
                 </FormField>
+              )}
+              {form.outputSchemaProblem && (
+                <p className="-mt-2 text-warning text-xs">
+                  {t(
+                    "tools.outputTemplateDropped",
+                    "This tool had a response template stored that could not be read, so it was not applied and is not shown: {{problem}}. Saving replaces it with whatever is in the box above.",
+                    { problem: form.outputSchemaProblem },
+                  )}
+                </p>
               )}
               {templatePreview && !templatePreview.projected && (
                 <p className="-mt-2 text-warning text-xs">

@@ -2287,7 +2287,7 @@
     "testOpen": "Enviar uma requisição de teste",
     "testOpenHint": "Executa esta ferramenta uma vez contra a API real e preenche o exemplo acima com a resposta.",
     "testRun": "Enviar requisição",
-    "testSendEmpty": "Manda como vazio na requisição",
+    "testSendEmpty": "Mandar como vazio na requisição",
     "testSendEmptyHelp": "Se não marcado, o campo não é incluso na requisição. Marcado, ele vai com o texto vazio, que é como se limpa um valor no provedor.",
     "testSize": "{{chars}} caracteres",
     "testStatus": "HTTP {{status}} em {{ms}} ms",

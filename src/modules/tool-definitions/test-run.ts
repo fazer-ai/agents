@@ -246,7 +246,17 @@ export async function runToolTest(
           new DOMException("The operation was aborted.", "AbortError"),
         );
       }, deps.timeoutMs ?? DEFAULT_HTTP_TOOL_TIMEOUT_MS);
-      const res = await doFetch(url, { ...init, signal: ctrl.signal });
+      // The cleanup below hangs off the BODY promise, which does not exist yet: a fetch that
+      // rejects before returning a response (a refused connection, a TLS failure) would leave the
+      // timer, the controller and the listener alive for the whole budget, once per failed test.
+      let res: Response;
+      try {
+        res = await doFetch(url, { ...init, signal: ctrl.signal });
+      } catch (err) {
+        clearTimeout(deadline);
+        init.signal?.removeEventListener("abort", relay);
+        throw err;
+      }
       // `.catch` rather than a bare promise: when the runtime aborts, this rejects too, and an
       // unobserved rejection would be a crash rather than a refusal. The value is read only on the
       // path where the call succeeded.

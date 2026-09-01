@@ -18,6 +18,7 @@ import { normalizeToolShapes } from "@/modules/tool-definitions/normalize";
 import {
   clipToModelLimit,
   MODEL_RESPONSE_CHAR_LIMIT,
+  type ProjectedResponse,
   projectToolResponse,
 } from "@/modules/tool-definitions/response-template";
 import { resolveSecretInjection } from "@/modules/vault/secret-types";
@@ -472,7 +473,7 @@ function projectResponse(
   deps: HttpToolDeps,
   status: number,
   rawBody: string,
-): string | null {
+): ProjectedResponse {
   // The decision is `projectToolResponse`'s, in `modules/tool-definitions/response-template.ts`,
   // because the editor's preview has to make the identical one and a second copy of the rules is
   // how a preview stops being one. What is left here is the REPORTING, which is the runtime's
@@ -509,7 +510,9 @@ function projectResponse(
       { missing },
     );
   }
-  return text;
+  // The reason travels with the text, because the clip notice below has to give DIFFERENT advice
+  // depending on it: "declare a template" is wrong for a tool that has one.
+  return { text, missing, skipped };
 }
 
 export function buildHttpTool(
@@ -852,24 +855,44 @@ export function buildHttpTool(
       // cut could never have reached one. The clip below still applies to whatever comes out, as a
       // backstop — a template with many tokens, or one long value, can still overrun.
       const rendered = projectResponse(def, deps, res.status, text);
-      const modelBody = rendered ?? text;
+      const modelBody = rendered.text ?? text;
       const trimmed = clipToModelLimit(modelBody, maxChars).text;
       // The clip is otherwise invisible from both ends: the model reads `…[truncated]` as an end,
       // and the operator reads a plausible answer. Reported for a TEMPLATED response too — the
-      // first draft guarded this on `rendered === null`, reasoning that an operator whose own text
+      // first draft guarded this on "did it render", reasoning that an operator whose own text
       // overran already knows about it, and the mutation battery kept that condition alive with no
       // test able to tell either way. It is the same silent hole (the model loses the tail), so
-      // what differs is only the fix, and `templated` is what says which fix it is.
+      // what differs is only the ADVICE.
+      //
+      // And the advice needs three branches, not two, because "it did not render" covers a tool
+      // that has no template AND a tool whose template deliberately does not apply here. Telling
+      // the second one to declare a template names something it already did, for a case where a
+      // template is not the remedy.
       if (modelBody.length > maxChars) {
-        const templated = rendered !== null;
+        const templated = rendered.text !== null;
+        const advice =
+          rendered.skipped === null
+            ? "shorten it or point it at fewer fields"
+            : rendered.skipped === "no-template"
+              ? "declare a response template so it gets the fields you want instead of the beginning of the body"
+              : rendered.skipped === "not-2xx"
+                ? "this tool's response template does not apply outside 2xx, where the body is the error the model has to read"
+                : "this tool's response template could not be applied because the body is not JSON";
         deps.onSideEffectError?.({
           tool: def.name,
           phase: "response_clipped",
-          detail: { chars: modelBody.length, limit: maxChars, templated },
+          detail: {
+            chars: modelBody.length,
+            limit: maxChars,
+            templated,
+            ...(rendered.skipped ? { skipped: rendered.skipped } : {}),
+          },
           err: new Error(
-            templated
-              ? `the response template rendered ${modelBody.length} characters and the model was given the first ${maxChars}; shorten it or point it at fewer fields`
-              : `the response was ${modelBody.length} characters and the model was given the first ${maxChars}; declare a response template so it gets the fields you want instead of the beginning of the body`,
+            `${
+              templated
+                ? `the response template rendered ${modelBody.length} characters`
+                : `the response was ${modelBody.length} characters`
+            } and the model was given the first ${maxChars}; ${advice}`,
           ),
         });
       }

@@ -788,3 +788,35 @@ test("a body far larger than memory allows is never retained whole", async () =>
   // between them with an order of magnitude on either side.
   expect(got.grew).toBeLessThan(50 * 1024 * 1024);
 }, 180_000);
+
+// Round 12 of review, finding 1. The cleanup hangs off the BODY promise, which does not exist when
+// the fetch itself rejects — a refused connection, a TLS failure — so each failed test left its
+// timer, controller and listener alive for the whole budget.
+test("a fetch that rejects leaves no timer behind", async () => {
+  const script = `
+    import { runToolTest } from "@/modules/tool-definitions/test-run";
+    const ctx = { tenantId: 1n, userId: null, role: "TENANT_ADMIN" };
+    const def = { method: "GET", urlTemplate: "https://8.8.8.8/v1/x", allowedHosts: ["8.8.8.8"], inputSchema: {} };
+    // Twenty refused connections under a bound far longer than this process will live.
+    for (let i = 0; i < 20; i++) {
+      await runToolTest(ctx, { definition: def }, {}, {
+        timeoutMs: 600_000,
+        fetchImpl: async () => { throw new Error("connection refused"); },
+      }).catch(() => {});
+    }
+    // If the deadlines were still armed the loop would hold the process open; exiting on its own is
+    // the observable. Printed so a hang is told apart from a crash.
+    console.log("EXITED_CLEANLY");
+  `;
+  const started = Date.now();
+  const proc = Bun.spawn(["bun", "-e", script], {
+    cwd: process.cwd(),
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const out = await new Response(proc.stdout).text();
+  await proc.exited;
+  expect(out).toContain("EXITED_CLEANLY");
+  // Ten minutes of armed timers would have kept it alive; it comes back in seconds.
+  expect(Date.now() - started).toBeLessThan(30_000);
+}, 60_000);

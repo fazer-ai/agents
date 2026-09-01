@@ -1400,3 +1400,95 @@ describe("a response template with no tokens does not need a body", () => {
     expect(warns).toContain("response_template");
   });
 });
+
+// Round 12 of review, finding 2. The clip notice used to have two branches — rendered or not — and
+// "not rendered" covers a tool with NO template and a tool whose template deliberately does not
+// apply here. The second one was being told to declare a template it already has, for a case where
+// a template is not the remedy.
+describe("the clip notice says which fix applies", () => {
+  async function clipNoticeFor(opts: {
+    status?: number;
+    body: string;
+    template?: string;
+  }) {
+    const notices: { message: string; detail?: Record<string, unknown> }[] = [];
+    const tool = buildHttpTool(
+      {
+        name: "t",
+        method: "GET",
+        urlTemplate: "https://8.8.8.8/v1/x",
+        allowedHosts: ["8.8.8.8"],
+        headers: {},
+        inputSchema: {},
+        expectedStatuses: [opts.status ?? 200],
+        credentialRef: null,
+        credentialKind: null,
+        credentialParamName: null,
+        credentialBaseUrl: null,
+        ackMessage: null,
+        outputSchema: opts.template
+          ? { mode: "template", template: opts.template }
+          : undefined,
+      },
+      {
+        resolveCredential: async () => null,
+        onSideEffectError: (e) => {
+          if (e.phase === "response_clipped") {
+            notices.push({
+              message: e.err instanceof Error ? e.err.message : String(e.err),
+              detail: e.detail,
+            });
+          }
+        },
+        fetchImpl: (async () =>
+          new Response(opts.body, {
+            status: opts.status ?? 200,
+            headers: { "content-type": "application/json" },
+          })) as unknown as typeof fetch,
+      },
+    );
+    await tool.invoke({});
+    return notices[0];
+  }
+
+  const BIG = JSON.stringify({ a: "x".repeat(5000) });
+
+  test("no template: declare one", async () => {
+    const n = await clipNoticeFor({ body: BIG });
+    expect(n?.message).toContain("declare a response template");
+    expect(n?.detail).toMatchObject({ templated: false });
+  });
+
+  test("a template that rendered too much: shorten it", async () => {
+    // Two fields, because `renderResponseTemplate` clips each VALUE at 2,000 characters: one token
+    // can never overrun on its own.
+    const n = await clipNoticeFor({
+      body: JSON.stringify({ a: "x".repeat(2500), b: "y".repeat(2500) }),
+      template: "{{a}}\n---\n{{b}}",
+    });
+    expect(n?.message).toContain("shorten it");
+    expect(n?.detail).toMatchObject({ templated: true });
+  });
+
+  test("a template skipped for a non-2xx: not a template problem", async () => {
+    const n = await clipNoticeFor({
+      status: 500,
+      body: BIG,
+      template: "{{a}}",
+    });
+    // The tool HAS a template. Telling the operator to declare one names something they did.
+    expect(n?.message).not.toContain("declare a response template");
+    expect(n?.message).toContain("does not apply outside 2xx");
+    expect(n?.detail).toMatchObject({ skipped: "not-2xx" });
+  });
+
+  test("a template skipped for a body that is not JSON: says so", async () => {
+    const n = await clipNoticeFor({
+      body: "z".repeat(5000),
+      template: "{{a}}",
+    });
+    expect(n?.message).not.toContain("declare a response template");
+    expect(n?.message).toContain("not JSON");
+    expect(n?.detail).toMatchObject({ skipped: "not-json" });
+  });
+});

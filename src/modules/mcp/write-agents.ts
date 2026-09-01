@@ -27,6 +27,10 @@ import {
 import { unsupportedBodyShape } from "@/modules/tool-definitions/body-shape";
 import { normalizeToolShapes } from "@/modules/tool-definitions/normalize";
 import {
+  readResponseTemplateResult,
+  storableResponseTemplate,
+} from "@/modules/tool-definitions/response-template";
+import {
   createToolDefinition,
   deleteToolDefinition,
   getToolDefinition,
@@ -397,7 +401,10 @@ export interface ToolWriteArgs {
 }
 
 // Map snake_case tool args → the service's camelCase shape, resolving credential_ref NAME → vault:<id>.
-async function buildToolPatch(
+//
+// EXPORTED for the dry-run tests. What the preview shows has to be what the apply stores, and the
+// only way to say that as a test is to ask this function what it built.
+export async function buildToolPatch(
   ctx: TenantContext,
   args: ToolWriteArgs,
   base: Parameters<typeof resolveSecretRef>[2],
@@ -411,7 +418,20 @@ async function buildToolPatch(
   if (args.allowed_hosts !== undefined) patch.allowedHosts = args.allowed_hosts;
   if (args.headers !== undefined) patch.headers = args.headers;
   if (args.input_schema !== undefined) patch.inputSchema = args.input_schema;
-  if (args.output_schema !== undefined) patch.outputSchema = args.output_schema;
+  if (args.output_schema !== undefined) {
+    // NOTE: refused here and not only in the service, for the reason the body check below gives: a
+    // dry run never calls the service, so a template the apply would reject was previewed back
+    // intact and with no warning. Only a DECLARED template is judged — anything else in this column
+    // (including a real JSON Schema, which this argument has accepted unvalidated since it existed)
+    // passes through as it always has.
+    const r = readResponseTemplateResult(args.output_schema);
+    if (r.declared && !r.ok) return { fail: err(r.problem) };
+    // CANONICALIZED, not passed through, and it is the same lesson one line further down: the
+    // service stores what `storableResponseTemplate` makes of this — a trimmed template, extra keys
+    // dropped — so a dry run echoing the argument back promises a value that will not be stored,
+    // and the diff a caller reads before applying is a diff against the wrong thing.
+    patch.outputSchema = storableResponseTemplate(args.output_schema);
+  }
   if (args.query !== undefined) patch.query = args.query;
   if (args.body !== undefined) {
     // NOTE: refused here and not only in the service, for the same reason the expected_statuses

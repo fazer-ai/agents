@@ -13,6 +13,10 @@ import {
 } from "@/modules/audit/projection";
 import { auditMutation, projectionMoved } from "@/modules/audit/service";
 import { readAppointmentDeclaration } from "@/modules/tool-definitions/appointment";
+import {
+  readResponseTemplateResult,
+  storableResponseTemplate,
+} from "@/modules/tool-definitions/response-template";
 import { readableVaultRef, requireVaultRef } from "@/modules/vault/service";
 import { unsupportedBodyShape } from "./body-shape";
 import { normalizeToolShapes } from "./normalize";
@@ -23,7 +27,28 @@ import { normalizeToolShapes } from "./normalize";
 // allowlist apply at invoke time. Granting a definition to an agent is a separate concern
 // (AgentToolSelection, source=HTTP).
 
-const HTTP_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
+// The methods a tool definition may carry, and EXPORTED because three writers reach that column:
+// this module's zod schema (REST + MCP), the agent import, and the editor's one-shot test run. Only
+// the first had the list, so the other two could store or issue a method no console can produce.
+export const HTTP_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
+export type HttpToolMethod = (typeof HTTP_METHODS)[number];
+
+// The method a definition takes when its author named none. EXPORTED for the same reason the
+// list is: the create path defaulted here and the editor's test run defaulted to GET, so a
+// definition with no method was TESTED as a GET and SAVED as a POST — two different requests
+// from one screen, which is exactly what an endpoint justified by "it does what saving does"
+// cannot do.
+export const DEFAULT_HTTP_METHOD: HttpToolMethod = "POST";
+
+// The method a caller sent, or null when it is not one of the five. Uppercases first, because the
+// runtime does (`def.method.toUpperCase()`) and a hand-written `get` is the same request.
+export function readHttpMethod(raw: unknown): HttpToolMethod | null {
+  if (typeof raw !== "string") return null;
+  const up = raw.trim().toUpperCase();
+  return (HTTP_METHODS as readonly string[]).includes(up)
+    ? (up as HttpToolMethod)
+    : null;
+}
 
 export interface ToolDefinitionDto {
   id: string;
@@ -104,6 +129,11 @@ function toDto(r: {
     allowedHosts: r.allowedHosts,
     headers: (r.headers ?? {}) as Record<string, unknown>,
     inputSchema: (r.inputSchema ?? {}) as Record<string, unknown>,
+    // Verbatim, and DELIBERATELY not re-read through `readResponseTemplateResult` the way
+    // `appointment` below is. That normalization exists so the editor never shows a rule the runtime
+    // ignores; here it would instead ERASE from the read surface a legacy JSON Schema that some
+    // caller wrote and may still be reading back. The write already stores the reader's own shape,
+    // so a declared template arrives here normalized anyway.
     outputSchema: (r.outputSchema ?? {}) as Record<string, unknown>,
     query: (r.query ?? {}) as Record<string, unknown>,
     body: (r.body ?? {}) as Record<string, unknown>,
@@ -221,7 +251,23 @@ export const toolDefinitionCreateSchema = z
     allowedHosts: z.array(z.string().min(1).max(255)).max(50),
     headers: z.record(z.string(), z.unknown()).optional(),
     inputSchema: z.record(z.string(), z.unknown()).optional(),
-    outputSchema: z.record(z.string(), z.unknown()).optional(),
+    // What this tool's RESPONSE should look like by the time it reaches the model (issue #456).
+    // Only `mode: "template"` opts in, and only that shape is judged: this column has been writable
+    // through the MCP tool since it existed, unvalidated and read nowhere, so a row may hold a real
+    // JSON Schema. Refusing those now would break a published surface for rows that never asked for
+    // this feature. A DECLARED template that the reader would not honour is refused rather than
+    // stored, for the reason the appointment field below carries: a declaration that looks saved and
+    // does nothing is the silence the feature exists to remove.
+    outputSchema: z
+      .record(z.string(), z.unknown())
+      .optional()
+      .superRefine((v, ctx) => {
+        if (v === undefined) return;
+        const r = readResponseTemplateResult(v);
+        if (r.declared && !r.ok) {
+          ctx.addIssue({ code: "custom", message: r.problem });
+        }
+      }),
     // Query-string params (Record<string,string> templates), applied for any method.
     query: z.record(z.string(), z.unknown()).optional(),
     // Body shape: { mode: "kv", rows } | { mode: "raw", raw } | legacy { mode: "fields" }, checked
@@ -339,12 +385,14 @@ export async function createToolDefinition(
         name: data.name,
         label: data.label,
         description: data.description ?? null,
-        method: data.method ?? "POST",
+        method: data.method ?? DEFAULT_HTTP_METHOD,
         urlTemplate: (shapes.urlTemplate ?? data.urlTemplate) as string,
         allowedHosts: data.allowedHosts,
         headers: (shapes.headers ?? {}) as Prisma.InputJsonValue,
         inputSchema: (shapes.inputSchema ?? {}) as Prisma.InputJsonValue,
-        outputSchema: (data.outputSchema ?? {}) as Prisma.InputJsonValue,
+        outputSchema: storableResponseTemplate(
+          data.outputSchema,
+        ) as Prisma.InputJsonValue,
         query: (shapes.query ?? {}) as Prisma.InputJsonValue,
         body: (shapes.body ?? {}) as Prisma.InputJsonValue,
         credentialRef,
@@ -431,7 +479,9 @@ export async function updateToolDefinition(
     if (data.inputSchema !== undefined)
       patchData.inputSchema = shapes.inputSchema as Prisma.InputJsonValue;
     if (data.outputSchema !== undefined)
-      patchData.outputSchema = data.outputSchema as Prisma.InputJsonValue;
+      patchData.outputSchema = storableResponseTemplate(
+        data.outputSchema,
+      ) as Prisma.InputJsonValue;
     if (data.query !== undefined)
       patchData.query = shapes.query as Prisma.InputJsonValue;
     if (data.body !== undefined)

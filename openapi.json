@@ -12190,7 +12190,7 @@
                     }
                   },
                   "outputSchema": {
-                    "description": "JSON Schema describing the tool response shape.",
+                    "description": "How this tool's response should read by the time it reaches the model: {\"mode\": \"template\", \"template\": \"**{{razao_social}}** — {{municipio}}\nStatus: {{situacao}}\"}. A token is a dot-separated path into the response body, with a number for a list position (data.items.0.name); a path that does not resolve renders \"(not returned)\" and is reported on the tool stage. Rendered before the response is clipped, so a field past the clip is reachable. Omitted (or any other shape) hands the model the raw body, clipped, which is the old behaviour.",
                     "type": "object",
                     "patternProperties": {
                       "^(.*)$": {}
@@ -12338,7 +12338,7 @@
                     }
                   },
                   "outputSchema": {
-                    "description": "JSON Schema describing the tool response shape.",
+                    "description": "How this tool's response should read by the time it reaches the model: {\"mode\": \"template\", \"template\": \"**{{razao_social}}** — {{municipio}}\nStatus: {{situacao}}\"}. A token is a dot-separated path into the response body, with a number for a list position (data.items.0.name); a path that does not resolve renders \"(not returned)\" and is reported on the tool stage. Rendered before the response is clipped, so a field past the clip is reachable. Omitted (or any other shape) hands the model the raw body, clipped, which is the old behaviour.",
                     "type": "object",
                     "patternProperties": {
                       "^(.*)$": {}
@@ -12486,7 +12486,7 @@
                     }
                   },
                   "outputSchema": {
-                    "description": "JSON Schema describing the tool response shape.",
+                    "description": "How this tool's response should read by the time it reaches the model: {\"mode\": \"template\", \"template\": \"**{{razao_social}}** — {{municipio}}\nStatus: {{situacao}}\"}. A token is a dot-separated path into the response body, with a number for a list position (data.items.0.name); a path that does not resolve renders \"(not returned)\" and is reported on the tool stage. Rendered before the response is clipped, so a field past the clip is reachable. Omitted (or any other shape) hands the model the raw body, clipped, which is the old behaviour.",
                     "type": "object",
                     "patternProperties": {
                       "^(.*)$": {}
@@ -12951,7 +12951,7 @@
                     }
                   },
                   "outputSchema": {
-                    "description": "JSON Schema describing the tool response shape.",
+                    "description": "How this tool's response should read by the time it reaches the model: {\"mode\": \"template\", \"template\": \"**{{razao_social}}** — {{municipio}}\nStatus: {{situacao}}\"}. A token is a dot-separated path into the response body, with a number for a list position (data.items.0.name); a path that does not resolve renders \"(not returned)\" and is reported on the tool stage. Rendered before the response is clipped, so a field past the clip is reachable. Omitted (or any other shape) hands the model the raw body, clipped, which is the old behaviour.",
                     "type": "object",
                     "patternProperties": {
                       "^(.*)$": {}
@@ -13093,7 +13093,7 @@
                     }
                   },
                   "outputSchema": {
-                    "description": "JSON Schema describing the tool response shape.",
+                    "description": "How this tool's response should read by the time it reaches the model: {\"mode\": \"template\", \"template\": \"**{{razao_social}}** — {{municipio}}\nStatus: {{situacao}}\"}. A token is a dot-separated path into the response body, with a number for a list position (data.items.0.name); a path that does not resolve renders \"(not returned)\" and is reported on the tool stage. Rendered before the response is clipped, so a field past the clip is reachable. Omitted (or any other shape) hands the model the raw body, clipped, which is the old behaviour.",
                     "type": "object",
                     "patternProperties": {
                       "^(.*)$": {}
@@ -13235,7 +13235,7 @@
                     }
                   },
                   "outputSchema": {
-                    "description": "JSON Schema describing the tool response shape.",
+                    "description": "How this tool's response should read by the time it reaches the model: {\"mode\": \"template\", \"template\": \"**{{razao_social}}** — {{municipio}}\nStatus: {{situacao}}\"}. A token is a dot-separated path into the response body, with a number for a list position (data.items.0.name); a path that does not resolve renders \"(not returned)\" and is reported on the tool stage. Rendered before the response is clipped, so a field past the clip is reachable. Omitted (or any other shape) hands the model the raw body, clipped, which is the old behaviour.",
                     "type": "object",
                     "patternProperties": {
                       "^(.*)$": {}
@@ -13697,6 +13697,478 @@
           }
         },
         "operationId": "getV1ToolsByIdReferences"
+      }
+    },
+    "/v1/tools/test": {
+      "post": {
+        "tags": [
+          "Resources"
+        ],
+        "summary": "Test a tool definition",
+        "description": "Issues one real request for the supplied (unsaved) HTTP tool definition and returns the provider's raw response alongside the exact text the model would receive. Adds no capability over saving the tool and calling it: the same allowlist, SSRF guard, redirect refusal and timeout apply. The request headers are never echoed back, and no appointment is registered. A definition this endpoint refuses answers 400; a provider that cannot be reached answers 502, and one that does not answer within the runtime's timeout answers 504.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "definition"
+                ],
+                "properties": {
+                  "definition": {
+                    "type": "object",
+                    "required": [
+                      "urlTemplate"
+                    ],
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "method": {
+                        "type": "string"
+                      },
+                      "urlTemplate": {
+                        "description": "Absolute URL template, or a path when the credential carries a base URL.",
+                        "type": "string"
+                      },
+                      "allowedHosts": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "headers": {
+                        "type": "object",
+                        "patternProperties": {
+                          "^(.*)$": {}
+                        }
+                      },
+                      "inputSchema": {
+                        "type": "object",
+                        "patternProperties": {
+                          "^(.*)$": {}
+                        }
+                      },
+                      "query": {
+                        "type": "object",
+                        "patternProperties": {
+                          "^(.*)$": {}
+                        }
+                      },
+                      "body": {
+                        "type": "object",
+                        "patternProperties": {
+                          "^(.*)$": {}
+                        }
+                      },
+                      "credentialRef": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "expectedStatuses": {
+                        "type": "array",
+                        "items": {
+                          "type": "number"
+                        }
+                      },
+                      "outputSchema": {
+                        "type": "object",
+                        "patternProperties": {
+                          "^(.*)$": {}
+                        }
+                      }
+                    }
+                  },
+                  "args": {
+                    "description": "Values for the AI-filled fields, as the model would have supplied them.",
+                    "type": "object",
+                    "patternProperties": {
+                      "^(.*)$": {}
+                    }
+                  },
+                  "context": {
+                    "description": "Values for the conversation/contact placeholders. Names outside the runtime's own list are ignored.",
+                    "type": "object",
+                    "patternProperties": {
+                      "^(.*)$": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "definition"
+                ],
+                "properties": {
+                  "definition": {
+                    "type": "object",
+                    "required": [
+                      "urlTemplate"
+                    ],
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "method": {
+                        "type": "string"
+                      },
+                      "urlTemplate": {
+                        "description": "Absolute URL template, or a path when the credential carries a base URL.",
+                        "type": "string"
+                      },
+                      "allowedHosts": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "headers": {
+                        "type": "object",
+                        "patternProperties": {
+                          "^(.*)$": {}
+                        }
+                      },
+                      "inputSchema": {
+                        "type": "object",
+                        "patternProperties": {
+                          "^(.*)$": {}
+                        }
+                      },
+                      "query": {
+                        "type": "object",
+                        "patternProperties": {
+                          "^(.*)$": {}
+                        }
+                      },
+                      "body": {
+                        "type": "object",
+                        "patternProperties": {
+                          "^(.*)$": {}
+                        }
+                      },
+                      "credentialRef": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "expectedStatuses": {
+                        "type": "array",
+                        "items": {
+                          "type": "number"
+                        }
+                      },
+                      "outputSchema": {
+                        "type": "object",
+                        "patternProperties": {
+                          "^(.*)$": {}
+                        }
+                      }
+                    }
+                  },
+                  "args": {
+                    "description": "Values for the AI-filled fields, as the model would have supplied them.",
+                    "type": "object",
+                    "patternProperties": {
+                      "^(.*)$": {}
+                    }
+                  },
+                  "context": {
+                    "description": "Values for the conversation/contact placeholders. Names outside the runtime's own list are ignored.",
+                    "type": "object",
+                    "patternProperties": {
+                      "^(.*)$": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "definition"
+                ],
+                "properties": {
+                  "definition": {
+                    "type": "object",
+                    "required": [
+                      "urlTemplate"
+                    ],
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "method": {
+                        "type": "string"
+                      },
+                      "urlTemplate": {
+                        "description": "Absolute URL template, or a path when the credential carries a base URL.",
+                        "type": "string"
+                      },
+                      "allowedHosts": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "headers": {
+                        "type": "object",
+                        "patternProperties": {
+                          "^(.*)$": {}
+                        }
+                      },
+                      "inputSchema": {
+                        "type": "object",
+                        "patternProperties": {
+                          "^(.*)$": {}
+                        }
+                      },
+                      "query": {
+                        "type": "object",
+                        "patternProperties": {
+                          "^(.*)$": {}
+                        }
+                      },
+                      "body": {
+                        "type": "object",
+                        "patternProperties": {
+                          "^(.*)$": {}
+                        }
+                      },
+                      "credentialRef": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "expectedStatuses": {
+                        "type": "array",
+                        "items": {
+                          "type": "number"
+                        }
+                      },
+                      "outputSchema": {
+                        "type": "object",
+                        "patternProperties": {
+                          "^(.*)$": {}
+                        }
+                      }
+                    }
+                  },
+                  "args": {
+                    "description": "Values for the AI-filled fields, as the model would have supplied them.",
+                    "type": "object",
+                    "patternProperties": {
+                      "^(.*)$": {}
+                    }
+                  },
+                  "context": {
+                    "description": "Values for the conversation/contact placeholders. Names outside the runtime's own list are ignored.",
+                    "type": "object",
+                    "patternProperties": {
+                      "^(.*)$": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Bad gateway — an upstream dependency failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad gateway — an upstream dependency failed.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Error.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Error.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postV1ToolsTest",
+        "parameters": [
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ]
       }
     },
     "/v1/mcp-connections": {

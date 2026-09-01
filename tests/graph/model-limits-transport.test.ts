@@ -49,15 +49,33 @@ async function requestsUntilFailure(
 }
 
 describe("the retry budget reaches the transport", () => {
-  test("maxRetries 0 spends exactly one request on a 503", async () => {
-    expect(await requestsUntilFailure(0)).toBe(1);
-  });
+  // BOTH ARMS CARRY AN EXPLICIT TIMEOUT, and it is not a flake being papered over: what these count
+  // is REQUESTS, and how long the SDK sleeps between them is the SDK's business. The default 5000ms
+  // was measuring the second thing. Alone this file runs in 1.5s; inside a shard of ~2,200 tests
+  // sharing one event loop the same call lands at 5.1s and the runner kills it — measured on
+  // `--shard=4/4` locally and on CI, three runs, always `this test timed out after 5000ms`. Adding
+  // test files anywhere in the tree reshuffles every shard (see `.github/workflows/test.yml`), so a
+  // duration-insensitive test gated on a thin default margin goes red for a change that has nothing
+  // to do with it. 30s still catches a hang, which is the only thing a timeout is for here.
+  const NOT_A_LATENCY_TEST = 30_000;
+
+  test(
+    "maxRetries 0 spends exactly one request on a 503",
+    async () => {
+      expect(await requestsUntilFailure(0)).toBe(1);
+    },
+    NOT_A_LATENCY_TEST,
+  );
 
   // The second arm, and it is what makes the first one mean something: a field the adapter ignored
   // would answer 1 to both, and the test above alone would pass with the bound deleted.
-  test("maxRetries 1 spends exactly two", async () => {
-    expect(await requestsUntilFailure(1)).toBe(2);
-  });
+  test(
+    "maxRetries 1 spends exactly two",
+    async () => {
+      expect(await requestsUntilFailure(1)).toBe(2);
+    },
+    NOT_A_LATENCY_TEST,
+  );
 });
 
 // THE CEILING'S BEHAVIOUR IS MEASURED, AND NOT FROM HERE. A hung endpoint against a model built by

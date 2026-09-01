@@ -2218,6 +2218,12 @@ function AgentEditor() {
           'Tool "{{name}}" had a request body in a shape this version does not accept, so it was reduced to the part that was actually being sent. The request is unchanged; open it under Body to check it.',
           p,
         );
+      case "httpToolMethodUnsupported":
+        return t(
+          "editor.importWarning.httpToolMethodUnsupported",
+          'Tool "{{name}}" asks for the HTTP method {{method}}, which is not one this platform sends, so the tool was not imported. The rest of the agent was.',
+          p,
+        );
       case "httpToolReused":
         return t(
           "editor.importWarning.httpToolReused",

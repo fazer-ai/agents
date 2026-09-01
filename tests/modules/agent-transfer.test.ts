@@ -652,6 +652,12 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
           reminderOffsetsHours: [24, 1],
           askConfirmationOnLast: true,
         },
+        // And the same shape again, one issue later still (#456): what the response looks like by
+        // the time it reaches the model.
+        outputSchema: {
+          mode: "template",
+          template: "Pedido {{data.id}} — {{data.status}}",
+        },
       },
     });
     const mcp = await suDb.mcpServerConnection.create({
@@ -911,6 +917,118 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     }
   });
 
+  // Review round 1, finding 3, and its sibling. The import writes STRAIGHT to the DB, so every
+  // field it copies has to pass through the reader the runtime uses — `expectedStatuses` and
+  // `appointment` already did, `outputSchema` and `method` did not. A hand-edited bundle is the
+  // only way to reach either, which is exactly why nothing caught them.
+  test("a hand-edited bundle cannot plant a template the runtime would ignore", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const broken = JSON.parse(JSON.stringify(exp)) as AgentExport;
+    const name = `edited_template_${process.pid}`;
+    const tool = broken.components?.httpTools?.find(
+      (h) => h.name === "lookup_order",
+    );
+    if (!tool) throw new Error("bundle missing lookup_order");
+    tool.name = name;
+    // Declared, and unusable: `{{data. status}}` is not a path, so the write schema refuses it.
+    tool.outputSchema = {
+      mode: "template",
+      template: "Pedido {{data. status}}",
+    };
+    if (broken.agent.tools) {
+      for (const g of broken.agent.tools) {
+        if (g && "tool" in g && g.tool === "lookup_order") g.tool = name;
+      }
+    }
+    broken.agent.name = `Edited template ${process.pid}`;
+    const { agent } = await importAgent(dstCtx(), broken, appDb);
+    const td = await suDb.toolDefinition.findFirst({
+      where: { tenantId: dstTenant, name },
+    });
+    // DROPPED rather than stored: parked in the column it would read as "no template" at runtime
+    // and as a legacy JSON Schema in the editor, with nothing anywhere saying why the projection
+    // stopped. The import cannot refuse the way the service does — a bundle is handed over whole.
+    expect(td?.outputSchema).toEqual({});
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM agent_tool_selections WHERE agent_id = ${BigInt(agent.id)}`,
+    );
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM agents WHERE id = ${BigInt(agent.id)}`,
+    );
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM tool_definitions WHERE tenant_id = ${dstTenant} AND name = '${name}'`,
+    );
+  });
+
+  test("a hand-edited bundle cannot plant an HTTP method the platform does not send", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const broken = JSON.parse(JSON.stringify(exp)) as AgentExport;
+    const name = `edited_method_${process.pid}`;
+    const tool = broken.components?.httpTools?.find(
+      (h) => h.name === "lookup_order",
+    );
+    if (!tool) throw new Error("bundle missing lookup_order");
+    tool.name = name;
+    tool.method = "PURGE";
+    if (broken.agent.tools) {
+      for (const g of broken.agent.tools) {
+        if (g && "tool" in g && g.tool === "lookup_order") g.tool = name;
+      }
+    }
+    broken.agent.name = `Edited method ${process.pid}`;
+    const { agent, warnings } = await importAgent(dstCtx(), broken, appDb);
+    expect(
+      warnings.some(
+        (w) =>
+          w.code === "httpToolMethodUnsupported" &&
+          w.params?.method === "PURGE",
+      ),
+    ).toBe(true);
+    // Skipped, not coerced: falling back to GET would change what the tool does, which is the
+    // difference from the body shape two lines above it in the importer.
+    expect(
+      await suDb.toolDefinition.count({
+        where: { tenantId: dstTenant, name },
+      }),
+    ).toBe(0);
+    // And a lowercase method is the SAME request, so it imports.
+    const lower = JSON.parse(JSON.stringify(broken)) as AgentExport;
+    const lowerName = `edited_lower_${process.pid}`;
+    const lt = lower.components?.httpTools?.find((h) => h.name === name);
+    if (!lt) throw new Error("bundle missing the edited tool");
+    lt.name = lowerName;
+    lt.method = "get";
+    if (lower.agent.tools) {
+      for (const g of lower.agent.tools) {
+        if (g && "tool" in g && g.tool === name) g.tool = lowerName;
+      }
+    }
+    lower.agent.name = `Edited lower ${process.pid}`;
+    const second = await importAgent(dstCtx(), lower, appDb);
+    expect(
+      (
+        await suDb.toolDefinition.findFirst({
+          where: { tenantId: dstTenant, name: lowerName },
+        })
+      )?.method,
+    ).toBe("GET");
+    for (const id of [agent.id, second.agent.id]) {
+      await suDb.$executeRawUnsafe(
+        `DELETE FROM agent_tool_selections WHERE agent_id = ${BigInt(id)}`,
+      );
+      await suDb.$executeRawUnsafe(
+        `DELETE FROM agents WHERE id = ${BigInt(id)}`,
+      );
+    }
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM tool_definitions WHERE tenant_id = ${dstTenant} AND name = '${lowerName}'`,
+    );
+  });
+
   test("import into a fresh tenant creates the missing components (fresh token, empty KB) then grants", async () => {
     const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
       includeComponents: true,
@@ -936,6 +1054,13 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
       startPath: "data.start",
       reminderOffsetsHours: [24, 1],
       askConfirmationOnLast: true,
+    });
+    // (#456) And the response template, for the third time the same reason: a bundle that drops it
+    // re-imports a tool that hands the model the first 4000 characters of a response instead of the
+    // four fields the operator picked, and nothing anywhere says the projection stopped.
+    expect(td?.outputSchema).toEqual({
+      mode: "template",
+      template: "Pedido {{data.id}} — {{data.status}}",
     });
     // credential absent on the destination ⇒ re-created as a PENDING entry with the ref kept wired
     // (the operator only fills the secret), not dropped.

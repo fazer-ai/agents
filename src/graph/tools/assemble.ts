@@ -68,6 +68,9 @@ export interface LoadedHttpToolDef {
   // forgotten in the `select` reads as `undefined` and normalizes to "declare nothing", which is a
   // feature going silently missing rather than failing.
   appointment: unknown;
+  // What this tool's response should look like by the time it reaches the model (issue #456).
+  // Required for the same reason as the two above.
+  outputSchema: unknown;
 }
 
 export interface AgentToolSelections {
@@ -205,6 +208,7 @@ export async function loadToolSelections(
           ackMessage: true,
           expectedStatuses: true,
           appointment: true,
+          outputSchema: true,
         },
       },
       mcpServerConnection: {
@@ -289,6 +293,7 @@ export async function loadToolSelections(
           body: td.body,
           expectedStatuses: td.expectedStatuses,
           appointment: td.appointment,
+          outputSchema: td.outputSchema,
         });
         break;
       }
@@ -465,6 +470,7 @@ export function buildHttpTools(
       body: d.body,
       expectedStatuses: d.expectedStatuses,
       appointment: d.appointment,
+      outputSchema: d.outputSchema,
     };
     return buildHttpTool(def, deps);
   });

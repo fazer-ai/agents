@@ -60,6 +60,8 @@ import {
   unsupportedBodyShape,
 } from "@/modules/tool-definitions/body-shape";
 import { normalizeToolShapes } from "@/modules/tool-definitions/normalize";
+import { storableResponseTemplate } from "@/modules/tool-definitions/response-template";
+import { readHttpMethod } from "@/modules/tool-definitions/service";
 import {
   createPendingVaultEntry,
   formatVaultRef,
@@ -1394,6 +1396,21 @@ async function createMissingComponents(
     // nothing reads. Blanking it to `{}` would NOT be equivalent: that is behaviour-preserving only
     // for a body with no recognized mode, and would switch a `{mode:"raw", …, extra}` tool to the
     // fields assembly — changing what it sends (issue #150).
+    // The method the bundle names, through the same reader the write schema uses. The column has
+    // three writers and only that one carried the list, so a hand-edited bundle could store a method
+    // no console can produce and the runtime would then issue it. Warn-and-skip rather than
+    // canonicalize, and the difference from the body two lines down is that there IS no equivalent
+    // request: a body shape this version refuses still describes the same call, while falling back
+    // to GET would change what the tool does.
+    const method = readHttpMethod(tdef.method);
+    if (method === null) {
+      warnings.push({
+        code: "httpToolMethodUnsupported",
+        params: { name: tdef.name, method: String(tdef.method) },
+        target: { kind: "tool", name: tdef.name },
+      });
+      continue;
+    }
     const badBody = unsupportedBodyShape(tdef.body);
     const { shapes } = normalizeToolShapes({
       urlTemplate: tdef.urlTemplate,
@@ -1415,12 +1432,18 @@ async function createMissingComponents(
           // label is required now; legacy exports without one fall back to the identifier.
           label: tdef.label ?? tdef.name,
           description: tdef.description ?? null,
-          method: tdef.method,
+          method,
           urlTemplate: (shapes.urlTemplate ?? tdef.urlTemplate) as string,
           allowedHosts: tdef.allowedHosts,
           headers: shapes.headers as Prisma.InputJsonValue,
           inputSchema: shapes.inputSchema as Prisma.InputJsonValue,
-          outputSchema: tdef.outputSchema as Prisma.InputJsonValue,
+          // Through the runtime's own reader, like `appointment` below and for the same reason —
+          // the import writes straight to the DB, so a hand-edited bundle would otherwise store a
+          // template the runtime silently ignores and the editor reads back as a legacy schema.
+          // `dropUnusable` because this path cannot refuse the way the service does.
+          outputSchema: storableResponseTemplate(tdef.outputSchema, {
+            dropUnusable: true,
+          }) as Prisma.InputJsonValue,
           query: shapes.query as Prisma.InputJsonValue,
           body: shapes.body as Prisma.InputJsonValue,
           // Normalized like the shapes above, and for the same reason: the import writes straight to

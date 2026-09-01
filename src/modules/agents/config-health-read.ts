@@ -15,7 +15,10 @@ import {
   type ConfigIssueSeverity,
   severityOf,
 } from "@/modules/agents/config-health-severity";
-import { getAgent, getAgentToolSelections } from "@/modules/agents/service";
+import {
+  getAgent,
+  listKnowledgeBasesNeedingIndex,
+} from "@/modules/agents/service";
 import { readSchedule } from "@/modules/business-hours/service";
 import { readChannelRedirectConfig } from "@/modules/channel-redirect/service";
 import { readOutOfOfficeInboxes } from "@/modules/chatwoot/management";
@@ -156,19 +159,17 @@ export async function readAgentConfigHealth(
   const memory = readMemoryConfig(settings);
   const redirect = readChannelRedirectConfig(settings);
 
-  const [tenantSettings, selections, schedule] = await Promise.all([
-    getTenantSettings(ctx, base),
-    getAgentToolSelections(ctx, agentId, base),
-    agent.businessHoursId
-      ? readSchedule(ctx, agent.businessHoursId, base)
-      : Promise.resolve(null),
-  ]);
-
-  const ragGrant = selections.grants.find((g) => g.source === "RAG");
-  const selectedKbIds = new Set(ragGrant?.knowledgeBaseIds ?? []);
-  const knowledgeBasesNeedingIndex = selections.catalog.knowledgeBases
-    .filter((k) => selectedKbIds.has(k.id) && k.unindexedCount > 0)
-    .map((k) => ({ id: k.id, name: k.name }));
+  const [tenantSettings, knowledgeBasesNeedingIndex, schedule] =
+    await Promise.all([
+      getTenantSettings(ctx, base),
+      // Not `getAgentToolSelections`: that view is the editor's, and it loads the tenant's entire
+      // tool catalog to draw a page. This reading happens on every agent write now, so it asks for
+      // the two facts it uses instead (see the header on the function).
+      listKnowledgeBasesNeedingIndex(ctx, agentId, base),
+      agent.businessHoursId
+        ? readSchedule(ctx, agent.businessHoursId, base)
+        : Promise.resolve(null),
+    ]);
 
   // The two readings that leave this process. Settled rather than awaited together so one failure
   // costs its own check and not the whole answer — and it is REPORTED, because both of them fail as

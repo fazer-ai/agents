@@ -443,6 +443,39 @@ describe.skipIf(!dbUp)("agent configuration health", () => {
     // The line `healthy` draws, tested from the side that makes it dangerous: a reading with nothing
     // to report on an agent that answers nobody. The credential check cannot raise this — it asks
     // whether a CONFIGURED provider has a key, and there is no provider to ask about.
+    // The scope the focused query has to keep: the grant is per AGENT and the count is per BASE, so
+    // a base with unindexed documents that this agent was never granted must not appear. The old
+    // path got this by filtering a tenant-wide list; the new one filters in the query, which is the
+    // half a refactor gets wrong.
+    test("a knowledge base this agent was not granted stays out", async () => {
+      const stranger = await suDb.knowledgeBase.create({
+        data: { tenantId, name: "Não concedida" },
+        select: { id: true },
+      });
+      await suDb.knowledgeDocument.create({
+        data: {
+          tenantId,
+          knowledgeBaseId: stranger.id,
+          title: "outro.pdf",
+          sourceType: "import",
+          content: "x",
+          status: "UNINDEXED",
+        },
+      });
+      const health = await readAgentConfigHealth(ctx(tenantId), ragAgent, {
+        base: appDb,
+        live: false,
+      });
+      // Still exactly one rollup, and it is the granted base's — a leak would raise a second issue
+      // or name the wrong base.
+      expect(health.issues.filter((i) => i.key === "embedding")).toHaveLength(
+        1,
+      );
+      expect(
+        health.issues.some((i) => i.knowledgeBaseName === "Não concedida"),
+      ).toBe(false);
+    });
+
     test("an agent with no model at all is not healthy", async () => {
       const health = await readAgentConfigHealth(
         ctx(tenantId),
@@ -467,6 +500,41 @@ describe.skipIf(!dbUp)("agent configuration health", () => {
       expect(health.issues.some((i) => i.key.startsWith("outOfHours"))).toBe(
         false,
       );
+    });
+
+    // The reading runs on EVERY agent write now, so what it touches is part of its contract. The
+    // editor's `getAgentToolSelections` answers the same question by loading the tenant's whole tool
+    // catalog — every tool definition, MCP connection, integration instance and document-template
+    // body — which is right for a page that draws all of it and wrong for a write path.
+    //
+    // Asserted by counting the models the read actually queries, because the alternative is a
+    // sentence in a comment that nothing checks: a later refactor reaching for the convenient helper
+    // would put the tenant-wide work back with every test still green.
+    test("it does not load the tenant's whole tool catalog", async () => {
+      const touched = new Set<string>();
+      const counted = appDb.$extends({
+        query: {
+          $allModels: {
+            $allOperations({ model, args, query }) {
+              if (model) touched.add(model);
+              return query(args);
+            },
+          },
+        },
+      }) as unknown as PrismaClient;
+      await readAgentConfigHealth(ctx(tenantId), ragAgent, {
+        base: counted,
+        live: false,
+      });
+      expect(touched.has("KnowledgeDocument")).toBe(true);
+      for (const model of [
+        "ToolDefinition",
+        "DocumentTemplate",
+        "McpServerConnection",
+        "IntegrationInstance",
+      ]) {
+        expect(`${model}: ${touched.has(model)}`).toBe(`${model}: false`);
+      }
     });
 
     test("an agent with nothing wrong comes back healthy and empty", async () => {

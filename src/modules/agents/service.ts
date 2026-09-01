@@ -1570,6 +1570,47 @@ async function buildToolSelectionView(
   };
 }
 
+// The knowledge bases THIS agent is granted that still hold documents nobody indexed — the two
+// facts the configuration-health read needs out of the whole tool catalog.
+//
+// A query of its own rather than a projection of `getAgentToolSelections`, and the difference is not
+// tidiness: that view loads every tool definition, MCP connection, integration instance, knowledge
+// base and document-template body the TENANT has, then groups the unindexed documents of all of
+// them. It is the right shape for the editor, which draws all of it. Health is now read on every
+// agent write, so paying for the tenant's whole catalog there makes an unrelated `agent_update`
+// scale with how much the tenant has configured.
+//
+// Scoped twice on purpose: to the agent's RAG grant, and to the bases that grant names.
+export async function listKnowledgeBasesNeedingIndex(
+  ctx: TenantContext,
+  agentId: bigint,
+  base: PrismaClient = basePrisma,
+): Promise<{ id: string; name: string }[]> {
+  return runScopedOn(base, ctx, async (db) => {
+    const grant = await db.agentToolSelection.findFirst({
+      where: { agentId, source: "RAG" },
+      select: { knowledgeBaseIds: true },
+    });
+    const ids = grant?.knowledgeBaseIds ?? [];
+    if (ids.length === 0) return [];
+    const unindexed = await db.knowledgeDocument.groupBy({
+      by: ["knowledgeBaseId"],
+      where: { status: "UNINDEXED", knowledgeBaseId: { in: ids } },
+      _count: { _all: true },
+    });
+    const needing = unindexed
+      .filter((g) => g._count._all > 0)
+      .map((g) => g.knowledgeBaseId);
+    if (needing.length === 0) return [];
+    const bases = await db.knowledgeBase.findMany({
+      where: { id: { in: needing } },
+      select: { id: true, name: true },
+      orderBy: { name: "asc" },
+    });
+    return bases.map((k) => ({ id: String(k.id), name: k.name }));
+  });
+}
+
 export async function getAgentToolSelections(
   ctx: TenantContext,
   agentId: bigint,

@@ -325,6 +325,30 @@ function endpointCouldStillArrive(
   return inherits && Boolean(agent.credentialRef);
 }
 
+// Whether the endpoint this model would DIAL is unusable, asked per provider because only two of
+// the six read the field at all (`createChatModel`, measured): `openai-compatible` REQUIRES it and
+// throws without one, `openrouter` uses it when present and falls back to its own API root. The
+// other four — openai, anthropic, google, deepseek — ignore `baseURL` entirely, so a malformed value
+// there breaks nothing and flagging it would be a warning about a field with no reader.
+//
+// "Unusable" is two things with one consequence: absent where it is required, or present and not
+// dialable anywhere. The second needs saying because the write boundary does not catch it — the
+// schema's `z.string().url()` accepts `llama:8080`, a valid URI with a `llama:` scheme (measured) —
+// and because `isValidHttpUrl` answers TRUE for the empty string on purpose, leaving emptiness to
+// the caller that knows whether the field is required. This is that caller.
+function endpointUnusable(provider: string, baseURL: string): boolean {
+  const stated = baseURL.trim();
+  if (provider === "openai-compatible") {
+    return !stated || !isValidHttpUrl(stated);
+  }
+  if (provider === "openrouter") {
+    // Optional: no endpoint is the DEFAULT and is correct. One that was typed still has to work,
+    // because `cfg.baseURL || OPENROUTER_BASE_URL` hands the typed value straight to the client.
+    return Boolean(stated) && !isValidHttpUrl(stated);
+  }
+  return false;
+}
+
 export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
   const issues: ConfigIssue[] = [];
   const pending = input.pendingRefs;
@@ -371,16 +395,7 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
   if (!modelConfigSchema.safeParse(input.modelConfig).success) {
     issues.push({ ...modelTarget });
   } else if (
-    input.modelProvider === "openai-compatible" &&
-    // Not merely "is it blank": the schema's own `z.string().url()` accepts `llama:8080` (a valid
-    // URI with a `llama:` scheme), measured, so a bag can pass every write boundary and still name
-    // nowhere any client can dial. Same strictness the three overrides already apply, and for the
-    // same reason — this check exists FOR the bags nobody validated.
-    // Two failures, one consequence: nothing there, or something no client can dial. Both spelled
-    // out because `isValidHttpUrl` answers TRUE for the empty string on purpose — emptiness is the
-    // caller's own required-check, and this is that caller.
-    (!(input.modelBaseURL ?? "").trim() ||
-      !isValidHttpUrl(input.modelBaseURL ?? "")) &&
+    endpointUnusable(input.modelProvider, input.modelBaseURL ?? "") &&
     // An endpoint can still ARRIVE on a credential the vault has not answered for yet, and calling
     // a runnable model broken is the false alarm the null-until-loaded rule exists to prevent. Same
     // wait the three overrides take, and for the same reason.

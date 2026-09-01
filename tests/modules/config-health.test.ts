@@ -122,6 +122,33 @@ describe("computeConfigIssues", () => {
       expected: ["modelNoEndpoint"],
     },
     {
+      // The second provider that READS the field: `cfg.baseURL || OPENROUTER_BASE_URL` hands a typed
+      // value straight to the client, so an unusable one is dialled instead of the default.
+      label: "openrouter overridden with something no client can dial",
+      bag: { provider: "openrouter", model: "x", baseURL: "llama:8080" },
+      provider: "openrouter",
+      baseURL: "llama:8080",
+      expected: ["modelNoEndpoint"],
+    },
+    {
+      // …and no endpoint at all is openrouter's normal, correct configuration.
+      label: "openrouter with no endpoint, which is its default",
+      bag: { provider: "openrouter", model: "x" },
+      provider: "openrouter",
+      baseURL: "",
+      expected: [],
+    },
+    {
+      // The other four providers never read `baseURL` (`createChatModel`, measured), so a bad value
+      // there breaks nothing — and a warning about a field with no reader is a warning that teaches
+      // the operator to ignore the panel.
+      label: "a provider that ignores the endpoint, with a bad one",
+      bag: { provider: "anthropic", model: "claude-sonnet-5" },
+      provider: "anthropic",
+      baseURL: "llama:8080",
+      expected: [],
+    },
+    {
       // Fenced to openai by the schema, because /v1/responses is OpenAI's endpoint; the write
       // boundary refuses it elsewhere, and an import does not.
       label: "reasoning effort on a provider that has no such thing",

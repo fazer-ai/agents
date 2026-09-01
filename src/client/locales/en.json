@@ -2247,6 +2247,7 @@
     "outputTemplateHint": "Markdown, with {{path.to.field}} for each value. Use a number for a list position: data.items.0.name",
     "outputTemplateMissing": "Not in the sample response: {{paths}}. The agent would see (not returned) there.",
     "outputTemplateNotApplied": "This sample came back as HTTP {{status}}, and the template only applies to a successful response. Outside 2xx the agent reads the body as it came, so it can read the error.",
+    "outputTemplateNotJson": "This sample is not JSON, so there is nothing for the fields to point at and the agent reads the body as it came. The call still succeeded — only the template does not apply to it.",
     "outputTemplatePick": "Insert a field",
     "outputTemplatePreview": "Preview",
     "outputTemplatePreviewHint": "Exactly what the agent would receive for the sample above.",

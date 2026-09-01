@@ -2255,6 +2255,7 @@
     "outputTemplateHint": "Markdown, com {{caminho.do.campo}} para cada valor. Use um número para uma posição de lista: data.items.0.name",
     "outputTemplateMissing": "Não está na resposta de exemplo: {{paths}}. O agente veria (not returned) aí.",
     "outputTemplateNotApplied": "Esta amostra voltou como HTTP {{status}}, e o template só vale para uma resposta bem-sucedida. Fora de 2xx o agente lê o corpo como ele veio, para poder ler o erro.",
+    "outputTemplateNotJson": "Esta amostra não é JSON, então não há em que os campos se apoiarem e o agente lê o corpo como ele veio. A chamada deu certo: só o template não vale para ela.",
     "outputTemplatePick": "Inserir um campo",
     "outputTemplatePreview": "Prévia",
     "outputTemplatePreviewHint": "Exatamente o que o agente receberia para o exemplo acima.",

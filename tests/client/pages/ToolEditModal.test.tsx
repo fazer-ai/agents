@@ -210,7 +210,9 @@ describe("templatePreviewFor", () => {
         status,
       });
       expect(preview?.text).toBe(await runtimeText(status));
-      expect(preview?.projected).toBe(status >= 200 && status < 300);
+      expect(preview?.skipped).toBe(
+        status >= 200 && status < 300 ? null : "not-2xx",
+      );
     },
   );
 
@@ -223,7 +225,7 @@ describe("templatePreviewFor", () => {
         status: null,
       }),
     ).toEqual({
-      projected: true,
+      skipped: null,
       text: "Empresa: MAGAZINE LUIZA S/A",
       missing: [],
     });
@@ -371,7 +373,7 @@ describe("templatePreviewFor — the rules are the runtime's, not a copy", () =>
     const body = JSON.stringify({ a: "x".repeat(2000), b: "y".repeat(2000) });
     const template = "{{a}}\n---\n{{b}}";
     const preview = templatePreviewFor({ template, sample: body, status: 200 });
-    expect(preview?.projected).toBe(true);
+    expect(preview?.skipped).toBeNull();
     expect(preview?.text).toContain("…[truncated]");
     expect(preview?.text).toBe(await runtimeText(200, body, template));
   });
@@ -384,7 +386,7 @@ describe("templatePreviewFor — the rules are the runtime's, not a copy", () =>
       sample: "",
       status: 204,
     });
-    expect(preview?.projected).toBe(true);
+    expect(preview?.skipped).toBeNull();
     expect(preview?.text).toBe(
       await runtimeText(204, null, "Done. The booking is confirmed."),
     );
@@ -397,7 +399,9 @@ describe("templatePreviewFor — the rules are the runtime's, not a copy", () =>
       status: 200,
     });
     // Previously null: no preview at all, for a call that succeeds and reaches the model.
-    expect(preview?.projected).toBe(false);
+    // Round 14: and the REASON travels with it. Collapsed to a boolean, this case rendered the
+    // non-2xx sentence — "this sample came back as HTTP null" — for a response that came back 200.
+    expect(preview?.skipped).toBe("not-json");
     expect(preview?.text).toBe(await runtimeText(200, "not json at all"));
   });
 });
@@ -414,7 +418,7 @@ describe("templatePreviewFor — the raw body is the raw body", () => {
       sample: body,
       status: 502,
     });
-    expect(preview?.projected).toBe(false);
+    expect(preview?.skipped).toBe("not-2xx");
     const tool = buildHttpTool(
       {
         name: "t",
@@ -496,4 +500,23 @@ test("the Test button is gated on the same template check Save is", async () => 
   expect(disabled).toContain("templateDeclProblem");
   // And it is the READER's verdict both places, never a second phrasing of the rule.
   expect(src).toMatch(/templateDeclProblem\s*=\s*useMemo/);
+});
+
+// Round 14 of review. The preview collapsed the runtime's three outcomes into a boolean, so a 2xx
+// response that simply is not JSON — a CSV, an XML, a plain "OK" — was explained to the operator as
+// "outside 2xx", with the status interpolated as `null` when the sample was pasted by hand. Same
+// shape as round 12's finding on the runtime side, one layer up.
+test("the preview names WHY the template did not apply, one branch per reason", async () => {
+  const src = await Bun.file(
+    "src/client/pages/resources/ToolEditModal.tsx",
+  ).text();
+  // Each reason the runtime can return has its own sentence, selected by that reason.
+  expect(src).toMatch(
+    /templatePreview\?\.skipped === "not-2xx"[\s\S]{0,400}outputTemplateNotApplied/,
+  );
+  expect(src).toMatch(
+    /templatePreview\?\.skipped === "not-json"[\s\S]{0,400}outputTemplateNotJson/,
+  );
+  // And never on the negation of "it rendered", which is what made one sentence cover two causes.
+  expect(src).not.toContain("!templatePreview.projected");
 });

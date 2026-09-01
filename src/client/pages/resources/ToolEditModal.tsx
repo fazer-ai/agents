@@ -39,6 +39,7 @@ import {
 import {
   clipToModelLimit,
   MAX_TEMPLATE_CHARS,
+  type ProjectedResponse,
   projectToolResponse,
   readResponseTemplateResult,
   templateLeaves,
@@ -159,7 +160,14 @@ export function templatePreviewFor(args: {
   template: string;
   sample: string;
   status: number | null;
-}): { projected: boolean; text: string; missing: string[] } | null {
+}): {
+  // The runtime's OWN reason, carried rather than collapsed. A boolean here made one sentence cover
+  // two causes: a 2xx body that is not JSON was explained as "outside 2xx", with a hand-pasted
+  // sample's absent status interpolated as `null`.
+  skipped: ProjectedResponse["skipped"];
+  text: string;
+  missing: string[];
+} | null {
   const template = args.template.trim();
   // VERBATIM, not trimmed: on the raw path the runtime clips the body exactly as it arrived, so
   // dropping leading whitespace here slides the 4000-character window and shows tail content the
@@ -185,12 +193,12 @@ export function templatePreviewFor(args: {
   );
   return p.text === null
     ? {
-        projected: false,
+        skipped: p.skipped,
         text: clipToModelLimit(sample).text,
         missing: [],
       }
     : {
-        projected: true,
+        skipped: null,
         text: clipToModelLimit(p.text).text,
         missing: p.missing,
       };
@@ -1850,12 +1858,20 @@ export function ToolEditModal({
                   )}
                 </p>
               )}
-              {templatePreview && !templatePreview.projected && (
+              {templatePreview?.skipped === "not-2xx" && (
                 <p className="-mt-2 text-warning text-xs">
                   {t(
                     "tools.outputTemplateNotApplied",
                     "This sample came back as HTTP {{status}}, and the template only applies to a successful response. Outside 2xx the agent reads the body as it came, so it can read the error.",
                     { status: sampleStatus },
+                  )}
+                </p>
+              )}
+              {templatePreview?.skipped === "not-json" && (
+                <p className="-mt-2 text-warning text-xs">
+                  {t(
+                    "tools.outputTemplateNotJson",
+                    "This sample is not JSON, so there is nothing for the fields to point at and the agent reads the body as it came. The call still succeeded — only the template does not apply to it.",
                   )}
                 </p>
               )}

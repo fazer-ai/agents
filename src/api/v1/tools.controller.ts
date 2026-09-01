@@ -15,6 +15,10 @@ import {
   toolReferences,
   updateToolDefinition,
 } from "@/modules/tool-definitions/service";
+import {
+  runToolTest,
+  type ToolTestInput,
+} from "@/modules/tool-definitions/test-run";
 
 // The error catalog this controller's routes answer with. `bun i18n:extract` materialises
 // src/api/locales/*.json from these lines and prunes anything nothing references, and
@@ -88,7 +92,8 @@ export const writeBody = t.Object({
   ),
   outputSchema: t.Optional(
     t.Record(t.String(), t.Unknown(), {
-      description: "JSON Schema describing the tool response shape.",
+      description:
+        'How this tool\'s response should read by the time it reaches the model: {"mode": "template", "template": "**{{razao_social}}** — {{municipio}}\nStatus: {{situacao}}"}. A token is a dot-separated path into the response body, with a number for a list position (data.items.0.name); a path that does not resolve renders "(not returned)" and is reported on the tool stage. Rendered before the response is clipped, so a field past the clip is reachable. Omitted (or any other shape) hands the model the raw body, clipped, which is the old behaviour.',
     }),
   ),
   query: t.Optional(
@@ -248,6 +253,58 @@ export const toolsController = new Elysia({
       ),
       response: errors(400, 401, 403, 404, 409, 422),
       body: createBody,
+    },
+  )
+  // Run the definition on screen, unsaved, against the real API — the loop that makes a response
+  // template writable (issue #456). It goes out through the same `buildHttpTool` a turn uses, so
+  // every guard is the same code; see `modules/tool-definitions/test-run.ts` for why that matters
+  // and for what is deliberately NOT wired (no appointment registration, no customer ack).
+  .post(
+    "/test",
+    async ({ tenantContext, body }) => ({
+      instance: instanceIdentity,
+      result: await runToolTest(
+        ctxOrThrow(tenantContext),
+        body as unknown as ToolTestInput,
+      ),
+    }),
+    {
+      requireRole: "TENANT_ADMIN",
+      detail: doc(
+        "Test a tool definition",
+        "Issues one real request for the supplied (unsaved) HTTP tool definition and returns the provider's raw response alongside the exact text the model would receive. Adds no capability over saving the tool and calling it: the same allowlist, SSRF guard, redirect refusal and timeout apply. The request headers are never echoed back, and no appointment is registered.",
+      ),
+      response: errors(400, 401, 403, 404, 422),
+      body: t.Object({
+        definition: t.Object({
+          name: t.Optional(t.String()),
+          method: t.Optional(t.String()),
+          urlTemplate: t.String({
+            description:
+              "Absolute URL template, or a path when the credential carries a base URL.",
+          }),
+          allowedHosts: t.Optional(t.Array(t.String())),
+          headers: t.Optional(t.Record(t.String(), t.Unknown())),
+          inputSchema: t.Optional(t.Record(t.String(), t.Unknown())),
+          query: t.Optional(t.Record(t.String(), t.Unknown())),
+          body: t.Optional(t.Record(t.String(), t.Unknown())),
+          credentialRef: t.Optional(t.Union([t.String(), t.Null()])),
+          expectedStatuses: t.Optional(t.Array(t.Number())),
+          outputSchema: t.Optional(t.Record(t.String(), t.Unknown())),
+        }),
+        args: t.Optional(
+          t.Record(t.String(), t.Unknown(), {
+            description:
+              "Values for the AI-filled fields, as the model would have supplied them.",
+          }),
+        ),
+        context: t.Optional(
+          t.Record(t.String(), t.String(), {
+            description:
+              "Values for the conversation/contact placeholders. Names outside the runtime's own list are ignored.",
+          }),
+        ),
+      }),
     },
   )
   .patch(

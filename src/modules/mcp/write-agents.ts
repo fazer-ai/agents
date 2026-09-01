@@ -26,6 +26,7 @@ import {
 } from "@/modules/mcp-connections/service";
 import { unsupportedBodyShape } from "@/modules/tool-definitions/body-shape";
 import { normalizeToolShapes } from "@/modules/tool-definitions/normalize";
+import { readResponseTemplateResult } from "@/modules/tool-definitions/response-template";
 import {
   createToolDefinition,
   deleteToolDefinition,
@@ -411,7 +412,16 @@ async function buildToolPatch(
   if (args.allowed_hosts !== undefined) patch.allowedHosts = args.allowed_hosts;
   if (args.headers !== undefined) patch.headers = args.headers;
   if (args.input_schema !== undefined) patch.inputSchema = args.input_schema;
-  if (args.output_schema !== undefined) patch.outputSchema = args.output_schema;
+  if (args.output_schema !== undefined) {
+    // NOTE: refused here and not only in the service, for the reason the body check below gives: a
+    // dry run never calls the service, so a template the apply would reject was previewed back
+    // intact and with no warning. Only a DECLARED template is judged — anything else in this column
+    // (including a real JSON Schema, which this argument has accepted unvalidated since it existed)
+    // passes through as it always has.
+    const r = readResponseTemplateResult(args.output_schema);
+    if (r.declared && !r.ok) return { fail: err(r.problem) };
+    patch.outputSchema = args.output_schema;
+  }
   if (args.query !== undefined) patch.query = args.query;
   if (args.body !== undefined) {
     // NOTE: refused here and not only in the service, for the same reason the expected_statuses

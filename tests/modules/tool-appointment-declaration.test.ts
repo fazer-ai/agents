@@ -2,11 +2,11 @@ import { describe, expect, test } from "bun:test";
 import {
   type AppointmentDeclaration,
   extractAppointment,
-  isUsablePath,
   readAppointmentDeclaration,
   readPath,
   sampleLeaves,
 } from "@/modules/tool-definitions/appointment";
+import { isUsablePath } from "@/modules/tool-definitions/json-path";
 import { toolDefinitionCreateSchema } from "@/modules/tool-definitions/service";
 
 // The decision table for what an operator's HTTP tool may declare about the booking its response

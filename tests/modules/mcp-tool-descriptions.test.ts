@@ -367,6 +367,16 @@ describe("MCP tool descriptions", () => {
   // And the `takeover` block of issue #430 takes it to 52,154. One boolean, 54 characters of total
   // payload, which is the honest price of a NEW block rather than a field on an existing one — the
   // same 33 characters this addition cost above, published once here.
+  //
+  // The response template of #456 takes it to 52,910, and the increment is worth naming because it
+  // is the largest single one recorded here: 756 characters, all of it the `output_schema`
+  // description on `tool_create` and `tool_update`. A column that existed with a one-line
+  // description ("JSON Schema describing the tool response shape") now has a contract behind it —
+  // the shape that opts in, the path grammar, the fact that it renders BEFORE the clip, and what
+  // omitting it means — and a client that cannot read those writes a template the runtime refuses.
+  // Measured after a first draft that cost 1,092: the version that ships drops the prose and keeps
+  // the four facts, and the fuller wording lives on the REST/OpenAPI field, which no ceiling counts.
+  // The ceiling goes to 53,000.
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;
@@ -376,7 +386,7 @@ describe("MCP tool descriptions", () => {
       schema += t.schema.length;
     }
     expect(desc).toBeLessThanOrEqual(27_250);
-    expect(schema).toBeLessThanOrEqual(52_200);
+    expect(schema).toBeLessThanOrEqual(53_000);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

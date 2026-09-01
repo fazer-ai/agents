@@ -1139,3 +1139,179 @@ describe("buildHttpTool — non-2xx marked as integration failure (issue #40)", 
     expect(String(okOut.content)).toContain("HTTP 200");
   });
 });
+
+// #456. THE MEASURED CASE: a lookup whose response is bigger than the clip, whose first kilobytes
+// are third-party data the tool was never asked for, and whose registration status sits past the
+// cut. Before the template the model got the head of the body and invented the tail.
+function measuredBody(): string {
+  return JSON.stringify({
+    // 5 partners with names and masked tax ids: 29% of the real response, and none of it asked for.
+    qsa: Array.from({ length: 5 }, (_, i) => ({
+      nome_socio: `SOCIO ${i}`,
+      cnpj_cpf_do_socio: `***${i}00000**`,
+      faixa_etaria: "Entre 41 a 50 anos",
+      data_entrada_sociedade: "2000-01-01",
+      qualificacao_socio: "Sócio-Administrador",
+      padding: "x".repeat(800),
+    })),
+    razao_social: "MAGAZINE LUIZA S/A",
+    municipio: "FRANCA",
+    cnae_fiscal_descricao: "Comércio varejista",
+    data_inicio_atividade: "1957-11-16",
+    descricao_situacao_cadastral: "ATIVA",
+  });
+}
+
+describe("response template (#456)", () => {
+  const TEMPLATE =
+    "**{{razao_social}}** — {{municipio}}\nSituação: {{descricao_situacao_cadastral}}\nAbertura: {{data_inicio_atividade}}";
+
+  test("without a template the status field is clipped away, and the clip is reported", async () => {
+    const body = measuredBody();
+    expect(body.length).toBeGreaterThan(4000);
+    expect(body.indexOf("descricao_situacao_cadastral")).toBeGreaterThan(4000);
+    const notes: { phase: string; detail?: Record<string, unknown> }[] = [];
+    const tool = buildHttpTool(def(), {
+      resolveCredential: async () => null,
+      fetchImpl: stubFetch({}, 200, body),
+      onSideEffectError: (e) =>
+        notes.push({ phase: e.phase, detail: e.detail }),
+    });
+    const out = (await tool.invoke({})) as unknown as ToolMessage;
+    const text = String(out.content ?? out);
+    expect(text).toContain("…[truncated]");
+    expect(text).not.toContain("ATIVA");
+    // The operator's only signal that the model was handed a partial answer.
+    expect(notes.map((n) => n.phase)).toEqual(["response_clipped"]);
+    expect(notes[0]?.detail).toMatchObject({
+      limit: 4000,
+      chars: body.length,
+      templated: false,
+    });
+  });
+
+  test("with a template the field past the clip DOES reach the model, and the noise does not", async () => {
+    // The whole point of rendering BEFORE the clip: char 4001 onwards is not reachable otherwise.
+    const tool = buildHttpTool(
+      def({ outputSchema: { mode: "template", template: TEMPLATE } }),
+      {
+        resolveCredential: async () => null,
+        fetchImpl: stubFetch({}, 200, measuredBody()),
+      },
+    );
+    const out = (await tool.invoke({})) as unknown as ToolMessage;
+    const text = String(out.content ?? out);
+    expect(text).toBe(
+      "HTTP 200\n**MAGAZINE LUIZA S/A** — FRANCA\nSituação: ATIVA\nAbertura: 1957-11-16",
+    );
+    expect(text).not.toContain("SOCIO");
+    expect(text).not.toContain("…[truncated]");
+  });
+
+  test("a path that misses is named to the operator, and the model sees the marker", async () => {
+    const notes: { phase: string; detail?: Record<string, unknown> }[] = [];
+    const tool = buildHttpTool(
+      def({
+        outputSchema: { mode: "template", template: "Status: {{situacao}}" },
+      }),
+      {
+        resolveCredential: async () => null,
+        fetchImpl: stubFetch(
+          {},
+          200,
+          '{"descricao_situacao_cadastral":"ATIVA"}',
+        ),
+        onSideEffectError: (e) =>
+          notes.push({ phase: e.phase, detail: e.detail }),
+      },
+    );
+    const out = (await tool.invoke({})) as unknown as ToolMessage;
+    expect(String(out.content ?? out)).toBe("HTTP 200\nStatus: (not returned)");
+    expect(notes.map((n) => n.phase)).toEqual(["response_template"]);
+    expect(notes[0]?.detail).toMatchObject({ missing: ["situacao"] });
+  });
+
+  test("a body that is not JSON keeps the raw text and says why", async () => {
+    const notes: string[] = [];
+    const tool = buildHttpTool(
+      def({ outputSchema: { mode: "template", template: "{{a}}" } }),
+      {
+        resolveCredential: async () => null,
+        fetchImpl: stubFetch({}, 200, "<html>maintenance</html>"),
+        onSideEffectError: (e) => notes.push(e.phase),
+      },
+    );
+    const out = (await tool.invoke({})) as unknown as ToolMessage;
+    expect(String(out.content ?? out)).toBe(
+      "HTTP 200\n<html>maintenance</html>",
+    );
+    expect(notes).toEqual(["response_template"]);
+  });
+
+  test("a non-2xx body reaches the model verbatim, template or not", async () => {
+    // The error text is what the model needs; a template aimed at success fields would paper it
+    // over with a block of absent markers.
+    const tool = buildHttpTool(
+      def({
+        expectedStatuses: [404],
+        outputSchema: { mode: "template", template: "Name: {{name}}" },
+      }),
+      {
+        resolveCredential: async () => null,
+        fetchImpl: stubFetch(
+          {},
+          404,
+          '{"message":"CNPJ 00.000.000/0001-00 não encontrado"}',
+        ),
+      },
+    );
+    const out = (await tool.invoke({})) as unknown as ToolMessage;
+    expect(String(out.content ?? out)).toBe(
+      'HTTP 404\n{"message":"CNPJ 00.000.000/0001-00 não encontrado"}',
+    );
+  });
+
+  test("an unreadable declaration is ignored, exactly as before the feature", async () => {
+    const tool = buildHttpTool(
+      // A real JSON Schema, which this column has accepted through MCP since it existed.
+      def({
+        outputSchema: { type: "object", properties: { a: { type: "string" } } },
+      }),
+      {
+        resolveCredential: async () => null,
+        fetchImpl: stubFetch({}, 200, '{"a":"1"}'),
+      },
+    );
+    const out = (await tool.invoke({})) as unknown as ToolMessage;
+    expect(String(out.content ?? out)).toBe('HTTP 200\n{"a":"1"}');
+  });
+
+  test("a rendered template is still clipped, as a backstop, and says so", async () => {
+    const notes: { phase: string; detail?: Record<string, unknown> }[] = [];
+    const tool = buildHttpTool(
+      def({ outputSchema: { mode: "template", template: "A{{a}}B{{b}}" } }),
+      {
+        resolveCredential: async () => null,
+        maxResponseChars: 50,
+        onSideEffectError: (e) =>
+          notes.push({ phase: e.phase, detail: e.detail }),
+        fetchImpl: stubFetch(
+          {},
+          200,
+          JSON.stringify({ a: "x".repeat(60), b: "y".repeat(60) }),
+        ),
+      },
+    );
+    const out = (await tool.invoke({})) as unknown as ToolMessage;
+    const text = String(out.content ?? out);
+    // Starts with the TEMPLATE's own literal, so this is the rendered text being clipped and not
+    // the raw body: the raw body starts with `{`.
+    expect(text.startsWith("HTTP 200\nAxxx")).toBe(true);
+    expect(text.endsWith("…[truncated]")).toBe(true);
+    expect(text.length).toBeLessThan(80);
+    // A template that overruns loses its own tail, which is the same silent hole as an unprojected
+    // body losing its end. `templated` is what tells the operator which fix theirs is.
+    expect(notes.map((n) => n.phase)).toEqual(["response_clipped"]);
+    expect(notes[0]?.detail).toMatchObject({ templated: true, limit: 50 });
+  });
+});

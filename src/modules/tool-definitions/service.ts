@@ -13,6 +13,7 @@ import {
 } from "@/modules/audit/projection";
 import { auditMutation, projectionMoved } from "@/modules/audit/service";
 import { readAppointmentDeclaration } from "@/modules/tool-definitions/appointment";
+import { readResponseTemplateResult } from "@/modules/tool-definitions/response-template";
 import { readableVaultRef, requireVaultRef } from "@/modules/vault/service";
 import { unsupportedBodyShape } from "./body-shape";
 import { normalizeToolShapes } from "./normalize";
@@ -104,6 +105,11 @@ function toDto(r: {
     allowedHosts: r.allowedHosts,
     headers: (r.headers ?? {}) as Record<string, unknown>,
     inputSchema: (r.inputSchema ?? {}) as Record<string, unknown>,
+    // Verbatim, and DELIBERATELY not re-read through `readResponseTemplateResult` the way
+    // `appointment` below is. That normalization exists so the editor never shows a rule the runtime
+    // ignores; here it would instead ERASE from the read surface a legacy JSON Schema that some
+    // caller wrote and may still be reading back. The write already stores the reader's own shape,
+    // so a declared template arrives here normalized anyway.
     outputSchema: (r.outputSchema ?? {}) as Record<string, unknown>,
     query: (r.query ?? {}) as Record<string, unknown>,
     body: (r.body ?? {}) as Record<string, unknown>,
@@ -221,7 +227,23 @@ export const toolDefinitionCreateSchema = z
     allowedHosts: z.array(z.string().min(1).max(255)).max(50),
     headers: z.record(z.string(), z.unknown()).optional(),
     inputSchema: z.record(z.string(), z.unknown()).optional(),
-    outputSchema: z.record(z.string(), z.unknown()).optional(),
+    // What this tool's RESPONSE should look like by the time it reaches the model (issue #456).
+    // Only `mode: "template"` opts in, and only that shape is judged: this column has been writable
+    // through the MCP tool since it existed, unvalidated and read nowhere, so a row may hold a real
+    // JSON Schema. Refusing those now would break a published surface for rows that never asked for
+    // this feature. A DECLARED template that the reader would not honour is refused rather than
+    // stored, for the reason the appointment field below carries: a declaration that looks saved and
+    // does nothing is the silence the feature exists to remove.
+    outputSchema: z
+      .record(z.string(), z.unknown())
+      .optional()
+      .superRefine((v, ctx) => {
+        if (v === undefined) return;
+        const r = readResponseTemplateResult(v);
+        if (r.declared && !r.ok) {
+          ctx.addIssue({ code: "custom", message: r.problem });
+        }
+      }),
     // Query-string params (Record<string,string> templates), applied for any method.
     query: z.record(z.string(), z.unknown()).optional(),
     // Body shape: { mode: "kv", rows } | { mode: "raw", raw } | legacy { mode: "fields" }, checked
@@ -303,6 +325,18 @@ async function assertNameFree(
   }
 }
 
+// Stored as the READER understands it (the trimmed template), so the row can never hold a
+// declaration the runtime would render differently from what the editor showed. Anything that is
+// not a declaration — absent, {}, a legacy JSON Schema — is stored verbatim: it is not this
+// feature's to rewrite.
+function storableOutputSchema(raw: unknown): Prisma.InputJsonValue {
+  const r = readResponseTemplateResult(raw);
+  if (r.declared && r.ok) {
+    return { mode: "template", template: r.template } as Prisma.InputJsonValue;
+  }
+  return (raw ?? {}) as Prisma.InputJsonValue;
+}
+
 function assertSupportedBody(body: unknown): void {
   const reason = unsupportedBodyShape(body);
   if (reason) throw new AppError(reason, 400);
@@ -344,7 +378,7 @@ export async function createToolDefinition(
         allowedHosts: data.allowedHosts,
         headers: (shapes.headers ?? {}) as Prisma.InputJsonValue,
         inputSchema: (shapes.inputSchema ?? {}) as Prisma.InputJsonValue,
-        outputSchema: (data.outputSchema ?? {}) as Prisma.InputJsonValue,
+        outputSchema: storableOutputSchema(data.outputSchema),
         query: (shapes.query ?? {}) as Prisma.InputJsonValue,
         body: (shapes.body ?? {}) as Prisma.InputJsonValue,
         credentialRef,
@@ -431,7 +465,7 @@ export async function updateToolDefinition(
     if (data.inputSchema !== undefined)
       patchData.inputSchema = shapes.inputSchema as Prisma.InputJsonValue;
     if (data.outputSchema !== undefined)
-      patchData.outputSchema = data.outputSchema as Prisma.InputJsonValue;
+      patchData.outputSchema = storableOutputSchema(data.outputSchema);
     if (data.query !== undefined)
       patchData.query = shapes.query as Prisma.InputJsonValue;
     if (data.body !== undefined)

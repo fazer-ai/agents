@@ -16,6 +16,10 @@ import {
   readAppointmentDeclaration,
 } from "@/modules/tool-definitions/appointment";
 import { normalizeToolShapes } from "@/modules/tool-definitions/normalize";
+import {
+  readResponseTemplate,
+  renderResponseTemplate,
+} from "@/modules/tool-definitions/response-template";
 import { resolveSecretInjection } from "@/modules/vault/secret-types";
 import { normalizeToolName } from "./toolName";
 
@@ -66,6 +70,10 @@ export interface HttpToolDef {
   // What this tool's RESPONSE says about an appointment, when it says anything (issue #352). Read by
   // readAppointmentDeclaration; anything it cannot make sense of declares nothing.
   appointment?: unknown;
+  // What this tool's RESPONSE should look like by the time it reaches the model (issue #456). Read
+  // by readResponseTemplate; anything it cannot make sense of declares nothing, which is the raw
+  // body and the clip this file has always handed over.
+  outputSchema?: unknown;
 }
 
 export interface HttpToolDeps {
@@ -112,9 +120,13 @@ export interface HttpToolDeps {
     eventId: string,
     opts?: { provider?: string; tool?: string },
   ) => Promise<void>;
-  // Reports a side effect that failed INSIDE a tool that still returns success to the model. A
-  // declared path that does not resolve is exactly that: the booking is real and already made, so
-  // the tool succeeded, and the only thing to do with the miss is put it where the operator reads it.
+  // Reports what went wrong INSIDE a tool that still returns success to the model. Two kinds reach
+  // it, and they share this channel because they share the property that makes them dangerous: the
+  // call succeeded, so nothing else anywhere says a word. A declared appointment path that does not
+  // resolve is one (the booking is real and already made). A response the operator's template could
+  // not render, or a response that was clipped with no template to render, is the other — there the
+  // model got an answer with a hole in it, and #456 is the measurement of what a model does with a
+  // hole. The only thing to do with either is put it where the operator reads it.
   onSideEffectError?: (e: {
     tool: string;
     phase: string;
@@ -438,6 +450,60 @@ async function applyExtractedAppointment(
     summary: value.summary ?? null,
     calendarLabel: null,
   });
+}
+
+// The operator's response template, applied to one response. Returns the text the model should be
+// given, or null for "hand over the raw body" — which is what every tool written before #456 says,
+// and what every response this cannot render says.
+//
+// ONLY 2xx, the same gate `registerDeclaredAppointment` uses and for a related reason. A non-2xx
+// body is the provider's own error message and the model needs it verbatim; a template pointed at
+// success fields would paper it over with a block of absent markers. `expectedStatuses` does not
+// change this: it says a status is a RESULT rather than an integration failure, which is how a
+// lookup declares that its 404 means "no record" (issue #59) — it does not say the 404 body carries
+// the success fields.
+function projectResponse(
+  def: HttpToolDef,
+  deps: HttpToolDeps,
+  status: number,
+  rawBody: string,
+): string | null {
+  const tpl = readResponseTemplate(def.outputSchema);
+  if (!tpl) return null;
+  if (status < 200 || status >= 300) return null;
+  const report = (err: Error, detail?: Record<string, unknown>) =>
+    deps.onSideEffectError?.({
+      tool: def.name,
+      phase: "response_template",
+      detail,
+      err,
+    });
+  let body: unknown;
+  try {
+    body = JSON.parse(rawBody);
+  } catch {
+    // The raw body still goes to the model: the request succeeded and refusing the call would be
+    // wrong, and an empty render would be worse than the body it replaced.
+    report(
+      new Error(
+        "the response is not JSON, so the response template could not be applied and the raw body was sent to the model",
+      ),
+    );
+    return null;
+  }
+  const { text, missing } = renderResponseTemplate(tpl, body);
+  if (missing.length > 0) {
+    // The model was handed an explicit marker rather than a blank, so this is not a silent hole for
+    // it. It IS a silent hole for the operator, whose template promises a field the API is not
+    // answering with — and naming the path is the only channel that exists for it.
+    report(
+      new Error(
+        `response template path(s) did not resolve: ${missing.join(", ")}`,
+      ),
+      { missing },
+    );
+  }
+  return text;
 }
 
 export function buildHttpTool(
@@ -775,10 +841,35 @@ export function buildHttpTool(
       }
 
       const text = await res.text();
+      // THE PROJECTION, and it runs BEFORE the clip because that ordering is the feature. In the
+      // response #456 measured, every status-bearing field sat past char 4000: rendering after the
+      // cut could never have reached one. The clip below still applies to whatever comes out, as a
+      // backstop — a template with many tokens, or one long value, can still overrun.
+      const rendered = projectResponse(def, deps, res.status, text);
+      const modelBody = rendered ?? text;
       const trimmed =
-        text.length > maxChars
-          ? `${clipText(text, maxChars)}…[truncated]`
-          : text;
+        modelBody.length > maxChars
+          ? `${clipText(modelBody, maxChars)}…[truncated]`
+          : modelBody;
+      // The clip is otherwise invisible from both ends: the model reads `…[truncated]` as an end,
+      // and the operator reads a plausible answer. Reported for a TEMPLATED response too — the
+      // first draft guarded this on `rendered === null`, reasoning that an operator whose own text
+      // overran already knows about it, and the mutation battery kept that condition alive with no
+      // test able to tell either way. It is the same silent hole (the model loses the tail), so
+      // what differs is only the fix, and `templated` is what says which fix it is.
+      if (modelBody.length > maxChars) {
+        const templated = rendered !== null;
+        deps.onSideEffectError?.({
+          tool: def.name,
+          phase: "response_clipped",
+          detail: { chars: modelBody.length, limit: maxChars, templated },
+          err: new Error(
+            templated
+              ? `the response template rendered ${modelBody.length} characters and the model was given the first ${maxChars}; shorten it or point it at fewer fields`
+              : `the response was ${modelBody.length} characters and the model was given the first ${maxChars}; declare a response template so it gets the fields you want instead of the beginning of the body`,
+          ),
+        });
+      }
       // NOTE: By default every non-2xx is an integration failure worth alerting on — a broken
       // credential, a provider outage, a rejected payload (issue #40) — unless the operator declared
       // this status a result for this tool (issue #59). The model sees the same "HTTP <status>" body

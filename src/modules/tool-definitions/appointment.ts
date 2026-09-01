@@ -22,6 +22,12 @@ import {
   readProviderSlug,
 } from "@/modules/appointments/provider";
 import { normalizeOffsets } from "@/modules/appointments/settings";
+import {
+  collectLeaves,
+  isUsablePath,
+  type SampleLeaf,
+  walkPath,
+} from "@/modules/tool-definitions/json-path";
 
 export interface AppointmentDeclaration {
   // "book": the response describes an appointment that now stands. "cancel": it describes one that
@@ -46,20 +52,6 @@ export interface AppointmentDeclaration {
   // booking than the settings page can.
   reminderOffsetsHours?: number[];
   askConfirmationOnLast?: boolean;
-}
-
-// A path into a JSON response: dot-separated keys, with a numeric segment indexing an array
-// (`data.items.0.id`). Deliberately not JSONPath — the whole surface an operator has to learn is one
-// sentence, and a filter expression would be a second language inside a text field.
-const PATH_SEGMENT = /^[A-Za-z0-9_$-]+$/;
-
-export function isUsablePath(p: unknown): p is string {
-  return (
-    typeof p === "string" &&
-    p.length > 0 &&
-    p.length <= 200 &&
-    p.split(".").every((seg) => PATH_SEGMENT.test(seg))
-  );
 }
 
 // Null for anything this cannot act on, and that is the fail-safe direction: a declaration the
@@ -108,34 +100,10 @@ export function readAppointmentDeclaration(
   };
 }
 
-// Walk a dotted path. Returns undefined for anything that is not a scalar at the end: an object or
-// an array there means the operator pointed at the wrong level, which is a mistake to report rather
-// than a value to coerce.
-export function readPath(body: unknown, path: string): string | undefined {
-  let cur: unknown = body;
-  for (const seg of path.split(".")) {
-    if (cur === null || typeof cur !== "object") return undefined;
-    cur = Array.isArray(cur)
-      ? /^\d+$/.test(seg)
-        ? cur[Number(seg)]
-        : undefined
-      : // OWN properties only. Nothing on Object.prototype is a scalar today, so no prototype path
-        // actually resolves — measured, and the reviewer's `constructor.name` returns undefined
-        // because the intermediate is a function and the guard above already refuses one. The check
-        // is here for the divergence rather than the exploit: `sampleLeaves` offers what
-        // `Object.keys` yields, which is own properties, so without this the two readers of the same
-        // question disagree about what a path may address, and that disagreement is exactly what the
-        // picker exists to remove.
-        Object.hasOwn(cur as object, seg)
-        ? (cur as Record<string, unknown>)[seg]
-        : undefined;
-  }
-  return readScalar(cur);
-}
-
-// What a path is allowed to END on, factored out of readPath because the sample picker below has to
-// offer exactly the leaves readPath would accept. Two readers of the same question drift; one does
-// not, and a picker that offers a leaf the reader then refuses is worse than no picker.
+// What an appointment path is allowed to END on. Narrower than the template reader's rule
+// (`response-template.ts`) on purpose, and the difference is not taste: an id may not be the empty
+// string and may not be a boolean, because the value is IDENTITY that a later cancel has to answer
+// with. The walk, the grammar and the picker are shared (`json-path.ts`); only this is local.
 function readScalar(cur: unknown): string | undefined {
   if (typeof cur === "string") return cur || undefined;
   if (typeof cur === "number" && Number.isFinite(cur)) {
@@ -150,66 +118,17 @@ function readScalar(cur: unknown): string | undefined {
   return undefined;
 }
 
-export interface SampleLeaf {
-  path: string;
-  value: string;
+// Walk a dotted path. Returns undefined for anything that is not a scalar at the end: an object or
+// an array there means the operator pointed at the wrong level, which is a mistake to report rather
+// than a value to coerce.
+export function readPath(body: unknown, path: string): string | undefined {
+  return readScalar(walkPath(body, path));
 }
 
-// Every place in a sample response that a declaration could point AT, in document order, so the
-// operator picks a path instead of typing one. Typing is where the expensive mistake lives: the
-// gates in the form catch a MALFORMED path, and nothing catches a well-formed path aimed at the
-// wrong key — `data.id` where the field is `data.appointment.id` passes every check and simply
-// finds nothing, at which point the platform records no appointment and the operator has no idea
-// why.
-//
-// Both filters mirror a reader rather than a taste, which is the property that makes the offer
-// trustworthy:
-//
-//   - the VALUE has to be one readScalar returns, so an object, an array, null, a boolean, an empty
-//     string and an already-rounded integer are all absent, exactly as they would be at read time;
-//   - every KEY between here and the root has to fit the segment grammar on its own, checked before
-//     the segments are joined. Joining destroys the evidence: a key named literally `a.b` yields the
-//     path `a.b`, which isUsablePath accepts (it splits on the dot and both halves are fine) while
-//     readPath walks it as body.a.b — a different place entirely. Checking the assembled path is
-//     therefore not the same check, and it is the one that would have shipped the exact silent
-//     mis-aim this picker exists to remove.
-//
-// Bounded on both axes: a sample is pasted by hand, and a response with thousands of rows would
-// otherwise render thousands of buttons.
+// The leaves an APPOINTMENT path may point at, which is `collectLeaves` paired with this module's
+// own scalar rule — the pairing is the invariant, and `json-path.ts` says why.
 export function sampleLeaves(root: unknown, max = 200): SampleLeaf[] {
-  const out: SampleLeaf[] = [];
-  const walk = (node: unknown, path: string, depth: number): void => {
-    if (out.length >= max || depth > 10) return;
-    // Both loops BREAK rather than letting each walk return: the cap has to stop the traversal, not
-    // just the pushing. A pasted response with a 50k-row array would otherwise still be enumerated
-    // end to end, in the browser, while the operator waits — and Object.entries would allocate the
-    // whole entry array first. The cap is only a bound if reaching it ends the work.
-    if (Array.isArray(node)) {
-      for (let i = 0; i < node.length; i++) {
-        if (out.length >= max) break;
-        walk(node[i], path === "" ? String(i) : `${path}.${i}`, depth + 1);
-      }
-      return;
-    }
-    if (node !== null && typeof node === "object") {
-      for (const k of Object.keys(node)) {
-        if (out.length >= max) break;
-        // The whole subtree goes with the key: nothing under an unaddressable key is addressable.
-        if (!PATH_SEGMENT.test(k)) continue;
-        walk(
-          (node as Record<string, unknown>)[k],
-          path === "" ? k : `${path}.${k}`,
-          depth + 1,
-        );
-      }
-      return;
-    }
-    const value = readScalar(node);
-    // isUsablePath still answers for the LENGTH cap, which is a property of the whole path.
-    if (value !== undefined && isUsablePath(path)) out.push({ path, value });
-  };
-  walk(root, "", 0);
-  return out;
+  return collectLeaves(root, readScalar, max);
 }
 
 // What a declared response is allowed to hand over, per field, and the two answers are different on

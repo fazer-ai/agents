@@ -4,6 +4,7 @@ import { describe, expect, test } from "bun:test";
 import {
   formFromTool,
   parseExpectedStatuses,
+  payloadOf,
   type Tool,
 } from "@/client/pages/resources/ToolEditModal";
 
@@ -99,5 +100,49 @@ describe("parseExpectedStatuses", () => {
   // Round-trip: the stored list is rendered back into the field as a comma list.
   test("the rendered value parses back to itself", () => {
     expect(parseExpectedStatuses([404, 409].join(", "))).toEqual([404, 409]);
+  });
+});
+
+// #456. The response template travels through the form as plain markdown; the {mode, template}
+// envelope is assembled on save, and whatever ELSE the column held has to survive an edit that
+// never showed it.
+describe("formFromTool / payloadOf — the response template", () => {
+  test("a stored template loads as the text the operator wrote", () => {
+    const form = formFromTool(
+      legacyTool({
+        outputSchema: { mode: "template", template: "Name: {{data.name}}" },
+      }),
+    );
+    expect(form.outputTemplate).toBe("Name: {{data.name}}");
+    expect(form.outputSchemaOther).toBeNull();
+    expect(payloadOf(form)?.outputSchema).toEqual({
+      mode: "template",
+      template: "Name: {{data.name}}",
+    });
+  });
+
+  test("a legacy JSON Schema is not shown, and is not deleted either", () => {
+    // This column has been writable through MCP since it existed, unvalidated and read nowhere. A
+    // form that renders nothing for it and sends {} on save would silently drop whatever the caller
+    // that wrote it is still reading back.
+    const schema = { type: "object", properties: { id: { type: "string" } } };
+    const form = formFromTool(legacyTool({ outputSchema: schema }));
+    expect(form.outputTemplate).toBe("");
+    expect(payloadOf(form)?.outputSchema).toEqual(schema);
+  });
+
+  test("writing a template replaces whatever was there", () => {
+    const form = formFromTool(legacyTool({ outputSchema: { type: "object" } }));
+    expect(
+      payloadOf({ ...form, outputTemplate: "  {{a}}  " })?.outputSchema,
+    ).toEqual({
+      mode: "template",
+      template: "{{a}}",
+    });
+  });
+
+  test("a tool with no outputSchema still sends an empty bag", () => {
+    const form = formFromTool(legacyTool());
+    expect(payloadOf(form)?.outputSchema).toEqual({});
   });
 });

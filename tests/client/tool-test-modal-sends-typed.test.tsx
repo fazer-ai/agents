@@ -320,6 +320,10 @@ test("an empty string reaches the wire when the field takes one", async () => {
   });
   const button = screen.getByText("Send request").closest("button");
   expect(button?.hasAttribute("disabled")).toBe(false);
+  // And the choice is offered exactly where it exists: one switch, for the optional field. The
+  // required one's blank box has nothing to disambiguate — it cannot be omitted — so a toggle
+  // there would offer a request the definition cannot make.
+  expect(screen.getAllByRole("switch")).toHaveLength(1);
   fireEvent.click(screen.getByText("Send request"));
   await waitFor(() => expect(sent.body).toBeDefined());
   expect((sent.body as { args: unknown }).args).toEqual({ note: "" });
@@ -335,7 +339,13 @@ test("and an optional field says so explicitly, because a blank box cannot", asy
       ],
     },
   });
-  fireEvent.click(screen.getByText(/Send an empty string instead/));
+  // The control is a switch with a FIXED label. It used to be a text link whose whole sentence
+  // rewrote itself on click, so it had no identity to scan a form for and had to be read twice to
+  // be used once. The STATE moved to where the operator is already looking: the placeholder of the
+  // blank box the toggle is about.
+  expect(screen.getByPlaceholderText("will not be sent")).toBeInTheDocument();
+  fireEvent.click(screen.getByLabelText(/Send as an empty string/));
+  expect(screen.getByPlaceholderText('"" (empty string)')).toBeInTheDocument();
   fireEvent.click(screen.getByText("Send request"));
   await waitFor(() => expect(sent.body).toBeDefined());
   expect((sent.body as { args: unknown }).args).toEqual({ tag: "" });

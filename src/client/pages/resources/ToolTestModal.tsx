@@ -9,6 +9,7 @@ import {
   ModalCancelButton,
   type ModalController,
   Select,
+  SwitchField,
   Textarea,
   useOnModalOpen,
 } from "@/client/components";
@@ -395,6 +396,14 @@ export function ToolTestModal({
               setValues((v) => ({ ...v, [f.name]: next }));
             const bad = problems.find((b) => b.field.name === f.name);
             const picker = fieldUsesPicker(f);
+            // The blank box is ambiguous only here: an optional string the operator may either omit
+            // or send as "". Filled, there is nothing to disambiguate; required cannot be omitted at
+            // all; and a context name is supplied by the platform, never by the model.
+            const canSendEmpty =
+              value === "" &&
+              !f.required &&
+              fieldTakesEmptyString(f) &&
+              !isContext(f.name);
             return (
               <FormField
                 key={f.name}
@@ -432,34 +441,34 @@ export function ToolTestModal({
                     <Input
                       value={value}
                       onChange={(e) => set(e.target.value)}
+                      // A blank box is two different requests, and the placeholder is where the
+                      // operator is already looking. It says which one is armed, so the switch
+                      // below can carry a FIXED label instead of a sentence that rewrites itself
+                      // on click — a control whose text changes when you use it has no identity to
+                      // scan for.
+                      placeholder={
+                        canSendEmpty
+                          ? sendEmpty[f.name]
+                            ? t("tools.testEmptyString", '"" (empty string)')
+                            : t("tools.testNotSent", "will not be sent")
+                          : undefined
+                      }
                     />
                     {/* Only while the box is blank AND the field is optional: filled, there is
                         nothing to disambiguate, and required cannot be omitted at all. */}
-                    {value === "" &&
-                      !f.required &&
-                      fieldTakesEmptyString(f) &&
-                      !isContext(f.name) && (
-                        <button
-                          type="button"
-                          className="self-start text-text-secondary text-xs underline"
-                          onClick={() =>
-                            setSendEmpty((m) => ({
-                              ...m,
-                              [f.name]: !m[f.name],
-                            }))
-                          }
-                        >
-                          {sendEmpty[f.name]
-                            ? t(
-                                "tools.testSendingEmpty",
-                                "Sending an empty string. Leave out instead?",
-                              )
-                            : t(
-                                "tools.testSendEmpty",
-                                "Left out. Send an empty string instead?",
-                              )}
-                        </button>
-                      )}
+                    {canSendEmpty && (
+                      <SwitchField
+                        className="self-start text-xs"
+                        checked={sendEmpty[f.name] ?? false}
+                        onCheckedChange={(on) =>
+                          setSendEmpty((m) => ({ ...m, [f.name]: on }))
+                        }
+                        label={t(
+                          "tools.testSendEmpty",
+                          'Send as an empty string ("")',
+                        )}
+                      />
+                    )}
                   </div>
                 )}
               </FormField>

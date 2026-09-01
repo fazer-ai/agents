@@ -125,7 +125,7 @@ import {
   loadToolSelections,
   type RagConfig,
 } from "./tools/assemble";
-import type { NativeToolName } from "./tools/catalog";
+import { NATIVE_TOOL_NAMES, type NativeToolName } from "./tools/catalog";
 import { buildDocumentTools, type DocumentSelection } from "./tools/documents";
 import {
   buildMcpContextSection,
@@ -1113,90 +1113,98 @@ export async function buildToolset(
   }
   // The order below IS the precedence when two sources claim one name — see unique-names.ts. Native
   // first, because those are the tools the operator cannot rename.
-  const { tools, dropped } = dropDuplicateToolNames([
-    ...deps.buildNativeTools(
-      {
-        client: ctx.client,
-        conversationId: ctx.conversationId,
-        turnState: ctx.turnState,
-        handoffState: ctx.handoffState,
-        transferWithSummary: cfg.transferWithSummary,
-        handoff: effectiveHandoff,
-        handoffTargets,
-        tenantId: ctx.tenantId,
-        base: ctx.base,
-        contactDbId: cfg.contactDbId,
-        conversationDbId: cfg.conversationDbId,
-        observed: ctx.observed,
-        contactVoiceReply: cfg.contactVoiceReply,
-        timezone: cfg.timezone,
-        vocab,
-        kanban,
-        sendImage: cfg.sendImageConfig,
-        fetchImpl: ctx.imageDeps?.fetchImpl,
-        assertSafe: ctx.imageDeps?.assertSafe,
-        toolInstructions,
-        onSideEffectError,
-      },
-      cfg.nativeToolsAllow,
-    ),
-    ...buildDocumentTools(cfg.documentSelections, {
-      tenantId: ctx.tenantId,
+  const nativeTools = deps.buildNativeTools(
+    {
+      client: ctx.client,
+      conversationId: ctx.conversationId,
       turnState: ctx.turnState,
-      // The document is bound to the conversation by its THREAD key, never by the conversation id
-      // alone: that id only identifies a conversation within one Chatwoot account, and a tenant can
-      // have several. Absent off a real conversation, and the document is then issued unbound.
-      threadId: apptThreadId ?? undefined,
-      chatwootInstanceId: ctx.conversationId > 0 ? ctx.instanceId : null,
-      conversationDbId: cfg.conversationDbId,
+      handoffState: ctx.handoffState,
+      transferWithSummary: cfg.transferWithSummary,
+      handoff: effectiveHandoff,
+      handoffTargets,
+      tenantId: ctx.tenantId,
       base: ctx.base,
-      storageDir: ctx.documentsStorageDir,
-      // The same zone the agent tells the time in, so a document's date and a message saying "hoje"
-      // cannot disagree by a day.
+      contactDbId: cfg.contactDbId,
+      conversationDbId: cfg.conversationDbId,
+      observed: ctx.observed,
+      contactVoiceReply: cfg.contactVoiceReply,
       timezone: cfg.timezone,
-      simulate: deps.simulateDocuments,
-    }),
-    ...buildHttpTools(cfg.httpToolDefs, {
-      resolveCredential,
-      emitAck,
-      // HTTP tools are https-only unless allowHttp. In dev (where SSRF_ALLOW_PRIVATE_TARGETS is on by
-      // default) operators legitimately point tools at local http services (see .env.example); prod
-      // keeps the flag false → https-only. Ties the two so a local HTTP tool works without extra config.
-      allowHttp: config.ssrf.allowPrivateTargets,
-      context: {
-        ...(ctx.conversationId > 0
-          ? { conversation_id: String(ctx.conversationId) }
-          : {}),
-        ...(ctx.messageId && ctx.messageId > 0
-          ? { message_id: String(ctx.messageId) }
-          : {}),
-        ...cfg.httpToolContext,
-      },
-      // The zone an offset-less start from a declared response is read in. Same value the documents
-      // tool gets, and for the same reason: two readers of the operator's own wall clock must not
-      // disagree by three hours.
-      timezone: cfg.timezone,
-      // The same two closures the toolpacks get, for a tool whose DEFINITION declares that its
-      // response describes an appointment (issue #352). Wired identically: undefined on the
-      // playground, where nothing is recorded, and the declaration then simply does nothing.
-      appointmentBooked: appointmentBookedFn,
-      cancelAppointment: cancelAppointmentFn,
+      vocab,
+      kanban,
+      sendImage: cfg.sendImageConfig,
+      fetchImpl: ctx.imageDeps?.fetchImpl,
+      assertSafe: ctx.imageDeps?.assertSafe,
+      toolInstructions,
       onSideEffectError,
-    }),
-    ...mcpTools,
-    ...toolpackTools,
-    ...buildRagTools(
-      {
+    },
+    cfg.nativeToolsAllow,
+  );
+  // The names no other source may answer under, which is every native name this agent did NOT build:
+  // the ones it did are already first in the list and win by order. See unique-names.ts for why the
+  // reservation cannot be left to ordering alone.
+  const builtNativeNames = new Set(nativeTools.map((t) => t.name));
+  const { tools, dropped } = dropDuplicateToolNames(
+    [
+      ...nativeTools,
+      ...buildDocumentTools(cfg.documentSelections, {
         tenantId: ctx.tenantId,
+        turnState: ctx.turnState,
+        // The document is bound to the conversation by its THREAD key, never by the conversation id
+        // alone: that id only identifies a conversation within one Chatwoot account, and a tenant can
+        // have several. Absent off a real conversation, and the document is then issued unbound.
+        threadId: apptThreadId ?? undefined,
+        chatwootInstanceId: ctx.conversationId > 0 ? ctx.instanceId : null,
+        conversationDbId: cfg.conversationDbId,
         base: ctx.base,
-        knowledgeBaseIds: cfg.ragConfig?.knowledgeBaseIds ?? [],
-        knowledgeBases: cfg.ragConfig?.knowledgeBases,
-        threadId: ctx.threadId,
-        maxDistance: cfg.ragConfig?.maxDistance,
-      },
-      cfg.ragConfig?.tools,
-    ),
-  ]);
+        storageDir: ctx.documentsStorageDir,
+        // The same zone the agent tells the time in, so a document's date and a message saying "hoje"
+        // cannot disagree by a day.
+        timezone: cfg.timezone,
+        simulate: deps.simulateDocuments,
+      }),
+      ...buildHttpTools(cfg.httpToolDefs, {
+        resolveCredential,
+        emitAck,
+        // HTTP tools are https-only unless allowHttp. In dev (where SSRF_ALLOW_PRIVATE_TARGETS is on by
+        // default) operators legitimately point tools at local http services (see .env.example); prod
+        // keeps the flag false → https-only. Ties the two so a local HTTP tool works without extra config.
+        allowHttp: config.ssrf.allowPrivateTargets,
+        context: {
+          ...(ctx.conversationId > 0
+            ? { conversation_id: String(ctx.conversationId) }
+            : {}),
+          ...(ctx.messageId && ctx.messageId > 0
+            ? { message_id: String(ctx.messageId) }
+            : {}),
+          ...cfg.httpToolContext,
+        },
+        // The zone an offset-less start from a declared response is read in. Same value the documents
+        // tool gets, and for the same reason: two readers of the operator's own wall clock must not
+        // disagree by three hours.
+        timezone: cfg.timezone,
+        // The same two closures the toolpacks get, for a tool whose DEFINITION declares that its
+        // response describes an appointment (issue #352). Wired identically: undefined on the
+        // playground, where nothing is recorded, and the declaration then simply does nothing.
+        appointmentBooked: appointmentBookedFn,
+        cancelAppointment: cancelAppointmentFn,
+        onSideEffectError,
+      }),
+      ...mcpTools,
+      ...toolpackTools,
+      ...buildRagTools(
+        {
+          tenantId: ctx.tenantId,
+          base: ctx.base,
+          knowledgeBaseIds: cfg.ragConfig?.knowledgeBaseIds ?? [],
+          knowledgeBases: cfg.ragConfig?.knowledgeBases,
+          threadId: ctx.threadId,
+          maxDistance: cfg.ragConfig?.maxDistance,
+        },
+        cfg.ragConfig?.tools,
+      ),
+    ],
+    NATIVE_TOOL_NAMES.filter((n) => !builtNativeNames.has(n)),
+  );
   // NOTE: The precondition seam, and the reason the whole feature is six lines: every source's tools have
   // already been merged into ONE name-unique list above, so a map keyed by name reaches native,
   // document, HTTP, MCP, toolpack and RAG at once. An agent with no preconditions gets the same

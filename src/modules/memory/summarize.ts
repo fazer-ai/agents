@@ -11,6 +11,7 @@ import {
   CONVERSATION_DIVIDER,
   HUMAN_AGENT_NOTE,
   isHumanAgentTurn,
+  isHumanHandback,
   isMemoryHead,
   isNudgeTurn,
 } from "@/graph/markers";
@@ -170,6 +171,11 @@ export function renderTranscript(
     // The note is trimmed by exact match but the BRANCH is marker-gated, which is the safe way round
     // here: a customer who types that exact sentence still renders as `cliente:` and keeps every word
     // of it, because what decides attribution is metadata a chat cannot carry.
+    // THE HAND-BACK NOTE IS NOT DIALOGUE, so it is dropped rather than attributed (issue #457).
+    // Unmarked it would render as `cliente:` — the #187 failure again, with the system's own words
+    // remembered as the contact's. Nothing is lost: it says the human attendance ended, which the
+    // summary of that attendance already shows by what is in it.
+    if (isHumanHandback(m)) continue;
     if (isHumanAgentTurn(m)) {
       if (text.startsWith(HUMAN_AGENT_NOTE)) {
         text = text.slice(HUMAN_AGENT_NOTE.length).trim();

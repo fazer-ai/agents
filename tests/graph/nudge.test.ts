@@ -4,6 +4,7 @@ import {
   AIMessage,
   type BaseMessage,
   HumanMessage,
+  ToolMessage,
 } from "@langchain/core/messages";
 import type { ChatResult } from "@langchain/core/outputs";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
@@ -16,6 +17,7 @@ import { isTurnInFlight } from "@/graph/inflight";
 import { armIngest, ingestHandler } from "@/graph/ingest-job";
 import {
   conversationStamp,
+  HUMAN_HANDBACK_NOTE,
   isConversationDivider,
   isNudgeTurn,
   stampedConversationId,
@@ -28,8 +30,13 @@ import {
   renderNudge,
   runAgentNudge,
 } from "@/graph/nudge";
-import { claimIngestWrite, releaseIngestWrite } from "@/graph/thread-claim";
+import {
+  claimIngestWrite,
+  markTurnOwning,
+  releaseIngestWrite,
+} from "@/graph/thread-claim";
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "@/graph/thread-state";
+import { HANDOFF_DONE_PREFIX } from "@/graph/tools/catalog";
 import { MAX_DB_ID } from "@/lib/db-id";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { selectClosedPrefix } from "@/modules/memory/cut";
@@ -926,6 +933,526 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     // The divider is prompt content, and it rides in the nudge's OWN invoke: written separately just
     // before it, the invoke would save the channel it had already loaded and erase it.
     expect(messages.some((m) => isConversationDivider(m))).toBe(true);
+  });
+
+  // A PROACTIVE SEND CAN BE THE FIRST TURN AFTER A HAND-BACK (issue #457, review round 1). A
+  // follow-up ladder, an appointment reminder or an inbound-domain nudge invokes this same persisted
+  // thread, and if only the reactive turn wrote the note this one would run against the old transfer
+  // context — the very context that makes a model go quiet or hand off again — with the correction
+  // arriving on some later turn.
+  test("a nudge after a hand-back writes the note, once", async () => {
+    const contactInboxId = 8857;
+    await seedConv(957, null, new Date(), contactInboxId);
+    const saver = new MemorySaver();
+    // The thread as a handed-off conversation leaves it: the agent's own transfer call, with nothing
+    // saying that stretch ended.
+    await buildThreadStateGraph(saver).updateState(
+      {
+        configurable: {
+          thread_id: contactInboxThreadId(tenantId, instanceId, contactInboxId),
+        },
+      },
+      {
+        messages: [
+          new AIMessage({
+            content: "",
+            tool_calls: [{ name: "handoff_to_human", args: {}, id: "h1" }],
+          }),
+          new ToolMessage({
+            content: `${HANDOFF_DONE_PREFIX} (status set to open).`,
+            tool_call_id: "h1",
+            name: "handoff_to_human",
+          }),
+        ],
+      },
+      THREAD_STATE_NODE,
+    );
+    const s = stub();
+    const outcome = await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:957`,
+      nudge: { source: "followup", kind: "inactivity", step: 1 },
+      base: appDb,
+      deps: {
+        makeModel: () => new FakeListChatModel({ responses: ["Tudo certo?"] }),
+        makeClient: s.makeClient,
+        checkpointer: saver,
+        persistUsage: async () => {},
+      },
+    });
+    expect(outcome).toBe("messaged");
+
+    const cp = await saver.get({
+      configurable: {
+        thread_id: contactInboxThreadId(tenantId, instanceId, contactInboxId),
+      },
+    });
+    const messages = ((cp?.channel_values as { messages?: BaseMessage[] })
+      ?.messages ?? []) as BaseMessage[];
+    expect(
+      messages.some((m) => String(m.content) === HUMAN_HANDBACK_NOTE),
+    ).toBe(true);
+    // ONE note: a second nudge on the same thread finds it already there and adds nothing.
+    expect(
+      messages.filter((m) => String(m.content) === HUMAN_HANDBACK_NOTE).length,
+    ).toBe(1);
+  });
+
+  // THE DEFERRED NOTE STILL REACHES THIS TURN (issue #457, review round 6). An older invoke reading
+  // the channel means the durable append would be erased — but the nudge that owes the note is the
+  // one about to run against the transfer context, so the correction rides in its own invoke input
+  // instead. Deferring the WRITE is right; deferring the correction would keep the defect for one
+  // more turn, which on a proactive send is the one message the customer gets.
+  test("a nudge defers the durable note and carries it in the invoke", async () => {
+    const contactInboxId = 8860;
+    await seedConv(962, null, new Date(), contactInboxId);
+    const saver = new MemorySaver();
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    await buildThreadStateGraph(saver).updateState(
+      { configurable: { thread_id: graphThreadId } },
+      {
+        messages: [
+          new ToolMessage({
+            content: `${HANDOFF_DONE_PREFIX} (status set to open).`,
+            tool_call_id: "h1",
+            name: "handoff_to_human",
+          }),
+        ],
+      },
+      THREAD_STATE_NODE,
+    );
+    // Another invoke is already reading this channel, which is what `markTurnOwning` answers with
+    // `heldBefore` when this run takes its own claim.
+    const owner = { tenantId, instanceId, contactInboxId, graphThreadId };
+    await markTurnOwning(owner, appDb);
+    const s = stub();
+    await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:962`,
+      nudge: { source: "followup", kind: "inactivity", step: 1 },
+      base: appDb,
+      deps: {
+        makeModel: () => new FakeListChatModel({ responses: ["Tudo certo?"] }),
+        makeClient: s.makeClient,
+        checkpointer: saver,
+        persistUsage: async () => {},
+      },
+    });
+    const cp = await saver.get({ configurable: { thread_id: graphThreadId } });
+    const messages = ((cp?.channel_values as { messages?: BaseMessage[] })
+      ?.messages ?? []) as BaseMessage[];
+    const texts = messages.map((m) => String(m.content));
+    // Present exactly once, and before the nudge directive the invoke carried it with.
+    expect(texts.filter((t) => t === HUMAN_HANDBACK_NOTE)).toHaveLength(1);
+    expect(texts.indexOf(HUMAN_HANDBACK_NOTE)).toBeLessThan(
+      messages.findIndex((m) => isNudgeTurn(m)),
+    );
+    // AND NOT APPENDED BESIDE THE OLDER INVOKE: a durable `updateState` writes the note in a
+    // checkpoint of its own, before the nudge directive exists. Carried by the invoke, the two enter
+    // together — so the OLDEST checkpoint that has the note has the directive too.
+    const withNote: BaseMessage[][] = [];
+    for await (const c of saver.list({
+      configurable: { thread_id: graphThreadId },
+    })) {
+      const ms = ((c.checkpoint.channel_values as { messages?: BaseMessage[] })
+        ?.messages ?? []) as BaseMessage[];
+      if (ms.some((m) => String(m.content) === HUMAN_HANDBACK_NOTE))
+        withNote.push(ms);
+    }
+    // `list` reads newest-first, so the oldest is last.
+    expect(withNote.at(-1)?.some((m) => isNudgeTurn(m))).toBe(true);
+  });
+
+  // LIVE WHERE THE CALLER ASKED FOR LIVE (issue #457, review round 7). `requireLiveBotOwnership` is
+  // the mode that does not trust the mirror: the assignment webhook can be delayed or lost, and the
+  // send path re-probes Chatwoot instead of reading the row. The note is durable and no later probe
+  // can unwrite it, so it gets the same certainty the send gets — here the mirror still says the bot
+  // owns it and the live conversation says a person does.
+  test("a live-gated nudge asks Chatwoot, not the mirror, before the note", async () => {
+    const contactInboxId = 8861;
+    await seedConv(963, null, new Date(), contactInboxId);
+    const saver = new MemorySaver();
+    const threadId = contactInboxThreadId(tenantId, instanceId, contactInboxId);
+    await buildThreadStateGraph(saver).updateState(
+      { configurable: { thread_id: threadId } },
+      {
+        messages: [
+          new ToolMessage({
+            content: `${HANDOFF_DONE_PREFIX} (status set to open).`,
+            tool_call_id: "h1",
+            name: "handoff_to_human",
+          }),
+        ],
+      },
+      THREAD_STATE_NODE,
+    );
+    const s = stub();
+    // The takeover lands AFTER the pre-gate probe: the first live read is what lets the run proceed
+    // at all, and every one after it reports the person. The mirror row seeded above still says the
+    // bot owns it, which is the whole point — this mode does not trust it.
+    let liveReads = 0;
+    const client = {
+      ...(await s.makeClient()),
+      getConversation: async (c: number) => ({
+        id: c,
+        status: ++liveReads === 1 ? "pending" : "open",
+        meta: liveReads === 1 ? {} : { assignee: { id: 5 } },
+      }),
+    } as unknown as ChatwootClient;
+    await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:963`,
+      nudge: { source: "followup", kind: "inactivity", step: 1 },
+      requireLiveBotOwnership: true,
+      base: appDb,
+      deps: {
+        makeModel: () => new FakeListChatModel({ responses: ["Tudo certo?"] }),
+        makeClient: async () => client,
+        checkpointer: saver,
+        persistUsage: async () => {},
+      },
+    });
+    const cp = await saver.get({ configurable: { thread_id: threadId } });
+    const messages = ((cp?.channel_values as { messages?: BaseMessage[] })
+      ?.messages ?? []) as BaseMessage[];
+    expect(
+      messages.some((m) => String(m.content) === HUMAN_HANDBACK_NOTE),
+    ).toBe(false);
+    // The control: the run really did get past the pre-gate, so the absence above is the note's own
+    // probe and not an early refusal.
+    expect(liveReads).toBeGreaterThan(1);
+  });
+
+  // A TAKEOVER INSIDE THE WINDOW (issue #457, review round 6). `canMessagePre` is decided at the top
+  // of the run and the note is written far below — after the ingestion drain, after the queue, and
+  // after a claim that WAITS on an append's lease and on the row lock a /reset holds. A person taking
+  // the conversation over in there leaves the old answer saying the bot owns it, and the note would
+  // then announce that a human attendance ended while the human is in it. Nothing later can unwrite
+  // it: the post-invoke probe suppresses the SEND, and the thread keeps the message.
+  test("a takeover after the pre-gate stops the note", async () => {
+    const contactInboxId = 8859;
+    await seedConv(961, null, new Date(), contactInboxId);
+    const saver = new MemorySaver();
+    const threadId = contactInboxThreadId(tenantId, instanceId, contactInboxId);
+    await buildThreadStateGraph(saver).updateState(
+      { configurable: { thread_id: threadId } },
+      {
+        messages: [
+          new ToolMessage({
+            content: `${HANDOFF_DONE_PREFIX} (status set to open).`,
+            tool_call_id: "h1",
+            name: "handoff_to_human",
+          }),
+        ],
+      },
+      THREAD_STATE_NODE,
+    );
+    // The takeover lands between the two reads: the config load sees a bot-owned conversation (so
+    // `canMessagePre` is true), and the ownership read beside the note sees the person.
+    const brittle = appDb.$extends({
+      query: {
+        conversation: {
+          async findUnique({ args, query }) {
+            const sel = args.select as Record<string, unknown> | undefined;
+            const isOwnershipRead =
+              !!sel &&
+              Object.keys(sel).length === 3 &&
+              sel.assigneeType === true &&
+              sel.assigneeId === true &&
+              sel.status === true;
+            const row = await query(args);
+            if (!isOwnershipRead || row === null) return row;
+            return { ...(row as object), assigneeType: "User", status: "open" };
+          },
+        },
+      },
+    }) as unknown as typeof appDb;
+    const s = stub();
+    await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:961`,
+      nudge: { source: "followup", kind: "inactivity", step: 1 },
+      base: brittle,
+      deps: {
+        makeModel: () => new FakeListChatModel({ responses: ["Tudo certo?"] }),
+        makeClient: s.makeClient,
+        checkpointer: saver,
+        persistUsage: async () => {},
+      },
+    });
+    const cp = await saver.get({ configurable: { thread_id: threadId } });
+    const messages = ((cp?.channel_values as { messages?: BaseMessage[] })
+      ?.messages ?? []) as BaseMessage[];
+    expect(
+      messages.some((m) => String(m.content) === HUMAN_HANDBACK_NOTE),
+    ).toBe(false);
+  });
+
+  // THE RACE IN THE OTHER DIRECTION (issue #457, review round 9). A nudge that STARTS while a person
+  // holds the conversation is prepared in human-handling mode: `renderNudge` will tell the model that
+  // a human is handling it and ask for an internal note. If the hand-back lands during that
+  // preparation, the fresh ownership read says the bot owns it — and writing the note there would put
+  // two contradictory statements in one model call. It stays owed; the next turn, prepared in bot
+  // mode with a directive that agrees with it, writes it.
+  test("a hand-back mid-preparation leaves the note for the next turn", async () => {
+    const contactInboxId = 8862;
+    // The conversation a person holds when the run starts: `canMessagePre` is false.
+    await seedConv(965, "User", new Date(), contactInboxId);
+    const saver = new MemorySaver();
+    const threadId = contactInboxThreadId(tenantId, instanceId, contactInboxId);
+    await buildThreadStateGraph(saver).updateState(
+      { configurable: { thread_id: threadId } },
+      {
+        messages: [
+          new ToolMessage({
+            content: `${HANDOFF_DONE_PREFIX} (status set to open).`,
+            tool_call_id: "h1",
+            name: "handoff_to_human",
+          }),
+        ],
+      },
+      THREAD_STATE_NODE,
+    );
+    // …and the hand-back landing during preparation: every ownership-shaped read says the bot has it.
+    const brittle = appDb.$extends({
+      query: {
+        conversation: {
+          async findUnique({ args, query }) {
+            const sel = args.select as Record<string, unknown> | undefined;
+            const isOwnershipRead =
+              !!sel &&
+              Object.keys(sel).length === 3 &&
+              sel.assigneeType === true &&
+              sel.assigneeId === true &&
+              sel.status === true;
+            const row = await query(args);
+            if (!isOwnershipRead || row === null) return row;
+            return {
+              ...(row as object),
+              assigneeType: null,
+              assigneeId: null,
+              status: "pending",
+            };
+          },
+        },
+      },
+    }) as unknown as typeof appDb;
+    const s = stub();
+    await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:965`,
+      nudge: { source: "followup", kind: "inactivity", step: 1 },
+      base: brittle,
+      deps: {
+        makeModel: () => new FakeListChatModel({ responses: ["Tudo certo?"] }),
+        makeClient: s.makeClient,
+        checkpointer: saver,
+        persistUsage: async () => {},
+      },
+    });
+    const cp = await saver.get({ configurable: { thread_id: threadId } });
+    const messages = ((cp?.channel_values as { messages?: BaseMessage[] })
+      ?.messages ?? []) as BaseMessage[];
+    // Not in the thread, and not in what the model was handed either: the directive it ran with says
+    // a person is handling the conversation.
+    expect(
+      messages.some((m) => String(m.content) === HUMAN_HANDBACK_NOTE),
+    ).toBe(false);
+  });
+
+  // And the same guard on the fallback branch, asked after the channel read and immediately before
+  // the write (issue #457, review round 7): the `getState` above it is its own round trip, so an
+  // ownership answer from before it is stale by exactly that much.
+  test("a takeover stops the note on a conversation-keyed thread too", async () => {
+    await seedConv(964, null, new Date());
+    const saver = new MemorySaver();
+    const threadId = `${tenantId}:${instanceId}:964`;
+    await buildThreadStateGraph(saver).updateState(
+      { configurable: { thread_id: threadId } },
+      {
+        messages: [
+          new ToolMessage({
+            content: `${HANDOFF_DONE_PREFIX} (status set to open).`,
+            tool_call_id: "h1",
+            name: "handoff_to_human",
+          }),
+        ],
+      },
+      THREAD_STATE_NODE,
+    );
+    const brittle = appDb.$extends({
+      query: {
+        conversation: {
+          async findUnique({ args, query }) {
+            const sel = args.select as Record<string, unknown> | undefined;
+            const isOwnershipRead =
+              !!sel &&
+              Object.keys(sel).length === 3 &&
+              sel.assigneeType === true &&
+              sel.assigneeId === true &&
+              sel.status === true;
+            const row = await query(args);
+            if (!isOwnershipRead || row === null) return row;
+            return { ...(row as object), assigneeType: "User", status: "open" };
+          },
+        },
+      },
+    }) as unknown as typeof appDb;
+    const s = stub();
+    await runAgentNudge({
+      tenantId,
+      threadId,
+      nudge: { source: "followup", kind: "inactivity", step: 1 },
+      base: brittle,
+      deps: {
+        makeModel: () => new FakeListChatModel({ responses: ["Tudo certo?"] }),
+        makeClient: s.makeClient,
+        checkpointer: saver,
+        persistUsage: async () => {},
+      },
+    });
+    const cp = await saver.get({ configurable: { thread_id: threadId } });
+    const messages = ((cp?.channel_values as { messages?: BaseMessage[] })
+      ?.messages ?? []) as BaseMessage[];
+    expect(
+      messages.some((m) => String(m.content) === HUMAN_HANDBACK_NOTE),
+    ).toBe(false);
+  });
+
+  // THE CONVERSATION-KEYED FALLBACK THREAD (issue #457, review round 4). When the contact-inbox is
+  // unknown the nudge claims the thread and returns early, before any of the bookkeeping above — so
+  // the note has to be written on that branch or not at all, and this is a path the runtime supports
+  // and a turn that can be the first one after a hand-back, exactly like the keyed one.
+  test("a nudge on a conversation-keyed thread writes the note too", async () => {
+    await seedConv(959, null, new Date());
+    const saver = new MemorySaver();
+    const threadId = `${tenantId}:${instanceId}:959`;
+    // The evidence reaches this thread the same way: a successful handoff is written by the turn's
+    // OWN invoke, whatever the thread is keyed by.
+    await buildThreadStateGraph(saver).updateState(
+      { configurable: { thread_id: threadId } },
+      {
+        messages: [
+          new AIMessage({
+            content: "",
+            tool_calls: [{ name: "handoff_to_human", args: {}, id: "h9" }],
+          }),
+          new ToolMessage({
+            content: `${HANDOFF_DONE_PREFIX} (status set to open).`,
+            tool_call_id: "h9",
+            name: "handoff_to_human",
+          }),
+        ],
+      },
+      THREAD_STATE_NODE,
+    );
+    const s = stub();
+    const outcome = await runAgentNudge({
+      tenantId,
+      threadId,
+      nudge: { source: "followup", kind: "inactivity", step: 1 },
+      base: appDb,
+      deps: {
+        makeModel: () => new FakeListChatModel({ responses: ["Tudo certo?"] }),
+        makeClient: s.makeClient,
+        checkpointer: saver,
+        persistUsage: async () => {},
+      },
+    });
+    expect(outcome).toBe("messaged");
+    const cp = await saver.get({ configurable: { thread_id: threadId } });
+    const messages = ((cp?.channel_values as { messages?: BaseMessage[] })
+      ?.messages ?? []) as BaseMessage[];
+    expect(
+      messages.filter((m) => String(m.content) === HUMAN_HANDBACK_NOTE).length,
+    ).toBe(1);
+  });
+
+  // And the same gate on that branch, for the same reason: this nudge runs in human-handling mode on
+  // purpose, and the note would contradict the directive it is about to act on.
+  test("a nudge on a conversation-keyed thread a human holds writes no note", async () => {
+    await seedConv(960, "User", new Date());
+    const saver = new MemorySaver();
+    const threadId = `${tenantId}:${instanceId}:960`;
+    await buildThreadStateGraph(saver).updateState(
+      { configurable: { thread_id: threadId } },
+      {
+        messages: [
+          new ToolMessage({
+            content: `${HANDOFF_DONE_PREFIX} (status set to open).`,
+            tool_call_id: "h9",
+            name: "handoff_to_human",
+          }),
+        ],
+      },
+      THREAD_STATE_NODE,
+    );
+    const s = stub();
+    await runAgentNudge({
+      tenantId,
+      threadId,
+      nudge: { source: "followup", kind: "inactivity", step: 1 },
+      base: appDb,
+      deps: {
+        makeModel: () => new FakeListChatModel({ responses: ["Tudo certo?"] }),
+        makeClient: s.makeClient,
+        checkpointer: saver,
+        persistUsage: async () => {},
+      },
+    });
+    const cp = await saver.get({ configurable: { thread_id: threadId } });
+    const messages = ((cp?.channel_values as { messages?: BaseMessage[] })
+      ?.messages ?? []) as BaseMessage[];
+    expect(
+      messages.some((m) => String(m.content) === HUMAN_HANDBACK_NOTE),
+    ).toBe(false);
+  });
+
+  // NOT WHILE A HUMAN STILL OWNS IT (issue #457, review round 3). A nudge on a human-held conversation
+  // runs in human-handling mode ON PURPOSE — it asks the model for an internal note instead of a
+  // customer message — so a note saying the human attendance ended would contradict the very
+  // directive it is about to act on, and would persist a transition that did not happen.
+  test("a nudge while a human holds the conversation writes no hand-back note", async () => {
+    const contactInboxId = 8858;
+    await seedConv(958, "User", new Date(), contactInboxId);
+    const saver = new MemorySaver();
+    const threadId = contactInboxThreadId(tenantId, instanceId, contactInboxId);
+    await buildThreadStateGraph(saver).updateState(
+      { configurable: { thread_id: threadId } },
+      {
+        messages: [
+          new ToolMessage({
+            content: `${HANDOFF_DONE_PREFIX} (status set to open).`,
+            tool_call_id: "h1",
+            name: "handoff_to_human",
+          }),
+        ],
+      },
+      THREAD_STATE_NODE,
+    );
+    const s = stub();
+    await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:958`,
+      nudge: { source: "followup", kind: "inactivity", step: 1 },
+      base: appDb,
+      deps: {
+        makeModel: () => new FakeListChatModel({ responses: ["Tudo certo?"] }),
+        makeClient: s.makeClient,
+        checkpointer: saver,
+        persistUsage: async () => {},
+      },
+    });
+    const cp = await saver.get({ configurable: { thread_id: threadId } });
+    const messages = ((cp?.channel_values as { messages?: BaseMessage[] })
+      ?.messages ?? []) as BaseMessage[];
+    expect(
+      messages.some((m) => String(m.content) === HUMAN_HANDBACK_NOTE),
+    ).toBe(false);
   });
 
   // The sidecar row is what resolve-time compaction reads to know which attendance the thread is on.
@@ -2454,7 +2981,9 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
         await seedConv(9972, null);
         const s = stub();
         // Only the ownership read is broken, and only its SECOND call: the first one is what decides
-        // the turn may post at all, and breaking that would test a different branch entirely.
+        // the turn may post at all, and breaking that would test a different branch entirely. The
+        // hand-back note takes a read with this same projection (#457), but only when a note is
+        // actually owed — this thread carries no handoff, so it asks for none.
         let ownershipReads = 0;
         const brittle = appDb.$extends({
           query: {

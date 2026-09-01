@@ -63,9 +63,14 @@ import {
   resolveGraphThreadId,
 } from "./checkpointer";
 import { lastAssistantText } from "./graph";
+import { owesHandbackNote } from "./handback";
 import { clearTurnInFlight, markTurnInFlight } from "./inflight";
 import { drainPendingIngest } from "./ingest-drain";
-import { conversationDividerMessage, conversationStamp } from "./markers";
+import {
+  conversationDividerMessage,
+  conversationStamp,
+  humanHandbackMessage,
+} from "./markers";
 import type { ResolvedModelConfig } from "./models";
 import {
   type AgentConfig,
@@ -1040,6 +1045,47 @@ async function runTurnBody(
   // in-flight flag the rollback refuses on has been released. The messages travel rather than a
   // boolean because the rollback runs outside the scope that has them.
   let silenceProduced: BaseMessage[] | null = null;
+  // Set when the hand-back note was OWED and could not be appended durably, because an older invoke
+  // was reading the channel. It then rides in this turn's own invoke input instead (issue #457,
+  // review round 6): deferring the durable write is right, but deferring the CORRECTION would leave
+  // this turn reading a transfer with no ending — which is the silence this whole PR is about, on
+  // the first turn after the return, for the customer who is waiting right now.
+  let handbackDeferred = false;
+  // WHO OWNS IT ACCORDING TO THE MIRROR, RIGHT NOW (issue #457, review round 7). The receiver's gate
+  // proved bot ownership before this turn was queued, and the note is written much later — after the
+  // toolset is built, after the ingestion drain, and after a claim that WAITS on an append's lease
+  // and on the row lock a /reset holds. A person taking the conversation over inside that window
+  // leaves the gate's answer saying the bot owns it, and the note would then state that a human
+  // attendance ended while the human is in it. The post-generation recheck suppresses the SEND and
+  // cannot unwrite a message. Same read that recheck makes, asked at the moment this writes; a read
+  // that fails leaves the note OWED, which costs nothing because nothing is consumed to write it.
+  const botOwnsItNow = async (): Promise<boolean> =>
+    await runScopedOn(base, sysCtx(tenantId), async (db) => {
+      const conv = await db.conversation.findUnique({
+        where: {
+          tenantId_chatwootInstanceId_chatwootConversationId: {
+            tenantId,
+            chatwootInstanceId: instanceId,
+            chatwootConversationId: conversationId,
+          },
+        },
+        select: { assigneeType: true, assigneeId: true, status: true },
+      });
+      return shouldBotHandle(
+        {
+          assigneeType: conv?.assigneeType ?? null,
+          assigneeId: conv?.assigneeId ?? null,
+          status: conv?.status ?? null,
+        },
+        { ourAgentBotId: loaded.agentBotId ?? agentBotId },
+      );
+    }).catch((err) => {
+      logger.warn(
+        { err, conv: conversationId },
+        "hand-back note: ownership read failed; leaving the note owed",
+      );
+      return false;
+    });
   try {
     // ── Attendance boundary. A NEW conversation reusing this contact-inbox thread gets the
     //    "fresh attendance" divider, and the attendance it replaced becomes compactable.
@@ -1190,6 +1236,46 @@ async function runTurnBody(
               THREAD_STATE_NODE,
             );
           }
+          // THE HAND-BACK NOTE, and this is the turn that owes it (issue #457): the conversation is
+          // back with the bot — it got here, so the gate said so — and the thread still reads as if a
+          // person were handling it. Written here rather than when ownership changed, for three
+          // reasons: an ownership change that never leads to a turn owes no note; here it lands
+          // BEFORE the customer's message, which is the order the model has to read it in; and this
+          // is inside the same section that guards the divider, so it cannot be erased by an invoke
+          // that started earlier.
+          //
+          // Whether it is owed is DERIVED from the channel (./handback.ts), never from a column
+          // tracking ownership: the evidence is what the model itself is looking at, and the note
+          // sitting after it is what makes a second announcement impossible.
+          const channelNow = (
+            (
+              await dividerGraph.getState({
+                configurable: { thread_id: graphThreadId },
+              })
+            ).values as { messages?: BaseMessage[] } | undefined
+          )?.messages;
+          // DEFERRED WHILE ANOTHER INVOKE IS READING, the same rule the divider follows and for the
+          // same reason: that invoke saves the channel it LOADED, so a note appended beside it is
+          // erased. Deferring costs nothing here, and that is the derived model paying off — there
+          // is no marker to advance and nothing to lose, so the next turn asks the same question of
+          // the same thread and writes it then.
+          if (
+            owesHandbackNote(channelNow ?? []) &&
+            // Asked LAST, after the channel read above: that read is a round trip to the
+            // checkpointer's own store, and a takeover during it would make an earlier answer stale
+            // in exactly the same way.
+            (await botOwnsItNow())
+          ) {
+            if (anotherInvokeIsReading) {
+              handbackDeferred = true;
+            } else {
+              await dividerGraph.updateState(
+                { configurable: { thread_id: graphThreadId } },
+                { messages: [humanHandbackMessage(conversationId)] },
+                THREAD_STATE_NODE,
+              );
+            }
+          }
           // THE TURN RECORDS THE INBOUND ID IT HANDLED (issue #194). Ingestion decides whether an
           // out-of-order message may still speak for the thread's attendance by comparing it with
           // the newest inbound id the thread has seen (./attendance-boundary.ts,
@@ -1271,6 +1357,34 @@ async function runTurnBody(
           base,
         });
       }
+    } else {
+      // THE CONVERSATION-KEYED FALLBACK THREAD, which has none of the bookkeeping above: no
+      // ingestion barrier, no claim, no divider. It still carries the one piece of evidence this
+      // decision needs, because a successful handoff is written by the turn's OWN invoke whatever
+      // the thread is keyed by — so leaving it out would leave issue #457 unfixed on a path the
+      // runtime supports.
+      //
+      // Best-effort, and the derived model is what makes that acceptable: with no claim there is no
+      // way to know whether another invoke is reading, so a note appended here can be erased — and
+      // the next turn asks the same question of the same thread and writes it again. Nothing is
+      // consumed, so nothing is lost.
+      const fallbackGraph = buildThreadStateGraph(
+        params.deps?.checkpointer ?? (await getCheckpointer()),
+      );
+      const channelNow = (
+        (
+          await fallbackGraph.getState({
+            configurable: { thread_id: graphThreadId },
+          })
+        ).values as { messages?: BaseMessage[] } | undefined
+      )?.messages;
+      if (owesHandbackNote(channelNow ?? []) && (await botOwnsItNow())) {
+        await fallbackGraph.updateState(
+          { configurable: { thread_id: graphThreadId } },
+          { messages: [humanHandbackMessage(conversationId)] },
+          THREAD_STATE_NODE,
+        );
+      }
     }
 
     // INPUT guardrail: screen the customer message BEFORE the agent processes it. On a violation,
@@ -1318,6 +1432,26 @@ async function runTurnBody(
     // Wrapped so a throw from INSIDE the graph still delivers what a handoff already promised: the
     // tool can complete the transfer and the model's next step can then fail, and the exception
     // leaves through here with the line still unsent and no later attempt able to send it.
+    // RE-DERIVED IMMEDIATELY BEFORE THE INVOKE (issue #457, review round 10). Between the decision
+    // above and here, the other invoke — the one this deferred to — can finish and append the note
+    // itself. Carrying ours as well would put two of them in the channel, which is the idempotence
+    // this design promises. The question is the same one, asked of the thread as it is now: if the
+    // note is there, nothing is owed and nothing is carried.
+    //
+    // It NARROWS the window rather than closing it: the invoke below loads the channel again, so an
+    // append landing between this read and that load is still possible. The remaining duplicate is
+    // two identical system notes, and nothing consumes either.
+    const carriedHandback =
+      handbackDeferred &&
+      owesHandbackNote(
+        (
+          (
+            await buildThreadStateGraph(
+              params.deps?.checkpointer ?? (await getCheckpointer()),
+            ).getState({ configurable: { thread_id: graphThreadId } })
+          ).values as { messages?: BaseMessage[] } | undefined
+        )?.messages ?? [],
+      );
     const result = await withFlowStage(
       flow,
       "generate",
@@ -1333,6 +1467,14 @@ async function runTurnBody(
         graph.invoke(
           {
             messages: [
+              // The deferred hand-back note, carried by the invoke that owes it rather than by a
+              // durable append beside an older invoke that would erase it. BEFORE the customer's
+              // message, which is the order the model has to read it in, and durable only insofar as
+              // this invoke's own write survives — if it does not, nothing was consumed and the next
+              // turn asks the same question of the same thread.
+              ...(carriedHandback
+                ? [humanHandbackMessage(conversationId)]
+                : []),
               // Stamped with the conversation it belongs to: that stamp, not the divider, is what the
               // compaction cut reads to find where this attendance starts.
               new HumanMessage({

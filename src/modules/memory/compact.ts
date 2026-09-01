@@ -8,6 +8,7 @@ import {
   contactInboxThreadId,
   getCheckpointer,
 } from "@/graph/checkpointer";
+import { owesHandbackNote } from "@/graph/handback";
 import { drainPendingIngest } from "@/graph/ingest-drain";
 import { memoryHeadMessage, stampedConversationId } from "@/graph/markers";
 import { contentToText } from "@/graph/message-text";
@@ -28,6 +29,7 @@ import {
 } from "@/modules/scheduler/worker";
 import {
   MEMORY_HEAD_MAX_ATTENDANCES,
+  renderEmptyMemoryHead,
   renderMemoryHead,
   selectClosedPrefix,
 } from "./cut";
@@ -686,7 +688,15 @@ export async function runCompaction(
         }),
       )
     ).reverse();
-    const head = renderMemoryHead(rows, cfg.timezone);
+    // WHAT THE SUMMARIZED STRETCH ENDED IN, asked once and used twice below (issue #457).
+    const owedHandback = owesHandbackNote(consumed);
+    // A head with nothing to render is normally nothing to keep. It becomes something to keep when
+    // the stretch about to be deleted is the only place the hand-back decision could read its
+    // evidence: the stamp needs a carrier, and without one the agent goes back to answering from the
+    // transfer context, permanently (review round 13). ../memory/cut.ts says what that head reads.
+    const head =
+      renderMemoryHead(rows, cfg.timezone) ??
+      (owedHandback ? renderEmptyMemoryHead() : null);
     // The update REMOVES BY ID and never clears the channel. REMOVE_ALL_MESSAGES would have been
     // shorter, and wrong: it replaces the whole list with what this update carries, so a message
     // appended between the read above and this write would be erased. Ingestion is held off by the
@@ -704,7 +714,18 @@ export async function runCompaction(
       {
         messages: [
           ...(head && survivorId
-            ? [memoryHeadMessage(contentToText(head.content), survivorId)]
+            ? [
+                memoryHeadMessage(
+                  contentToText(head.content),
+                  survivorId,
+                  // WHAT THE SUMMARIZED STRETCH ENDED IN (issue #457). The messages about to be
+                  // replaced are the only place the hand-back decision could read a transfer from,
+                  // and a conversation resolved while a person held it takes them all. Asked of the
+                  // consumed prefix — an older head among them carries its own stamp, so it
+                  // propagates across repeated compactions.
+                  owedHandback,
+                ),
+              ]
             : []),
           ...dropped.map((m) => new RemoveMessage({ id: m.id as string })),
           // NOTE: With no head to keep (every summary came back empty), the survivor has nothing

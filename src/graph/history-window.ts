@@ -1,4 +1,5 @@
 import type { BaseMessage } from "@langchain/core/messages";
+import { isHumanHandback } from "./markers";
 
 // Which slice of the persisted history travels to the model this turn.
 //
@@ -11,7 +12,7 @@ import type { BaseMessage } from "@langchain/core/messages";
 // Pure on purpose: no model, no database, no clock. The rule is a decision, and a decision belongs
 // in a table of cases (tests/graph/history-window.test.ts) rather than behind a live turn.
 //
-// THE FOUR INVARIANTS, each of which breaks the turn rather than shortening it when violated:
+// THE FIVE INVARIANTS, each of which breaks the turn rather than shortening it when violated:
 //
 //   1. The window opens on a HUMAN message. Open it on a ToolMessage whose originating tool_call
 //      was just dropped and the provider rejects the whole request (OpenAI 400), so the naive
@@ -24,6 +25,13 @@ import type { BaseMessage } from "@langchain/core/messages";
 //   4. Nothing is dropped unless the budget actually demands it. When the whole history fits, it
 //      goes through untouched — including a history that happens to start on a non-human message,
 //      where invariant 1 would otherwise drop messages for no reason at all.
+//   5. A hand-back note immediately before the opener travels WITH it (issue #457). It is a human
+//      message like any other here, so a turn whose own message eats the whole budget opens on the
+//      customer and leaves the note one place behind — and that loss is permanent, because the note
+//      is in the thread, so the decision that writes it (./handback.ts) reads it as already
+//      announced and never writes another. The turn then answers from the transfer context: the
+//      exact silence the note exists to end, for as long as that conversation lasts. One extra
+//      message, and only when it is that message.
 //
 // The system prompt is not counted: it is prepended per turn by the caller and is never part of
 // `history`, so counting it here would silently shrink the budget the operator configured.
@@ -89,6 +97,11 @@ export function selectHistoryWindow(
     }
     // NOTE: Invariant 3 — the turn being answered always travels, budget or no budget.
     if (start > lastHuman) start = lastHuman;
+    // NOTE: Invariant 5 — the hand-back note is the one message whose loss cannot be recovered on a
+    // later turn, so it comes along when the window opens right after it.
+    if (start > 0 && isHumanHandback(history[start - 1] as BaseMessage)) {
+      start--;
+    }
   }
 
   let tokens = 0;

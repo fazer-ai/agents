@@ -51,9 +51,14 @@ import {
   threadBelongsToTenant,
 } from "./checkpointer";
 import { lastAssistantText } from "./graph";
+import { owesHandbackNote } from "./handback";
 import { clearTurnInFlight, markTurnInFlight } from "./inflight";
 import { drainPendingIngest } from "./ingest-drain";
-import { conversationDividerMessage, nudgeMessage } from "./markers";
+import {
+  conversationDividerMessage,
+  humanHandbackMessage,
+  nudgeMessage,
+} from "./markers";
 import {
   type AgentConfig,
   buildCallbacks,
@@ -671,25 +676,28 @@ export async function runAgentNudge(
         { ourAgentBotId: cfg.agentBotId },
       );
 
-  const handoffState = {
-    customerMessage: null as string | null,
-    completed: false,
-  };
-
-  // Asked once before the send and once after moderation, which is why it is a closure and not two
-  // reads: the answer has to be produced the same way both times, or the second one would be a
-  // different question wearing the first one's name. Each mode keeps its own semantics — the
-  // live-gated path re-probes Chatwoot itself (the pre-invoke GET only covers the window BEFORE the
-  // model ran), the event-nudge path reads the mirror.
-  const botStillOwnsIt = async (): Promise<
-    "ours" | "not-ours" | "unavailable"
-  > => {
+  // WHO OWNS IT ACCORDING TO THE MIRROR, RIGHT NOW (issue #457, review round 6). `canMessagePre` is
+  // computed once, up here, and the hand-back note is written far below — after the ingestion drain,
+  // after the queue, and after a durable claim that WAITS on an append's lease and on the row lock a
+  // /reset holds. A person taking the conversation over inside that window leaves `canMessagePre`
+  // saying `true` while the answer has changed, and the note would then state that a human
+  // attendance ended while the human is in it. The post-invoke probe suppresses the SEND, and it
+  // cannot unwrite a message already appended to the thread.
+  //
+  // The mirror rather than a live probe, deliberately: this is asked inside the claim's critical
+  // section, and an HTTP round trip there holds the per-thread queue for the length of somebody
+  // else's network. The mirror is what the assignment webhook writes, so it is the same source
+  // `canMessagePre` used — just read at the moment it is used instead of half a minute earlier.
+  const botOwnsItNow = async (): Promise<boolean> => {
+    // LIVE WHERE THE CALLER ASKED FOR LIVE (issue #457, review round 7). `requireLiveBotOwnership`
+    // exists because in that mode the mirror is not trusted: the assignment webhook can be delayed or
+    // lost, and the send path re-probes Chatwoot rather than reading the row. A note is durable and
+    // the post-invoke probe cannot unwrite it, so it gets the same certainty the send does — and only
+    // that mode pays the round trip inside the claim. An unanswerable probe leaves the note owed.
     if (params.requireLiveBotOwnership) {
-      const post = await probeLiveOwnership();
-      if (post === "unavailable") return "unavailable";
-      return post === "not-owned" ? "not-ours" : "ours";
+      return (await probeLiveOwnership()) === "owned";
     }
-    const ours = await runScopedOn(base, sysCtx(tenantId), async (db) => {
+    return await runScopedOn(base, sysCtx(tenantId), async (db) => {
       const conv = await db.conversation.findUnique({
         where: {
           tenantId_chatwootInstanceId_chatwootConversationId: {
@@ -709,7 +717,27 @@ export async function runAgentNudge(
         { ourAgentBotId: cfg.agentBotId },
       );
     });
-    return ours ? "ours" : "not-ours";
+  };
+
+  const handoffState = {
+    customerMessage: null as string | null,
+    completed: false,
+  };
+
+  // Asked once before the send and once after moderation, which is why it is a closure and not two
+  // reads: the answer has to be produced the same way both times, or the second one would be a
+  // different question wearing the first one's name. Each mode keeps its own semantics — the
+  // live-gated path re-probes Chatwoot itself (the pre-invoke GET only covers the window BEFORE the
+  // model ran), the event-nudge path reads the mirror.
+  const botStillOwnsIt = async (): Promise<
+    "ours" | "not-ours" | "unavailable"
+  > => {
+    if (params.requireLiveBotOwnership) {
+      const post = await probeLiveOwnership();
+      if (post === "unavailable") return "unavailable";
+      return post === "not-owned" ? "not-ours" : "ours";
+    }
+    return (await botOwnsItNow()) ? "ours" : "not-ours";
   };
 
   // `canMessage` is the caller's own proof of ownership, not a shared variable: the branches below
@@ -1144,6 +1172,11 @@ export async function runAgentNudge(
   let claimedGraphThread = false;
   let graphOwner: ThreadOwner | null = null;
   let graphHold: TurnHold | null = null;
+  // The hand-back note this run owes and could not append durably — an older invoke is reading the
+  // channel, so an append beside it is erased. It rides in this run's own invoke input instead
+  // (issue #457, review round 6): deferring the WRITE is right, deferring the correction is not,
+  // because this invoke is the one that would otherwise read a transfer with no ending.
+  let handbackDeferred = false;
   let result: Awaited<ReturnType<typeof graph.invoke>>;
   try {
     // BARRIER (issue #194), for the same reason the reactive turn has one: a proactive turn reads
@@ -1184,6 +1217,49 @@ export async function runAgentNudge(
       if (contactInboxId === null) {
         markTurnInFlight(graphThreadId);
         claimedGraphThread = true;
+        // THE HAND-BACK NOTE on this thread too (issue #457). The block further down never runs for
+        // it — this branch returns first — and skipping it would leave the fix undone on a path the
+        // runtime supports: a successful handoff is written by the turn's OWN invoke whatever the
+        // thread is keyed by, so the evidence that makes a model stay quiet is here as well, and a
+        // proactive send can be the first turn after the person hands it back.
+        //
+        // Same two gates the keyed path uses, minus the one that has no answer here: `canMessagePre`
+        // false is this nudge running in human-handling mode on purpose, and there is no
+        // `markTurnOwning` on this branch, so whether an older invoke is reading is unknowable. That
+        // makes the write best-effort, and the derived model is what makes best-effort enough — a
+        // note erased by an older invoke is simply owed again to the next turn, because nothing was
+        // consumed to write it.
+        {
+          const fallbackGraph = buildThreadStateGraph(checkpointer);
+          const channelNow = (
+            (
+              await fallbackGraph.getState({
+                configurable: { thread_id: graphThreadId },
+              })
+            ).values as { messages?: BaseMessage[] } | undefined
+          )?.messages;
+          // Ownership asked LAST, immediately before the write, for the reason the keyed branch
+          // gives: the channel read above is its own round trip, and an answer from before it is
+          // stale by exactly that much.
+          if (
+            // Both answers, for the reason the keyed branch above states.
+            canMessagePre &&
+            owesHandbackNote(channelNow ?? []) &&
+            (await botOwnsItNow().catch((err) => {
+              logger.warn(
+                { err, conv: conversationId },
+                "hand-back note: ownership read failed; leaving the note owed",
+              );
+              return false;
+            }))
+          ) {
+            await fallbackGraph.updateState(
+              { configurable: { thread_id: graphThreadId } },
+              { messages: [humanHandbackMessage(conversationId)] },
+              THREAD_STATE_NODE,
+            );
+          }
+        }
         return {
           writeDivider: false,
           advanceMarker: false,
@@ -1255,6 +1331,57 @@ export async function runAgentNudge(
           THREAD_STATE_NODE,
         );
       }
+      // THE HAND-BACK NOTE, here as well as in the reactive turn (issue #457). A proactive send can
+      // be the FIRST model turn after a person hands the conversation back — a follow-up ladder, an
+      // appointment reminder, an inbound-domain nudge — and it invokes the same persisted thread. If
+      // only the reactive turn wrote it, this one would run against the old transfer context and
+      // could go quiet or hand off again, with the correction arriving on some later turn.
+      const channelNow = (
+        (
+          await buildThreadStateGraph(checkpointer).getState({
+            configurable: { thread_id: graphThreadId },
+          })
+        ).values as { messages?: BaseMessage[] } | undefined
+      )?.messages;
+      // NOT WHILE A HUMAN STILL OWNS IT, and not beside an older invoke. `canMessagePre` false is
+      // this nudge running in human-handling mode on purpose — it asks the model for an internal
+      // note instead of a customer message — so announcing that the human attendance ended would
+      // contradict the directive it is about to send itself. And `anotherInvokeIsReading` is the
+      // divider's rule: an invoke that started earlier saves the channel it loaded and erases what
+      // was appended beside it.
+      // A read that cannot run leaves the note OWED, and the next turn asks again — this is the one
+      // thing in this section that costs nothing to defer, and a throw here would escape to the
+      // scheduler, which retries the whole job and re-posts everything it already sent. Asked after
+      // the channel read above and only when the note is actually owed: that read is a round trip of
+      // its own, and this is the last thing before the write.
+      if (
+        // BOTH ANSWERS, and they guard opposite races. `canMessagePre` is what this run IS: false
+        // means the whole nudge was prepared in human-handling mode, and `renderNudge` is about to
+        // tell the model that a person is handling the conversation — a note beside that directive
+        // would put two contradictory statements in one model call. The fresh read is what the world
+        // IS: it catches the person taking the conversation over after the pre-gate. A hand-back that
+        // lands mid-preparation leaves the note owed, and the next turn — prepared in bot mode, with
+        // a directive that agrees with it — writes it.
+        canMessagePre &&
+        owesHandbackNote(channelNow ?? []) &&
+        (await botOwnsItNow().catch((err) => {
+          logger.warn(
+            { err, conv: conversationId },
+            "hand-back note: ownership read failed; leaving the note owed",
+          );
+          return false;
+        }))
+      ) {
+        if (anotherInvokeIsReading) {
+          handbackDeferred = true;
+        } else {
+          await buildThreadStateGraph(checkpointer).updateState(
+            { configurable: { thread_id: graphThreadId } },
+            { messages: [humanHandbackMessage(conversationId)] },
+            THREAD_STATE_NODE,
+          );
+        }
+      }
       // The sidecar row is what resolve-time compaction reads to know which attendance the thread
       // is on. A nudge that opens a conversation used to leave it absent, and the job then exited
       // at its generation fence with the attendance never summarized.
@@ -1307,10 +1434,27 @@ export async function runAgentNudge(
     // the tool can complete the transfer and the model's next step can then fail. The label and the
     // follow-up stamp are deliberately NOT applied there — the turn failed, and the only thing that
     // cannot wait for a retry is the sentence the customer was promised.
+    // RE-DERIVED IMMEDIATELY BEFORE THE INVOKE (issue #457, review round 10), for the reason
+    // ../graph/runtime.ts gives at its own: the invoke this deferred to can finish and append the
+    // note itself in between, and carrying ours as well would put two in the channel.
+    const carriedHandback =
+      handbackDeferred &&
+      owesHandbackNote(
+        (
+          (
+            await buildThreadStateGraph(checkpointer).getState({
+              configurable: { thread_id: graphThreadId },
+            })
+          ).values as { messages?: BaseMessage[] } | undefined
+        )?.messages ?? [],
+      );
     result = await graph
       .invoke(
         {
           messages: [
+            // The deferred note, before the directive, for the reason the reactive turn gives at its
+            // own invoke (../graph/runtime.ts): the write had to wait, the correction did not.
+            ...(carriedHandback ? [humanHandbackMessage(conversationId)] : []),
             nudgeMessage(
               renderNudge(
                 params.nudge,

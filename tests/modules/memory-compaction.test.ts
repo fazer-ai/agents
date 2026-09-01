@@ -5,6 +5,7 @@ import {
   type BaseMessage,
   HumanMessage,
   RemoveMessage,
+  ToolMessage,
 } from "@langchain/core/messages";
 import type { ChatResult } from "@langchain/core/outputs";
 import {
@@ -18,6 +19,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { contactInboxThreadId } from "@/graph/checkpointer";
+import { owesHandbackNote } from "@/graph/handback";
 import {
   clearTurnInFlight,
   isTurnInFlight,
@@ -28,10 +30,12 @@ import {
   CONVERSATION_DIVIDER,
   conversationDividerMessage,
   conversationStamp,
+  humanAgentMessage,
   MEMORY_HEAD_OPEN,
   memoryHeadMessage,
 } from "@/graph/markers";
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "@/graph/thread-state";
+import { HANDOFF_DONE_PREFIX } from "@/graph/tools/catalog";
 import { runScopedOn } from "@/lib/tenancy";
 import { type CompactPayload, runCompaction } from "@/modules/memory/compact";
 import { MEMORY_HEAD_MAX_ATTENDANCES } from "@/modules/memory/cut";
@@ -448,6 +452,119 @@ describe.skipIf(!dbUp)("memory compaction", () => {
     // attendance it describes, not under whatever the job happened to be armed for.
     expect(rows[0]?.conversationId).toBe(708);
     expect(rows[0]?.messageCount).toBe(3);
+  });
+
+  // THE HAND-BACK EVIDENCE SURVIVES THE SUMMARY (issue #457, review round 8). A conversation
+  // resolved while a person still held it is compacted away with everything the hand-back decision
+  // reads — the handoff's tool result and the human agent's messages — and the next turn on the
+  // thread would find nothing, ask nothing, and go back to the silence the feature exists to end.
+  // The head that replaces the stretch carries what it ended in, as metadata: the summary text is
+  // model-written, and nothing here decides from model-written text.
+  test("a summarized human stretch leaves the hand-back still owed", async () => {
+    const saver = new MemorySaver();
+    const contactInboxId = 5099;
+    const threadId = contactInboxThreadId(tenantId, instanceId, contactInboxId);
+    await seedThread(saver, threadId, [
+      new HumanMessage({
+        content: `quero falar com uma pessoa, ${SEEDED_TEXT}`,
+        additional_kwargs: conversationStamp(708),
+      }),
+      new AIMessage({
+        content: "",
+        tool_calls: [{ name: "handoff_to_human", args: {}, id: "h1" }],
+      }),
+      new ToolMessage({
+        content: `${HANDOFF_DONE_PREFIX} (status set to open).`,
+        tool_call_id: "h1",
+        name: "handoff_to_human",
+      }),
+      humanAgentMessage(708, "Oi, aqui é a Ana."),
+      conversationDividerMessage(709, "oi, voltei"),
+      new AIMessage("Oi! Como posso ajudar?"),
+    ]);
+    const model = new SummarizerModel("Ana atendeu o cliente pessoalmente.");
+    const res = await runCompaction(
+      tenantId,
+      payload(contactInboxId, 708, "new_attendance"),
+      appDb,
+      { checkpointer: saver, makeModel: () => model },
+    );
+    expect(res).toEqual({ outcome: "done" });
+
+    const cp = await saver.get({ configurable: { thread_id: threadId } });
+    const messages = ((
+      cp?.channel_values as { messages?: BaseMessage[] } | undefined
+    )?.messages ?? []) as BaseMessage[];
+    // The raw evidence really is gone — this is what the case is about.
+    expect(
+      messages.some((m) => String(m.content).includes(HANDOFF_DONE_PREFIX)),
+    ).toBe(false);
+    // And the decision still says the note is owed, from the head alone.
+    expect(owesHandbackNote(messages)).toBe(true);
+  });
+
+  // AND WITH NOTHING TO SUMMARIZE, THE EVIDENCE STILL SURVIVES (issue #457, review round 13). A
+  // summarizer that returns only fence tags leaves every entry empty, `renderMemoryHead` answers
+  // null, and the rewrite then deletes the raw attendance and keeps nothing — including the handoff
+  // the hand-back decision reads. The head is kept in that one case for the sake of the stamp, and
+  // it says exactly what it is: past attendances, no summary of them.
+  test("an empty summary still leaves a carrier for the hand-back", async () => {
+    const saver = new MemorySaver();
+    const contactInboxId = 5098;
+    const threadId = contactInboxThreadId(tenantId, instanceId, contactInboxId);
+    await seedThread(saver, threadId, [
+      new HumanMessage({
+        content: `quero falar com uma pessoa, ${SEEDED_TEXT}`,
+        additional_kwargs: conversationStamp(708),
+      }),
+      new ToolMessage({
+        content: `${HANDOFF_DONE_PREFIX} (status set to open).`,
+        tool_call_id: "h1",
+        name: "handoff_to_human",
+      }),
+      humanAgentMessage(708, "Oi, aqui é a Ana."),
+      conversationDividerMessage(709, "oi, voltei"),
+      new AIMessage("Oi! Como posso ajudar?"),
+    ]);
+    // Only fence tags: the renderer strips them and the entry is empty.
+    const model = new SummarizerModel("<atendimento></atendimento>");
+    const res = await runCompaction(
+      tenantId,
+      payload(contactInboxId, 708, "new_attendance"),
+      appDb,
+      { checkpointer: saver, makeModel: () => model },
+    );
+    expect(res).toEqual({ outcome: "done" });
+
+    const cp = await saver.get({ configurable: { thread_id: threadId } });
+    const messages = ((
+      cp?.channel_values as { messages?: BaseMessage[] } | undefined
+    )?.messages ?? []) as BaseMessage[];
+    expect(
+      messages.some((m) => String(m.content).includes(HANDOFF_DONE_PREFIX)),
+    ).toBe(false);
+    expect(owesHandbackNote(messages)).toBe(true);
+  });
+
+  // The control, and it is what keeps the rescue above narrow: with nothing to carry, an empty
+  // summary still keeps nothing. A head that says "no summary" on every ordinary empty attendance
+  // would be prose the model reads for no reason.
+  test("an empty summary with nothing to carry keeps no head", async () => {
+    const saver = new MemorySaver();
+    const contactInboxId = 5097;
+    const threadId = contactInboxThreadId(tenantId, instanceId, contactInboxId);
+    await seedThread(saver, threadId, twoAttendances(718, 719));
+    const model = new SummarizerModel("<atendimento></atendimento>");
+    const res = await runCompaction(
+      tenantId,
+      payload(contactInboxId, 718, "new_attendance"),
+      appDb,
+      { checkpointer: saver, makeModel: () => model },
+    );
+    expect(res).toEqual({ outcome: "done" });
+    const after = await readThread(saver, threadId);
+    expect(after.some((c) => c.startsWith(MEMORY_HEAD_OPEN))).toBe(false);
+    expect(after.some((c) => c.includes(SEEDED_TEXT))).toBe(false);
   });
 
   // Both triggers can fire for the same thread, and a job that failed late gets retried, so a second

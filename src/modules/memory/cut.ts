@@ -144,3 +144,22 @@ export function renderMemoryHead(
     `${MEMORY_HEAD_OPEN}\n(Contexto do sistema: resumos de atendimentos já encerrados com este mesmo contato, do mais antigo para o mais recente. É memória de conversas passadas, não o assunto atual.)\n${entries.join("\n")}\n${MEMORY_HEAD_CLOSE}`,
   );
 }
+
+// THE HEAD WITH NOTHING TO SHOW, which exists for one reason: to carry metadata that would otherwise
+// be deleted with the messages (issue #457, review round 13).
+//
+// `renderMemoryHead` answers null when every stored summary is empty — a summarizer that returned
+// only fence tags, and nothing before it either. The rewrite then removes the raw attendance and
+// keeps nothing, which is normally fine: an empty summary describes an attendance nobody can
+// describe. It is NOT fine when that attendance ended with a person still handling the conversation,
+// because the hand-back decision reads its evidence from those very messages, and losing it silences
+// the agent on the next turn for good.
+//
+// The wrapper is the same one every head carries, with no entries — which is exactly what it says:
+// there are past attendances and no summary of them. The stamp is the point; the prose is the
+// truthful minimum around it.
+export function renderEmptyMemoryHead(): HumanMessage {
+  return memoryHeadMessage(
+    `${MEMORY_HEAD_OPEN}\n(Contexto do sistema: houve atendimentos anteriores com este contato, mas não há resumo deles.)\n${MEMORY_HEAD_CLOSE}`,
+  );
+}

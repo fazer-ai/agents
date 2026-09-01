@@ -26,7 +26,10 @@ import {
 } from "@/modules/mcp-connections/service";
 import { unsupportedBodyShape } from "@/modules/tool-definitions/body-shape";
 import { normalizeToolShapes } from "@/modules/tool-definitions/normalize";
-import { readResponseTemplateResult } from "@/modules/tool-definitions/response-template";
+import {
+  readResponseTemplateResult,
+  storableResponseTemplate,
+} from "@/modules/tool-definitions/response-template";
 import {
   createToolDefinition,
   deleteToolDefinition,
@@ -398,7 +401,10 @@ export interface ToolWriteArgs {
 }
 
 // Map snake_case tool args → the service's camelCase shape, resolving credential_ref NAME → vault:<id>.
-async function buildToolPatch(
+//
+// EXPORTED for the dry-run tests. What the preview shows has to be what the apply stores, and the
+// only way to say that as a test is to ask this function what it built.
+export async function buildToolPatch(
   ctx: TenantContext,
   args: ToolWriteArgs,
   base: Parameters<typeof resolveSecretRef>[2],
@@ -420,7 +426,11 @@ async function buildToolPatch(
     // passes through as it always has.
     const r = readResponseTemplateResult(args.output_schema);
     if (r.declared && !r.ok) return { fail: err(r.problem) };
-    patch.outputSchema = args.output_schema;
+    // CANONICALIZED, not passed through, and it is the same lesson one line further down: the
+    // service stores what `storableResponseTemplate` makes of this — a trimmed template, extra keys
+    // dropped — so a dry run echoing the argument back promises a value that will not be stored,
+    // and the diff a caller reads before applying is a diff against the wrong thing.
+    patch.outputSchema = storableResponseTemplate(args.output_schema);
   }
   if (args.query !== undefined) patch.query = args.query;
   if (args.body !== undefined) {

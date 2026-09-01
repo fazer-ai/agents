@@ -646,3 +646,145 @@ describe("runToolTest — the deadline covers the body, not just the headers", (
     expect(r.raw).toBe('{"a":1}');
   }, 10_000);
 });
+
+// Round 10 of review, finding 1. The wire cap was applied AFTER `.text()` had buffered the whole
+// body, which is a second complete copy of the response alongside the one `buildHttpTool` is
+// already holding — over an endpoint whose contract is 100,000 characters.
+describe("runToolTest — the raw body is bounded while it is read", () => {
+  test("a response far past the cap comes back capped, and counted whole", async () => {
+    // 2 MB in 64kB chunks: enough that retaining it all would be visible, small enough to run.
+    const CHUNK = "y".repeat(64 * 1024);
+    const CHUNKS = 32;
+    const r = await runToolTest(
+      ctx,
+      {
+        definition: {
+          ...base,
+          urlTemplate: `https://${PUBLIC}/v1/x`,
+          inputSchema: {},
+        } as never,
+      },
+      noDb,
+      {
+        fetchImpl: (async () =>
+          new Response(
+            new ReadableStream({
+              start(c) {
+                for (let i = 0; i < CHUNKS; i++) {
+                  c.enqueue(new TextEncoder().encode(CHUNK));
+                }
+                c.close();
+              },
+            }),
+            { status: 200 },
+          )) as unknown as typeof fetch,
+      },
+    );
+    // Capped on the way out…
+    expect(r.raw.length).toBe(100_000);
+    // …and the count is the WHOLE response, because "too large to bring back as a sample" is
+    // decided on it.
+    expect(r.rawChars).toBe(CHUNK.length * CHUNKS);
+    expect(r.rawClipped).toBe(true);
+  }, 30_000);
+
+  test("a response under the cap is returned whole and reported as such", async () => {
+    const body = JSON.stringify({ a: "x".repeat(500) });
+    const r = await runToolTest(
+      ctx,
+      {
+        definition: {
+          ...base,
+          urlTemplate: `https://${PUBLIC}/v1/x`,
+          inputSchema: {},
+        } as never,
+      },
+      noDb,
+      { fetchImpl: stub({}, 200, body) },
+    );
+    expect(r.raw).toBe(body);
+    expect(r.rawChars).toBe(body.length);
+    expect(r.rawClipped).toBe(false);
+  });
+
+  test("a multi-byte character split across two chunks is not corrupted", async () => {
+    // The decoder is streaming for exactly this: "é" is two bytes, and a chunk boundary between
+    // them would otherwise yield a replacement character in the sample the pickers walk.
+    const bytes = new TextEncoder().encode('{"nome":"José"}');
+    const r = await runToolTest(
+      ctx,
+      {
+        definition: {
+          ...base,
+          urlTemplate: `https://${PUBLIC}/v1/x`,
+          inputSchema: {},
+        } as never,
+      },
+      noDb,
+      {
+        fetchImpl: (async () =>
+          new Response(
+            new ReadableStream({
+              start(c) {
+                // Split inside the two bytes of "é".
+                const at = bytes.indexOf(0xc3) + 1;
+                c.enqueue(bytes.slice(0, at));
+                c.enqueue(bytes.slice(at));
+                c.close();
+              },
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          )) as unknown as typeof fetch,
+      },
+    );
+    expect(r.raw).toBe('{"nome":"José"}');
+  });
+});
+
+// And the BOUND itself, which is the only thing the finding was about: the two versions return the
+// same string, so nothing above can tell them apart. What separates them is what stays in memory
+// while the body is read.
+//
+// IN A SUBPROCESS, and that is the whole reason this test is shaped like this. `heapUsed` is
+// process-wide: measured inside the suite the delta reads 473 MB of other tests' allocations
+// whether the guard is there or not, which is a threshold nobody can set honestly. Alone in a fresh
+// process the two are 4.5 MB with the guard and 105 MB without it, both measured.
+test("a body far larger than memory allows is never retained whole", async () => {
+  const script = `
+      import { runToolTest } from "@/modules/tool-definitions/test-run";
+      const MB = 1024 * 1024;
+      // ONE buffer, enqueued many times: the producer allocates 1 MB and the consumer decodes each
+      // chunk transiently, so the only thing that could hold 300 MB is the accumulator under test.
+      const chunk = new TextEncoder().encode("z".repeat(MB));
+      const TIMES = 300;
+      Bun.gc(true);
+      const before = process.memoryUsage().heapUsed;
+      const r = await runToolTest(
+        { tenantId: 1n, userId: null, role: "TENANT_ADMIN" },
+        { definition: { method: "GET", urlTemplate: "https://8.8.8.8/v1/x", allowedHosts: ["8.8.8.8"], inputSchema: {} } },
+        {},
+        { fetchImpl: async () => new Response(new ReadableStream({
+            start(c) { for (let i = 0; i < TIMES; i++) c.enqueue(chunk); c.close(); },
+          }), { status: 200 }) },
+      );
+      const grew = process.memoryUsage().heapUsed - before;
+      console.log(JSON.stringify({ grew, rawChars: r.rawChars, rawLen: r.raw.length }));
+    `;
+  const proc = Bun.spawn(["bun", "-e", script], {
+    cwd: process.cwd(),
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const out = await new Response(proc.stdout).text();
+  const line = out.trim().split("\n").at(-1) as string;
+  const got = JSON.parse(line) as {
+    grew: number;
+    rawChars: number;
+    rawLen: number;
+  };
+  expect(got.rawChars).toBe(300 * 1024 * 1024);
+  expect(got.rawLen).toBe(100_000);
+  // Retaining the body is ~955 MB (measured); the guard keeps it under 2 MB. The threshold sits
+  // between them with an order of magnitude on either side.
+  expect(got.grew).toBeLessThan(50 * 1024 * 1024);
+}, 180_000);

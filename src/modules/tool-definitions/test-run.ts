@@ -177,7 +177,7 @@ export async function runToolTest(
   }
 
   const notes: ToolTestNote[] = [];
-  let seen: { status: number; body: Promise<string> } | null = null;
+  let seen: { status: number; body: Promise<CappedBody> } | null = null;
   // Set by the deadline below, and READ in the catch, because the name of the error cannot tell.
   // Aborting a body mid-read surfaces as `EncodingError` — the same shape a provider that really
   // broke its stream produces — so without this flag our own timeout would be reported as the
@@ -252,10 +252,8 @@ export async function runToolTest(
       // path where the call succeeded.
       seen = {
         status: res.status,
-        body: res
-          .clone()
-          .text()
-          .catch(() => "")
+        body: cappedText(res.clone(), MAX_RAW_CHARS)
+          .catch(() => ({ text: "", chars: 0 }))
           // Cleanup with no observable behaviour: firing the abort on a finished request is a
           // no-op and nobody reads `timedOut` after the return, so a mutation battery cannot tell
           // this block from an empty one. It is here so the process is not left holding a ten-second
@@ -311,7 +309,7 @@ export async function runToolTest(
     );
   }
   const durationMs = Date.now() - startedAt;
-  const captured = seen as { status: number; body: Promise<string> } | null;
+  const captured = seen as { status: number; body: Promise<CappedBody> } | null;
 
   const message = out as { content?: unknown; status?: unknown };
   const modelText = String(message?.content ?? out);
@@ -326,9 +324,9 @@ export async function runToolTest(
   return {
     status: captured.status,
     durationMs,
-    raw: clipText(rawBody, MAX_RAW_CHARS),
-    rawChars: rawBody.length,
-    rawClipped: rawBody.length > MAX_RAW_CHARS,
+    raw: rawBody.text,
+    rawChars: rawBody.chars,
+    rawClipped: rawBody.chars > MAX_RAW_CHARS,
     modelText,
     // The tool marks an integration failure by returning a ToolMessage with status "error"; without
     // a tool_call in scope (which is this call) that degrades to the plain string, so the status is
@@ -341,6 +339,42 @@ export async function runToolTest(
       ),
     notes,
   };
+}
+
+interface CappedBody {
+  // The prefix that crosses the wire, already capped.
+  text: string;
+  // How long the WHOLE response was, which is what tells the operator it was cut.
+  chars: number;
+}
+
+// Read a response body keeping only the first `cap` characters, and counting the rest.
+//
+// `.text()` would buffer the whole thing before the cap is applied, which is a second complete copy
+// of the response alongside the one `buildHttpTool` is already holding — so a provider answering
+// with a few hundred megabytes could take the process down over an endpoint that returns 100,000
+// characters. The count still has to be exact, because "this response is too large to bring back as
+// a sample" is decided on it, so the stream is drained to the end and only the prefix is retained.
+async function cappedText(res: Response, cap: number): Promise<CappedBody> {
+  const stream = res.body;
+  if (!stream) return { text: "", chars: 0 };
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let kept = "";
+  let chars = 0;
+  const take = (chunk: string) => {
+    chars += chunk.length;
+    // Overshoots by at most one chunk, which the clip below trims; the point is the bound, not the
+    // exact byte.
+    if (kept.length < cap) kept += chunk;
+  };
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    take(decoder.decode(value, { stream: true }));
+  }
+  take(decoder.decode());
+  return { text: clipText(kept, cap), chars };
 }
 
 async function readCredentialMeta(

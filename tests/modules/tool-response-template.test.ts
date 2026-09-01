@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test";
+import { buildToolPatch } from "@/modules/mcp/write-agents";
 import {
   ABSENT_MARKER,
   MAX_TEMPLATE_CHARS,
   readResponseTemplate,
   readResponseTemplateResult,
   renderResponseTemplate,
+  storableResponseTemplate,
   templateLeaves,
   templateTokens,
   unmatchedTemplateDelimiter,
@@ -291,5 +293,43 @@ describe("unmatchedTemplateDelimiter", () => {
     expect(unmatchedTemplateDelimiter(template)).toBeNull();
     const read = readResponseTemplateResult({ mode: "template", template });
     expect(read.declared && read.ok).toBe(true);
+  });
+});
+
+// Round 10 of review, finding 2. `tool_create` / `tool_update` have a dry run, and a dry run never
+// calls the service — so whatever this function puts in the patch is what the caller reads in the
+// preview and the diff, and then applies. The service stores what `storableResponseTemplate` makes
+// of the argument, so echoing the argument back promises a value that will not be stored.
+//
+// The same lesson the `body` check one line below already carries from issue #150, and the reason
+// it is a test rather than a comment: round 1 of this review showed a fix that only the call site
+// could prove.
+describe("the MCP dry run previews what the apply would store", () => {
+  const ctx = {
+    tenantId: 1n,
+    userId: null,
+    role: "TENANT_ADMIN",
+  } as unknown as Parameters<typeof buildToolPatch>[0];
+  const noDb = {} as Parameters<typeof buildToolPatch>[2];
+
+  test.each([
+    [
+      "a padded template",
+      { mode: "template", template: "  Empresa: {{razao_social}}  " },
+    ],
+    [
+      "extra keys beside the declaration",
+      { mode: "template", template: "Done.", note: "ignored", extra: 1 },
+    ],
+    ["a plain template", { mode: "template", template: "Done." }],
+    // Not a template declaration at all: it has to survive untouched, which is the other half.
+    ["a legacy JSON Schema", { type: "object", properties: { id: {} } }],
+  ])("%s", async (_label, output_schema) => {
+    const got = await buildToolPatch(ctx, { output_schema } as never, noDb);
+    expect("patch" in got).toBe(true);
+    const previewed = (got as { patch: { outputSchema?: unknown } }).patch
+      .outputSchema;
+    // Not "looks canonical": the very value the write path would store.
+    expect(previewed).toEqual(storableResponseTemplate(output_schema));
   });
 });

@@ -313,6 +313,12 @@ function silenceNarration(history: BaseMessage[]): BaseMessage[] {
 // So the exemption asks two things, and drops the turn (the pre-#455 behavior, always safe) whenever
 // either is unanswerable: the block came from a provider that replays its own blocks, and EVERY
 // model that can receive this turn is that same provider.
+//
+// ADDING A PROVIDER TO `models.ts` DOES NOT ADD IT HERE, and should not. Absence is the safe answer:
+// the turn is dropped, which costs context and never breaks a thread. Membership is earned by
+// reading how that vendor's adapter builds an assistant message from a `content` array — if it
+// filters to text blocks, as `@langchain/openai` does, the vendor does NOT belong here however well
+// it round-trips its own reasoning inside a single call.
 const REPLAYS_OWN_BLOCKS: ReadonlySet<string> = new Set(["anthropic"]);
 
 function isEmptyAssistantTurn(

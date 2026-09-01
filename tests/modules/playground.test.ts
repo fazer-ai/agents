@@ -8,7 +8,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { loadAgentConfig } from "@/graph/prepare";
-import { FOLLOWUP_SKIP_SENTINEL } from "@/graph/silence";
+import { FOLLOWUP_SKIP_SENTINEL, SKIP_REPLY_TOOL } from "@/graph/silence";
 import { buildThreadStateGraph } from "@/graph/thread-state";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import {
@@ -456,6 +456,55 @@ describe.skipIf(!dbUp)("playground", () => {
     expect(r.threadId.startsWith(`${tenantId}:playground:${agentOk}:`)).toBe(
       true,
     );
+  });
+
+  // Round 13, and the other side of the same switch: the removal belongs to the simulated FOLLOW-UP
+  // and to nothing else. On a REACTIVE turn an agent granted `skip_reply` and nothing else is the
+  // operator's own configuration — it is how their agent answers "ok" and "obrigado" with silence —
+  // and production keeps the tool there. A playground that removed it would show them an agent that
+  // cannot make the decision they configured.
+  test("an ordinary playground turn keeps a lone skip_reply", async () => {
+    const grant = await suDb.agentToolSelection.create({
+      data: {
+        tenantId,
+        agentId: agentOk,
+        source: "NATIVE",
+        enabledTools: [SKIP_REPLY_TOOL],
+        knowledgeBaseIds: [],
+      },
+      select: { id: true },
+    });
+    const bound: string[][] = [];
+    class ToolCapturingModel extends BaseChatModel {
+      _llmType() {
+        return "capturing";
+      }
+      override bindTools(tools: unknown) {
+        bound.push((tools as { name: string }[]).map((t) => t.name));
+        return this;
+      }
+      async _generate(): Promise<ChatResult> {
+        return {
+          generations: [{ text: REPLY, message: new AIMessage(REPLY) }],
+        };
+      }
+    }
+    try {
+      await runPlaygroundTurn({
+        ctx: ctx(tenantId),
+        agentId: agentOk,
+        message: "ok",
+        base: appDb,
+        deps: {
+          makeModel: () => new ToolCapturingModel({}),
+          checkpointer: new MemorySaver(),
+        },
+      });
+      expect(bound).not.toEqual([]);
+      expect(bound[0]).toEqual([SKIP_REPLY_TOOL]);
+    } finally {
+      await suDb.agentToolSelection.delete({ where: { id: grant.id } });
+    }
   });
 
   // Round 12, the WIRING of the same rule production applies (`tests/graph/silence.test.ts` proves

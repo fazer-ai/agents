@@ -11,6 +11,7 @@ import { MemorySaver } from "@langchain/langgraph";
 import { z } from "zod";
 import { buildAgentGraph } from "@/graph/graph";
 import { SKIP_REPLY_ACK, SKIP_REPLY_TOOL } from "@/graph/silence";
+import { buildThreadStateGraph } from "@/graph/thread-state";
 import { unmetPreconditionMessage } from "@/modules/agents/tool-preconditions";
 
 // Records the messages handed to the model on each invoke (the only thing agentNode does with it).
@@ -320,6 +321,136 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     expect(String(result.messages.at(-1)?.content ?? "")).toBe(
       "Claro! Me confirma seu CPF?",
     );
+  });
+
+  // Round 13. A model can put text in the very message that calls `skip_reply`, and that text is
+  // never delivered — the runtime posts the LAST assistant message, which is the empty one the turn
+  // ends on. Left in the channel it is a sentence the customer never saw, read by the next turn as
+  // something they were told: the false memory this whole family is about, arriving through the
+  // silence protocol instead of through a refusal.
+  test("text written beside the decision does not stay in the channel", async () => {
+    const skipTool = tool(
+      async () => `${SKIP_REPLY_ACK}. Produce no message now.`,
+      { name: SKIP_REPLY_TOOL, description: "skip", schema: z.object({}) },
+    );
+    const NARRATION = "Vou deixar quieto por ora.";
+    class TalksWhileSkipping {
+      rounds = 0;
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("");
+      }
+      bindTools(_tools: unknown) {
+        const self = this;
+        return {
+          async invoke(): Promise<AIMessage> {
+            self.rounds++;
+            return new AIMessage({
+              id: "ai-skip-1",
+              content: NARRATION,
+              tool_calls: [{ name: SKIP_REPLY_TOOL, args: {}, id: "c1" }],
+              response_metadata: { finish_reason: "tool_calls" },
+              usage_metadata: {
+                input_tokens: 20,
+                output_tokens: 10,
+                total_tokens: 30,
+              },
+            });
+          },
+        };
+      }
+    }
+    const model = new TalksWhileSkipping();
+    const checkpointer = new MemorySaver();
+    const graph = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
+      model: model as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer,
+      tools: [skipTool],
+      maxToolCalls: 10,
+    });
+    const result = await graph.invoke(
+      { messages: [new HumanMessage("ok")] },
+      { configurable: { thread_id: "silence-narration" } },
+    );
+    expect(model.rounds).toBe(1);
+    expect(String(result.messages.at(-1)?.content ?? "")).toBe("");
+    // Gone from the CHANNEL, which is the copy the next turn reads back.
+    const state = await buildThreadStateGraph(checkpointer).getState({
+      configurable: { thread_id: "silence-narration" },
+    });
+    const messages = ((state.values as { messages?: BaseMessage[] })
+      ?.messages ?? []) as BaseMessage[];
+    expect(messages.length).toBeGreaterThan(0);
+    expect(
+      messages.filter((m) => JSON.stringify(m.content).includes("quieto")),
+    ).toEqual([]);
+    // The tool call and its result stay: the results already in the channel name that call, and an
+    // orphaned `tool_call_id` is a provider error on the next turn.
+    expect(
+      messages.some((m) => ((m as AIMessage).tool_calls?.length ?? 0) > 0),
+    ).toBe(true);
+    expect(messages.some((m) => m.getType() === "tool")).toBe(true);
+    // ...and so does everything BUT the content. Rebuilding the message from its id and content
+    // alone drops the model's own usage and response fields, which is a second edit nobody asked
+    // for — content is the only thing this rule may change.
+    const rewritten = messages.find((m) => m.id === "ai-skip-1") as AIMessage;
+    expect(rewritten.response_metadata?.finish_reason).toBe("tool_calls");
+    expect(rewritten.usage_metadata?.total_tokens).toBe(30);
+  });
+
+  // The scope, pinned: a preamble beside an ORDINARY call is followed by a reply that may lean on
+  // it, and rewriting the history of every tool-calling turn is a different change. Only the
+  // decision to say nothing is rewritten here.
+  test("a preamble beside an ordinary tool call is left alone", async () => {
+    const echo = tool(async () => "pedido 42: enviado", {
+      name: "search_order",
+      description: "search",
+      schema: z.object({}),
+    });
+    class PreamblesThenAnswers {
+      rounds = 0;
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("");
+      }
+      bindTools(_tools: unknown) {
+        const self = this;
+        return {
+          async invoke(): Promise<AIMessage> {
+            self.rounds++;
+            if (self.rounds === 1) {
+              return new AIMessage({
+                id: "ai-pre-1",
+                content: "Vou verificar seu pedido.",
+                tool_calls: [{ name: "search_order", args: {}, id: "c1" }],
+              });
+            }
+            return new AIMessage("Seu pedido 42 já foi enviado.");
+          },
+        };
+      }
+    }
+    const checkpointer = new MemorySaver();
+    const graph = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
+      model: new PreamblesThenAnswers() as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer,
+      tools: [echo],
+      maxToolCalls: 10,
+    });
+    await graph.invoke(
+      { messages: [new HumanMessage("cadê meu pedido?")] },
+      { configurable: { thread_id: "ordinary-preamble" } },
+    );
+    const state = await buildThreadStateGraph(checkpointer).getState({
+      configurable: { thread_id: "ordinary-preamble" },
+    });
+    const messages = ((state.values as { messages?: BaseMessage[] })
+      ?.messages ?? []) as BaseMessage[];
+    expect(
+      messages.filter((m) => JSON.stringify(m.content).includes("verificar")),
+    ).not.toEqual([]);
   });
 
   // Round 7: parallel tool calls. `skip_reply` alongside `react_to_message` is the documented way to

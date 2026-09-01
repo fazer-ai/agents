@@ -572,7 +572,6 @@ export async function runPlaygroundTurn(
       turnId,
       flow,
       loaded: loadedConfig,
-      silenceProtocol: true,
       onModelRetry: ({ attempt, provider, model }) =>
         emitFlowEvent(flow, {
           stage: "generate",

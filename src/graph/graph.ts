@@ -108,7 +108,18 @@ function toolCallsSinceLastHuman(history: BaseMessage[]): number {
 // limit on that very round. The COUNT is left alone deliberately — the cap still has to bound a model
 // that calls skip_reply in a loop.
 function justDecidedToStaySilent(history: BaseMessage[]): boolean {
+  return lastBatch(history).skipped;
+}
+
+// The AI message that REQUESTED the tool batch the history ends on, alongside whether that batch
+// says the model chose silence. One scan, because the two answers are about the same batch and a
+// second walk would be a second chance to disagree about where it starts.
+function lastBatch(history: BaseMessage[]): {
+  skipped: boolean;
+  caller: BaseMessage | null;
+} {
   let sawTool = false;
+  let skipped = false;
   // The CONTIGUOUS batch, not the last message: a model can emit parallel calls (`skip_reply`
   // alongside `react_to_message`, which is the documented way to answer with a reaction alone), and
   // whichever result lands last is an ordering accident. Returning on the first `ToolMessage` read
@@ -122,14 +133,52 @@ function justDecidedToStaySilent(history: BaseMessage[]): boolean {
       // that same name saying the call did NOT run — read by name, an operator's own guard would
       // end the turn with no text where the customer is waiting for one. `skipReplyRan` recognises
       // our no-op and nothing else, so anything unrecognised falls through to "answer them".
-      if (skipReplyRan(m as Parameters<typeof skipReplyRan>[0])) return true;
+      if (skipReplyRan(m as Parameters<typeof skipReplyRan>[0])) skipped = true;
       continue;
     }
     // The batch ends at the AI message that requested it — anything before is an earlier round.
-    if (sawTool) return false;
-    if (t === "human") return false;
+    if (sawTool) return { skipped, caller: m ?? null };
+    if (t === "human") return { skipped: false, caller: null };
   }
-  return false;
+  return { skipped: false, caller: null };
+}
+
+// WHAT THE MODEL WROTE BESIDE THE DECISION, taken back out. A model can put text in the very message
+// that calls `skip_reply` ("Vou deixar quieto por ora"), and that text is never delivered: the
+// runtime posts the LAST assistant message, which is the empty one this turn ends on. Left in the
+// channel it is a sentence the customer never saw, read by the next turn as something they were
+// told — the false memory `refused-turn.ts` exists to prevent, arriving through the silence protocol
+// instead of through a refusal.
+//
+// SCOPED TO THE DECISION, and deliberately not to every tool call. A preamble beside an ORDINARY
+// call ("Vou verificar seu pedido") is followed by a reply that may lean on it, and rewriting the
+// history of every tool-calling turn is a different change on a path this issue is not about. Here
+// we know what the model chose: nothing at all reached the customer.
+//
+// Replaced by ID so the reducer swaps it in place, and everything BUT the content rides along: the
+// tool calls, because the results already in the channel name them and an orphaned `tool_call_id` is
+// a provider error on the next turn; the metadata, because a message rebuilt from its id and content
+// alone silently drops the model's own usage and response fields, which is a second edit nobody
+// asked for. Content is the only thing this is allowed to change.
+//
+// No "already empty, skip it" shortcut: with everything else carried over, replacing an empty
+// message with an empty message is the same message, so the branch would be a condition no test
+// could tell from its absence — and one of those is how a rule gets read as protection it is not.
+function silenceNarration(history: BaseMessage[]): BaseMessage[] {
+  const { caller } = lastBatch(history);
+  if (!caller || typeof caller.id !== "string") return [];
+  const ai = caller as AIMessage;
+  return [
+    new AIMessage({
+      id: ai.id,
+      content: "",
+      tool_calls: ai.tool_calls ?? [],
+      additional_kwargs: ai.additional_kwargs,
+      response_metadata: ai.response_metadata,
+      ...(ai.usage_metadata ? { usage_metadata: ai.usage_metadata } : {}),
+      ...(ai.name ? { name: ai.name } : {}),
+    }),
+  ];
 }
 
 // Applies the per-agent history ceiling, if there is one. Best-effort: trimming is an optimization
@@ -234,7 +283,7 @@ export function buildAgentGraph({
     // a turn that chose not to give one (round 9 found that half, round 11 the other).
     if (staySilent) {
       if (hardLimit) onToolLimit?.({ maxToolCalls: max, toolCalls });
-      return { messages: [new AIMessage("")] };
+      return { messages: [...silenceNarration(history), new AIMessage("")] };
     }
     // No `staySilent` term here: the branch above already returned on it. The wrap-up instruction
     // ("Conclua agora: responda ao cliente") is the exact opposite of what the model just chose, and

@@ -8,7 +8,6 @@ import {
   normalizeChatwootEvent,
   shouldBotHandle,
 } from "@/modules/chatwoot/normalize";
-import { statusClaimDeadline } from "@/modules/chatwoot/status-claim";
 import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
 import { isFollowUpLive } from "@/modules/followups/eligibility";
 import { POLL_DEADLINE_MS } from "@/tests/utils/poll";
@@ -1063,64 +1062,6 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
       failingReads.delete(conv);
     }
     expect((await convRow(conv))?.status).toBe("open");
-  });
-
-  // WAY IN THREE, and the only one that is about the FENCE rather than the mirror.
-  // `mirrorConsoleWrite` falls back to an unversioned write whenever its live read fails or carries
-  // no version (issue #77) — which is every write on a Chatwoot too old to send `updated_at` — so the
-  // row holds the operator's `pending` with `chatwoot_status_at` exactly where the state this
-  // delivery decided on left it. The freshness check has nothing to compare, passes, and the takeover
-  // undoes the click. The claim is the write saying it happened.
-  test("an unversioned hand-back committed while the client is built is not undone", async () => {
-    const conv = 8562;
-    await deliver(conv, { ...customerSays("oi") });
-    const row = await convRow(conv);
-    whileBuildingClient = async () => {
-      whileBuildingClient = null;
-      await suDb.conversation.update({
-        where: { id: row?.id },
-        // What `mirrorConsoleWrite` leaves behind on that fallback: the operator's status, no mark to
-        // order it by, and a deadline saying a local decision exists. No `statusClaimFrom`, because
-        // the console wrote to Chatwoot first and has nothing in flight to fence.
-        data: {
-          status: "pending",
-          statusClaimUntil: statusClaimDeadline(new Date()),
-        },
-      });
-    };
-    try {
-      await deliver(conv, { ...deviceReply("já te respondo") });
-    } finally {
-      whileBuildingClient = null;
-    }
-    expect(toggles(conv).length).toBe(0);
-    expect((await convRow(conv))?.status).toBe("pending");
-    expect((await takeoverRows(conv, 200)).length).toBe(0);
-  });
-
-  // A claim is a deadline, and past it the fence is the one this release replaced. Same scenario as
-  // above with the deadline already spent, so the difference between the two is the clock and nothing
-  // else — which is what makes the test above about the claim rather than about the write beside it.
-  test("a hand-back whose claim has run out no longer holds the fence", async () => {
-    const conv = 8563;
-    await deliver(conv, { ...customerSays("oi") });
-    const row = await convRow(conv);
-    whileBuildingClient = async () => {
-      whileBuildingClient = null;
-      await suDb.conversation.update({
-        where: { id: row?.id },
-        data: {
-          status: "pending",
-          statusClaimUntil: new Date(Date.now() - 1),
-        },
-      });
-    };
-    try {
-      await deliver(conv, { ...deviceReply("já te respondo") });
-    } finally {
-      whileBuildingClient = null;
-    }
-    expect(toggles(conv).length).toBe(1);
   });
 
   function deliverReplyOff() {

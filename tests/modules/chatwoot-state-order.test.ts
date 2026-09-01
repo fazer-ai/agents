@@ -478,19 +478,6 @@ const CASES: Case[] = [
     }),
     want: { status: "pending", statusAt: V_NEW },
   },
-  {
-    // The console's fallback, which takes the deadline and no status: it writes to Chatwoot FIRST, so
-    // by the time it mirrors there is nothing in flight to fence. The half it needs is read by the
-    // takeover's fence, not here.
-    name: "a claim with no status in flight fences nothing in the mirror",
-    payload: conversationEvent({ version: V_NEW, status: "pending" }),
-    row: storedRow({
-      status: "open",
-      statusClaimUntil: CLAIM_LIVE,
-      statusClaimFrom: null,
-    }),
-    want: { status: "pending", statusAt: V_NEW },
-  },
 ];
 
 describe("decideConversationWrites", () => {

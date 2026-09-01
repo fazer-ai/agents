@@ -20,29 +20,30 @@
  * on, exactly like one serialized after it. There is no reading of that clock which tells the two
  * apart, which is why the write has to announce itself instead of borrowing one.
  *
- * ## Two questions, and a claim does not always answer both
+ * ## What a claim refuses, and what it must not
  *
- * A claim always says one thing: a local decision about this row's status exists that no version can
- * order. That is what a delivery deciding from an older payload has to know, and it is why the
- * takeover's fence asks nothing but whether a claim is live.
+ * ONE status: the one it is replacing. A payload restating it while the claim is live is a snapshot
+ * from before the write — the two shapes issue #436 measured, a customer message carrying the reopen
+ * exception and a delayed or companion `conversation_*` event, are both exactly that.
  *
- * Whether it also fences the MIRROR depends on which side moved first, and the two writers are
- * opposites:
+ * A payload stating anything ELSE is news, and an operator resolving the conversation inside the
+ * claim produces one event we ack and Chatwoot never redelivers — so a blanket fence would lose that
+ * resolve for good, with no later event on a resolved conversation to repair it. The single
+ * exception, and why it is keyed on the status the ROW holds, is on `statusClaimRefuses`.
  *
- *   * the takeover writes the row and THEN calls Chatwoot, deliberately, because every reader that
- *     decides whether the agent may speak reads the row. Until the toggle answers, the source has not
- *     decided, so a payload stating the old status is a snapshot from before the write and the mirror
- *     must refuse it. That claim carries the status it is replacing;
- *   * the console calls Chatwoot and THEN mirrors, so by the time its unversioned fallback runs the
- *     source has already decided and nothing is in flight to fence. That claim carries no status, and
- *     the difference is measured rather than tidied: fencing there left the mirror refusing the state
- *     every later payload reported, on a conversation an operator was still working.
+ * ## Only a write that moves FIRST can take one
  *
- * And what a fencing claim refuses is ONE status, never the field. A payload stating anything else is
- * news, and an operator resolving the conversation inside the claim produces one event that we ack
- * and Chatwoot never redelivers — so a blanket fence loses that resolve for good, with no later event
- * on a resolved conversation to repair it. The single exception, and why it is keyed on the status the
- * ROW holds, is on `statusClaimRefuses`.
+ * The takeover writes the row and THEN calls Chatwoot, deliberately, because every reader that
+ * decides whether the agent may speak reads the row. That order is what makes the claim meaningful:
+ * until the toggle answers, the source has not decided, and a payload stating the old status is a
+ * snapshot from before the write.
+ *
+ * A caller that writes to Chatwoot FIRST and mirrors afterwards — the console's status buttons, whose
+ * live read can leave them writing unversioned (issue #77) — has nothing in flight to fence, and
+ * giving it a claim was measured to be worse than the gap it closed: it left the mirror refusing the
+ * state every later payload reported, and it made the takeover's own fence skip a colleague who
+ * replied AFTER the operator's click. That gap is real and is issue #469; it needs an axis this file
+ * does not have, since neither side of it can offer a version.
  *
  * ## Why a deadline
  *

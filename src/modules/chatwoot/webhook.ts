@@ -162,7 +162,7 @@ import {
   CHATWOOT_TIMESTAMP_HEADER,
   verifyChatwootSignature,
 } from "./signing";
-import { statusClaimDeadline, statusClaimIsLive } from "./status-claim";
+import { statusClaimDeadline } from "./status-claim";
 import type { NormalizedChatwootEvent } from "./types";
 
 // Dedicated Chatwoot Agent Bot webhook receiver. Resolve tenant+instance by the opaque
@@ -1191,11 +1191,6 @@ async function conversationOwnershipNow(p: {
       statusAt: number | null;
       assigneeType: string | null;
       assigneeId: number | null;
-      // The local claim, along for the same reason the three above are: a caller that writes
-      // conditionally on this reading has to be able to put it in the predicate. It is the one input
-      // here that does not come from Chatwoot (issue #436, ./status-claim.ts).
-      statusClaimUntil: Date | null;
-      statusClaimFrom: string | null;
     }
   | { ours: false; closed: GateCloseDetail | null }
 > {
@@ -1215,8 +1210,6 @@ async function conversationOwnershipNow(p: {
         assigneeId: true,
         status: true,
         chatwootStatusAt: true,
-        statusClaimUntil: true,
-        statusClaimFrom: true,
       },
     }),
   );
@@ -1237,8 +1230,6 @@ async function conversationOwnershipNow(p: {
         statusAt: conv?.chatwootStatusAt ?? null,
         assigneeType: conv?.assigneeType ?? null,
         assigneeId: conv?.assigneeId ?? null,
-        statusClaimUntil: conv?.statusClaimUntil ?? null,
-        statusClaimFrom: conv?.statusClaimFrom ?? null,
       }
     : {
         ours: false,
@@ -4281,24 +4272,6 @@ export async function processChatwootDelivery(
               base,
             });
             if (!now.ours) return false;
-            // AND IS A LOCAL DECISION ALREADY OUTSTANDING? The version check below cannot see one:
-            // a write made on this side claims no version, so a hand-back that landed through
-            // `mirrorConsoleWrite`'s unversioned fallback leaves `chatwoot_status_at` exactly where
-            // the state this delivery decided on left it, and the comparison passes. The claim is
-            // that write saying so (issue #436, ../../modules/chatwoot/status-claim.ts).
-            //
-            // ANY live claim, not only one that would refuse `pending`: the question here is not
-            // which status a payload may write, it is whether this delivery — decided from an event
-            // Chatwoot serialized earlier — is still the most recent word about the conversation. A
-            // local write nobody has confirmed yet is a more recent one by construction.
-            if (statusClaimIsLive(now.statusClaimUntil, new Date())) {
-              logger.info(
-                "chatwoot: %s handoff skipped (conv=%s) — a local status write is still outstanding on this conversation",
-                `human reply (${humanReplyBy})`,
-                convLabel,
-              );
-              return false;
-            }
             // AND IS THIS DECISION STILL THE MOST RECENT ONE? Ownership alone cannot answer that,
             // because the state that would overrule us is `pending` and bot-owned too: a hand-back
             // ("Return to AI", conversations/service.ts) puts the conversation back exactly there. So
@@ -4307,6 +4280,11 @@ export async function processChatwootDelivery(
             // payload that drove this decision is a later answer about the same conversation, and a
             // later answer wins. Without it the operator who just asked for the agent back watches the
             // request undone by a reply they had already sent.
+            //
+            // NOTE: An unversioned hand-back is invisible to this. `mirrorConsoleWrite` falls back to
+            // a write that stamps no mark whenever its live read fails or carries none (issue #77),
+            // so the row still names the pre-click state and this comparison passes — issue #469,
+            // which the status claim below deliberately does not cover.
             if (
               now.statusAt !== null &&
               n.conversationUpdatedAt != null &&
@@ -4327,9 +4305,8 @@ export async function processChatwootDelivery(
             // longer the bot's, and a status-and-version predicate would open it anyway.
             //
             // No test in this process can pry that window open — there is nothing to await between the
-            // two statements — so the mutations that drop these terms survive the suite, the claim
-            // added below included. They stay because the window is real, not because a test asks for
-            // them.
+            // two statements — so the mutations that drop these terms survive the suite. They stay
+            // because the window is real, not because a test asks for them.
             //
             // AND THE WRITE ANNOUNCES ITSELF, in the same statement that makes it, because that is
             // the whole of issue #436: this `open` claims no version, so until the reconcile earns
@@ -4339,9 +4316,6 @@ export async function processChatwootDelivery(
             // how long it refuses that status, and ../../modules/chatwoot/status-claim.ts holds why
             // it can be neither a version nor a permanent flag.
             //
-            // The claim is in the PREDICATE as well as in the data, for the reason the three
-            // observed columns are: a claim taken between the read above and this write is another
-            // decision about the same row, and losing the CAS is how this delivery is told.
             const claimedAt = new Date();
             const claimUntil = statusClaimDeadline(claimedAt);
             const { count } = await runScopedOn(
@@ -4357,7 +4331,6 @@ export async function processChatwootDelivery(
                     chatwootStatusAt: now.statusAt,
                     assigneeType: now.assigneeType,
                     assigneeId: now.assigneeId,
-                    statusClaimUntil: now.statusClaimUntil,
                   },
                   data: {
                     status: "open",

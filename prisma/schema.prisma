@@ -587,10 +587,9 @@ model Conversation {
   // restating it while the claim is live is a snapshot from before the write; a payload stating
   // anything else is news, and refusing that would drop a resolve nothing ever redelivers.
   //
-  // NULL when the source has already decided — the console writes to Chatwoot and only then mirrors,
-  // so its unversioned fallback (issue #77) has nothing in flight and fences no payload. It still
-  // takes the deadline above, because a delivery deciding from an older payload has no other way to
-  // learn that a local decision exists.
+  // Written and cleared with the column above, always as a pair: only a write that moves the row
+  // BEFORE it calls Chatwoot can take a claim, because only then is there a transition in flight for
+  // a payload to be behind. See src/modules/chatwoot/status-claim.ts.
   statusClaimFrom          String?   @map("status_claim_from")
   // Debounce watermark: the Chatwoot message id of the last inbound message already handled
   // (responded to or deliberately skipped). The flush re-fetches and answers only ids beyond it,

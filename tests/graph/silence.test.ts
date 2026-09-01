@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { AIMessage, ToolMessage } from "@langchain/core/messages";
+import { contentToText } from "@/graph/message-text";
 import {
   customerFacingReply,
   FOLLOWUP_SKIP_SENTINEL,
@@ -10,6 +11,7 @@ import {
   isNudgeSilent,
   proactiveReply,
   SKIP_REPLY_ACK,
+  SKIP_REPLY_MARK,
   SKIP_REPLY_TOOL,
   skipReplyRan,
   withFollowupSilenceChannel,
@@ -323,20 +325,36 @@ describe("withoutLoneSilenceTool — our tool is never the only one", () => {
   });
 });
 
-describe("skipReplyRan — the ACK is the identity, not the name", () => {
-  const msg = (name: string, content: string) =>
-    new ToolMessage({ content, tool_call_id: "c1", name });
+describe("skipReplyRan — the MARK is the identity, not the name and not the text", () => {
+  const msg = (name: string, content: string, marked = false): ToolMessage =>
+    new ToolMessage({
+      content,
+      tool_call_id: "c1",
+      name,
+      ...(marked ? { additional_kwargs: { [SKIP_REPLY_MARK]: true } } : {}),
+    });
 
   test("our no-op reporting that it ran", () => {
+    expect(
+      skipReplyRan(msg(SKIP_REPLY_TOOL, `${SKIP_REPLY_ACK}. x`, true)),
+    ).toBe(true);
+  });
+
+  // Round 24. The ack is published in this repo, and with natives revoked an operator may bind a
+  // custom HTTP tool under this name whose response body they do not control — a third-party API, or
+  // a customer's own words echoed back. Read as identity, a body that begins with the ack ends the
+  // turn without answering: a denial of the customer's reply, reachable by injection.
+  test("a response body that merely SAYS the ack is not the tool", () => {
     expect(skipReplyRan(msg(SKIP_REPLY_TOOL, `${SKIP_REPLY_ACK}. x`))).toBe(
-      true,
+      false,
     );
   });
 
-  // Round 10, the defect. `skip_reply` is a native name, so `isGuardableToolName` accepts a
-  // precondition on it; unmet or unreadable, the wrapper returns a NORMAL tool result under the same
-  // name telling the model to carry on. Read by name that is silence, and the turn then ends with no
-  // text at all — a customer left waiting by the rule meant to make the agent more careful.
+  // Round 10, the defect that made the name insufficient. `skip_reply` is a native name, so
+  // `isGuardableToolName` accepts a precondition on it; unmet, the wrapper returns a NORMAL tool
+  // result under the same name telling the model to carry on. Read by name that is silence, and the
+  // turn then ends with no text at all — a customer left waiting by the rule meant to make the agent
+  // more careful. Unmarked, so it is not the tool either.
   test("a precondition refusal wearing the same name is NOT silence", () => {
     const refusal = unmetPreconditionMessage(SKIP_REPLY_TOOL, {
       kind: "attribute",
@@ -347,8 +365,10 @@ describe("skipReplyRan — the ACK is the identity, not the name", () => {
     expect(skipReplyRan(msg(SKIP_REPLY_TOOL, refusal))).toBe(false);
   });
 
-  test("another tool's result is not silence, whatever it says", () => {
-    expect(skipReplyRan(msg("private_note", `${SKIP_REPLY_ACK}.`))).toBe(false);
+  test("another tool's result is not silence, marked or not", () => {
+    expect(skipReplyRan(msg("private_note", `${SKIP_REPLY_ACK}.`, true))).toBe(
+      false,
+    );
   });
 
   test("an AI message that CALLED it is not a result", () => {
@@ -359,8 +379,8 @@ describe("skipReplyRan — the ACK is the identity, not the name", () => {
     expect(skipReplyRan(ai as never)).toBe(false);
   });
 
-  // The anti-drift half, and the reason the ack is a shared constant: the reader recognises the
-  // string the REAL tool returns, both of its variants, not a copy of it kept in this file.
+  // The anti-drift half: the reader recognises what the REAL tool returns, both of its variants, and
+  // the mark is something only the tool can set — a response body cannot.
   test("the real tool's own return is recognised, with and without a reason", async () => {
     // `skip_reply` calls nothing, so the ctx it is bound to is never reached — the client below
     // exists only to satisfy the signature, and a call reaching it would be the test's own failure.
@@ -369,8 +389,17 @@ describe("skipReplyRan — the ACK is the identity, not the name", () => {
     ]).find((t) => t.name === SKIP_REPLY_TOOL);
     expect(skip).toBeDefined();
     for (const args of [{}, { reason: "customer only sent 'ok'" }]) {
-      const out = (await skip?.invoke(args as never)) as string;
-      expect(skipReplyRan(msg(SKIP_REPLY_TOOL, out))).toBe(true);
+      // Invoked as a TOOL CALL, which is how the graph invokes it: without one there is no
+      // `tool_call_id` to build a ToolMessage around, and the tool degrades to the plain string the
+      // same way `failableTool` does.
+      const out = (await skip?.invoke({
+        type: "tool_call",
+        id: "c1",
+        name: SKIP_REPLY_TOOL,
+        args,
+      } as never)) as ToolMessage;
+      expect(contentToText(out.content)).toContain(SKIP_REPLY_ACK);
+      expect(skipReplyRan(out)).toBe(true);
     }
   });
 });

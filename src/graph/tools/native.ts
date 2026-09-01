@@ -1,9 +1,17 @@
-import type { StructuredToolInterface } from "@langchain/core/tools";
+import { ToolMessage } from "@langchain/core/messages";
+import type {
+  StructuredToolInterface,
+  ToolRunnableConfig,
+} from "@langchain/core/tools";
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
-import { SKIP_REPLY_ACK, SKIP_REPLY_TOOL } from "@/graph/silence";
+import {
+  SKIP_REPLY_ACK,
+  SKIP_REPLY_MARK,
+  SKIP_REPLY_TOOL,
+} from "@/graph/silence";
 import { failableTool, toolFailure } from "@/graph/tools/failure";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
@@ -1097,13 +1105,24 @@ function reactToMessageTool(ctx: ToolCtx) {
 // conversation timeline (via the tool flow log) as a "decided not to respond" marker.
 function skipReplyTool(_ctx: ToolCtx) {
   return tool(
-    async ({ reason }: { reason?: string }) => {
-      // Built from SKIP_REPLY_ACK rather than spelling it out, because `skipReplyRan` reads this
-      // string back to tell a real no-op from a precondition refusal wearing the same tool name.
-      // Two copies of the literal is how that reader silently stops recognising its own tool.
-      return reason
+    async ({ reason }: { reason?: string }, config: ToolRunnableConfig) => {
+      // The ack is what the MODEL reads — LangGraph calls it again after a tool result, and this
+      // sentence is the instruction that makes the turn end quiet.
+      const ack = reason
         ? `${SKIP_REPLY_ACK} (${reason}). Produce no message now.`
         : `${SKIP_REPLY_ACK}. Produce no message now.`;
+      // ...and the MARK is what identifies the tool, in `additional_kwargs`, out of reach of any
+      // response body (round 24). Returned as a whole `ToolMessage` for that, the same
+      // direct-tool-output passthrough `failableTool` uses; without a tool_call in scope (a direct
+      // invocation with plain args) it degrades to the plain string, as that one does.
+      const id = config?.toolCall?.id;
+      if (!id) return ack;
+      return new ToolMessage({
+        content: ack,
+        tool_call_id: id,
+        name: SKIP_REPLY_TOOL,
+        additional_kwargs: { [SKIP_REPLY_MARK]: true },
+      });
     },
     {
       name: "skip_reply",

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { ToolMessage } from "@langchain/core/messages";
+import type { ToolMessage } from "@langchain/core/messages";
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 import { SKIP_REPLY_TOOL, skipReplyRan } from "@/graph/silence";
@@ -110,17 +110,16 @@ describe("applyToolMocks (P4)", () => {
       new Set([SKIP_REPLY_TOOL]),
     );
     const skip = mocked.find((t) => t.name === SKIP_REPLY_TOOL);
-    const out = String(await skip?.invoke({}));
-    expect(out).not.toBe("vou responder sim");
-    expect(
-      skipReplyRan(
-        new ToolMessage({
-          content: out,
-          tool_call_id: "c1",
-          name: SKIP_REPLY_TOOL,
-        }),
-      ),
-    ).toBe(true);
+    // Invoked as a TOOL CALL, which is how the graph invokes it: since round 24 the tool identifies
+    // itself with a mark only it can set, and there is no `tool_call_id` to hang one on otherwise.
+    const out = (await skip?.invoke({
+      type: "tool_call",
+      id: "c1",
+      name: SKIP_REPLY_TOOL,
+      args: {},
+    } as never)) as ToolMessage;
+    expect(String(out.content)).not.toBe("vou responder sim");
+    expect(skipReplyRan(out)).toBe(true);
     // Positive control: the mock machinery still works, so the assertion above is about the
     // exemption and not about mocks having quietly stopped applying.
     const calc = mocked.find((t) => t.name === "calculator");

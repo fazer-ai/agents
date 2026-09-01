@@ -6,14 +6,16 @@ import {
   HumanMessage,
   SystemMessage,
 } from "@langchain/core/messages";
+import type { StructuredToolInterface } from "@langchain/core/tools";
 import { tool } from "@langchain/core/tools";
 import { MemorySaver } from "@langchain/langgraph";
 import { z } from "zod";
 import { buildAgentGraph } from "@/graph/graph";
 import { contentToText } from "@/graph/message-text";
-import { SKIP_REPLY_ACK, SKIP_REPLY_TOOL } from "@/graph/silence";
+import { SKIP_REPLY_TOOL } from "@/graph/silence";
 import { buildThreadStateGraph } from "@/graph/thread-state";
 import { failableTool, toolFailure } from "@/graph/tools/failure";
+import { buildNativeTools } from "@/graph/tools/native";
 import { guardedTool } from "@/graph/tools/precondition";
 import { unmetPreconditionMessage } from "@/modules/agents/tool-preconditions";
 
@@ -100,6 +102,18 @@ const noopTool = tool(async () => "feito", {
   schema: z.object({}),
 });
 
+// The REAL `skip_reply`, not a double: since round 24 the tool identifies itself with a mark in
+// `additional_kwargs` that only it can set, so a stand-in returning the ack string is no longer the
+// tool as far as `skipReplyRan` is concerned — which is the whole point of that change. It calls
+// nothing, so the ctx below is never reached.
+function realSkipTool(): StructuredToolInterface {
+  const t = buildNativeTools({ client: {} as never, conversationId: 1 }, [
+    SKIP_REPLY_TOOL,
+  ]).find((x) => x.name === SKIP_REPLY_TOOL);
+  if (!t) throw new Error("skip_reply is not in the native catalog");
+  return t;
+}
+
 describe("agentNode tool-call limit (soft+hard)", () => {
   // Issue #454, review rounds 5 and 11. Silence is a TOOL CALL now, so the graph loops back with the
   // tool's result and asks the model AGAIN — and round 5 only stopped that round from being told
@@ -108,14 +122,7 @@ describe("agentNode tool-call limit (soft+hard)", () => {
   // sentinel made impossible by being the final text. The decision is terminal now: no further round
   // at all. The COUNT is untouched, so the cap still bounds a model that loops on skip_reply.
   test("the turn ends on the silence decision: the model is not asked again", async () => {
-    const skipTool = tool(
-      async () => `${SKIP_REPLY_ACK}. Produce no message now.`,
-      {
-        name: "skip_reply",
-        description: "skip",
-        schema: z.object({}),
-      },
-    );
+    const skipTool = realSkipTool();
     // One skip_reply call, then an empty answer — the shape a silent turn actually has.
     class SkipThenSilentModel {
       boundSystemPrompts: string[] = [];
@@ -168,10 +175,7 @@ describe("agentNode tool-call limit (soft+hard)", () => {
   // where a follow-up that chose silence writes to the customer anyway. Well below the cap, so no
   // limit is involved — only the decision.
   test("a model that would speak after skip_reply never gets the chance", async () => {
-    const skipTool = tool(
-      async () => `${SKIP_REPLY_ACK}. Produce no message now.`,
-      { name: SKIP_REPLY_TOOL, description: "skip", schema: z.object({}) },
-    );
+    const skipTool = realSkipTool();
     class SkipThenTalksAnyway {
       rounds = 0;
       async invoke(): Promise<AIMessage> {
@@ -214,14 +218,7 @@ describe("agentNode tool-call limit (soft+hard)", () => {
   // budget is spent by the very round that chose silence, and that path exists to force a TEXT
   // answer — it invokes the raw model with no tools bound. A deliberate silence became a message.
   test("the hard limit does not force text out of a turn that chose silence", async () => {
-    const skipTool = tool(
-      async () => `${SKIP_REPLY_ACK}. Produce no message now.`,
-      {
-        name: "skip_reply",
-        description: "skip",
-        schema: z.object({}),
-      },
-    );
+    const skipTool = realSkipTool();
     class SkipThenWouldSpeakModel {
       rawInvokes = 0;
       // The raw path is what the hard limit reaches for, and it is what must NOT run here.
@@ -332,10 +329,7 @@ describe("agentNode tool-call limit (soft+hard)", () => {
   // something they were told: the false memory this whole family is about, arriving through the
   // silence protocol instead of through a refusal.
   test("text written beside the decision does not stay in the channel", async () => {
-    const skipTool = tool(
-      async () => `${SKIP_REPLY_ACK}. Produce no message now.`,
-      { name: SKIP_REPLY_TOOL, description: "skip", schema: z.object({}) },
-    );
+    const skipTool = realSkipTool();
     const NARRATION = "Vou deixar quieto por ora.";
     class TalksWhileSkipping {
       rounds = 0;
@@ -412,10 +406,7 @@ describe("agentNode tool-call limit (soft+hard)", () => {
   // and the turn could still finish silent, leaving that text standing as something the customer
   // was told.
   test("narration beside a parallel skip is blanked even without ending there", async () => {
-    const skipTool = tool(
-      async () => `${SKIP_REPLY_ACK}. Produce no message now.`,
-      { name: SKIP_REPLY_TOOL, description: "skip", schema: z.object({}) },
-    );
+    const skipTool = realSkipTool();
     const reactTool = tool(async () => "reacted with 👍", {
       name: "react_to_message",
       description: "react",
@@ -483,10 +474,7 @@ describe("agentNode tool-call limit (soft+hard)", () => {
   // one arriving through the parallel door. The budget stops the tools that ACT and leaves the one
   // that does not, so the model can reaffirm silence after seeing the companion's result.
   test("the hard limit leaves a silent turn the option to stay silent", async () => {
-    const skipTool = tool(
-      async () => `${SKIP_REPLY_ACK}. Produce no message now.`,
-      { name: SKIP_REPLY_TOOL, description: "skip", schema: z.object({}) },
-    );
+    const skipTool = realSkipTool();
     const reactTool = tool(async () => "reacted with 👍", {
       name: "react_to_message",
       description: "react",
@@ -555,10 +543,7 @@ describe("agentNode tool-call limit (soft+hard)", () => {
   // ...and the same round may ANSWER instead, which is what the customer needs when the companion
   // failed. The option is the point; the outcome is the model's.
   test("the hard limit still lets that turn answer if it wants to", async () => {
-    const skipTool = tool(
-      async () => `${SKIP_REPLY_ACK}. Produce no message now.`,
-      { name: SKIP_REPLY_TOOL, description: "skip", schema: z.object({}) },
-    );
+    const skipTool = realSkipTool();
     const reactTool = failableTool(async () => toolFailure("could not react"), {
       name: "react_to_message",
       description: "react",
@@ -609,10 +594,7 @@ describe("agentNode tool-call limit (soft+hard)", () => {
   // the extra round a parallel batch buys would otherwise still be SENT the sentence the customer
   // never received — and the model can lean on it, or repeat it, in the answer that does go out.
   test("the extra round is not shown the narration it is about to lose", async () => {
-    const skipTool = tool(
-      async () => `${SKIP_REPLY_ACK}. Produce no message now.`,
-      { name: SKIP_REPLY_TOOL, description: "skip", schema: z.object({}) },
-    );
+    const skipTool = realSkipTool();
     const reactTool = tool(async () => "reacted with 👍", {
       name: "react_to_message",
       description: "react",
@@ -727,10 +709,7 @@ describe("agentNode tool-call limit (soft+hard)", () => {
   // every other failed tool call already gets. (Round 18 widened the rule to every companion, for
   // the reason below; this case is what made the question visible.)
   test("a companion tool that FAILED keeps the turn going", async () => {
-    const skipTool = tool(
-      async () => `${SKIP_REPLY_ACK}. Produce no message now.`,
-      { name: SKIP_REPLY_TOOL, description: "skip", schema: z.object({}) },
-    );
+    const skipTool = realSkipTool();
     const reactTool = failableTool(
       async () => toolFailure("could not react: the message is a reaction"),
       { name: "react_to_message", description: "react", schema: z.object({}) },
@@ -784,10 +763,7 @@ describe("agentNode tool-call limit (soft+hard)", () => {
   // success string), so the rule moved to the CALLS. This case is covered by the same rule now, and
   // it stays because it is the shape an operator can actually configure.
   test("a companion tool that was REFUSED keeps the turn going", async () => {
-    const skipTool = tool(
-      async () => `${SKIP_REPLY_ACK}. Produce no message now.`,
-      { name: SKIP_REPLY_TOOL, description: "skip", schema: z.object({}) },
-    );
+    const skipTool = realSkipTool();
     const reactTool = guardedTool(
       tool(async () => "reacted with 👍", {
         name: "react_to_message",
@@ -847,10 +823,7 @@ describe("agentNode tool-call limit (soft+hard)", () => {
   // reader can tell. What the extra round must still deliver is SILENCE when the model asks for it
   // alone: the decision is terminal there, and the raw model never speaks.
   test("a companion that worked costs one round and still ends silent", async () => {
-    const skipTool = tool(
-      async () => `${SKIP_REPLY_ACK}. Produce no message now.`,
-      { name: SKIP_REPLY_TOOL, description: "skip", schema: z.object({}) },
-    );
+    const skipTool = realSkipTool();
     const reactTool = tool(async () => "reacted with 👍", {
       name: "react_to_message",
       description: "react",
@@ -908,10 +881,7 @@ describe("agentNode tool-call limit (soft+hard)", () => {
   // reach the provider: `@langchain/anthropic` renders string content as a text block and Anthropic
   // refuses an empty one, so a thread that accumulated one would stop answering entirely.
   test("the empty turn stays in the channel and never reaches the model", async () => {
-    const skipTool = tool(
-      async () => `${SKIP_REPLY_ACK}. Produce no message now.`,
-      { name: SKIP_REPLY_TOOL, description: "skip", schema: z.object({}) },
-    );
+    const skipTool = realSkipTool();
     const seen: number[] = [];
     class CountsEmptyAssistantTurns {
       round = 0;
@@ -976,14 +946,7 @@ describe("agentNode tool-call limit (soft+hard)", () => {
   // answer with a reaction alone, and whichever result lands last is an ordering accident — reading
   // only the last one made the wrap-up instruction depend on it.
   test("skip_reply counts even when another tool's result lands last", async () => {
-    const skipTool = tool(
-      async () => `${SKIP_REPLY_ACK}. Produce no message now.`,
-      {
-        name: "skip_reply",
-        description: "skip",
-        schema: z.object({}),
-      },
-    );
+    const skipTool = realSkipTool();
     const reactTool = tool(async () => "reagiu", {
       name: "react_to_message",
       description: "react",

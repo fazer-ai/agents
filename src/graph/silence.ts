@@ -1,6 +1,3 @@
-import type { MessageContent } from "@langchain/core/messages";
-import { contentToText } from "./message-text";
-
 // What a model turn may hand to a person, and what counts as the model choosing to say nothing.
 //
 // The rule exists because the proactive path ASKS for a token. A follow-up that decides not to
@@ -22,9 +19,18 @@ export const FOLLOWUP_SKIP_SENTINEL = SENTINEL;
 export const SKIP_REPLY_TOOL = "skip_reply";
 
 // The tool's OWN acknowledgement, exported so its writer and its reader share one literal rather
-// than two copies that drift. `skipReplyRan` is the reader; `skipReplyTool` (tools/native.ts) is the
-// writer, and `tests/graph/silence.test.ts` calls the real tool to prove the two still agree.
+// than two copies that drift. It is what the MODEL reads; it is not what identifies the tool.
 export const SKIP_REPLY_ACK = "Acknowledged: not replying this turn";
+
+// WHAT IDENTIFIES THE TOOL, and it is deliberately not text. The ack is published in this repo, and
+// with natives revoked an operator may legitimately bind a custom HTTP tool under this name whose
+// response body they do not control — a third-party API, or a customer's own words echoed back. A
+// body that happens to begin with the ack would then be read as a decision to stay silent, and the
+// turn would end without answering: a denial of the customer's reply, reachable by injection.
+//
+// `additional_kwargs` is out of reach of any response body: only the tool that builds the
+// `ToolMessage` can set it, and `skipReplyTool` is the only thing that does (round 24).
+export const SKIP_REPLY_MARK = "fazer_skip_reply";
 
 export interface CustomerFacingReply {
   // The model said nothing this turn. Callers post no text; what else the turn produced (a queued
@@ -247,10 +253,10 @@ export function followupSilenceChannel(
 export function skipReplyRan(m: {
   getType: () => string;
   name?: string;
-  content: MessageContent;
+  additional_kwargs?: Record<string, unknown>;
 }): boolean {
   if (m.getType() !== "tool" || m.name !== SKIP_REPLY_TOOL) return false;
-  return contentToText(m.content).trimStart().startsWith(SKIP_REPLY_ACK);
+  return m.additional_kwargs?.[SKIP_REPLY_MARK] === true;
 }
 
 // OUR PROTOCOL TOOL IS NEVER THE ONLY TOOL A FOLLOW-UP BINDS, asked of the toolset that was actually

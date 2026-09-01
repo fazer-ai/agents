@@ -307,6 +307,25 @@ export function buildAgentGraph({
   // opposite of what a transient outage should cost.
   let fallbackHasTheTurn = false;
 
+  // ONCE PER TURN, and the same closure argument the flag above makes: `buildModelAndGraph` builds
+  // this graph inside the turn and invokes it once, so this variable IS "this invocation".
+  //
+  // The cap is one EVENT — the turn ran out of tool budget — and its handlers write an operator line
+  // and can page. It used to be one call by construction, because the hard limit ended the turn. It
+  // stopped being one when a parallel batch containing `skip_reply` became non-terminal (round 18)
+  // and then kept `skip_reply` bound at the cap (round 22): the batch reports the limit, the
+  // reaffirmation round re-enters the terminal branch and reports it again, with a bigger count. Two
+  // warnings for one event, the second one describing a round that spent nothing.
+  let toolLimitReported = false;
+  const reportToolLimit = (info: {
+    maxToolCalls: number;
+    toolCalls: number;
+  }) => {
+    if (toolLimitReported) return;
+    toolLimitReported = true;
+    onToolLimit?.(info);
+  };
+
   const agentNode = async (state: typeof MessagesAnnotation.State) => {
     // Exactly one system message, and it must be first: prepend the configured prompt and drop any
     // system message that leaked into the history (e.g. a proactive nudge persisted as a
@@ -348,7 +367,7 @@ export function buildAgentGraph({
     // Terminal only when the decision was ALL the model did (see `onlySkipped`). `staySilent` alone
     // still suppresses the wrap-up instruction below: the model just chose silence either way.
     if (staySilent && lastBatch(history).alone) {
-      if (hardLimit) onToolLimit?.({ maxToolCalls: max, toolCalls });
+      if (hardLimit) reportToolLimit({ maxToolCalls: max, toolCalls });
       return { messages: [...narration, new AIMessage("")] };
     }
     // `staySilent` is back in this condition, and round 18 is why it had to be. It left when the
@@ -367,7 +386,7 @@ export function buildAgentGraph({
       prompt = `${systemPrompt}\n\n[Sistema] Você já usou ${toolCalls} de ${max} ferramentas permitidas neste turno. Conclua agora: responda ao cliente com as informações que já tem. Só use outra ferramenta se for absolutamente imprescindível.`;
     }
     if (hardLimit) {
-      onToolLimit?.({ maxToolCalls: max, toolCalls });
+      reportToolLimit({ maxToolCalls: max, toolCalls });
     }
     // THE HARD LIMIT MUST NOT TALK A DECISION OUT OF ITSELF, and a PARALLEL batch is where it could.
     // The hard-limit path invokes the RAW model with no tools bound, which exists to force a text

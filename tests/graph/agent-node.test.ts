@@ -545,7 +545,11 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     expect(model.rawInvokes).toBe(0);
     expect(boundAtLimit).toEqual([[SKIP_REPLY_TOOL]]);
     expect(String(result.messages.at(-1)?.content ?? "")).toBe("");
-    expect(hits[0]).toEqual({ maxToolCalls: 2, toolCalls: 2 });
+    // ONCE. The cap is one event — the turn ran out of budget — and its handlers write an operator
+    // line and can page. Two rounds now cross the limit (the batch, then the reaffirmation), and
+    // reporting both meant two warnings for one event, the second describing a round that spent
+    // nothing (round 23).
+    expect(hits).toEqual([{ maxToolCalls: 2, toolCalls: 2 }]);
   });
 
   // ...and the same round may ANSWER instead, which is what the customer needs when the companion

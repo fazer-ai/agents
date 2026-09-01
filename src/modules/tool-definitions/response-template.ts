@@ -30,6 +30,13 @@ import {
 } from "@/modules/tool-definitions/json-path";
 
 // The template becomes model context on EVERY call of the tool, so it is capped like one.
+// How much of a response reaches the model, template or not: `graph/tools/http.ts` clips to this,
+// and the editor's preview promises "exactly what the agent would receive". Here rather than there
+// because this module is the one both can import — `http.ts` is not client-safe, and a second 4000
+// in the editor would be a second answer to the same question, with the wrong one being the one
+// nobody is looking at.
+export const MODEL_RESPONSE_CHAR_LIMIT = 4000;
+
 export const MAX_TEMPLATE_CHARS = 4000;
 
 // Per value, and the cap is what keeps the template's promise rather than a cost control. Without

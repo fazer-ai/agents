@@ -6,7 +6,9 @@ import {
   parseExpectedStatuses,
   payloadOf,
   type Tool,
+  templatePreviewFor,
 } from "@/client/pages/resources/ToolEditModal";
+import { buildHttpTool } from "@/graph/tools/http";
 
 // NOTE: formFromTool is pure over its argument; these tests exercise the legacy load path without
 // rendering the modal.
@@ -144,5 +146,121 @@ describe("formFromTool / payloadOf — the response template", () => {
   test("a tool with no outputSchema still sends an empty bag", () => {
     const form = formFromTool(legacyTool());
     expect(payloadOf(form)?.outputSchema).toEqual({});
+  });
+});
+
+// Round 3 of review, finding 4. The preview is labelled "exactly what the agent would receive", and
+// the runtime projects the template on 2xx ALONE — so a sample captured from a status outside that
+// range had the preview promising something the very same test run had just reported otherwise.
+//
+// The control is agreement with `buildHttpTool`, not with this file's reading of it: each case runs
+// the same definition through the runtime and compares.
+describe("templatePreviewFor", () => {
+  const BODY = {
+    razao_social: "MAGAZINE LUIZA S/A",
+    message: "não encontrado",
+  };
+  const SAMPLE = JSON.stringify(BODY);
+  const TEMPLATE = "Empresa: {{razao_social}}";
+
+  // What the runtime hands the model for this definition at this status, minus the "HTTP n" line
+  // the preview box does not show.
+  async function runtimeText(status: number, body = SAMPLE): Promise<string> {
+    const tool = buildHttpTool(
+      {
+        name: "t",
+        method: "GET",
+        urlTemplate: "https://8.8.8.8/v1/x",
+        allowedHosts: ["8.8.8.8"],
+        headers: {},
+        inputSchema: {},
+        expectedStatuses: [status],
+        credentialRef: null,
+        credentialKind: null,
+        credentialParamName: null,
+        credentialBaseUrl: null,
+        ackMessage: null,
+        outputSchema: { mode: "template", template: TEMPLATE },
+      },
+      {
+        resolveCredential: async () => null,
+        fetchImpl: (async () =>
+          new Response(body, {
+            status,
+            headers: { "content-type": "application/json" },
+          })) as unknown as typeof fetch,
+      },
+    );
+    return String(await tool.invoke({}))
+      .split("\n")
+      .slice(1)
+      .join("\n");
+  }
+
+  test.each([200, 201, 404, 500])(
+    "matches what the runtime hands the model at HTTP %i",
+    async (status) => {
+      const preview = templatePreviewFor({
+        template: TEMPLATE,
+        sample: SAMPLE,
+        body: BODY,
+        parsed: true,
+        status,
+      });
+      expect(preview?.text).toBe(await runtimeText(status));
+      expect(preview?.projected).toBe(status >= 200 && status < 300);
+    },
+  );
+
+  test("a hand-pasted sample has no status and is previewed as a success", () => {
+    // Nobody pastes an error body to design a success template against, so null reads as 2xx.
+    expect(
+      templatePreviewFor({
+        template: TEMPLATE,
+        sample: SAMPLE,
+        body: BODY,
+        parsed: true,
+        status: null,
+      }),
+    ).toEqual({
+      projected: true,
+      text: "Empresa: MAGAZINE LUIZA S/A",
+      missing: [],
+    });
+  });
+
+  test("nothing to preview without a template or without a parsed sample", () => {
+    expect(
+      templatePreviewFor({
+        template: "   ",
+        sample: SAMPLE,
+        body: BODY,
+        parsed: true,
+        status: 200,
+      }),
+    ).toBeNull();
+    expect(
+      templatePreviewFor({
+        template: TEMPLATE,
+        sample: "not json",
+        body: undefined,
+        parsed: false,
+        status: 200,
+      }),
+    ).toBeNull();
+  });
+
+  test("a non-2xx sample past the model's limit is previewed clipped, as the runtime clips it", async () => {
+    const big = JSON.stringify({ message: "x".repeat(5000) });
+    const preview = templatePreviewFor({
+      template: TEMPLATE,
+      sample: big,
+      body: JSON.parse(big),
+      parsed: true,
+      status: 502,
+    });
+    expect(preview?.text).toContain("…[truncated]");
+    // Not "clipped somehow": clipped to the same string, by the same rule.
+    expect(preview?.text).toBe(await runtimeText(502, big));
   });
 });

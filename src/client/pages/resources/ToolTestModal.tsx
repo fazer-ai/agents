@@ -166,7 +166,10 @@ export function ToolTestModal({
   onResponse,
 }: {
   modal: ModalController<ToolTestTarget>;
-  onResponse: (raw: string) => void;
+  // The raw response AND the status it came back under. The status travels because the runtime
+  // projects the template on 2xx alone, so the editor cannot say what the model would receive
+  // without knowing which side of that line the sample is on.
+  onResponse: (raw: string, status: number) => void;
 }) {
   const { t } = useTranslation();
   const [values, setValues] = useState<Record<string, string>>({});
@@ -259,7 +262,14 @@ export function ToolTestModal({
       setResult(data.result);
       // The sample field is filled from the RAW response, not the model's text: the picker walks the
       // provider's own body, including the parts the clip would have removed.
-      onResponse(data.result.raw);
+      //
+      // Unless the wire cap cut it. A clipped JSON document is not a JSON document: both pickers go
+      // dark on it, the sample field says "not valid JSON", and none of that names the actual
+      // reason. So an unusable prefix is not offered as a sample at all, and the result panel says
+      // what happened instead (`testTooLarge` below).
+      if (!data.result.rawClipped) {
+        onResponse(data.result.raw, data.result.status);
+      }
     } catch {
       if (sessionRef.current !== session) return;
       setError(t("tools.testFailed", "The request could not run."));
@@ -407,6 +417,14 @@ export function ToolTestModal({
                 })}
               </span>
             </div>
+            {result.rawClipped && (
+              <p className="text-warning text-xs">
+                {t(
+                  "tools.testTooLarge",
+                  "This response is too large to bring back as a sample, so the field above was left as it was. The agent still receives what is shown below.",
+                )}
+              </p>
+            )}
             {result.notes.length > 0 && (
               <ul className="flex flex-col gap-1">
                 {result.notes.map((n) => (

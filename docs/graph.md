@@ -79,7 +79,7 @@ An operator can declare, per granted tool, a condition the runtime checks BEFORE
 
 ## What an HTTP tool's response hands the model
 
-By default the whole response body, clipped at `maxResponseChars` (4000, `src/graph/tools/http.ts`), prefixed `HTTP <status>`. That default has a failure mode worth naming, because it is not about tokens: **a clipped payload does not read to a model as missing data, it reads as a gap to fill from training data.** Measured on #456 against a public CNPJ lookup — a 7,982-char response whose first 2.3k are five third parties' names and masked tax ids, and whose registration status sits at char 7,806. The agent answered with a status that was not in the tool result at all, twice, past an explicit system-prompt guard telling it not to infer one.
+By default the whole response body, clipped at `maxResponseChars` (`MODEL_RESPONSE_CHAR_LIMIT`, 4000, declared in `src/modules/tool-definitions/response-template.ts` so the editor's preview can clip by the same number), prefixed `HTTP <status>`. That default has a failure mode worth naming, because it is not about tokens: **a clipped payload does not read to a model as missing data, it reads as a gap to fill from training data.** Measured on #456 against a public CNPJ lookup — a 7,982-char response whose first 2.3k are five third parties' names and masked tax ids, and whose registration status sits at char 7,806. The agent answered with a status that was not in the tool result at all, twice, past an explicit system-prompt guard telling it not to infer one.
 
 So a tool may declare **what its response should look like** by the time the model reads it, in `ToolDefinition.outputSchema`:
 

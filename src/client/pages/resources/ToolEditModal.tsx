@@ -26,6 +26,7 @@ import { api } from "@/client/lib/api";
 import { cn } from "@/client/lib/utils";
 import { isValidUrlTemplate } from "@/client/lib/validation";
 import { normalizeToolName } from "@/graph/tools/toolName";
+import { clipText } from "@/lib/text";
 import { readProviderSlug } from "@/modules/appointments/provider";
 import { sampleLeaves } from "@/modules/tool-definitions/appointment";
 import {
@@ -37,6 +38,7 @@ import {
   normalizeToolShapes,
 } from "@/modules/tool-definitions/normalize";
 import {
+  MODEL_RESPONSE_CHAR_LIMIT,
   readResponseTemplate,
   renderResponseTemplate,
   templateLeaves,
@@ -125,6 +127,48 @@ const NATIVE_VAR_NAMES = new Set<string>(CONTEXT_VAR_NAMES);
 // strings it replaced had no entry for.
 //
 // Exported and pure so that agreement is a test rather than a claim.
+// What the model would be handed for the sample on screen. The point of the whole response section:
+// a template is a promise about the model's input, and this is the only place an operator can read
+// that input before a customer does — which is exactly why it has to follow the runtime's rule and
+// not a friendlier one.
+//
+// `projectResponse` runs on 2xx ALONE, and deliberately: a non-2xx body is the error message the
+// model needs to read literally, and a template aimed at success fields would render a block of
+// absent markers over it. So a sample captured from a 404 the tool declares a result is previewed
+// RAW, clipped the way the runtime clips. Rendering the template there would have contradicted the
+// `modelText` the very same test run reported, one dialog away.
+//
+// `status: null` means the sample was pasted by hand, and reads as 2xx: nobody pastes an error body
+// to design a success template against.
+//
+// Exported and pure so the agreement is a test rather than a claim.
+export function templatePreviewFor(args: {
+  template: string;
+  sample: string;
+  body: unknown;
+  parsed: boolean;
+  status: number | null;
+}): { projected: boolean; text: string; missing: string[] } | null {
+  const template = args.template.trim();
+  if (!template || !args.parsed) return null;
+  const { status } = args;
+  if (status !== null && (status < 200 || status >= 300)) {
+    const raw = args.sample.trim();
+    return {
+      projected: false,
+      text:
+        raw.length > MODEL_RESPONSE_CHAR_LIMIT
+          ? `${clipText(raw, MODEL_RESPONSE_CHAR_LIMIT)}…[truncated]`
+          : raw,
+      missing: [],
+    };
+  }
+  return {
+    projected: true,
+    ...renderResponseTemplate({ template }, args.body),
+  };
+}
+
 export function contextNamesReferencedBy(
   payload: {
     urlTemplate?: unknown;
@@ -906,6 +950,13 @@ export function ToolEditModal({
   // asking for it twice is the kind of duplication an operator reads as two different questions.
   // Local, never submitted, never part of the dirty comparison — see sampleParse.
   const [sample, setSample] = useState("");
+  // The STATUS the sample came back under, or null when it was pasted by hand. It exists because the
+  // runtime projects on 2xx alone: a sample captured from a 404 the tool declares a result would be
+  // handed to the model RAW, and a preview that rendered the template over it would promise
+  // something the runtime never does — under a label that says "exactly what the agent would
+  // receive". Null reads as 2xx, which is the right assumption for a hand-pasted body: nobody
+  // pastes an error response to design a success template against.
+  const [sampleStatus, setSampleStatus] = useState<number | null>(null);
   const [apptPicker, setApptPicker] = useState<
     "id" | "start" | "summary" | null
   >(null);
@@ -962,6 +1013,7 @@ export function ToolEditModal({
     // The sample belongs to the tool being edited, so it does not survive into the next one: a
     // response pasted for tool A offering its paths while editing tool B is worse than no offer.
     setSample("");
+    setSampleStatus(null);
     setApptPicker(null);
     setTemplatePickerOpen(false);
     const payloadId = modal.payload?.id;
@@ -1119,11 +1171,17 @@ export function ToolEditModal({
   // What the model would be handed, rendered against the pasted sample. The point of the whole
   // section: a template is a promise about the model's input, and this is the only place the
   // operator can read that input before a customer does.
-  const templatePreview = useMemo(() => {
-    const template = form.outputTemplate.trim();
-    if (!template || sampleParse.state !== "ok") return null;
-    return renderResponseTemplate({ template }, sampleParse.body);
-  }, [form.outputTemplate, sampleParse]);
+  const templatePreview = useMemo(
+    () =>
+      templatePreviewFor({
+        template: form.outputTemplate,
+        sample,
+        body: sampleParse.body,
+        parsed: sampleParse.state === "ok",
+        status: sampleStatus,
+      }),
+    [form.outputTemplate, sample, sampleParse, sampleStatus],
+  );
   const badTemplateTokens = unusableTemplateTokens(form.outputTemplate);
   const apptIdPathInvalid = apptOn && !isUsablePath(form.apptIdPath.trim());
   const apptStartPathInvalid =
@@ -1591,7 +1649,12 @@ export function ToolEditModal({
               >
                 <Textarea
                   value={sample}
-                  onChange={(e) => setSample(e.target.value)}
+                  onChange={(e) => {
+                    setSample(e.target.value);
+                    // Typed or pasted by hand: there is no status behind it any more, and keeping
+                    // the last run's would judge this body by that one's.
+                    setSampleStatus(null);
+                  }}
                   rows={3}
                   placeholder='{"data": {"id": "ap_1", "start": "2026-09-02T14:00:00-03:00"}}'
                 />
@@ -1690,6 +1753,15 @@ export function ToolEditModal({
                     {templatePreview.text}
                   </pre>
                 </FormField>
+              )}
+              {templatePreview && !templatePreview.projected && (
+                <p className="-mt-2 text-warning text-xs">
+                  {t(
+                    "tools.outputTemplateNotApplied",
+                    "This sample came back as HTTP {{status}}, and the template only applies to a successful response. Outside 2xx the agent reads the body as it came, so it can read the error.",
+                    { status: sampleStatus },
+                  )}
+                </p>
               )}
               {templatePreview && templatePreview.missing.length > 0 && (
                 <p className="-mt-2 text-warning text-xs">
@@ -2028,7 +2100,13 @@ export function ToolEditModal({
           </div>
         )}
       </Modal>
-      <ToolTestModal modal={testModal} onResponse={setSample} />
+      <ToolTestModal
+        modal={testModal}
+        onResponse={(raw, status) => {
+          setSample(raw);
+          setSampleStatus(status);
+        }}
+      />
     </>
   );
 }

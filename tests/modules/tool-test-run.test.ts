@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { PrismaClient } from "@/../generated/prisma/client";
+import { buildHttpTool } from "@/graph/tools/http";
 import { AppError } from "@/lib/errors";
 import type { TenantContext } from "@/lib/tenancy";
 import { DEFAULT_HTTP_METHOD } from "@/modules/tool-definitions/service";
@@ -321,4 +322,136 @@ describe("runToolTest — the same request the saved tool would make", () => {
     expect((err as AppError).statusCode).toBe(400);
     expect(String((err as AppError).message)).toMatch(/not in allowlist/);
   });
+});
+
+// Round 3 of review, findings 1 and 2. The wrapper that captures the raw body sat between the
+// runtime and the network, and both of the ways it could be noticed are timing rather than content.
+describe("runToolTest — the capture wrapper is invisible to the runtime", () => {
+  test("a body that arrives after the headers is not put back under the abort timer", async () => {
+    // The runtime clears its timer the instant `fetch` resolves and reads the body afterwards, so
+    // the bound is on the HEADERS. Reading the body inside the wrapper moved it back under the
+    // armed timer: measured at a 300ms timeout against a provider that answers at once and streams
+    // its body 800ms later, the runtime returned the body and this aborted.
+    //
+    // Written with a short timeout on `buildHttpTool` rather than through `runToolTest`, because
+    // the real bound is ten seconds and the property is the ORDERING, not the number.
+    const provider = (async (_u: string, init: RequestInit) =>
+      new Response(
+        new ReadableStream({
+          start(c) {
+            c.enqueue(new TextEncoder().encode('{"a":'));
+            const t = setTimeout(() => {
+              c.enqueue(new TextEncoder().encode("1}"));
+              c.close();
+            }, 400);
+            init.signal?.addEventListener("abort", () => {
+              clearTimeout(t);
+              c.error(new Error("The operation was aborted."));
+            });
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      )) as unknown as typeof fetch;
+
+    // What `test-run.ts` hands `buildHttpTool`, read out of the file so this cannot pass against a
+    // wrapper the module no longer uses.
+    const src = await Bun.file(
+      "src/modules/tool-definitions/test-run.ts",
+    ).text();
+    expect(src).toContain(".clone()");
+    expect(src).not.toMatch(/const body = await res\.text\(\)/);
+    expect(src).not.toMatch(/return new Response\(body/);
+
+    let captured: Promise<string> | null = null;
+    const wrapper = (async (u: string, i: RequestInit) => {
+      const res = await provider(u, i);
+      captured = res
+        .clone()
+        .text()
+        .catch(() => "");
+      return res;
+    }) as unknown as typeof fetch;
+
+    const tool = buildHttpTool(
+      {
+        name: "t",
+        method: "GET",
+        urlTemplate: `https://${PUBLIC}/v1/x`,
+        allowedHosts: [PUBLIC],
+        headers: {},
+        inputSchema: {},
+        expectedStatuses: [],
+        credentialRef: null,
+        credentialKind: null,
+        credentialParamName: null,
+        credentialBaseUrl: null,
+        ackMessage: null,
+        outputSchema: undefined,
+      },
+      {
+        resolveCredential: async () => null,
+        timeoutMs: 150,
+        fetchImpl: wrapper,
+      },
+    );
+    expect(String(await tool.invoke({}))).toBe('HTTP 200\n{"a":1}');
+    expect(await (captured as unknown as Promise<string>)).toBe('{"a":1}');
+  });
+
+  test("and the streamed body still reaches the operator whole", async () => {
+    // The other half of the clone: not delaying the fetch must not cost the raw body, which is the
+    // thing the sample field is filled from.
+    const r = await runToolTest(
+      ctx,
+      {
+        definition: {
+          ...base,
+          urlTemplate: `https://${PUBLIC}/v1/x`,
+          inputSchema: {},
+        },
+      },
+      noDb,
+      {
+        fetchImpl: (async () =>
+          new Response(
+            new ReadableStream({
+              start(c) {
+                c.enqueue(new TextEncoder().encode('{"razao_social":'));
+                setTimeout(() => {
+                  c.enqueue(new TextEncoder().encode('"MAGAZINE LUIZA S/A"}'));
+                  c.close();
+                }, 30);
+              },
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          )) as unknown as typeof fetch,
+      },
+    );
+    expect(r.raw).toBe('{"razao_social":"MAGAZINE LUIZA S/A"}');
+    expect(r.rawChars).toBe(37);
+  });
+
+  test.each([204, 205, 304])(
+    "a bodyless %i is handed back as the response it was",
+    async (status) => {
+      // The wrapper used to rebuild the Response from the text it had read. Bun accepts an empty
+      // body on a null-body status where the spec does not, so this never threw here — but a
+      // rebuilt Response is a second object to keep faithful, and there is no longer one.
+      const r = await runToolTest(
+        ctx,
+        {
+          definition: { ...base, expectedStatuses: [status] },
+          args: { cnpj: "1" },
+        },
+        noDb,
+        {
+          fetchImpl: (async () =>
+            new Response(null, { status })) as unknown as typeof fetch,
+        },
+      );
+      expect(r.status).toBe(status);
+      expect(r.raw).toBe("");
+      expect(r.failed).toBe(false);
+    },
+  );
 });

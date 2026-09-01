@@ -158,7 +158,7 @@ export async function runToolTest(
   }
 
   const notes: ToolTestNote[] = [];
-  let seen: { status: number; body: string } | null = null;
+  let seen: { status: number; body: Promise<string> } | null = null;
   const doFetch = deps.fetchImpl ?? fetch;
   const tool = buildHttpTool(def, {
     resolveCredential: (ref) =>
@@ -173,15 +173,29 @@ export async function runToolTest(
       }),
     // The raw body is taken HERE, on the way in, because everything downstream of this point is the
     // model's view: rendered, clipped, prefixed. The operator needs the provider's own answer.
+    //
+    // From a CLONE, and not awaited before returning, because both halves of that are timing. The
+    // runtime clears its abort timer the instant `fetch` resolves and reads the body afterwards, so
+    // production bounds the wait for HEADERS and not for the body. Reading here, inside the call,
+    // put the body read back under the armed timer: measured against a provider that answers at
+    // once and streams its body 800ms later with a 300ms timeout, the runtime returns `HTTP 200
+    // {"a":1}` and this returned "The operation was aborted." — the same definition, against the
+    // same provider, behaving differently on the screen built to preview it. Returning `res`
+    // untouched also means there is no reconstructed Response to get wrong: a 204 or a 304 stays
+    // exactly the object the runtime would have read.
     fetchImpl: (async (url: string, init: RequestInit) => {
       const res = await doFetch(url, init);
-      const body = await res.text();
-      seen = { status: res.status, body };
-      return new Response(body, {
+      // `.catch` rather than a bare promise: when the runtime aborts, this rejects too, and an
+      // unobserved rejection would be a crash rather than a refusal. The value is read only on the
+      // path where the call succeeded.
+      seen = {
         status: res.status,
-        statusText: res.statusText,
-        headers: res.headers,
-      });
+        body: res
+          .clone()
+          .text()
+          .catch(() => ""),
+      };
+      return res;
     }) as unknown as typeof fetch,
   });
 
@@ -211,7 +225,7 @@ export async function runToolTest(
     throw new AppError(err instanceof Error ? err.message : String(err), 400);
   }
   const durationMs = Date.now() - startedAt;
-  const captured = seen as { status: number; body: string } | null;
+  const captured = seen as { status: number; body: Promise<string> } | null;
 
   const message = out as { content?: unknown; status?: unknown };
   const modelText = String(message?.content ?? out);
@@ -221,12 +235,14 @@ export async function runToolTest(
     throw new AppError(modelText, 400);
   }
 
+  const rawBody = await captured.body;
+
   return {
     status: captured.status,
     durationMs,
-    raw: clipText(captured.body, MAX_RAW_CHARS),
-    rawChars: captured.body.length,
-    rawClipped: captured.body.length > MAX_RAW_CHARS,
+    raw: clipText(rawBody, MAX_RAW_CHARS),
+    rawChars: rawBody.length,
+    rawClipped: rawBody.length > MAX_RAW_CHARS,
     modelText,
     // The tool marks an integration failure by returning a ToolMessage with status "error"; without
     // a tool_call in scope (which is this call) that degrades to the plain string, so the status is

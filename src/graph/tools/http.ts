@@ -17,6 +17,7 @@ import {
 } from "@/modules/tool-definitions/appointment";
 import { normalizeToolShapes } from "@/modules/tool-definitions/normalize";
 import {
+  MODEL_RESPONSE_CHAR_LIMIT,
   readResponseTemplate,
   renderResponseTemplate,
 } from "@/modules/tool-definitions/response-template";
@@ -539,7 +540,7 @@ export function buildHttpTool(
     method === "POST" || method === "PUT" || method === "PATCH";
   const doFetch = deps.fetchImpl ?? fetch;
   const timeoutMs = deps.timeoutMs ?? DEFAULT_HTTP_TOOL_TIMEOUT_MS;
-  const maxChars = deps.maxResponseChars ?? 4000;
+  const maxChars = deps.maxResponseChars ?? MODEL_RESPONSE_CHAR_LIMIT;
   const expectedStatuses = normalizeExpectedStatuses(def.expectedStatuses);
 
   // Schema = the AI-filled fields. When an ack is configured, the model MUST write the holding message

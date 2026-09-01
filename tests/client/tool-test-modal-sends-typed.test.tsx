@@ -61,7 +61,12 @@ const TARGET: ToolTestTarget = {
 
 function mount(
   sent: { body?: unknown },
-  opts: { target?: ToolTestTarget; hold?: { release?: () => void } } = {},
+  opts: {
+    target?: ToolTestTarget;
+    hold?: { release?: () => void };
+    clipped?: boolean;
+    status?: number;
+  } = {},
 ) {
   globalThis.fetch = (async (_i: RequestInfo | URL, init?: RequestInit) => {
     if ((init?.method ?? "GET").toUpperCase() === "POST") {
@@ -76,11 +81,11 @@ function mount(
         JSON.stringify({
           instance: {},
           result: {
-            status: 200,
+            status: opts.status ?? 200,
             durationMs: 1,
             raw: "{}",
-            rawChars: 2,
-            rawClipped: false,
+            rawChars: opts.clipped ? 100_001 : 2,
+            rawClipped: opts.clipped ?? false,
             modelText: "HTTP 200\n{}",
             failed: false,
             notes: [],
@@ -96,6 +101,7 @@ function mount(
   }) as typeof fetch;
 
   const seenSamples: string[] = [];
+  const seenStatuses: number[] = [];
   let controller: { open: () => void; close: () => void } | null = null;
   function Harness() {
     const modal = useModalController<ToolTestTarget>();
@@ -110,7 +116,10 @@ function mount(
         </button>
         <ToolTestModal
           modal={modal}
-          onResponse={(raw) => seenSamples.push(raw)}
+          onResponse={(raw, status) => {
+            seenSamples.push(raw);
+            seenStatuses.push(status);
+          }}
         />
       </ToastProvider>
     );
@@ -119,6 +128,7 @@ function mount(
   fireEvent.click(screen.getByText("open"));
   return {
     samples: seenSamples,
+    statuses: seenStatuses,
     reopen: () => {
       act(() => controller?.close());
       act(() => controller?.open());
@@ -240,4 +250,27 @@ test("a response from a dismissed session never lands on the next one", async ()
   // must not paint a result under a form the operator has just cleared.
   expect(samples).toEqual([]);
   expect(screen.queryByText(/HTTP 200 in/)).toBeNull();
+});
+
+// Round 3 of review, finding 3. The wire cap on the raw response is 100k characters, and what comes
+// back past it is a PREFIX: not a JSON document, so both path pickers go dark and the sample field
+// says only "not valid JSON" — none of which names the actual reason.
+test("a response too large to be a sample is not offered as one", async () => {
+  const sent: { body?: unknown } = {};
+  const { samples } = mount(sent, { clipped: true });
+  fireEvent.click(screen.getByText("Send request"));
+  await waitFor(() => expect(sent.body).toBeDefined());
+  await waitFor(() => expect(screen.getByText(/too large/)).toBeDefined());
+  // The editor's sample keeps whatever it had; the run's own answer is still on screen.
+  expect(samples).toEqual([]);
+});
+
+test("a usable response is handed over with the status it came back under", async () => {
+  const sent: { body?: unknown } = {};
+  const { statuses } = mount(sent, { status: 404 });
+  fireEvent.click(screen.getByText("Send request"));
+  await waitFor(() => expect(statuses.length).toBe(1));
+  // The status travels because the runtime projects the template on 2xx alone — see the preview
+  // test in tests/client/pages/ToolEditModal.test.tsx.
+  expect(statuses).toEqual([404]);
 });

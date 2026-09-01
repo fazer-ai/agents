@@ -5,6 +5,8 @@ import {
   SystemMessage,
   ToolMessage,
 } from "@langchain/core/messages";
+import { DATA_FENCE } from "@/graph/nudge";
+import { FOLLOWUP_SKIP_SENTINEL } from "@/graph/silence";
 import {
   applyTurnNotes,
   rebuildPlaygroundTurns,
@@ -29,6 +31,55 @@ describe("rebuildPlaygroundTurns", () => {
     ]);
   });
 
+  // Issue #454, review round 1. The live response sanitizes, but the CHECKPOINTER holds the model's
+  // raw turn, so reopening a session rebuilt the token and showed it to the operator again — the
+  // same defect one surface over.
+  test("a reloaded session renders a sentinel-carrying reply as written", () => {
+    const turns = rebuildPlaygroundTurns([
+      new HumanMessage("oi"),
+      new AIMessage(`${FOLLOWUP_SKIP_SENTINEL} Claro, posso ajudar.`),
+    ]);
+    expect(turns.map((x) => [x.role, x.text])).toEqual([
+      ["user", "oi"],
+      // Round 4: a reload shows what the model actually wrote. Only a turn that reduces ENTIRELY to
+      // the token is silence; editing the token out of a real answer is the prohibited data loss.
+      ["assistant", `${FOLLOWUP_SKIP_SENTINEL} Claro, posso ajudar.`],
+    ]);
+  });
+
+  // A turn that reduces to the token was a SILENT turn, so it renders no assistant bubble at all —
+  // and, in particular, does not borrow the previous exchange's answer to fill the gap.
+  test("a sentinel-only turn renders no assistant bubble", () => {
+    const turns = rebuildPlaygroundTurns([
+      new HumanMessage("oi"),
+      new AIMessage("Olá!"),
+      new HumanMessage("e agora?"),
+      new AIMessage(FOLLOWUP_SKIP_SENTINEL),
+    ]);
+    expect(turns.map((x) => [x.role, x.text])).toEqual([
+      ["user", "oi"],
+      ["assistant", "Olá!"],
+      ["user", "e agora?"],
+    ]);
+  });
+
+  // Round 9. A silent follow-up ends with an EMPTY ai message after the tool result, and an earlier
+  // tool-calling ai message in the same slice can carry text. Scanning past the empty one returned
+  // that text, so reopening the session showed a follow-up the live run had reported silent.
+  test("a turn ending in an empty ai message renders as silence, not as its earlier text", () => {
+    const turns = rebuildPlaygroundTurns([
+      new HumanMessage("oi"),
+      new AIMessage("deixa eu ver aqui"),
+      new ToolMessage({
+        content: "Produce no message now.",
+        tool_call_id: "c1",
+        name: "skip_reply",
+      }),
+      new AIMessage(""),
+    ]);
+    expect(turns.map((x) => [x.role, x.text])).toEqual([["user", "oi"]]);
+  });
+
   test("unwraps an audio message and flags it", () => {
     const turns = rebuildPlaygroundTurns([
       new HumanMessage("<mensagem-de-audio>quero agendar</mensagem-de-audio>"),
@@ -40,6 +91,47 @@ describe("rebuildPlaygroundTurns", () => {
       audio: true,
     });
     expect(turns[1]).toMatchObject({ role: "assistant", text: "Claro!" });
+  });
+
+  // Round 22. The two rules are not interchangeable, and the rebuild used the reactive one for
+  // everything: a follow-up's reply went out through `proactiveReply`, which strips a stray token
+  // from a real answer, so reopening the session showed the operator a different reply from the one
+  // they were given — with the token back in it.
+  test("a reopened follow-up is sanitized by the rule that produced it", () => {
+    const reply = `${FOLLOWUP_SKIP_SENTINEL} Ainda precisa de algo?`;
+    // The legacy shape (a SystemMessage nudge)...
+    const legacy = rebuildPlaygroundTurns([
+      new SystemMessage("nudge…"),
+      new AIMessage(reply),
+    ]);
+    expect(legacy[0]).toMatchObject({
+      role: "assistant",
+      text: "Ainda precisa de algo?",
+      followup: true,
+    });
+    // ...and the current one, a human turn carrying the nudge fence.
+    const fenced = rebuildPlaygroundTurns([
+      new HumanMessage(`um evento aconteceu ${DATA_FENCE} dados`),
+      new AIMessage(reply),
+    ]);
+    expect(fenced[0]).toMatchObject({
+      role: "assistant",
+      text: "Ainda precisa de algo?",
+      followup: true,
+    });
+  });
+
+  // The control, and it is the whole reason the rules differ: an ORDINARY turn keeps the token,
+  // because editing a customer-facing answer is the data loss `docs/graph.md` prohibits.
+  test("a reopened ordinary turn still carries a stray token", () => {
+    const turns = rebuildPlaygroundTurns([
+      new HumanMessage("oi"),
+      new AIMessage(`${FOLLOWUP_SKIP_SENTINEL} Claro, posso ajudar.`),
+    ]);
+    expect(turns[1]).toMatchObject({
+      role: "assistant",
+      text: `${FOLLOWUP_SKIP_SENTINEL} Claro, posso ajudar.`,
+    });
   });
 
   test("a system nudge yields a follow-up reply; a silent one is skipped", () => {

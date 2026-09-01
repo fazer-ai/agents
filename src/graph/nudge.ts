@@ -64,6 +64,18 @@ import {
 import { undoRefusedTurn } from "./refused-turn";
 import type { RuntimeDeps } from "./runtime";
 import {
+  FOLLOWUP_SKIP_SENTINEL,
+  followupSilenceChannel,
+  inertToolsFor,
+  isNudgeSilent,
+  proactiveReply,
+  withFollowupSilenceChannel,
+  withoutLoneSilenceTool,
+} from "./silence";
+
+export { FOLLOWUP_SKIP_SENTINEL, isNudgeSilent };
+
+import {
   clearTurnOwning,
   markTurnOwning,
   type ThreadOwner,
@@ -247,28 +259,6 @@ export const OUTSIDE_WINDOW_NOTE_PREFIX =
   "⏳ Fora da janela de 24h do WhatsApp: a mensagem abaixo NÃO foi enviada ao cliente. " +
   "Para reengajar fora da janela, configure um template aprovado (HSM) na aba Comportamento do agente.\n\n";
 
-// Explicit "no follow-up" signal. We ask the model to emit EXACTLY this token when a proactive
-// message isn't warranted, instead of "reply with an empty message" — models routinely NARRATE
-// their emptiness ("(empty — nothing to do yet)") instead of returning truly empty text, and that
-// non-empty narration would otherwise get posted to the customer. A distinctive sentinel is
-// detectable and is stripped before any post so it can never leak.
-export const FOLLOWUP_SKIP_SENTINEL = "[[SKIP]]";
-
-// True when the model declined to follow up: empty, the skip sentinel (tolerating wrapping quotes),
-// a bare "SKIP", or a parenthetical-only "narrated emptiness" (the failure mode that leaked before).
-export function isNudgeSilent(reply: string): boolean {
-  const trimmed = reply.trim();
-  if (!trimmed) return true;
-  const stripped = trimmed.replace(/^["'`]+|["'`]+$/g, "").trim();
-  if (stripped === FOLLOWUP_SKIP_SENTINEL) return true;
-  if (stripped.toUpperCase() === "SKIP") return true;
-  // A reply that is ONLY a parenthetical starting with empty/nothing/none (pt-BR + EN) → silence.
-  if (/^\((?:empty|vazi|nothing|none|nada|sem|n\/a)[^)]*\)$/i.test(stripped)) {
-    return true;
-  }
-  return false;
-}
-
 // External free-text is UNTRUSTED (the inbound poster controls it). Collapse control chars and
 // newlines to a single line (so it cannot forge multi-line "system" framing), drop the data fence
 // token, and bound the length. Never let this text read as instructions.
@@ -289,6 +279,11 @@ function sanitizeFreeText(s: string, max: number): string {
 export function renderNudge(
   n: AgentNudge,
   canMessageCustomer: boolean,
+  // Which silence channel this agent HAS. The tool is the one that leaves nothing to imitate and is
+  // the default; an agent that revoked every tool cannot be handed a schema at all (a plain chat
+  // model, an `openai-compatible` endpoint that 400s on function definitions), so for it the token
+  // is still the only way to say nothing. Asking for a tool that is not bound would produce text.
+  silenceChannel: "tool" | "sentinel" = "tool",
 ): string {
   const facts = [`source=${sanitizeFreeText(n.source, 60)}`];
   if (n.kind) facts.push(`kind=${sanitizeFreeText(n.kind, 40)}`);
@@ -308,9 +303,20 @@ export function renderNudge(
       }
     }
   }
+  // WHY A TOOL AND NOT A TOKEN (issue #454). This used to ask for the literal string `[[SKIP]]`,
+  // which made silence a MESSAGE — and the memory thread is keyed per contact-inbox, so every silent
+  // follow-up left an assistant turn whose whole content was that token, on the same thread a later
+  // ordinary turn loads. The model then reproduced it in a reactive turn where nothing stripped it,
+  // and it went to the customer. `docs/graph.md` states the rule this violated: fix a leak at the
+  // SOURCE, never by stripping the reply. `skip_reply` already exists, already means exactly this on
+  // the reactive path, and leaves a tool call rather than text — so there is nothing to imitate.
+  const silenceInstruction =
+    silenceChannel === "tool"
+      ? "call the `skip_reply` tool and produce NO text (end your turn)"
+      : `reply with EXACTLY ${FOLLOWUP_SKIP_SENTINEL} and nothing else`;
   const directive = canMessageCustomer
-    ? `An external system event just occurred for this conversation. By default, send a brief, warm, helpful proactive message to the customer about it — keep it short and natural, in the conversation's language. Lean toward reaching out: a timely follow-up is usually welcome. Stay silent ONLY if a message would clearly be unhelpful, premature, duplicated, or annoying; in that rare case reply with EXACTLY ${FOLLOWUP_SKIP_SENTINEL} and nothing else.`
-    : `A human agent is currently handling this conversation. Do NOT message the customer. If the event is worth flagging, write a short internal note for the human; otherwise reply with EXACTLY ${FOLLOWUP_SKIP_SENTINEL} and nothing else.`;
+    ? `An external system event just occurred for this conversation. By default, send a brief, warm, helpful proactive message to the customer about it — keep it short and natural, in the conversation's language. Lean toward reaching out: a timely follow-up is usually welcome. Stay silent ONLY if a message would clearly be unhelpful, premature, duplicated, or annoying; in that rare case ${silenceInstruction}.`
+    : `A human agent is currently handling this conversation. Do NOT message the customer. If the event is worth flagging, write a short internal note for the human; otherwise ${silenceInstruction}.`;
   const parts = [
     directive,
     "",
@@ -864,24 +870,36 @@ export async function runAgentNudge(
     cfg = withAuthContextSection(cfg, auth.context ?? null);
   }
 
-  const tools = await buildToolset(
-    cfg,
-    {
-      tenantId,
-      instanceId,
-      base,
-      client,
-      conversationId,
-      threadId: params.threadId,
-      // NOTE: The live probe's answer where this path has one, the mirror's otherwise. resolve_conversation
-      // runs immediately on a nudge turn (no turnState), so this is what tells its close apart from
-      // one that had already happened — but only as a FALLBACK: this snapshot is taken before
-      // `graph.invoke`, and the tool fires during a model call that can run for a minute, so the
-      // tool re-reads the live state itself and falls back here only when that read fails.
-      observed: { status: loaded.status, statusAt: loaded.statusAt },
-      handoffState,
-    },
-    { buildNativeTools, mcp: params.deps?.mcp, flow },
+  // A follow-up must ALWAYS have a way to say nothing, so `skip_reply` is not an operator-revocable
+  // capability on this path — it is the protocol. Revoking it used to leave the token as the only
+  // silence channel, which is the leak above; leaving it revocable now would leave the model with no
+  // channel at all, and a follow-up with nothing to say would have to say something.
+  const nudgeCfg: AgentConfig = withFollowupSilenceChannel(cfg);
+  // ...and taken back out when it turns out to be the whole toolset: an agent whose other sources
+  // yielded nothing is tool-less in practice, and binding one no-op tool at a provider that refuses
+  // schemas costs the entire follow-up (round 12). `followupSilenceChannel` then reads `sentinel`
+  // off this same list, so the directive and the binding cannot disagree.
+  const tools = withoutLoneSilenceTool(
+    nudgeCfg,
+    await buildToolset(
+      nudgeCfg,
+      {
+        tenantId,
+        instanceId,
+        base,
+        client,
+        conversationId,
+        threadId: params.threadId,
+        // NOTE: The live probe's answer where this path has one, the mirror's otherwise. resolve_conversation
+        // runs immediately on a nudge turn (no turnState), so this is what tells its close apart from
+        // one that had already happened — but only as a FALLBACK: this snapshot is taken before
+        // `graph.invoke`, and the tool fires during a model call that can run for a minute, so the
+        // tool re-reads the live state itself and falls back here only when that read fails.
+        observed: { status: loaded.status, statusAt: loaded.statusAt },
+        handoffState,
+      },
+      { buildNativeTools, mcp: params.deps?.mcp, flow },
+    ),
   );
 
   // 3. Model + graph + callbacks (node="nudge").
@@ -1294,7 +1312,13 @@ export async function runAgentNudge(
         {
           messages: [
             nudgeMessage(
-              renderNudge(params.nudge, canMessagePre),
+              renderNudge(
+                params.nudge,
+                canMessagePre,
+                // Asked of THIS turn's assembled toolset, not of the config that asked for it: a
+                // grant that produced no bound tool would otherwise have the directive name one.
+                followupSilenceChannel(nudgeCfg, tools),
+              ),
               conversationId,
             ),
           ],
@@ -1342,10 +1366,19 @@ export async function runAgentNudge(
     outcome: RunAgentNudgeOutcome,
   ): Promise<RunAgentNudgeOutcome> => {
     const plan = await undoRefusedTurn({
+      // `skip_reply` counts as inert only when the NATIVE one is what got bound. A custom HTTP tool
+      // may legitimately carry that name (`toolDefinitionCreateSchema` reserves none), and that one
+      // really calls something — removing a turn after it ran is the case `actedOnTheWorld` exists
+      // to prevent.
+      inertTools: inertToolsFor(nudgeCfg),
       checkpointer,
       graphThreadId,
       produced: result.messages,
       kind: "proactive",
+      // Same reason the reactive path passes it: this runs just after the durable claim was
+      // released, which is exactly when another replica may start. Null off a contact inbox.
+      owner: graphOwner,
+      base,
     }).catch((err) => {
       // NOTE: best-effort, and loudly. The send was already suppressed, so a failed rollback costs
       // the next turn a message the customer never saw, which is the defect this exists to close,
@@ -1376,13 +1409,73 @@ export async function runAgentNudge(
     return outcome;
   };
 
+  // SILENCE IS NOT A REFUSAL, and it still leaves words behind. `refuse` above is for a turn the
+  // customer got none of because something stopped it; this is a turn that concluded correctly, as
+  // silence — and the model may have written the SENTINEL, or a narrated "(nada a fazer)", to say so.
+  // Nothing of that reached anyone, and the memory thread is shared per contact-inbox, so the next
+  // ordinary turn reads it as a sentence the customer was told and can reproduce it: issue #454's own
+  // defect, surviving in the one place the tool channel does not reach.
+  //
+  // It reaches here for the tool-less agents alone, which is what makes it the LAST residue rather
+  // than the main one: every agent that can bind a tool says nothing by calling `skip_reply`, whose
+  // call leaves no imitable text. Those that cannot are told to use the token, and this takes the
+  // token back out.
+  //
+  // Nothing to take back when the model produced no text at all — `planTurnRollback` would still
+  // remove the directive, but a turn that wrote nothing left nothing to be read as something said,
+  // and paying a checkpointer round trip for it on every silent follow-up is the cost this avoids.
+  const takeBackUndeliveredSilence = async (
+    wroteText: boolean,
+  ): Promise<void> => {
+    if (!wroteText) return;
+    const plan = await undoRefusedTurn({
+      checkpointer,
+      graphThreadId,
+      produced: result.messages,
+      // THE REACTIVE PLAN, on the proactive path, and the two are not interchangeable here. The
+      // proactive plan takes the whole turn — directive and answer — and therefore has to keep
+      // EVERYTHING the moment a tool ran, because the directive and the act are one slice and no
+      // removal can undo an act. That is right for a REFUSAL, where the question is whether the turn
+      // may be erased. It is wrong for SILENCE: a follow-up that labelled the conversation and then
+      // said nothing leaves the token in the thread, and `tool-ran` removes not one word of it.
+      //
+      // The reactive plan names the removable part directly — the trailing run of assistant messages
+      // that neither called a tool nor are a tool result — so the act sits OUTSIDE it by
+      // construction: the tool call and its result stay, and only the sentence nobody read comes
+      // out. The directive stays with them, which is the more faithful history anyway: an event the
+      // agent chose not to answer is exactly what happened (#455, review round 19).
+      kind: "reactive",
+      owner: graphOwner,
+      base,
+    }).catch((err) => {
+      logger.warn(
+        { err, conversationId: String(conversationId) },
+        "agentNudge: could not take back a silent turn's own words",
+      );
+      return null;
+    });
+    if (plan?.action === "remove") {
+      logger.info(
+        "agentNudge took a silent turn's own words back out: conv=%s messages=%d",
+        String(conversationId),
+        plan.ids.length,
+      );
+    } else if (plan) {
+      // NOTE: Named rather than silent, for the reason `refuse` names its own miss: the history still holds
+      // words nobody received, and the next turn will read them.
+      logger.warn(
+        "agentNudge could not take a silent turn's words back out: conv=%s reason=%s",
+        String(conversationId),
+        plan.reason,
+      );
+    }
+  };
+
   // Silence via the explicit sentinel / narrated-emptiness guard (never post that), else strip any
   // stray sentinel occurrence from a real reply so it can't leak into the customer message.
-  const replyRaw = lastAssistantText(result.messages);
-  const silent = isNudgeSilent(replyRaw);
-  const reply = silent
-    ? ""
-    : replyRaw.split(FOLLOWUP_SKIP_SENTINEL).join("").trim();
+  const drafted = proactiveReply(lastAssistantText(result.messages));
+  const silent = drafted.silent;
+  const reply = drafted.text;
 
   // 5. Re-check ownership at post time (a human may have taken over during model execution). Needed
   // for BOTH the customer message AND the deterministic post-actions. The live-gated path re-probes
@@ -1468,6 +1561,7 @@ export async function runAgentNudge(
     // Keyed on the TRANSFER, not on the suppression: a conversation the human queue now owns is not
     // ours to close, even when the closing line never made it out.
     await applyPostActions({ canMessage: canMessagePost });
+    await takeBackUndeliveredSilence(drafted.wroteText);
     return "silent";
   }
 

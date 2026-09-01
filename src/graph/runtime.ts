@@ -77,6 +77,7 @@ import {
 } from "./prepare";
 import { undoRefusedTurn } from "./refused-turn";
 import { stillInSameEpisode } from "./reset-episode";
+import { customerFacingReply } from "./silence";
 import { AgentStatusReporter } from "./status";
 import {
   clearTurnOwning,
@@ -1035,6 +1036,10 @@ async function runTurnBody(
   // Set inside the `ingest:` lock when the ask below says this run was called off. A flag and not a
   // throw: the lock's transaction has to commit and release before this function can return.
   let calledOff = false;
+  // What the turn produced, kept when the TOKEN silenced it, and consumed in the `finally` once the
+  // in-flight flag the rollback refuses on has been released. The messages travel rather than a
+  // boolean because the rollback runs outside the scope that has them.
+  let silenceProduced: BaseMessage[] | null = null;
   try {
     // ── Attendance boundary. A NEW conversation reusing this contact-inbox thread gets the
     //    "fresh attendance" divider, and the attendance it replaced becomes compactable.
@@ -1395,7 +1400,48 @@ async function runTurnBody(
       }
       return outcome;
     };
-    let reply = lastAssistantText(result.messages).trim();
+    // The follow-up's silence token is not vocabulary of this path, but it IS in this thread: the
+    // memory is keyed per contact-inbox, so every silent follow-up leaves an assistant turn whose
+    // whole content is the token, and the model reproduces it here (issue #454). Reduced to it, the
+    // reply is silence — the shape `skip_reply` produces, and the one the `!reply` branch below
+    // already handles; carrying it, the reply keeps its text and loses the token. Before the output
+    // guardrail on purpose: the judge would otherwise be asked to screen a marker as if it were
+    // something the agent wrote for the customer.
+    const drafted = customerFacingReply(lastAssistantText(result.messages));
+    let reply = drafted.text;
+    // Silence the operator can explain. `skip_reply` records itself in the timeline, and a turn that
+    // went quiet because the model emitted the token would otherwise be indistinguishable from the
+    // agent ignoring a customer who is waiting.
+    if (drafted.bySentinel) {
+      emitFlowEvent(flow, {
+        stage: "generate",
+        level: "warn",
+        status: "ok",
+        detail: { silenceTokenSuppressed: true },
+      });
+      // NOTE: ...and the turn must not leave the token behind, or the defect FEEDS itself: the raw message
+      // is already checkpointed (graph.invoke persisted it before this line), the thread is shared
+      // per contact-inbox, and the next turn reads one more sentinel answer — reinforcing exactly the
+      // condition that produced this one.
+      //
+      // ARMED here and run in the `finally`, not called here, and that is not tidiness: the rollback
+      // takes the ingest queue and REFUSES while `isTurnInFlight` holds, which is this very turn.
+      // Called inline it returns `keep` every time and silently does nothing — measured, the message
+      // stayed in the channel with the test green on everything else.
+      silenceProduced = result.messages as BaseMessage[];
+    }
+    // The other half, and it exists because the rule REFUSES to edit the token out of a real answer
+    // (that is the data loss `docs/graph.md` prohibits). So the reply goes out carrying it, and the
+    // operator hears about it here rather than from the customer — a cosmetic leak that is reported
+    // is a different thing from one that is silent.
+    if (drafted.carriesToken) {
+      emitFlowEvent(flow, {
+        stage: "generate",
+        level: "warn",
+        status: "ok",
+        detail: { silenceTokenInReply: true },
+      });
+    }
 
     // The deferred resolve falls with the TRANSFER, not with the suppression of the final text: a
     // conversation the human queue now owns is not ours to close, and that holds even when the
@@ -1721,13 +1767,6 @@ async function runTurnBody(
     return "posted";
   } finally {
     clearTurnInFlight(threadId);
-    // Only what this turn actually took: releasing a claim we never made would release a CONCURRENT
-    // turn's, and hand the thread to a compaction while that turn is still reading it.
-    // NOTE: releasing is best-effort, and deliberately cannot fail the turn. By here the reply may
-    // already be with the customer; a throw from this line would skip `status.finished` and make the
-    // caller treat a delivered turn as failed, which a retry then answers a second time. The row
-    // carries a lease precisely so a release that never lands is recovered by expiry instead of by
-    // anyone waiting on it.
     if (graphOwner) {
       const heldOwner: ThreadOwner = graphOwner;
       try {
@@ -1740,6 +1779,65 @@ async function runTurnBody(
         logger.warn(
           { err, thread: heldOwner.graphThreadId },
           "failed to release the durable turn claim; its lease will expire",
+        );
+      }
+    }
+    // LAST, and the order is the whole point. `undoRefusedTurn` stands down while the GRAPH thread is
+    // in flight, and there are two claims on this turn: `markTurnInFlight(threadId)` cleared at the
+    // top of this block, and the durable one `markTurnOwning` takes on `graphThreadId` — which is a
+    // DIFFERENT key whenever the conversation has a contact-inbox, i.e. the normal case. Released
+    // only by `clearTurnOwning` just above, so anywhere earlier the rollback reads this turn's own
+    // claim and answers `another-invoke-is-reading`: a no-op, silently, in exactly the production
+    // shape. Round 5 put it after the first clear and the test agreed, because the test seeded a
+    // conversation with no contact-inbox and the two keys collapsed into one.
+    if (silenceProduced) {
+      const produced = silenceProduced;
+      try {
+        const plan = await undoRefusedTurn({
+          checkpointer: params.deps?.checkpointer ?? (await getCheckpointer()),
+          graphThreadId,
+          produced,
+          kind: "reactive",
+          // The claim this turn has just released, taken again for the write — so a turn STARTING on
+          // another replica waits for it instead of loading the sentinel and saving it back. Null
+          // when the conversation has no contact inbox: no row, hence nothing durable to hold, and
+          // the process-local check is all there is (thread-claim.ts).
+          owner: graphOwner,
+          base,
+        });
+        if (plan?.action === "remove") {
+          logger.info(
+            "turn rolled back a token-silenced turn: conv=%s messages=%d",
+            String(conversationId),
+            plan.ids.length,
+          );
+        } else if (plan?.reason === "already-gone") {
+          // NOTE: NOT A MISS: the words are not in the thread, which is the whole goal. This is what a
+          // REFUSAL after the silence looks like — a takeover, a supersede, a `/reset` — because
+          // every refusal exits through `refuse`, whose own rollback removes the same messages.
+          //
+          // The two race, and this side always loses: `return refuse(...)` is not awaited, so this
+          // `finally` runs while that rollback is still in flight, and the `ingest:` queue decides
+          // the order. Clearing a flag inside `refuse` cannot fix it — this block has already read
+          // it by then (measured, round 25). Reading the OUTCOME instead of the ordering is what
+          // makes the answer stable.
+          logger.info(
+            "turn: the token-silenced turn was already taken back out: conv=%s",
+            String(conversationId),
+          );
+        } else {
+          // NOTE: Named rather than silent: the history still holds a message the customer never received,
+          // which is the compounding this exists to stop.
+          logger.warn(
+            "turn could not roll back a token-silenced turn: conv=%s reason=%s",
+            String(conversationId),
+            plan?.reason ?? "unknown",
+          );
+        }
+      } catch (err) {
+        logger.warn(
+          { err, conversationId: String(conversationId) },
+          "turn: could not roll back a token-silenced turn",
         );
       }
     }

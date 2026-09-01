@@ -1,6 +1,8 @@
 import type { AIMessage, BaseMessage } from "@langchain/core/messages";
 import { RemoveMessage } from "@langchain/core/messages";
 import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
+import type { PrismaClient } from "@/../generated/prisma/client";
+import logger from "@/api/lib/logger";
 import { withKeyedQueue } from "@/lib/locks";
 import {
   clearTurnInFlight,
@@ -8,6 +10,12 @@ import {
   markTurnInFlight,
 } from "./inflight";
 import { isNudgeTurn } from "./markers";
+import {
+  claimIngestWrite,
+  type IngestWriteClaim,
+  releaseIngestWrite,
+  type ThreadOwner,
+} from "./thread-claim";
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "./thread-state";
 
 // WHAT A PROACTIVE TURN LEAVES BEHIND WHEN IT IS REFUSED AFTER IT WAS GENERATED.
@@ -52,10 +60,37 @@ export type RollbackPlan =
 // the turn would erase the only record of an act that really happened, to the outside world, and no
 // removal here can undo. So the question is asked of the whole slice and answered conservatively:
 // any tool call at all, and the turn stays.
-function actedOnTheWorld(slice: readonly BaseMessage[]): boolean {
+// `skip_reply` is the one tool that acts on NOTHING — it is the decision to stay quiet, and since
+// #454 it is how a follow-up says so. Counting it as an action pins a refused turn's directive and
+// tool result in shared memory after a `/reset`, a takeover, or any post-generation refusal: exactly
+// the residue this planner exists to clear, and now reachable through the silence protocol itself.
+// A NAME IS NOT AN IDENTITY HERE EITHER, and this one is a real collision rather than a hypothetical:
+// `toolDefinitionCreateSchema` does not reserve the native names, so an agent with native tools
+// disabled can grant a custom HTTP tool called `skip_reply` that really does call something. Judging
+// by name alone would let a refused turn be removed after that call went out, which is the exact case
+// `actedOnTheWorld` exists to preserve. So the CALLER — the only side that knows which tool was
+// actually bound — passes the set, and an empty set means nothing was inert.
+function isInertToolCall(m: BaseMessage, inert: ReadonlySet<string>): boolean {
+  // No early return on an empty set, deliberately: `inert.has` already answers false for one, and
+  // the shortcut made a by-name mutation of the branch below unobservable — the battery could not
+  // tell the two implementations apart.
+  if (m.getType() === "tool") {
+    const name = (m as { name?: string }).name;
+    return name !== undefined && inert.has(name);
+  }
+  const calls = (m as AIMessage).tool_calls ?? [];
+  return calls.length > 0 && calls.every((c) => inert.has(c.name));
+}
+
+function actedOnTheWorld(
+  slice: readonly BaseMessage[],
+  inert: ReadonlySet<string>,
+): boolean {
   return slice.some(
     (m) =>
-      m.getType() === "tool" || ((m as AIMessage).tool_calls?.length ?? 0) > 0,
+      !isInertToolCall(m, inert) &&
+      (m.getType() === "tool" ||
+        ((m as AIMessage).tool_calls?.length ?? 0) > 0),
   );
 }
 
@@ -87,6 +122,10 @@ function isStillTheSameMessage(
 export function planTurnRollback(
   produced: readonly BaseMessage[],
   current: readonly BaseMessage[],
+  // Tools whose call performed NOTHING, so a turn holding only those can still be taken back. Named
+  // by the caller because only the toolset knows which tool a name resolved to; empty by default,
+  // which is the behaviour every caller had before the silence protocol existed.
+  inertTools: ReadonlySet<string> = new Set(),
 ): RollbackPlan {
   // NOTE: the LAST one, not the first: the thread can already carry the directive of an earlier nudge that
   // ended silent, and that one belongs to a turn nobody refused. Everything from here on is what
@@ -101,7 +140,8 @@ export function planTurnRollback(
   }
   if (start === -1) return { action: "keep", reason: "no-turn-found" };
   const slice = produced.slice(start);
-  if (actedOnTheWorld(slice)) return { action: "keep", reason: "tool-ran" };
+  if (actedOnTheWorld(slice, inertTools))
+    return { action: "keep", reason: "tool-ran" };
   return nameWhatSurvived(slice, current);
 }
 
@@ -152,6 +192,9 @@ function saidSomethingAndNothingElse(m: BaseMessage): boolean {
 export function planReactiveTurnRollback(
   produced: readonly BaseMessage[],
   current: readonly BaseMessage[],
+  // Unused here: a reactive turn's removable slice never includes a tool result (see below), so the
+  // question the proactive planner asks does not arise. Accepted so the two share one call shape.
+  _inertTools: ReadonlySet<string> = new Set(),
 ): RollbackPlan {
   let start = produced.length;
   while (start > 0) {
@@ -188,15 +231,24 @@ export function planReactiveTurnRollback(
 // The nudge's own claim is already released by the time any refusal reaches here (the `finally` that
 // clears it sits above them all), so this never stands down on account of itself.
 //
-// WHERE THIS STOPS, because the check reads a count rather than holding a gate. It excludes an invoke
-// that is ALREADY in flight; it cannot exclude one that starts a moment later, loads the refused turn
-// and saves it back when it finishes. The window is widest on the fallback thread, where a
-// conversation with no `contactInboxId` makes the graph thread and the conversation thread the same
-// key, and `runLoadedTurn` marks that key before it takes any lock. Closing it would mean holding a
-// critical section across another invoke, which is the pool inversion #227 removed for issue #225, so
-// it is deliberately not attempted. Losing that race costs exactly what happens today with no
-// rollback at all: the refused turn stays in the history. The rollback is best-effort against a
-// concurrent invoke, and never worse than not having run.
+// AND THE MAP IS NOT ENOUGH EITHER, WHICH IS WHAT `owner` IS FOR. `isTurnInFlight` is a Map in ONE
+// process, and on the topology docs/deploy.md §4 sanctions — extra web replicas, workers on one
+// leader — the turn runs wherever the webhook landed. A caller reaches this line just after
+// releasing its own durable claim (it has to: the check above would otherwise read that claim and
+// stand down on itself), so the moment this runs is exactly the moment another replica may start.
+//
+// THIS IS AN APPEND, so it takes the claim appends take. Writing to the message channel from outside
+// an invoke is what `claimIngestWrite` exists to fence (thread-claim.ts), and it is the same shape:
+// a bounded read-plan-write, not a model turn. Held, a turn STARTING on any replica waits for it and
+// then loads a channel the sentinel has already left; held by someone else, this stands down under
+// the name it already had. The durable TURN claim would not have done: `turn_holders` is counted, so
+// two turns share a thread by design and holding one excludes no other turn at all.
+//
+// WHERE IT STILL STOPS. An invoke ALREADY reading the channel cannot be excluded by anything here —
+// it will save back what it loaded — and a thread with no `contactInboxId` has no row to hang a
+// claim on, so the fallback key keeps the Map alone. Losing either race costs exactly what happens
+// with no rollback: the refused turn stays in the history. Best-effort against a concurrent invoke,
+// and never worse than not having run.
 export async function undoRefusedTurn(params: {
   checkpointer: BaseCheckpointSaver;
   graphThreadId: string;
@@ -206,8 +258,16 @@ export async function undoRefusedTurn(params: {
   // answer, a reactive one is answering the CUSTOMER'S message and must leave it standing. Required
   // rather than defaulted — a caller that has to name it cannot inherit the wrong one by omission.
   kind: "proactive" | "reactive";
+  // See planTurnRollback. The caller resolves it from the toolset it actually built, so a CUSTOM tool
+  // that happens to be named like a native one is never mistaken for the inert one.
+  inertTools?: ReadonlySet<string>;
+  // The DURABLE half of the exclusion, for the one thread key that has a row to hang it on. Both or
+  // neither: without them this keeps the process-local answer it always had, which is all a thread
+  // with no contact inbox can ever have.
+  owner?: ThreadOwner | null;
+  base?: PrismaClient;
 }): Promise<RollbackPlan> {
-  const { checkpointer, graphThreadId, produced, kind } = params;
+  const { checkpointer, graphThreadId, produced, kind, owner, base } = params;
   const plan =
     kind === "reactive" ? planReactiveTurnRollback : planTurnRollback;
   const graph = buildThreadStateGraph(checkpointer);
@@ -215,6 +275,20 @@ export async function undoRefusedTurn(params: {
   return withKeyedQueue(`ingest:${graphThreadId}`, async () => {
     if (isTurnInFlight(graphThreadId)) {
       return { action: "keep", reason: "another-invoke-is-reading" };
+    }
+    // BEFORE the Map mark, and the order is forced rather than chosen: `claimIngestWrite` asks
+    // `isTurnInFlight` itself, so a mark taken first would make this call refuse on account of the
+    // caller. Same order continuous ingestion uses (ingest.ts), which is also why the two cannot
+    // deadlock: queue, then claim, both times.
+    let write: IngestWriteClaim | null = null;
+    if (owner && base) {
+      const held = await claimIngestWrite(owner, base);
+      // A turn holds the thread on some replica. The same answer the Map gives, decided from the row
+      // — which is the half that can see another process.
+      if (held.state === "busy") {
+        return { action: "keep", reason: "another-invoke-is-reading" };
+      }
+      write = held;
     }
     // NOTE: taken only once the answer above is no, and for the length of the read and the write: it
     // is what keeps a compaction from rewriting the channel between them.
@@ -225,7 +299,7 @@ export async function undoRefusedTurn(params: {
           | { messages?: BaseMessage[] }
           | undefined
       )?.messages ?? []) as BaseMessage[];
-      const decided = plan(produced, current);
+      const decided = plan(produced, current, params.inertTools ?? new Set());
       if (decided.action === "remove") {
         await graph.updateState(
           threadCfg,
@@ -236,6 +310,24 @@ export async function undoRefusedTurn(params: {
       return decided;
     } finally {
       clearTurnInFlight(graphThreadId);
+      // Released on every exit, including a throw: a claim left behind defers every append on this
+      // thread until its lease runs out.
+      //
+      // ...and BEST-EFFORT, the way ingestion releases its own. A transient failure here would
+      // otherwise throw out of a `finally` that runs after the rollback already succeeded, turning a
+      // clean removal into an error the caller reports — and the claim would be stranded either way,
+      // since the release stops the lease renewal before it touches the database. The lease is the
+      // recovery path; what this owes is a name in the log (round 21).
+      if (write && owner && base) {
+        try {
+          await releaseIngestWrite(owner, base, write);
+        } catch (err) {
+          logger.warn(
+            { err, thread: graphThreadId },
+            "failed to release the durable ingest write claim after a rollback; its lease will expire",
+          );
+        }
+      }
     }
   });
 }

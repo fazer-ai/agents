@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { rm } from "node:fs/promises";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { AIMessage, type BaseMessage } from "@langchain/core/messages";
@@ -8,6 +8,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { setPublisher, TOPICS } from "@/api/features/realtime/realtime.service";
 import { encryptJson } from "@/api/lib/crypto";
+import logger from "@/api/lib/logger";
 import { computeConfigIssues } from "@/client/lib/configHealth";
 import { contactInboxThreadId } from "@/graph/checkpointer";
 import {
@@ -19,7 +20,9 @@ import { ingestMessageIntoThread } from "@/graph/ingest";
 import { armIngest } from "@/graph/ingest-job";
 import { isConversationDivider, stampedConversationId } from "@/graph/markers";
 import type { ResolvedModelConfig } from "@/graph/models";
+import { FOLLOWUP_SKIP_SENTINEL } from "@/graph/nudge";
 import { runAgentTurn } from "@/graph/runtime";
+import { clearTurnOwning, markTurnOwning } from "@/graph/thread-claim";
 import { buildThreadStateGraph } from "@/graph/thread-state";
 import type { TenantContext } from "@/lib/tenancy";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
@@ -370,6 +373,336 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     });
     expect(outcome).toBe("posted");
     expect(sent).toEqual([[900, REPLY]]);
+  });
+
+  // NOTE: Issue #454. `[[SKIP]]` is the FOLLOW-UP's way of saying "stay silent", and it is stripped
+  // on both proactive paths. The reactive path had no equivalent, so a model that reproduced the
+  // token — it is in the shared per-contact-inbox transcript every silent follow-up leaves behind —
+  // had it delivered verbatim. On an email inbox that is a real email, to whoever wrote in.
+  test("a reply that is only the follow-up's skip sentinel is silence, not text", async () => {
+    await seedConversation(9454, null);
+    const saver9454 = new MemorySaver();
+    const sent: Array<[number, string]> = [];
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 9454 }),
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new FakeListChatModel({ responses: [FOLLOWUP_SKIP_SENTINEL] }),
+        makeClient: makeStubClient(sent),
+        checkpointer: saver9454,
+      },
+    });
+    expect(sent).toEqual([]);
+    expect(outcome).toBe("empty");
+
+    // And the operator can tell this apart from the agent ignoring a customer: `skip_reply` records
+    // itself in the timeline, so a turn silenced by the token owes a line of its own.
+    const conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 9454 },
+    });
+    // Searched rather than taken by order: a turn writes several `generate` lines, and "the last
+    // one" is whichever the stage happened to end on.
+    const rows = await flowLogRows(suDb, {
+      where: { tenantId, conversationId: conv.id, stage: "generate" },
+      select: { level: true, detail: true },
+    });
+    const suppressed = rows.filter((r) =>
+      JSON.stringify(r.detail ?? {}).includes("silenceTokenSuppressed"),
+    );
+    expect(suppressed).toHaveLength(1);
+    expect(suppressed[0]?.level).toBe("warn");
+
+    // Review round 5: and the token is not left in the thread to feed itself. The raw message was
+    // already checkpointed, the thread is shared per contact-inbox, and the next turn reading one
+    // more sentinel answer is what reinforces the condition that produced this one.
+    const held = await threadChannel(saver9454, 9454);
+    expect(held.filter(([, c]) => c.includes(FOLLOWUP_SKIP_SENTINEL))).toEqual(
+      [],
+    );
+  });
+
+  // Review round 6. The rollback stands down while the GRAPH thread is in flight, and a conversation
+  // WITH a contact-inbox — the normal production shape — carries TWO claims on two different keys:
+  // the conversation one, and the durable `markTurnOwning` one on the contact-inbox thread. Placed
+  // between them, the rollback read this turn's own claim and did nothing, silently. The case above
+  // could not catch it: with no contact-inbox the two keys collapse into one.
+  test("the token is rolled back on a contact-inbox thread too", async () => {
+    const contactInboxId = 7454;
+    const contact = await suDb.contact.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootContactId: 88454,
+        name: "C",
+      },
+      select: { id: true },
+    });
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: 9460,
+        contactInboxId,
+        contactId: contact.id,
+        status: "pending",
+        threadId: `${tenantId}:${instanceId}:9460`,
+        lastEventAt: new Date(),
+      },
+    });
+    const saver = new MemorySaver();
+    const sent: Array<[number, string]> = [];
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 9460, contactInboxId }),
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new FakeListChatModel({ responses: [FOLLOWUP_SKIP_SENTINEL] }),
+        makeClient: makeStubClient(sent),
+        checkpointer: saver,
+      },
+    });
+    expect(sent).toEqual([]);
+    expect(outcome).toBe("empty");
+
+    // Read on the key the NUDGE and the next reactive turn actually load: the contact-inbox thread.
+    const state = await buildThreadStateGraph(saver).getState({
+      configurable: {
+        thread_id: contactInboxThreadId(tenantId, instanceId, contactInboxId),
+      },
+    });
+    const messages = ((state.values as { messages?: BaseMessage[] })
+      ?.messages ?? []) as BaseMessage[];
+    // Positive control: a probe that found no messages measured nothing. The customer's own turn
+    // stands (the reactive rollback plan leaves it), and the sentinel answer is gone.
+    expect(messages.length).toBeGreaterThan(0);
+    expect(
+      messages.filter((m) =>
+        JSON.stringify(m.content).includes(FOLLOWUP_SKIP_SENTINEL),
+      ),
+    ).toEqual([]);
+  });
+
+  // Review round 11, and the twin of the case above one layer out. The rollback runs just after this
+  // turn released its durable claim, which is exactly when a turn on ANOTHER replica may start —
+  // and that one holds nothing in this process's Map. So the rollback takes the claim every write to
+  // the channel from outside an invoke takes, and stands down when the row says the thread is busy.
+  // Here to prove the WIRING: `runAgentTurn` handing its owner down is what the deferral depends on,
+  // and `tests/graph/nudge-refused-rollback.test.ts` proves the rule itself.
+  test("another replica's turn defers the token rollback instead of racing it", async () => {
+    const contactInboxId = 7455;
+    const contact = await suDb.contact.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootContactId: 88455,
+        name: "C",
+      },
+      select: { id: true },
+    });
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: 9461,
+        contactInboxId,
+        contactId: contact.id,
+        status: "pending",
+        threadId: `${tenantId}:${instanceId}:9461`,
+        lastEventAt: new Date(),
+      },
+    });
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    const owner = { tenantId, instanceId, contactInboxId, graphThreadId };
+    const saver = new MemorySaver();
+    const sent: Array<[number, string]> = [];
+    // The other replica JOINS while this turn runs — turn claims are counted, so that is ordinary —
+    // and is still there when this one releases. Its Map entry is dropped at once: another replica
+    // holds none here, and leaving one would let the Map check answer instead of the row.
+    const otherReplica = await markTurnOwning(owner, appDb);
+    clearTurnInFlight(graphThreadId);
+    let outcome: string;
+    try {
+      outcome = await runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: incoming({ conversationId: 9461, contactInboxId }),
+        base: appDb,
+        deps: {
+          makeModel: () =>
+            new FakeListChatModel({ responses: [FOLLOWUP_SKIP_SENTINEL] }),
+          makeClient: makeStubClient(sent),
+          checkpointer: saver,
+        },
+      });
+    } finally {
+      markTurnInFlight(graphThreadId);
+      await clearTurnOwning(owner, appDb, otherReplica);
+    }
+    expect(sent).toEqual([]);
+    expect(outcome).toBe("empty");
+    // Deferred, not removed: the honest outcome, and the one the log names. Writing a removal an
+    // invoke on another host is about to undo leaves the same history and a checkpoint that lies.
+    const state = await buildThreadStateGraph(saver).getState({
+      configurable: { thread_id: graphThreadId },
+    });
+    const messages = ((state.values as { messages?: BaseMessage[] })
+      ?.messages ?? []) as BaseMessage[];
+    expect(
+      messages.filter((m) =>
+        JSON.stringify(m.content).includes(FOLLOWUP_SKIP_SENTINEL),
+      ),
+    ).not.toEqual([]);
+  });
+
+  // The control for the line above, and the reason it is not just "log on every empty turn": a model
+  // that genuinely wrote nothing is an ordinary silent turn, and a warn there would cry wolf on the
+  // shape `skip_reply` produces on purpose.
+  test("an ordinary empty reply logs no suppression line", async () => {
+    await seedConversation(9456, null);
+    const sent: Array<[number, string]> = [];
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 9456 }),
+      base: appDb,
+      deps: {
+        makeModel: () => new FakeListChatModel({ responses: [""] }),
+        makeClient: makeStubClient(sent),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(sent).toEqual([]);
+    expect(outcome).toBe("empty");
+    const conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 9456 },
+    });
+    const rows = await flowLogRows(suDb, {
+      where: { tenantId, conversationId: conv.id, stage: "generate" },
+      select: { detail: true },
+    });
+    expect(
+      rows.filter((r) =>
+        JSON.stringify(r.detail ?? {}).includes("silenceTokenSuppressed"),
+      ),
+    ).toEqual([]);
+  });
+
+  // The other half, and the one that says this is a strip and not a refusal: a real answer that
+  // happens to carry the token still reaches the customer, minus the token. Suppressing the whole
+  // reply here would trade a leaked marker for an ignored customer.
+  test("a real reply carrying a stray sentinel keeps its text and loses the token", async () => {
+    await seedConversation(9455, null);
+    const sent: Array<[number, string]> = [];
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 9455 }),
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new FakeListChatModel({
+            responses: [`${FOLLOWUP_SKIP_SENTINEL} Claro, posso ajudar.`],
+          }),
+        makeClient: makeStubClient(sent),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    // Review round 4: the token is NOT edited out of a real answer — that is the silent data loss
+    // docs/graph.md rejects. It rides along, and the operator gets a line saying so.
+    expect(outcome).toBe("posted");
+    expect(sent).toEqual([
+      [9455, `${FOLLOWUP_SKIP_SENTINEL} Claro, posso ajudar.`],
+    ]);
+    const conv455 = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 9455 },
+    });
+    const rows455 = await flowLogRows(suDb, {
+      where: { tenantId, conversationId: conv455.id, stage: "generate" },
+      select: { detail: true },
+    });
+    expect(
+      rows455.filter((r) =>
+        JSON.stringify(r.detail ?? {}).includes("silenceTokenInReply"),
+      ),
+    ).toHaveLength(1);
+  });
+
+  // Review round 1, P2. The proactive path also reads a bare "SKIP" and a parenthetical-only reply
+  // as silence, because ITS prompt asked the model to produce nothing. Nothing asks that here, a
+  // customer is waiting, and these are ordinary short answers — importing that heuristic would trade
+  // a leaked marker for an ignored customer, which is the defect this PR exists to avoid.
+  test("a short reply the follow-up would read as silence is still delivered", async () => {
+    for (const [conv, reply] of [
+      [9457, "SKIP"],
+      [9458, "(nada consta)"],
+    ] as Array<[number, string]>) {
+      await seedConversation(conv, null);
+      const sent: Array<[number, string]> = [];
+      const outcome = await runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: incoming({ conversationId: conv }),
+        base: appDb,
+        deps: {
+          makeModel: () => new FakeListChatModel({ responses: [reply] }),
+          makeClient: makeStubClient(sent),
+          checkpointer: new MemorySaver(),
+        },
+      });
+      expect(outcome).toBe("posted");
+      expect(sent).toEqual([[conv, reply]]);
+    }
+  });
+
+  // Review round 1, P3. `[[SKIP]][[SKIP]]` used to fall between the two answers: not equal to the
+  // sentinel, so "not silent", yet empty once stripped — silenced with no line explaining it.
+  test("a reply of repeated sentinels is silence, and says so", async () => {
+    await seedConversation(9459, null);
+    const sent: Array<[number, string]> = [];
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 9459 }),
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new FakeListChatModel({
+            responses: [`${FOLLOWUP_SKIP_SENTINEL} ${FOLLOWUP_SKIP_SENTINEL}`],
+          }),
+        makeClient: makeStubClient(sent),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(sent).toEqual([]);
+    expect(outcome).toBe("empty");
+    const conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 9459 },
+    });
+    const rows = await flowLogRows(suDb, {
+      where: { tenantId, conversationId: conv.id, stage: "generate" },
+      select: { detail: true },
+    });
+    expect(
+      rows.filter((r) =>
+        JSON.stringify(r.detail ?? {}).includes("silenceTokenSuppressed"),
+      ),
+    ).toHaveLength(1);
   });
 
   // NOTE: Issue #63 end-to-end. A provider answering 200 with an empty completion used to end the
@@ -1136,6 +1469,71 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     });
     expect(outcome).toBe("taken-over");
     expect(sent).toEqual([]);
+  });
+
+  // Round 25. A turn silenced by the TOKEN arms a rollback for the `finally`, and it can still be
+  // refused afterwards — a takeover, a supersede, a `/reset`. `refuse` then removes the same
+  // messages, and the armed rollback ran a second time: it took the ingest claim, read the channel,
+  // found nothing left and logged "could not roll back" — a warning about a removal that succeeded.
+  test("a token-silenced turn that is then refused is not rolled back twice", async () => {
+    await seedConversation(9462, null);
+    const warn = spyOn(logger, "warn");
+    const sent: Array<[number, string]> = [];
+    try {
+      const outcome = await runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: incoming({ conversationId: 9462 }),
+        base: appDb,
+        deps: {
+          makeModel: () =>
+            new FakeListChatModel({ responses: [FOLLOWUP_SKIP_SENTINEL] }),
+          makeClient: makeStubClient(sent),
+          checkpointer: new MemorySaver(),
+        },
+      });
+      // The takeover fixture above: `seedConversation(_, "User")` is what makes the recheck lose, so
+      // this one is only silenced. Kept as the control that the warning is absent because nothing
+      // failed, not because the branch never ran.
+      expect(outcome).toBe("empty");
+      expect(sent).toEqual([]);
+      const said = warn.mock.calls.map((c) => JSON.stringify(c));
+      expect(
+        said.filter((c) => c.includes("could not roll back a token-silenced")),
+      ).toEqual([]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test("a token-silenced turn refused by a takeover logs no failed rollback", async () => {
+    await seedConversation(9463, "User");
+    const warn = spyOn(logger, "warn");
+    const sent: Array<[number, string]> = [];
+    try {
+      const outcome = await runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: incoming({ conversationId: 9463 }),
+        base: appDb,
+        deps: {
+          makeModel: () =>
+            new FakeListChatModel({ responses: [FOLLOWUP_SKIP_SENTINEL] }),
+          makeClient: makeStubClient(sent),
+          checkpointer: new MemorySaver(),
+        },
+      });
+      expect(outcome).toBe("taken-over");
+      expect(sent).toEqual([]);
+      const said = warn.mock.calls.map((c) => JSON.stringify(c));
+      expect(
+        said.filter((c) => c.includes("could not roll back a token-silenced")),
+      ).toEqual([]);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   // NOTE: Both of these lose the ownership recheck and return the same "taken-over". What they must

@@ -52,12 +52,42 @@ describe("renderNudge (prompt-injection boundary)", () => {
     expect(out).toContain("UNTRUSTED external event data");
   });
 
-  test("leans toward sending and signals no-follow-up via the sentinel (not 'empty')", () => {
-    const out = renderNudge({ source: "followup", kind: "inactivity" }, true);
+  // Issue #454. Silence used to be a TOKEN the directive asked for, which made it a message: it
+  // landed in the per-contact thread and a later reactive turn copied it to the customer. It is a
+  // TOOL CALL now — `skip_reply`, which already means this on the reactive path — so a silent
+  // follow-up leaves nothing in the transcript for anyone to imitate. The absence of the token is
+  // the regression guard: this is the cause, and the strip elsewhere is only the backstop.
+  // Round 7: the directive asks for whichever channel the agent HAS. An agent with no tools cannot
+  // be handed a schema, so for it the token is still the only way to say nothing — and the strip
+  // backstop is what keeps that from reaching a customer.
+  test("a tool-less agent is still told to use the token", () => {
+    const out = renderNudge(
+      { source: "followup", kind: "inactivity" },
+      true,
+      "sentinel",
+    );
     expect(out).toContain(FOLLOWUP_SKIP_SENTINEL);
-    expect(out.toLowerCase()).toContain("by default");
-    // It must NOT instruct the brittle "reply with an empty message" anymore.
-    expect(out.toLowerCase()).not.toContain("empty message");
+    expect(out).not.toContain("skip_reply");
+  });
+
+  test("leans toward sending and asks for a tool call, never a token", () => {
+    for (const canMessageCustomer of [true, false]) {
+      const out = renderNudge(
+        { source: "followup", kind: "inactivity" },
+        canMessageCustomer,
+      );
+      expect(out).toContain("skip_reply");
+      expect(out).not.toContain(FOLLOWUP_SKIP_SENTINEL);
+      expect(out).not.toContain("SKIP]]");
+      // Nor the brittle "reply with an empty message" the token had replaced.
+      expect(out.toLowerCase()).not.toContain("empty message");
+    }
+    expect(
+      renderNudge(
+        { source: "followup", kind: "inactivity" },
+        true,
+      ).toLowerCase(),
+    ).toContain("by default");
   });
 
   test("malicious multiline summary cannot forge a system block", () => {
@@ -371,6 +401,58 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(outcome).toBe("messaged");
     expect(s.messages).toEqual([[900, "Pagamento confirmado!"]]);
     expect(s.notes).toEqual([]);
+  });
+
+  // The other half of the #454 cause fix. A follow-up must ALWAYS have a way to say nothing: the
+  // directive now asks for `skip_reply`, and `skip_reply` is an operator-revocable native tool. An
+  // agent that revoked it would leave the model with no silence channel at all — and a follow-up
+  // with nothing to say would then have to say something, which is the leak by another road.
+  test("a follow-up keeps skip_reply even when the agent revoked it", async () => {
+    const agent = await suDb.agent.findFirstOrThrow({ where: { tenantId } });
+    const sel = await suDb.agentToolSelection.create({
+      data: {
+        tenantId,
+        agentId: agent.id,
+        source: "NATIVE",
+        // Deliberately WITHOUT skip_reply, which is the whole point.
+        enabledTools: ["private_note", "assign_label"],
+        knowledgeBaseIds: [],
+      },
+      select: { id: true },
+    });
+    const seen: string[][] = [];
+    class ToolCapturingModel {
+      async invoke() {
+        return new AIMessage("Pagamento confirmado!");
+      }
+      bindTools(tools: Array<{ name: string }>) {
+        seen.push(tools.map((t) => t.name));
+        return { invoke: () => this.invoke() };
+      }
+    }
+    await seedConv(9454, null);
+    const s2 = stub();
+    try {
+      await runAgentNudge({
+        tenantId,
+        threadId: `${tenantId}:${instanceId}:9454`,
+        nudge: { source: "ASAAS", status: "paid", value: 100, currency: "BRL" },
+        base: appDb,
+        deps: {
+          makeModel: () => new ToolCapturingModel() as never,
+          makeClient: s2.makeClient,
+          checkpointer: new MemorySaver(),
+          persistUsage: async () => {},
+        },
+      });
+    } finally {
+      await suDb.agentToolSelection.delete({ where: { id: sel.id } });
+    }
+    expect(seen.length).toBeGreaterThan(0);
+    // Forced in, and the revocation still respected for everything else.
+    expect(seen[0]).toContain("skip_reply");
+    expect(seen[0]).toContain("private_note");
+    expect(seen[0]).not.toContain("resolve_conversation");
   });
 
   // A follow-up invokes on the SAME memory thread a reactive turn does, so it is the second producer
@@ -3551,6 +3633,70 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(outcome).toBe("silent");
     expect(s.messages).toEqual([]);
     expect(s.notes).toEqual([]);
+  });
+
+  // Round 12, and it is the WIRING of the rule, not the rule: `tests/graph/silence.test.ts` proves
+  // `withoutLoneSilenceTool` in isolation, and this proves the follow-up applies it.
+  //
+  // The defect it stands on: granting the channel used to be gated on whether a source was
+  // CONFIGURED, and a source can be configured and yield nothing (an MCP server that is down). The
+  // grant then handed a lone function schema to an endpoint that had been running tool-less on the
+  // sentinel, and the whole follow-up fails at the provider — a token that leaks traded for a
+  // follow-up that never runs. The model here IS such an endpoint: `bindTools` throws.
+  test("a tool-less agent's follow-up binds nothing and stays silent", async () => {
+    await seedConv(9074, null);
+    const agent = await suDb.agent.findFirstOrThrow({
+      where: { tenantId },
+      select: { id: true },
+    });
+    // A NATIVE grant row with an empty list is how "every native revoked" is really configured — the
+    // absence of a row means ALL of them, so writing settings would have configured nothing.
+    const grant = await suDb.agentToolSelection.create({
+      data: {
+        tenantId,
+        agentId: agent.id,
+        source: "NATIVE",
+        enabledTools: [],
+        knowledgeBaseIds: [],
+      },
+      select: { id: true },
+    });
+    const s = stub();
+    let bound = 0;
+    class SchemaRefusingModel extends BaseChatModel {
+      _llmType() {
+        return "schema-refusing";
+      }
+      override bindTools(_tools: unknown): never {
+        bound++;
+        throw new Error("400 this endpoint does not support function calling");
+      }
+      async _generate(): Promise<ChatResult> {
+        const text = FOLLOWUP_SKIP_SENTINEL;
+        return {
+          generations: [{ text, message: new AIMessage(text) }],
+        };
+      }
+    }
+    try {
+      const outcome = await runAgentNudge({
+        tenantId,
+        threadId: `${tenantId}:${instanceId}:9074`,
+        nudge: { source: "followup", kind: "inactivity" },
+        base: appDb,
+        deps: {
+          makeModel: () => new SchemaRefusingModel({}),
+          makeClient: s.makeClient,
+          checkpointer: new MemorySaver(),
+          persistUsage: async () => {},
+        },
+      });
+      expect(bound).toBe(0);
+      expect(outcome).toBe("silent");
+      expect(s.messages).toEqual([]);
+    } finally {
+      await suDb.agentToolSelection.delete({ where: { id: grant.id } });
+    }
   });
 
   test("narrated-emptiness reply does not leak to the customer", async () => {

@@ -1,11 +1,15 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
+import { BaseChatModel } from "@langchain/core/language_models/chat_models";
+import { AIMessage, type BaseMessage } from "@langchain/core/messages";
+import type { ChatResult } from "@langchain/core/outputs";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
 import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { loadAgentConfig } from "@/graph/prepare";
+import { FOLLOWUP_SKIP_SENTINEL, SKIP_REPLY_TOOL } from "@/graph/silence";
+import { buildThreadStateGraph } from "@/graph/thread-state";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import {
   listPlaygroundTools,
@@ -52,6 +56,19 @@ const fakeModel = () => new FakeListChatModel({ responses: [REPLY] });
 const deps = () => ({ makeModel: fakeModel, checkpointer: new MemorySaver() });
 function ctx(t: bigint): TenantContext {
   return { tenantId: t, userId: null, role: "TENANT_ADMIN" };
+}
+
+// What the thread actually HOLDS after a turn, read through the same minimal graph the rollback
+// writes through — the checkpointer's own view, not the value the service returned.
+async function threadMessages(
+  checkpointer: MemorySaver,
+  threadId: string,
+): Promise<BaseMessage[]> {
+  const state = await buildThreadStateGraph(checkpointer).getState({
+    configurable: { thread_id: threadId },
+  });
+  return ((state.values as { messages?: BaseMessage[] }).messages ??
+    []) as BaseMessage[];
 }
 
 describe.skipIf(!dbUp)("playground", () => {
@@ -217,6 +234,82 @@ describe.skipIf(!dbUp)("playground", () => {
     );
   });
 
+  // The second half of issue #454's family. The playground runs the production toolset on a thread
+  // of its own, and its REACTIVE path restated none of the silence rule the follow-up path next to
+  // it already had — so the operator testing an agent could be shown the raw token as the reply.
+  test("the follow-up's skip sentinel is not rendered as a playground reply", async () => {
+    const r = await runPlaygroundTurn({
+      ctx: ctx(tenantId),
+      agentId: agentOk,
+      message: "oi",
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new FakeListChatModel({ responses: [FOLLOWUP_SKIP_SENTINEL] }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(r.reply).toBe("");
+  });
+
+  // Round 10. Emptying the REPLY does not empty the THREAD: `graph.invoke` checkpointed the raw
+  // message before the rule ran, a playground session is multi-turn on one thread, and the next turn
+  // would read one more sentinel answer — the compounding the inbox path rolls back. The playground
+  // claims production fidelity (`docs/playground.md`), and this is the one place it was not.
+  test("a token-silenced playground turn leaves nothing behind in the thread", async () => {
+    const checkpointer = new MemorySaver();
+    const r = await runPlaygroundTurn({
+      ctx: ctx(tenantId),
+      agentId: agentOk,
+      message: "oi",
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new FakeListChatModel({ responses: [FOLLOWUP_SKIP_SENTINEL] }),
+        checkpointer,
+      },
+    });
+    expect(r.reply).toBe("");
+    const after = await threadMessages(checkpointer, r.threadId);
+    expect(after.filter((m) => m.getType() === "ai")).toHaveLength(0);
+    // The CUSTOMER's message is not the turn's to take back — the reactive plan's whole distinction
+    // from the proactive one.
+    expect(after.map((m) => String(m.content))).toEqual(["oi"]);
+  });
+
+  // Positive control: the same machinery must leave a REAL answer standing, or the assertion above
+  // would pass on a rollback that eats every reply.
+  test("an ordinary playground turn keeps its reply in the thread", async () => {
+    const checkpointer = new MemorySaver();
+    const r = await runPlaygroundTurn({
+      ctx: ctx(tenantId),
+      agentId: agentOk,
+      message: "oi",
+      base: appDb,
+      deps: { makeModel: fakeModel, checkpointer },
+    });
+    const after = await threadMessages(checkpointer, r.threadId);
+    expect(after.map((m) => String(m.content))).toEqual(["oi", REPLY]);
+  });
+
+  test("a playground reply carrying a stray sentinel is left intact", async () => {
+    const r = await runPlaygroundTurn({
+      ctx: ctx(tenantId),
+      agentId: agentOk,
+      message: "oi",
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new FakeListChatModel({
+            responses: [`${FOLLOWUP_SKIP_SENTINEL} Claro, posso ajudar.`],
+          }),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    // Round 4: carried, not edited out (docs/graph.md — never strip a real reply).
+    expect(r.reply).toBe(`${FOLLOWUP_SKIP_SENTINEL} Claro, posso ajudar.`);
+  });
+
   // The playground synthesized WITHOUT the speech rewrite until #105, so the operator heard a
   // different rendering than the customer. Observable effects, in the order the operator meets them:
   // the voice provider is handed the REWRITTEN text, the audio is saved against the turn, and the
@@ -363,6 +456,184 @@ describe.skipIf(!dbUp)("playground", () => {
     expect(r.threadId.startsWith(`${tenantId}:playground:${agentOk}:`)).toBe(
       true,
     );
+  });
+
+  // Round 13, and the other side of the same switch: the removal belongs to the simulated FOLLOW-UP
+  // and to nothing else. On a REACTIVE turn an agent granted `skip_reply` and nothing else is the
+  // operator's own configuration — it is how their agent answers "ok" and "obrigado" with silence —
+  // and production keeps the tool there. A playground that removed it would show them an agent that
+  // cannot make the decision they configured.
+  test("an ordinary playground turn keeps a lone skip_reply", async () => {
+    const grant = await suDb.agentToolSelection.create({
+      data: {
+        tenantId,
+        agentId: agentOk,
+        source: "NATIVE",
+        enabledTools: [SKIP_REPLY_TOOL],
+        knowledgeBaseIds: [],
+      },
+      select: { id: true },
+    });
+    const bound: string[][] = [];
+    class ToolCapturingModel extends BaseChatModel {
+      _llmType() {
+        return "capturing";
+      }
+      override bindTools(tools: unknown) {
+        bound.push((tools as { name: string }[]).map((t) => t.name));
+        return this;
+      }
+      async _generate(): Promise<ChatResult> {
+        return {
+          generations: [{ text: REPLY, message: new AIMessage(REPLY) }],
+        };
+      }
+    }
+    try {
+      await runPlaygroundTurn({
+        ctx: ctx(tenantId),
+        agentId: agentOk,
+        message: "ok",
+        base: appDb,
+        deps: {
+          makeModel: () => new ToolCapturingModel({}),
+          checkpointer: new MemorySaver(),
+        },
+      });
+      expect(bound).not.toEqual([]);
+      expect(bound[0]).toEqual([SKIP_REPLY_TOOL]);
+    } finally {
+      await suDb.agentToolSelection.delete({ where: { id: grant.id } });
+    }
+  });
+
+  // Round 16, the playground twin of round 15's fix. An agent that can bind no tool is told to say
+  // nothing with the token, and emptying the REPLY does not empty the THREAD — a playground session
+  // is multi-turn on one thread, so the next simulated turn reads the token back as a sentence the
+  // customer was told, which is precisely what production stopped doing.
+  test("a silent simulated follow-up leaves its token out of the thread", async () => {
+    const grant = await suDb.agentToolSelection.create({
+      data: {
+        tenantId,
+        agentId: agentOk,
+        source: "NATIVE",
+        enabledTools: [],
+        knowledgeBaseIds: [],
+      },
+      select: { id: true },
+    });
+    const checkpointer = new MemorySaver();
+    try {
+      const r = await runPlaygroundFollowup({
+        ctx: ctx(tenantId),
+        agentId: agentOk,
+        base: appDb,
+        deps: {
+          makeModel: () =>
+            new FakeListChatModel({ responses: [FOLLOWUP_SKIP_SENTINEL] }),
+          checkpointer,
+        },
+      });
+      expect(r.silent).toBe(true);
+      const after = await threadMessages(checkpointer, r.threadId);
+      // The ASSISTANT turn whose whole content is the token — the one a later turn imitates — is
+      // gone.
+      expect(after.filter((m) => m.getType() === "ai")).toEqual([]);
+      // The directive stays, and that is the reactive plan's shape rather than a judgement about it:
+      // `nudgeMessage` stamps a conversation id and this path has none, so the proactive plan finds
+      // no marker to cut at. It is a human-role instruction, not an assistant turn to copy, and it
+      // already survives every simulated follow-up.
+      expect(after.filter((m) => m.getType() === "human")).toHaveLength(1);
+    } finally {
+      await suDb.agentToolSelection.delete({ where: { id: grant.id } });
+    }
+  });
+
+  // The scope, pinned exactly as production pins it: a follow-up that produced no text at all left
+  // nothing to be read as something said, so it pays no round trip and its turn stands. The two
+  // paths agreeing on this is the playground's whole claim.
+  test("a simulated follow-up that wrote nothing is not rolled back", async () => {
+    const checkpointer = new MemorySaver();
+    const r = await runPlaygroundFollowup({
+      ctx: ctx(tenantId),
+      agentId: agentOk,
+      base: appDb,
+      deps: {
+        makeModel: () => new FakeListChatModel({ responses: [""] }),
+        checkpointer,
+      },
+    });
+    expect(r.silent).toBe(true);
+    const after = await threadMessages(checkpointer, r.threadId);
+    expect(after.filter((m) => m.getType() === "ai")).toHaveLength(1);
+  });
+
+  // Positive control: a follow-up that really answered keeps its turn, or the assertion above would
+  // pass on a rollback that eats every simulated follow-up.
+  test("a simulated follow-up that answered keeps its turn in the thread", async () => {
+    const checkpointer = new MemorySaver();
+    const r = await runPlaygroundFollowup({
+      ctx: ctx(tenantId),
+      agentId: agentOk,
+      base: appDb,
+      deps: { makeModel: fakeModel, checkpointer },
+    });
+    expect(r.reply).toBe(REPLY);
+    const after = await threadMessages(checkpointer, r.threadId);
+    expect(after.map((m) => String(m.content))).toContain(REPLY);
+  });
+
+  // Round 12, the WIRING of the same rule production applies (`tests/graph/silence.test.ts` proves
+  // the rule). A source that yields nothing leaves the granted channel as the WHOLE toolset, and
+  // binding one lone schema at an endpoint that refuses them costs the entire follow-up. This model
+  // IS such an endpoint: `bindTools` throws.
+  test("a tool-less agent's simulated follow-up binds nothing either", async () => {
+    const grant = await suDb.agentToolSelection.create({
+      data: {
+        tenantId,
+        agentId: agentOk,
+        source: "NATIVE",
+        enabledTools: [],
+        knowledgeBaseIds: [],
+      },
+      select: { id: true },
+    });
+    let bound = 0;
+    class SchemaRefusingModel extends BaseChatModel {
+      _llmType() {
+        return "schema-refusing";
+      }
+      override bindTools(_tools: unknown): never {
+        bound++;
+        throw new Error("400 this endpoint does not support function calling");
+      }
+      async _generate(): Promise<ChatResult> {
+        return {
+          generations: [
+            {
+              text: FOLLOWUP_SKIP_SENTINEL,
+              message: new AIMessage(FOLLOWUP_SKIP_SENTINEL),
+            },
+          ],
+        };
+      }
+    }
+    try {
+      const r = await runPlaygroundFollowup({
+        ctx: ctx(tenantId),
+        agentId: agentOk,
+        base: appDb,
+        deps: {
+          makeModel: () => new SchemaRefusingModel({}),
+          checkpointer: new MemorySaver(),
+        },
+      });
+      expect(bound).toBe(0);
+      expect(r.silent).toBe(true);
+      expect(r.reply).toBe("");
+    } finally {
+      await suDb.agentToolSelection.delete({ where: { id: grant.id } });
+    }
   });
 
   test("a follow-up with an empty model reply is reported as silent", async () => {

@@ -12,8 +12,16 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { contactInboxThreadId } from "@/graph/checkpointer";
 import { clearTurnInFlight, markTurnInFlight } from "@/graph/inflight";
-import { isNudgeTurn } from "@/graph/markers";
+import { isNudgeTurn, nudgeMessage } from "@/graph/markers";
 import { runAgentNudge } from "@/graph/nudge";
+import { type RollbackPlan, undoRefusedTurn } from "@/graph/refused-turn";
+import { FOLLOWUP_SKIP_SENTINEL } from "@/graph/silence";
+import {
+  claimIngestWrite,
+  clearTurnOwning,
+  markTurnOwning,
+  releaseIngestWrite,
+} from "@/graph/thread-claim";
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "@/graph/thread-state";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { seedChatwootInstance } from "../utils/chatwoot";
@@ -70,6 +78,57 @@ class RetiringModel extends BaseChatModel {
   }
   async _generate(): Promise<ChatResult> {
     this.retire();
+    return {
+      generations: [{ text: this.text, message: new AIMessage(this.text) }],
+    };
+  }
+}
+
+// A follow-up that ACTS and then goes quiet — the shape the proactive rollback plan cannot clean,
+// because directive and act are one slice there and any tool call keeps the whole thing.
+class LabelsThenSkipsModel {
+  async invoke(): Promise<AIMessage> {
+    return new AIMessage(FOLLOWUP_SKIP_SENTINEL);
+  }
+  bindTools(_tools: unknown) {
+    const self = this;
+    let n = 0;
+    return {
+      async invoke(): Promise<AIMessage> {
+        n++;
+        if (n === 1) {
+          return new AIMessage({
+            content: "",
+            tool_calls: [
+              {
+                name: "assign_label",
+                args: { scope: "conversation", label: "follow-up" },
+                id: "call_label",
+              },
+            ],
+          });
+        }
+        return self.invoke();
+      },
+    };
+  }
+}
+
+// The same shape as RetiringModel, with an ASYNC hook: the case below has to take a claim from
+// inside the generation, which is the only stretch where "another replica started while this turn
+// was thinking" can be expressed.
+class AwaitingModel extends BaseChatModel {
+  constructor(
+    private readonly before: () => Promise<void>,
+    private readonly text: string,
+  ) {
+    super({});
+  }
+  _llmType() {
+    return "awaiting";
+  }
+  async _generate(): Promise<ChatResult> {
+    await this.before();
     return {
       generations: [{ text: this.text, message: new AIMessage(this.text) }],
     };
@@ -394,6 +453,362 @@ describe.skipIf(!dbUp)(
       const after = await channel(checkpointer, graphThreadId);
       expect(after.some((m) => isNudgeTurn(m))).toBe(true);
       expect(after.map(textOf).join("\n")).toContain("ainda precisa de ajuda");
+    });
+
+    // Round 11 of PR #455. The test above is the SAME-process half: a Map this process owns. On the
+    // topology docs/deploy.md §4 sanctions, the invoke that races this one runs on another replica
+    // and holds no entry in this Map at all — and the rollback reaches this line just after
+    // releasing its own durable claim, which is exactly the moment the other replica can start.
+    //
+    // So the rollback takes the claim every write to the channel from outside an invoke takes
+    // (`claimIngestWrite`), and the two halves are separated here on purpose: the row is claimed and
+    // the Map entry is dropped, which is what "another replica" looks like from inside this process.
+    test("a turn holding the thread on ANOTHER replica defers the rollback too", async () => {
+      const contactInboxId = 7256;
+      await seedConv(9256, contactInboxId);
+      const graphThreadId = contactInboxThreadId(
+        tenantId,
+        instanceId,
+        contactInboxId,
+      );
+      const owner = { tenantId, instanceId, contactInboxId, graphThreadId };
+      const checkpointer = new MemorySaver();
+      await seedHistory(checkpointer, graphThreadId);
+      const produced = [
+        nudgeMessage("An external system event just occurred.", 9256),
+        new AIMessage({ id: "rb-x1", content: "Oi, ainda precisa de ajuda?" }),
+      ];
+      await buildThreadStateGraph(checkpointer).updateState(
+        { configurable: { thread_id: graphThreadId } },
+        { messages: produced },
+        THREAD_STATE_NODE,
+      );
+
+      const hold = await markTurnOwning(owner, appDb);
+      // The other replica's Map is not ours. Dropping only the local entry leaves the ROW claimed,
+      // which is the whole state under test — the durable half answering where the Map cannot.
+      clearTurnInFlight(graphThreadId);
+      let plan: RollbackPlan;
+      try {
+        plan = await undoRefusedTurn({
+          checkpointer,
+          graphThreadId,
+          produced,
+          kind: "proactive",
+          owner,
+          base: appDb,
+        });
+      } finally {
+        markTurnInFlight(graphThreadId);
+        await clearTurnOwning(owner, appDb, hold);
+      }
+      expect(plan).toEqual({
+        action: "keep",
+        reason: "another-invoke-is-reading",
+      });
+      expect(
+        (await channel(checkpointer, graphThreadId)).map(textOf).join("\n"),
+      ).toContain("ainda precisa de ajuda");
+    });
+
+    // Positive control: with nothing holding the row, the same call REMOVES. Without it the
+    // assertion above would pass on a rollback that had simply stopped working.
+    test("with the thread free on every replica, the same call removes the turn", async () => {
+      const contactInboxId = 7257;
+      await seedConv(9257, contactInboxId);
+      const graphThreadId = contactInboxThreadId(
+        tenantId,
+        instanceId,
+        contactInboxId,
+      );
+      const owner = { tenantId, instanceId, contactInboxId, graphThreadId };
+      const checkpointer = new MemorySaver();
+      await seedHistory(checkpointer, graphThreadId);
+      const produced = [
+        nudgeMessage("An external system event just occurred.", 9257),
+        new AIMessage({ id: "rb-y1", content: "Oi, ainda precisa de ajuda?" }),
+      ];
+      await buildThreadStateGraph(checkpointer).updateState(
+        { configurable: { thread_id: graphThreadId } },
+        { messages: produced },
+        THREAD_STATE_NODE,
+      );
+      const plan = await undoRefusedTurn({
+        checkpointer,
+        graphThreadId,
+        produced,
+        kind: "proactive",
+        owner,
+        base: appDb,
+      });
+      expect(plan.action).toBe("remove");
+      const after = await channel(checkpointer, graphThreadId);
+      expect(after.map(textOf).join("\n")).not.toContain(
+        "ainda precisa de ajuda",
+      );
+      // The attendance that was there before is not this turn's to take.
+      expect(after.map(textOf)).toContain("bom dia");
+      // ...AND THE CLAIM WENT BACK. A write claim left behind defers every append on this thread
+      // until its lease runs out — a rollback that succeeds and then strands the thread is worse
+      // than one that never ran. Proven by taking it again: refused, this is still held.
+      const again = await claimIngestWrite(owner, appDb);
+      expect(again.state).not.toBe("busy");
+      await releaseIngestWrite(owner, appDb, again);
+    });
+
+    // Round 21. The release runs in a `finally` that fires AFTER the removal has already been
+    // written, and it stops the lease renewal before it touches the database — so a transient
+    // failure there strands the claim either way, and throwing on top of it turns a clean rollback
+    // into an error the caller reports. Ingestion catches its own for the same reason; this catches
+    // its own too, and owes a line in the log.
+    test("a release that fails does not turn a clean rollback into an error", async () => {
+      const contactInboxId = 7262;
+      await seedConv(9262, contactInboxId);
+      const graphThreadId = contactInboxThreadId(
+        tenantId,
+        instanceId,
+        contactInboxId,
+      );
+      const owner = { tenantId, instanceId, contactInboxId, graphThreadId };
+      const checkpointer = new MemorySaver();
+      await seedHistory(checkpointer, graphThreadId);
+      const produced = [
+        nudgeMessage("An external system event just occurred.", 9262),
+        new AIMessage({ id: "rb-z1", content: "Oi, ainda precisa de ajuda?" }),
+      ];
+      await buildThreadStateGraph(checkpointer).updateState(
+        { configurable: { thread_id: graphThreadId } },
+        { messages: produced },
+        THREAD_STATE_NODE,
+      );
+      // The `agent_threads` row has to EXIST first, or the claim falls to its insert path and spends
+      // a second transaction — which the proxy below would then fail, testing the claim instead of
+      // the release. A turn claim taken and released leaves the row behind with no holders.
+      await clearTurnOwning(owner, appDb, await markTurnOwning(owner, appDb));
+      // With the row there, the claim spends ONE scoped transaction and the release spends the next. Failing from the second on is therefore
+      // "the claim worked, the release did not", and the count is asserted so a change in either
+      // one's shape shows up here instead of silently testing nothing.
+      let scoped = 0;
+      const flaky = new Proxy(appDb, {
+        get(target, prop, receiver) {
+          if (prop !== "$extends") return Reflect.get(target, prop, receiver);
+          return (...args: unknown[]) => {
+            const ext = (
+              target as unknown as { $extends: (...a: unknown[]) => object }
+            ).$extends(...args);
+            return new Proxy(ext, {
+              get(et, ep, er) {
+                if (ep !== "$transaction") return Reflect.get(et, ep, er);
+                return async (...targs: unknown[]) => {
+                  scoped++;
+                  if (scoped > 1) throw new Error("db is down");
+                  return (
+                    et as unknown as {
+                      $transaction: (...a: unknown[]) => Promise<unknown>;
+                    }
+                  ).$transaction(...targs);
+                };
+              },
+            });
+          };
+        },
+      }) as typeof appDb;
+
+      const plan = await undoRefusedTurn({
+        checkpointer,
+        graphThreadId,
+        produced,
+        kind: "proactive",
+        owner,
+        base: flaky,
+      });
+      expect(plan.action).toBe("remove");
+      expect(scoped).toBeGreaterThanOrEqual(2);
+      const after = await channel(checkpointer, graphThreadId);
+      expect(after.map(textOf).join("\n")).not.toContain(
+        "ainda precisa de ajuda",
+      );
+      // The stranded claim is real and is the lease's problem, not this call's: released by hand so
+      // the next test on this thread is not blocked by it.
+      await appDb.$executeRawUnsafe(
+        `UPDATE agent_threads SET ingest_write_until = NULL, ingest_write_token = NULL
+           WHERE tenant_id = ${tenantId} AND chatwoot_instance_id = ${instanceId}
+             AND contact_inbox_id = ${contactInboxId}`,
+      );
+    });
+
+    // THE WIRING, which the two tests above do not touch: they call `undoRefusedTurn` directly, so a
+    // caller that stopped passing its owner would leave them both green. Same scenario, driven
+    // through the real `runAgentNudge`.
+    //
+    // The other replica's turn is taken DURING generation, which is the only position that produces
+    // the case: turn claims are counted, so B joining while A holds is ordinary, and what matters is
+    // that B is still there when A releases and reaches its rollback. Its Map entry is dropped
+    // immediately — another replica holds no entry in this process's Map, and leaving one would let
+    // the Map check answer instead of the row.
+    test("the nudge hands its owner down, so another replica defers it too", async () => {
+      const contactInboxId = 7258;
+      await seedConv(9258, contactInboxId);
+      const graphThreadId = contactInboxThreadId(
+        tenantId,
+        instanceId,
+        contactInboxId,
+      );
+      const owner = { tenantId, instanceId, contactInboxId, graphThreadId };
+      const checkpointer = new MemorySaver();
+      await seedHistory(checkpointer, graphThreadId);
+      const s = stub();
+      let wanted = true;
+      let otherReplica: Awaited<ReturnType<typeof markTurnOwning>> | null =
+        null;
+      let outcome: string;
+      try {
+        outcome = await runAgentNudge({
+          tenantId,
+          threadId: `${tenantId}:${instanceId}:9258`,
+          nudge: { source: "followup", kind: "inactivity", step: 1 },
+          stillWanted: async () => wanted,
+          base: appDb,
+          deps: {
+            makeModel: () =>
+              new AwaitingModel(async () => {
+                wanted = false;
+                otherReplica = await markTurnOwning(owner, appDb);
+                clearTurnInFlight(graphThreadId);
+              }, "Oi, ainda precisa de ajuda?"),
+            makeClient: s.makeClient,
+            checkpointer,
+            persistUsage: async () => {},
+          },
+        });
+      } finally {
+        if (otherReplica) {
+          markTurnInFlight(graphThreadId);
+          await clearTurnOwning(owner, appDb, otherReplica);
+        }
+      }
+      expect(outcome).toBe("stale");
+      expect(s.messages).toEqual([]);
+      const after = await channel(checkpointer, graphThreadId);
+      expect(after.some((m) => isNudgeTurn(m))).toBe(true);
+      expect(after.map(textOf).join("\n")).toContain("ainda precisa de ajuda");
+    });
+
+    // Round 15, and the LAST place issue #454's own defect survived. An agent that can bind no tool
+    // is told to say nothing with the token, and a follow-up that does so ends "silent" — not
+    // refused, so it never passed through the rollback. The token stayed in the shared contact-inbox
+    // thread, the next ordinary turn read it as something the customer was told, and reproducing it
+    // now costs that customer their answer entirely (the reactive rule reads a reply that is only
+    // the token as silence).
+    test("a silent follow-up leaves its own token out of the thread", async () => {
+      const contactInboxId = 7259;
+      await seedConv(9259, contactInboxId);
+      const graphThreadId = contactInboxThreadId(
+        tenantId,
+        instanceId,
+        contactInboxId,
+      );
+      const checkpointer = new MemorySaver();
+      await seedHistory(checkpointer, graphThreadId);
+      const s = stub();
+      const outcome = await runAgentNudge({
+        tenantId,
+        threadId: `${tenantId}:${instanceId}:9259`,
+        nudge: { source: "followup", kind: "inactivity", step: 1 },
+        base: appDb,
+        deps: {
+          makeModel: () => new RetiringModel(() => {}, FOLLOWUP_SKIP_SENTINEL),
+          makeClient: s.makeClient,
+          checkpointer,
+          persistUsage: async () => {},
+        },
+      });
+      expect(outcome).toBe("silent");
+      expect(s.messages).toEqual([]);
+      const after = await channel(checkpointer, graphThreadId);
+      // Positive control: a probe that found nothing measured nothing. The attendance that was
+      // already there is not this turn's to take.
+      expect(after.map(textOf)).toContain("bom dia");
+      expect(
+        after.filter((m) => textOf(m).includes(FOLLOWUP_SKIP_SENTINEL)),
+      ).toEqual([]);
+      // The DIRECTIVE stays, and round 19 is why: silence and refusal want different plans. The
+      // proactive plan takes directive and answer together and must therefore keep everything the
+      // moment a tool ran — right for a refusal, and it would leave the token untouched on any
+      // follow-up that labelled the conversation before going quiet. The reactive plan names the
+      // trailing assistant run instead, so the act (and the directive) stay and only the sentence
+      // nobody read comes out. An event the agent chose not to answer is what actually happened.
+      expect(after.some((m) => isNudgeTurn(m))).toBe(true);
+    });
+
+    // The case that forced the plan swap: a follow-up that DID something and then went quiet. The
+    // proactive plan answers `tool-ran` here and removes not one word.
+    test("a silent follow-up that ran a tool still loses its token", async () => {
+      const contactInboxId = 7261;
+      await seedConv(9261, contactInboxId);
+      const graphThreadId = contactInboxThreadId(
+        tenantId,
+        instanceId,
+        contactInboxId,
+      );
+      const checkpointer = new MemorySaver();
+      await seedHistory(checkpointer, graphThreadId);
+      const s = stub();
+      const outcome = await runAgentNudge({
+        tenantId,
+        threadId: `${tenantId}:${instanceId}:9261`,
+        nudge: { source: "followup", kind: "inactivity", step: 1 },
+        base: appDb,
+        deps: {
+          makeModel: () =>
+            new LabelsThenSkipsModel() as unknown as BaseChatModel,
+          makeClient: s.makeClient,
+          checkpointer,
+          persistUsage: async () => {},
+        },
+      });
+      expect(outcome).toBe("silent");
+      expect(s.messages).toEqual([]);
+      const after = await channel(checkpointer, graphThreadId);
+      expect(
+        after.filter((m) => textOf(m).includes(FOLLOWUP_SKIP_SENTINEL)),
+      ).toEqual([]);
+      // The ACT keeps its record: a label really was applied, and no removal here can undo it.
+      expect(after.some((m) => m.getType() === "tool")).toBe(true);
+      expect(
+        after.some((m) => ((m as AIMessage).tool_calls?.length ?? 0) > 0),
+      ).toBe(true);
+    });
+
+    // The scope, pinned. A turn that produced no text at all left nothing to be read as something
+    // said, so it pays no checkpointer round trip — and the history keeps what it had.
+    test("a follow-up that wrote nothing at all is not rolled back", async () => {
+      const contactInboxId = 7260;
+      await seedConv(9260, contactInboxId);
+      const graphThreadId = contactInboxThreadId(
+        tenantId,
+        instanceId,
+        contactInboxId,
+      );
+      const checkpointer = new MemorySaver();
+      await seedHistory(checkpointer, graphThreadId);
+      const s = stub();
+      const outcome = await runAgentNudge({
+        tenantId,
+        threadId: `${tenantId}:${instanceId}:9260`,
+        nudge: { source: "followup", kind: "inactivity", step: 1 },
+        base: appDb,
+        deps: {
+          makeModel: () => new RetiringModel(() => {}, ""),
+          makeClient: s.makeClient,
+          checkpointer,
+          persistUsage: async () => {},
+        },
+      });
+      expect(outcome).toBe("silent");
+      expect(s.messages).toEqual([]);
+      const after = await channel(checkpointer, graphThreadId);
+      expect(after.some((m) => isNudgeTurn(m))).toBe(true);
     });
 
     test("a turn that reached the customer stays in the history, where it belongs", async () => {

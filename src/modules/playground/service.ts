@@ -5,15 +5,11 @@ import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
+import { getCheckpointer } from "@/graph/checkpointer";
 import { lastAssistantText } from "@/graph/graph";
 import type { ModelRetryInfo } from "@/graph/model-limit";
 import type { ResolvedModelConfig } from "@/graph/models";
-import {
-  type AgentNudge,
-  FOLLOWUP_SKIP_SENTINEL,
-  isNudgeSilent,
-  renderNudge,
-} from "@/graph/nudge";
+import { type AgentNudge, renderNudge } from "@/graph/nudge";
 import {
   type AgentConfig,
   type AgentConfigOverrides,
@@ -23,6 +19,15 @@ import {
   buildToolset,
   loadAgentConfig,
 } from "@/graph/prepare";
+import { undoRefusedTurn } from "@/graph/refused-turn";
+import {
+  customerFacingReply,
+  followupSilenceChannel,
+  inertToolsFor,
+  proactiveReply,
+  withFollowupSilenceChannel,
+  withoutLoneSilenceTool,
+} from "@/graph/silence";
 import { ToolFlowLogger } from "@/graph/tool-flowlog";
 import {
   CONVERSATION_NATIVE_TOOL_NAMES,
@@ -198,8 +203,23 @@ export function toPlaygroundInvokeError(e: unknown): AppError {
 export function applyToolMocks(
   tools: StructuredToolInterface[],
   mocks: Record<string, string> | undefined,
+  // Tool names that are OURS rather than the operator's, from `inertToolsFor`. Empty by default,
+  // which is every caller that has no protocol tool to protect.
+  protocol: ReadonlySet<string> = new Set(),
 ): StructuredToolInterface[] {
   const names = new Set(Object.keys(mocks ?? {}));
+  // THE PROTOCOL TOOL IS NOT THE OPERATOR'S TO MOCK, the same exemption and the same reason
+  // `buildSimulatedNativeTools` already makes for it: its RETURN is the whole tool. The runtime
+  // recognises silence by that acknowledgement (`skipReplyRan`), so a canned result under this name
+  // is not read as a decision to stay quiet — the graph asks the model again and the simulation
+  // writes a follow-up production would have stayed silent on, which is the one decision the
+  // playground exists to show (round 12).
+  //
+  // BY IDENTITY, NEVER BY NAME (round 14). With natives revoked the tool under this name is the
+  // operator's own HTTP tool, which really calls something: refusing their mock there would have the
+  // playground hit the live endpoint — a simulation with side effects, which is the one thing it
+  // exists not to have.
+  for (const n of protocol) names.delete(n);
   if (names.size === 0) return tools;
   return tools.map((tl) =>
     names.has(tl.name)
@@ -336,6 +356,11 @@ async function buildPlaygroundGraph(params: {
     dropped: number;
     tokens: number;
   }) => void;
+  // This build is for a simulated FOLLOW-UP, whose config was widened with the silence channel. Only
+  // that path may take the protocol tool back out when it turns out to be the whole toolset — on a
+  // reactive turn an agent granted `skip_reply` and nothing else is the operator's own choice, and
+  // it is how their agent answers "ok" with silence.
+  silenceProtocol?: boolean;
 }) {
   const { ctx, agentId, threadId, base } = params;
   const tenantId = ctx.tenantId as bigint;
@@ -356,10 +381,24 @@ async function buildPlaygroundGraph(params: {
     flow: params.flow,
   });
   const toolMocks = params.overrides?.toolMocks;
-  const tools = applyToolMocks(rawTools, toolMocks);
+  // Which names are OURS in this turn's toolset rather than the operator's — the question every rule
+  // below asks, and the one a name alone cannot answer.
+  const protocol = inertToolsFor(loaded);
+  const mocked = applyToolMocks(rawTools, toolMocks, protocol);
+  const tools = params.silenceProtocol
+    ? // Same rule production applies, on the same list: a toolset that is nothing but the protocol
+      // tool belongs to an agent that is tool-less in practice, and binding it here would simulate a
+      // follow-up production never runs.
+      withoutLoneSilenceTool(loaded, mocked)
+    : mocked;
   // Trace labels: which tool names are mocked (operator) vs simulated (conversation natives that the
   // agent actually has, minus any the operator mocked — the mock takes precedence).
-  const mockedNames = new Set(Object.keys(toolMocks ?? {}));
+  // Our own protocol tool is never among them: `applyToolMocks` refuses a mock on it, and a label
+  // saying otherwise would tell the operator a mock applied that did not. A tool of THEIRS that
+  // merely shares the name does take its mock, and is labelled like any other.
+  const mockedNames = new Set(
+    Object.keys(toolMocks ?? {}).filter((n) => !protocol.has(n)),
+  );
   const toolNames = new Set(tools.map((tl) => tl.name));
   const simulatedNames = new Set(
     [
@@ -724,7 +763,52 @@ export async function runPlaygroundTurn(
   }
   // OUTPUT direction: screen the reply BEFORE anything renders it, so the TTS below synthesizes the
   // text that would actually be delivered rather than the one the guardrail took away.
-  const raw = lastAssistantText(result.messages).trim();
+  // Same rule as the inbox's reactive path (issue #454), and for the same reason: the playground
+  // runs the production toolset over a thread of its own, and a model that reproduces the follow-up's
+  // silence token would otherwise have it rendered as the reply the operator is testing.
+  const draftedTurn = customerFacingReply(lastAssistantText(result.messages));
+  const raw = draftedTurn.text;
+  // ...and the token must not stay in the THREAD, which emptying the reply does not do. `graph.invoke`
+  // checkpointed the raw message before this line, the playground session is multi-turn on one
+  // thread, and the next turn would read one more sentinel answer — the same compounding the inbox
+  // path rolls back (runtime.ts), on the surface whose whole claim is production fidelity
+  // (`docs/playground.md`). Inline rather than armed for later, unlike the inbox: no claim is held
+  // on this thread (the playground marks none), so the rollback is free to read it now.
+  //
+  // The turn TRACE is built from `result.messages` and keeps the raw token, deliberately: it exists
+  // to show what the model actually produced, and the operator testing an agent that emits the
+  // sentinel needs to see it. What must not survive is the message in the THREAD, which is the copy
+  // the next turn reads back as an example.
+  if (draftedTurn.bySentinel) {
+    emitFlowEvent(flow, {
+      stage: "generate",
+      level: "warn",
+      status: "ok",
+      detail: { silenceTokenSuppressed: true },
+    });
+    try {
+      const plan = await undoRefusedTurn({
+        checkpointer: params.deps?.checkpointer ?? (await getCheckpointer()),
+        graphThreadId: threadId,
+        produced: result.messages as BaseMessage[],
+        kind: "reactive",
+      });
+      if (plan.action !== "remove") {
+        // NOTE: Named rather than silent, for the reason the inbox names it: the thread still holds a
+        // message nobody was shown, and the next simulated turn will read it.
+        logger.warn(
+          "playground could not roll back a token-silenced turn: thread=%s reason=%s",
+          threadId,
+          plan.reason,
+        );
+      }
+    } catch (err) {
+      logger.warn(
+        { err, threadId },
+        "playground: could not roll back a token-silenced turn",
+      );
+    }
+  }
   const outGuard = raw
     ? await screen("output", raw)
     : { kind: "not-run" as const };
@@ -909,13 +993,19 @@ export async function runPlaygroundFollowup(
   // answering 429 in a spent one reports a refusal that did not happen and sends the operator to
   // look at their budget over a selector that was simply wrong. The read is handed to the graph
   // below, so asking in this order costs nothing.
-  const loadedConfig = await loadPlaygroundConfig({
-    ctx,
-    agentId,
-    threadId,
-    base,
-    overrides: params.overrides,
-  });
+  // The SAME widening production applies, because this path renders the SAME directive: it asks the
+  // model to call `skip_reply`, which is operator-revocable, so a simulation without it shows the
+  // operator a follow-up that production would have stayed silent on. One function and not two
+  // copies precisely because there are two renderers of that directive (issue #454, round 3).
+  const loadedConfig = withFollowupSilenceChannel(
+    await loadPlaygroundConfig({
+      ctx,
+      agentId,
+      threadId,
+      base,
+      overrides: params.overrides,
+    }),
+  );
   // The playground's token ceiling, before the graph is built and before a single provider call.
   // Its own number, never the inbox one: an operator burning the month testing must not be able to
   // silence the agent for customers, and the two ledgers are already told apart by `source`.
@@ -932,6 +1022,7 @@ export async function runPlaygroundFollowup(
       turnId,
       flow,
       loaded: loadedConfig,
+      silenceProtocol: true,
       onModelRetry: ({ attempt, provider, model }) =>
         emitFlowEvent(flow, {
           stage: "generate",
@@ -1018,7 +1109,21 @@ export async function runPlaygroundFollowup(
     result = await graph.invoke(
       // HUMAN turn, not SystemMessage: the agent node prepends the only system prompt; a second
       // system message makes strict providers (Google) reject the call. See graph.ts agentNode.
-      { messages: [new HumanMessage(renderNudge(nudge, true))] },
+      {
+        messages: [
+          new HumanMessage(
+            renderNudge(
+              nudge,
+              true,
+              // Same question production answers, asked the same way and of the same thing: THIS
+              // turn's assembled toolset. An agent with no `skip_reply` bound would answer a
+              // directive naming it with TEXT — a simulation showing a message where production
+              // stays silent.
+              followupSilenceChannel(loadedConfig, tools),
+            ),
+          ),
+        ],
+      },
       {
         configurable: { thread_id: threadId },
         callbacks: [
@@ -1040,11 +1145,46 @@ export async function runPlaygroundFollowup(
   }
   // Same silence contract as production (runAgentNudge): the skip sentinel / narrated-emptiness is
   // "stayed silent", and a stray sentinel is stripped so it never shows in the simulated reply.
-  const replyRaw = lastAssistantText(result.messages);
-  const silentByChoice = isNudgeSilent(replyRaw);
-  const drafted = silentByChoice
-    ? ""
-    : replyRaw.split(FOLLOWUP_SKIP_SENTINEL).join("").trim();
+  const draftedNudge = proactiveReply(lastAssistantText(result.messages));
+  const drafted = draftedNudge.text;
+  // ...and the same rule production applies one line later (`takeBackUndeliveredSilence`): a silent
+  // follow-up that WROTE something left it in the thread, and this playground session is multi-turn
+  // on one thread, so the next simulated turn reads the token back as a sentence the customer was
+  // told. It reaches here only for the agents that cannot bind a tool — everyone else says nothing by
+  // calling `skip_reply`, which leaves no imitable text. Inline rather than armed for later, unlike
+  // the inbox: no claim is held on this thread, so the rollback is free to read it now.
+  //
+  // THE REACTIVE PLAN, and the difference from production is not a choice about what should go. The
+  // proactive plan finds its slice by the nudge MARKER, and this path builds its directive with a
+  // plain `HumanMessage` — `nudgeMessage` stamps a conversation id, and there is no conversation
+  // here. So the proactive plan answers `no-turn-found` and removes nothing. The reactive plan names
+  // the removable part directly: the trailing run of assistant messages, which is exactly the
+  // sentinel answer. The directive stays, as it already does after every simulated follow-up; it is
+  // a human-role instruction, not an assistant turn for the model to imitate. Marking it would be a
+  // fidelity change with its own readers (the trace, `isNudgeTurn`), on a path this issue is not
+  // about.
+  if (draftedNudge.silent && draftedNudge.wroteText) {
+    try {
+      const plan = await undoRefusedTurn({
+        checkpointer: params.deps?.checkpointer ?? (await getCheckpointer()),
+        graphThreadId: threadId,
+        produced: result.messages as BaseMessage[],
+        kind: "reactive",
+      });
+      if (plan.action !== "remove") {
+        logger.warn(
+          "playground could not take a silent follow-up's words back out: thread=%s reason=%s",
+          threadId,
+          plan.reason,
+        );
+      }
+    } catch (err) {
+      logger.warn(
+        { err, threadId },
+        "playground: could not take a silent follow-up's words back out",
+      );
+    }
+  }
   // OUTPUT direction only, exactly as the inbox's proactive path (issue #160): a follow-up answers
   // no question, so there is no customer message for the relevance check to judge, and the gate
   // drops that check structurally when none is passed. A `silent` verdict reads as silence here for

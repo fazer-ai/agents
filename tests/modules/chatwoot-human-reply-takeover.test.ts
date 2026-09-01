@@ -334,9 +334,16 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
   async function deliverConversationEvent(
     convId: number,
     event: string,
+    // The conversation object to serialize from. Handed in when two events have to be the COMPANIONS
+    // of one write: Chatwoot serializes them from the same row, so they agree on `updated_at` by
+    // construction, and building one apiece would make them two different writes.
+    snapshot?: ReturnType<typeof conversation>,
   ): Promise<"processed" | "skipped"> {
     deliverySeq += 1;
-    const n = normalizeChatwootEvent({ event, ...conversation(convId) });
+    const n = normalizeChatwootEvent({
+      event,
+      ...(snapshot ?? conversation(convId)),
+    });
     if (!n) throw new Error("conversation payload did not normalize");
     const delivery = await suDb.chatwootWebhookDelivery.create({
       data: {
@@ -393,6 +400,7 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
         chatwootStatusAt: true,
         statusClaimUntil: true,
         statusClaimFrom: true,
+        statusClaimFromAt: true,
       },
     });
   }
@@ -1053,6 +1061,7 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
   test("a customer message delivered while the toggle is on the wire drives no turn", async () => {
     const conv = 8560;
     await deliver(conv, { ...customerSays("oi") });
+    const markBefore = (await convRow(conv))?.chatwootStatusAt ?? null;
     const before = turnsRan;
     whileToggling = async () => {
       whileToggling = null;
@@ -1064,6 +1073,10 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
       whileToggling = null;
     }
     expect(turnsRan).toBe(before);
+    // AND THE CLAIM RECORDS THE MARK IT WAS TAKEN AT, which is the other half of the rule above: the
+    // one payload a live claim lets through is the companion of a write it already refused, and
+    // without this the claim's own starting mark would qualify as one.
+    expect((await convRow(conv))?.statusClaimFromAt).toBe(markBefore);
   });
 
   // WAY IN TWO: a delayed or companion `conversation_*` event. It needs no reopen exception — it
@@ -1078,6 +1091,11 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     failingReads.add(conv);
     whileToggling = async () => {
       whileToggling = null;
+      // TWO INDEPENDENT ones, which is the shape a single refusal does not cover: the first is
+      // refused and leaves its version on the mark, and the second must not ride that mark in. They
+      // are different writes — a label and a priority, say — so they carry different versions, which
+      // is exactly what tells them from the companion of one write.
+      await deliverConversationEvent(conv, "conversation_updated");
       await deliverConversationEvent(conv, "conversation_updated");
     };
     try {
@@ -1108,8 +1126,14 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
       stamp += 100;
       // Both of them, because that is what a status change dispatches: CONVERSATION_STATUS_CHANGED
       // always, and `conversation_updated` because `status` is in the conversation's `list_of_keys`.
-      await deliverConversationEvent(conv, "conversation_updated");
-      await deliverConversationEvent(conv, "conversation_status_changed");
+      // ONE snapshot for the two, which is how Chatwoot produces them: same row, same `updated_at`.
+      const handback = conversation(conv);
+      await deliverConversationEvent(conv, "conversation_updated", handback);
+      await deliverConversationEvent(
+        conv,
+        "conversation_status_changed",
+        handback,
+      );
     };
     try {
       await deliver(conv, { ...deviceReply("já te respondo") });

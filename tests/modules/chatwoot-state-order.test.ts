@@ -429,8 +429,8 @@ const CASES: Case[] = [
     // ...and the companion of that same write lands, which is what makes the refusal above a delay
     // rather than a loss. A status change dispatches CONVERSATION_STATUS_CHANGED and, since `status`
     // is in the conversation's `list_of_keys`, `conversation_updated` too, so a real hand-back
-    // arrives at least twice; the mark the first one left is what ends the claim's ordered half.
-    name: "the companion of a refused transition applies, because the mark it left ended the ordered half",
+    // arrives at least twice, and the two agree on `updated_at` by construction.
+    name: "the companion of a refused transition applies: the SAME version, on a mark that moved",
     payload: conversationEvent({ version: V_NEW, status: "pending" }),
     row: storedRow({
       status: "open",
@@ -495,20 +495,34 @@ const CASES: Case[] = [
     want: { status: null },
   },
   {
-    // ONCE THE SOURCE HAS STAMPED THE TRANSITION, an ordered payload is ordered against that version
-    // and the claim steps out of its way. Going on refusing it would drop a hand-back committed after
-    // the takeover — one event, which we ack and Chatwoot never redelivers.
-    name: "a claim whose transition the source has versioned no longer refuses an ordered payload",
+    // A LATER VERSION IS A DIFFERENT WRITE, and while the claim is live a different write is exactly
+    // what it cannot place — even on a mark some earlier refusal already moved. Two independent
+    // payloads frozen before the toggle would otherwise walk the row back, the second riding the mark
+    // the first one left.
+    name: "a live claim refuses a different write even after the mark has moved",
     payload: conversationEvent({ version: V_NEW, status: "pending" }),
     row: storedRow({
       status: "open",
       statusAt: V_NOW,
-      // The reconcile moved the mark off the value the claim was taken at.
       statusClaimFromAt: V_NOW - 1,
       statusClaimUntil: CLAIM_LIVE,
       statusClaimFrom: "pending",
     }),
-    want: { status: "pending", statusAt: V_NEW },
+    want: { status: null, statusAt: V_NEW },
+  },
+  {
+    // ...and the first payload of the claim's life cannot let itself through by matching the mark it
+    // started on, which is the other half of why the companion rule needs both terms.
+    name: "a payload matching the mark the claim was taken at is still refused",
+    payload: conversationEvent({ version: V_NOW, status: "pending" }),
+    row: storedRow({
+      status: "open",
+      statusAt: V_NOW,
+      statusClaimFromAt: V_NOW,
+      statusClaimUntil: CLAIM_LIVE,
+      statusClaimFrom: "pending",
+    }),
+    want: { status: null },
   },
   {
     // ...and the reopen exception is refused for the claim's whole life anyway, because it is the one

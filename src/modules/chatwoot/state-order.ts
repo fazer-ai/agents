@@ -333,7 +333,11 @@ export function decideConversationWrites(
   // this refuses ONE status rather than the field.
   const claim = statusClaimVerdict(
     row,
-    { status: payload.status, reopens: payload.reopensConversation },
+    {
+      status: payload.status,
+      reopens: payload.reopensConversation,
+      version: payload.version,
+    },
     now,
   );
   const writeStatus = claim === "apply" && (statusOrdered || reopenOrdered);

@@ -1300,6 +1300,63 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(liveReads).toBeGreaterThan(1);
   });
 
+  // A LOCAL CLAIM THE SOURCE HAS NOT CONFIRMED (issue #436, review round 4). This gate deliberately
+  // does not trust the mirror, and that is right for everything Chatwoot knows and wrong for the one
+  // thing it does not: a transition this side has already written. While the takeover's toggle is on
+  // the wire the REST snapshot still says `pending` and bot-owned, so a probe reading it at face
+  // value sends a follow-up into a conversation a colleague has just answered in — the mirror
+  // refuses that write, and the probe would go ahead anyway.
+  //
+  // `reconcileMirrorFromLive` returns the row AFTER its own ordering decided, so it is the live read
+  // wherever the live read won and the claim where it did not.
+  test("a live-gated nudge does not send over a status claim the source has not confirmed", async () => {
+    const convId = 966;
+    await seedConv(convId, null);
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: convId },
+      // What the takeover leaves behind between its compare-and-swap and its reconcile.
+      data: {
+        status: "open",
+        chatwootStatusAt: 1_788_000_000.5,
+        statusClaimUntil: new Date(Date.now() + 30_000),
+        statusClaimFrom: "pending",
+        statusClaimFromAt: 1_788_000_000.5,
+      },
+    });
+    const s = stub();
+    const client = {
+      ...(await s.makeClient()),
+      // Chatwoot has not committed the toggle yet, so it answers with the state the takeover decided
+      // about — the one reading this gate cannot tell from a conversation nobody has touched.
+      getConversation: async (c: number) => ({
+        id: c,
+        status: "pending",
+        updated_at: 1_788_000_001.5,
+        meta: {},
+      }),
+    } as unknown as ChatwootClient;
+    await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:${convId}`,
+      nudge: { source: "followup", kind: "inactivity", step: 1 },
+      requireLiveBotOwnership: true,
+      base: appDb,
+      deps: {
+        makeModel: () => new FakeListChatModel({ responses: ["Tudo certo?"] }),
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    });
+    expect(s.messages).toEqual([]);
+    // ...and the claim is still what the row says: the probe read it, it did not overwrite it.
+    const row = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { status: true },
+    });
+    expect(row.status).toBe("open");
+  });
+
   // A TAKEOVER INSIDE THE WINDOW (issue #457, review round 6). `canMessagePre` is decided at the top
   // of the run and the note is written far below — after the ingestion drain, after the queue, and
   // after a claim that WAITS on an append's lease and on the row lock a /reset holds. A person taking

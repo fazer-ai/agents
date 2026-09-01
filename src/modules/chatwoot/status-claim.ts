@@ -133,12 +133,18 @@ const REOPENABLE = new Set(["resolved", "snoozed"]);
  * round 3): a conversation event committed AFTER our transition — an operator handing the
  * conversation back inside the window — is indistinguishable here from one frozen before it, so it
  * is refused, but the mark it leaves means nothing older can overwrite what it announced, our own
- * reconcile's snapshot included. And because the mark then differs from the one the claim was taken
- * at, the ordered half of the claim is over: the COMPANION of that transition applies.
+ * reconcile's snapshot included.
  *
- * That companion is not luck. A status change dispatches `CONVERSATION_STATUS_CHANGED` and, since
- * `status` is in the conversation's `list_of_keys`, `conversation_updated` as well (measured on the
- * fork) — so a real hand-back arrives at least twice and the second one lands. A write that is NOT a
+ * And what gets through afterwards is the COMPANION of that same write, which is how the refusal
+ * becomes a delay rather than a loss: Chatwoot emits several events for one write and they agree by
+ * construction, carrying the same `updated_at`. So the exception is an EQUAL version and nothing
+ * else — a later version is a different write, and while the claim is live a different write is
+ * exactly what it cannot place (round 4: two independent payloads frozen before the toggle would
+ * otherwise walk the row back, the second one riding the mark the first one left).
+ *
+ * That a real transition HAS a companion is measured, not assumed. A status change dispatches
+ * `CONVERSATION_STATUS_CHANGED` and, since `status` is in the conversation's `list_of_keys`,
+ * `conversation_updated` as well — so a hand-back arrives at least twice. A write that is not a
  * status change (a label, a priority) dispatches only `conversation_updated`, so the one payload that
  * carries the pre-takeover `pending` by accident is refused and stays refused.
  */
@@ -160,9 +166,10 @@ export type StatusClaimVerdict = "apply" | "refuse" | "refuse-and-mark";
  *     and on any other row it is a snapshot carrying the conversation's status. Keyed on the status
  *     the ROW holds and never on the one the reopen produces: measured on the fork, that act writes
  *     `pending` on an inbox with an active bot and `open` everywhere else;
- *   * anything ELSE is ordered by version, so the claim only has to cover the stretch in which there
- *     is no version to order it against — from the write until the reconcile stamps the one Chatwoot
- *     produced. `statusAt === claimedFromAt` is that stretch, read off the row instead of remembered.
+ *   * anything ELSE is ordered by version, and the claim refuses it while it cannot place that
+ *     version against its own transition — which is the whole of its life, because the toggle renders
+ *     no version to place it against. The one payload that gets through is the companion of a write
+ *     already refused: equal version, and a mark that has moved off the one the claim was taken at.
  */
 export function statusClaimVerdict(
   row: {
@@ -174,7 +181,7 @@ export function statusClaimVerdict(
     statusClaimFrom: string | null;
     statusClaimFromAt: number | null;
   },
-  payload: { status: string | null; reopens: boolean },
+  payload: { status: string | null; reopens: boolean; version: number | null },
   now: Date,
 ): StatusClaimVerdict {
   if (!statusClaimIsLive(row.statusClaimUntil, now)) return "apply";
@@ -184,5 +191,12 @@ export function statusClaimVerdict(
   if (payload.reopens) {
     return REOPENABLE.has(row.status) ? "apply" : "refuse";
   }
-  return row.statusAt === row.statusClaimFromAt ? "refuse-and-mark" : "apply";
+  // The companion of a write this claim already refused: the same version, on a mark that is no
+  // longer the one the claim was taken at. Both halves are needed — the second is what keeps the
+  // claim's very first payload from letting itself through by matching the mark it started on.
+  const companion =
+    payload.version !== null &&
+    payload.version === row.statusAt &&
+    row.statusAt !== row.statusClaimFromAt;
+  return companion ? "apply" : "refuse-and-mark";
 }

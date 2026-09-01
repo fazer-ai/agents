@@ -51,6 +51,14 @@ export interface ReconcileResult {
   } | null;
   applied: boolean;
   outrankedByVersion: boolean;
+  /**
+   * The snapshot's status lost to a LOCAL CLAIM rather than to ordering (issue #436): this side has
+   * written a transition the source has not confirmed, so a read taken while it is on the wire is
+   * about the state we already decided to leave. Distinct from `outrankedByVersion`, which is about
+   * something newer at the SOURCE — a caller that trusts the live read on principle still has to
+   * stand down for this one, because the thing it does not know about is ours.
+   */
+  refusedByStatusClaim: boolean;
 }
 
 export interface ReconcileFromLiveParams {
@@ -81,6 +89,7 @@ export async function reconcileMirrorFromLive(
     state: null,
     applied: false,
     outrankedByVersion: false,
+    refusedByStatusClaim: false,
   };
   // NOTE: Serialize with mirrorChatwootEvent: same per-conversation withEntityLock, and a
   // freshness guard — a webhook committed between our GET and this write is NEWER than the
@@ -167,9 +176,10 @@ export async function reconcileMirrorFromLive(
             { ...current, statusAt: current.chatwootStatusAt },
             // NOTE: A live snapshot is never a message, so it can never be the source's own reopen —
             // the same reading `clearsResolutionOrigin` is handed below, for the same reason.
-            { status: live.status, reopens: false },
+            { status: live.status, reopens: false, version: liveVersion },
             new Date(),
           ) !== "apply";
+        result.refusedByStatusClaim = claimed;
         const statusRanked = orderedBy(current.chatwootStatusAt);
         const statusOrdered = !claimed && statusRanked;
         const assigneeOrdered = orderedBy(current.chatwootAssigneeAt);

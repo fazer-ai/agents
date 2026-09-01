@@ -794,7 +794,7 @@ export async function runPlaygroundTurn(
         kind: "reactive",
       });
       if (plan.action !== "remove") {
-        // Named rather than silent, for the reason the inbox names it: the thread still holds a
+        // NOTE: Named rather than silent, for the reason the inbox names it: the thread still holds a
         // message nobody was shown, and the next simulated turn will read it.
         logger.warn(
           "playground could not roll back a token-silenced turn: thread=%s reason=%s",

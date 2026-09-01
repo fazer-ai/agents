@@ -70,7 +70,7 @@ function lastAi(
       const txt = contentToText(m.content).trim();
       if (txt) {
         const id = (m as unknown as { id?: unknown }).id;
-        // The checkpointer holds the model's RAW turn, so a reload rebuilds text the live response
+        // NOTE: The checkpointer holds the model's RAW turn, so a reload rebuilds text the live response
         // already sanitized — a session reopened after a silent follow-up would show `[[SKIP]]`
         // again (issue #454). Sanitized after picking WHICH message is the reply, not before: a
         // sentinel-only turn is a silent turn, and letting the scan walk past it would render the

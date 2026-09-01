@@ -1291,7 +1291,7 @@ export async function runLoadedTurn(
         status: "ok",
         detail: { silenceTokenSuppressed: true },
       });
-      // ...and the turn must not leave the token behind, or the defect FEEDS itself: the raw message
+      // NOTE: ...and the turn must not leave the token behind, or the defect FEEDS itself: the raw message
       // is already checkpointed (graph.invoke persisted it before this line), the thread is shared
       // per contact-inbox, and the next turn reads one more sentinel answer — reinforcing exactly the
       // condition that produced this one.
@@ -1673,7 +1673,7 @@ export async function runLoadedTurn(
             plan.ids.length,
           );
         } else if (plan?.reason === "already-gone") {
-          // NOT A MISS: the words are not in the thread, which is the whole goal. This is what a
+          // NOTE: NOT A MISS: the words are not in the thread, which is the whole goal. This is what a
           // REFUSAL after the silence looks like — a takeover, a supersede, a `/reset` — because
           // every refusal exits through `refuse`, whose own rollback removes the same messages.
           //
@@ -1687,7 +1687,7 @@ export async function runLoadedTurn(
             String(conversationId),
           );
         } else {
-          // Named rather than silent: the history still holds a message the customer never received,
+          // NOTE: Named rather than silent: the history still holds a message the customer never received,
           // which is the compounding this exists to stop.
           logger.warn(
             "turn could not roll back a token-silenced turn: conv=%s reason=%s",

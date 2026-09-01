@@ -1400,7 +1400,7 @@ export function buildSimulatedNativeTools(
   allowed?: Iterable<string>,
 ): StructuredToolInterface[] {
   return buildNativeTools(ctx, allowed).map((tl) =>
-    // `skip_reply` is simulated-by-nature: it performs nothing, and its RETURN is the whole tool —
+    // NOTE: `skip_reply` is simulated-by-nature: it performs nothing, and its RETURN is the whole tool —
     // "Produce no message now" is an instruction the model reads and acts on, since LangGraph calls
     // the model again after a tool result. Replacing it with the generic `[simulated]` line makes
     // the playground write a follow-up that production stays silent on, which is the simulation

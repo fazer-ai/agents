@@ -1461,7 +1461,7 @@ export async function runAgentNudge(
         plan.ids.length,
       );
     } else if (plan) {
-      // Named rather than silent, for the reason `refuse` names its own miss: the history still holds
+      // NOTE: Named rather than silent, for the reason `refuse` names its own miss: the history still holds
       // words nobody received, and the next turn will read them.
       logger.warn(
         "agentNudge could not take a silent turn's words back out: conv=%s reason=%s",

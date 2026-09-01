@@ -269,7 +269,7 @@ function silenceNarration(history: BaseMessage[]): BaseMessage[] {
       // (round 27).
       content: textlessContent(ai.content),
       tool_calls: ai.tool_calls ?? [],
-      // Carried like the valid ones: they are part of what the model asked for, and a rebuild that
+      // NOTE: Carried like the valid ones: they are part of what the model asked for, and a rebuild that
       // dropped them would erase the record of a call that failed to parse.
       ...(ai.invalid_tool_calls?.length
         ? { invalid_tool_calls: ai.invalid_tool_calls }

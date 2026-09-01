@@ -113,7 +113,7 @@ export function isNudgeSilent(reply: string): boolean {
 // DID ask the model to produce nothing and models answer that in prose.
 export function proactiveReply(raw: string): CustomerFacingReply {
   if (isNudgeSilent(raw)) {
-    // `bySentinel` stays honest: a narrated "(vazio)" is silence, but it is not the token.
+    // NOTE: `bySentinel` stays honest: a narrated "(vazio)" is silence, but it is not the token.
     return {
       silent: true,
       text: "",

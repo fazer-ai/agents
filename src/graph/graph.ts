@@ -220,22 +220,27 @@ export function buildAgentGraph({
     const toolCalls = hasTools ? toolCallsSinceLastHuman(history) : 0;
     const hardLimit = hasTools && toolCalls >= max;
     const staySilent = hasTools && justDecidedToStaySilent(history);
-    // THE DECISION IS TERMINAL, and the hard limit is the other way it used to be talked over. At
-    // `maxToolCalls: 1`, or when a parallel batch (`react_to_message` + `skip_reply`) reaches the
-    // cap, the budget is spent on the very round that chose silence — and the hard-limit path exists
-    // to force a TEXT answer, invoking the raw model with no tools bound. Ending here instead is the
-    // same outcome the model was heading for on its own: no tool calls, so `toolsCondition` routes
-    // to END, and an empty message posts nothing. The calls still counted, which is what keeps a
-    // model that loops on skip_reply bounded.
-    if (staySilent && hardLimit) {
-      onToolLimit?.({ maxToolCalls: max, toolCalls });
+    // THE DECISION IS TERMINAL, and terminal means the model is not asked again — not "asked again
+    // and hopefully quiet". `skip_reply` is a tool, so the graph loops back here with its result, and
+    // the contract that the next completion carries no text was the MODEL's to keep. It usually does,
+    // being told to; when it does not, a turn that explicitly chose silence writes to the customer
+    // anyway, and on the proactive path that is an unsolicited message — the outcome the sentinel
+    // used to make impossible, because the token WAS the final text and the turn ended on it.
+    //
+    // So the turn ends here, on the decision, whatever the budget says. The outcome is the one the
+    // model was heading for: no tool calls, `toolsCondition` routes to END, an empty message posts
+    // nothing. The hard limit keeps its callback because the calls still COUNTED, which is what
+    // bounds a model that loops on skip_reply; what it no longer does is force a TEXT answer out of
+    // a turn that chose not to give one (round 9 found that half, round 11 the other).
+    if (staySilent) {
+      if (hardLimit) onToolLimit?.({ maxToolCalls: max, toolCalls });
       return { messages: [new AIMessage("")] };
     }
+    // No `staySilent` term here: the branch above already returned on it. The wrap-up instruction
+    // ("Conclua agora: responda ao cliente") is the exact opposite of what the model just chose, and
+    // the reason it cannot land any more is that there is no round after the decision at all.
     const softLimit =
-      hasTools &&
-      !hardLimit &&
-      toolCalls >= Math.max(1, max - 2) &&
-      !justDecidedToStaySilent(history);
+      hasTools && !hardLimit && toolCalls >= Math.max(1, max - 2);
 
     let prompt = systemPrompt;
     if (softLimit) {

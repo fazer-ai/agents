@@ -21,6 +21,7 @@ import { isConversationDivider, stampedConversationId } from "@/graph/markers";
 import type { ResolvedModelConfig } from "@/graph/models";
 import { FOLLOWUP_SKIP_SENTINEL } from "@/graph/nudge";
 import { runAgentTurn } from "@/graph/runtime";
+import { clearTurnOwning, markTurnOwning } from "@/graph/thread-claim";
 import { buildThreadStateGraph } from "@/graph/thread-state";
 import type { TenantContext } from "@/lib/tenancy";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
@@ -484,6 +485,83 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         JSON.stringify(m.content).includes(FOLLOWUP_SKIP_SENTINEL),
       ),
     ).toEqual([]);
+  });
+
+  // Review round 11, and the twin of the case above one layer out. The rollback runs just after this
+  // turn released its durable claim, which is exactly when a turn on ANOTHER replica may start —
+  // and that one holds nothing in this process's Map. So the rollback takes the claim every write to
+  // the channel from outside an invoke takes, and stands down when the row says the thread is busy.
+  // Here to prove the WIRING: `runAgentTurn` handing its owner down is what the deferral depends on,
+  // and `tests/graph/nudge-refused-rollback.test.ts` proves the rule itself.
+  test("another replica's turn defers the token rollback instead of racing it", async () => {
+    const contactInboxId = 7455;
+    const contact = await suDb.contact.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootContactId: 88455,
+        name: "C",
+      },
+      select: { id: true },
+    });
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: 9461,
+        contactInboxId,
+        contactId: contact.id,
+        status: "pending",
+        threadId: `${tenantId}:${instanceId}:9461`,
+        lastEventAt: new Date(),
+      },
+    });
+    const graphThreadId = contactInboxThreadId(
+      tenantId,
+      instanceId,
+      contactInboxId,
+    );
+    const owner = { tenantId, instanceId, contactInboxId, graphThreadId };
+    const saver = new MemorySaver();
+    const sent: Array<[number, string]> = [];
+    // The other replica JOINS while this turn runs — turn claims are counted, so that is ordinary —
+    // and is still there when this one releases. Its Map entry is dropped at once: another replica
+    // holds none here, and leaving one would let the Map check answer instead of the row.
+    const otherReplica = await markTurnOwning(owner, appDb);
+    clearTurnInFlight(graphThreadId);
+    let outcome: string;
+    try {
+      outcome = await runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: incoming({ conversationId: 9461, contactInboxId }),
+        base: appDb,
+        deps: {
+          makeModel: () =>
+            new FakeListChatModel({ responses: [FOLLOWUP_SKIP_SENTINEL] }),
+          makeClient: makeStubClient(sent),
+          checkpointer: saver,
+        },
+      });
+    } finally {
+      markTurnInFlight(graphThreadId);
+      await clearTurnOwning(owner, appDb, otherReplica);
+    }
+    expect(sent).toEqual([]);
+    expect(outcome).toBe("empty");
+    // Deferred, not removed: the honest outcome, and the one the log names. Writing a removal an
+    // invoke on another host is about to undo leaves the same history and a checkpoint that lies.
+    const state = await buildThreadStateGraph(saver).getState({
+      configurable: { thread_id: graphThreadId },
+    });
+    const messages = ((state.values as { messages?: BaseMessage[] })
+      ?.messages ?? []) as BaseMessage[];
+    expect(
+      messages.filter((m) =>
+        JSON.stringify(m.content).includes(FOLLOWUP_SKIP_SENTINEL),
+      ),
+    ).not.toEqual([]);
   });
 
   // The control for the line above, and the reason it is not just "log on every empty turn": a model

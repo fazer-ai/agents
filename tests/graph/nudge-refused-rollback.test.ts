@@ -12,8 +12,15 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { contactInboxThreadId } from "@/graph/checkpointer";
 import { clearTurnInFlight, markTurnInFlight } from "@/graph/inflight";
-import { isNudgeTurn } from "@/graph/markers";
+import { isNudgeTurn, nudgeMessage } from "@/graph/markers";
 import { runAgentNudge } from "@/graph/nudge";
+import { type RollbackPlan, undoRefusedTurn } from "@/graph/refused-turn";
+import {
+  claimIngestWrite,
+  clearTurnOwning,
+  markTurnOwning,
+  releaseIngestWrite,
+} from "@/graph/thread-claim";
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "@/graph/thread-state";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { seedChatwootInstance } from "../utils/chatwoot";
@@ -70,6 +77,27 @@ class RetiringModel extends BaseChatModel {
   }
   async _generate(): Promise<ChatResult> {
     this.retire();
+    return {
+      generations: [{ text: this.text, message: new AIMessage(this.text) }],
+    };
+  }
+}
+
+// The same shape as RetiringModel, with an ASYNC hook: the case below has to take a claim from
+// inside the generation, which is the only stretch where "another replica started while this turn
+// was thinking" can be expressed.
+class AwaitingModel extends BaseChatModel {
+  constructor(
+    private readonly before: () => Promise<void>,
+    private readonly text: string,
+  ) {
+    super({});
+  }
+  _llmType() {
+    return "awaiting";
+  }
+  async _generate(): Promise<ChatResult> {
+    await this.before();
     return {
       generations: [{ text: this.text, message: new AIMessage(this.text) }],
     };
@@ -389,6 +417,164 @@ describe.skipIf(!dbUp)(
         clearTurnInFlight(graphThreadId);
       }
 
+      expect(outcome).toBe("stale");
+      expect(s.messages).toEqual([]);
+      const after = await channel(checkpointer, graphThreadId);
+      expect(after.some((m) => isNudgeTurn(m))).toBe(true);
+      expect(after.map(textOf).join("\n")).toContain("ainda precisa de ajuda");
+    });
+
+    // Round 11 of PR #455. The test above is the SAME-process half: a Map this process owns. On the
+    // topology docs/deploy.md §4 sanctions, the invoke that races this one runs on another replica
+    // and holds no entry in this Map at all — and the rollback reaches this line just after
+    // releasing its own durable claim, which is exactly the moment the other replica can start.
+    //
+    // So the rollback takes the claim every write to the channel from outside an invoke takes
+    // (`claimIngestWrite`), and the two halves are separated here on purpose: the row is claimed and
+    // the Map entry is dropped, which is what "another replica" looks like from inside this process.
+    test("a turn holding the thread on ANOTHER replica defers the rollback too", async () => {
+      const contactInboxId = 7256;
+      await seedConv(9256, contactInboxId);
+      const graphThreadId = contactInboxThreadId(
+        tenantId,
+        instanceId,
+        contactInboxId,
+      );
+      const owner = { tenantId, instanceId, contactInboxId, graphThreadId };
+      const checkpointer = new MemorySaver();
+      await seedHistory(checkpointer, graphThreadId);
+      const produced = [
+        nudgeMessage("An external system event just occurred.", 9256),
+        new AIMessage({ id: "rb-x1", content: "Oi, ainda precisa de ajuda?" }),
+      ];
+      await buildThreadStateGraph(checkpointer).updateState(
+        { configurable: { thread_id: graphThreadId } },
+        { messages: produced },
+        THREAD_STATE_NODE,
+      );
+
+      const hold = await markTurnOwning(owner, appDb);
+      // The other replica's Map is not ours. Dropping only the local entry leaves the ROW claimed,
+      // which is the whole state under test — the durable half answering where the Map cannot.
+      clearTurnInFlight(graphThreadId);
+      let plan: RollbackPlan;
+      try {
+        plan = await undoRefusedTurn({
+          checkpointer,
+          graphThreadId,
+          produced,
+          kind: "proactive",
+          owner,
+          base: appDb,
+        });
+      } finally {
+        markTurnInFlight(graphThreadId);
+        await clearTurnOwning(owner, appDb, hold);
+      }
+      expect(plan).toEqual({
+        action: "keep",
+        reason: "another-invoke-is-reading",
+      });
+      expect(
+        (await channel(checkpointer, graphThreadId)).map(textOf).join("\n"),
+      ).toContain("ainda precisa de ajuda");
+    });
+
+    // Positive control: with nothing holding the row, the same call REMOVES. Without it the
+    // assertion above would pass on a rollback that had simply stopped working.
+    test("with the thread free on every replica, the same call removes the turn", async () => {
+      const contactInboxId = 7257;
+      await seedConv(9257, contactInboxId);
+      const graphThreadId = contactInboxThreadId(
+        tenantId,
+        instanceId,
+        contactInboxId,
+      );
+      const owner = { tenantId, instanceId, contactInboxId, graphThreadId };
+      const checkpointer = new MemorySaver();
+      await seedHistory(checkpointer, graphThreadId);
+      const produced = [
+        nudgeMessage("An external system event just occurred.", 9257),
+        new AIMessage({ id: "rb-y1", content: "Oi, ainda precisa de ajuda?" }),
+      ];
+      await buildThreadStateGraph(checkpointer).updateState(
+        { configurable: { thread_id: graphThreadId } },
+        { messages: produced },
+        THREAD_STATE_NODE,
+      );
+      const plan = await undoRefusedTurn({
+        checkpointer,
+        graphThreadId,
+        produced,
+        kind: "proactive",
+        owner,
+        base: appDb,
+      });
+      expect(plan.action).toBe("remove");
+      const after = await channel(checkpointer, graphThreadId);
+      expect(after.map(textOf).join("\n")).not.toContain(
+        "ainda precisa de ajuda",
+      );
+      // The attendance that was there before is not this turn's to take.
+      expect(after.map(textOf)).toContain("bom dia");
+      // ...AND THE CLAIM WENT BACK. A write claim left behind defers every append on this thread
+      // until its lease runs out — a rollback that succeeds and then strands the thread is worse
+      // than one that never ran. Proven by taking it again: refused, this is still held.
+      const again = await claimIngestWrite(owner, appDb);
+      expect(again.state).not.toBe("busy");
+      await releaseIngestWrite(owner, appDb, again);
+    });
+
+    // THE WIRING, which the two tests above do not touch: they call `undoRefusedTurn` directly, so a
+    // caller that stopped passing its owner would leave them both green. Same scenario, driven
+    // through the real `runAgentNudge`.
+    //
+    // The other replica's turn is taken DURING generation, which is the only position that produces
+    // the case: turn claims are counted, so B joining while A holds is ordinary, and what matters is
+    // that B is still there when A releases and reaches its rollback. Its Map entry is dropped
+    // immediately — another replica holds no entry in this process's Map, and leaving one would let
+    // the Map check answer instead of the row.
+    test("the nudge hands its owner down, so another replica defers it too", async () => {
+      const contactInboxId = 7258;
+      await seedConv(9258, contactInboxId);
+      const graphThreadId = contactInboxThreadId(
+        tenantId,
+        instanceId,
+        contactInboxId,
+      );
+      const owner = { tenantId, instanceId, contactInboxId, graphThreadId };
+      const checkpointer = new MemorySaver();
+      await seedHistory(checkpointer, graphThreadId);
+      const s = stub();
+      let wanted = true;
+      let otherReplica: Awaited<ReturnType<typeof markTurnOwning>> | null =
+        null;
+      let outcome: string;
+      try {
+        outcome = await runAgentNudge({
+          tenantId,
+          threadId: `${tenantId}:${instanceId}:9258`,
+          nudge: { source: "followup", kind: "inactivity", step: 1 },
+          stillWanted: async () => wanted,
+          base: appDb,
+          deps: {
+            makeModel: () =>
+              new AwaitingModel(async () => {
+                wanted = false;
+                otherReplica = await markTurnOwning(owner, appDb);
+                clearTurnInFlight(graphThreadId);
+              }, "Oi, ainda precisa de ajuda?"),
+            makeClient: s.makeClient,
+            checkpointer,
+            persistUsage: async () => {},
+          },
+        });
+      } finally {
+        if (otherReplica) {
+          markTurnInFlight(graphThreadId);
+          await clearTurnOwning(owner, appDb, otherReplica);
+        }
+      }
       expect(outcome).toBe("stale");
       expect(s.messages).toEqual([]);
       const after = await channel(checkpointer, graphThreadId);

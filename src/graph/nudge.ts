@@ -1367,6 +1367,10 @@ export async function runAgentNudge(
       graphThreadId,
       produced: result.messages,
       kind: "proactive",
+      // Same reason the reactive path passes it: this runs just after the durable claim was
+      // released, which is exactly when another replica may start. Null off a contact inbox.
+      owner: graphOwner,
+      base,
     }).catch((err) => {
       // NOTE: best-effort, and loudly. The send was already suppressed, so a failed rollback costs
       // the next turn a message the customer never saw, which is the defect this exists to close,

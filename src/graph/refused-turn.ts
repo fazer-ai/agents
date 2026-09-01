@@ -1,6 +1,7 @@
 import type { AIMessage, BaseMessage } from "@langchain/core/messages";
 import { RemoveMessage } from "@langchain/core/messages";
 import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
+import type { PrismaClient } from "@/../generated/prisma/client";
 import { withKeyedQueue } from "@/lib/locks";
 import {
   clearTurnInFlight,
@@ -8,6 +9,12 @@ import {
   markTurnInFlight,
 } from "./inflight";
 import { isNudgeTurn } from "./markers";
+import {
+  claimIngestWrite,
+  type IngestWriteClaim,
+  releaseIngestWrite,
+  type ThreadOwner,
+} from "./thread-claim";
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "./thread-state";
 
 // WHAT A PROACTIVE TURN LEAVES BEHIND WHEN IT IS REFUSED AFTER IT WAS GENERATED.
@@ -223,15 +230,24 @@ export function planReactiveTurnRollback(
 // The nudge's own claim is already released by the time any refusal reaches here (the `finally` that
 // clears it sits above them all), so this never stands down on account of itself.
 //
-// WHERE THIS STOPS, because the check reads a count rather than holding a gate. It excludes an invoke
-// that is ALREADY in flight; it cannot exclude one that starts a moment later, loads the refused turn
-// and saves it back when it finishes. The window is widest on the fallback thread, where a
-// conversation with no `contactInboxId` makes the graph thread and the conversation thread the same
-// key, and `runLoadedTurn` marks that key before it takes any lock. Closing it would mean holding a
-// critical section across another invoke, which is the pool inversion #227 removed for issue #225, so
-// it is deliberately not attempted. Losing that race costs exactly what happens today with no
-// rollback at all: the refused turn stays in the history. The rollback is best-effort against a
-// concurrent invoke, and never worse than not having run.
+// AND THE MAP IS NOT ENOUGH EITHER, WHICH IS WHAT `owner` IS FOR. `isTurnInFlight` is a Map in ONE
+// process, and on the topology docs/deploy.md §4 sanctions — extra web replicas, workers on one
+// leader — the turn runs wherever the webhook landed. A caller reaches this line just after
+// releasing its own durable claim (it has to: the check above would otherwise read that claim and
+// stand down on itself), so the moment this runs is exactly the moment another replica may start.
+//
+// THIS IS AN APPEND, so it takes the claim appends take. Writing to the message channel from outside
+// an invoke is what `claimIngestWrite` exists to fence (thread-claim.ts), and it is the same shape:
+// a bounded read-plan-write, not a model turn. Held, a turn STARTING on any replica waits for it and
+// then loads a channel the sentinel has already left; held by someone else, this stands down under
+// the name it already had. The durable TURN claim would not have done: `turn_holders` is counted, so
+// two turns share a thread by design and holding one excludes no other turn at all.
+//
+// WHERE IT STILL STOPS. An invoke ALREADY reading the channel cannot be excluded by anything here —
+// it will save back what it loaded — and a thread with no `contactInboxId` has no row to hang a
+// claim on, so the fallback key keeps the Map alone. Losing either race costs exactly what happens
+// with no rollback: the refused turn stays in the history. Best-effort against a concurrent invoke,
+// and never worse than not having run.
 export async function undoRefusedTurn(params: {
   checkpointer: BaseCheckpointSaver;
   graphThreadId: string;
@@ -244,8 +260,13 @@ export async function undoRefusedTurn(params: {
   // See planTurnRollback. The caller resolves it from the toolset it actually built, so a CUSTOM tool
   // that happens to be named like a native one is never mistaken for the inert one.
   inertTools?: ReadonlySet<string>;
+  // The DURABLE half of the exclusion, for the one thread key that has a row to hang it on. Both or
+  // neither: without them this keeps the process-local answer it always had, which is all a thread
+  // with no contact inbox can ever have.
+  owner?: ThreadOwner | null;
+  base?: PrismaClient;
 }): Promise<RollbackPlan> {
-  const { checkpointer, graphThreadId, produced, kind } = params;
+  const { checkpointer, graphThreadId, produced, kind, owner, base } = params;
   const plan =
     kind === "reactive" ? planReactiveTurnRollback : planTurnRollback;
   const graph = buildThreadStateGraph(checkpointer);
@@ -253,6 +274,20 @@ export async function undoRefusedTurn(params: {
   return withKeyedQueue(`ingest:${graphThreadId}`, async () => {
     if (isTurnInFlight(graphThreadId)) {
       return { action: "keep", reason: "another-invoke-is-reading" };
+    }
+    // BEFORE the Map mark, and the order is forced rather than chosen: `claimIngestWrite` asks
+    // `isTurnInFlight` itself, so a mark taken first would make this call refuse on account of the
+    // caller. Same order continuous ingestion uses (ingest.ts), which is also why the two cannot
+    // deadlock: queue, then claim, both times.
+    let write: IngestWriteClaim | null = null;
+    if (owner && base) {
+      const held = await claimIngestWrite(owner, base);
+      // A turn holds the thread on some replica. The same answer the Map gives, decided from the row
+      // — which is the half that can see another process.
+      if (held.state === "busy") {
+        return { action: "keep", reason: "another-invoke-is-reading" };
+      }
+      write = held;
     }
     // NOTE: taken only once the answer above is no, and for the length of the read and the write: it
     // is what keeps a compaction from rewriting the channel between them.
@@ -274,6 +309,9 @@ export async function undoRefusedTurn(params: {
       return decided;
     } finally {
       clearTurnInFlight(graphThreadId);
+      // Released on every exit, including a throw: a claim left behind defers every append on this
+      // thread until its lease runs out.
+      if (write && owner && base) await releaseIngestWrite(owner, base, write);
     }
   });
 }

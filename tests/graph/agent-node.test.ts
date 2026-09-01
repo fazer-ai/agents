@@ -97,12 +97,13 @@ const noopTool = tool(async () => "feito", {
 });
 
 describe("agentNode tool-call limit (soft+hard)", () => {
-  // Issue #454, review round 5. Silence is a TOOL CALL now (`skip_reply`), and the soft limit tells
-  // the model "Conclua agora: responda ao cliente" — the exact opposite of what it just chose. An
-  // agent with a small `maxToolCalls` crosses that limit on the very round after skip_reply, so a
-  // deliberate silent follow-up became an unsolicited customer message. The COUNT is untouched: the
-  // cap still has to bound a model that calls skip_reply in a loop.
-  test("the wrap-up instruction does not land on the round after skip_reply", async () => {
+  // Issue #454, review rounds 5 and 11. Silence is a TOOL CALL now, so the graph loops back with the
+  // tool's result and asks the model AGAIN — and round 5 only stopped that round from being told
+  // "Conclua agora: responda ao cliente". The round itself was the defect: whatever the model writes
+  // there goes to the customer, and on the proactive path that is an unsolicited message, which the
+  // sentinel made impossible by being the final text. The decision is terminal now: no further round
+  // at all. The COUNT is untouched, so the cap still bounds a model that loops on skip_reply.
+  test("the turn ends on the silence decision: the model is not asked again", async () => {
     const skipTool = tool(
       async () => `${SKIP_REPLY_ACK}. Produce no message now.`,
       {
@@ -144,18 +145,65 @@ describe("agentNode tool-call limit (soft+hard)", () => {
       tools: [skipTool],
       maxToolCalls: 3,
     });
-    await graph.invoke(
+    const result = await graph.invoke(
       { messages: [new HumanMessage("nada a fazer")] },
       { configurable: { thread_id: "limit-skip" } },
     );
-    // Two rounds ran (the control below proves the same cap DOES produce the instruction), and the
-    // second one — the round after the silence decision — was not told to answer the customer.
-    expect(model.boundSystemPrompts.length).toBeGreaterThanOrEqual(2);
+    // ONE round: the decision ended the turn. The wrap-up instruction cannot land because there is
+    // no round after it to land on (the control below proves the same cap DOES produce it).
+    expect(model.boundSystemPrompts).toHaveLength(1);
     expect(
       model.boundSystemPrompts.some((p) =>
         p.includes("[Sistema] Você já usou"),
       ),
     ).toBe(false);
+    expect(String(result.messages.at(-1)?.content ?? "")).toBe("");
+  });
+
+  // The defect round 11 named, in the shape that reaches a person: the round after the decision is
+  // where a follow-up that chose silence writes to the customer anyway. Well below the cap, so no
+  // limit is involved — only the decision.
+  test("a model that would speak after skip_reply never gets the chance", async () => {
+    const skipTool = tool(
+      async () => `${SKIP_REPLY_ACK}. Produce no message now.`,
+      { name: SKIP_REPLY_TOOL, description: "skip", schema: z.object({}) },
+    );
+    class SkipThenTalksAnyway {
+      rounds = 0;
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("");
+      }
+      bindTools(_tools: unknown) {
+        const self = this;
+        return {
+          async invoke(): Promise<AIMessage> {
+            self.rounds++;
+            if (self.rounds === 1) {
+              return new AIMessage({
+                content: "",
+                tool_calls: [{ name: SKIP_REPLY_TOOL, args: {}, id: "c1" }],
+              });
+            }
+            return new AIMessage("Oi! Só passando para lembrar do seu boleto.");
+          },
+        };
+      }
+    }
+    const model = new SkipThenTalksAnyway();
+    const graph = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
+      model: model as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer: new MemorySaver(),
+      tools: [skipTool],
+      maxToolCalls: 10,
+    });
+    const result = await graph.invoke(
+      { messages: [new HumanMessage("ok")] },
+      { configurable: { thread_id: "silence-terminal" } },
+    );
+    expect(model.rounds).toBe(1);
+    expect(String(result.messages.at(-1)?.content ?? "")).toBe("");
   });
 
   // Round 9: the HARD limit is the other way the decision gets talked over. At `maxToolCalls: 1` the
@@ -330,7 +378,9 @@ describe("agentNode tool-call limit (soft+hard)", () => {
       { messages: [new HumanMessage("ok")] },
       { configurable: { thread_id: "limit-parallel" } },
     );
-    expect(model.boundSystemPrompts.length).toBeGreaterThanOrEqual(2);
+    // The batch was READ, not just its last result: the reaction landed after the skip and the turn
+    // still ended on the decision, in one round.
+    expect(model.boundSystemPrompts).toHaveLength(1);
     expect(
       model.boundSystemPrompts.some((p) =>
         p.includes("[Sistema] Você já usou"),

@@ -1659,6 +1659,12 @@ export async function runLoadedTurn(
           graphThreadId,
           produced,
           kind: "reactive",
+          // The claim this turn has just released, taken again for the write — so a turn STARTING on
+          // another replica waits for it instead of loading the sentinel and saving it back. Null
+          // when the conversation has no contact inbox: no row, hence nothing durable to hold, and
+          // the process-local check is all there is (thread-claim.ts).
+          owner: graphOwner,
+          base,
         });
         if (plan?.action === "remove") {
           logger.info(

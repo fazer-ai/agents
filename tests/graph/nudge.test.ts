@@ -1357,6 +1357,62 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(row.status).toBe("open");
   });
 
+  // ...AND WHEN THE RECONCILE CANNOT ANSWER, THE PROBE STANDS DOWN (issue #468, round 10). The one
+  // thing this gate needs the reconcile for is the claim, which the snapshot in hand cannot show, so
+  // carrying on with that snapshot is carrying on with the exact reading the claim exists to refuse.
+  test("a live-gated nudge stands down when the reconcile cannot be read", async () => {
+    const convId = 967;
+    await seedConv(convId, null);
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: convId },
+      data: {
+        status: "open",
+        chatwootStatusAt: 1_788_000_000.5,
+        statusClaimUntil: new Date(Date.now() + 30_000),
+        statusClaimFrom: "pending",
+        statusClaimStampedAt: null,
+      },
+    });
+    // The reconcile's OWN read, and nothing else: it is the only one that asks for the claim columns.
+    const unreadable = appDb.$extends({
+      query: {
+        conversation: {
+          async findUnique({ args, query }) {
+            const sel = args.select as Record<string, unknown> | undefined;
+            if (sel?.statusClaimStampedAt === true) {
+              throw new Error("mirror unreadable");
+            }
+            return query(args);
+          },
+        },
+      },
+    }) as unknown as typeof appDb;
+    const s = stub();
+    const client = {
+      ...(await s.makeClient()),
+      getConversation: async (c: number) => ({
+        id: c,
+        status: "pending",
+        updated_at: 1_788_000_001.5,
+        meta: {},
+      }),
+    } as unknown as ChatwootClient;
+    await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:${convId}`,
+      nudge: { source: "followup", kind: "inactivity", step: 1 },
+      requireLiveBotOwnership: true,
+      base: unreadable,
+      deps: {
+        makeModel: () => new FakeListChatModel({ responses: ["Tudo certo?"] }),
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    });
+    expect(s.messages).toEqual([]);
+  });
+
   // A TAKEOVER INSIDE THE WINDOW (issue #457, review round 6). `canMessagePre` is decided at the top
   // of the run and the note is written far below — after the ingestion drain, after the queue, and
   // after a claim that WAITS on an append's lease and on the row lock a /reset holds. A person taking

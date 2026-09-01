@@ -581,10 +581,16 @@ export async function runAgentNudge(
       loaded.assigneeId = decided.assigneeId;
       loaded.assigneeName = live.assigneeName;
     } catch (err) {
+      // FAILING CLOSED, like the fetch above, and for a sharper reason: the one thing this probe
+      // needs the reconcile for is the local claim, which the snapshot in hand cannot show. Carrying
+      // on with that snapshot is carrying on with the exact reading the claim exists to refuse — a
+      // pre-toggle `pending`, bot-owned — and this gate would then send over the colleague who just
+      // replied (issue #468, round 10). A skipped follow-up costs a follow-up.
       logger.warn(
         { err, conversationId: String(conversationId) },
-        "agentNudge: mirror reconcile failed",
+        "agentNudge: mirror reconcile failed — failing closed",
       );
+      return "unavailable";
     }
     const owned = shouldBotHandle(
       {

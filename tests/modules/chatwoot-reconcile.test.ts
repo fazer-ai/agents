@@ -38,6 +38,7 @@ const suDb = su as PrismaClient;
 const T = 1_786_600_000;
 let tenantId = 0n;
 let instanceId = 0n;
+let inboxRowId = 0n;
 let nextConvId = 700;
 
 interface StoredRow {
@@ -70,6 +71,7 @@ async function seedRow(over: Partial<StoredRow> = {}): Promise<number> {
       statusClaimFrom: over.statusClaimFrom ?? null,
       statusClaimStampedAt: over.statusClaimStampedAt ?? null,
       statusClaimRefusedAt: over.statusClaimRefusedAt ?? null,
+      inboxId: inboxRowId,
       threadId: `${tenantId}:${instanceId}:${chatwootConversationId}`,
     },
   });
@@ -102,6 +104,7 @@ async function applyFor(
     updatedAt: number | null;
   },
   ownsStatusClaim: Date | null = null,
+  base: PrismaClient = appDb,
 ) {
   return reconcileMirrorFromLive({
     ownsStatusClaim,
@@ -116,7 +119,7 @@ async function applyFor(
       lastActivityAt: new Date((live.lastActivitySec ?? T) * 1000),
       updatedAt: live.updatedAt,
     },
-    base: appDb,
+    base,
   });
 }
 
@@ -133,6 +136,15 @@ describe.skipIf(!dbUp)("reconcileMirrorFromLive", () => {
       adminToken: "enc",
     });
     instanceId = inst.id;
+    const inbox = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: 11,
+        name: "Reconcile",
+      },
+    });
+    inboxRowId = inbox.id;
   });
 
   afterAll(async () => {
@@ -255,12 +267,33 @@ describe.skipIf(!dbUp)("reconcileMirrorFromLive", () => {
       },
     });
     const published: Record<string, unknown>[] = [];
+    // WHEN each half happens, not only that it did. The durable one is the last statement inside the
+    // transaction; the realtime one must come after it, because a broadcast made in there is a
+    // `pending` every console is holding while the row can still roll back to `open`.
+    const order: string[] = [];
+    const traced = appDb.$extends({
+      query: {
+        outboundWebhookDelivery: {
+          async createMany({ args, query }) {
+            const out = await query(args);
+            order.push("enqueued");
+            return out;
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
     setPublisher((_topic, data) => {
       published.push(JSON.parse(String(data)));
+      order.push("broadcast");
     });
     let result: Awaited<ReturnType<typeof applyFor>>;
     try {
-      result = await applyFor(id, { status: "open", updatedAt: T + 1 }, until);
+      result = await applyFor(
+        id,
+        { status: "open", updatedAt: T + 1 },
+        until,
+        traced,
+      );
     } finally {
       setPublisher(() => undefined);
     }
@@ -280,11 +313,18 @@ describe.skipIf(!dbUp)("reconcileMirrorFromLive", () => {
         (e) => e.type === "conversation" && e.status === "pending",
       ).length,
     ).toBe(1);
+    expect(order).toEqual(["enqueued", "broadcast"]);
     const emitted = await suDb.outboundWebhookDelivery.findMany({
       where: { tenantId, event: "conversation.status_changed" },
-      select: { id: true },
+      select: { payload: true },
     });
     expect(emitted.length).toBe(1);
+    // The inbox travels with the event: subscribers route and filter on it, and this path is not the
+    // one that gets to be the exception.
+    expect(
+      (emitted[0]?.payload as { data?: { inbox_id?: unknown } } | null)?.data
+        ?.inbox_id,
+    ).toBe(String(inboxRowId));
   });
 
   test("a version refused behind ours was a stale snapshot, and goes", async () => {

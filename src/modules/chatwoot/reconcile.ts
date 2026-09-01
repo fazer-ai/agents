@@ -94,6 +94,9 @@ export async function reconcileMirrorFromLive(
     outrankedByVersion: false,
     refusedByStatusClaim: false,
   };
+  // What the deferred adjudication has to announce once the transaction it happened in has
+  // committed, and null on every other path. See the note where it is filled in.
+  let announce: Parameters<typeof broadcastConversationEvent>[1] | null = null;
   // NOTE: Serialize with mirrorChatwootEvent: same per-conversation withEntityLock, and a
   // freshness guard — a webhook committed between our GET and this write is NEWER than the
   // probe snapshot, so the reconcile must not restore stale status/assignee over it. The
@@ -116,8 +119,10 @@ export async function reconcileMirrorFromLive(
           select: {
             // The mirror's own row id, which is what a console and an outbound consumer name this
             // conversation by — needed only on the deferred path below, which is the one write here
-            // that no webhook will announce.
+            // that no webhook will announce. The inbox travels with it because subscribers route and
+            // filter on it, and this path is not the one that gets to be the exception.
             id: true,
+            inboxId: true,
             status: true,
             assigneeType: true,
             assigneeId: true,
@@ -322,17 +327,24 @@ export async function reconcileMirrorFromLive(
           nextStatus !== null &&
           nextStatus !== current.status
         ) {
-          broadcastConversationEvent(tenantId, {
+          // NOTE: The realtime half waits for this transaction to COMMIT (it is published at the end
+          // of this function). Announced from in here, a statement that fails afterwards — or a
+          // commit that does — leaves every open console told `pending` while the row rolls back to
+          // `open`, which is the ownership gate's own reading and the one thing a console must not
+          // disagree with. The durable half stays inside, because it IS a row and rolls back with
+          // everything else.
+          announce = {
             conversationId: String(current.id),
             status: nextStatus,
             assigneeId: current.assigneeId,
             assigneeType: current.assigneeType,
             lastEventAt: nextEventAt ? nextEventAt.toISOString() : null,
-          });
+          };
           try {
             await emitOutbound(db, tenantId, "conversation.status_changed", {
               conversation_id: String(current.id),
-              inbox_id: null,
+              inbox_id:
+                current.inboxId != null ? String(current.inboxId) : null,
               status: nextStatus,
               previous_status: current.status,
               assignee_type: current.assigneeType,
@@ -358,5 +370,6 @@ export async function reconcileMirrorFromLive(
       },
     ),
   );
+  if (announce) broadcastConversationEvent(tenantId, announce);
   return result;
 }

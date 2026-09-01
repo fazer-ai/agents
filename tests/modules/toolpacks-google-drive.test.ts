@@ -279,6 +279,25 @@ describe("google drive toolpack — send file", () => {
     });
   });
 
+  test("a file over the cap is refused, even when the server understates its size", async () => {
+    // The refusal path had no test at all. It also had no BOUND: `arrayBuffer()` buffered the whole
+    // body and `byteLength` refused it afterwards, so an honest Content-Length was the only thing
+    // keeping a large file out of memory (#464). What is asserted here is the refusal; that the
+    // read now stops at the cap is asserted on the reader itself, in tests/lib/outbound.test.ts,
+    // where the producer can be watched.
+    const OVER = 15 * 1024 * 1024 + 1;
+    const { impl } = routerFetch((url: string) =>
+      url.includes("alt=media") || url.includes("/export")
+        ? binaryResponse(OVER, 10)
+        : json(200, { name: "big.bin", mimeType: "application/octet-stream" }),
+    );
+    const cw = fakeChatwoot();
+    const tool = sendTool(baseCtx({ fetchImpl: impl, chatwoot: cw.chatwoot }));
+    const out = (await tool?.invoke({ fileId: "f1" })) as string;
+    expect(out).toContain("too large");
+    expect(cw.sent).toHaveLength(0);
+  });
+
   test("Google-apps doc is exported to PDF (name + mime adjusted)", async () => {
     const { impl, calls } = routerFetch(
       driveHandler(

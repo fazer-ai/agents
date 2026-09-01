@@ -7,6 +7,7 @@ import {
   normalizeExpectedStatuses,
 } from "@/graph/tools/http-status";
 import { AppError } from "@/lib/errors";
+import { fetchBounded } from "@/lib/outbound";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { zonedWallClock } from "@/modules/integrations/toolpacks/calendar-slots";
 import {
@@ -833,23 +834,17 @@ export function buildHttpTool(
         allowHttp: deps.allowHttp,
       });
 
-      // 5. Fetch — no redirects, bounded timeout.
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-      let res: Response;
-      try {
-        res = await doFetch(url.toString(), {
-          method,
-          headers,
-          body,
-          redirect: "error",
-          signal: ctrl.signal,
-        });
-      } finally {
-        clearTimeout(timer);
-      }
+      // 5. Fetch — no redirects, and one bound over the WHOLE exchange. Not a bound on the
+      // headers: `fetchBounded` reads the body under the same armed timer, because a provider that
+      // answers at once and then stalls mid-body used to leave this line pending forever (#464).
+      // It also caps what the read retains, which is the other half of the same defect.
+      const { res, body: responseBody } = await fetchBounded(
+        url.toString(),
+        { method, headers, body, redirect: "error" },
+        { timeoutMs, fetchImpl: doFetch },
+      );
 
-      const text = await res.text();
+      const text = responseBody.text;
       // THE PROJECTION, and it runs BEFORE the clip because that ordering is the feature. In the
       // response #456 measured, every status-bearing field sat past char 4000: rendering after the
       // cut could never have reached one. The clip below still applies to whatever comes out, as a
@@ -870,6 +865,12 @@ export function buildHttpTool(
       // template is not the remedy.
       if (modelBody.length > maxChars) {
         const templated = rendered.text !== null;
+        // A SECOND CUT, upstream of this one and reported separately: past the read cap the body
+        // arrives truncated, so a JSON response stops parsing and a template that would have
+        // applied reports itself as "not JSON". Without this branch the advice sends the operator
+        // to fix a template that was never the problem — and the count would be the cap rather
+        // than the size their provider actually answered with.
+        const capped = responseBody.chars > text.length;
         const advice =
           rendered.skipped === null
             ? "shorten it or point it at fewer fields"
@@ -877,21 +878,24 @@ export function buildHttpTool(
               ? "declare a response template so it gets the fields you want instead of the beginning of the body"
               : rendered.skipped === "not-2xx"
                 ? "this tool's response template does not apply outside 2xx, where the body is the error the model has to read"
-                : "this tool's response template could not be applied because the body is not JSON";
+                : capped
+                  ? `only the first ${text.length} characters of the body were read, so it could not be parsed as JSON and this tool's response template was not applied`
+                  : "this tool's response template could not be applied because the body is not JSON";
         deps.onSideEffectError?.({
           tool: def.name,
           phase: "response_clipped",
           detail: {
-            chars: modelBody.length,
+            chars: templated ? modelBody.length : responseBody.chars,
             limit: maxChars,
             templated,
+            ...(capped ? { readCap: text.length } : {}),
             ...(rendered.skipped ? { skipped: rendered.skipped } : {}),
           },
           err: new Error(
             `${
               templated
                 ? `the response template rendered ${modelBody.length} characters`
-                : `the response was ${modelBody.length} characters`
+                : `the response was ${responseBody.chars} characters`
             } and the model was given the first ${maxChars}; ${advice}`,
           ),
         });

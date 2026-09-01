@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { Prisma } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import { failableTool, toolFailure } from "@/graph/tools/failure";
+import { fetchBounded } from "@/lib/outbound";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import {
@@ -72,10 +73,11 @@ async function asaasFetch(
   const assertSafe = ctx.assertSafe ?? assertSafeOutboundUrl;
   await assertSafe(url);
   const doFetch = ctx.fetchImpl ?? fetch;
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
-  try {
-    const res = await doFetch(url, {
+  // The cap is on what is READ, not a slice of what was already read: `.text()` buffers the whole
+  // body before any limit applies (#464).
+  const { res, body } = await fetchBounded(
+    url,
+    {
       method: init.method,
       headers: {
         access_token: init.token,
@@ -84,19 +86,16 @@ async function asaasFetch(
       },
       body: init.body !== undefined ? JSON.stringify(init.body) : undefined,
       redirect: "error",
-      signal: ctrl.signal,
-    });
-    const text = (await res.text()).slice(0, MAX_RESPONSE_CHARS);
-    let json: unknown = null;
-    try {
-      json = JSON.parse(text);
-    } catch {
-      // non-JSON body → leave json null; the caller surfaces a generic error
-    }
-    return { status: res.status, json };
-  } finally {
-    clearTimeout(timer);
+    },
+    { timeoutMs: TIMEOUT_MS, cap: MAX_RESPONSE_CHARS, fetchImpl: doFetch },
+  );
+  let json: unknown = null;
+  try {
+    json = JSON.parse(body.text);
+  } catch {
+    // non-JSON body → leave json null; the caller surfaces a generic error
   }
+  return { status: res.status, json };
 }
 
 // Tool input schemas (single source for both the runtime tool and the UI arg specs).

@@ -117,11 +117,15 @@ export interface StateRow {
   /**
    * THE LOCAL CLAIM (issue #436): a status written on this side that the source has not versioned,
    * and the instant it stops fencing. `from` is the status it replaced, which is the only one it
-   * refuses. Both null when nothing local is outstanding. See ./status-claim.ts.
+   * refuses; `stampedAt` is the version the source gave that write once the reconcile has read it
+   * back, and null for as long as there is nothing to place a payload against; `refusedAt` is the
+   * newest version refused while that was null, kept for the reconcile to adjudicate. All null when
+   * nothing local is outstanding. See ./status-claim.ts.
    */
   statusClaimUntil: Date | null;
   statusClaimFrom: string | null;
-  statusClaimFromAt: number | null;
+  statusClaimStampedAt: number | null;
+  statusClaimRefusedAt: number | null;
 }
 
 export interface StateDecision {
@@ -152,6 +156,13 @@ export interface StateDecision {
   unversioned: boolean;
   /** Version to stamp on the status mark, or null to leave it where it is. */
   statusAt: number | null;
+  /**
+   * Version to record as REFUSED BY THE LOCAL CLAIM, or null to leave the stored one. Written only
+   * while the claim has no stamped version of its own, which is the window in which a refusal cannot
+   * be told from a loss: the reconcile that stamps ours adjudicates this against it. Forward-only
+   * like every mark here, so the newest refusal is the one kept. ./status-claim.ts.
+   */
+  statusClaimRefusedAt: number | null;
   /** Version to stamp on the assignee mark, or null to leave it where it is. */
   assigneeAt: number | null;
   /**
@@ -224,6 +235,7 @@ export function decideConversationWrites(
       assignee: payload.assigneeStated,
       unversioned: true,
       statusAt: payload.status != null ? payload.version : null,
+      statusClaimRefusedAt: null,
       assigneeAt: payload.assigneeStated ? payload.version : null,
       redirectOrigin: redirectOriginAnswers,
       redirectOriginAt: redirectOriginAnswers ? payload.version : null,
@@ -280,6 +292,7 @@ export function decideConversationWrites(
       assignee: false,
       unversioned: false,
       statusAt: null,
+      statusClaimRefusedAt: null,
       assigneeAt: null,
       redirectOrigin: redirectOriginAnswers && !olderThanRedirectOrigin,
       redirectOriginAt:
@@ -337,7 +350,6 @@ export function decideConversationWrites(
       status: payload.status,
       reopens: payload.reopensConversation,
       version: payload.version,
-      source: "dispatch",
     },
     now,
   );
@@ -385,14 +397,16 @@ export function decideConversationWrites(
     status,
     assignee,
     unversioned: row.activityAt == null || eventAt >= row.activityAt,
-    // NOTE: `refuse-and-mark` is the one case where the mark moves for a status we did NOT write, and
-    // it is what keeps the refusal from being a hole: the payload is a versioned reading of the
-    // source, so anything older must not win over what it announced — and the mark differing from the
-    // one the claim was taken at is what ends the claim's ordered half, so the companion event of a
-    // real transition lands. ../../modules/chatwoot/status-claim.ts.
-    statusAt:
-      status != null || claim === "refuse-and-mark"
-        ? advances(row.statusAt)
+    statusAt: status != null ? advances(row.statusAt) : null,
+    // NOTE: A refusal the claim could not place is KEPT, on a mark of its own rather than on the
+    // status mark. Both halves matter: we ack this event and Chatwoot never redelivers it, so
+    // dropping it would lose a hand-back made while our toggle was on the wire; and putting it on the
+    // status mark instead would say the source stamped something it did not, which is the reading
+    // three rounds of review broke in three different ways (issue #468).
+    // ../../modules/chatwoot/status-claim.ts.
+    statusClaimRefusedAt:
+      claim === "refuse-and-defer"
+        ? advancesFrom(row.statusClaimRefusedAt, payload.version)
         : null,
     assigneeAt: assignee ? advances(row.assigneeAt) : null,
     redirectOrigin,

@@ -10,10 +10,16 @@
 -- The write announces itself instead, and says both how long it fences the status and which status it
 -- replaced — the only one it refuses.
 --
--- ROLLOUT: no window. Both columns are NULL for every existing row, which reads as "no local write is
+-- The other two columns are what the gap costs. While the source has not stamped a version for our
+-- transition there is nothing to order a payload against, so the ones refused there are DEFERRED
+-- rather than dropped — we acknowledge those events and Chatwoot never sends them again — and the
+-- reconcile that learns our version adjudicates the newest of them against it.
+--
+-- ROLLOUT: no window. Every column is NULL for every existing row, which reads as "no local write is
 -- outstanding" — exactly the behaviour of the release that did not have them. A process from the
 -- previous release takes no claim and respects none, so during a rolling overlap the window this
 -- closes is simply still open on the old replicas.
 ALTER TABLE "conversations" ADD COLUMN "status_claim_until" TIMESTAMP(3);
 ALTER TABLE "conversations" ADD COLUMN "status_claim_from" TEXT;
-ALTER TABLE "conversations" ADD COLUMN "status_claim_from_at" DOUBLE PRECISION;
+ALTER TABLE "conversations" ADD COLUMN "status_claim_stamped_at" DOUBLE PRECISION;
+ALTER TABLE "conversations" ADD COLUMN "status_claim_refused_at" DOUBLE PRECISION;

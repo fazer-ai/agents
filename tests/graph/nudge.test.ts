@@ -1320,7 +1320,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
         chatwootStatusAt: 1_788_000_000.5,
         statusClaimUntil: new Date(Date.now() + 30_000),
         statusClaimFrom: "pending",
-        statusClaimFromAt: 1_788_000_000.5,
+        statusClaimStampedAt: null,
       },
     });
     const s = stub();

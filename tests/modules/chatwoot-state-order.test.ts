@@ -57,7 +57,8 @@ function storedRow(over: Partial<StateRow> = {}): StateRow {
     redirectOriginKnown: false,
     statusClaimUntil: null,
     statusClaimFrom: null,
-    statusClaimFromAt: null,
+    statusClaimStampedAt: null,
+    statusClaimRefusedAt: null,
     ...over,
   };
 }
@@ -401,10 +402,11 @@ const CASES: Case[] = [
       status: "open",
       statusClaimUntil: CLAIM_LIVE,
       statusClaimFrom: "pending",
-      // The mark is still the one the claim was taken at: the reconcile has not run.
-      statusClaimFromAt: V_NOW,
+      // Nothing stamped: the reconcile has not run, so there is no version of our own to place this
+      // against. A message carries none to keep either.
+      statusClaimStampedAt: null,
     }),
-    want: { status: null, statusAt: null },
+    want: { status: null, statusAt: null, statusClaimRefusedAt: null },
   },
   {
     // The other way in, and it needs no exception: a delayed or companion `conversation_*` event
@@ -416,30 +418,59 @@ const CASES: Case[] = [
       status: "open",
       statusClaimUntil: CLAIM_LIVE,
       statusClaimFrom: "pending",
-      // The mark is still the one the claim was taken at: the reconcile has not run.
-      statusClaimFromAt: V_NOW,
+      // Nothing stamped: the reconcile has not run.
+      statusClaimStampedAt: null,
     }),
-    // ...and the VERSION is kept, because this payload is a versioned reading of the source and the
-    // claim cannot tell one frozen before our write from one committed after it. Keeping it is what
-    // stops anything older — our own reconcile's snapshot included — from overwriting what it
-    // announced.
-    want: { status: null, statusAt: V_NEW },
+    // ...and the VERSION IS KEPT, on the claim's own mark and not on the status one. This payload is
+    // a transition somebody dispatched and we are about to acknowledge it, so dropping it would lose
+    // a hand-back made while the toggle was on the wire; the reconcile answers it against the version
+    // the source gives our own write.
+    want: { status: null, statusAt: null, statusClaimRefusedAt: V_NEW },
   },
   {
-    // ...and the companion of that same write lands, which is what makes the refusal above a delay
-    // rather than a loss. A status change dispatches CONVERSATION_STATUS_CHANGED and, since `status`
-    // is in the conversation's `list_of_keys`, `conversation_updated` too, so a real hand-back
-    // arrives at least twice, and the two agree on `updated_at` by construction.
-    name: "the companion of a refused transition applies: the SAME version, on a mark that moved",
+    // ...and it is the NEWEST refusal that is kept, forward-only like every other mark here: two
+    // payloads frozen before the toggle are two readings of a state we already decided to leave, and
+    // only the later one could be evidence of anything.
+    name: "a second refusal keeps only the newer version",
+    payload: conversationEvent({ version: V_NOW, status: "pending" }),
+    row: storedRow({
+      status: "open",
+      // Behind the version already kept, and AHEAD of the status mark, so this payload is a live
+      // reading and not a stale one: what stops it is the comparison, not the staleness branch.
+      statusAt: V_OLD,
+      statusClaimUntil: CLAIM_LIVE,
+      statusClaimFrom: "pending",
+      statusClaimRefusedAt: V_NEW,
+    }),
+    want: { status: null, statusClaimRefusedAt: null },
+  },
+  {
+    // ...and once the source HAS stamped our transition, the ordinary question is back: a version
+    // strictly ahead of ours was committed after our write, so it is a hand-back and it lands.
+    name: "a write committed after the stamped transition applies",
     payload: conversationEvent({ version: V_NEW, status: "pending" }),
     row: storedRow({
       status: "open",
-      statusAt: V_NEW,
+      statusAt: V_NOW,
       statusClaimUntil: CLAIM_LIVE,
       statusClaimFrom: "pending",
-      statusClaimFromAt: V_NOW,
+      statusClaimStampedAt: V_NOW,
     }),
-    want: { status: "pending" },
+    want: { status: "pending", statusAt: V_NEW, statusClaimRefusedAt: null },
+  },
+  {
+    // ...and a version the stamp has already placed as ours or older is still the gap: EQUAL is the
+    // reading our own reconcile took, and a payload restating it is that same state read twice.
+    name: "a version equal to the stamped transition is still refused",
+    payload: conversationEvent({ version: V_NOW, status: "pending" }),
+    row: storedRow({
+      status: "open",
+      statusAt: V_NOW,
+      statusClaimUntil: CLAIM_LIVE,
+      statusClaimFrom: "pending",
+      statusClaimStampedAt: V_NOW,
+    }),
+    want: { status: null, statusAt: null },
   },
   {
     // Not a freeze of the field. An operator resolving inside the claim produces ONE event, which we
@@ -451,8 +482,8 @@ const CASES: Case[] = [
       status: "open",
       statusClaimUntil: CLAIM_LIVE,
       statusClaimFrom: "pending",
-      // The mark is still the one the claim was taken at: the reconcile has not run.
-      statusClaimFromAt: V_NOW,
+      // Nothing stamped: the reconcile has not run.
+      statusClaimStampedAt: null,
     }),
     want: { status: "resolved", statusAt: V_NEW },
   },
@@ -473,7 +504,6 @@ const CASES: Case[] = [
       status: "resolved",
       statusClaimUntil: CLAIM_LIVE,
       statusClaimFrom: "open",
-      statusClaimFromAt: V_NOW,
     }),
     want: { status: "open" },
   },
@@ -490,39 +520,23 @@ const CASES: Case[] = [
       status: "pending",
       statusClaimUntil: CLAIM_LIVE,
       statusClaimFrom: "pending",
-      statusClaimFromAt: V_NOW,
     }),
     want: { status: null },
   },
   {
-    // A LATER VERSION IS A DIFFERENT WRITE, and while the claim is live a different write is exactly
-    // what it cannot place — even on a mark some earlier refusal already moved. Two independent
-    // payloads frozen before the toggle would otherwise walk the row back, the second riding the mark
-    // the first one left.
-    name: "a live claim refuses a different write even after the mark has moved",
+    // A MARK THAT MOVED IS NOT A STAMP, which is the reading three rounds of review broke in three
+    // ways (issue #468). Whatever moved the status mark here — a delivery for another field, an
+    // operator's own change — says nothing about whether the SOURCE has decided our transition, so
+    // the gap is still open and a payload restating the replaced status is still unplaceable.
+    name: "a live claim refuses a payload on a mark that moved without a stamp",
     payload: conversationEvent({ version: V_NEW, status: "pending" }),
     row: storedRow({
       status: "open",
       statusAt: V_NOW,
-      statusClaimFromAt: V_NOW - 1,
       statusClaimUntil: CLAIM_LIVE,
       statusClaimFrom: "pending",
     }),
-    want: { status: null, statusAt: V_NEW },
-  },
-  {
-    // ...and the first payload of the claim's life cannot let itself through by matching the mark it
-    // started on, which is the other half of why the companion rule needs both terms.
-    name: "a payload matching the mark the claim was taken at is still refused",
-    payload: conversationEvent({ version: V_NOW, status: "pending" }),
-    row: storedRow({
-      status: "open",
-      statusAt: V_NOW,
-      statusClaimFromAt: V_NOW,
-      statusClaimUntil: CLAIM_LIVE,
-      statusClaimFrom: "pending",
-    }),
-    want: { status: null },
+    want: { status: null, statusAt: null, statusClaimRefusedAt: V_NEW },
   },
   {
     // ...and the reopen exception is refused for the claim's whole life anyway, because it is the one
@@ -538,7 +552,7 @@ const CASES: Case[] = [
     row: storedRow({
       status: "open",
       statusAt: V_NOW,
-      statusClaimFromAt: V_NOW - 1,
+      statusClaimStampedAt: V_NOW - 1,
       statusClaimUntil: CLAIM_LIVE,
       statusClaimFrom: "pending",
     }),
@@ -554,7 +568,6 @@ const CASES: Case[] = [
       status: "open",
       statusClaimUntil: CLAIM_EXPIRED,
       statusClaimFrom: "pending",
-      statusClaimFromAt: V_NOW,
     }),
     want: { status: "pending", statusAt: V_NEW },
   },

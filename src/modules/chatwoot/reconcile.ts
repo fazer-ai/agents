@@ -3,7 +3,7 @@ import { withEntityLock } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clearsResolutionOrigin } from "@/modules/conversations/resolution-origin";
 import type { LiveConversationState } from "./normalize";
-import { statusClaimVerdict } from "./status-claim";
+import { statusClaimDeferredWins, statusClaimVerdict } from "./status-claim";
 
 // Applies a LIVE conversation snapshot (a REST `GET /conversations/:id`) to the mirror row, under the
 // same ordering rule the webhook mirror uses.
@@ -121,7 +121,8 @@ export async function reconcileMirrorFromLive(
             chatwootAssigneeAt: true,
             statusClaimUntil: true,
             statusClaimFrom: true,
-            statusClaimFromAt: true,
+            statusClaimStampedAt: true,
+            statusClaimRefusedAt: true,
           },
         });
         if (!current) return;
@@ -173,20 +174,33 @@ export async function reconcileMirrorFromLive(
         const claimed =
           !ours &&
           statusClaimVerdict(
-            { ...current, statusAt: current.chatwootStatusAt },
+            current,
             // NOTE: A live snapshot is never a message, so it can never be the source's own reopen —
             // the same reading `clearsResolutionOrigin` is handed below, for the same reason.
-            {
-              status: live.status,
-              reopens: false,
-              version: liveVersion,
-              source: "read",
-            },
+            { status: live.status, reopens: false, version: liveVersion },
             new Date(),
           ) !== "apply";
         result.refusedByStatusClaim = claimed;
+        // NOTE: THE OWNER'S ADJUDICATION (issue #436). This read is the version the source gave our
+        // own transition, so it is also the answer to everything the claim had to refuse without one.
+        // A refusal ahead of it was a write committed AFTER ours — a colleague handing the
+        // conversation back while the toggle was on the wire — and the only status a refusal can have
+        // kept is the one the claim replaced, so that is the state that stands. Behind it, the
+        // refusal was a snapshot frozen before our write and goes.
+        //
+        // Forward-only against the status mark as well, for the ordinary reason: an operator's own
+        // change applied INSIDE the claim is newer than both, and nothing here may walk it back.
+        const deferredAt = current.statusClaimRefusedAt;
+        const deferredStatus = current.statusClaimFrom;
+        const deferredWins =
+          ours &&
+          deferredStatus !== null &&
+          deferredAt !== null &&
+          statusClaimDeferredWins(deferredAt, liveVersion) &&
+          (current.chatwootStatusAt === null ||
+            deferredAt > current.chatwootStatusAt);
         const statusRanked = orderedBy(current.chatwootStatusAt);
-        const statusOrdered = !claimed && statusRanked;
+        const statusOrdered = !claimed && !deferredWins && statusRanked;
         const assigneeOrdered = orderedBy(current.chatwootAssigneeAt);
         // NOTE: A field the snapshot LOST while a version could rank it — the row holds a strictly
         // newer write, which a caller must not paper over.
@@ -214,20 +228,41 @@ export async function reconcileMirrorFromLive(
         // NOTE: Only what actually differs. The probe runs on every proactive send, and the
         // common outcome is "nothing changed" — writing the same values back would be two
         // updates per follow-up and would advance the row's `updatedAt` for nothing.
+        // NOTE: What this call writes for the status: the deferred transition when the owner's own
+        // read has just placed it ahead of ours, the snapshot's status when it is ordered, nothing
+        // otherwise. One value computed once, so the row, the marks, the resolution origin and the
+        // answer the caller broadcasts cannot disagree about which of the three it was.
+        const nextStatus = deferredWins
+          ? deferredStatus
+          : statusOrdered
+            ? live.status
+            : null;
+        const nextStatusAt = deferredWins ? deferredAt : liveVersion;
         const data = {
-          ...(statusOrdered && live.status !== current.status
-            ? { status: live.status }
+          ...(nextStatus !== null && nextStatus !== current.status
+            ? { status: nextStatus }
+            : {}),
+          // The claim's own bookkeeping, written by its owner and nobody else: the version the source
+          // gave our transition, and the end of whatever this call just adjudicated. Both belong to
+          // this read — it is the only one that can produce either. ./status-claim.ts.
+          ...(ours && liveVersion !== null
+            ? { statusClaimStampedAt: liveVersion }
+            : {}),
+          ...(ours &&
+          liveVersion !== null &&
+          current.statusClaimRefusedAt !== null
+            ? { statusClaimRefusedAt: null }
             : {}),
           // NOTE: The same rule the webhook mirror applies, from the same function: a live read always
           // speaks about status, and what it is allowed to WRITE is `statusOrdered`.
           ...(clearsResolutionOrigin({
             storedStatus: current.status,
-            statedStatus: live.status,
-            appliedStatus: statusOrdered ? live.status : null,
+            statedStatus: nextStatus ?? live.status,
+            appliedStatus: nextStatus,
             sourceMayStateStatus: true,
             // NOTE: A live snapshot is never a message: it cannot be the customer coming back.
             reopens: false,
-            statedVersion: live.updatedAt,
+            statedVersion: deferredWins ? deferredAt : live.updatedAt,
             stampedAfterVersion: current.resolvedByAt,
           })
             ? { resolvedBy: null, resolvedByAt: null }
@@ -243,11 +278,11 @@ export async function reconcileMirrorFromLive(
               }
             : {}),
           ...(advancesActivity ? { lastEventAt: nextEventAt } : {}),
-          ...(statusOrdered &&
-          liveVersion !== null &&
+          ...(nextStatus !== null &&
+          nextStatusAt !== null &&
           (current.chatwootStatusAt === null ||
-            liveVersion > current.chatwootStatusAt)
-            ? { chatwootStatusAt: liveVersion }
+            nextStatusAt > current.chatwootStatusAt)
+            ? { chatwootStatusAt: nextStatusAt }
             : {}),
           ...(assigneeOrdered &&
           liveVersion !== null &&
@@ -259,7 +294,7 @@ export async function reconcileMirrorFromLive(
         if (Object.keys(data).length === 0) return;
         await db.conversation.update({ where, data });
         result.state = {
-          status: statusOrdered ? live.status : current.status,
+          status: nextStatus ?? current.status,
           assigneeId: assigneeOrdered ? live.assigneeId : current.assigneeId,
           assigneeType: assigneeOrdered
             ? live.assigneeType

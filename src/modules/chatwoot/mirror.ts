@@ -181,7 +181,8 @@ export async function mirrorChatwootEvent(
           // (issue #436). See ./status-claim.ts.
           statusClaimUntil: true,
           statusClaimFrom: true,
-          statusClaimFromAt: true,
+          statusClaimStampedAt: true,
+          statusClaimRefusedAt: true,
         },
       });
       const prevAssigneeId = existing?.assigneeId ?? null;
@@ -203,7 +204,8 @@ export async function mirrorChatwootEvent(
                 existing.redirectOriginDisplayId != null,
               statusClaimUntil: existing.statusClaimUntil,
               statusClaimFrom: existing.statusClaimFrom,
-              statusClaimFromAt: existing.statusClaimFromAt,
+              statusClaimStampedAt: existing.statusClaimStampedAt,
+              statusClaimRefusedAt: existing.statusClaimRefusedAt,
             }
           : null,
         now,
@@ -510,6 +512,11 @@ export async function mirrorChatwootEvent(
           lastEventAt: effectiveLastEventAt,
           ...(decision.statusAt != null
             ? { chatwootStatusAt: decision.statusAt }
+            : {}),
+          // The claim's own record of what it could not place, which the takeover's reconcile reads
+          // back and answers. See `statusClaimRefusedAt` on the decision.
+          ...(decision.statusClaimRefusedAt != null
+            ? { statusClaimRefusedAt: decision.statusClaimRefusedAt }
             : {}),
           ...(decision.assigneeAt != null
             ? { chatwootAssigneeAt: decision.assigneeAt }

@@ -29,7 +29,7 @@
  * A payload stating anything ELSE is news, and an operator resolving the conversation inside the
  * claim produces one event we ack and Chatwoot never redelivers — so a blanket fence would lose that
  * resolve for good, with no later event on a resolved conversation to repair it. The single
- * exception, and why it is keyed on the status the ROW holds, is on `statusClaimRefuses`.
+ * exception, and why it is keyed on the status the ROW holds, is on `statusClaimVerdict`.
  *
  * ## Only a write that moves FIRST can take one
  *
@@ -49,16 +49,27 @@
  *
  * In two steps, and they are not the same step because they cover different routes.
  *
- * Its ORDERED half ends the moment the source stamps a version for the transition — the live read the
- * takeover reconciles from. From then on a conversation event carrying a version is ordered against
- * THAT version by the ordinary rule, and going on refusing it would drop a hand-back nothing ever
- * redelivers. That instant is readable rather than remembered: the mark has moved off the value the
- * claim was taken at.
+ * Its ORDERED half ends the moment the source stamps a version for OUR OWN transition, which is what
+ * the takeover's live read goes and gets (`statusClaimStampedAt`). Before that instant there is
+ * nothing to place a payload against, and no reading of the row supplies one: a mark that moved
+ * proves only that some write reached us, never that it was ours or that it came after ours (issue
+ * #468, rounds 4 to 6, which is three ways of learning the same thing). After it the question is
+ * ordinary again — a version STRICTLY ahead of the one our transition carries was committed after
+ * it, and is a hand-back that has to land.
  *
- * The rest of its life covers the one route no version can order — the reopen exception, which a
- * message payload carries and which compares whole seconds against the status mark, so a message
- * frozen in the same second as the toggle wins even against the version the reconcile just stamped.
- * That is the shape measured live, and it is why the claim does not simply retire at the reconcile.
+ * What that leaves is the gap itself, and the payloads that fall in it are not dropped, they are
+ * DEFERRED: the newest version refused there is kept on the row (`statusClaimRefusedAt`), and the
+ * reconcile that stamps our version adjudicates it against that version. Older is a snapshot frozen
+ * before our write, and goes; newer is a transition committed after it — a colleague handing the
+ * conversation back while the toggle was on the wire — and the status it restated is the one that
+ * stands. This is what keeps the refusal from being a loss: we ack every one of those events and
+ * Chatwoot never redelivers them.
+ *
+ * The rest of the claim's life covers the one route no version can order — the reopen exception,
+ * which a message payload carries and which compares whole seconds against the status mark, so a
+ * message frozen in the same second as the toggle wins even against the version the reconcile just
+ * stamped. That is the shape measured live, and it is why the claim does not simply retire at the
+ * reconcile.
  *
  * And NOTHING ends it early, because no outcome makes an unconfirmed local `open` safe to un-fence. A
  * toggle that throws is an UNKNOWN outcome, not a refusal: Chatwoot commits the transition and the
@@ -67,7 +78,18 @@
  * back into a conversation the platform HAS handed over — the defect this exists to prevent,
  * reintroduced by the recovery. What the deadline costs on that path is a delay: the conversation
  * Chatwoot really did leave `pending` comes back to the agent when the claim runs out, instead of on
- * the next customer message.
+ * the next customer message. A deferred version costs the same, and for the same reason — nothing
+ * ever stamps it, so nothing adjudicates it.
+ *
+ * ## What this cannot do on a Chatwoot that sends no version
+ *
+ * Everything above is written in versions, and an instance older than 4.0.2 sends none. There the
+ * claim never gets stamped and nothing refused inside it can be adjudicated, so a hand-back made
+ * during the window is refused and stays refused: the mirror keeps the agent OUT of a conversation
+ * the platform returned to it, until the deadline passes and some later payload restates `pending`.
+ * That is the safe direction of the same coin — the alternative is applying a snapshot we cannot
+ * place, which is issue #436 itself — but it is a real cost, and it is the reason the deadline is
+ * measured in tens of seconds rather than minutes.
  *
  * ## Why a deadline
  *
@@ -125,35 +147,17 @@ const REOPENABLE = new Set(["resolved", "snoozed"]);
  *
  * `"apply"` — the claim has nothing to say about it.
  *
- * `"refuse"` — the payload restates the status the claim is replacing, and it is evidence of nothing
- * newer: it came through the reopen exception, which is a snapshot Chatwoot froze before our write.
+ * `"refuse"` — the payload restates the status the claim is replacing, and there is nothing to keep:
+ * it came through the reopen exception, which carries the conversation's status because every message
+ * payload embeds a snapshot, and is not a transition anybody dispatched.
  *
- * `"refuse-and-mark"` — the same refusal, on a payload that IS a versioned reading of the source. The
- * status is not written and the version is, which is what keeps this from being a hole (issue #468,
- * round 3): a conversation event committed AFTER our transition — an operator handing the
- * conversation back inside the window — is indistinguishable here from one frozen before it, so it
- * is refused, but the mark it leaves means nothing older can overwrite what it announced, our own
- * reconcile's snapshot included.
- *
- * And what gets through afterwards is the COMPANION of that same write, which is how the refusal
- * becomes a delay rather than a loss: Chatwoot emits several events for one write and they agree by
- * construction, carrying the same `updated_at`. So the exception is an EQUAL version and nothing
- * else — a later version is a different write, and while the claim is live a different write is
- * exactly what it cannot place (round 4: two independent payloads frozen before the toggle would
- * otherwise walk the row back, the second one riding the mark the first one left).
- *
- * That a real transition HAS a companion is measured, not assumed. A status change dispatches
- * `CONVERSATION_STATUS_CHANGED` and, since `status` is in the conversation's `list_of_keys`,
- * `conversation_updated` as well — so a hand-back arrives at least twice. A write that is not a
- * status change (a label, a priority) dispatches only `conversation_updated`, so the one payload that
- * carries the pre-takeover `pending` by accident is refused and stays refused.
- *
- * Which is also why the exception is only ever offered to a DISPATCH. The evidence an equal version
- * carries is that the source emitted the same write twice; a REST snapshot repeats a version for the
- * opposite reason — nothing has changed since — and while the toggle is on the wire, nothing having
- * changed is exactly the state the claim exists to leave behind.
+ * `"refuse-and-defer"` — the same refusal, on a versioned reading of the source, which IS a
+ * transition somebody dispatched and which we are about to acknowledge. The version is kept on the
+ * row so the reconcile can adjudicate it against the one the source stamps for our own write
+ * (`statusClaimDeferredWins`). Without that, the one shape this cannot tell apart in the moment — a
+ * colleague handing the conversation back while our toggle is on the wire — would be acked and lost.
  */
-export type StatusClaimVerdict = "apply" | "refuse" | "refuse-and-mark";
+export type StatusClaimVerdict = "apply" | "refuse" | "refuse-and-defer";
 
 /**
  * Whether a live claim refuses what this payload states, and whether the refusal keeps its version.
@@ -171,31 +175,20 @@ export type StatusClaimVerdict = "apply" | "refuse" | "refuse-and-mark";
  *     and on any other row it is a snapshot carrying the conversation's status. Keyed on the status
  *     the ROW holds and never on the one the reopen produces: measured on the fork, that act writes
  *     `pending` on an inbox with an active bot and `open` everywhere else;
- *   * anything ELSE is ordered by version, and the claim refuses it while it cannot place that
- *     version against its own transition — which is the whole of its life, because the toggle renders
- *     no version to place it against. The one payload that gets through is the companion of a write
- *     already refused: equal version, and a mark that has moved off the one the claim was taken at.
+ *   * anything ELSE is ordered against the version the source stamped for our own transition, and
+ *     while there is none — the whole of the gap between the local write and the reconcile — nothing
+ *     can be placed, so it is refused and its version deferred.
  */
 export function statusClaimVerdict(
   row: {
     /** The status currently stored. */
     status: string;
-    /** The status mark now, and the one the claim was taken at. */
-    statusAt: number | null;
     statusClaimUntil: Date | null;
     statusClaimFrom: string | null;
-    statusClaimFromAt: number | null;
+    /** The source's own version for the transition this claim wrote, once the reconcile has it. */
+    statusClaimStampedAt: number | null;
   },
-  payload: {
-    status: string | null;
-    reopens: boolean;
-    version: number | null;
-    /**
-     * Where this reading came from. `"dispatch"` is one of the source's own webhook events;
-     * `"read"` is a REST snapshot somebody went and fetched (./reconcile.ts).
-     */
-    source: "dispatch" | "read";
-  },
+  payload: { status: string | null; reopens: boolean; version: number | null },
   now: Date,
 ): StatusClaimVerdict {
   if (!statusClaimIsLive(row.statusClaimUntil, now)) return "apply";
@@ -205,19 +198,29 @@ export function statusClaimVerdict(
   if (payload.reopens) {
     return REOPENABLE.has(row.status) ? "apply" : "refuse";
   }
-  // A READ is never either of the two things below, and both would be holes (issue #468, round 5).
-  // What makes an equal version meaningful is that the source EMITTED it twice for one write; a
-  // snapshot repeats a version simply because nothing has changed since, which while a toggle is on
-  // the wire is precisely the state the claim was taken to leave. And marking a read's version would
-  // be worse than useless: it would move the mark onto the value a pre-toggle dispatch is carrying,
-  // handing that dispatch the companion exception it does not qualify for.
-  if (payload.source !== "dispatch") return "refuse";
-  // The companion of a write this claim already refused: the same version, on a mark that is no
-  // longer the one the claim was taken at. Both halves are needed — the second is what keeps the
-  // claim's very first payload from letting itself through by matching the mark it started on.
-  const companion =
+  // STRICTLY ahead of our own transition is the only thing that can be a change made after it. Equal
+  // is the reading our own reconcile took, and below it is the gap this exists to fence.
+  const afterOurs =
+    row.statusClaimStampedAt !== null &&
     payload.version !== null &&
-    payload.version === row.statusAt &&
-    row.statusAt !== row.statusClaimFromAt;
-  return companion ? "apply" : "refuse-and-mark";
+    payload.version > row.statusClaimStampedAt;
+  if (afterOurs) return "apply";
+  return payload.version !== null ? "refuse-and-defer" : "refuse";
+}
+
+/**
+ * Whether a version refused inside the gap turns out to have been committed AFTER our own transition,
+ * once the source has stamped one for it.
+ *
+ * Asked only by the reconcile that does the stamping, and only of its own claim: `stamped` is the
+ * version the source gave the write this claim announced, so anything strictly greater was a
+ * different, later write — and the only status a refusal can have kept is the one the claim replaced,
+ * which is therefore the state that stands. Anything else is a snapshot frozen before our write, and
+ * the evidence goes with the answer.
+ */
+export function statusClaimDeferredWins(
+  refusedAt: number | null,
+  stamped: number | null,
+): boolean {
+  return refusedAt !== null && stamped !== null && refusedAt > stamped;
 }

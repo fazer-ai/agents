@@ -43,7 +43,8 @@ interface StoredRow {
   status: string;
   statusClaimUntil: Date | null;
   statusClaimFrom: string | null;
-  statusClaimFromAt: number | null;
+  statusClaimStampedAt: number | null;
+  statusClaimRefusedAt: number | null;
   assigneeType: string | null;
   assigneeId: number | null;
   lastEventAt: Date | null;
@@ -66,7 +67,8 @@ async function seedRow(over: Partial<StoredRow> = {}): Promise<number> {
       chatwootAssigneeAt: over.chatwootAssigneeAt ?? null,
       statusClaimUntil: over.statusClaimUntil ?? null,
       statusClaimFrom: over.statusClaimFrom ?? null,
-      statusClaimFromAt: over.statusClaimFromAt ?? null,
+      statusClaimStampedAt: over.statusClaimStampedAt ?? null,
+      statusClaimRefusedAt: over.statusClaimRefusedAt ?? null,
       threadId: `${tenantId}:${instanceId}:${chatwootConversationId}`,
     },
   });
@@ -82,6 +84,8 @@ async function readRow(conversationId: number) {
       assigneeId: true,
       chatwootStatusAt: true,
       chatwootAssigneeAt: true,
+      statusClaimStampedAt: true,
+      statusClaimRefusedAt: true,
       updatedAt: true,
     },
   });
@@ -163,9 +167,9 @@ describe.skipIf(!dbUp)("reconcileMirrorFromLive", () => {
       status: "open",
       statusClaimUntil: new Date(Date.now() + 30_000),
       statusClaimFrom: "pending",
-      // Taken at the mark the row still holds: the reconcile that would stamp the source's own
-      // version for this transition has not run, which is the whole of the window.
-      statusClaimFromAt: T,
+      // Nothing stamped: the reconcile that would give this transition the source's own version has
+      // not run, which is the whole of the window.
+      statusClaimStampedAt: null,
       chatwootStatusAt: T,
     });
     // What the proactive nudge's probe sees while a takeover's toggle is on the wire: the source
@@ -181,28 +185,95 @@ describe.skipIf(!dbUp)("reconcileMirrorFromLive", () => {
     expect(result.outrankedByVersion).toBe(false);
   });
 
-  test("a read is never the companion of the write the claim refused", async () => {
-    // The mark has ALREADY moved off the one the claim was taken at: a `conversation_*` event
-    // serialized before the toggle was refused on the way in, and the refusal kept its version
-    // (state-order.ts, `refuse-and-mark`), so that version is what a companion of that same write is
-    // compared against.
+  test("a read carrying the gap's own state does not end the fence", async () => {
+    // Something moved the status mark while the claim was open — a delivery for another field, an
+    // operator's own change — and a mark that moved is not a version for OUR transition. The gap is
+    // still open, so a snapshot restating the status the claim replaced is still unplaceable.
     const id = await seedRow({
       status: "open",
       statusClaimUntil: new Date(Date.now() + 30_000),
       statusClaimFrom: "pending",
-      statusClaimFromAt: T,
+      statusClaimStampedAt: null,
       chatwootStatusAt: T + 1,
     });
-    // A live read taken while the toggle is STILL on the wire answers with exactly that version,
-    // because nothing at the source has changed since the event that carried it. A dispatch repeating
-    // it would be the companion of one write and is let through; a read repeating it is the same
-    // pre-toggle snapshot read a second time, and applying it would hand the conversation back to the
-    // agent over the colleague who just replied.
     const result = await applyFor(id, { status: "pending", updatedAt: T + 1 });
     const row = await readRow(id);
     expect(row.status).toBe("open");
     expect(row.chatwootStatusAt).toBe(T + 1);
     expect(result.refusedByStatusClaim).toBe(true);
+  });
+
+  // ── THE OWNER'S ADJUDICATION ──
+  //
+  // This read is the version the source gave our own transition, so it is also the answer to
+  // everything the claim had to refuse without one. Both directions are decided here and nowhere
+  // else: the mirror only KEPT those versions, it never judged them.
+  test("a version refused ahead of ours was a hand-back, and it stands", async () => {
+    const until = new Date(Date.now() + 30_000);
+    const id = await seedRow({
+      status: "open",
+      statusClaimUntil: until,
+      statusClaimFrom: "pending",
+      // A colleague returned the conversation while the toggle was on the wire: both events for that
+      // one write were refused and acknowledged, and Chatwoot never sends them again.
+      statusClaimRefusedAt: T + 9,
+      chatwootStatusAt: T,
+    });
+    // Our own read is older than that write — a GET issued before it committed comes back with
+    // exactly this — so the refusal is what describes the source now.
+    const result = await applyFor(
+      id,
+      { status: "open", updatedAt: T + 1 },
+      until,
+    );
+    const row = await readRow(id);
+    expect(row.status).toBe("pending");
+    expect(row.chatwootStatusAt).toBe(T + 9);
+    expect(result.state?.status).toBe("pending");
+    // The stamp is still our own read's version, which is what it is: the version of OUR write. And
+    // the evidence goes with the answer.
+    expect(row.statusClaimStampedAt).toBe(T + 1);
+    expect(row.statusClaimRefusedAt).toBeNull();
+  });
+
+  test("a version refused behind ours was a stale snapshot, and goes", async () => {
+    const until = new Date(Date.now() + 30_000);
+    const id = await seedRow({
+      status: "open",
+      statusClaimUntil: until,
+      statusClaimFrom: "pending",
+      // The shape issue #468 round 6 found: a pair of `conversation_*` events for a write that
+      // happened BEFORE the claim — a customer message reopening the conversation — refused on the
+      // way in. Nothing about them is news, and letting either one through would put the agent back
+      // into a conversation a colleague is holding.
+      statusClaimRefusedAt: T + 1,
+      chatwootStatusAt: T,
+    });
+    await applyFor(id, { status: "open", updatedAt: T + 5 }, until);
+    const row = await readRow(id);
+    expect(row.status).toBe("open");
+    expect(row.statusClaimStampedAt).toBe(T + 5);
+    expect(row.statusClaimRefusedAt).toBeNull();
+  });
+
+  test("a change applied inside the claim outranks what the gap kept", async () => {
+    const until = new Date(Date.now() + 30_000);
+    const id = await seedRow({
+      // An operator resolved the conversation while the claim was open: that payload stated a status
+      // the claim does not refuse, so it was APPLIED, and its version is on the status mark.
+      status: "resolved",
+      chatwootStatusAt: T + 20,
+      statusClaimUntil: until,
+      statusClaimFrom: "pending",
+      statusClaimRefusedAt: T + 9,
+    });
+    // The deferred version is ahead of our own read and would otherwise stand, but it is behind the
+    // resolve, and nothing here may walk a newer write back.
+    await applyFor(id, { status: "open", updatedAt: T + 1 }, until);
+    const row = await readRow(id);
+    expect(row.status).toBe("resolved");
+    expect(row.chatwootStatusAt).toBe(T + 20);
+    expect(row.statusClaimRefusedAt).toBeNull();
   });
 
   test("the caller holding the claim writes through it", async () => {
@@ -211,7 +282,7 @@ describe.skipIf(!dbUp)("reconcileMirrorFromLive", () => {
       status: "open",
       statusClaimUntil: until,
       statusClaimFrom: "pending",
-      statusClaimFromAt: T,
+      statusClaimStampedAt: null,
       chatwootStatusAt: T,
     });
     // The takeover's own reconcile, which is what EARNS the claim the version it was taken without.

@@ -4336,10 +4336,13 @@ export async function processChatwootDelivery(
                     status: "open",
                     statusClaimUntil: claimUntil,
                     // The status this write replaced, which the predicate above pins to `pending`,
-                    // and the mark it was replaced AT — which is what says, later, whether the source
-                    // has stamped this transition yet (../../modules/chatwoot/status-claim.ts).
+                    // and the two columns the claim starts EMPTY: the source has stamped no version
+                    // for this transition yet, and nothing has been refused on its account. A stale
+                    // pair from an earlier claim would otherwise be read as this one's
+                    // (../../modules/chatwoot/status-claim.ts).
                     statusClaimFrom: "pending",
-                    statusClaimFromAt: now.statusAt,
+                    statusClaimStampedAt: null,
+                    statusClaimRefusedAt: null,
                   },
                 }),
             );

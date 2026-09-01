@@ -2,15 +2,16 @@ import { describe, expect, test } from "bun:test";
 import {
   STATUS_CLAIM_TTL_MS,
   statusClaimDeadline,
+  statusClaimDeferredWins,
   statusClaimIsLive,
   statusClaimVerdict,
 } from "@/modules/chatwoot/status-claim";
 
 // The two halves of the claim that its callers cannot reach (issue #436). What it REFUSES is
 // exercised through the decision table in ./chatwoot-state-order.test.ts, where the rest of the
-// ordering lives; here are the answers no row of that table can hold — the deadline, which is one
-// instant wide on a clock the callers do not control, and the verdict a LIVE READ gets, which the
-// table cannot ask for because every payload it feeds the mirror is a dispatch.
+// ordering lives; here are the two answers no row of that table can hold — the deadline, which is one
+// instant wide on a clock the callers do not control, and the adjudication, which belongs to the
+// reconcile and happens after every payload the table can describe has already been decided.
 
 describe("the status claim's deadline", () => {
   const now = new Date("2026-09-01T12:00:00.000Z");
@@ -37,33 +38,70 @@ describe("the status claim's deadline", () => {
   });
 });
 
-describe("what a live read gets from a claim", () => {
+describe("what a claim does before and after its version is stamped", () => {
   const now = new Date("2026-09-01T12:00:00.000Z");
-  // A claim taken at version 100 whose mark has since moved to 101: a dispatch serialized before the
-  // toggle was refused on the way in and kept its version, which is the mark a companion of that same
-  // write is compared against.
-  const row = {
+  const claimed = {
     status: "open",
-    statusAt: 101,
     statusClaimUntil: new Date(now.getTime() + 30_000),
     statusClaimFrom: "pending",
-    statusClaimFromAt: 100,
   };
   const restating = { status: "pending", reopens: false, version: 101 };
 
-  test("a dispatch at that version is the companion and is let through", () => {
+  test("inside the gap it refuses, and keeps the version to be adjudicated", () => {
+    // No stamp yet: the source has said nothing about our own transition, so there is nothing this
+    // version can be placed against. It is kept rather than dropped because the event carrying it is
+    // about to be acknowledged and Chatwoot never sends it again.
     expect(
-      statusClaimVerdict(row, { ...restating, source: "dispatch" }, now),
-    ).toBe("apply");
+      statusClaimVerdict(
+        { ...claimed, statusClaimStampedAt: null },
+        restating,
+        now,
+      ),
+    ).toBe("refuse-and-defer");
   });
 
-  test("a read at that version is refused, and leaves the mark alone", () => {
-    // Refused because a snapshot repeats a version by not having changed, which while the toggle is
-    // on the wire is the state the claim was taken to leave. `refuse` and not `refuse-and-mark`: a
-    // read's version stamped onto the mark would be the value a pre-toggle dispatch is carrying, and
-    // that dispatch would then qualify as the companion of a write nobody made.
-    expect(statusClaimVerdict(row, { ...restating, source: "read" }, now)).toBe(
-      "refuse",
+  test("a payload with no version at all is refused with nothing to keep", () => {
+    // Chatwoot < 4.0.2. There is no number to adjudicate later, so the refusal is the whole answer.
+    expect(
+      statusClaimVerdict(
+        { ...claimed, statusClaimStampedAt: null },
+        { ...restating, version: null },
+        now,
+      ),
+    ).toBe("refuse");
+  });
+
+  test("once ours is stamped, only a STRICTLY newer write gets through", () => {
+    const stamped = { ...claimed, statusClaimStampedAt: 101 };
+    // Ahead of our transition: committed after it, so it is a hand-back and must land.
+    expect(
+      statusClaimVerdict(stamped, { ...restating, version: 101.5 }, now),
+    ).toBe("apply");
+    // Equal is the reading our own reconcile took, and below it is the gap itself. Neither is
+    // evidence of anything committed after our write.
+    expect(statusClaimVerdict(stamped, restating, now)).toBe(
+      "refuse-and-defer",
     );
+    expect(
+      statusClaimVerdict(stamped, { ...restating, version: 100.5 }, now),
+    ).toBe("refuse-and-defer");
+  });
+});
+
+describe("adjudicating what the gap refused", () => {
+  test("a refusal ahead of our own stamped version stands", () => {
+    expect(statusClaimDeferredWins(101.5, 101)).toBe(true);
+  });
+
+  test("equal or behind is a snapshot from before our write, and goes", () => {
+    expect(statusClaimDeferredWins(101, 101)).toBe(false);
+    expect(statusClaimDeferredWins(100.5, 101)).toBe(false);
+  });
+
+  test("nothing refused, or nothing stamped, decides nothing", () => {
+    // The second is the versionless deployment and the failed toggle alike: no stamp ever arrives,
+    // so the deferred version is never answered and the deadline is what ends the fence.
+    expect(statusClaimDeferredWins(null, 101)).toBe(false);
+    expect(statusClaimDeferredWins(101.5, null)).toBe(false);
   });
 });

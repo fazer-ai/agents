@@ -591,11 +591,17 @@ model Conversation {
   // BEFORE it calls Chatwoot can take a claim, because only then is there a transition in flight for
   // a payload to be behind. See src/modules/chatwoot/status-claim.ts.
   statusClaimFrom          String?   @map("status_claim_from")
-  // `chatwoot_status_at` as of the claim, which is what says whether the SOURCE has stamped this
-  // transition yet: once the reconcile writes the version Chatwoot produced for it, the mark moves off
-  // this value and an ordered payload is ordered against that version rather than against nothing.
-  // NULL is a real reading (the row had no mark), so it is compared, never coalesced.
-  statusClaimFromAt        Float?    @map("status_claim_from_at")
+  // The version the SOURCE gave the transition this claim announced, learned from the live read the
+  // takeover makes after its toggle. NULL is the gap: until it is written there is nothing to place a
+  // payload against, and no reading of the ordering marks supplies one, since a mark that moved says
+  // only that some write arrived, never whose or when. Once it is written the question is ordinary
+  // again — strictly ahead of it was committed after our write.
+  statusClaimStampedAt     Float?    @map("status_claim_stamped_at")
+  // The newest version the claim refused while that gap was open. Kept because we ACK those events
+  // and Chatwoot never redelivers them: the reconcile that stamps the column above adjudicates this
+  // one against it, and a version ahead of ours is a transition committed after our write (a
+  // colleague handing the conversation back) whose status therefore stands. Cleared with the answer.
+  statusClaimRefusedAt     Float?    @map("status_claim_refused_at")
   // Debounce watermark: the Chatwoot message id of the last inbound message already handled
   // (responded to or deliberately skipped). The flush re-fetches and answers only ids beyond it,
   // so re-arm / retry / a concurrent claim cannot produce a duplicate reply. NULL = nothing handled.

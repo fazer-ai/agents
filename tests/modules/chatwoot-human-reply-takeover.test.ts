@@ -400,7 +400,8 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
         chatwootStatusAt: true,
         statusClaimUntil: true,
         statusClaimFrom: true,
-        statusClaimFromAt: true,
+        statusClaimStampedAt: true,
+        statusClaimRefusedAt: true,
       },
     });
   }
@@ -1073,10 +1074,36 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
       whileToggling = null;
     }
     expect(turnsRan).toBe(before);
-    // AND THE CLAIM RECORDS THE MARK IT WAS TAKEN AT, which is the other half of the rule above: the
-    // one payload a live claim lets through is the companion of a write it already refused, and
-    // without this the claim's own starting mark would qualify as one.
-    expect((await convRow(conv))?.statusClaimFromAt).toBe(markBefore);
+    // AND THE RECONCILE STAMPED THE SOURCE'S VERSION ON IT, which is the other half of the rule: the
+    // claim refuses what it cannot place, and this is the number that ends that — everything past it
+    // is a write committed after ours. The mark the claim was taken at is where it started.
+    const claimed = await convRow(conv);
+    expect(claimed?.statusClaimStampedAt ?? 0).toBeGreaterThan(markBefore ?? 0);
+    expect(claimed?.statusClaimRefusedAt).toBeNull();
+  });
+
+  // ...AND A CLAIM STARTS EMPTY, whatever the row was carrying. Both columns belong to ONE claim: a
+  // stamp left by an earlier one would say the source has already decided this transition, and the
+  // gap would be un-fenced from its first instant.
+  test("a takeover clears what an earlier claim left on the row", async () => {
+    const conv = 8565;
+    await deliver(conv, { ...customerSays("oi") });
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: conv },
+      data: { statusClaimStampedAt: 1, statusClaimRefusedAt: 2 },
+    });
+    // With the live read failing, nothing stamps afterwards, so what the row holds at the end is
+    // exactly what the claim itself wrote.
+    failingReads.add(conv);
+    try {
+      await deliver(conv, { ...deviceReply("já te respondo") });
+    } finally {
+      failingReads.delete(conv);
+    }
+    const row = await convRow(conv);
+    expect(row?.statusClaimFrom).toBe("pending");
+    expect(row?.statusClaimStampedAt).toBeNull();
+    expect(row?.statusClaimRefusedAt).toBeNull();
   });
 
   // WAY IN TWO: a delayed or companion `conversation_*` event. It needs no reopen exception — it
@@ -1105,6 +1132,43 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
       failingReads.delete(conv);
     }
     expect((await convRow(conv))?.status).toBe("open");
+  });
+
+  // ISSUE #468, ROUND 6. The same way in, by the OTHER shape: two events that are companions of ONE
+  // write — the customer's own reopen, dispatched as `conversation_status_changed` and, because
+  // `status` is in the conversation's `list_of_keys`, `conversation_updated` — queued behind the
+  // reply and delivered inside the window. They agree on `updated_at` by construction, and that
+  // agreement proves only that they describe one write, never that the write came after the claim.
+  test("two companions of a write made BEFORE the claim cannot walk it back", async () => {
+    const conv = 8566;
+    await deliver(conv, { ...customerSays("oi") });
+    // ONE snapshot, serialized here: before the colleague replied, and therefore before the toggle.
+    const beforeTheReply = conversation(conv);
+    failingReads.add(conv);
+    whileToggling = async () => {
+      whileToggling = null;
+      await deliverConversationEvent(
+        conv,
+        "conversation_status_changed",
+        beforeTheReply,
+      );
+      await deliverConversationEvent(
+        conv,
+        "conversation_updated",
+        beforeTheReply,
+      );
+    };
+    try {
+      await deliver(conv, { ...deviceReply("já te respondo") });
+    } finally {
+      whileToggling = null;
+      failingReads.delete(conv);
+    }
+    const row = await convRow(conv);
+    expect(row?.status).toBe("open");
+    // Kept, not applied: the read that would adjudicate it failed, so the claim holds the version and
+    // the deadline is what ends the fence.
+    expect(row?.statusClaimRefusedAt).toBe(beforeTheReply.updated_at);
   });
 
   // ISSUE #468, ROUND 3. The claim cannot tell a conversation event frozen BEFORE our write from one

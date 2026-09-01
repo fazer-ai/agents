@@ -398,6 +398,23 @@ describe.skipIf(!dbUp)("listOutOfOfficeInboxes", () => {
     expect(read.inboxes.length).toBeGreaterThan(0);
   });
 
+  // The second spelling of the same thing, and the reason the check counts instead of testing the
+  // shape: a list whose ENTRIES cannot be read parses to fewer inboxes than it contained, and one of
+  // the dropped ones may be the inbox that answers out of hours.
+  test("entries it could not read make the account unreached too", async () => {
+    const { makeClient } = fakeChatwoot({
+      1: { payload: [{ name: "no id at all" }] },
+      2: ACCOUNT_2,
+    });
+    const read = await readOutOfOfficeInboxes(
+      ctx(tenantA),
+      agent1,
+      { makeClient },
+      appDb,
+    );
+    expect(read.unreachable).toBe(1);
+  });
+
   test("another tenant's context sees nothing, agent id or not", async () => {
     const { makeClient, calls } = fakeChatwoot({ 1: ACCOUNT_1, 2: ACCOUNT_2 });
     expect(

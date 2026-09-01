@@ -766,12 +766,12 @@ export async function readOutOfOfficeInboxes(
             base,
             makeClient: deps.makeClient,
           });
-          const listed = await client.listInboxes();
-          // A 200 whose body is not a list is not an empty account, it is an answer nobody
-          // understood — counted as unreached rather than reported as "nothing armed here".
-          if (!isInboxListShape(listed)) return null;
+          const listed = readInboxList(await client.listInboxes());
+          // An answer we did not fully understand is not an empty account: counted as unreached
+          // rather than reported as "nothing armed here". See the header on `readInboxList`.
+          if (!listed.understood) return null;
           const armed = new Map<number, string>();
-          for (const remote of parseInboxList(listed)) {
+          for (const remote of listed.inboxes) {
             if (chatwootAutoRepliesOutOfHours(remote)) {
               armed.set(remote.chatwootInboxId, remote.name);
             }
@@ -1496,13 +1496,23 @@ export interface RemoteInbox {
 // Pure parse of the Chatwoot inbox-list response. Confirmed against the chatwoot-pro fork:
 // `{ payload: [{ id, name, channel_type, … }] }`. Tolerant of a bare array and of
 // missing name/channel_type; skips entries without a numeric id.
-// Whether a `GET /inboxes` response is a list AT ALL. `parseInboxList` answers an unrecognised body
-// with an empty list on purpose — a shape change must never invent an inbox — and that is the right
-// default for a caller that draws what it got. It is the wrong one for a caller that reports its own
-// coverage: "no inbox answers out of hours" and "the body meant nothing to us" are the same value,
-// and the second is not something a clean answer may be built on.
-export function isInboxListShape(raw: unknown): boolean {
-  return Array.isArray(isRecord(raw) ? raw.payload : raw);
+// DID WE UNDERSTAND EVERYTHING CHATWOOT SAID — one question, asked once, instead of a list of the
+// ways an answer can be unintelligible.
+//
+// `parseInboxList` drops what it cannot read: a body that is not a list becomes an empty one, and an
+// entry with no numeric id is skipped. Both are the right default for a caller that DRAWS the
+// result — a shape change must never invent an inbox — and both are wrong for a caller that reports
+// its own coverage, because "nothing is armed here" and "we could not read the answer" arrive as the
+// same value. Two review rounds found those two spellings separately; this counts instead, so the
+// third spelling of an unreadable answer is covered before somebody finds it.
+export function readInboxList(raw: unknown): {
+  inboxes: RemoteInbox[];
+  understood: boolean;
+} {
+  const payload = isRecord(raw) ? raw.payload : raw;
+  if (!Array.isArray(payload)) return { inboxes: [], understood: false };
+  const inboxes = parseInboxList(raw);
+  return { inboxes, understood: inboxes.length === payload.length };
 }
 
 export function parseInboxList(raw: unknown): RemoteInbox[] {

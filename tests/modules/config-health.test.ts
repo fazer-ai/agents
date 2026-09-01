@@ -183,6 +183,28 @@ describe("computeConfigIssues", () => {
     });
   }
 
+  // The wait covers the INVALID verdict too, which is the half I had backwards for a round: the
+  // credential's base URL wins over the typed field, so a credential still unread is precisely what
+  // would replace an undialable string with a working host. The editor passes
+  // `credentialBaseUrl ?? model.baseURL`, so while the vault is unread the typed value is what
+  // arrives here — and a failed vault load leaves it that way indefinitely.
+  test("waits for the vault on an undialable endpoint too, not just a missing one", () => {
+    const unread = {
+      ...base,
+      modelConfig: { provider: "openai-compatible", model: "" },
+      modelProvider: "openai-compatible",
+      modelCredentialRef: "vault:1",
+      modelBaseURL: "llama:8080",
+    };
+    expect(computeConfigIssues({ ...unread, knownRefs: null })).toEqual([]);
+    expect(
+      computeConfigIssues({
+        ...unread,
+        knownRefs: new Set(["vault:1"]),
+      }).map((i) => i.key),
+    ).toEqual(["modelBadEndpoint"]);
+  });
+
   // The endpoint can arrive ON the credential, and the vault answers a request after the first
   // paint. Announcing a runnable model as broken for that one paint is the false alarm the
   // null-until-loaded rule exists to prevent — the same wait the three model overrides take.

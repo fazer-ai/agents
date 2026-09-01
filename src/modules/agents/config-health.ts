@@ -408,16 +408,21 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
       input.modelProvider,
       input.modelBaseURL ?? "",
     );
-    // An endpoint can still ARRIVE on a credential the vault has not answered for yet, and calling
-    // a runnable model broken is the false alarm the null-until-loaded rule exists to prevent. Same
-    // wait the three overrides take, and for the same reason — and it applies to the MISSING verdict
-    // only: a stated endpoint that cannot be dialled is settled whatever the vault says, since a
-    // credential's own base URL would replace it and there is nothing to wait for either way.
+    // An endpoint can still ARRIVE on a credential the vault has not answered for yet, and calling a
+    // runnable model broken is the false alarm the null-until-loaded rule exists to prevent. Same
+    // wait the three overrides take, and it covers BOTH verdicts.
+    //
+    // Not obvious, and I had it backwards for a round: the credential's own base URL WINS over the
+    // typed field, here and at runtime alike, so a credential still unread is exactly what would
+    // replace an undialable string with a working host. The editor makes this concrete — it passes
+    // `credentialBaseUrl ?? model.baseURL`, so while the vault is unread the typed `llama:8080` IS
+    // what arrives here, and a verdict on it is a verdict on a value the runtime will not use.
     const owed = known === null && Boolean(input.modelCredentialRef);
-    if (endpoint === "invalid") {
-      issues.push({ ...modelTarget, key: "modelBadEndpoint" });
-    } else if (endpoint === "missing" && !owed) {
-      issues.push({ ...modelTarget, key: "modelNoEndpoint" });
+    if (endpoint !== null && !owed) {
+      issues.push({
+        ...modelTarget,
+        key: endpoint === "invalid" ? "modelBadEndpoint" : "modelNoEndpoint",
+      });
     }
   }
   push(

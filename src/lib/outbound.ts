@@ -150,6 +150,23 @@ export async function fetchBounded(
   return { res, body: value };
 }
 
+// For a call whose whole ANSWER is the status: a best-effort revoke, a ping, a fire-and-forget
+// notification. The body is CANCELLED rather than read, because draining one nobody looks at can
+// only add latency — a provider that answers its headers and then stalls would hold the caller for
+// the entire budget, and this is exactly where that is felt: the Google disconnect awaits its
+// revoke before it removes the local tokens.
+export async function fetchBoundedNoBody(
+  url: string,
+  init: RequestInit,
+  opts: { timeoutMs: number; fetchImpl?: typeof fetch },
+): Promise<Response> {
+  const { res } = await bounded(url, init, opts, async (r) => {
+    await r.body?.cancel().catch(() => undefined);
+    return null;
+  });
+  return res;
+}
+
 export interface OutboundBytes {
   // At most `maxBytes`, and empty when there were more: a download this size is refused, never
   // truncated, because half a file is not a smaller file.

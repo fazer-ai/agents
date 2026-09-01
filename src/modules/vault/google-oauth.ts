@@ -2,7 +2,7 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import basePrisma from "@/api/lib/prisma";
 import { AppError } from "@/lib/errors";
-import { fetchBounded } from "@/lib/outbound";
+import { fetchBounded, fetchBoundedNoBody } from "@/lib/outbound";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import {
   buildOAuthCallbackHtml,
@@ -289,7 +289,10 @@ export async function exchangeCodeForTokens(params: {
 // Best-effort: a failed revoke must never block disconnect (the credential is removed regardless).
 export async function revokeGoogleToken(refreshToken: string): Promise<void> {
   try {
-    await fetchBounded(
+    // NO BODY, and that is the point rather than an omission: nothing here reads Google's answer,
+    // the disconnect AWAITS this call before removing the local tokens, and a revoke that answers
+    // its headers and then stalls its body would hold that disconnect for the whole budget.
+    await fetchBoundedNoBody(
       REVOKE_ENDPOINT,
       {
         method: "POST",

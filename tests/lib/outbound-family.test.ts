@@ -24,7 +24,7 @@ function code(src: string): string {
 
 test.each(THROUGH_THE_BOUND)("%s reads its body under the bound", async (f) => {
   const src = code(await Bun.file(f).text());
-  expect(src).toMatch(/fetchBounded(?:Bytes)?\(/);
+  expect(src).toMatch(/fetchBounded(?:Bytes|NoBody)?\(/);
   // No abort timer of its own: there is one place that arms one, and it is the place that also
   // does the reading.
   expect(src).not.toMatch(/clearTimeout\(/);

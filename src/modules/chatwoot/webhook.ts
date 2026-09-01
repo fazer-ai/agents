@@ -4335,8 +4335,11 @@ export async function processChatwootDelivery(
                   data: {
                     status: "open",
                     statusClaimUntil: claimUntil,
-                    // The status this write replaced, which the predicate above pins to `pending`.
+                    // The status this write replaced, which the predicate above pins to `pending`,
+                    // and the mark it was replaced AT — which is what says, later, whether the source
+                    // has stamped this transition yet (../../modules/chatwoot/status-claim.ts).
                     statusClaimFrom: "pending",
+                    statusClaimFromAt: now.statusAt,
                   },
                 }),
             );
@@ -4401,27 +4404,13 @@ export async function processChatwootDelivery(
       // the same place every other ordering question is decided (state-order.ts), and it needs no
       // version, which is what the third way in has none of.
       //
-      // AND A FAILED OPEN GIVES IT BACK. The claim exists to fence the transition while it is being
-      // made; once the toggle has failed there is no transition to fence, and what settles the
-      // disagreement is precisely the write the claim refuses — the next customer message carrying
-      // `pending` through the reopen exception. Left standing it would fence that message for the
-      // claim's whole life, which is the recovery below being described and then blocked.
-      //
-      // Conditional on the value this delivery wrote, so a claim taken by anything else in the
-      // meantime is not released by our failure.
-      if (claimHeld !== null && !opened) {
-        await runScopedOn(base, sysCtx(params.tenantId), (db) =>
-          db.conversation.updateMany({
-            where: {
-              tenantId: params.tenantId,
-              chatwootInstanceId: params.instanceId,
-              chatwootConversationId: conversationId,
-              statusClaimUntil: claimHeld,
-            },
-            data: { statusClaimUntil: null, statusClaimFrom: null },
-          }),
-        );
-      }
+      // AND A FAILED OPEN KEEPS IT, which is the same answer #430 already gives to the claim itself.
+      // A toggle that throws is an UNKNOWN outcome, not a refusal — Chatwoot commits the transition
+      // and the response is lost — so releasing here would let a payload frozen before the toggle put
+      // the agent straight back into a conversation the platform HAS handed over. What the deadline
+      // costs on this path is a delay rather than the recovery: the conversation Chatwoot really did
+      // leave `pending` comes back to the agent when the claim runs out, instead of on the next
+      // customer message.
       //
       // Refused by the fence, or the write failed: both are already reported by the shared unit, and
       // neither is a takeover — so nothing below runs. NOT a `return`: the delivery still has its

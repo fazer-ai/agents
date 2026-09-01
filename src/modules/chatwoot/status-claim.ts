@@ -45,17 +45,35 @@
  * replied AFTER the operator's click. That gap is real and is issue #469; it needs an axis this file
  * does not have, since neither side of it can offer a version.
  *
+ * ## How a claim ends, and why nothing ends it early
+ *
+ * In two steps, and they are not the same step because they cover different routes.
+ *
+ * Its ORDERED half ends the moment the source stamps a version for the transition — the live read the
+ * takeover reconciles from. From then on a conversation event carrying a version is ordered against
+ * THAT version by the ordinary rule, and going on refusing it would drop a hand-back nothing ever
+ * redelivers. That instant is readable rather than remembered: the mark has moved off the value the
+ * claim was taken at.
+ *
+ * The rest of its life covers the one route no version can order — the reopen exception, which a
+ * message payload carries and which compares whole seconds against the status mark, so a message
+ * frozen in the same second as the toggle wins even against the version the reconcile just stamped.
+ * That is the shape measured live, and it is why the claim does not simply retire at the reconcile.
+ *
+ * And NOTHING ends it early, because no outcome makes an unconfirmed local `open` safe to un-fence. A
+ * toggle that throws is an UNKNOWN outcome, not a refusal: Chatwoot commits the transition and the
+ * response is lost, and there is nothing in the error that tells that apart from a request the server
+ * never applied. Releasing there would let a payload frozen before the toggle put the agent straight
+ * back into a conversation the platform HAS handed over — the defect this exists to prevent,
+ * reintroduced by the recovery. What the deadline costs on that path is a delay: the conversation
+ * Chatwoot really did leave `pending` comes back to the agent when the claim runs out, instead of on
+ * the next customer message.
+ *
  * ## Why a deadline
  *
- * The writer releases the claim itself when the outcome is known and it must not stand: a failed
- * toggle is an UNKNOWN outcome, the local `open` deliberately survives it, and what settles it is the
- * next customer message carrying `pending` through the reopen exception — which a live claim would
- * refuse (the webhook's takeover states that rule from its own side).
- *
- * What no writer can release is a claim its own process died holding, and a claim with no end would
- * then fence that conversation's status forever. So the claim carries the instant it stops mattering,
- * and a crash costs the window rather than the row: past it, the behaviour is the one this release
- * replaced.
+ * A claim its own process died holding is one no writer can end, and a claim with no end would fence
+ * that conversation's status forever. So it carries the instant it stops mattering, and a crash costs
+ * the window rather than the row: past it, the behaviour is the one this release replaced.
  */
 
 // Long enough to outlast the critical section it fences plus the deliveries already in flight when it
@@ -108,19 +126,29 @@ const REOPENABLE = new Set(["resolved", "snoozed"]);
  * Asked of the STATED status, never of the stored one: a payload that states none says nothing about
  * the transition and is not what this exists to stop.
  *
- * The exception is Chatwoot's own reopen, and it is keyed on the status the row HOLDS rather than on
- * the one the payload carries. A brand-new incoming message runs `reopen_conversation` before the
- * event is dispatched, so on a conversation we believe is resolved or snoozed the payload is evidence
- * of a change made AFTER our write — which is exactly what a claim must not refuse, and is the shape
- * an operator resolving from the console leaves behind. On a conversation we believe is open or
- * pending that same act does nothing at all, so a payload restating the status the claim replaced is
- * a snapshot of the state before it and nothing else.
+ * `reopens` is the source's own act — `Message#execute_after_create_commit_callbacks` runs
+ * `reopen_conversation` before it dispatches (state-order.ts) — and it splits the answer in two,
+ * because it is the one route that carries no version:
+ *
+ *   * a REOPEN is refused for the claim's whole life, unless the row is one that act can move. It
+ *     acts on a resolved or snoozed conversation and does nothing at all to an open or pending one,
+ *     so on a row we believe is resolved the payload is evidence of a change made AFTER our write,
+ *     and on any other row it is a snapshot carrying the conversation's status. Keyed on the status
+ *     the ROW holds and never on the one the reopen produces: measured on the fork, that act writes
+ *     `pending` on an inbox with an active bot and `open` everywhere else;
+ *   * anything ELSE is ordered by version, so the claim only has to cover the stretch in which there
+ *     is no version to order it against — from the write until the reconcile stamps the one Chatwoot
+ *     produced. `statusAt === claimedFromAt` is that stretch, read off the row instead of remembered.
  */
 export function statusClaimRefuses(
   row: {
+    /** The status currently stored. */
     status: string;
+    /** The status mark now, and the one the claim was taken at. */
+    statusAt: number | null;
     statusClaimUntil: Date | null;
     statusClaimFrom: string | null;
+    statusClaimFromAt: number | null;
   },
   payload: { status: string | null; reopens: boolean },
   now: Date,
@@ -129,5 +157,6 @@ export function statusClaimRefuses(
   if (payload.status === null || payload.status !== row.statusClaimFrom) {
     return false;
   }
-  return !(payload.reopens && REOPENABLE.has(row.status));
+  if (payload.reopens) return !REOPENABLE.has(row.status);
+  return row.statusAt === row.statusClaimFromAt;
 }

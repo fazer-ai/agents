@@ -121,6 +121,7 @@ export interface StateRow {
    */
   statusClaimUntil: Date | null;
   statusClaimFrom: string | null;
+  statusClaimFromAt: number | null;
 }
 
 export interface StateDecision {
@@ -331,7 +332,7 @@ export function decideConversationWrites(
   // outranks a mark the claim never advanced). ./status-claim.ts holds the reasoning and the reason
   // this refuses ONE status rather than the field.
   const claimed = statusClaimRefuses(
-    row,
+    { ...row, statusAt: row.statusAt },
     { status: payload.status, reopens: payload.reopensConversation },
     now,
   );

@@ -16,3 +16,4 @@
 -- closes is simply still open on the old replicas.
 ALTER TABLE "conversations" ADD COLUMN "status_claim_until" TIMESTAMP(3);
 ALTER TABLE "conversations" ADD COLUMN "status_claim_from" TEXT;
+ALTER TABLE "conversations" ADD COLUMN "status_claim_from_at" DOUBLE PRECISION;

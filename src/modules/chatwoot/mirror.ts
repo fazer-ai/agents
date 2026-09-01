@@ -181,6 +181,7 @@ export async function mirrorChatwootEvent(
           // (issue #436). See ./status-claim.ts.
           statusClaimUntil: true,
           statusClaimFrom: true,
+          statusClaimFromAt: true,
         },
       });
       const prevAssigneeId = existing?.assigneeId ?? null;
@@ -202,6 +203,7 @@ export async function mirrorChatwootEvent(
                 existing.redirectOriginDisplayId != null,
               statusClaimUntil: existing.statusClaimUntil,
               statusClaimFrom: existing.statusClaimFrom,
+              statusClaimFromAt: existing.statusClaimFromAt,
             }
           : null,
         now,

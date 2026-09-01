@@ -57,6 +57,7 @@ function storedRow(over: Partial<StateRow> = {}): StateRow {
     redirectOriginKnown: false,
     statusClaimUntil: null,
     statusClaimFrom: null,
+    statusClaimFromAt: null,
     ...over,
   };
 }
@@ -400,6 +401,8 @@ const CASES: Case[] = [
       status: "open",
       statusClaimUntil: CLAIM_LIVE,
       statusClaimFrom: "pending",
+      // The mark is still the one the claim was taken at: the reconcile has not run.
+      statusClaimFromAt: V_NOW,
     }),
     want: { status: null, statusAt: null },
   },
@@ -413,6 +416,8 @@ const CASES: Case[] = [
       status: "open",
       statusClaimUntil: CLAIM_LIVE,
       statusClaimFrom: "pending",
+      // The mark is still the one the claim was taken at: the reconcile has not run.
+      statusClaimFromAt: V_NOW,
     }),
     want: { status: null, statusAt: null },
   },
@@ -426,6 +431,8 @@ const CASES: Case[] = [
       status: "open",
       statusClaimUntil: CLAIM_LIVE,
       statusClaimFrom: "pending",
+      // The mark is still the one the claim was taken at: the reconcile has not run.
+      statusClaimFromAt: V_NOW,
     }),
     want: { status: "resolved", statusAt: V_NEW },
   },
@@ -446,6 +453,7 @@ const CASES: Case[] = [
       status: "resolved",
       statusClaimUntil: CLAIM_LIVE,
       statusClaimFrom: "open",
+      statusClaimFromAt: V_NOW,
     }),
     want: { status: "open" },
   },
@@ -462,6 +470,43 @@ const CASES: Case[] = [
       status: "pending",
       statusClaimUntil: CLAIM_LIVE,
       statusClaimFrom: "pending",
+      statusClaimFromAt: V_NOW,
+    }),
+    want: { status: null },
+  },
+  {
+    // ONCE THE SOURCE HAS STAMPED THE TRANSITION, an ordered payload is ordered against that version
+    // and the claim steps out of its way. Going on refusing it would drop a hand-back committed after
+    // the takeover — one event, which we ack and Chatwoot never redelivers.
+    name: "a claim whose transition the source has versioned no longer refuses an ordered payload",
+    payload: conversationEvent({ version: V_NEW, status: "pending" }),
+    row: storedRow({
+      status: "open",
+      statusAt: V_NOW,
+      // The reconcile moved the mark off the value the claim was taken at.
+      statusClaimFromAt: V_NOW - 1,
+      statusClaimUntil: CLAIM_LIVE,
+      statusClaimFrom: "pending",
+    }),
+    want: { status: "pending", statusAt: V_NEW },
+  },
+  {
+    // ...and the reopen exception is refused for the claim's whole life anyway, because it is the one
+    // route the stamped version cannot order: it compares WHOLE SECONDS against the mark, so a message
+    // frozen in the same second as the toggle wins even against the version the reconcile just wrote.
+    // Measured live, on a toggle and a customer message that landed in the same second.
+    name: "a versioned transition still refuses the reopen exception, which no version orders",
+    payload: messageEvent({
+      reopensConversation: true,
+      activityAt: NOW,
+      status: "pending",
+    }),
+    row: storedRow({
+      status: "open",
+      statusAt: V_NOW,
+      statusClaimFromAt: V_NOW - 1,
+      statusClaimUntil: CLAIM_LIVE,
+      statusClaimFrom: "pending",
     }),
     want: { status: null },
   },
@@ -475,6 +520,7 @@ const CASES: Case[] = [
       status: "open",
       statusClaimUntil: CLAIM_EXPIRED,
       statusClaimFrom: "pending",
+      statusClaimFromAt: V_NOW,
     }),
     want: { status: "pending", statusAt: V_NEW },
   },

@@ -112,6 +112,7 @@ export async function reconcileMirrorFromLive(
             chatwootAssigneeAt: true,
             statusClaimUntil: true,
             statusClaimFrom: true,
+            statusClaimFromAt: true,
           },
         });
         if (!current) return;
@@ -163,7 +164,7 @@ export async function reconcileMirrorFromLive(
         const claimed =
           !ours &&
           statusClaimRefuses(
-            current,
+            { ...current, statusAt: current.chatwootStatusAt },
             // NOTE: A live snapshot is never a message, so it can never be the source's own reopen —
             // the same reading `clearsResolutionOrigin` is handed below, for the same reason.
             { status: live.status, reopens: false },

@@ -831,10 +831,10 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
   // lost — and rolling back on the unknown puts the agent straight back to answering over the person
   // it just handed the conversation to.
   //
-  // So the claim stands, and what resolves it is the path that already exists: the next customer
-  // message carries the reopen exception, so a conversation Chatwoot really did leave `pending`
-  // comes back to the agent on its own.
-  test("a failed open keeps the claim, and the next message is what settles it", async () => {
+  // So the claim stands, and what resolves it is the deadline rather than the next message: while it
+  // is live it refuses precisely the `pending` that message carries, and once it runs out the
+  // conversation Chatwoot really did leave `pending` comes back to the agent on its own.
+  test("a failed open keeps the claim, and the next message is refused while it stands", async () => {
     const conv = 8512;
     await deliver(conv, { ...customerSays("oi") });
     failingToggles.add(conv);
@@ -847,12 +847,31 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     expect((await convRow(conv))?.status).toBe("open");
     // ...and not reported as one, because nothing established that a person was handed anything.
     expect((await takeoverRows(conv, 200)).length).toBe(0);
-    // AND THE CLAIM IS GIVEN BACK (issue #436), which is what lets the recovery below happen at all:
-    // the claim refuses precisely the `pending` that the next message carries, so left standing it
-    // would fence the one write this branch relies on.
-    expect((await convRow(conv))?.statusClaimUntil).toBeNull();
-    // And it does not stay stuck: Chatwoot never left `pending`, so the next customer message says
-    // so and the agent answers again.
+    const before = turnsRan;
+    await deliver(conv, { ...customerSays("continua aí?") });
+    expect(turnsRan).toBe(before);
+    expect((await convRow(conv))?.status).toBe("open");
+  });
+
+  // ...and the other half of the same sentence, which is what makes the disagreement non-durable.
+  // Same scenario with the deadline already spent, so the only difference between the two tests is
+  // the clock — which is what makes the one above about the claim rather than about the write beside
+  // it.
+  test("...and settled by the next message once the claim runs out", async () => {
+    const conv = 8563;
+    await deliver(conv, { ...customerSays("oi") });
+    failingToggles.add(conv);
+    try {
+      await deliver(conv, { ...deviceReply("já te respondo") });
+    } finally {
+      failingToggles.delete(conv);
+    }
+    const row = await convRow(conv);
+    expect(row?.status).toBe("open");
+    await suDb.conversation.update({
+      where: { id: row?.id },
+      data: { statusClaimUntil: new Date(Date.now() - 1) },
+    });
     const before = turnsRan;
     await deliver(conv, { ...customerSays("continua aí?") });
     expect(turnsRan).toBe(before + 1);

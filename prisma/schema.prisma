@@ -591,6 +591,11 @@ model Conversation {
   // BEFORE it calls Chatwoot can take a claim, because only then is there a transition in flight for
   // a payload to be behind. See src/modules/chatwoot/status-claim.ts.
   statusClaimFrom          String?   @map("status_claim_from")
+  // `chatwoot_status_at` as of the claim, which is what says whether the SOURCE has stamped this
+  // transition yet: once the reconcile writes the version Chatwoot produced for it, the mark moves off
+  // this value and an ordered payload is ordered against that version rather than against nothing.
+  // NULL is a real reading (the row had no mark), so it is compared, never coalesced.
+  statusClaimFromAt        Float?    @map("status_claim_from_at")
   // Debounce watermark: the Chatwoot message id of the last inbound message already handled
   // (responded to or deliberately skipped). The flush re-fetches and answers only ids beyond it,
   // so re-arm / retry / a concurrent claim cannot produce a duplicate reply. NULL = nothing handled.

@@ -43,6 +43,7 @@ interface StoredRow {
   status: string;
   statusClaimUntil: Date | null;
   statusClaimFrom: string | null;
+  statusClaimFromAt: number | null;
   assigneeType: string | null;
   assigneeId: number | null;
   lastEventAt: Date | null;
@@ -65,6 +66,7 @@ async function seedRow(over: Partial<StoredRow> = {}): Promise<number> {
       chatwootAssigneeAt: over.chatwootAssigneeAt ?? null,
       statusClaimUntil: over.statusClaimUntil ?? null,
       statusClaimFrom: over.statusClaimFrom ?? null,
+      statusClaimFromAt: over.statusClaimFromAt ?? null,
       threadId: `${tenantId}:${instanceId}:${chatwootConversationId}`,
     },
   });
@@ -161,6 +163,9 @@ describe.skipIf(!dbUp)("reconcileMirrorFromLive", () => {
       status: "open",
       statusClaimUntil: new Date(Date.now() + 30_000),
       statusClaimFrom: "pending",
+      // Taken at the mark the row still holds: the reconcile that would stamp the source's own
+      // version for this transition has not run, which is the whole of the window.
+      statusClaimFromAt: T,
       chatwootStatusAt: T,
     });
     // What the proactive nudge's probe sees while a takeover's toggle is on the wire: the source
@@ -182,6 +187,7 @@ describe.skipIf(!dbUp)("reconcileMirrorFromLive", () => {
       status: "open",
       statusClaimUntil: until,
       statusClaimFrom: "pending",
+      statusClaimFromAt: T,
       chatwootStatusAt: T,
     });
     // The takeover's own reconcile, which is what EARNS the claim the version it was taken without.

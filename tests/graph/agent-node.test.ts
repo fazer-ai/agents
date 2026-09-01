@@ -722,6 +722,96 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     ]);
   });
 
+  // Round 27. A provider can return blocks BESIDE the text, and Anthropic's `thinking` /
+  // `redacted_thinking` are signed and must be replayed unchanged before the tool result they
+  // precede — so emptying the block list deletes protocol data and the very next round fails at the
+  // provider. And for models served over the Responses API, `@langchain/openai` replays the raw
+  // `output` array from `response_metadata` rather than `content`, so blanking `content` alone hands
+  // the narration back anyway. Text is the only thing this rule may remove, wherever it lives.
+  test("blanking removes the text and nothing else", async () => {
+    const skipTool = realSkipTool();
+    const reactTool = tool(async () => "reacted with 👍", {
+      name: "react_to_message",
+      description: "react",
+      schema: z.object({}),
+    });
+    class ThinksThenSkips {
+      rounds = 0;
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("");
+      }
+      bindTools(_tools: unknown) {
+        const self = this;
+        return {
+          async invoke(): Promise<AIMessage> {
+            self.rounds++;
+            if (self.rounds === 1) {
+              return new AIMessage({
+                id: "ai-think-1",
+                content: [
+                  { type: "thinking", thinking: "hmm", signature: "sig-abc" },
+                  { type: "text", text: "Vou só reagir." },
+                ],
+                tool_calls: [
+                  { name: "react_to_message", args: {}, id: "c1" },
+                  { name: SKIP_REPLY_TOOL, args: {}, id: "c2" },
+                ],
+                response_metadata: {
+                  output: [
+                    { type: "reasoning", id: "rs_1", summary: [] },
+                    {
+                      type: "message",
+                      role: "assistant",
+                      content: [
+                        { type: "output_text", text: "Vou só reagir." },
+                      ],
+                    },
+                    { type: "function_call", name: SKIP_REPLY_TOOL, id: "fc1" },
+                  ],
+                },
+              });
+            }
+            return new AIMessage({
+              content: "",
+              tool_calls: [{ name: SKIP_REPLY_TOOL, args: {}, id: "c3" }],
+            });
+          },
+        };
+      }
+    }
+    const checkpointer = new MemorySaver();
+    const cfg = { configurable: { thread_id: "blank-text-only" } };
+    const graph = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
+      model: new ThinksThenSkips() as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer,
+      tools: [skipTool, reactTool],
+      maxToolCalls: 10,
+    });
+    await graph.invoke({ messages: [new HumanMessage("👍")] }, cfg);
+    const state = await buildThreadStateGraph(checkpointer).getState(cfg);
+    const messages = ((state.values as { messages?: BaseMessage[] })
+      ?.messages ?? []) as BaseMessage[];
+    const rewritten = messages.find((m) => m.id === "ai-think-1") as AIMessage;
+    // The signed thinking block survives; the text is gone.
+    expect(rewritten.content).toEqual([
+      { type: "thinking", thinking: "hmm", signature: "sig-abc" },
+    ]);
+    // ...and so does the raw provider output, minus its text part. `reasoning` and `function_call`
+    // are untouched: they carry state the provider needs back.
+    const out = rewritten.response_metadata?.output as Array<
+      Record<string, unknown>
+    >;
+    expect(out.map((o) => o.type)).toEqual([
+      "reasoning",
+      "message",
+      "function_call",
+    ]);
+    expect(out[1]?.content).toEqual([]);
+    expect(JSON.stringify(rewritten)).not.toContain("Vou só reagir");
+  });
+
   // The scope, pinned: a preamble beside an ORDINARY call is followed by a reply that may lean on
   // it, and rewriting the history of every tool-calling turn is a different change. Only the
   // decision to say nothing is rewritten here.

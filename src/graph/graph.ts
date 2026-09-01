@@ -2,6 +2,7 @@ import type { BaseChatModel } from "@langchain/core/language_models/chat_models"
 import {
   AIMessage,
   type BaseMessage,
+  type MessageContent,
   SystemMessage,
 } from "@langchain/core/messages";
 import type { StructuredToolInterface } from "@langchain/core/tools";
@@ -202,6 +203,48 @@ function onlySkipped(caller: BaseMessage | undefined): boolean {
 // No "already empty, skip it" shortcut: with everything else carried over, replacing an empty
 // message with an empty message is the same message, so the branch would be a condition no test
 // could tell from its absence — and one of those is how a rule gets read as protection it is not.
+// The message's blocks with the TEXT taken out and everything else left alone. A string collapses to
+// an empty list (there was nothing but text in it); an array keeps every block that is not text,
+// which is what carries Anthropic's signed `thinking` / `redacted_thinking` through unchanged.
+function textlessContent(content: MessageContent): MessageContent {
+  if (!Array.isArray(content)) return [];
+  return content.filter(
+    (b) => typeof b !== "string" && (b as { type?: unknown }).type !== "text",
+  ) as MessageContent;
+}
+
+// ...AND THE RAW PROVIDER OUTPUT, because for some models the history is serialized from THAT and
+// not from `content`. `@langchain/openai` keeps the Responses API's `output` array in
+// `response_metadata` and replays it, so a message whose `content` is blanked would still hand the
+// narration back to the model, which is the false memory this whole rule exists to remove.
+//
+// The PART type is what decides, and it is the only condition here. A second check on the ITEM type
+// ("only a message loses its text") was written first and removed: `function_call` carries its
+// arguments as a string and `reasoning` carries `reasoning_text` parts, so neither is reachable by
+// the filter below, and a condition no fixture can tell from its absence reads as protection it is
+// not. An adapter that keeps no `output` array pays nothing.
+function textlessResponseMetadata(
+  meta: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  const output = meta?.output;
+  if (!meta || !Array.isArray(output)) return meta;
+  return {
+    ...meta,
+    output: output.map((item) => {
+      const it = item as { content?: unknown };
+      if (!Array.isArray(it?.content)) return item;
+      return {
+        ...(item as object),
+        content: (it.content as unknown[]).filter(
+          (part) =>
+            (part as { type?: unknown })?.type !== "output_text" &&
+            (part as { type?: unknown })?.type !== "text",
+        ),
+      };
+    }),
+  };
+}
+
 function silenceNarration(history: BaseMessage[]): BaseMessage[] {
   const { caller } = lastBatch(history);
   if (!caller || typeof caller.id !== "string") return [];
@@ -209,12 +252,19 @@ function silenceNarration(history: BaseMessage[]): BaseMessage[] {
   return [
     new AIMessage({
       id: ai.id,
-      // AN EMPTY ARRAY, never `""`. This message KEEPS its tool calls, so `isEmptyAssistantTurn`
-      // rightly leaves it in the history the model is sent — and `@langchain/anthropic` renders
-      // string content as a text block, which Anthropic refuses when it is empty ("text content
-      // blocks must be non-empty"). An empty block LIST renders no text block at all, which is the
-      // shape a tool-call-only message has anyway. `contentToText` reads both as "" (round 21).
-      content: [],
+      // A BLOCK LIST WITHOUT THE TEXT, never `""` and never a blanket `[]`.
+      //
+      // Not `""`: this message KEEPS its tool calls, so `isEmptyAssistantTurn` rightly leaves it in
+      // the history the model is sent — and `@langchain/anthropic` renders string content as a text
+      // block, which Anthropic refuses when it is empty ("text content blocks must be non-empty").
+      // An empty block LIST renders no text block at all (round 21).
+      //
+      // Not `[]` either: a provider can return blocks BESIDE the text, and Anthropic's `thinking`
+      // and `redacted_thinking` are signed and must be replayed unchanged before the tool result
+      // they precede. Emptying the list deletes protocol data, and the very next round — the one a
+      // parallel companion buys — fails at the provider. TEXT is the only thing this may remove
+      // (round 27).
+      content: textlessContent(ai.content),
       tool_calls: ai.tool_calls ?? [],
       // Carried like the valid ones: they are part of what the model asked for, and a rebuild that
       // dropped them would erase the record of a call that failed to parse.
@@ -222,7 +272,7 @@ function silenceNarration(history: BaseMessage[]): BaseMessage[] {
         ? { invalid_tool_calls: ai.invalid_tool_calls }
         : {}),
       additional_kwargs: ai.additional_kwargs,
-      response_metadata: ai.response_metadata,
+      response_metadata: textlessResponseMetadata(ai.response_metadata),
       ...(ai.usage_metadata ? { usage_metadata: ai.usage_metadata } : {}),
       ...(ai.name ? { name: ai.name } : {}),
     }),

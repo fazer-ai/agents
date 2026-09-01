@@ -4,7 +4,10 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import type { TenantContext } from "@/lib/tenancy";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
-import { listOutOfOfficeInboxes } from "@/modules/chatwoot/management";
+import {
+  listOutOfOfficeInboxes,
+  readOutOfOfficeInboxes,
+} from "@/modules/chatwoot/management";
 import { chatwootAutoRepliesOutOfHours } from "@/modules/chatwoot/out-of-office";
 
 // Issue #166. Two products can both answer out of hours on the same inbox, on schedules neither can
@@ -374,6 +377,27 @@ describe.skipIf(!dbUp)("listOutOfOfficeInboxes", () => {
   // So the scope on the bound-inbox read is the first of two fences and the second is load-bearing
   // today. It stays because it is the read that hands rows to the caller, and because a fence whose
   // only guarantee is a downstream detail is one refactor away from not being a fence at all.
+  // A 200 whose body is not a list. `parseInboxList` answers that with an empty array on purpose —
+  // a shape change must never invent an inbox — and for a caller that REPORTS ITS OWN COVERAGE that
+  // default is indistinguishable from an account where nothing is armed. The reading has to be able
+  // to say it did not understand the answer.
+  test("a body that is not a list counts as unreached, not as empty", async () => {
+    const { makeClient } = fakeChatwoot({
+      1: { unexpected: "shape" },
+      2: ACCOUNT_2,
+    });
+    const read = await readOutOfOfficeInboxes(
+      ctx(tenantA),
+      agent1,
+      { makeClient },
+      appDb,
+    );
+    expect(read.unreachable).toBe(1);
+    // And the account that DID answer is still reported: one unreadable server must not decide for
+    // the others.
+    expect(read.inboxes.length).toBeGreaterThan(0);
+  });
+
   test("another tenant's context sees nothing, agent id or not", async () => {
     const { makeClient, calls } = fakeChatwoot({ 1: ACCOUNT_1, 2: ACCOUNT_2 });
     expect(

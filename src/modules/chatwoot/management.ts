@@ -766,8 +766,12 @@ export async function readOutOfOfficeInboxes(
             base,
             makeClient: deps.makeClient,
           });
+          const listed = await client.listInboxes();
+          // A 200 whose body is not a list is not an empty account, it is an answer nobody
+          // understood — counted as unreached rather than reported as "nothing armed here".
+          if (!isInboxListShape(listed)) return null;
           const armed = new Map<number, string>();
-          for (const remote of parseInboxList(await client.listInboxes())) {
+          for (const remote of parseInboxList(listed)) {
             if (chatwootAutoRepliesOutOfHours(remote)) {
               armed.set(remote.chatwootInboxId, remote.name);
             }
@@ -1492,6 +1496,15 @@ export interface RemoteInbox {
 // Pure parse of the Chatwoot inbox-list response. Confirmed against the chatwoot-pro fork:
 // `{ payload: [{ id, name, channel_type, … }] }`. Tolerant of a bare array and of
 // missing name/channel_type; skips entries without a numeric id.
+// Whether a `GET /inboxes` response is a list AT ALL. `parseInboxList` answers an unrecognised body
+// with an empty list on purpose — a shape change must never invent an inbox — and that is the right
+// default for a caller that draws what it got. It is the wrong one for a caller that reports its own
+// coverage: "no inbox answers out of hours" and "the body meant nothing to us" are the same value,
+// and the second is not something a clean answer may be built on.
+export function isInboxListShape(raw: unknown): boolean {
+  return Array.isArray(isRecord(raw) ? raw.payload : raw);
+}
+
 export function parseInboxList(raw: unknown): RemoteInbox[] {
   const payload = isRecord(raw) ? raw.payload : raw;
   const arr = Array.isArray(payload) ? payload : [];

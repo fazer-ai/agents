@@ -1873,7 +1873,8 @@ function AgentEditor() {
   // modal when pending. Per-issue messages (dynamic key by issue.key) registered for extraction:
   // t('editor.configIssue.model', 'The model has no API key set, so the agent cannot reply.')
   // t('editor.configIssue.modelNotRunnable', 'This model configuration cannot be built, so the agent cannot reply. Check the provider and the model.')
-  // t('editor.configIssue.modelNoEndpoint', 'The OpenAI-compatible model has no base URL, so it cannot be reached and the agent cannot reply.')
+  // t('editor.configIssue.modelNoEndpoint', 'This model needs a base URL and has none, so it cannot be reached and the agent cannot reply.')
+  // t('editor.configIssue.modelBadEndpoint', 'The model\'s base URL is not an http(s) address, so every request goes nowhere and the agent cannot reply.')
   // t('editor.configIssue.stt', 'Voice transcription is on but has no API key set.')
   // t('editor.configIssue.tts', 'Audio replies are on but have no API key set.')
   // t('editor.configIssue.ttsNormalize', 'The speech rewrite is on but its model configuration cannot run, so replies will be spoken without it. Check its provider, model, key and endpoint.')

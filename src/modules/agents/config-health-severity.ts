@@ -29,6 +29,8 @@ const SEVERITY: Record<ConfigIssueKey, ConfigIssueSeverity> = {
   modelNotRunnable: "blocking",
   // openai-compatible with nowhere to dial: `createChatModel` throws instead of degrading.
   modelNoEndpoint: "blocking",
+  // An endpoint that is stated and undialable: every request goes to an address nothing answers.
+  modelBadEndpoint: "blocking",
   // Fail-open: the analysis is skipped and every message is delivered as if it had been screened.
   guardrails: "blocking",
   // The same consequence, except measured rather than deduced: those turns already went out

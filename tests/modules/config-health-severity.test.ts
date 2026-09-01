@@ -16,6 +16,7 @@ const EXPECTED: Record<ConfigIssueKey, ConfigIssueSeverity> = {
   model: "blocking",
   modelNotRunnable: "blocking",
   modelNoEndpoint: "blocking",
+  modelBadEndpoint: "blocking",
   guardrails: "blocking",
   guardrailsFailing: "blocking",
   contactAuth: "blocking",

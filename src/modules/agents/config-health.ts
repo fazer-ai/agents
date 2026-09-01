@@ -33,7 +33,12 @@ export type ConfigIssueKey =
   // simply won't run until set"), an import stores whatever record the export carried, and an
   // openai-compatible bag with no endpoint passes every write boundary there is.
   | "modelNotRunnable"
+  // Two spellings of one unreachable endpoint, because the operator's move differs: fill a field
+  // that is required and empty, or correct one that is filled and undialable. The wording cannot
+  // carry both — and it must not quote the value, since a base URL is one of the places a
+  // credential gets pasted (the audit projection treats it that way already).
   | "modelNoEndpoint"
+  | "modelBadEndpoint"
   | "stt"
   | "tts"
   | "ttsNormalize"
@@ -336,17 +341,21 @@ function endpointCouldStillArrive(
 // schema's `z.string().url()` accepts `llama:8080`, a valid URI with a `llama:` scheme (measured) —
 // and because `isValidHttpUrl` answers TRUE for the empty string on purpose, leaving emptiness to
 // the caller that knows whether the field is required. This is that caller.
-function endpointUnusable(provider: string, baseURL: string): boolean {
+function endpointVerdict(
+  provider: string,
+  baseURL: string,
+): "missing" | "invalid" | null {
   const stated = baseURL.trim();
   if (provider === "openai-compatible") {
-    return !stated || !isValidHttpUrl(stated);
+    if (!stated) return "missing";
+    return isValidHttpUrl(stated) ? null : "invalid";
   }
   if (provider === "openrouter") {
     // Optional: no endpoint is the DEFAULT and is correct. One that was typed still has to work,
     // because `cfg.baseURL || OPENROUTER_BASE_URL` hands the typed value straight to the client.
-    return Boolean(stated) && !isValidHttpUrl(stated);
+    return stated && !isValidHttpUrl(stated) ? "invalid" : null;
   }
-  return false;
+  return null;
 }
 
 export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
@@ -394,14 +403,22 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
   } as const;
   if (!modelConfigSchema.safeParse(input.modelConfig).success) {
     issues.push({ ...modelTarget });
-  } else if (
-    endpointUnusable(input.modelProvider, input.modelBaseURL ?? "") &&
+  } else {
+    const endpoint = endpointVerdict(
+      input.modelProvider,
+      input.modelBaseURL ?? "",
+    );
     // An endpoint can still ARRIVE on a credential the vault has not answered for yet, and calling
     // a runnable model broken is the false alarm the null-until-loaded rule exists to prevent. Same
-    // wait the three overrides take, and for the same reason.
-    !(known === null && Boolean(input.modelCredentialRef))
-  ) {
-    issues.push({ ...modelTarget, key: "modelNoEndpoint" });
+    // wait the three overrides take, and for the same reason — and it applies to the MISSING verdict
+    // only: a stated endpoint that cannot be dialled is settled whatever the vault says, since a
+    // credential's own base URL would replace it and there is nothing to wait for either way.
+    const owed = known === null && Boolean(input.modelCredentialRef);
+    if (endpoint === "invalid") {
+      issues.push({ ...modelTarget, key: "modelBadEndpoint" });
+    } else if (endpoint === "missing" && !owed) {
+      issues.push({ ...modelTarget, key: "modelNoEndpoint" });
+    }
   }
   push(
     { key: "model", tab: "general", sectionId: "general-model" },

@@ -119,7 +119,9 @@ describe("computeConfigIssues", () => {
       bag: { provider: "openai-compatible", model: "", baseURL: "llama:8080" },
       provider: "openai-compatible",
       baseURL: "llama:8080",
-      expected: ["modelNoEndpoint"],
+      // Stated and undialable is a DIFFERENT sentence from stated-nowhere: one is a field to fill,
+      // the other a value to correct.
+      expected: ["modelBadEndpoint"],
     },
     {
       // The second provider that READS the field: `cfg.baseURL || OPENROUTER_BASE_URL` hands a typed
@@ -128,7 +130,7 @@ describe("computeConfigIssues", () => {
       bag: { provider: "openrouter", model: "x", baseURL: "llama:8080" },
       provider: "openrouter",
       baseURL: "llama:8080",
-      expected: ["modelNoEndpoint"],
+      expected: ["modelBadEndpoint"],
     },
     {
       // …and no endpoint at all is openrouter's normal, correct configuration.

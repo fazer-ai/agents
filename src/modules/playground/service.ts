@@ -23,8 +23,8 @@ import { undoRefusedTurn } from "@/graph/refused-turn";
 import {
   customerFacingReply,
   followupSilenceChannel,
+  inertToolsFor,
   proactiveReply,
-  SKIP_REPLY_TOOL,
   withFollowupSilenceChannel,
   withoutLoneSilenceTool,
 } from "@/graph/silence";
@@ -203,6 +203,9 @@ export function toPlaygroundInvokeError(e: unknown): AppError {
 export function applyToolMocks(
   tools: StructuredToolInterface[],
   mocks: Record<string, string> | undefined,
+  // Tool names that are OURS rather than the operator's, from `inertToolsFor`. Empty by default,
+  // which is every caller that has no protocol tool to protect.
+  protocol: ReadonlySet<string> = new Set(),
 ): StructuredToolInterface[] {
   const names = new Set(Object.keys(mocks ?? {}));
   // THE PROTOCOL TOOL IS NOT THE OPERATOR'S TO MOCK, the same exemption and the same reason
@@ -211,7 +214,12 @@ export function applyToolMocks(
   // is not read as a decision to stay quiet — the graph asks the model again and the simulation
   // writes a follow-up production would have stayed silent on, which is the one decision the
   // playground exists to show (round 12).
-  names.delete(SKIP_REPLY_TOOL);
+  //
+  // BY IDENTITY, NEVER BY NAME (round 14). With natives revoked the tool under this name is the
+  // operator's own HTTP tool, which really calls something: refusing their mock there would have the
+  // playground hit the live endpoint — a simulation with side effects, which is the one thing it
+  // exists not to have.
+  for (const n of protocol) names.delete(n);
   if (names.size === 0) return tools;
   return tools.map((tl) =>
     names.has(tl.name)
@@ -373,18 +381,23 @@ async function buildPlaygroundGraph(params: {
     flow: params.flow,
   });
   const toolMocks = params.overrides?.toolMocks;
+  // Which names are OURS in this turn's toolset rather than the operator's — the question every rule
+  // below asks, and the one a name alone cannot answer.
+  const protocol = inertToolsFor(loaded);
+  const mocked = applyToolMocks(rawTools, toolMocks, protocol);
   const tools = params.silenceProtocol
     ? // Same rule production applies, on the same list: a toolset that is nothing but the protocol
       // tool belongs to an agent that is tool-less in practice, and binding it here would simulate a
       // follow-up production never runs.
-      withoutLoneSilenceTool(applyToolMocks(rawTools, toolMocks))
-    : applyToolMocks(rawTools, toolMocks);
+      withoutLoneSilenceTool(loaded, mocked)
+    : mocked;
   // Trace labels: which tool names are mocked (operator) vs simulated (conversation natives that the
   // agent actually has, minus any the operator mocked — the mock takes precedence).
-  // `skip_reply` is never among them: `applyToolMocks` refuses it, and a label saying otherwise
-  // would tell the operator a mock applied that did not.
+  // Our own protocol tool is never among them: `applyToolMocks` refuses a mock on it, and a label
+  // saying otherwise would tell the operator a mock applied that did not. A tool of THEIRS that
+  // merely shares the name does take its mock, and is labelled like any other.
   const mockedNames = new Set(
-    Object.keys(toolMocks ?? {}).filter((n) => n !== SKIP_REPLY_TOOL),
+    Object.keys(toolMocks ?? {}).filter((n) => !protocol.has(n)),
   );
   const toolNames = new Set(tools.map((tl) => tl.name));
   const simulatedNames = new Set(

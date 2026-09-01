@@ -243,8 +243,18 @@ export function skipReplyRan(m: {
 // FOLLOW-UP ONLY, and the scope is the point: an operator who granted `skip_reply` and nothing else
 // gets exactly that on a REACTIVE turn, which is how their agent answers "ok" and "obrigado" with
 // silence. This rule belongs to the path that adds the tool, not to every path that binds one.
+//
+// AND A NAME IS NOT AN IDENTITY, here as everywhere else in this file. With natives revoked, the
+// lone tool under this name is the operator's own HTTP tool — `withFollowupSilenceChannel` refuses to
+// grant over it for exactly that reason — and removing it would delete their only tool from every
+// follow-up because it happens to be spelled like ours. `inertToolsFor` is the one that knows.
 export function withoutLoneSilenceTool<T extends { name: string }>(
+  cfg: { nativeToolsAllow?: string[] },
   tools: T[],
 ): T[] {
-  return tools.length === 1 && tools[0]?.name === SKIP_REPLY_TOOL ? [] : tools;
+  return tools.length === 1 &&
+    tools[0]?.name === SKIP_REPLY_TOOL &&
+    inertToolsFor(cfg).has(SKIP_REPLY_TOOL)
+    ? []
+    : tools;
 }

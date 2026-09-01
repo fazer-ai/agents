@@ -880,6 +880,7 @@ export async function runAgentNudge(
   // schemas costs the entire follow-up (round 12). `followupSilenceChannel` then reads `sentinel`
   // off this same list, so the directive and the binding cannot disagree.
   const tools = withoutLoneSilenceTool(
+    nudgeCfg,
     await buildToolset(
       nudgeCfg,
       {

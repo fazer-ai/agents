@@ -217,32 +217,61 @@ describe("followupSilenceChannel — what the directive may ASK for", () => {
 
 describe("withoutLoneSilenceTool — our tool is never the only one", () => {
   const t = (name: string) => ({ name });
+  // Ours is bound: the grant left `skip_reply` in the allowlist, so the native wins the name.
+  const OURS = { nativeToolsAllow: [SKIP_REPLY_TOOL] };
 
   // Round 12, the defect. A source that is configured and yields nothing (an MCP server that is
   // down) left the grant handing a lone function schema to an endpoint that had been running
   // tool-less on the sentinel: the whole follow-up fails at the provider instead of one token
   // leaking. Only the assembled list can tell the two apart.
   test("a toolset that is nothing but the channel is a tool-less agent", () => {
-    expect(withoutLoneSilenceTool([t(SKIP_REPLY_TOOL)])).toEqual([]);
+    expect(withoutLoneSilenceTool(OURS, [t(SKIP_REPLY_TOOL)])).toEqual([]);
+    // An undefined allowlist means every native is granted, so the name is ours there too.
+    expect(
+      withoutLoneSilenceTool({ nativeToolsAllow: undefined }, [
+        t(SKIP_REPLY_TOOL),
+      ]),
+    ).toEqual([]);
   });
 
   test("anything else beside it, and it stays", () => {
     expect(
-      withoutLoneSilenceTool([t(SKIP_REPLY_TOOL), t("cep")]).map((x) => x.name),
+      withoutLoneSilenceTool(OURS, [t(SKIP_REPLY_TOOL), t("cep")]).map(
+        (x) => x.name,
+      ),
     ).toEqual([SKIP_REPLY_TOOL, "cep"]);
     expect(
-      withoutLoneSilenceTool([t("cep"), t(SKIP_REPLY_TOOL)]).map((x) => x.name),
+      withoutLoneSilenceTool(OURS, [t("cep"), t(SKIP_REPLY_TOOL)]).map(
+        (x) => x.name,
+      ),
     ).toEqual(["cep", SKIP_REPLY_TOOL]);
   });
 
-  test("a lone tool that is somebody else's is not ours to remove", () => {
-    expect(withoutLoneSilenceTool([t("cep")]).map((x) => x.name)).toEqual([
-      "cep",
-    ]);
+  test("a lone tool under another name is not ours to remove", () => {
+    expect(withoutLoneSilenceTool(OURS, [t("cep")]).map((x) => x.name)).toEqual(
+      ["cep"],
+    );
+  });
+
+  // Round 14, and the same mistake this whole file keeps correcting: a NAME is not an identity. With
+  // natives revoked the lone tool under that name is the operator's own HTTP tool — the grant
+  // refuses to install over it for exactly that reason — and removing it would delete their only
+  // tool from every follow-up because it happens to be spelled like ours.
+  test("a lone tool that is theirs under OUR name is not ours to remove", () => {
+    expect(
+      withoutLoneSilenceTool({ nativeToolsAllow: [] }, [
+        t(SKIP_REPLY_TOOL),
+      ]).map((x) => x.name),
+    ).toEqual([SKIP_REPLY_TOOL]);
+    expect(
+      withoutLoneSilenceTool({ nativeToolsAllow: ["private_note"] }, [
+        t(SKIP_REPLY_TOOL),
+      ]).map((x) => x.name),
+    ).toEqual([SKIP_REPLY_TOOL]);
   });
 
   test("an empty toolset stays empty", () => {
-    expect(withoutLoneSilenceTool([])).toEqual([]);
+    expect(withoutLoneSilenceTool(OURS, [])).toEqual([]);
   });
 
   // The pair, again as one obligation: what the drop leaves is what the directive may ask for.
@@ -250,13 +279,22 @@ describe("withoutLoneSilenceTool — our tool is never the only one", () => {
     const granted = withFollowupSilenceChannel({
       nativeToolsAllow: [] as string[],
     });
-    const built = withoutLoneSilenceTool([{ name: SKIP_REPLY_TOOL }]);
+    const built = withoutLoneSilenceTool(granted, [{ name: SKIP_REPLY_TOOL }]);
     expect(followupSilenceChannel(granted, built)).toBe("sentinel");
-    const withOther = withoutLoneSilenceTool([
+    const withOther = withoutLoneSilenceTool(granted, [
       { name: SKIP_REPLY_TOOL },
       { name: "cep" },
     ]);
     expect(followupSilenceChannel(granted, withOther)).toBe("tool");
+    // ...and for the agent whose own tool holds the name, the grant never fired, the drop leaves it
+    // standing, and the directive falls back to the sentinel it can actually speak.
+    const theirs = withFollowupSilenceChannel({
+      nativeToolsAllow: [] as string[],
+      httpToolDefs: [{ name: SKIP_REPLY_TOOL }],
+    });
+    const kept = withoutLoneSilenceTool(theirs, [{ name: SKIP_REPLY_TOOL }]);
+    expect(kept).toHaveLength(1);
+    expect(followupSilenceChannel(theirs, kept)).toBe("sentinel");
   });
 });
 

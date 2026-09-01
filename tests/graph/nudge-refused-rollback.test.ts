@@ -84,6 +84,36 @@ class RetiringModel extends BaseChatModel {
   }
 }
 
+// A follow-up that ACTS and then goes quiet — the shape the proactive rollback plan cannot clean,
+// because directive and act are one slice there and any tool call keeps the whole thing.
+class LabelsThenSkipsModel {
+  async invoke(): Promise<AIMessage> {
+    return new AIMessage(FOLLOWUP_SKIP_SENTINEL);
+  }
+  bindTools(_tools: unknown) {
+    const self = this;
+    let n = 0;
+    return {
+      async invoke(): Promise<AIMessage> {
+        n++;
+        if (n === 1) {
+          return new AIMessage({
+            content: "",
+            tool_calls: [
+              {
+                name: "assign_label",
+                args: { scope: "conversation", label: "follow-up" },
+                id: "call_label",
+              },
+            ],
+          });
+        }
+        return self.invoke();
+      },
+    };
+  }
+}
+
 // The same shape as RetiringModel, with an ASYNC hook: the case below has to take a claim from
 // inside the generation, which is the only stretch where "another replica started while this turn
 // was thinking" can be expressed.
@@ -621,9 +651,52 @@ describe.skipIf(!dbUp)(
       expect(
         after.filter((m) => textOf(m).includes(FOLLOWUP_SKIP_SENTINEL)),
       ).toEqual([]);
-      // The directive goes with it: this process wrote it, the customer never saw either half, and
-      // leaving a nudge marker with no answer is a turn the next reader cannot make sense of.
-      expect(after.some((m) => isNudgeTurn(m))).toBe(false);
+      // The DIRECTIVE stays, and round 19 is why: silence and refusal want different plans. The
+      // proactive plan takes directive and answer together and must therefore keep everything the
+      // moment a tool ran — right for a refusal, and it would leave the token untouched on any
+      // follow-up that labelled the conversation before going quiet. The reactive plan names the
+      // trailing assistant run instead, so the act (and the directive) stay and only the sentence
+      // nobody read comes out. An event the agent chose not to answer is what actually happened.
+      expect(after.some((m) => isNudgeTurn(m))).toBe(true);
+    });
+
+    // The case that forced the plan swap: a follow-up that DID something and then went quiet. The
+    // proactive plan answers `tool-ran` here and removes not one word.
+    test("a silent follow-up that ran a tool still loses its token", async () => {
+      const contactInboxId = 7261;
+      await seedConv(9261, contactInboxId);
+      const graphThreadId = contactInboxThreadId(
+        tenantId,
+        instanceId,
+        contactInboxId,
+      );
+      const checkpointer = new MemorySaver();
+      await seedHistory(checkpointer, graphThreadId);
+      const s = stub();
+      const outcome = await runAgentNudge({
+        tenantId,
+        threadId: `${tenantId}:${instanceId}:9261`,
+        nudge: { source: "followup", kind: "inactivity", step: 1 },
+        base: appDb,
+        deps: {
+          makeModel: () =>
+            new LabelsThenSkipsModel() as unknown as BaseChatModel,
+          makeClient: s.makeClient,
+          checkpointer,
+          persistUsage: async () => {},
+        },
+      });
+      expect(outcome).toBe("silent");
+      expect(s.messages).toEqual([]);
+      const after = await channel(checkpointer, graphThreadId);
+      expect(
+        after.filter((m) => textOf(m).includes(FOLLOWUP_SKIP_SENTINEL)),
+      ).toEqual([]);
+      // The ACT keeps its record: a label really was applied, and no removal here can undo it.
+      expect(after.some((m) => m.getType() === "tool")).toBe(true);
+      expect(
+        after.some((m) => ((m as AIMessage).tool_calls?.length ?? 0) > 0),
+      ).toBe(true);
     });
 
     // The scope, pinned. A turn that produced no text at all left nothing to be read as something

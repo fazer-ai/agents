@@ -1429,11 +1429,22 @@ export async function runAgentNudge(
   ): Promise<void> => {
     if (!wroteText) return;
     const plan = await undoRefusedTurn({
-      inertTools: inertToolsFor(nudgeCfg),
       checkpointer,
       graphThreadId,
       produced: result.messages,
-      kind: "proactive",
+      // THE REACTIVE PLAN, on the proactive path, and the two are not interchangeable here. The
+      // proactive plan takes the whole turn — directive and answer — and therefore has to keep
+      // EVERYTHING the moment a tool ran, because the directive and the act are one slice and no
+      // removal can undo an act. That is right for a REFUSAL, where the question is whether the turn
+      // may be erased. It is wrong for SILENCE: a follow-up that labelled the conversation and then
+      // said nothing leaves the token in the thread, and `tool-ran` removes not one word of it.
+      //
+      // The reactive plan names the removable part directly — the trailing run of assistant messages
+      // that neither called a tool nor are a tool result — so the act sits OUTSIDE it by
+      // construction: the tool call and its result stay, and only the sentence nobody read comes
+      // out. The directive stays with them, which is the more faithful history anyway: an event the
+      // agent chose not to answer is exactly what happened (#455, review round 19).
+      kind: "reactive",
       owner: graphOwner,
       base,
     }).catch((err) => {

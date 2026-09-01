@@ -449,8 +449,11 @@ export function ToolTestModal({
                       placeholder={
                         canSendEmpty
                           ? sendEmpty[f.name]
-                            ? t("tools.testEmptyString", '"" (empty string)')
-                            : t("tools.testNotSent", "will not be sent")
+                            ? t("tools.testEmptyString", 'goes in empty: ""')
+                            : t(
+                                "tools.testNotSent",
+                                "not included in the request",
+                              )
                           : undefined
                       }
                     />
@@ -465,7 +468,15 @@ export function ToolTestModal({
                         }
                         label={t(
                           "tools.testSendEmpty",
-                          'Send as an empty string ("")',
+                          "Send it as empty in the request",
+                        )}
+                        // A switch's label only ever describes the ON state, so the OFF one is left
+                        // to inference — and here OFF is the surprising half: the field vanishes
+                        // from the payload with nothing on screen saying so. The help carries that,
+                        // plus the reason anyone would want the other one.
+                        help={t(
+                          "tools.testSendEmptyHelp",
+                          "If unchecked, the field is not included in the request. Checked, it goes with the empty string, which is how a value is cleared at the provider.",
                         )}
                       />
                     )}

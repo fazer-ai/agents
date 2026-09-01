@@ -324,6 +324,13 @@ test("an empty string reaches the wire when the field takes one", async () => {
   // required one's blank box has nothing to disambiguate — it cannot be omitted — so a toggle
   // there would offer a request the definition cannot make.
   expect(screen.getAllByRole("switch")).toHaveLength(1);
+  // A switch's label only describes the ON state, so the OFF one — the field disappearing from the
+  // payload — has to be written down somewhere. It is the half nobody guesses.
+  expect(
+    screen.getByRole("button", {
+      name: /Show help: Send it as empty in the request/,
+    }),
+  ).toBeInTheDocument();
   fireEvent.click(screen.getByText("Send request"));
   await waitFor(() => expect(sent.body).toBeDefined());
   expect((sent.body as { args: unknown }).args).toEqual({ note: "" });
@@ -343,9 +350,13 @@ test("and an optional field says so explicitly, because a blank box cannot", asy
   // rewrote itself on click, so it had no identity to scan a form for and had to be read twice to
   // be used once. The STATE moved to where the operator is already looking: the placeholder of the
   // blank box the toggle is about.
-  expect(screen.getByPlaceholderText("will not be sent")).toBeInTheDocument();
-  fireEvent.click(screen.getByLabelText(/Send as an empty string/));
-  expect(screen.getByPlaceholderText('"" (empty string)')).toBeInTheDocument();
+  expect(
+    screen.getByPlaceholderText("not included in the request"),
+  ).toBeInTheDocument();
+  fireEvent.click(
+    screen.getByRole("switch", { name: /Send it as empty in the request/ }),
+  );
+  expect(screen.getByPlaceholderText('goes in empty: ""')).toBeInTheDocument();
   fireEvent.click(screen.getByText("Send request"));
   await waitFor(() => expect(sent.body).toBeDefined());
   expect((sent.body as { args: unknown }).args).toEqual({ tag: "" });

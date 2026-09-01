@@ -1672,6 +1672,20 @@ export async function runLoadedTurn(
             String(conversationId),
             plan.ids.length,
           );
+        } else if (plan?.reason === "already-gone") {
+          // NOT A MISS: the words are not in the thread, which is the whole goal. This is what a
+          // REFUSAL after the silence looks like — a takeover, a supersede, a `/reset` — because
+          // every refusal exits through `refuse`, whose own rollback removes the same messages.
+          //
+          // The two race, and this side always loses: `return refuse(...)` is not awaited, so this
+          // `finally` runs while that rollback is still in flight, and the `ingest:` queue decides
+          // the order. Clearing a flag inside `refuse` cannot fix it — this block has already read
+          // it by then (measured, round 25). Reading the OUTCOME instead of the ordering is what
+          // makes the answer stable.
+          logger.info(
+            "turn: the token-silenced turn was already taken back out: conv=%s",
+            String(conversationId),
+          );
         } else {
           // Named rather than silent: the history still holds a message the customer never received,
           // which is the compounding this exists to stop.

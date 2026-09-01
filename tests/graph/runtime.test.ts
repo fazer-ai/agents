@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { rm } from "node:fs/promises";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { AIMessage, type BaseMessage } from "@langchain/core/messages";
@@ -8,6 +8,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { setPublisher, TOPICS } from "@/api/features/realtime/realtime.service";
 import { encryptJson } from "@/api/lib/crypto";
+import logger from "@/api/lib/logger";
 import { computeConfigIssues } from "@/client/lib/configHealth";
 import { contactInboxThreadId } from "@/graph/checkpointer";
 import {
@@ -1467,6 +1468,71 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     });
     expect(outcome).toBe("taken-over");
     expect(sent).toEqual([]);
+  });
+
+  // Round 25. A turn silenced by the TOKEN arms a rollback for the `finally`, and it can still be
+  // refused afterwards — a takeover, a supersede, a `/reset`. `refuse` then removes the same
+  // messages, and the armed rollback ran a second time: it took the ingest claim, read the channel,
+  // found nothing left and logged "could not roll back" — a warning about a removal that succeeded.
+  test("a token-silenced turn that is then refused is not rolled back twice", async () => {
+    await seedConversation(9462, null);
+    const warn = spyOn(logger, "warn");
+    const sent: Array<[number, string]> = [];
+    try {
+      const outcome = await runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: incoming({ conversationId: 9462 }),
+        base: appDb,
+        deps: {
+          makeModel: () =>
+            new FakeListChatModel({ responses: [FOLLOWUP_SKIP_SENTINEL] }),
+          makeClient: makeStubClient(sent),
+          checkpointer: new MemorySaver(),
+        },
+      });
+      // The takeover fixture above: `seedConversation(_, "User")` is what makes the recheck lose, so
+      // this one is only silenced. Kept as the control that the warning is absent because nothing
+      // failed, not because the branch never ran.
+      expect(outcome).toBe("empty");
+      expect(sent).toEqual([]);
+      const said = warn.mock.calls.map((c) => JSON.stringify(c));
+      expect(
+        said.filter((c) => c.includes("could not roll back a token-silenced")),
+      ).toEqual([]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  test("a token-silenced turn refused by a takeover logs no failed rollback", async () => {
+    await seedConversation(9463, "User");
+    const warn = spyOn(logger, "warn");
+    const sent: Array<[number, string]> = [];
+    try {
+      const outcome = await runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: incoming({ conversationId: 9463 }),
+        base: appDb,
+        deps: {
+          makeModel: () =>
+            new FakeListChatModel({ responses: [FOLLOWUP_SKIP_SENTINEL] }),
+          makeClient: makeStubClient(sent),
+          checkpointer: new MemorySaver(),
+        },
+      });
+      expect(outcome).toBe("taken-over");
+      expect(sent).toEqual([]);
+      const said = warn.mock.calls.map((c) => JSON.stringify(c));
+      expect(
+        said.filter((c) => c.includes("could not roll back a token-silenced")),
+      ).toEqual([]);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   // NOTE: Both of these lose the ownership recheck and return the same "taken-over". What they must

@@ -292,8 +292,14 @@ function silenceNarration(history: BaseMessage[]): BaseMessage[] {
 // the skip tool's acknowledgement, which would otherwise be delivered to the customer as the reply.
 //
 // A message with tool_calls is not this, whatever its content: it is the call, and removing it
-// orphans every `tool_call_id` after it. Nor is one with `invalid_tool_calls`, for the same reason
-// `silenceNarration` carries them: they are the record of a call that failed to parse.
+// orphans every `tool_call_id` after it.
+//
+// `invalid_tool_calls` is the opposite case, and the asymmetry is the point. A call that failed to
+// parse is never executed, so `toolsCondition` ends the graph and no `ToolMessage` ever answers it —
+// and `@langchain/openai` stores the RAW calls in `additional_kwargs.tool_calls` and replays those
+// whenever `tool_calls` is empty, so keeping such a turn hands the provider an assistant tool call
+// with no response and every later turn on that thread is rejected. Dropping it is what keeps the
+// thread usable; a repair round, not a filter exception, is what would preserve the record.
 //
 // And "no TEXT" is not the question (round 31). A provider can answer with reasoning or an image and
 // nothing else, and Anthropic's `thinking` is signed; a turn carrying any non-text block is output,
@@ -303,7 +309,6 @@ function isEmptyAssistantTurn(m: BaseMessage): boolean {
   if (m.getType() !== "ai") return false;
   const ai = m as AIMessage;
   if ((ai.tool_calls?.length ?? 0) > 0) return false;
-  if ((ai.invalid_tool_calls?.length ?? 0) > 0) return false;
   if (Array.isArray(ai.content) && textlessContent(ai.content).length > 0) {
     return false;
   }

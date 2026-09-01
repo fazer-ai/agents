@@ -1157,10 +1157,12 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     expect(seen).toEqual([0, 1]);
   });
 
-  // Same round, the other record the filter was erasing. A call the adapter could not parse arrives
-  // as `invalid_tool_calls` with nothing in `content`, and it is what the model asked for: dropping
-  // it hands the next round a history in which the malformed call never happened.
-  test("a turn whose only record is an unparseable call still reaches the model", async () => {
+  // Round 1 of the follow-up, and it is the case the guard above must NOT make an exception for. A
+  // call that failed to parse is never executed, so `toolsCondition` ends the graph and nothing ever
+  // answers it — and `@langchain/openai` keeps the RAW calls in `additional_kwargs.tool_calls` and
+  // replays those whenever `tool_calls` is empty. Keeping that turn hands OpenAI an assistant tool
+  // call with no tool response, which it rejects, and every later turn on the thread dies with it.
+  test("a turn whose only record is an unparseable call never reaches the model", async () => {
     const seen: number[] = [];
     class RecordsInvalidCallTurns {
       round = 0;
@@ -1194,7 +1196,7 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     const cfg = { configurable: { thread_id: "invalid-call-only-turn" } };
     await graph.invoke({ messages: [new HumanMessage("ok")] }, cfg);
     await graph.invoke({ messages: [new HumanMessage("e aí?")] }, cfg);
-    expect(seen).toEqual([0, 1]);
+    expect(seen).toEqual([0, 0]);
   });
 
   // The other side of the same guard: a block list is not automatically output. A provider that

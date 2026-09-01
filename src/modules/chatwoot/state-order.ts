@@ -67,6 +67,8 @@
  * apart into one version.
  */
 
+import { statusClaimRefuses } from "./status-claim";
+
 export interface StatePayload {
   /** `conversation.updated_at`. Null on a Chatwoot older than 4.0.2, which sends no version. */
   version: number | null;
@@ -99,6 +101,8 @@ export interface StatePayload {
 
 /** The ordering state already stored for this conversation. Null when there is no row yet. */
 export interface StateRow {
+  /** The status currently stored, which only the claim rule below reads. */
+  status: string;
   activityAt: Date | null;
   statusAt: number | null;
   assigneeAt: number | null;
@@ -110,6 +114,13 @@ export interface StateRow {
    * having neither is silence.
    */
   redirectOriginKnown: boolean;
+  /**
+   * THE LOCAL CLAIM (issue #436): a status written on this side that the source has not versioned,
+   * and the instant it stops fencing. `from` is the status it replaced, which is the only one it
+   * refuses. Both null when nothing local is outstanding. See ./status-claim.ts.
+   */
+  statusClaimUntil: Date | null;
+  statusClaimFrom: string | null;
 }
 
 export interface StateDecision {
@@ -312,7 +323,19 @@ export function decideConversationWrites(
     payload.reopensConversation &&
     (row.statusAt === null ||
       Math.floor(eventAt.getTime() / 1000) >= Math.floor(row.statusAt));
-  const writeStatus = statusOrdered || reopenOrdered;
+  // A LOCAL CLAIM OUTRANKS BOTH ROUTES ABOVE, and it is the only rule here that is not about a
+  // version — because the write it protects had none to claim. A payload restating the status the
+  // claim replaced is a snapshot from before that write, whichever axis it would have won on: the
+  // reopen exception carries one (a customer message frozen while the toggle was on the wire), and
+  // the ordinary ordered path carries the other (a delayed or companion `conversation_*` event, which
+  // outranks a mark the claim never advanced). ./status-claim.ts holds the reasoning and the reason
+  // this refuses ONE status rather than the field.
+  const claimed = statusClaimRefuses(
+    row,
+    { status: payload.status, reopens: payload.reopensConversation },
+    now,
+  );
+  const writeStatus = !claimed && (statusOrdered || reopenOrdered);
   const status = writeStatus ? payload.status : null;
 
   // NOTE: One rule for the EQUAL-version case, so the outcome cannot depend on delivery order. A

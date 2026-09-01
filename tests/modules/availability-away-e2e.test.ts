@@ -705,14 +705,15 @@ describe.skipIf(!dbUp)("out-of-hours away message (issue #153)", () => {
       query: {
         conversation: {
           async findUnique({ args, query }) {
-            // The fence's read is the narrow one: assigneeType + assigneeId + status + the status
-            // version, and nothing else. The mirror also reads assigneeId, but along with the row id
-            // and its clocks.
+            // The fence's read is the narrow one: assigneeType + assigneeId + status, the status
+            // version, and the local status claim (issue #436) — and nothing else. The mirror also
+            // reads assigneeId, but along with the row id and its clocks.
             const sel = args.select as Record<string, unknown> | undefined;
             if (
               sel?.assigneeId === true &&
               sel?.chatwootStatusAt === true &&
-              Object.keys(sel).length === 4
+              sel?.statusClaimUntil === true &&
+              Object.keys(sel).length === 6
             ) {
               fenceReads += 1;
               throw new Error("ownership read exploded");

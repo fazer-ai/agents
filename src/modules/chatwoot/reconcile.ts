@@ -3,6 +3,7 @@ import { withEntityLock } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clearsResolutionOrigin } from "@/modules/conversations/resolution-origin";
 import type { LiveConversationState } from "./normalize";
+import { statusClaimRefuses } from "./status-claim";
 
 // Applies a LIVE conversation snapshot (a REST `GET /conversations/:id`) to the mirror row, under the
 // same ordering rule the webhook mirror uses.
@@ -58,6 +59,17 @@ export interface ReconcileFromLiveParams {
   // The Chatwoot display id, as used by the mirror's unique key.
   conversationId: number;
   live: LiveConversationState;
+  /**
+   * The local status claim this caller is holding, when it is holding one (issue #436). A claim
+   * fences the status against payloads serialized before the write that took it; this read is not
+   * one of those — it is what EARNS that write the version it was made without — so its owner passes
+   * the deadline it wrote and is let through.
+   *
+   * Null for every other caller, and that is the safe default rather than a formality: the nudge's
+   * probe is a plain live read, and a Chatwoot that has not yet committed somebody else's toggle
+   * would answer it with the pre-toggle status and undo the claim through this write.
+   */
+  ownsStatusClaim?: Date | null;
   base: PrismaClient;
 }
 
@@ -98,6 +110,8 @@ export async function reconcileMirrorFromLive(
             chatwootStatusAt: true,
             resolvedByAt: true,
             chatwootAssigneeAt: true,
+            statusClaimUntil: true,
+            statusClaimFrom: true,
           },
         });
         if (!current) return;
@@ -137,13 +151,40 @@ export async function reconcileMirrorFromLive(
           liveVersion !== null && mark !== null
             ? liveVersion >= mark
             : !activityStale;
-        const statusOrdered = orderedBy(current.chatwootStatusAt);
+        // NOTE: A LOCAL CLAIM SOMEBODY ELSE IS HOLDING fences the status here for the same reason it
+        // does in the mirror: this snapshot may have been read before that write reached Chatwoot,
+        // and it carries no way to tell. Asked of the status the snapshot STATES, so a read that
+        // agrees with the claim's new status is not refused by it. ./status-claim.ts.
+        const ours =
+          params.ownsStatusClaim != null &&
+          current.statusClaimUntil != null &&
+          params.ownsStatusClaim.getTime() ===
+            current.statusClaimUntil.getTime();
+        const claimed =
+          !ours &&
+          statusClaimRefuses(
+            current,
+            // NOTE: A live snapshot is never a message, so it can never be the source's own reopen —
+            // the same reading `clearsResolutionOrigin` is handed below, for the same reason.
+            { status: live.status, reopens: false },
+            new Date(),
+          );
+        const statusRanked = orderedBy(current.chatwootStatusAt);
+        const statusOrdered = !claimed && statusRanked;
         const assigneeOrdered = orderedBy(current.chatwootAssigneeAt);
         // NOTE: A field the snapshot LOST while a version could rank it — the row holds a strictly
         // newer write, which a caller must not paper over.
+        //
+        // The VERSION comparison and not `statusOrdered`, so a claim cannot be reported as one. The
+        // two answers are read for opposite purposes: this one tells the console its click was
+        // beaten by something newer and it must stand down, and a claim is the exact opposite
+        // situation — an unconfirmed local write, which a fresh command outranks by being newer than
+        // it. Folded in, the console would return early on `outrankedByVersion` and its own
+        // unversioned fallback — the write that makes the operator's action visible at all — would
+        // never run.
         result.outrankedByVersion =
           liveVersion !== null &&
-          ((!statusOrdered && current.chatwootStatusAt !== null) ||
+          ((!statusRanked && current.chatwootStatusAt !== null) ||
             (!assigneeOrdered && current.chatwootAssigneeAt !== null));
         result.applied = statusOrdered && assigneeOrdered;
         // NOTE: The recency this write leaves in the row, computed once so the caller announces the

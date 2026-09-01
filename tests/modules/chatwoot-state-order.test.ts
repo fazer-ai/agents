@@ -18,6 +18,10 @@ const LATER = new Date("2026-08-15T11:30:00.000Z");
 const V_OLD = 1_776_000_000.101;
 const V_NOW = 1_776_000_000.202;
 const V_NEW = 1_776_000_000.303;
+// A claim's deadline, either side of the caller's clock. `decideConversationWrites` is handed `NOW`,
+// so these are what "still standing" and "ran out" look like to it.
+const CLAIM_LIVE = new Date(NOW.getTime() + 30_000);
+const CLAIM_EXPIRED = new Date(NOW.getTime() - 1);
 
 function conversationEvent(over: Partial<StatePayload> = {}): StatePayload {
   return {
@@ -44,12 +48,15 @@ function messageEvent(over: Partial<StatePayload> = {}): StatePayload {
 
 function storedRow(over: Partial<StateRow> = {}): StateRow {
   return {
+    status: "open",
     activityAt: LATER,
     statusAt: V_NOW,
     assigneeAt: V_NOW,
     assigneeType: "AgentBot",
     redirectOriginAt: null,
     redirectOriginKnown: false,
+    statusClaimUntil: null,
+    statusClaimFrom: null,
     ...over,
   };
 }
@@ -371,6 +378,118 @@ const CASES: Case[] = [
     payload: messageEvent({ redirectOriginStated: true }),
     row: null,
     want: { redirectOrigin: true, redirectOriginAt: V_NEW },
+  },
+
+  // ── THE LOCAL CLAIM (issue #436) ──
+  //
+  // A status this side wrote that the source has not versioned. It is the one ordering input here
+  // that does not come from Chatwoot, and it exists because no reading of `updated_at` can separate a
+  // snapshot taken before that write from one taken after it: a customer message advances the
+  // conversation's version on its own account. ../../src/modules/chatwoot/status-claim.ts.
+  {
+    // The takeover writes `open` over `pending` and then calls Chatwoot. The customer message
+    // Chatwoot serialized before it committed the toggle still says `pending`, and the reopen
+    // exception is the one rule that lets a message move status at all.
+    name: "a live claim refuses the status it is replacing, carried by a message",
+    payload: messageEvent({
+      reopensConversation: true,
+      activityAt: NOW,
+      status: "pending",
+    }),
+    row: storedRow({
+      status: "open",
+      statusClaimUntil: CLAIM_LIVE,
+      statusClaimFrom: "pending",
+    }),
+    want: { status: null, statusAt: null },
+  },
+  {
+    // The other way in, and it needs no exception: a delayed or companion `conversation_*` event
+    // carrying the same pre-takeover `pending` wins on the ordinary ordered path, because the claim
+    // advanced no mark for it to lose to.
+    name: "a live claim refuses the status it is replacing, carried by a conversation event",
+    payload: conversationEvent({ version: V_NEW, status: "pending" }),
+    row: storedRow({
+      status: "open",
+      statusClaimUntil: CLAIM_LIVE,
+      statusClaimFrom: "pending",
+    }),
+    want: { status: null, statusAt: null },
+  },
+  {
+    // Not a freeze of the field. An operator resolving inside the claim produces ONE event, which we
+    // ack and Chatwoot never redelivers, so a blanket fence would lose it with no later event on a
+    // resolved conversation to repair it.
+    name: "a live claim lets a status it is not replacing through",
+    payload: conversationEvent({ version: V_NEW, status: "resolved" }),
+    row: storedRow({
+      status: "open",
+      statusClaimUntil: CLAIM_LIVE,
+      statusClaimFrom: "pending",
+    }),
+    want: { status: "resolved", statusAt: V_NEW },
+  },
+  {
+    // The one exception, keyed on the status the ROW holds and not on the one the payload carries:
+    // `reopen_conversation` acts on a resolved or snoozed conversation and does nothing at all to an
+    // open or pending one, so on a row we believe is resolved the payload is evidence of a change
+    // made AFTER our write. Measured on the fork, where that same act produces `pending` rather than
+    // `open` on an inbox with an active bot — which is why the rule cannot be written around the
+    // status it produces.
+    name: "a live claim does not refuse the source's own reopen of a resolved conversation",
+    payload: messageEvent({
+      reopensConversation: true,
+      activityAt: NOW,
+      status: "open",
+    }),
+    row: storedRow({
+      status: "resolved",
+      statusClaimUntil: CLAIM_LIVE,
+      statusClaimFrom: "open",
+    }),
+    want: { status: "open" },
+  },
+  {
+    // Same act, on a row nothing can reopen: the payload is carrying the conversation's status
+    // because every message payload embeds a snapshot, which is the whole of issue #61.
+    name: "the reopen exception does not rescue a payload on a row that cannot be reopened",
+    payload: messageEvent({
+      reopensConversation: true,
+      activityAt: NOW,
+      status: "pending",
+    }),
+    row: storedRow({
+      status: "pending",
+      statusClaimUntil: CLAIM_LIVE,
+      statusClaimFrom: "pending",
+    }),
+    want: { status: null },
+  },
+  {
+    // A claim is a deadline, not a flag: the pair is left where the writer put it, so a claim that
+    // ran out and no claim at all are the same answer. Past it, the behaviour is the one this rule
+    // replaced.
+    name: "an expired claim refuses nothing",
+    payload: conversationEvent({ version: V_NEW, status: "pending" }),
+    row: storedRow({
+      status: "open",
+      statusClaimUntil: CLAIM_EXPIRED,
+      statusClaimFrom: "pending",
+    }),
+    want: { status: "pending", statusAt: V_NEW },
+  },
+  {
+    // The console's fallback, which takes the deadline and no status: it writes to Chatwoot FIRST, so
+    // by the time it mirrors there is nothing in flight to fence. The half it needs is read by the
+    // takeover's fence, not here.
+    name: "a claim with no status in flight fences nothing in the mirror",
+    payload: conversationEvent({ version: V_NEW, status: "pending" }),
+    row: storedRow({
+      status: "open",
+      statusClaimUntil: CLAIM_LIVE,
+      statusClaimFrom: null,
+    }),
+    want: { status: "pending", statusAt: V_NEW },
   },
 ];
 

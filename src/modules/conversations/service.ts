@@ -31,6 +31,7 @@ import {
   parseLiveConversation,
 } from "@/modules/chatwoot/normalize";
 import { reconcileMirrorFromLive } from "@/modules/chatwoot/reconcile";
+import { statusClaimDeadline } from "@/modules/chatwoot/status-claim";
 import { recordResolutionOrigin } from "@/modules/conversations/record-resolution";
 import { appointmentPauseApplies } from "@/modules/followups/appointment-pause";
 import { isFollowUpLive } from "@/modules/followups/eligibility";
@@ -620,6 +621,10 @@ async function updateMirror(
     assigneeId?: number | null;
     assigneeType?: string | null;
     assigneeName?: string | null;
+    // The local status claim, when this write is one (issue #436). See ./service.ts's
+    // `mirrorConsoleWrite` for when it is, and chatwoot/status-claim.ts for what it means.
+    statusClaimUntil?: Date | null;
+    statusClaimFrom?: string | null;
   },
 ): Promise<void> {
   await runScopedOn(base, ctx, (db) =>
@@ -684,6 +689,7 @@ async function mirrorConsoleWrite(
   conv: {
     chatwootInstanceId: bigint;
     chatwootConversationId: number;
+    status: string;
     assigneeType: string | null;
     assigneeId: number | null;
   },
@@ -788,7 +794,28 @@ async function mirrorConsoleWrite(
               ? observed.assigneeName
               : null,
         };
-  await updateMirror(ctx, base, id, { ...fallback, ...named });
+  // AND THE UNVERSIONED WRITE ANNOUNCES ITSELF (issue #436). Everything above this line failed to
+  // earn the operator's action a version, so what lands is a status the ordering marks cannot place:
+  // `chatwoot_status_at` stays exactly where the state the operator just replaced left it. A delayed
+  // human-reply delivery then reads this row, finds the hand-back's `pending` indistinguishable from
+  // the `pending` its own payload decided on, passes the takeover's freshness check — which has
+  // nothing to compare, since this write claimed no version — and undoes the click.
+  //
+  // A DEADLINE AND NO REFUSED STATUS, and the asymmetry with the takeover's claim is the whole point.
+  // That one is taken with the transition still on the wire, so until Chatwoot answers, a payload
+  // stating the old status is a snapshot from before it and the mirror must refuse it. Here the order
+  // is reversed: Chatwoot was written to first and has already decided, so there is nothing in flight
+  // to fence, and fencing anyway costs real events — measured, it left the mirror refusing the state
+  // every later payload was reporting. What survives is the half this needs: a local decision exists
+  // that no version can order, which is the question a takeover's fence is asking.
+  //
+  // Only on a real transition: a fallback restating the status the row already holds decided nothing.
+  const claims = fallback.status != null && fallback.status !== conv.status;
+  await updateMirror(ctx, base, id, {
+    ...fallback,
+    ...named,
+    ...(claims ? { statusClaimUntil: statusClaimDeadline(new Date()) } : {}),
+  });
   return { state: null, observed };
 }
 

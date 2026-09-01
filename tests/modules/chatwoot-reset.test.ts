@@ -2577,11 +2577,13 @@ describe.skipIf(!dbUp)(
               // columns, and breaking that one would end the command before it reaches what this
               // test is about.
               if (
-                Object.keys(sel).length === 4 &&
+                Object.keys(sel).length === 6 &&
                 sel.assigneeType === true &&
                 sel.assigneeId === true &&
                 sel.status === true &&
-                sel.chatwootStatusAt === true
+                sel.chatwootStatusAt === true &&
+                sel.statusClaimUntil === true &&
+                sel.statusClaimFrom === true
               ) {
                 fenceReads += 1;
                 return Promise.reject(new Error("connection reset"));
@@ -2680,11 +2682,13 @@ describe.skipIf(!dbUp)(
             findUnique({ args, query }) {
               const sel = (args.select ?? {}) as Record<string, unknown>;
               if (
-                Object.keys(sel).length === 4 &&
+                Object.keys(sel).length === 6 &&
                 sel.assigneeType === true &&
                 sel.assigneeId === true &&
                 sel.status === true &&
-                sel.chatwootStatusAt === true
+                sel.chatwootStatusAt === true &&
+                sel.statusClaimUntil === true &&
+                sel.statusClaimFrom === true
               ) {
                 fenceReads += 1;
                 return Promise.reject(new Error("connection reset"));

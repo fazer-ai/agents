@@ -569,6 +569,29 @@ model Conversation {
   // conversation_updated that announces a new pairing arrives with a FROZEN activity timestamp and a
   // recency fence would discard exactly the payload that carries the answer.
   chatwootRedirectOriginAt Float?    @map("chatwoot_redirect_origin_at")
+  // THE LOCAL STATUS CLAIM (issue #436): a status this side wrote that the source has not versioned,
+  // and the instant that write stops fencing this row. NULL = no local write is outstanding.
+  //
+  // The three marks above order a field by the SOURCE's version. A local write has none to offer —
+  // the toggle endpoint renders a status blob and no `updated_at` (issue #77) — so it lands with the
+  // marks where they were, and every payload still in flight compares greater and undoes it. That is
+  // not an ordering problem with a missing number in it: a customer message advances
+  // `conversation.updated_at` on its own account, so no version can separate a snapshot taken before
+  // our write from one taken after. The claim is therefore the write announcing itself rather than
+  // borrowing a clock.
+  //
+  // A DEADLINE and not a flag, because the only thing that can end it other than the writer is the
+  // writer's death. See src/modules/chatwoot/status-claim.ts for how long and why.
+  statusClaimUntil         DateTime? @map("status_claim_until")
+  // The status the claim is still REPLACING AT THE SOURCE, and the only one it refuses. A payload
+  // restating it while the claim is live is a snapshot from before the write; a payload stating
+  // anything else is news, and refusing that would drop a resolve nothing ever redelivers.
+  //
+  // NULL when the source has already decided — the console writes to Chatwoot and only then mirrors,
+  // so its unversioned fallback (issue #77) has nothing in flight and fences no payload. It still
+  // takes the deadline above, because a delivery deciding from an older payload has no other way to
+  // learn that a local decision exists.
+  statusClaimFrom          String?   @map("status_claim_from")
   // Debounce watermark: the Chatwoot message id of the last inbound message already handled
   // (responded to or deliberately skipped). The flush re-fetches and answers only ids beyond it,
   // so re-arm / retry / a concurrent claim cannot produce a duplicate reply. NULL = nothing handled.

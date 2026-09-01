@@ -177,6 +177,10 @@ export async function mirrorChatwootEvent(
           // Read for the stale branch, which advances this watermark only when the payload really is
           // ahead of it. See the write there.
           lastInboundAt: true,
+          // The local claim, which is the one ordering input that does not come from the source
+          // (issue #436). See ./status-claim.ts.
+          statusClaimUntil: true,
+          statusClaimFrom: true,
         },
       });
       const prevAssigneeId = existing?.assigneeId ?? null;
@@ -184,6 +188,7 @@ export async function mirrorChatwootEvent(
         statePayload,
         existing
           ? {
+              status: existing.status,
               activityAt: existing.lastEventAt,
               statusAt: existing.chatwootStatusAt,
               assigneeAt: existing.chatwootAssigneeAt,
@@ -195,6 +200,8 @@ export async function mirrorChatwootEvent(
               redirectOriginKnown:
                 existing.chatwootRedirectOriginAt != null ||
                 existing.redirectOriginDisplayId != null,
+              statusClaimUntil: existing.statusClaimUntil,
+              statusClaimFrom: existing.statusClaimFrom,
             }
           : null,
         now,

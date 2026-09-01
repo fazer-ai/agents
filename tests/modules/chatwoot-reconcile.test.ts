@@ -41,6 +41,8 @@ let nextConvId = 700;
 
 interface StoredRow {
   status: string;
+  statusClaimUntil: Date | null;
+  statusClaimFrom: string | null;
   assigneeType: string | null;
   assigneeId: number | null;
   lastEventAt: Date | null;
@@ -61,6 +63,8 @@ async function seedRow(over: Partial<StoredRow> = {}): Promise<number> {
       lastEventAt: over.lastEventAt ?? new Date(T * 1000),
       chatwootStatusAt: over.chatwootStatusAt ?? null,
       chatwootAssigneeAt: over.chatwootAssigneeAt ?? null,
+      statusClaimUntil: over.statusClaimUntil ?? null,
+      statusClaimFrom: over.statusClaimFrom ?? null,
       threadId: `${tenantId}:${instanceId}:${chatwootConversationId}`,
     },
   });
@@ -90,8 +94,10 @@ async function applyFor(
     lastActivitySec?: number;
     updatedAt: number | null;
   },
+  ownsStatusClaim: Date | null = null,
 ) {
   return reconcileMirrorFromLive({
+    ownsStatusClaim,
     tenantId,
     instanceId,
     conversationId,
@@ -143,6 +149,51 @@ describe.skipIf(!dbUp)("reconcileMirrorFromLive", () => {
     expect(row.assigneeId).toBe(7);
     expect(row.chatwootStatusAt).toBe(T + 1);
     expect(row.chatwootAssigneeAt).toBe(T + 1);
+  });
+
+  // ── THE LOCAL STATUS CLAIM (issue #436) ──
+  //
+  // A live read is not evidence about a transition still on the wire: Chatwoot may not have committed
+  // it yet, and the snapshot carries no way to say so. The claim is the writer of that transition
+  // announcing it, and this is the second reader of it after the mirror.
+  test("a claim somebody else holds fences the status this read carries", async () => {
+    const id = await seedRow({
+      status: "open",
+      statusClaimUntil: new Date(Date.now() + 30_000),
+      statusClaimFrom: "pending",
+      chatwootStatusAt: T,
+    });
+    // What the proactive nudge's probe sees while a takeover's toggle is on the wire: the source
+    // still says `pending`, and applying it would put the agent back into a conversation a colleague
+    // has just answered in.
+    const result = await applyFor(id, { status: "pending", updatedAt: T + 1 });
+    const row = await readRow(id);
+    expect(row.status).toBe("open");
+    expect(row.chatwootStatusAt).toBe(T);
+    // NOT reported as outranked, which is a different answer with a different consequence: the
+    // console reads it to decide that something strictly newer is in the row and it must stand down,
+    // and a claim is the opposite situation — its own unversioned write, which a fresh command beats.
+    expect(result.outrankedByVersion).toBe(false);
+  });
+
+  test("the caller holding the claim writes through it", async () => {
+    const until = new Date(Date.now() + 30_000);
+    const id = await seedRow({
+      status: "open",
+      statusClaimUntil: until,
+      statusClaimFrom: "pending",
+      chatwootStatusAt: T,
+    });
+    // The takeover's own reconcile, which is what EARNS the claim the version it was taken without.
+    // Read back with the source DISAGREEING, which is the only shape where owning the claim changes
+    // the outcome: a snapshot that agrees states something the claim does not refuse anyway. The
+    // toggle returned, so this is the freshest word there is about a conversation somebody moved back
+    // — and fenced by its own claim the row would sit `open` and unversioned while Chatwoot said
+    // `pending`, with the agent silent on a conversation nobody holds.
+    await applyFor(id, { status: "pending", updatedAt: T + 1 }, until);
+    const row = await readRow(id);
+    expect(row.status).toBe("pending");
+    expect(row.chatwootStatusAt).toBe(T + 1);
   });
 
   test("a webhook that landed after the read wins: nothing is applied over it", async () => {

@@ -1445,6 +1445,52 @@ describe.skipIf(!dbUp)(
         expect((await mirrored(43)).status).toBe("open");
       });
 
+      // ISSUE #436: the fallback is a status write nothing at the source versioned, and the row is
+      // what a delayed human-reply delivery reads to decide whether its own payload is still the most
+      // recent word about this conversation. Without a trace of the click, that delivery's freshness
+      // check has nothing to compare and undoes it. The claim is the write saying it happened; the
+      // versioned path needs none, because the mark it stamps already says so.
+      test("only the unversioned console write leaves a claim behind", async () => {
+        const T = 1_786_515_000;
+        for (const [convId, live] of [
+          [80, undefined],
+          [81, { status: "resolved", lastActivityAt: T, updatedAt: T + 1 }],
+        ] as const) {
+          await mirror({
+            event: "conversation_updated",
+            ...convPayload(convId, {
+              status: "open",
+              lastActivityAt: T,
+              updatedAt: T + 0.1,
+            }),
+          });
+          await setConversationStatus(
+            opCtx(),
+            await rowIdOf(convId),
+            "resolved",
+            { makeClient: stubClient(live).makeClient },
+            appDb,
+          );
+        }
+        const claims = await suDb.conversation.findMany({
+          where: { tenantId, chatwootConversationId: { in: [80, 81] } },
+          select: {
+            chatwootConversationId: true,
+            statusClaimUntil: true,
+            statusClaimFrom: true,
+          },
+          orderBy: { chatwootConversationId: "asc" },
+        });
+        const unversioned = claims[0];
+        expect(unversioned?.statusClaimUntil?.getTime()).toBeGreaterThan(
+          Date.now(),
+        );
+        // No status in flight: Chatwoot was written to first, so there is nothing for the mirror to
+        // fence and the claim carries only the half the takeover's fence reads.
+        expect(unversioned?.statusClaimFrom).toBeNull();
+        expect(claims[1]?.statusClaimUntil).toBeNull();
+      });
+
       // Issue #188: this path resolves with the instance ADMIN token and deliberately does not
       // assign the operator, so status + assignee cannot tell it apart from the agent closing the
       // conversation itself. It is recorded instead.

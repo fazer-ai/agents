@@ -401,6 +401,76 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     expect(rewritten.usage_metadata?.total_tokens).toBe(30);
   });
 
+  // Round 20, and it is where rounds 13 and 18 meet. A PARALLEL batch is not terminal, so the
+  // narration written beside the decision no longer went out through the branch that blanks it —
+  // and the turn could still finish silent, leaving that text standing as something the customer
+  // was told.
+  test("narration beside a parallel skip is blanked even without ending there", async () => {
+    const skipTool = tool(
+      async () => `${SKIP_REPLY_ACK}. Produce no message now.`,
+      { name: SKIP_REPLY_TOOL, description: "skip", schema: z.object({}) },
+    );
+    const reactTool = tool(async () => "reacted with 👍", {
+      name: "react_to_message",
+      description: "react",
+      schema: z.object({}),
+    });
+    class NarratesThenGoesQuiet {
+      rounds = 0;
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("");
+      }
+      bindTools(_tools: unknown) {
+        const self = this;
+        return {
+          async invoke(): Promise<AIMessage> {
+            self.rounds++;
+            if (self.rounds === 1) {
+              return new AIMessage({
+                id: "ai-par-1",
+                content: "Só vou reagir e ficar quieto.",
+                tool_calls: [
+                  { name: "react_to_message", args: {}, id: "c1" },
+                  { name: SKIP_REPLY_TOOL, args: {}, id: "c2" },
+                ],
+              });
+            }
+            return new AIMessage({
+              content: "",
+              tool_calls: [{ name: SKIP_REPLY_TOOL, args: {}, id: "c3" }],
+            });
+          },
+        };
+      }
+    }
+    const model = new NarratesThenGoesQuiet();
+    const checkpointer = new MemorySaver();
+    const cfg = { configurable: { thread_id: "parallel-narration" } };
+    const graph = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
+      model: model as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer,
+      tools: [skipTool, reactTool],
+      maxToolCalls: 10,
+    });
+    const result = await graph.invoke(
+      { messages: [new HumanMessage("👍")] },
+      cfg,
+    );
+    expect(model.rounds).toBe(2);
+    expect(String(result.messages.at(-1)?.content ?? "")).toBe("");
+    const state = await buildThreadStateGraph(checkpointer).getState(cfg);
+    const messages = ((state.values as { messages?: BaseMessage[] })
+      ?.messages ?? []) as BaseMessage[];
+    expect(messages.length).toBeGreaterThan(0);
+    expect(
+      messages.filter((m) => JSON.stringify(m.content).includes("quieto")),
+    ).toEqual([]);
+    // The reaction's own record stays: it really happened.
+    expect(messages.some((m) => m.getType() === "tool")).toBe(true);
+  });
+
   // The scope, pinned: a preamble beside an ORDINARY call is followed by a reply that may lean on
   // it, and rewriting the history of every tool-calling turn is a different change. Only the
   // decision to say nothing is rewritten here.

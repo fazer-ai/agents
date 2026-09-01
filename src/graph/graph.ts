@@ -334,11 +334,17 @@ export function buildAgentGraph({
     // nothing. The hard limit keeps its callback because the calls still COUNTED, which is what
     // bounds a model that loops on skip_reply; what it no longer does is force a TEXT answer out of
     // a turn that chose not to give one (round 9 found that half, round 11 the other).
+    // BLANKED THE MOMENT THE DECISION IS SEEN, not only when the turn ends on it. A model can put
+    // text in the message that calls `skip_reply`, and on a PARALLEL batch that message is not the
+    // end of the turn — so a branch that only blanked on the way out left the narration standing
+    // whenever a companion tool bought another round, and the turn could still finish silent (round
+    // 20). Undelivered either way: the runtime posts the LAST assistant message.
+    const narration = staySilent ? silenceNarration(history) : [];
     // Terminal only when the decision was ALL the model did (see `onlySkipped`). `staySilent` alone
     // still suppresses the wrap-up instruction below: the model just chose silence either way.
     if (staySilent && lastBatch(history).alone) {
       if (hardLimit) onToolLimit?.({ maxToolCalls: max, toolCalls });
-      return { messages: [...silenceNarration(history), new AIMessage("")] };
+      return { messages: [...narration, new AIMessage("")] };
     }
     // `staySilent` is back in this condition, and round 18 is why it had to be. It left when the
     // branch above returned on `staySilent` alone — no round after the decision, so nothing to
@@ -417,7 +423,7 @@ export function buildAgentGraph({
           : undefined,
       },
     );
-    return { messages: [response] };
+    return { messages: [...narration, response] };
   };
 
   const builder = new StateGraph(MessagesAnnotation)

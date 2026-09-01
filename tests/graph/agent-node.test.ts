@@ -1112,10 +1112,9 @@ describe("agentNode tool-call limit (soft+hard)", () => {
   });
 
   // Round 31, the half the filter above got wrong. "No text" and "empty" are not the same question:
-  // a provider can return a turn whose whole content is a non-text block — Anthropic's signed
-  // `thinking`, an image — with no tool calls and no text at all. Classifying that as an empty turn
-  // deletes provider-native output from every later prompt, and it deletes exactly what
-  // `silenceNarration` above takes such care to keep.
+  // a provider can return a turn whose whole content is a signed `thinking` block, with no tool
+  // calls and no text at all. Classifying that as an empty turn deletes provider-native output from
+  // every later prompt, and it deletes exactly what `silenceNarration` above takes such care to keep.
   test("a turn whose only content is a non-text block still reaches the model", async () => {
     const seen: number[] = [];
     class RecordsThinkingTurns {
@@ -1137,6 +1136,7 @@ describe("agentNode tool-call limit (soft+hard)", () => {
             content: [
               { type: "thinking", thinking: "pensando", signature: "sig-abc" },
             ],
+            response_metadata: { model_provider: "anthropic" },
           });
         return new AIMessage("Oi de novo!");
       }
@@ -1155,6 +1155,183 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     await graph.invoke({ messages: [new HumanMessage("e aí?")] }, cfg);
     // The first round saw none because none existed yet; the second must see the one the first left.
     expect(seen).toEqual([0, 1]);
+  });
+
+  // ...and the exemption ends where the block stops being renderable. `@langchain/openai` builds an
+  // assistant message out of the text blocks alone, so an Anthropic `thinking` block handed to an
+  // OpenAI-shaped model arrives as `content: []` and the request is refused — every later turn on
+  // the thread with it. The fallback can take over mid-invocation and is handed the same array, so
+  // its vendor counts as a destination even on the turns it never answers.
+  test("the same turn is dropped once another vendor can receive it", async () => {
+    const seen: number[] = [];
+    class ThinksThenCounts {
+      round = 0;
+      async invoke(messages: BaseMessage[]): Promise<AIMessage> {
+        seen.push(
+          messages.filter(
+            (m) =>
+              Array.isArray(m.content) &&
+              m.content.some(
+                (b) => (b as { type?: unknown }).type === "thinking",
+              ),
+          ).length,
+        );
+        this.round++;
+        if (this.round === 1)
+          return new AIMessage({
+            content: [
+              { type: "thinking", thinking: "pensando", signature: "sig-abc" },
+            ],
+            response_metadata: { model_provider: "anthropic" },
+          });
+        return new AIMessage("Oi de novo!");
+      }
+    }
+    const model = new ThinksThenCounts() as unknown as BaseChatModel;
+    const checkpointer = new MemorySaver();
+    const graph = buildAgentGraph({
+      primary: { provider: "anthropic", model: "test-model" },
+      // NOTE: The agent never falls over in this test; merely CONFIGURING a second vendor is what
+      // makes the turn unsafe to keep, because the node cannot know in advance who answers.
+      fallback: { model, provider: "openai", modelId: "gpt-test" },
+      model,
+      systemPrompt: "PROMPT",
+      checkpointer,
+      tools: [],
+      maxToolCalls: 10,
+    });
+    const cfg = { configurable: { thread_id: "thinking-cross-vendor" } };
+    await graph.invoke({ messages: [new HumanMessage("ok")] }, cfg);
+    await graph.invoke({ messages: [new HumanMessage("e aí?")] }, cfg);
+    expect(seen).toEqual([0, 0]);
+  });
+
+  // And an unsigned origin is not a licence either: a turn whose provider the metadata does not name
+  // cannot be proved renderable anywhere, so it takes the same safe exit.
+  test("a non-text turn of unknown origin is dropped", async () => {
+    const seen: number[] = [];
+    class ThinksWithoutSaying {
+      round = 0;
+      async invoke(messages: BaseMessage[]): Promise<AIMessage> {
+        seen.push(
+          messages.filter(
+            (m) =>
+              Array.isArray(m.content) &&
+              m.content.some(
+                (b) => (b as { type?: unknown }).type === "thinking",
+              ),
+          ).length,
+        );
+        this.round++;
+        if (this.round === 1)
+          return new AIMessage({
+            content: [
+              { type: "thinking", thinking: "pensando", signature: "sig-abc" },
+            ],
+          });
+        return new AIMessage("Oi de novo!");
+      }
+    }
+    const checkpointer = new MemorySaver();
+    const graph = buildAgentGraph({
+      primary: { provider: "anthropic", model: "test-model" },
+      model: new ThinksWithoutSaying() as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer,
+      tools: [],
+      maxToolCalls: 10,
+    });
+    const cfg = { configurable: { thread_id: "thinking-unknown-origin" } };
+    await graph.invoke({ messages: [new HumanMessage("ok")] }, cfg);
+    await graph.invoke({ messages: [new HumanMessage("e aí?")] }, cfg);
+    expect(seen).toEqual([0, 0]);
+  });
+
+  // Nor is every vendor's block replayable by its own vendor. Google's adapter builds an assistant
+  // message out of text too, so a Gemini reasoning turn does not survive even a same-provider trip:
+  // the exemption is a short list of vendors that replay what they emitted, not a property of
+  // "came from where it is going".
+  test("a non-text turn from a vendor that does not replay its blocks is dropped", async () => {
+    const seen: number[] = [];
+    class ThinksOnce {
+      round = 0;
+      async invoke(messages: BaseMessage[]): Promise<AIMessage> {
+        seen.push(
+          messages.filter(
+            (m) =>
+              Array.isArray(m.content) &&
+              m.content.some(
+                (b) => (b as { type?: unknown }).type === "thinking",
+              ),
+          ).length,
+        );
+        this.round++;
+        if (this.round === 1)
+          return new AIMessage({
+            content: [
+              { type: "thinking", thinking: "pensando", signature: "sig-abc" },
+            ],
+            response_metadata: { model_provider: "google" },
+          });
+        return new AIMessage("Oi de novo!");
+      }
+    }
+    const checkpointer = new MemorySaver();
+    const graph = buildAgentGraph({
+      primary: { provider: "google", model: "test-model" },
+      model: new ThinksOnce() as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer,
+      tools: [],
+      maxToolCalls: 10,
+    });
+    const cfg = { configurable: { thread_id: "thinking-google-origin" } };
+    await graph.invoke({ messages: [new HumanMessage("ok")] }, cfg);
+    await graph.invoke({ messages: [new HumanMessage("e aí?")] }, cfg);
+    expect(seen).toEqual([0, 0]);
+  });
+
+  // And the destination has to be nameable at all. An install that reaches the node without naming a
+  // provider proves nothing about where the turn lands, and "no destinations" must not read as "every
+  // destination agrees" — which is what an unguarded `every` over an empty set would say.
+  test("a non-text turn is dropped when no destination can be named", async () => {
+    const seen: number[] = [];
+    class ThinksOnce {
+      round = 0;
+      async invoke(messages: BaseMessage[]): Promise<AIMessage> {
+        seen.push(
+          messages.filter(
+            (m) =>
+              Array.isArray(m.content) &&
+              m.content.some(
+                (b) => (b as { type?: unknown }).type === "thinking",
+              ),
+          ).length,
+        );
+        this.round++;
+        if (this.round === 1)
+          return new AIMessage({
+            content: [
+              { type: "thinking", thinking: "pensando", signature: "sig-abc" },
+            ],
+            response_metadata: { model_provider: "anthropic" },
+          });
+        return new AIMessage("Oi de novo!");
+      }
+    }
+    const checkpointer = new MemorySaver();
+    const graph = buildAgentGraph({
+      primary: { provider: "", model: "test-model" },
+      model: new ThinksOnce() as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer,
+      tools: [],
+      maxToolCalls: 10,
+    });
+    const cfg = { configurable: { thread_id: "thinking-no-destination" } };
+    await graph.invoke({ messages: [new HumanMessage("ok")] }, cfg);
+    await graph.invoke({ messages: [new HumanMessage("e aí?")] }, cfg);
+    expect(seen).toEqual([0, 0]);
   });
 
   // Round 1 of the follow-up, and it is the case the guard above must NOT make an exception for. A

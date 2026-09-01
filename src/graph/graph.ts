@@ -171,7 +171,13 @@ function lastBatch(history: BaseMessage[]): {
 // (terminal) or answers. That is the point — when the reaction did not happen, answering is exactly
 // what the customer needs.
 function onlySkipped(caller: BaseMessage | undefined): boolean {
-  const calls = (caller as AIMessage | undefined)?.tool_calls ?? [];
+  const ai = caller as AIMessage | undefined;
+  const calls = ai?.tool_calls ?? [];
+  // INVALID CALLS COUNT AS COMPANIONS. A provider can emit a good `skip_reply` beside a call whose
+  // arguments do not parse, and LangChain files that one under `invalid_tool_calls` — so a check
+  // that read `tool_calls` alone saw a batch that was nothing but the decision, ended the turn, and
+  // denied the model the round where it would have seen the failure and answered (round 26).
+  if ((ai?.invalid_tool_calls?.length ?? 0) > 0) return false;
   return calls.length > 0 && calls.every((c) => c.name === SKIP_REPLY_TOOL);
 }
 
@@ -210,6 +216,11 @@ function silenceNarration(history: BaseMessage[]): BaseMessage[] {
       // shape a tool-call-only message has anyway. `contentToText` reads both as "" (round 21).
       content: [],
       tool_calls: ai.tool_calls ?? [],
+      // Carried like the valid ones: they are part of what the model asked for, and a rebuild that
+      // dropped them would erase the record of a call that failed to parse.
+      ...(ai.invalid_tool_calls?.length
+        ? { invalid_tool_calls: ai.invalid_tool_calls }
+        : {}),
       additional_kwargs: ai.additional_kwargs,
       response_metadata: ai.response_metadata,
       ...(ai.usage_metadata ? { usage_metadata: ai.usage_metadata } : {}),

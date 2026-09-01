@@ -649,6 +649,79 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     expect(seenNarration).toEqual([false]);
   });
 
+  // Round 26. A provider can emit a good `skip_reply` beside a call whose arguments do not parse, and
+  // LangChain files that one under `invalid_tool_calls` — invisible to a check that reads
+  // `tool_calls`. The batch then looked like nothing but the decision, the turn ended, and the model
+  // never got the round where it would have seen the failure and answered.
+  test("a malformed companion call is a companion", async () => {
+    const skipTool = realSkipTool();
+    const reactTool = tool(async () => "reacted with 👍", {
+      name: "react_to_message",
+      description: "react",
+      schema: z.object({ emoji: z.string() }),
+    });
+    class SkipsBesideAMalformedCall {
+      rounds = 0;
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("");
+      }
+      bindTools(_tools: unknown) {
+        const self = this;
+        return {
+          async invoke(): Promise<AIMessage> {
+            self.rounds++;
+            if (self.rounds === 1) {
+              return new AIMessage({
+                id: "ai-inv-1",
+                content: "Vou reagir e sumir.",
+                tool_calls: [{ name: SKIP_REPLY_TOOL, args: {}, id: "c1" }],
+                invalid_tool_calls: [
+                  {
+                    name: "react_to_message",
+                    args: "{ emoji: ",
+                    id: "c2",
+                    error: "Malformed args.",
+                  },
+                ],
+              });
+            }
+            return new AIMessage("Recebido, obrigado!");
+          },
+        };
+      }
+    }
+    const model = new SkipsBesideAMalformedCall();
+    const checkpointer = new MemorySaver();
+    const cfg = { configurable: { thread_id: "malformed-companion" } };
+    const graph = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
+      model: model as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer,
+      tools: [skipTool, reactTool],
+      maxToolCalls: 10,
+    });
+    const result = await graph.invoke(
+      { messages: [new HumanMessage("👍")] },
+      cfg,
+    );
+    // The turn did NOT end on the decision, and the customer got the answer.
+    expect(model.rounds).toBe(2);
+    expect(String(result.messages.at(-1)?.content ?? "")).toBe(
+      "Recebido, obrigado!",
+    );
+    // The narration is still blanked, and the malformed call survives the rebuild: it is part of
+    // what the model asked for, and dropping it erases the record of a call that failed to parse.
+    const state = await buildThreadStateGraph(checkpointer).getState(cfg);
+    const messages = ((state.values as { messages?: BaseMessage[] })
+      ?.messages ?? []) as BaseMessage[];
+    const rewritten = messages.find((m) => m.id === "ai-inv-1") as AIMessage;
+    expect(contentToText(rewritten.content)).toBe("");
+    expect(rewritten.invalid_tool_calls?.map((c) => c.name)).toEqual([
+      "react_to_message",
+    ]);
+  });
+
   // The scope, pinned: a preamble beside an ORDINARY call is followed by a reply that may lean on
   // it, and rewriting the history of every tool-calling turn is a different change. Only the
   // decision to say nothing is rewritten here.

@@ -289,7 +289,11 @@ describe("runToolTest — the same request the saved tool would make", () => {
     const src = await Bun.file(
       "src/modules/tool-definitions/test-run.ts",
     ).text();
-    expect(src).toContain("timeoutMs: DEFAULT_HTTP_TOOL_TIMEOUT_MS");
+    // The runtime's constant is what production passes; a test may hand a shorter one, and what
+    // must not exist is a number of this file's own.
+    expect(src).toMatch(
+      /timeoutMs:\s*(?:deps\.timeoutMs\s*\?\?\s*)?DEFAULT_HTTP_TOOL_TIMEOUT_MS/,
+    );
     expect(src).not.toMatch(/timeoutMs:\s*\d/);
     expect(src).not.toMatch(/TIMEOUT_MS\s*=\s*\d/);
   });
@@ -454,4 +458,108 @@ describe("runToolTest — the capture wrapper is invisible to the runtime", () =
       expect(r.failed).toBe(false);
     },
   );
+});
+
+// Round 6 of review, finding 3, and it is a correction of a decision made in round 2. That round
+// made EVERY throw out of `invoke` a 400, on the reasoning that everything reachable in there is the
+// caller's to fix. Half of them are not: a name that does not resolve, a body that stops
+// mid-stream, a provider that does not answer inside the bound. Answering 400 for those tells the
+// operator to edit a definition that is fine.
+//
+// The shapes below were measured, not guessed: AbortError (DOMException), DNSException with
+// ENOTFOUND, EncodingError for a broken stream.
+describe("runToolTest — what kind of failure it was", () => {
+  const pub = {
+    ...base,
+    urlTemplate: `https://${PUBLIC}/v1/x`,
+    inputSchema: {},
+  };
+
+  async function statusOf(
+    deps: Parameters<typeof runToolTest>[3],
+    definition: Record<string, unknown> = pub,
+  ): Promise<{ status: number; message: string }> {
+    const err = await runToolTest(
+      ctx,
+      { definition: definition as never },
+      noDb,
+      deps,
+    ).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(AppError);
+    return {
+      status: (err as AppError).statusCode,
+      message: (err as AppError).message,
+    };
+  }
+
+  test("a provider that does not answer inside the bound is 504, not 400", async () => {
+    const got = await statusOf({
+      fetchImpl: (async (_u: string, i: RequestInit) =>
+        new Promise((_r, rej) => {
+          i.signal?.addEventListener("abort", () =>
+            rej(i.signal?.reason ?? new Error("aborted")),
+          );
+        })) as unknown as typeof fetch,
+      // Not the runtime's ten seconds, because the property is the CLASS of the answer.
+      timeoutMs: 20,
+    });
+    expect(got.status).toBe(504);
+  });
+
+  test("a body that stops mid-stream is 502, not 400", async () => {
+    const got = await statusOf({
+      fetchImpl: (async () =>
+        new Response(
+          new ReadableStream({
+            start(c) {
+              c.error(new Error("stream broke"));
+            },
+          }),
+          { status: 200 },
+        )) as unknown as typeof fetch,
+    });
+    expect(got.status).toBe(502);
+    expect(got.message).toContain("stream broke");
+  });
+
+  test("a credential the store cannot inject is 500: it is ours, not the definition's", async () => {
+    const got = await statusOf(
+      {
+        fetchImpl: stub({}, 200),
+        resolveCredentialImpl: async () => {
+          throw new Error("db down");
+        },
+      },
+      // A ref `readVaultRefId` does not recognise, so the METADATA read short-circuits without
+      // touching the store (no auto-injection, which is the runtime's own fallback) and the failure
+      // under test is the injection read alone.
+      { ...pub, credentialRef: "not-a-vault-ref" },
+    );
+    expect(got.status).toBe(500);
+    expect(got.message).toContain("db down");
+  });
+
+  test("and neither is the metadata read, which happens before the call", async () => {
+    // `readCredentialMeta` runs OUTSIDE the try around `invoke`, so a store that cannot answer here
+    // escaped as a bare throw with no status at all — a generic 500 with the reason stripped off,
+    // for the one failure in this function that really is a 500. `noDb` is a PrismaClient with no
+    // methods, which is exactly what a store that cannot answer looks like from here.
+    const err = await runToolTest(
+      ctx,
+      { definition: { ...pub, credentialRef: "vault:1" } as never },
+      noDb,
+      { fetchImpl: stub({}, 200) },
+    ).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(AppError);
+    expect((err as AppError).statusCode).toBe(500);
+    expect((err as AppError).message).toContain("credential could not be read");
+  });
+
+  test.each([
+    ["a host off the allowlist", { ...pub, allowedHosts: ["example.com"] }],
+    ["a URL the template cannot fill", base],
+  ])("%s is still 400", async (_label, definition) => {
+    const got = await statusOf({ fetchImpl: stub({}, 200) }, definition);
+    expect(got.status).toBe(400);
+  });
 });

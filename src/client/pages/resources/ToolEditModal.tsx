@@ -38,6 +38,7 @@ import {
 } from "@/modules/tool-definitions/normalize";
 import {
   clipToModelLimit,
+  MAX_TEMPLATE_CHARS,
   projectToolResponse,
   readResponseTemplateResult,
   templateLeaves,
@@ -143,13 +144,27 @@ const NATIVE_VAR_NAMES = new Set<string>(CONTEXT_VAR_NAMES);
 // to design a success template against.
 //
 // Exported and pure so the agreement is a test rather than a claim.
+// Whether the server would refuse this template, in the server's own words, or null when it would
+// not. Exported and pure so that "the console's gate and the service's refinement are one reader"
+// is a test rather than a claim: they are the same function, and the test says so by putting each
+// shape through both.
+export function templateSaveProblem(template: string): string | null {
+  const t = template.trim();
+  if (!t) return null;
+  const r = readResponseTemplateResult({ mode: "template", template: t });
+  return r.declared && !r.ok ? r.problem : null;
+}
+
 export function templatePreviewFor(args: {
   template: string;
   sample: string;
   status: number | null;
 }): { projected: boolean; text: string; missing: string[] } | null {
   const template = args.template.trim();
-  const sample = args.sample.trim();
+  // VERBATIM, not trimmed: on the raw path the runtime clips the body exactly as it arrived, so
+  // dropping leading whitespace here slides the 4000-character window and shows tail content the
+  // model would never have reached. Trimmed only where the question is "is there a sample at all".
+  const sample = args.sample;
   if (!template) return null;
   // A declaration the reader refuses has its own message under the box; previewing it as "the raw
   // body" would answer a question about a template that cannot be saved.
@@ -158,7 +173,7 @@ export function templatePreviewFor(args: {
   // An empty sample is only "nothing to preview" for a template that has tokens: with none, the
   // template IS the answer whatever came back, and the case that proves it is a tool answering 204
   // with no body, where the runtime hands the model the operator's own text and this box was blank.
-  if (!sample && templateTokens(template).length > 0) return null;
+  if (!sample.trim() && templateTokens(template).length > 0) return null;
   // The runtime's decision, made by the runtime's own function. Everything this preview used to
   // decide for itself drifted from it within a round: the 2xx gate, the token-less render, the
   // clip. `status: null` is a hand-pasted sample and reads as 200 — nobody pastes an error body to
@@ -1218,6 +1233,17 @@ export function ToolEditModal({
   const strayTemplateDelimiter = unmatchedTemplateDelimiter(
     form.outputTemplate,
   );
+  // AND THE GATE IS THE READER'S, not the sum of the two checks above. Those name the two problems
+  // this screen can phrase well; the reader refuses more than they see — a template past
+  // MAX_TEMPLATE_CHARS, a NUL or a lone surrogate the jsonb column cannot store — and it is the
+  // same function the service refines with. Gating on the pair left Save enabled on a payload the
+  // server was always going to reject, with nothing inline saying why.
+  const templateDeclProblem = useMemo(
+    () => templateSaveProblem(form.outputTemplate),
+    [form.outputTemplate],
+  );
+  const templateTooLong =
+    form.outputTemplate.trim().length > MAX_TEMPLATE_CHARS;
   const apptIdPathInvalid = apptOn && !isUsablePath(form.apptIdPath.trim());
   const apptStartPathInvalid =
     form.apptAction === "book" && !isUsablePath(form.apptStartPath.trim());
@@ -1244,8 +1270,7 @@ export function ToolEditModal({
     !apptSummaryPathInvalid &&
     !apptProviderInvalid &&
     !apptOffsetsInvalid &&
-    badTemplateTokens.length === 0 &&
-    strayTemplateDelimiter === null &&
+    templateDeclProblem === null &&
     !ackInvalid;
   // NOTE: baseline is captured on open (create defaults / loaded tool); null while never opened or
   // while the edit fetch is in flight.
@@ -1742,10 +1767,7 @@ export function ToolEditModal({
                   placeholder={
                     "**{{razao_social}}** — {{municipio}}\nSituação: {{descricao_situacao_cadastral}}"
                   }
-                  error={
-                    badTemplateTokens.length > 0 ||
-                    strayTemplateDelimiter !== null
-                  }
+                  error={templateDeclProblem !== null}
                   errorMessage={
                     badTemplateTokens.length > 0
                       ? t(
@@ -1763,7 +1785,19 @@ export function ToolEditModal({
                             'There is an unmatched brace near "{{stray}}". A field takes two braces on each side, and a stray one would reach the agent as literal text.',
                             { stray: strayTemplateDelimiter },
                           )
-                        : undefined
+                        : templateTooLong
+                          ? t(
+                              "tools.outputTemplateTooLong",
+                              "This is {{length}} characters and the limit is {{max}}. It is sent to the agent on every call of this tool.",
+                              {
+                                length: form.outputTemplate.trim().length,
+                                max: MAX_TEMPLATE_CHARS,
+                              },
+                            )
+                          : // Whatever else the reader refused — an unstorable character, say. Its
+                            // own sentence names the offending code point, which is the part that
+                            // makes it fixable.
+                            (templateDeclProblem ?? undefined)
                   }
                 />
               </FormField>

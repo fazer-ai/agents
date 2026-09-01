@@ -20,6 +20,7 @@
 // same reason — there is no customer on the other end of this, and wiring the ack would also make
 // `__wait_message` a required argument of a schema the operator never filled.
 
+import { ToolInputParsingException } from "@langchain/core/tools";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import {
@@ -102,7 +103,13 @@ export interface ToolTestResult {
 const CONTEXT_NAMES = new Set<string>(CONTEXT_VAR_NAMES);
 
 export interface ToolTestDeps {
+  // Test seams, both of them, and both narrow on purpose: production passes neither. They exist
+  // because the two things this module has to classify correctly — a provider that never answers,
+  // a credential store that fails — cannot be produced from the outside without waiting ten seconds
+  // or breaking a database.
   fetchImpl?: typeof fetch;
+  timeoutMs?: number;
+  resolveCredentialImpl?: (ref: string) => Promise<string | null>;
 }
 
 export async function runToolTest(
@@ -130,9 +137,21 @@ export async function runToolTest(
   // The credential's own metadata, read where the turn reads it, so a typed credential auto-injects
   // here the way it will in production. A ref naming nothing yields no metadata, which is the same
   // "no auto-injection" the runtime falls back to.
-  const meta = credentialRef
-    ? await readCredentialMeta(base, ctx, credentialRef)
-    : null;
+  //
+  // Wrapped like the injection read below, and for the same reason: this one runs BEFORE the try
+  // around `invoke`, so a store that cannot answer here escaped as a bare throw with no status —
+  // a 500 with the reason stripped off, for the one failure in this function that really is a 500.
+  let meta: Awaited<ReturnType<typeof readCredentialMeta>> = null;
+  if (credentialRef) {
+    try {
+      meta = await readCredentialMeta(base, ctx, credentialRef);
+    } catch (err) {
+      throw new AppError(
+        `the credential could not be read: ${err instanceof Error ? err.message : String(err)}`,
+        500,
+      );
+    }
+  }
 
   const def: HttpToolDef = {
     name: d.name || "tool_test",
@@ -161,9 +180,23 @@ export async function runToolTest(
   let seen: { status: number; body: Promise<string> } | null = null;
   const doFetch = deps.fetchImpl ?? fetch;
   const tool = buildHttpTool(def, {
-    resolveCredential: (ref) =>
-      resolveInjectableCredential(base, tenantId, ref),
-    timeoutMs: DEFAULT_HTTP_TOOL_TIMEOUT_MS,
+    // Wrapped so that a failure to READ the credential is not read as a failure of the definition.
+    // It is the one thing inside `invoke` that is ours rather than the operator's or the provider's,
+    // and it is what makes the `AppError` passthrough below a branch with a case rather than an
+    // identity: it is the only status in here that is not a 4xx.
+    resolveCredential: async (ref) => {
+      try {
+        return await (deps.resolveCredentialImpl
+          ? deps.resolveCredentialImpl(ref)
+          : resolveInjectableCredential(base, tenantId, ref));
+      } catch (err) {
+        throw new AppError(
+          `the credential could not be read: ${err instanceof Error ? err.message : String(err)}`,
+          500,
+        );
+      }
+    },
+    timeoutMs: deps.timeoutMs ?? DEFAULT_HTTP_TOOL_TIMEOUT_MS,
     context,
     onSideEffectError: (e) =>
       notes.push({
@@ -200,29 +233,42 @@ export async function runToolTest(
   });
 
   const startedAt = Date.now();
-  // WHY THE REFUSALS ARE CAUGHT HERE. `buildHttpTool` has no outer catch: a host off the allowlist,
-  // a URL the SSRF guard blocks, a name with no value, an argument the declared type refuses — each
-  // THROWS out of `invoke` rather than coming back as a refusal string. Mid-turn LangGraph catches
-  // those and hands the model the message; there is no LangGraph here, so an uncaught one reaches
-  // Elysia with no status and surfaces as a 500, which reads as "the console is broken" for what is
-  // in every case the operator's own definition to fix. Measured: a required field left blank threw
-  // `ToolInputParsingException`, whose message names the field, under a generic 500 that did not.
+  // WHY THE THROWS ARE CAUGHT HERE, AND HOW THEY ARE SORTED. `buildHttpTool` has no outer catch:
+  // everything that stops a call — a host off the allowlist, a URL the SSRF guard blocks, a name
+  // with no value, an argument the declared type refuses, a DNS failure, the abort — THROWS out of
+  // `invoke`. Mid-turn LangGraph catches those and hands the model the message; there is no
+  // LangGraph here, so an uncaught one reaches Elysia with no status at all and surfaces as a 500.
   //
-  // The rule is the one the `!captured` branch below already used, now covering both shapes of the
-  // same event: nothing went out, so the reason is the caller's, and it travels with a 400.
+  // The first version of this made every throw a 400, on the reasoning that everything reachable in
+  // here is the caller's to fix. That is wrong for half of them, and review round 6 was right to
+  // say so: a name that does not resolve, a TLS handshake that fails, a provider that does not
+  // answer inside the bound — none of those is a malformed request, and answering 400 tells the
+  // operator to go and edit a definition that is fine. What each one IS, measured rather than
+  // guessed:
   //
-  // 400 for EVERY throw, with no `instanceof AppError` passthrough above it, and that is a claim
-  // about the code rather than a shortcut: every AppError raised inside `buildHttpTool` is already
-  // a 400 (the allowlist, both invalid-urlTemplate paths, the unfilled placeholders), the SSRF
-  // guard raises an `SsrfError` that is not one, and `resolveInjectableCredential` throws nothing
-  // at all — it returns null. A passthrough branch would therefore have been an identity no test
-  // could tell either way, which is the shape review round 1 already removed once from `http.ts`.
-  // If a non-400 AppError is ever raised in there, this is the line that has to learn about it.
+  //   AppError        the definition's own refusals, already carrying 400 (SsrfError is one of
+  //                   these), plus the credential read above, which carries 500. Kept as sent.
+  //   AbortError      the provider did not answer inside the runtime's bound -> 504.
+  //   anything else   DNSException (`getaddrinfo ENOTFOUND`), EncodingError (a body that stopped
+  //                   mid-stream), TLS -> 502. The message travels either way, because it is the
+  //                   only thing that says what to do next.
   let out: unknown;
   try {
     out = await tool.invoke(input.args ?? {});
   } catch (err) {
-    throw new AppError(err instanceof Error ? err.message : String(err), 400);
+    if (err instanceof AppError) throw err;
+    if (err instanceof ToolInputParsingException) {
+      // The declared schema refused the operator's own values, and its message names the field.
+      throw new AppError(err.message, 400);
+    }
+    const message = err instanceof Error ? err.message : String(err);
+    const aborted = err instanceof Error && err.name === "AbortError";
+    throw new AppError(
+      aborted
+        ? `the provider did not answer within ${DEFAULT_HTTP_TOOL_TIMEOUT_MS / 1000}s: ${message}`
+        : message,
+      aborted ? 504 : 502,
+    );
   }
   const durationMs = Date.now() - startedAt;
   const captured = seen as { status: number; body: Promise<string> } | null;

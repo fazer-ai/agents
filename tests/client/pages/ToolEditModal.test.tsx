@@ -8,8 +8,10 @@ import {
   payloadOf,
   type Tool,
   templatePreviewFor,
+  templateSaveProblem,
 } from "@/client/pages/resources/ToolEditModal";
 import { buildHttpTool } from "@/graph/tools/http";
+import { MAX_TEMPLATE_CHARS } from "@/modules/tool-definitions/response-template";
 import { toolDefinitionCreateSchema } from "@/modules/tool-definitions/service";
 
 // NOTE: formFromTool is pure over its argument; these tests exercise the legacy load path without
@@ -397,5 +399,86 @@ describe("templatePreviewFor — the rules are the runtime's, not a copy", () =>
     // Previously null: no preview at all, for a call that succeeds and reaches the model.
     expect(preview?.projected).toBe(false);
     expect(preview?.text).toBe(await runtimeText(200, "not json at all"));
+  });
+});
+
+// Round 6 of review, findings 1 and 2. Two more ways the console answered a question the server
+// answers differently — and both are the same shape as round 5's: a rule restated instead of asked.
+describe("templatePreviewFor — the raw body is the raw body", () => {
+  test("leading whitespace is not trimmed away before the clip", async () => {
+    // On the raw path the runtime clips the body EXACTLY as it arrived, so trimming here slides the
+    // 4,000-character window and shows tail content the model never reaches.
+    const body = `${" ".repeat(200)}${"x".repeat(4000)}TAIL`;
+    const preview = templatePreviewFor({
+      template: "Empresa: {{razao_social}}",
+      sample: body,
+      status: 502,
+    });
+    expect(preview?.projected).toBe(false);
+    const tool = buildHttpTool(
+      {
+        name: "t",
+        method: "GET",
+        urlTemplate: "https://8.8.8.8/v1/x",
+        allowedHosts: ["8.8.8.8"],
+        headers: {},
+        inputSchema: {},
+        expectedStatuses: [502],
+        credentialRef: null,
+        credentialKind: null,
+        credentialParamName: null,
+        credentialBaseUrl: null,
+        ackMessage: null,
+        outputSchema: {
+          mode: "template",
+          template: "Empresa: {{razao_social}}",
+        },
+      },
+      {
+        resolveCredential: async () => null,
+        fetchImpl: (async () =>
+          new Response(body, { status: 502 })) as unknown as typeof fetch,
+      },
+    );
+    const runtime = String(await tool.invoke({}))
+      .split("\n")
+      .slice(1)
+      .join("\n");
+    expect(preview?.text).toBe(runtime);
+    // And the difference is observable, not theoretical: the trimmed version reaches TAIL.
+    expect(preview?.text).not.toContain("TAIL");
+  });
+});
+
+// Round 6 of review, finding 2. The Save button was gated on the two problems this screen can phrase
+// well — an unusable token, a stray brace — while the service refines with the WHOLE reader, which
+// also refuses a template past the character limit and one carrying a NUL or a lone surrogate. For
+// those, Save stayed enabled on a payload the server was always going to reject.
+//
+// So the test is not a list of shapes this file thinks are bad: it is the agreement itself, each
+// shape put through the console's gate and the service's schema and required to get the same answer.
+describe("templateSaveProblem agrees with the service, shape for shape", () => {
+  const NUL = String.fromCharCode(0);
+  const CASES: [string, string][] = [
+    ["a plain template", "Empresa: {{razao_social}}"],
+    ["a constant", "Done."],
+    ["an unusable token", "Name: {{data..name}}"],
+    ["a stray brace", "Name: {{data.name}"],
+    ["past the character limit", "x".repeat(MAX_TEMPLATE_CHARS + 1)],
+    ["exactly at the limit", "x".repeat(MAX_TEMPLATE_CHARS)],
+    ["a NUL", `a${NUL}b`],
+    ["a lone surrogate", "a\ud800b"],
+  ];
+
+  test.each(CASES)("%s", (_label, template) => {
+    const consoleSaysOk = templateSaveProblem(template) === null;
+    const serverSaysOk = toolDefinitionCreateSchema.safeParse({
+      name: "t",
+      label: "T",
+      urlTemplate: "https://api.example.com/x",
+      allowedHosts: ["api.example.com"],
+      outputSchema: { mode: "template", template },
+    }).success;
+    expect(consoleSaysOk).toBe(serverSaysOk);
   });
 });

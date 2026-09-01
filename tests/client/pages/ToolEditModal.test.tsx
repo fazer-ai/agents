@@ -205,8 +205,6 @@ describe("templatePreviewFor", () => {
       const preview = templatePreviewFor({
         template: TEMPLATE,
         sample: SAMPLE,
-        body: BODY,
-        parsed: true,
         status,
       });
       expect(preview?.text).toBe(await runtimeText(status));
@@ -220,8 +218,6 @@ describe("templatePreviewFor", () => {
       templatePreviewFor({
         template: TEMPLATE,
         sample: SAMPLE,
-        body: BODY,
-        parsed: true,
         status: null,
       }),
     ).toEqual({
@@ -231,22 +227,19 @@ describe("templatePreviewFor", () => {
     });
   });
 
-  test("nothing to preview without a template or without a parsed sample", () => {
+  test("nothing to preview without a template, or without a sample to render against", () => {
     expect(
-      templatePreviewFor({
-        template: "   ",
-        sample: SAMPLE,
-        body: BODY,
-        parsed: true,
-        status: 200,
-      }),
+      templatePreviewFor({ template: "   ", sample: SAMPLE, status: 200 }),
     ).toBeNull();
     expect(
+      templatePreviewFor({ template: TEMPLATE, sample: "", status: 200 }),
+    ).toBeNull();
+    // A declaration the reader refuses gets its own message under the box, not a preview of what a
+    // template that cannot be saved would have done.
+    expect(
       templatePreviewFor({
-        template: TEMPLATE,
-        sample: "not json",
-        body: undefined,
-        parsed: false,
+        template: "Name: {{data..name}}",
+        sample: SAMPLE,
         status: 200,
       }),
     ).toBeNull();
@@ -257,8 +250,6 @@ describe("templatePreviewFor", () => {
     const preview = templatePreviewFor({
       template: TEMPLATE,
       sample: big,
-      body: JSON.parse(big),
-      parsed: true,
       status: 502,
     });
     expect(preview?.text).toContain("…[truncated]");
@@ -329,5 +320,82 @@ describe("outputSchemaForm", () => {
     expect(got.outputTemplate).toBe("Name: {{data.name}}");
     expect(got.outputSchemaOther).toBeNull();
     expect(got.outputSchemaProblem).toBeNull();
+  });
+});
+
+// Round 5 of review. Both findings are the same defect twice: the preview restated the runtime's
+// rules instead of asking it, so every rule the runtime learned in rounds 3 and 4 left the preview
+// behind. It now calls `projectToolResponse`, and these are the three cases that were wrong.
+describe("templatePreviewFor — the rules are the runtime's, not a copy", () => {
+  const TPL = "Empresa: {{razao_social}}";
+
+  async function runtimeText(
+    status: number,
+    body: string | null,
+    template = TPL,
+  ): Promise<string> {
+    const tool = buildHttpTool(
+      {
+        name: "t",
+        method: "GET",
+        urlTemplate: "https://8.8.8.8/v1/x",
+        allowedHosts: ["8.8.8.8"],
+        headers: {},
+        inputSchema: {},
+        expectedStatuses: [status],
+        credentialRef: null,
+        credentialKind: null,
+        credentialParamName: null,
+        credentialBaseUrl: null,
+        ackMessage: null,
+        outputSchema: { mode: "template", template },
+      },
+      {
+        resolveCredential: async () => null,
+        fetchImpl: (async () =>
+          new Response(body, { status })) as unknown as typeof fetch,
+      },
+    );
+    return String(await tool.invoke({}))
+      .split("\n")
+      .slice(1)
+      .join("\n");
+  }
+
+  test("a render that overruns the model's limit is previewed clipped", async () => {
+    // Two 2,000-character fields and a separator: the substitutions, not the template, are what
+    // overrun. The runtime clips the PROJECTED body too — that is round 1's surviving mutant — and
+    // the preview was showing the whole thing under "exactly what the agent would receive".
+    const body = JSON.stringify({ a: "x".repeat(2000), b: "y".repeat(2000) });
+    const template = "{{a}}\n---\n{{b}}";
+    const preview = templatePreviewFor({ template, sample: body, status: 200 });
+    expect(preview?.projected).toBe(true);
+    expect(preview?.text).toContain("…[truncated]");
+    expect(preview?.text).toBe(await runtimeText(200, body, template));
+  });
+
+  test("a token-less template is previewed for a 204 with no body at all", async () => {
+    // The sample field is EMPTY here, which used to mean "nothing to preview". The runtime hands
+    // the model the operator's own text, so an empty box was the wrong answer.
+    const preview = templatePreviewFor({
+      template: "Done. The booking is confirmed.",
+      sample: "",
+      status: 204,
+    });
+    expect(preview?.projected).toBe(true);
+    expect(preview?.text).toBe(
+      await runtimeText(204, null, "Done. The booking is confirmed."),
+    );
+  });
+
+  test("a body that is not JSON is previewed raw, as the runtime sends it", async () => {
+    const preview = templatePreviewFor({
+      template: TPL,
+      sample: "not json at all",
+      status: 200,
+    });
+    // Previously null: no preview at all, for a call that succeeds and reaches the model.
+    expect(preview?.projected).toBe(false);
+    expect(preview?.text).toBe(await runtimeText(200, "not json at all"));
   });
 });

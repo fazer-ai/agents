@@ -211,6 +211,60 @@ export function readResponseTemplate(raw: unknown): ResponseTemplate | null {
 // than importing it — so there the broken declaration is DROPPED, which makes the row say "no
 // template" honestly instead of parking unusable text where the editor reads it back as a legacy
 // schema and nothing anywhere says why the tool stopped projecting.
+// THE PROJECTION ITSELF, and it lives here rather than in `graph/tools/http.ts` because two callers
+// have to agree on it: the runtime, and the editor's preview, which is labelled "exactly what the
+// agent would receive". They were written as two readers of the same rules, and they drifted twice
+// in two review rounds — round 4 taught the runtime that a token-less template needs no body and
+// left the preview parsing JSON first; round 3 taught the preview about non-2xx and left it with
+// its own copy of the clip. Restating a rule is how a preview stops being one, so there is one
+// function and the callers differ only in what they do with `skipped`.
+export interface ProjectedResponse {
+  // What the model is handed, or null when the template does not apply and the raw body goes.
+  text: string | null;
+  // Paths the template names that the body does not answer with. Empty when `text` is null.
+  missing: string[];
+  // Why the template did not apply, when it did not.
+  skipped: "no-template" | "not-2xx" | "not-json" | null;
+}
+
+export function projectToolResponse(
+  outputSchema: unknown,
+  status: number,
+  rawBody: string,
+): ProjectedResponse {
+  const tpl = readResponseTemplate(outputSchema);
+  if (!tpl) return { text: null, missing: [], skipped: "no-template" };
+  // 2xx alone, the same gate `registerDeclaredAppointment` uses and for the same kind of reason: a
+  // non-2xx body is the error the model has to read literally, and a template aimed at success
+  // fields would render a block of absent markers over it.
+  if (status < 200 || status >= 300) {
+    return { text: null, missing: [], skipped: "not-2xx" };
+  }
+  // A template with no tokens says the same thing whatever the body is, so it must not be gated on
+  // the body PARSING: the endpoint that most wants a constant answer is the one returning 204 with
+  // nothing in it.
+  if (templateTokens(tpl.template).length === 0) {
+    return { ...renderResponseTemplate(tpl, undefined), skipped: null };
+  }
+  let body: unknown;
+  try {
+    body = JSON.parse(rawBody);
+  } catch {
+    return { text: null, missing: [], skipped: "not-json" };
+  }
+  return { ...renderResponseTemplate(tpl, body), skipped: null };
+}
+
+// The clip the model's input gets, whoever is applying it. Returns the flag as well as the text
+// because the runtime warns on it and the preview does not.
+export function clipToModelLimit(
+  text: string,
+  max: number = MODEL_RESPONSE_CHAR_LIMIT,
+): { text: string; clipped: boolean } {
+  if (text.length <= max) return { text, clipped: false };
+  return { text: `${clipText(text, max)}…[truncated]`, clipped: true };
+}
+
 export function storableResponseTemplate(
   raw: unknown,
   opts: { dropUnusable?: boolean } = {},

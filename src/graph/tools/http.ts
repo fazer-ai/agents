@@ -8,7 +8,6 @@ import {
 } from "@/graph/tools/http-status";
 import { AppError } from "@/lib/errors";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
-import { clipText } from "@/lib/text";
 import { zonedWallClock } from "@/modules/integrations/toolpacks/calendar-slots";
 import {
   type ExtractedAppointment,
@@ -17,10 +16,9 @@ import {
 } from "@/modules/tool-definitions/appointment";
 import { normalizeToolShapes } from "@/modules/tool-definitions/normalize";
 import {
+  clipToModelLimit,
   MODEL_RESPONSE_CHAR_LIMIT,
-  readResponseTemplate,
-  renderResponseTemplate,
-  templateTokens,
+  projectToolResponse,
 } from "@/modules/tool-definitions/response-template";
 import { resolveSecretInjection } from "@/modules/vault/secret-types";
 import { normalizeToolName } from "./toolName";
@@ -475,9 +473,15 @@ function projectResponse(
   status: number,
   rawBody: string,
 ): string | null {
-  const tpl = readResponseTemplate(def.outputSchema);
-  if (!tpl) return null;
-  if (status < 200 || status >= 300) return null;
+  // The decision is `projectToolResponse`'s, in `modules/tool-definitions/response-template.ts`,
+  // because the editor's preview has to make the identical one and a second copy of the rules is
+  // how a preview stops being one. What is left here is the REPORTING, which is the runtime's
+  // alone: there is no operator standing in front of a turn.
+  const { text, missing, skipped } = projectToolResponse(
+    def.outputSchema,
+    status,
+    rawBody,
+  );
   const report = (err: Error, detail?: Record<string, unknown>) =>
     deps.onSideEffectError?.({
       tool: def.name,
@@ -485,18 +489,7 @@ function projectResponse(
       detail,
       err,
     });
-  // A template with no tokens says the same thing whatever the body is — "Done.", a fixed
-  // instruction — and it is a declaration the reader accepts on purpose. Rendering it needs no body,
-  // so it must not be gated on the body PARSING: the endpoint that most wants a constant answer is
-  // the one that returns 204 with nothing in it, and there the parse fails and the model was handed
-  // `HTTP 204\n` — an empty result where the operator had written the whole answer.
-  if (templateTokens(tpl.template).length === 0) {
-    return renderResponseTemplate(tpl, undefined).text;
-  }
-  let body: unknown;
-  try {
-    body = JSON.parse(rawBody);
-  } catch {
+  if (skipped === "not-json") {
     // The raw body still goes to the model: the request succeeded and refusing the call would be
     // wrong, and an empty render would be worse than the body it replaced.
     report(
@@ -504,9 +497,7 @@ function projectResponse(
         "the response is not JSON, so the response template could not be applied and the raw body was sent to the model",
       ),
     );
-    return null;
   }
-  const { text, missing } = renderResponseTemplate(tpl, body);
   if (missing.length > 0) {
     // The model was handed an explicit marker rather than a blank, so this is not a silent hole for
     // it. It IS a silent hole for the operator, whose template promises a field the API is not
@@ -862,10 +853,7 @@ export function buildHttpTool(
       // backstop — a template with many tokens, or one long value, can still overrun.
       const rendered = projectResponse(def, deps, res.status, text);
       const modelBody = rendered ?? text;
-      const trimmed =
-        modelBody.length > maxChars
-          ? `${clipText(modelBody, maxChars)}…[truncated]`
-          : modelBody;
+      const trimmed = clipToModelLimit(modelBody, maxChars).text;
       // The clip is otherwise invisible from both ends: the model reads `…[truncated]` as an end,
       // and the operator reads a plausible answer. Reported for a TEMPLATED response too — the
       // first draft guarded this on `rendered === null`, reasoning that an operator whose own text

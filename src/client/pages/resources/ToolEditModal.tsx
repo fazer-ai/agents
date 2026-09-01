@@ -26,7 +26,6 @@ import { api } from "@/client/lib/api";
 import { cn } from "@/client/lib/utils";
 import { isValidUrlTemplate } from "@/client/lib/validation";
 import { normalizeToolName } from "@/graph/tools/toolName";
-import { clipText } from "@/lib/text";
 import { readProviderSlug } from "@/modules/appointments/provider";
 import { sampleLeaves } from "@/modules/tool-definitions/appointment";
 import {
@@ -38,10 +37,11 @@ import {
   normalizeToolShapes,
 } from "@/modules/tool-definitions/normalize";
 import {
-  MODEL_RESPONSE_CHAR_LIMIT,
+  clipToModelLimit,
+  projectToolResponse,
   readResponseTemplateResult,
-  renderResponseTemplate,
   templateLeaves,
+  templateTokens,
   unmatchedTemplateDelimiter,
   unusableTemplateTokens,
 } from "@/modules/tool-definitions/response-template";
@@ -146,28 +146,39 @@ const NATIVE_VAR_NAMES = new Set<string>(CONTEXT_VAR_NAMES);
 export function templatePreviewFor(args: {
   template: string;
   sample: string;
-  body: unknown;
-  parsed: boolean;
   status: number | null;
 }): { projected: boolean; text: string; missing: string[] } | null {
   const template = args.template.trim();
-  if (!template || !args.parsed) return null;
-  const { status } = args;
-  if (status !== null && (status < 200 || status >= 300)) {
-    const raw = args.sample.trim();
-    return {
-      projected: false,
-      text:
-        raw.length > MODEL_RESPONSE_CHAR_LIMIT
-          ? `${clipText(raw, MODEL_RESPONSE_CHAR_LIMIT)}…[truncated]`
-          : raw,
-      missing: [],
-    };
-  }
-  return {
-    projected: true,
-    ...renderResponseTemplate({ template }, args.body),
-  };
+  const sample = args.sample.trim();
+  if (!template) return null;
+  // A declaration the reader refuses has its own message under the box; previewing it as "the raw
+  // body" would answer a question about a template that cannot be saved.
+  const decl = readResponseTemplateResult({ mode: "template", template });
+  if (!decl.declared || !decl.ok) return null;
+  // An empty sample is only "nothing to preview" for a template that has tokens: with none, the
+  // template IS the answer whatever came back, and the case that proves it is a tool answering 204
+  // with no body, where the runtime hands the model the operator's own text and this box was blank.
+  if (!sample && templateTokens(template).length > 0) return null;
+  // The runtime's decision, made by the runtime's own function. Everything this preview used to
+  // decide for itself drifted from it within a round: the 2xx gate, the token-less render, the
+  // clip. `status: null` is a hand-pasted sample and reads as 200 — nobody pastes an error body to
+  // design a success template against.
+  const p = projectToolResponse(
+    { mode: "template", template },
+    args.status ?? 200,
+    sample,
+  );
+  return p.text === null
+    ? {
+        projected: false,
+        text: clipToModelLimit(sample).text,
+        missing: [],
+      }
+    : {
+        projected: true,
+        text: clipToModelLimit(p.text).text,
+        missing: p.missing,
+      };
 }
 
 export function contextNamesReferencedBy(
@@ -1196,11 +1207,9 @@ export function ToolEditModal({
       templatePreviewFor({
         template: form.outputTemplate,
         sample,
-        body: sampleParse.body,
-        parsed: sampleParse.state === "ok",
         status: sampleStatus,
       }),
-    [form.outputTemplate, sample, sampleParse, sampleStatus],
+    [form.outputTemplate, sample, sampleStatus],
   );
   const badTemplateTokens = unusableTemplateTokens(form.outputTemplate);
   // A `{{` or `}}` that is not part of a token: `{{a}` is not an unusable token, it is not a token,

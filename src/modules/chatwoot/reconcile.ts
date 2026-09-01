@@ -176,7 +176,12 @@ export async function reconcileMirrorFromLive(
             { ...current, statusAt: current.chatwootStatusAt },
             // NOTE: A live snapshot is never a message, so it can never be the source's own reopen —
             // the same reading `clearsResolutionOrigin` is handed below, for the same reason.
-            { status: live.status, reopens: false, version: liveVersion },
+            {
+              status: live.status,
+              reopens: false,
+              version: liveVersion,
+              source: "read",
+            },
             new Date(),
           ) !== "apply";
         result.refusedByStatusClaim = claimed;

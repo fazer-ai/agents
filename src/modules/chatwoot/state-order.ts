@@ -337,6 +337,7 @@ export function decideConversationWrites(
       status: payload.status,
       reopens: payload.reopensConversation,
       version: payload.version,
+      source: "dispatch",
     },
     now,
   );

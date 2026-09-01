@@ -181,6 +181,30 @@ describe.skipIf(!dbUp)("reconcileMirrorFromLive", () => {
     expect(result.outrankedByVersion).toBe(false);
   });
 
+  test("a read is never the companion of the write the claim refused", async () => {
+    // The mark has ALREADY moved off the one the claim was taken at: a `conversation_*` event
+    // serialized before the toggle was refused on the way in, and the refusal kept its version
+    // (state-order.ts, `refuse-and-mark`), so that version is what a companion of that same write is
+    // compared against.
+    const id = await seedRow({
+      status: "open",
+      statusClaimUntil: new Date(Date.now() + 30_000),
+      statusClaimFrom: "pending",
+      statusClaimFromAt: T,
+      chatwootStatusAt: T + 1,
+    });
+    // A live read taken while the toggle is STILL on the wire answers with exactly that version,
+    // because nothing at the source has changed since the event that carried it. A dispatch repeating
+    // it would be the companion of one write and is let through; a read repeating it is the same
+    // pre-toggle snapshot read a second time, and applying it would hand the conversation back to the
+    // agent over the colleague who just replied.
+    const result = await applyFor(id, { status: "pending", updatedAt: T + 1 });
+    const row = await readRow(id);
+    expect(row.status).toBe("open");
+    expect(row.chatwootStatusAt).toBe(T + 1);
+    expect(result.refusedByStatusClaim).toBe(true);
+  });
+
   test("the caller holding the claim writes through it", async () => {
     const until = new Date(Date.now() + 30_000);
     const id = await seedRow({

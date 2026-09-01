@@ -147,6 +147,11 @@ const REOPENABLE = new Set(["resolved", "snoozed"]);
  * `conversation_updated` as well — so a hand-back arrives at least twice. A write that is not a
  * status change (a label, a priority) dispatches only `conversation_updated`, so the one payload that
  * carries the pre-takeover `pending` by accident is refused and stays refused.
+ *
+ * Which is also why the exception is only ever offered to a DISPATCH. The evidence an equal version
+ * carries is that the source emitted the same write twice; a REST snapshot repeats a version for the
+ * opposite reason — nothing has changed since — and while the toggle is on the wire, nothing having
+ * changed is exactly the state the claim exists to leave behind.
  */
 export type StatusClaimVerdict = "apply" | "refuse" | "refuse-and-mark";
 
@@ -181,7 +186,16 @@ export function statusClaimVerdict(
     statusClaimFrom: string | null;
     statusClaimFromAt: number | null;
   },
-  payload: { status: string | null; reopens: boolean; version: number | null },
+  payload: {
+    status: string | null;
+    reopens: boolean;
+    version: number | null;
+    /**
+     * Where this reading came from. `"dispatch"` is one of the source's own webhook events;
+     * `"read"` is a REST snapshot somebody went and fetched (./reconcile.ts).
+     */
+    source: "dispatch" | "read";
+  },
   now: Date,
 ): StatusClaimVerdict {
   if (!statusClaimIsLive(row.statusClaimUntil, now)) return "apply";
@@ -191,6 +205,13 @@ export function statusClaimVerdict(
   if (payload.reopens) {
     return REOPENABLE.has(row.status) ? "apply" : "refuse";
   }
+  // A READ is never either of the two things below, and both would be holes (issue #468, round 5).
+  // What makes an equal version meaningful is that the source EMITTED it twice for one write; a
+  // snapshot repeats a version simply because nothing has changed since, which while a toggle is on
+  // the wire is precisely the state the claim was taken to leave. And marking a read's version would
+  // be worse than useless: it would move the mark onto the value a pre-toggle dispatch is carrying,
+  // handing that dispatch the companion exception it does not qualify for.
+  if (payload.source !== "dispatch") return "refuse";
   // The companion of a write this claim already refused: the same version, on a mark that is no
   // longer the one the claim was taken at. Both halves are needed — the second is what keeps the
   // claim's very first payload from letting itself through by matching the mark it started on.

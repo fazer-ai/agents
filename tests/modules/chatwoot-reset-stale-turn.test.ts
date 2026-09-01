@@ -8,7 +8,12 @@ import {
 } from "bun:test";
 import { createHmac } from "node:crypto";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
-import { AIMessage, HumanMessage } from "@langchain/core/messages";
+import {
+  AIMessage,
+  type BaseMessage,
+  HumanMessage,
+  type ToolMessage,
+} from "@langchain/core/messages";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
@@ -532,11 +537,12 @@ describe.skipIf(!dbUp)("a turn already running when /reset lands", () => {
   }, 30000);
 
   // THE BOUNDARY OF THIS FENCE, measured rather than asserted. Once the turn holds the durable claim
-  // the model call is in flight, and the asks that guard it have all been answered: a command
-  // landing THERE cannot stop a tool. What it does instead is refuse its own memory step, on the
-  // claim, and say so in the acknowledgement — so the operator is told the conversation was not
-  // fully cleared and /reset is a command they can type again, which is what makes this window a
-  // different defect from the one this PR closes (there the command completes and says nothing).
+  // the model call is in flight, and the asks that guard it have all been answered. What the command
+  // does THERE is refuse its own memory step, on the claim, and say so in the acknowledgement — so
+  // the operator is told the conversation was not fully cleared and /reset is a command they can
+  // type again, which is what makes this window a different defect from the one #428 closed (there
+  // the command completes and says nothing). The tools of that same turn are stopped by the fence
+  // the two tests below measure (issue #449), which is a seam of its own inside the invoke.
   test("a command landing mid-invoke is refused, and says so", async () => {
     const inModel = Promise.withResolvers<void>();
     const held = Promise.withResolvers<void>();
@@ -575,6 +581,138 @@ describe.skipIf(!dbUp)("a turn already running when /reset lands", () => {
       .find((t) => t.includes("🔄") || t.includes("memória"));
     // The command reports the step it could not do, instead of confirming a clean slate.
     expect(ack ?? "").toContain("memória");
+  }, 30000);
+
+  // A TOOL-CALL ID OF THIS TEST'S OWN, and it is not hygiene. The stub above hardcodes `call_attr`
+  // and every test in this file writes to the SAME thread, so a second call under that id is
+  // REPLACED IN PLACE by the messages reducer instead of appended: the tool result lands back at the
+  // earlier test's position, the model's next round sees an assistant turn nothing answered, and the
+  // tool never writes. Measured — with the shared id the two tests below pass on the code they exist
+  // to fail against, and the Chatwoot double records no attribute write at all.
+  const parkedModel = (
+    callId: string,
+  ): {
+    model: SetAttributeThenReplyModel;
+    parked: BaseChatModel;
+    turnCalls: () => number;
+    reached: Promise<void>;
+    release: () => void;
+  } => {
+    const inModel = Promise.withResolvers<void>();
+    const held = Promise.withResolvers<void>();
+    const model = new SetAttributeThenReplyModel();
+    // Counted HERE and not off `model.calls`, which any model the delivery builds increments — the
+    // output guardrail and the compaction summary share this `makeModel`. This counts the TURN's.
+    let turnCalls = 0;
+    const parked = {
+      invoke: model.invoke.bind(model),
+      bindTools: (tools: unknown) => {
+        const bound = model.bindTools(tools);
+        return {
+          invoke: async () => {
+            turnCalls += 1;
+            inModel.resolve();
+            await held.promise;
+            const out = await bound.invoke();
+            const call = out.tool_calls?.[0];
+            if (call) call.id = callId;
+            return out;
+          },
+        };
+      },
+    } as unknown as BaseChatModel;
+    return {
+      model,
+      parked,
+      turnCalls: () => turnCalls,
+      reached: Promise.race([
+        inModel.promise,
+        Bun.sleep(10_000).then(() => {
+          throw new Error("the turn never reached the model call");
+        }),
+      ]),
+      release: () => held.resolve(),
+    };
+  };
+
+  // ISSUE #449, the other half of the window the test above measures. The command IS refused on its
+  // memory step and says so — and the turn's tools then act on the very conversation the operator
+  // was just told about: `set_custom_attribute` writes the attribute back. The acknowledgement's
+  // failure list names the memory step alone, so nothing anywhere says it came back.
+  //
+  // Counted from AFTER the command's own calls, so what is asserted is what the STALE TURN did.
+  test("a tool call started before the command lands does not write after it", async () => {
+    const cw = fakeChatwoot();
+    globalThis.fetch = cw.impl;
+    const m = parkedModel("call_attr_449_write");
+    const turn = deliver("dá para marcar como qualificado?", {
+      makeModel: () => m.parked,
+    });
+    await m.reached;
+    await deliver("/reset");
+    const afterReset = cw.calls.length;
+    m.release();
+    await turn;
+
+    const after = cw.calls.slice(afterReset);
+    expect(attributeWrites(after)).toEqual([]);
+    // And nothing was said to the customer either. The refusal answers the MODEL, not the
+    // conversation, so a refusal that ends the turn must not arrive as the text that gets posted —
+    // the runtime posts the LAST message of the result whatever its type.
+    expect(
+      after.filter((c) => c.method === "POST" && c.path.endsWith("/messages")),
+    ).toEqual([]);
+    // The positive control: without it this passes on a turn that stood down before its tool call,
+    // which is the scenario of the tests above and not this one.
+    expect(m.turnCalls()).toBeGreaterThan(0);
+  }, 30000);
+
+  // TWO REQUIREMENTS, NOT ONE, and each fails differently. An `AIMessage` carrying `tool_calls` with
+  // no `ToolMessage` answering them is what most providers reject on the NEXT turn, so refusing by
+  // routing away would trade a write on a cleared conversation for a thread nothing can resume. And
+  // answering "refused" back INTO the model invites it to call the same tool again, to the recursion
+  // limit, on a conversation the operator has already cleared — so the refusal ends the turn.
+  test("the refused call is answered, and the turn does not go back to the model", async () => {
+    const cw = fakeChatwoot();
+    globalThis.fetch = cw.impl;
+    const m = parkedModel("call_attr_449_seq");
+    const turn = deliver("marca como qualificado, por favor", {
+      makeModel: () => m.parked,
+    });
+    await m.reached;
+    await deliver("/reset");
+    m.release();
+    await turn;
+
+    const state = await buildThreadStateGraph(await getCheckpointer()).getState(
+      {
+        configurable: {
+          thread_id: contactInboxThreadId(
+            tenantId,
+            instanceId,
+            CONTACT_INBOX_ID,
+          ),
+        },
+      },
+    );
+    const msgs = (state.values as { messages?: BaseMessage[] }).messages ?? [];
+    // This turn's slice of a thread the whole suite writes to: everything after the last human
+    // message is what this invoke appended.
+    const tail = msgs.slice(
+      msgs.map((mm) => mm.getType()).lastIndexOf("human") + 1,
+    );
+    const calls = tail
+      .filter((mm) => mm.getType() === "ai")
+      .flatMap((mm) => (mm as AIMessage).tool_calls ?? [])
+      .map((c) => String(c.id));
+    const answered = tail
+      .filter((mm) => mm.getType() === "tool")
+      .map((mm) => String((mm as ToolMessage).tool_call_id));
+    expect(calls.length).toBeGreaterThan(0);
+    expect([...answered].sort()).toEqual([...calls].sort());
+    // ONE model call. On the code this closes it is two: the tool runs, its result routes back, and
+    // the model answers over the conversation that was cleared.
+    expect(m.turnCalls()).toBe(1);
   }, 30000);
 
   // THE LEDGER AND THE WATERMARK HAVE TO AGREE. A stale turn's delivery is settled as CONSUMED, so

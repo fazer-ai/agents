@@ -2391,9 +2391,12 @@ async function maybeConsumeCommandOrGate(params: {
     // successful hand-back writes. Returning the conversation therefore un-silences the stale reply
     // and posts it over the human who had claimed the conversation.
     //
-    // The direct webhook turn is the one that gets here: it passes `stillWanted: null`, so nothing
-    // can call it off once it is invoking. A debounced flush is retired through its own job and
-    // stands down by itself.
+    // WHAT GETS HERE IS A RUN NOTHING CAN CALL OFF, and since issue #449 the direct webhook turn is
+    // no longer one of those: it carries the episode fence (../../graph/reset-episode.ts), which
+    // stands it down at every send and, now, at its tool boundary. A debounced flush is retired
+    // through its own job. What is left is the run with neither — a follow-up NUDGE, which claims the
+    // graph key while posting into this conversation and is asked nothing at all — and the takeover
+    // is the only thing keeping that one quiet.
     //
     // Checked in memory and outside the memory step's lock, which is enough for the harm named: a
     // turn that starts AFTER this line loads the memory the reset just cleared, so it is not the

@@ -191,3 +191,36 @@ describe("every post-generation refusal rolls the turn back", () => {
     expect(routedCount(source)).toBeGreaterThanOrEqual(8);
   });
 });
+
+// THE BOUNDARY'S REFUSAL READ BEFORE THE REPLY IS DRAFTED, in both callers (issue #449, review
+// round 5).
+//
+// A turn the tool boundary refused ends on an empty assistant message, which is byte for byte what a
+// turn that chose silence ends on. The caller cannot tell them apart by asking its own fence again,
+// because the fence is the thing that can have changed its mind — the channel-redirect one reads
+// `agent.enabled` on every ask — and read as silence the turn advances a follow-up ladder or a
+// handled watermark over a message nothing answered.
+//
+// A source walk for `runLoadedTurn`, for the reason still-wanted-strictness.test.ts gives about its
+// own: the webhook path builds its fence from the conversation row, so a non-monotonic one is not
+// injectable there. `runAgentNudge` covers the same seam behaviourally in nudge.test.ts, and this
+// covers both files — including the ORDER, which is the whole property: asked after `drafted`, the
+// line would be reading a decision already made.
+describe("the called-off result is read before the reply is drafted", () => {
+  test.each([["src/graph/runtime.ts"], ["src/graph/nudge.ts"]])(
+    "%s asks turnWasCalledOff first",
+    async (file) => {
+      const lines = (await Bun.file(file as string).text()).split("\n");
+      const code = (l: string) => !/^\s*(?:\/\/|\*)/.test(l);
+      const asked = lines.findIndex(
+        (l) => code(l) && /\bturnWasCalledOff\(/.test(l),
+      );
+      const drafted = lines.findIndex(
+        (l) => code(l) && /^\s*const drafted = /.test(l),
+      );
+      expect(asked).toBeGreaterThan(-1);
+      expect(drafted).toBeGreaterThan(-1);
+      expect(asked).toBeLessThan(drafted);
+    },
+  );
+});

@@ -70,6 +70,7 @@ import {
   conversationDividerMessage,
   conversationStamp,
   humanHandbackMessage,
+  turnWasCalledOff,
 } from "./markers";
 import type { ResolvedModelConfig } from "./models";
 import {
@@ -695,10 +696,27 @@ async function runTurnBody(
     { buildNativeTools, mcp: params.deps?.mcp, flow },
   );
 
+  // Bound once so the closure below carries the fence itself rather than `params`, which TypeScript
+  // cannot narrow across a callback.
+  const fence = params.stillWanted;
+  const stillWantedFence =
+    fence === null ? undefined : () => fence({ strict: false });
+
   // Build model + graph + cost/trace callbacks.
   const graph = await buildModelAndGraph(loaded, tools, {
     makeModel: params.deps?.makeModel,
     checkpointer: params.deps?.checkpointer,
+    // THE ONE SEAM INSIDE THE INVOKE (issue #449). Every other ask this function makes sits BETWEEN
+    // steps — before the divider, after the claim, before the invoke, at each outward write — and a
+    // tool call happens inside one. Handed down here so the graph can ask it at the tool boundary,
+    // where the alternative is the turn writing an attribute, a label and a kanban card onto the
+    // conversation a `/reset` just cleared.
+    //
+    // `strict: false`, bound here rather than there, and it is the same reading `writeCalledOff`
+    // makes one screen down: what the graph guards is a WRITE TO THE WORLD, and an unreadable mark
+    // is not a withdrawal. The graph cannot honour the other answer anyway — it says why — so
+    // binding the strictness at this end is what keeps the option meaning one thing.
+    stillWanted: stillWantedFence,
     // Hard tool-call limit reached → surface a warn in the turn trail/Logs so the operator sees the
     // agent was forced to answer (vs silently looping or erroring with GraphRecursionError).
     onToolLimit: ({ maxToolCalls, toolCalls }) =>
@@ -1542,6 +1560,15 @@ async function runTurnBody(
       }
       return outcome;
     };
+    // THE BOUNDARY'S REFUSAL IS NOT AN EMPTY TURN, and read from here the two are identical: both end
+    // on an empty assistant message. Asked of the RESULT and not of the fence, because the fence is
+    // what can have changed its mind — `writeCalledOff` below reads it live, and not every fence this
+    // path is given is monotonic — and a refusal read as "the agent had nothing to say" advances the
+    // handled watermark over a customer message nothing answered and skips the rollback (issue #449,
+    // review round 5). Before `drafted`, which is the first line that treats the empty turn as a
+    // result.
+    if (turnWasCalledOff(result.messages)) return refuse("stale");
+
     // The follow-up's silence token is not vocabulary of this path, but it IS in this thread: the
     // memory is keyed per contact-inbox, so every silent follow-up leaves an assistant turn whose
     // whole content is the token, and the model reproduces it here (issue #454). Reduced to it, the

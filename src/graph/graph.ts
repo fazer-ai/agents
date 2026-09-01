@@ -24,6 +24,7 @@ import {
 } from "@/graph/model-limit";
 import { countMessageTokens } from "@/graph/token-count";
 import { USAGE_MODEL_METADATA_KEY } from "@/graph/usage";
+import { calledOffToolResult } from "./markers";
 import { SKIP_REPLY_TOOL, skipReplyRan } from "./silence";
 
 // The second provider as the graph needs it: the built model plus the two labels that name it on
@@ -86,6 +87,25 @@ export interface BuildAgentGraphParams {
     dropped: number;
     tokens: number;
   }) => void;
+  // THE TURN'S OWN "IS THIS STILL WANTED", ASKED AT THE TOOL BOUNDARY (issue #449).
+  //
+  // The runtime asks it at every seam it owns — before the divider, after the claim, before the
+  // invoke, and at each outward write — and the one stretch none of those covers is INSIDE the
+  // invoke, because a tool call happens within a step rather than between two. So a `/reset` landing
+  // once the model call is in flight is refused on its memory step, says so, clears everything else
+  // it can reach, and then this graph's tools write an attribute, a label and a kanban card back
+  // onto the conversation the operator was just told about.
+  //
+  // NO `strict` HERE, and its absence is the contract rather than a simplification. Everywhere else
+  // that option chooses whether an unreadable answer STOPS the run by throwing, and this seam cannot
+  // be stopped that way: see `refuseCalledOffCalls`. So it asks one question with two answers, the
+  // caller binds the strictness it wants, and an error is not one of the answers.
+  //
+  // Absent for every caller with nothing to call the run off — the playground, and any caller that
+  // scheduled no work — and absent means the tool node behaves exactly as it did. Both the reactive
+  // turn and the NUDGE pass one: a nudge runs from a job that `/reset` retires, which is the same
+  // withdrawal by another route (review round 1 found the nudge missing here).
+  stillWanted?: () => Promise<boolean>;
 }
 
 const DEFAULT_MAX_TOOL_CALLS = 10;
@@ -383,6 +403,7 @@ export function buildAgentGraph({
   onModelFallbackFailed,
   maxHistoryTokens,
   onHistoryTrim,
+  stillWanted,
 }: BuildAgentGraphParams) {
   const hasTools = !!tools && tools.length > 0;
   const llm = hasTools ? (model.bindTools?.(tools) ?? model) : model;
@@ -596,16 +617,93 @@ export function buildAgentGraph({
     return { messages: [...narration, response] };
   };
 
+  // ONCE PER TURN, the same closure argument the two flags above make. It says the tool boundary
+  // refused this turn's calls, which is what routes the graph to END instead of back to the model.
+  let calledOffAtTools = false;
+  const toolNode = hasTools ? new ToolNode(tools) : null;
+
+  // THE REFUSAL IS A TOOL RESULT, AND THE TURN ENDS ON IT. Two requirements, and each of the two
+  // obvious shortcuts breaks one of them:
+  //
+  //   - routing away from the tool node leaves an `AIMessage` carrying `tool_calls` that no
+  //     `ToolMessage` answers, and that thread is what the NEXT turn loads. `@langchain/openai`
+  //     replays those calls out of `additional_kwargs` (issue #454), so the vendor is handed a call
+  //     with no answer and rejects the whole history — the conversation stops working, which is a
+  //     worse outcome than the write this refusal exists to prevent;
+  //   - answering "refused" back INTO the model invites it to call the same tool again, round after
+  //     round to the recursion limit, spending tokens on a conversation the operator has already
+  //     cleared. So the graph ENDS here. The runtime's own gate refuses the send of a turn that was
+  //     called off, which is what keeps this text out of the conversation.
+  //
+  // AND IT REFUSES BY RETURNING, NEVER BY THROWING, which is why the ask is wrapped. The contract in
+  // ./reset-episode.ts reserves the throwing answer for seams that are asked "before anything is
+  // written" — and by the time this node runs, the assistant turn carrying the calls is ALREADY
+  // checkpointed. Measured against the real checkpointer with a tools node that throws: the thread
+  // comes back `[human, ai(tool_calls=call_x)]`, no `ToolMessage`, which is the broken sequence
+  // above, reached by the mechanism meant to prevent it. Several of the fences the runtime hands
+  // down read a job row and throw on a database transient whatever the strictness, so this is not a
+  // hypothetical caller.
+  //
+  // An unreadable mark therefore lets the tools run, which is the same trade the sends make: it is
+  // not evidence that anybody withdrew the run, and a turn whose database is failing is failing
+  // through the machinery that already exists.
+  const refuseCalledOffCalls = async (
+    state: typeof MessagesAnnotation.State,
+  ): Promise<{ messages: BaseMessage[] } | null> => {
+    if (!stillWanted) return null;
+    // No guard on an empty list, and the mutation battery is why: `toolsCondition` routes here only
+    // when the last message is an assistant turn carrying tool calls, so the empty case is not a
+    // case. A check for it survived every mutation, which is what a dead condition looks like.
+    const last = state.messages.at(-1);
+    const calls =
+      last?.getType() === "ai" ? ((last as AIMessage).tool_calls ?? []) : [];
+    const wanted = await stillWanted().catch((err) => {
+      logger.warn(
+        { err },
+        "graph: could not read whether the turn is still wanted; letting its tool calls run",
+      );
+      return true;
+    });
+    if (wanted) return null;
+    calledOffAtTools = true;
+    logger.info(
+      "graph: the turn was called off mid-invoke, so %d tool call(s) were refused instead of run",
+      calls.length,
+    );
+    // AND AN EMPTY ASSISTANT TURN AFTER THEM, which is not decoration. The runtime reads the reply
+    // off the LAST message of the result whatever its type (`lastAssistantText`), so a turn ending on
+    // a `ToolMessage` offers the refusal's own sentence as the text to post. Today the gate at each
+    // send refuses it — but the fences this graph is handed are not all monotonic: the
+    // channel-redirect one answers false while an agent is disabled and TRUE once it is re-enabled,
+    // so "called off here, still called off at the send" is a property of the caller rather than of
+    // this seam. The empty turn is the same terminator the silence protocol ends on, and it makes
+    // the refusal unpostable by construction rather than by the gate agreeing with this node.
+    return {
+      messages: [...calls.map(calledOffToolResult), new AIMessage("")],
+    };
+  };
+
   const builder = new StateGraph(MessagesAnnotation)
     .addNode("agent", agentNode)
     .addEdge(START, "agent");
 
   if (hasTools) {
     builder
-      .addNode("tools", new ToolNode(tools))
+      // EVERY TOOL GOES THROUGH HERE, which is the reason the guard lives at the node and not in the
+      // tools themselves: native, HTTP, MCP, integrations and documents are all assembled into this
+      // one list, and a guard written per tool is the per-call-site enforcement this repo keeps
+      // having to undo — the tool added next week would simply not have it.
+      .addNode("tools", async (state: typeof MessagesAnnotation.State) => {
+        const refused = await refuseCalledOffCalls(state);
+        // biome-ignore lint/style/noNonNullAssertion: hasTools is what built it.
+        return refused ?? (await toolNode!.invoke(state));
+      })
       // toolsCondition routes to "tools" when the last AIMessage has tool calls, else to END.
       .addConditionalEdges("agent", toolsCondition)
-      .addEdge("tools", "agent");
+      .addConditionalEdges("tools", () => (calledOffAtTools ? END : "agent"), [
+        END,
+        "agent",
+      ]);
   } else {
     builder.addEdge("agent", END);
   }

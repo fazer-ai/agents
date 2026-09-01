@@ -58,6 +58,7 @@ import {
   conversationDividerMessage,
   humanHandbackMessage,
   nudgeMessage,
+  turnWasCalledOff,
 } from "./markers";
 import {
   type AgentConfig,
@@ -938,6 +939,16 @@ export async function runAgentNudge(
   const graph = await buildModelAndGraph(cfg, tools, {
     makeModel: params.deps?.makeModel,
     checkpointer,
+    // THE SAME SEAM THE REACTIVE TURN HANDS DOWN (issue #449), and this path needs it for the same
+    // reason it needs the other fifteen asks: a nudge runs from a scheduler job, `/reset` retires
+    // that job, and every ask above and below sits BETWEEN two steps. A tool call happens inside
+    // one, so a retirement landing while the model call is in flight left `assign_label` and
+    // `set_custom_attribute` free to write to the conversation the operator just cleared.
+    //
+    // Absent when the caller scheduled nothing, which is what the local helper's own default says:
+    // passing a fence that always answers yes would be a read per hop bought for nothing.
+    stillWanted:
+      params.stillWanted === undefined ? undefined : () => stillWanted(),
     // Same warn line the reactive turn leaves: a proactive send that only worked on the second
     // attempt must not read like a clean one, and this path can page an alert channel.
     onModelRetry: ({ attempt, provider, model }) =>
@@ -1614,6 +1625,15 @@ export async function runAgentNudge(
       );
     }
   };
+
+  // THE BOUNDARY'S REFUSAL IS NOT A SILENT TURN, and read from here the two are identical: both end
+  // on an empty assistant message. Asked of the RESULT rather than of the fence, because the fence is
+  // the thing that can have changed its mind — `stillWanted` below reads `agent.enabled` live, so an
+  // operator who switched the agent off during the model call and back on by now answers yes, and
+  // this turn would advance the ladder and leave its own refusal in shared history (issue #449,
+  // review round 5). Before `drafted`, which is the first line that treats the empty turn as a
+  // result.
+  if (turnWasCalledOff(result.messages)) return refuse("stale");
 
   // Silence via the explicit sentinel / narrated-emptiness guard (never post that), else strip any
   // stray sentinel occurrence from a real reply so it can't leak into the customer message.

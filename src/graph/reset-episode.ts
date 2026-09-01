@@ -15,7 +15,10 @@ import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 // `qualificado` back onto the conversation the operator was just told was clean. The REPLY is
 // stopped — the /reset message is itself an incoming message, so its own delivery advances the
 // handled watermark past this turn's trigger and the supersede gate refuses the post — but a tool
-// call is not a post, and nothing between the model and Chatwoot asks the question at all.
+// call is not a post, and at the time nothing between the model and Chatwoot asked the question at
+// all. Issue #449 put the ask at the tool boundary, which is the one seam INSIDE the invoke: this
+// fence is handed down to `buildAgentGraph` and asked once per tool-calling hop, and a turn that was
+// called off gets its calls answered with a refusal instead of run.
 //
 // So the fact the run is named by is the EPISODE, and the question is asked in the SOURCE's own
 // order: is the message this turn is answering at or below the one that carried the command?

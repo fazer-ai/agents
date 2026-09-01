@@ -1474,6 +1474,11 @@ export interface GraphBuildDeps {
     model: string;
     reason: string;
   }) => void;
+  // The caller's own "is this run still wanted", carried down to the graph's TOOL BOUNDARY, which is
+  // the one seam inside the invoke (issue #449). The reactive turn and the nudge both pass one; the
+  // playground passes none and the tool node is then exactly what it was. No `strict`: the graph
+  // states why.
+  stillWanted?: () => Promise<boolean>;
   // WHICH FALLBACK could not be built, carried and NOT optional, for the reason the other three
   // fallback events carry it: the line is written by handlers whose only other labels are the
   // PRIMARY's, so a `reason` on its own gets published under the name of the model that is working.
@@ -1617,5 +1622,6 @@ export async function buildModelAndGraph(
     onModelFallbackFailed: deps.onModelFallbackFailed,
     maxHistoryTokens: cfg.maxHistoryTokens,
     onHistoryTrim: deps.onHistoryTrim,
+    stillWanted: deps.stillWanted,
   });
 }

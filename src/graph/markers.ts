@@ -1,4 +1,8 @@
-import { type BaseMessage, HumanMessage } from "@langchain/core/messages";
+import {
+  type BaseMessage,
+  HumanMessage,
+  ToolMessage,
+} from "@langchain/core/messages";
 
 // The system markers that ride INSIDE messages of the graph memory thread.
 //
@@ -24,7 +28,8 @@ type SystemMarker =
   | "memory_head"
   | "nudge"
   | "human_agent"
-  | "human_handback";
+  | "human_handback"
+  | "called_off";
 
 function hasMarker(message: BaseMessage, marker: SystemMarker): boolean {
   return message.additional_kwargs?.[MARKER_KWARG] === marker;
@@ -249,4 +254,53 @@ export function isNudgeTurn(message: BaseMessage): boolean {
 
 export function isHumanAgentTurn(message: BaseMessage): boolean {
   return hasMarker(message, "human_agent");
+}
+
+// WHAT A TOOL CALL GETS BACK WHEN THE TURN WAS CALLED OFF WHILE IT WAS IN FLIGHT (issue #449).
+//
+// The text is for the model that eventually reads this thread; the MARKER is for us, and the two are
+// not interchangeable. A rollback has to know that nothing ran, and it cannot ask the tool's name —
+// the name is the caller's (`toolDefinitionCreateSchema` does not reserve the native ones) and the
+// refusal covers every tool source there is. It cannot read the content either: a tool is free to
+// return this sentence itself. Only the graph writes this marker, so only the graph's own refusal
+// carries it.
+//
+// It does not name `/reset`, because the fence does not either: a retired job withdraws a turn the
+// same way, and a result that guessed the cause would be wrong on the other half of the callers.
+export const CALLED_OFF_TOOL_RESULT =
+  "Not executed: this turn was cancelled while the call was in flight.";
+
+export function calledOffToolResult(call: {
+  id?: string;
+  name: string;
+}): ToolMessage {
+  return new ToolMessage({
+    tool_call_id: call.id ?? "",
+    name: call.name,
+    content: CALLED_OFF_TOOL_RESULT,
+    additional_kwargs: { [MARKER_KWARG]: "called_off" },
+  });
+}
+
+export function isCalledOffToolResult(message: BaseMessage): boolean {
+  return message.getType() === "tool" && hasMarker(message, "called_off");
+}
+
+// DID THE TOOL BOUNDARY REFUSE THIS INVOKE'S CALLS? Asked of what `graph.invoke` returned, by the
+// caller, and it exists because the caller cannot ask its own fence again to find out.
+//
+// The fences handed to the graph are not all monotonic: the channel-redirect one reads `agent.enabled`
+// on every ask, so an operator who switches the agent off during the model call and back on before
+// the caller's post-invoke check gets `true` there. The turn then looks like an ordinary SILENT one —
+// the boundary ends it on an empty assistant message — and the caller advances its ladder, marks the
+// message handled, and rolls nothing back, on a turn that was withdrawn (review round 5).
+//
+// Read positionally, the same axis the rollback pairs on, because that is the shape the boundary
+// emits: the refusals for one batch, then the empty turn that closes it. So the message before the
+// last one is a refusal exactly when this invoke ended in one — an OLDER refusal still in the thread
+// (the reactive rollback keeps a call and its answer) cannot sit there, because every later invoke
+// appends its own turn after it.
+export function turnWasCalledOff(produced: readonly BaseMessage[]): boolean {
+  const beforeLast = produced.at(-2);
+  return beforeLast !== undefined && isCalledOffToolResult(beforeLast);
 }

@@ -33,6 +33,7 @@ import { clipText } from "@/lib/text";
 import { resolveInjectableCredential } from "@/modules/vault/injectable";
 import { formatVaultRef, readVaultRefId } from "@/modules/vault/service";
 import { CONTEXT_VAR_NAMES } from "./normalize";
+import { readHttpMethod } from "./service";
 
 // What the operator gets back to paste into the sample field, and it is the RAW response, not the
 // clipped one the model sees: the whole point is to pick paths out of it, including the ones past
@@ -108,6 +109,18 @@ export async function runToolTest(
   const tenantId = ctx.tenantId;
   if (tenantId === null) throw new AppError("tenant required", 400);
   const d = input.definition;
+  // The SAME five methods the write schema accepts, and refused here rather than passed through.
+  // Without this the endpoint is the one place a TENANT_ADMIN can make the server issue a `PURGE`
+  // or a `CONNECT` — which is a capability that saving the definition and calling it does not give
+  // them, and "adds no capability over what you can already do" is the whole argument for this
+  // endpoint existing.
+  const method = readHttpMethod(d.method ?? "GET");
+  if (method === null) {
+    throw new AppError(
+      `method must be one of GET, POST, PUT, PATCH, DELETE (got ${String(d.method)})`,
+      400,
+    );
+  }
   const credentialRef = d.credentialRef || null;
   // The credential's own metadata, read where the turn reads it, so a typed credential auto-injects
   // here the way it will in production. A ref naming nothing yields no metadata, which is the same
@@ -118,7 +131,7 @@ export async function runToolTest(
 
   const def: HttpToolDef = {
     name: d.name || "tool_test",
-    method: d.method || "GET",
+    method,
     urlTemplate: d.urlTemplate,
     allowedHosts: d.allowedHosts ?? [],
     headers: (d.headers ?? {}) as Record<string, string>,

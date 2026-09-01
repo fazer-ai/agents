@@ -8,10 +8,13 @@ import {
   Modal,
   ModalCancelButton,
   type ModalController,
+  Select,
+  Textarea,
   useOnModalOpen,
 } from "@/client/components";
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
+import { fieldTypeLabels } from "./toolFieldTypes";
 
 // One real request for the definition on screen, so the operator can see what the API answers and
 // what the model would be given (issue #456). The sample field upstairs is filled from the response,
@@ -21,12 +24,104 @@ import { apiErrorMessage } from "@/client/lib/apiError";
 // Everything about the request itself is decided server-side (`modules/tool-definitions/test-run.ts`),
 // including which context names are honoured. This screen only collects values.
 
+export interface ToolTestField {
+  name: string;
+  description: string;
+  required: boolean;
+  // The DECLARED type, carried here because the runtime validates against it before fetching. A
+  // model supplies a typed argument; this dialog collects text, and text is what five of the seven
+  // declared types are not.
+  type: string;
+  enumValues?: string[];
+  itemType?: string;
+}
+
 export interface ToolTestTarget {
   // The definition as the editor would save it, snapshotted when this dialog opens.
   definition: Record<string, unknown>;
   // The AI-filled fields the model would supply, and the conversation placeholders it would not.
-  aiFields: { name: string; description: string; required: boolean }[];
+  aiFields: ToolTestField[];
   contextNames: string[];
+}
+
+// A typed argument out of what the operator typed, because `buildHttpTool` validates against the
+// declared zod type BEFORE the request goes out: sending `"3"` for an integer field, or `"true"`
+// for a boolean, fails the call with a schema error and never reaches the API. Five of the seven
+// declared types are not strings.
+//
+// Exported and pure so the table is a test rather than a claim.
+export type CoercedArg =
+  | { ok: true; value: unknown }
+  // The reason names the TYPE the field declared, because that is the thing the operator cannot see
+  // from this dialog — the declaration lives on the tab behind it.
+  | { ok: false; reason: string; itemType?: string };
+
+export function coerceTestArg(
+  field: Pick<ToolTestField, "type" | "itemType">,
+  raw: string,
+): CoercedArg {
+  const text = raw.trim();
+  switch (field.type) {
+    case "integer": {
+      // The emptiness guard is not redundant with the callers that already skip a blank box:
+      // `Number("")` is 0 and `Number.isInteger(0)` is true, so without it this function answers
+      // "the operator typed zero" to a box nobody filled.
+      const n = text === "" ? Number.NaN : Number(text);
+      return Number.isInteger(n)
+        ? { ok: true, value: n }
+        : { ok: false, reason: "integer" };
+    }
+    case "number": {
+      const n = Number(text);
+      return text !== "" && Number.isFinite(n)
+        ? { ok: true, value: n }
+        : { ok: false, reason: "number" };
+    }
+    case "boolean":
+      if (text === "true") return { ok: true, value: true };
+      if (text === "false") return { ok: true, value: false };
+      return { ok: false, reason: "boolean" };
+    case "array": {
+      // JSON first, because that is what the model sends and what round-trips every element type.
+      // A bare comma-separated list is accepted as the shorthand an operator types by hand, with
+      // each element coerced by the declared item type so an array of numbers stays numbers.
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        parsed = text.split(",").map((v) => v.trim());
+      }
+      if (!Array.isArray(parsed)) return { ok: false, reason: "array" };
+      const item = field.itemType ?? "string";
+      const out: unknown[] = [];
+      for (const el of parsed) {
+        const c = coerceTestArg(
+          { type: item, itemType: undefined },
+          typeof el === "string" ? el : JSON.stringify(el),
+        );
+        if (!c.ok) return { ok: false, reason: "array", itemType: item };
+        out.push(c.value);
+      }
+      return { ok: true, value: out };
+    }
+    case "object": {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        return { ok: false, reason: "object" };
+      }
+      return parsed !== null &&
+        typeof parsed === "object" &&
+        !Array.isArray(parsed)
+        ? { ok: true, value: parsed }
+        : { ok: false, reason: "object" };
+    }
+    default:
+      // string and enum: the runtime takes the text as written, and an enum's own membership is the
+      // schema's to refuse — the picker below only offers declared values anyway.
+      return { ok: true, value: raw };
+  }
 }
 
 type TestResult = NonNullable<
@@ -47,6 +142,14 @@ export function ToolTestModal({
   const [result, setResult] = useState<TestResult | null>(null);
 
   const target = modal.payload;
+  const typeLabels = fieldTypeLabels(t);
+  // The refused type, named the way the tab where it was CHOSEN names it. Reporting the raw
+  // `integer` would name a word the operator has never seen on this console: that picker says
+  // "Inteiro".
+  const typeText = (bad: { reason: string; itemType?: string }) =>
+    bad.itemType
+      ? `${typeLabels[bad.reason] ?? bad.reason} (${typeLabels[bad.itemType] ?? bad.itemType})`
+      : (typeLabels[bad.reason] ?? bad.reason);
 
   useOnModalOpen(modal, () => {
     // The component outlives the dialog: a previous run's answer must not read as this one's.
@@ -65,7 +168,20 @@ export function ToolTestModal({
       const args: Record<string, unknown> = {};
       for (const f of target.aiFields) {
         const v = values[f.name];
-        if (v !== undefined && v !== "") args[f.name] = v;
+        if (v === undefined || v === "") continue;
+        const coerced = coerceTestArg(f, v);
+        // Guarded by the disabled button too; kept here because the button is not the only way a
+        // value can be stale by the time this runs.
+        if (!coerced.ok) {
+          setError(
+            t("tools.testBadArg", '"{{field}}" has to be: {{type}}.', {
+              field: f.name,
+              type: typeText(coerced),
+            }),
+          );
+          return;
+        }
+        args[f.name] = coerced.value;
       }
       const context: Record<string, string> = {};
       for (const name of target.contextNames) {
@@ -98,22 +214,34 @@ export function ToolTestModal({
     }
   }
 
-  const fields = target
+  const fields: (ToolTestField & { hint: string })[] = target
     ? [
-        ...target.aiFields.map((f) => ({
-          name: f.name,
-          hint: f.description,
-          required: f.required,
-        })),
+        ...target.aiFields.map((f) => ({ ...f, hint: f.description })),
         ...target.contextNames.map((name) => ({
           name,
+          description: "",
+          required: false,
+          // A context placeholder is interpolated as text whatever it names, so it has no declared
+          // type to honour.
+          type: "string",
           hint: t(
             "tools.testContextHint",
             "Supplied by the platform during a real conversation.",
           ),
-          required: false,
         })),
       ]
+    : [];
+  // Which boxes hold something the declared type cannot take. Computed for the render as well as
+  // the send, so the operator sees it before pressing the button instead of reading a schema error
+  // out of a failed call.
+  const badArgs = target
+    ? target.aiFields
+        .filter((f) => (values[f.name] ?? "") !== "")
+        .map((f) => ({
+          field: f,
+          got: coerceTestArg(f, values[f.name] ?? ""),
+        }))
+        .filter((x) => !x.got.ok)
     : [];
 
   return (
@@ -126,7 +254,11 @@ export function ToolTestModal({
           <span className="text-error text-xs">{error}</span>
           <div className="flex gap-2">
             <ModalCancelButton disabled={running} />
-            <Button onClick={run} loading={running}>
+            <Button
+              onClick={run}
+              loading={running}
+              disabled={badArgs.length > 0}
+            >
               {t("tools.testRun", "Send request")}
             </Button>
           </div>
@@ -148,16 +280,59 @@ export function ToolTestModal({
             )}
           </p>
         ) : (
-          fields.map((f) => (
-            <FormField key={f.name} label={f.name} description={f.hint}>
-              <Input
-                value={values[f.name] ?? ""}
-                onChange={(e) =>
-                  setValues((v) => ({ ...v, [f.name]: e.target.value }))
+          fields.map((f) => {
+            const value = values[f.name] ?? "";
+            const set = (next: string) =>
+              setValues((v) => ({ ...v, [f.name]: next }));
+            const bad = badArgs.find((b) => b.field.name === f.name);
+            return (
+              <FormField
+                key={f.name}
+                label={f.name}
+                description={f.hint}
+                group={f.type === "boolean" || f.type === "enum"}
+                error={
+                  bad && !bad.got.ok
+                    ? t(
+                        "tools.testBadArg",
+                        '"{{field}}" has to be: {{type}}.',
+                        {
+                          field: f.name,
+                          type: typeText(bad.got),
+                        },
+                      )
+                    : undefined
                 }
-              />
-            </FormField>
-          ))
+              >
+                {f.type === "boolean" || f.type === "enum" ? (
+                  <Select value={value} onChange={(e) => set(e.target.value)}>
+                    <option value="">
+                      {t("tools.testUnset", "Leave out")}
+                    </option>
+                    {(f.type === "boolean"
+                      ? ["true", "false"]
+                      : (f.enumValues ?? [])
+                    ).map((opt) => (
+                      <option key={opt} value={opt}>
+                        {opt}
+                      </option>
+                    ))}
+                  </Select>
+                ) : f.type === "array" || f.type === "object" ? (
+                  <Textarea
+                    rows={2}
+                    value={value}
+                    onChange={(e) => set(e.target.value)}
+                    placeholder={
+                      f.type === "array" ? '["a", "b"]' : '{"key": "value"}'
+                    }
+                  />
+                ) : (
+                  <Input value={value} onChange={(e) => set(e.target.value)} />
+                )}
+              </FormField>
+            );
+          })
         )}
         {result && (
           <div className="flex flex-col gap-2 rounded-md border border-border p-3">

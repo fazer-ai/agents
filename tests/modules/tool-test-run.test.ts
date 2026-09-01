@@ -213,3 +213,44 @@ describe("runToolTest", () => {
     expect(wired).not.toContain("emitAck");
   });
 });
+
+// Round 1 of review, finding 2. The endpoint's whole justification is that it adds no capability
+// over saving the definition and calling it, and an unconstrained method is exactly a capability
+// the write schema does not grant: `tool_create` takes an enum of five.
+describe("runToolTest — the method vocabulary is the write schema's", () => {
+  test.each(["PURGE", "PROPFIND", "CONNECT", "TRACE", ""])(
+    "refuses %s before anything goes out",
+    async (method) => {
+      const seen: Seen = {};
+      await expect(
+        runToolTest(
+          ctx,
+          { definition: { ...base, method }, args: { cnpj: "1" } },
+          noDb,
+          { fetchImpl: stub(seen, 200) },
+        ),
+      ).rejects.toThrow(/GET, POST, PUT, PATCH, DELETE/);
+      expect(seen.url).toBeUndefined();
+    },
+  );
+
+  test("takes the five, in any case the operator wrote them", async () => {
+    for (const method of ["get", "POST", "Put", "patch", "DELETE"]) {
+      const seen: Seen = {};
+      await runToolTest(
+        ctx,
+        {
+          definition: {
+            ...base,
+            method,
+            inputSchema: {},
+            urlTemplate: `https://${PUBLIC}/v1/x`,
+          },
+        },
+        noDb,
+        { fetchImpl: stub(seen, 200) },
+      );
+      expect((seen.init as RequestInit).method).toBe(method.toUpperCase());
+    }
+  });
+});

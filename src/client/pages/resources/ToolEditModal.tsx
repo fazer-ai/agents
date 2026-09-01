@@ -43,6 +43,7 @@ import {
   unusableTemplateTokens,
 } from "@/modules/tool-definitions/response-template";
 import { ToolTestModal, type ToolTestTarget } from "./ToolTestModal";
+import { fieldTypeLabels } from "./toolFieldTypes";
 
 type ToolsData = Awaited<ReturnType<typeof api.api.v1.tools.get>>["data"];
 export type Tool = NonNullable<ToolsData>["tools"][number];
@@ -990,6 +991,12 @@ export function ToolEditModal({
           name: f.name.trim(),
           description: f.description,
           required: f.required,
+          // The declared type travels with the field: the runtime validates the argument against it
+          // before the request goes out, so a dialog that only collected text would fail every
+          // non-string field on the schema instead of reaching the API.
+          type: f.type,
+          ...(f.type === "enum" ? { enumValues: f.enumValues } : {}),
+          ...(f.type === "array" ? { itemType: f.itemType } : {}),
         })),
       contextNames: referencedContextNames,
     });
@@ -2065,15 +2072,7 @@ function AiFieldsPanel({
   const { t } = useTranslation();
   const update = (i: number, patch: Partial<AiFieldRow>) =>
     onChange(value.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
-  const typeLabels: Record<AiFieldType, string> = {
-    string: t("tools.typeString", "Text"),
-    integer: t("tools.typeInteger", "Integer"),
-    number: t("tools.typeNumber", "Number"),
-    boolean: t("tools.typeBoolean", "Yes/No"),
-    enum: t("tools.typeEnum", "List (enum)"),
-    array: t("tools.typeArray", "Array"),
-    object: t("tools.typeObject", "JSON object"),
-  };
+  const typeLabels = fieldTypeLabels(t);
   return (
     <div className="flex flex-col gap-2">
       {value.length === 0 && (

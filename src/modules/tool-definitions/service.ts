@@ -13,7 +13,10 @@ import {
 } from "@/modules/audit/projection";
 import { auditMutation, projectionMoved } from "@/modules/audit/service";
 import { readAppointmentDeclaration } from "@/modules/tool-definitions/appointment";
-import { readResponseTemplateResult } from "@/modules/tool-definitions/response-template";
+import {
+  readResponseTemplateResult,
+  storableResponseTemplate,
+} from "@/modules/tool-definitions/response-template";
 import { readableVaultRef, requireVaultRef } from "@/modules/vault/service";
 import { unsupportedBodyShape } from "./body-shape";
 import { normalizeToolShapes } from "./normalize";
@@ -24,7 +27,21 @@ import { normalizeToolShapes } from "./normalize";
 // allowlist apply at invoke time. Granting a definition to an agent is a separate concern
 // (AgentToolSelection, source=HTTP).
 
-const HTTP_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
+// The methods a tool definition may carry, and EXPORTED because three writers reach that column:
+// this module's zod schema (REST + MCP), the agent import, and the editor's one-shot test run. Only
+// the first had the list, so the other two could store or issue a method no console can produce.
+export const HTTP_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
+export type HttpToolMethod = (typeof HTTP_METHODS)[number];
+
+// The method a caller sent, or null when it is not one of the five. Uppercases first, because the
+// runtime does (`def.method.toUpperCase()`) and a hand-written `get` is the same request.
+export function readHttpMethod(raw: unknown): HttpToolMethod | null {
+  if (typeof raw !== "string") return null;
+  const up = raw.trim().toUpperCase();
+  return (HTTP_METHODS as readonly string[]).includes(up)
+    ? (up as HttpToolMethod)
+    : null;
+}
 
 export interface ToolDefinitionDto {
   id: string;
@@ -325,18 +342,6 @@ async function assertNameFree(
   }
 }
 
-// Stored as the READER understands it (the trimmed template), so the row can never hold a
-// declaration the runtime would render differently from what the editor showed. Anything that is
-// not a declaration — absent, {}, a legacy JSON Schema — is stored verbatim: it is not this
-// feature's to rewrite.
-function storableOutputSchema(raw: unknown): Prisma.InputJsonValue {
-  const r = readResponseTemplateResult(raw);
-  if (r.declared && r.ok) {
-    return { mode: "template", template: r.template } as Prisma.InputJsonValue;
-  }
-  return (raw ?? {}) as Prisma.InputJsonValue;
-}
-
 function assertSupportedBody(body: unknown): void {
   const reason = unsupportedBodyShape(body);
   if (reason) throw new AppError(reason, 400);
@@ -378,7 +383,9 @@ export async function createToolDefinition(
         allowedHosts: data.allowedHosts,
         headers: (shapes.headers ?? {}) as Prisma.InputJsonValue,
         inputSchema: (shapes.inputSchema ?? {}) as Prisma.InputJsonValue,
-        outputSchema: storableOutputSchema(data.outputSchema),
+        outputSchema: storableResponseTemplate(
+          data.outputSchema,
+        ) as Prisma.InputJsonValue,
         query: (shapes.query ?? {}) as Prisma.InputJsonValue,
         body: (shapes.body ?? {}) as Prisma.InputJsonValue,
         credentialRef,
@@ -465,7 +472,9 @@ export async function updateToolDefinition(
     if (data.inputSchema !== undefined)
       patchData.inputSchema = shapes.inputSchema as Prisma.InputJsonValue;
     if (data.outputSchema !== undefined)
-      patchData.outputSchema = storableOutputSchema(data.outputSchema);
+      patchData.outputSchema = storableResponseTemplate(
+        data.outputSchema,
+      ) as Prisma.InputJsonValue;
     if (data.query !== undefined)
       patchData.query = shapes.query as Prisma.InputJsonValue;
     if (data.body !== undefined)

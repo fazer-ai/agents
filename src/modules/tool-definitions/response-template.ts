@@ -169,6 +169,27 @@ export function readResponseTemplate(raw: unknown): ResponseTemplate | null {
   return r.declared && r.ok ? { template: r.template } : null;
 }
 
+// What a WRITER puts in the column, from what a caller sent. The reader's own shape for a usable
+// declaration, and the value untouched for anything that is not one — a legacy JSON Schema is not
+// this feature's to rewrite.
+//
+// `dropUnusable` is the difference between the two kinds of writer, and it is not a style choice.
+// The REST/MCP path refuses a broken declaration before reaching here (the operator wrote it and can
+// fix it), so nothing unusable ever arrives and the flag is off. The IMPORT path cannot refuse: a
+// bundle is a file handed over whole, and failing all of it over one tool's template would be worse
+// than importing it — so there the broken declaration is DROPPED, which makes the row say "no
+// template" honestly instead of parking unusable text where the editor reads it back as a legacy
+// schema and nothing anywhere says why the tool stopped projecting.
+export function storableResponseTemplate(
+  raw: unknown,
+  opts: { dropUnusable?: boolean } = {},
+): Record<string, unknown> {
+  const r = readResponseTemplateResult(raw);
+  if (r.declared && r.ok) return { mode: "template", template: r.template };
+  if (r.declared && opts.dropUnusable) return {};
+  return (raw ?? {}) as Record<string, unknown>;
+}
+
 export interface RenderedResponse {
   text: string;
   // The paths that did NOT resolve, named, in document order. This is the operator's only channel:

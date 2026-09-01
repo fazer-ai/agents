@@ -580,6 +580,179 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(generated).toBe(0);
   });
 
+  // ISSUE #449, on the path that owns fifteen of these asks and had none where it mattered. All of
+  // them sit BETWEEN two steps; a tool call happens inside one, so a retirement landing while the
+  // model call is in flight left the nudge's own tools free to write. `assign_label` is the one this
+  // asserts because the client stub records it, and it is one of the three the issue names.
+  test("a job retired during the model call does not get its tools run", async () => {
+    // Ids of this test's own, and picked against the whole file rather than the neighbour: this
+    // suite shares one tenant, so a reused contact-inbox makes another test's
+    // `agentThread.findUnique` read the row THIS turn wrote, and a reused conversation does the same
+    // to its thread.
+    const contactInboxId = 8890;
+    await seedConv(9889, null, new Date(), contactInboxId);
+    const s = stub();
+    let wanted = true;
+    let rounds = 0;
+    // Flipped INSIDE the model call, which is the window: every ask before it has been answered and
+    // the next one comes after the invoke has already run the tools.
+    class RetiredMidCallModel extends BaseChatModel {
+      constructor() {
+        super({});
+      }
+      _llmType() {
+        return "fake-retired-mid-call";
+      }
+      async _generate(): Promise<ChatResult> {
+        rounds += 1;
+        wanted = false;
+        const message =
+          rounds === 1
+            ? new AIMessage({
+                content: "",
+                tool_calls: [
+                  {
+                    name: "assign_label",
+                    args: { label: "seguimento", scope: "conversation" },
+                    id: "call_449_nudge",
+                  },
+                ],
+              })
+            : new AIMessage("Tudo certo?");
+        return { generations: [{ text: "", message }] };
+      }
+    }
+
+    const cp = new MemorySaver();
+    const outcome = await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:9889`,
+      nudge: { source: "followup", kind: "inactivity", step: 1 },
+      stillWanted: async () => wanted,
+      base: appDb,
+      deps: {
+        makeModel: () => new RetiredMidCallModel(),
+        makeClient: s.makeClient,
+        checkpointer: cp,
+        persistUsage: async () => {},
+      },
+    });
+
+    expect(outcome).toBe("stale");
+    // The label the retired run would have written onto the conversation.
+    expect(s.labelSets).toEqual([]);
+    // And nothing was said either, which the asks after the invoke already covered.
+    expect(s.messages).toEqual([]);
+    // ONE round: the refusal ends the turn instead of routing back to the model.
+    expect(rounds).toBe(1);
+    // AND THE THREAD IS CLEAN. The rollback keeps a turn whose tools ACTED, because no removal here
+    // can undo a write to the outside world — and a refused call looks exactly like one that ran
+    // unless the planner can tell them apart. It can: the graph marks its own refusal. Without that,
+    // the retired nudge's directive, its tool call and the refusal all stay in shared memory.
+    const left =
+      (
+        (
+          await buildThreadStateGraph(cp).getState({
+            configurable: {
+              thread_id: contactInboxThreadId(
+                tenantId,
+                instanceId,
+                contactInboxId,
+              ),
+            },
+          })
+        ).values as { messages?: BaseMessage[] }
+      ).messages ?? [];
+    expect(left).toEqual([]);
+  });
+
+  // REVIEW ROUND 5, and it is the same non-monotonicity that put the empty terminator there. The
+  // fences this path hands down are not all one-way: the channel-redirect one reads `agent.enabled`
+  // on every ask, so an operator who switches the agent off during the model call and back on before
+  // the post-invoke check gets a `true` there. The refused turn then reads as an ordinary SILENT one
+  // — both end on an empty assistant message — and this run would advance the ladder and leave its
+  // own refusal in shared history. What tells them apart is the RESULT, not the fence.
+  test("a fence that flips back to yes does not turn a refused turn into a silent one", async () => {
+    const contactInboxId = 8891;
+    await seedConv(9890, null, new Date(), contactInboxId);
+    const s = stub();
+    let generated = false;
+    let refusedOnce = false;
+    class CallsThenWouldAnswer extends BaseChatModel {
+      constructor() {
+        super({});
+      }
+      _llmType() {
+        return "fake-flip-back";
+      }
+      async _generate(): Promise<ChatResult> {
+        generated = true;
+        return {
+          generations: [
+            {
+              text: "",
+              message: new AIMessage({
+                content: "",
+                tool_calls: [
+                  {
+                    name: "assign_label",
+                    args: { label: "seguimento", scope: "conversation" },
+                    id: "call_449_flip",
+                  },
+                ],
+              }),
+            },
+          ],
+        };
+      }
+    }
+
+    const cp = new MemorySaver();
+    const outcome = await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:9890`,
+      nudge: { source: "followup", kind: "inactivity", step: 1 },
+      // False exactly once, on the first ask AFTER the model produced its call — which is the tool
+      // boundary's — and yes to everything before and after it.
+      stillWanted: async () => {
+        if (generated && !refusedOnce) {
+          refusedOnce = true;
+          return false;
+        }
+        return true;
+      },
+      base: appDb,
+      deps: {
+        makeModel: () => new CallsThenWouldAnswer(),
+        makeClient: s.makeClient,
+        checkpointer: cp,
+        persistUsage: async () => {},
+      },
+    });
+
+    // The boundary refused, so the run is withdrawn — not "the agent had nothing to say", which is
+    // what the caller advances its ladder on.
+    expect(outcome).toBe("stale");
+    expect(refusedOnce).toBe(true);
+    expect(s.labelSets).toEqual([]);
+    expect(s.messages).toEqual([]);
+    const after =
+      (
+        (
+          await buildThreadStateGraph(cp).getState({
+            configurable: {
+              thread_id: contactInboxThreadId(
+                tenantId,
+                instanceId,
+                contactInboxId,
+              ),
+            },
+          })
+        ).values as { messages?: BaseMessage[] }
+      ).messages ?? [];
+    expect(after).toEqual([]);
+  });
+
   // THE BARRIER (issue #194), at the third reader of the memory thread. A nudge is a model call on
   // this thread like any other, so a message the agent stayed silent on that is still a queued row
   // is a message the nudge writes without — and the nudge is the writer most likely to ask about

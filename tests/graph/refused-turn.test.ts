@@ -5,7 +5,11 @@ import {
   HumanMessage,
   ToolMessage,
 } from "@langchain/core/messages";
-import { memoryHeadMessage, nudgeMessage } from "@/graph/markers";
+import {
+  calledOffToolResult,
+  memoryHeadMessage,
+  nudgeMessage,
+} from "@/graph/markers";
 import {
   planReactiveTurnRollback,
   planTurnRollback,
@@ -45,6 +49,14 @@ function toolResult(
     tool_call_id: `${id}-c`,
     ...(name ? { name } : {}),
   });
+}
+// The graph's own refusal, carrying the marker that says the call never ran (issue #449). Built
+// through the production helper on purpose: a hand-rolled copy would keep passing if the marker
+// moved.
+function refused(id: string, name: string, callId: string): BaseMessage {
+  const m = calledOffToolResult({ id: callId, name });
+  m.id = id;
+  return m;
 }
 function nudge(id: string): BaseMessage {
   const m = nudgeMessage("An external system event just occurred…", 900);
@@ -258,6 +270,81 @@ describe("planTurnRollback", () => {
         produced,
         current: [produced[0] as BaseMessage],
         expected: { action: "remove", ids: ["n1"] },
+      };
+    })(),
+    (() => {
+      // ISSUE #449. The graph's tool boundary refused the call, so nothing reached the world and the
+      // turn is as removable as a silent one. The tool's NAME says nothing here — it is whatever the
+      // operator granted — and neither does the content, which any tool may return. What answers is
+      // the marker the graph writes on its own refusal.
+      const produced = [
+        nudge("n1"),
+        calling("a1", "assign_label"),
+        refused("t1", "assign_label", "a1-c"),
+        a("a2", ""),
+      ];
+      return {
+        name: "a call the tool boundary refused never acted, so the turn comes back out",
+        produced,
+        current: produced,
+        expected: { action: "remove", ids: ["n1", "a1", "t1", "a2"] },
+      };
+    })(),
+    (() => {
+      // REVIEW ROUND 3. A provider may emit a call with no id — LangChain types it optional — and the
+      // refusal then carries `""`, which matches no call. Pairing by id read the wrong axis: the
+      // boundary refuses a BATCH, so what answers is the position, and this row is what says so.
+      const produced = [
+        nudge("n1"),
+        new AIMessage({
+          id: "a1",
+          content: "",
+          tool_calls: [{ name: "assign_label", args: {} }],
+        }),
+        refused("t1", "assign_label", ""),
+        a("a2", ""),
+      ];
+      return {
+        name: "a refused call with no id is still a call that never ran",
+        produced,
+        current: produced,
+        expected: { action: "remove", ids: ["n1", "a1", "t1", "a2"] },
+      };
+    })(),
+    (() => {
+      // ONLY OUR OWN REFUSAL makes a calling turn inert, and the mutation battery is what asked for
+      // this row: reading the position without reading the MARKER survived every other case, because
+      // a real tool result is caught on its own line. It is not caught here — a calling turn whose
+      // result is simply absent is a call that may well have gone out, and the conservative answer
+      // for a write nothing can undo is to keep the slice.
+      const produced = [
+        nudge("n1"),
+        calling("a1", "assign_label"),
+        a("a2", ""),
+      ];
+      return {
+        name: "a calling turn followed by anything else is still a turn that may have acted",
+        produced,
+        current: produced,
+        expected: { action: "keep", reason: "tool-ran" } as RollbackPlan,
+      };
+    })(),
+    (() => {
+      // The pairing, and the reason the answer is not "the slice contains a refusal". One hop RAN
+      // before the turn was called off, and that write is in the world: the slice stays whole.
+      const produced = [
+        nudge("n1"),
+        calling("a1", "assign_label"),
+        toolResult("t1", "Label applied.", "assign_label"),
+        calling("a2", "set_custom_attribute"),
+        refused("t2", "set_custom_attribute", "a2-c"),
+        a("a3", ""),
+      ];
+      return {
+        name: "a turn refused on its SECOND hop keeps the tool that already ran",
+        produced,
+        current: produced,
+        expected: { action: "keep", reason: "tool-ran" } as RollbackPlan,
       };
     })(),
   ];

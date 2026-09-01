@@ -10,7 +10,8 @@ import type { StructuredToolInterface } from "@langchain/core/tools";
 import { tool } from "@langchain/core/tools";
 import { MemorySaver } from "@langchain/langgraph";
 import { z } from "zod";
-import { buildAgentGraph } from "@/graph/graph";
+import { buildAgentGraph, lastAssistantText } from "@/graph/graph";
+import { CALLED_OFF_TOOL_RESULT } from "@/graph/markers";
 import { contentToText } from "@/graph/message-text";
 import { SKIP_REPLY_TOOL } from "@/graph/silence";
 import { buildThreadStateGraph } from "@/graph/thread-state";
@@ -1631,5 +1632,253 @@ describe("agentNode history ceiling", () => {
     );
     expect(model.seen[0]).toHaveLength(17);
     expect(trims).toHaveLength(0);
+  });
+});
+
+// ISSUE #449. `stillWanted` is the runtime's own ask, and every seam it owns is BETWEEN two steps:
+// before the divider, after the claim, before the invoke, at each outward write. A tool call happens
+// INSIDE one, so a `/reset` that lands once the model call is in flight is refused on its memory
+// step, says so, and the turn's tools then write an attribute, a label and a kanban card back onto
+// the conversation the operator was just told about. The seam that covers every tool source at once
+// is the node they all pass through.
+describe("the tool boundary refuses a turn that was called off", () => {
+  // Calls a tool, then answers. The shape of the turn the window is measured on.
+  class CallsThenAnswers {
+    rounds = 0;
+    async invoke(): Promise<AIMessage> {
+      return new AIMessage("");
+    }
+    bindTools(_tools: unknown) {
+      const self = this;
+      return {
+        async invoke(): Promise<AIMessage> {
+          self.rounds++;
+          if (self.rounds === 1) {
+            return new AIMessage({
+              content: "",
+              tool_calls: [{ name: "writer", args: { v: "sim" }, id: "c1" }],
+            });
+          }
+          return new AIMessage("pronto");
+        },
+      };
+    }
+  }
+
+  const writerTool = (ran: string[]): StructuredToolInterface =>
+    tool(
+      async ({ v }: { v: string }) => {
+        ran.push(v);
+        return `wrote ${v}`;
+      },
+      {
+        name: "writer",
+        description: "writes something to the world",
+        schema: z.object({ v: z.string() }),
+      },
+    ) as unknown as StructuredToolInterface;
+
+  test("the tool does not run, its call is still answered, and the turn ends", async () => {
+    const ran: string[] = [];
+    const model = new CallsThenAnswers();
+    const graph = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
+      model: model as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer: new MemorySaver(),
+      tools: [writerTool(ran)],
+      stillWanted: async () => false,
+    });
+    const result = await graph.invoke(
+      { messages: [new HumanMessage("marca como qualificado")] },
+      { configurable: { thread_id: "called-off" } },
+    );
+    // The write the operator was told had been undone.
+    expect(ran).toEqual([]);
+    // ONE round: answering the refusal back into the model would invite it to call the same tool
+    // again, to the recursion limit, on a conversation that was already cleared.
+    expect(model.rounds).toBe(1);
+    // And the call is answered, which is the half a plain "route away" gets wrong: the next turn
+    // loads this thread, and an assistant turn carrying tool calls that no ToolMessage answers is
+    // what the providers reject (see the empty-turn rule above — @langchain/openai replays those
+    // calls out of `additional_kwargs`).
+    const answers = result.messages.filter((m) => m.getType() === "tool");
+    expect(
+      answers.map(
+        (m) => (m as unknown as { tool_call_id: string }).tool_call_id,
+      ),
+    ).toEqual(["c1"]);
+    expect(contentToText(answers[0]?.content ?? "")).toBe(
+      CALLED_OFF_TOOL_RESULT,
+    );
+  });
+
+  // AND IT DOES NOT END ON THAT MESSAGE. The runtime reads the reply off the LAST message of the
+  // result whatever its type (`lastAssistantText`), so ending on the `ToolMessage` would offer the
+  // refusal's own sentence as the text to post. The gate at each send refuses a called-off turn
+  // today — but the fences this graph is handed are not all monotonic (the channel-redirect one
+  // answers false while an agent is disabled and true once it is re-enabled), so the property has to
+  // hold at this seam rather than depend on the caller agreeing with it later.
+  test("the refused turn ends on an empty assistant message, so nothing is postable", async () => {
+    const ran: string[] = [];
+    const model = new CallsThenAnswers();
+    const graph = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
+      model: model as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer: new MemorySaver(),
+      tools: [writerTool(ran)],
+      stillWanted: async () => false,
+    });
+    const result = await graph.invoke(
+      { messages: [new HumanMessage("marca como qualificado")] },
+      { configurable: { thread_id: "called-off-tail" } },
+    );
+    expect(result.messages.at(-1)?.getType()).toBe("ai");
+    expect(lastAssistantText(result.messages)).toBe("");
+    // The refusal is still in the thread, one message back: it is the answer the NEXT turn needs.
+    expect(result.messages.at(-2)?.getType()).toBe("tool");
+  });
+
+  // ALL OR NOTHING, and the rollback's pairing rests on it: the boundary reads ONE assistant turn and
+  // answers every call it carries, so a batch never comes back half-run. Without this the positional
+  // rule in ../graph/refused-turn.ts would be pairing against a shape nothing pins.
+  test("a batch of calls is refused whole, and every one of them is answered", async () => {
+    const ran: string[] = [];
+    class CallsTwiceInOneTurn {
+      rounds = 0;
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("");
+      }
+      bindTools(_tools: unknown) {
+        const self = this;
+        return {
+          async invoke(): Promise<AIMessage> {
+            self.rounds++;
+            if (self.rounds === 1) {
+              return new AIMessage({
+                content: "",
+                tool_calls: [
+                  { name: "writer", args: { v: "um" }, id: "c1" },
+                  { name: "writer", args: { v: "dois" }, id: "c2" },
+                ],
+              });
+            }
+            return new AIMessage("pronto");
+          },
+        };
+      }
+    }
+    const model = new CallsTwiceInOneTurn();
+    const graph = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
+      model: model as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer: new MemorySaver(),
+      tools: [writerTool(ran)],
+      stillWanted: async () => false,
+    });
+    const result = await graph.invoke(
+      { messages: [new HumanMessage("faz as duas coisas")] },
+      { configurable: { thread_id: "called-off-batch" } },
+    );
+    expect(ran).toEqual([]);
+    expect(
+      result.messages
+        .filter((m) => m.getType() === "tool")
+        .map((m) => (m as unknown as { tool_call_id: string }).tool_call_id),
+    ).toEqual(["c1", "c2"]);
+    expect(model.rounds).toBe(1);
+  });
+
+  // THE SEAM CANNOT REFUSE BY THROWING, only break the thread. Measured against the real
+  // checkpointer with a tools node that throws: the thread comes back `[human, ai(tool_calls=…)]`
+  // with no ToolMessage — the exact broken sequence the refusal above exists to avoid. And a
+  // throwing fence is not hypothetical: several of the ones the runtime hands down read a job row.
+  test("a fence that cannot answer lets the tools run", async () => {
+    const ran: string[] = [];
+    const model = new CallsThenAnswers();
+    const graph = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
+      model: model as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer: new MemorySaver(),
+      tools: [writerTool(ran)],
+      stillWanted: async () => {
+        throw new Error("database is unreachable");
+      },
+    });
+    const result = await graph.invoke(
+      { messages: [new HumanMessage("marca como qualificado")] },
+      { configurable: { thread_id: "unreadable-fence" } },
+    );
+    expect(ran).toEqual(["sim"]);
+    expect(model.rounds).toBe(2);
+    expect(String(result.messages.at(-1)?.content ?? "")).toBe("pronto");
+  });
+
+  // The control, and it is the one that says the refusal is not simply "tools are off": the same
+  // graph with the same fence answering the other way runs the tool and finishes the turn.
+  test("a turn that is still wanted runs its tools", async () => {
+    const ran: string[] = [];
+    const model = new CallsThenAnswers();
+    const graph = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
+      model: model as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer: new MemorySaver(),
+      tools: [writerTool(ran)],
+      stillWanted: async () => true,
+    });
+    const result = await graph.invoke(
+      { messages: [new HumanMessage("marca como qualificado")] },
+      { configurable: { thread_id: "still-wanted" } },
+    );
+    expect(ran).toEqual(["sim"]);
+    expect(String(result.messages.at(-1)?.content ?? "")).toBe("pronto");
+  });
+
+  // WHAT IT COSTS, counted rather than estimated: one read per TOOL-CALLING hop, and none at all on
+  // a turn that calls nothing. The issue named the cost as a reason this needed a design, on a path
+  // that already pays for the fence #428 added.
+  test("the fence is asked once per tool-calling hop, and never on a turn without one", async () => {
+    const ran: string[] = [];
+    let asked = 0;
+    const answers = new CallsThenAnswers();
+    const withTool = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
+      model: answers as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer: new MemorySaver(),
+      tools: [writerTool(ran)],
+      stillWanted: async () => {
+        asked += 1;
+        return true;
+      },
+    });
+    await withTool.invoke(
+      { messages: [new HumanMessage("marca")] },
+      { configurable: { thread_id: "cost-one-hop" } },
+    );
+    expect(asked).toBe(1);
+
+    asked = 0;
+    const silent = new RecordingModel();
+    const noTool = buildAgentGraph({
+      primary: { provider: "openai", model: "test-model" },
+      model: silent as unknown as BaseChatModel,
+      systemPrompt: "PROMPT",
+      checkpointer: new MemorySaver(),
+      tools: [writerTool(ran)],
+      stillWanted: async () => {
+        asked += 1;
+        return true;
+      },
+    });
+    await noTool.invoke(
+      { messages: [new HumanMessage("oi")] },
+      { configurable: { thread_id: "cost-no-hop" } },
+    );
+    expect(asked).toBe(0);
   });
 });

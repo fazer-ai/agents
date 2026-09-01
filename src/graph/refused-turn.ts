@@ -9,7 +9,7 @@ import {
   isTurnInFlight,
   markTurnInFlight,
 } from "./inflight";
-import { isNudgeTurn } from "./markers";
+import { isCalledOffToolResult, isNudgeTurn } from "./markers";
 import {
   claimIngestWrite,
   type IngestWriteClaim,
@@ -70,16 +70,43 @@ export type RollbackPlan =
 // by name alone would let a refused turn be removed after that call went out, which is the exact case
 // `actedOnTheWorld` exists to preserve. So the CALLER — the only side that knows which tool was
 // actually bound — passes the set, and an empty set means nothing was inert.
-function isInertToolCall(m: BaseMessage, inert: ReadonlySet<string>): boolean {
+//
+// THE SECOND WAY A CALL PERFORMS NOTHING is that it never ran at all (issue #449): the graph's tool
+// boundary refuses a batch when the turn was called off mid-invoke and answers each call with a
+// marked `ToolMessage`. That one is not a set of NAMES and could not be — the refusal covers every
+// tool source, so the names are whatever the operator granted — and it is not the content either,
+// since a tool is free to return the same sentence. It is the marker only the graph writes.
+//
+// PAIRED BY POSITION, WHICH IS WHAT THE MECHANISM ACTUALLY IS. The boundary refuses a BATCH: it
+// either answers every call of the assistant turn it just read, or none of them, and it emits those
+// answers directly after that turn. So the assistant turn a refusal follows is the one whose calls
+// did not run.
+//
+// Pairing by `tool_call_id` was the first version of this and it read the wrong axis. A provider may
+// emit a call with no id — LangChain types it optional — and the refusal then carries `""`, which
+// matches no call: the turn came back as "a tool ran" and the cancelled nudge stayed in shared
+// memory, which is the defect this branch exists to close (review round 3).
+//
+// Positional rather than "the slice contains a refusal", because a turn can run a tool on one hop
+// and be refused on the NEXT: that first result is a real act and the slice has to stay whole.
+function isInertToolCall(
+  m: BaseMessage,
+  inert: ReadonlySet<string>,
+  // The message directly after `m` in the slice, or undefined at the end of it.
+  next: BaseMessage | undefined,
+): boolean {
   // NOTE: No early return on an empty set, deliberately: `inert.has` already answers false for one, and
   // the shortcut made a by-name mutation of the branch below unobservable — the battery could not
   // tell the two implementations apart.
   if (m.getType() === "tool") {
+    if (isCalledOffToolResult(m)) return true;
     const name = (m as { name?: string }).name;
     return name !== undefined && inert.has(name);
   }
   const calls = (m as AIMessage).tool_calls ?? [];
-  return calls.length > 0 && calls.every((c) => inert.has(c.name));
+  if (calls.length === 0) return false;
+  if (next !== undefined && isCalledOffToolResult(next)) return true;
+  return calls.every((c) => inert.has(c.name));
 }
 
 function actedOnTheWorld(
@@ -87,8 +114,8 @@ function actedOnTheWorld(
   inert: ReadonlySet<string>,
 ): boolean {
   return slice.some(
-    (m) =>
-      !isInertToolCall(m, inert) &&
+    (m, i) =>
+      !isInertToolCall(m, inert, slice[i + 1]) &&
       (m.getType() === "tool" ||
         ((m as AIMessage).tool_calls?.length ?? 0) > 0),
   );

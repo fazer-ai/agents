@@ -362,7 +362,7 @@ export function collectCredRefs(
 // Maps each agent-field credential ref (model/stt/tts/vision) to the editor section that sets it, so a
 // "credential not found" import warning can deep-link to the exact field rather than the vault page.
 // First occurrence wins: a name shared across fields lands on one section, and config-health surfaces
-// the rest live once the agent is open. The section ids mirror configHealth.ts.
+// the rest live once the agent is open. The section ids mirror config-health.ts.
 export function credentialFieldTargets(
   modelConfig: Record<string, unknown>,
   settings: Record<string, unknown>,
@@ -1787,7 +1787,7 @@ async function createMissingComponents(
       });
     }
     // A freshly created KB is silent (only reused ones warn). Imported-but-unindexed documents surface
-    // through the editor's live "needs indexing" alert (configHealth), not a one-shot import warning.
+    // through the editor's live "needs indexing" alert (config-health), not a one-shot import warning.
   }
 }
 

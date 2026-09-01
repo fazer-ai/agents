@@ -2,6 +2,7 @@ import basePrisma from "@/api/lib/prisma";
 import { normalizeExpectedStatuses } from "@/graph/tools/http-status";
 import { AppError } from "@/lib/errors";
 import type { TenantContext } from "@/lib/tenancy";
+import { configHealthAfterWrite } from "@/modules/agents/config-health-read";
 import {
   type AgentCreate,
   type AgentUpdate,
@@ -129,7 +130,13 @@ export async function agentCreate(
     }
     const created = await createAgent(ctx, input, base);
     const target = `agent:${created.id}`;
-    return ok({ dryRun: false, applied: true, target, agent: created });
+    return ok({
+      dryRun: false,
+      applied: true,
+      target,
+      agent: created,
+      ...(await configHealthAfterWrite(ctx, created.id, base)),
+    });
   } catch (e) {
     return failOf(e);
   }
@@ -204,6 +211,7 @@ export async function agentUpdate(
       applied: true,
       target,
       diff: diffFields(beforeProj, appliedProj),
+      ...(await configHealthAfterWrite(ctx, id, base)),
     });
   } catch (e) {
     return failOf(e);
@@ -233,7 +241,12 @@ export async function agentClone(
       });
     }
     const clone = await cloneAgent(ctx, id, args.name, base);
-    return ok({ dryRun: false, applied: true, agent: clone });
+    return ok({
+      dryRun: false,
+      applied: true,
+      agent: clone,
+      ...(await configHealthAfterWrite(ctx, clone.id, base)),
+    });
   } catch (e) {
     return failOf(e);
   }
@@ -290,7 +303,13 @@ export async function agentImport(
   // structured warnings (reused components / missing credentials) for the operator to resolve.
   try {
     const { agent, warnings } = await importAgent(ctx, args.export, base);
-    return ok({ dryRun: false, applied: true, agent, warnings });
+    return ok({
+      dryRun: false,
+      applied: true,
+      agent,
+      warnings,
+      ...(await configHealthAfterWrite(ctx, agent.id, base)),
+    });
   } catch (e) {
     return failOf(e);
   }
@@ -373,7 +392,13 @@ export async function agentToolsSet(
       });
     }
     const view = await replaceAgentToolSelections(ctx, id, grants, base);
-    return ok({ dryRun: false, applied: true, target, grants: view.grants });
+    return ok({
+      dryRun: false,
+      applied: true,
+      target,
+      grants: view.grants,
+      ...(await configHealthAfterWrite(ctx, id, base)),
+    });
   } catch (e) {
     return failOf(e);
   }

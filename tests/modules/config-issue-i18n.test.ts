@@ -28,7 +28,7 @@ const HANDLED_ELSEWHERE = new Set([
 const CREDENTIAL_STATES_ONLY = new Set(["contactAuth"]);
 
 const source = await Bun.file(
-  new URL("../../src/client/lib/configHealth.ts", import.meta.url),
+  new URL("../../src/modules/agents/config-health.ts", import.meta.url),
 ).text();
 const start = source.indexOf("export type ConfigIssueKey =");
 const union = source.slice(start, source.indexOf(";", start));
@@ -105,7 +105,52 @@ describe("config issue copy", () => {
     }
   });
 
-  // Both lists above are subtracted from a key set READ OUT OF `configHealth.ts`, so appending to
+  // The keys the RENDERER names literally, read out of its source. The two lists above excuse a
+  // handful of issue keys from `editor.configIssue.*` because they read a key of their own instead,
+  // and nothing checked that those keys exist — the excuse was the whole assertion.
+  //
+  // It is not hypothetical. `configIssueMessage` moved out of `src/client` so the API could answer
+  // with the same sentences (#467), and `i18next-parser` deletes as orphaned every key it cannot see
+  // a call for: five interpolated keys vanished from BOTH catalogs in the same commit, with every
+  // test here still green, because each one falls back to the English default the call site passes.
+  // A pt-BR reader would have silently started reading English.
+  test("every catalog key the renderer names exists in both locales", () => {
+    const renderer = Bun.file(
+      new URL(
+        "../../src/modules/agents/config-health-message.ts",
+        import.meta.url,
+      ),
+    );
+    const text = renderer.text();
+    return text.then((src) => {
+      const named = [
+        ...new Set(
+          [...src.matchAll(/"(editor\.configIssue[A-Za-z]*)"/g)].map(
+            (m) => m[1] ?? "",
+          ),
+        ),
+      ];
+      // The literal ones only: the three dynamic lookups (`editor.configIssue.${key}` and its two
+      // siblings) are what the rest of this file already covers, key by key.
+      expect(named.length).toBeGreaterThanOrEqual(5);
+      for (const [name, bag] of [
+        ["en", en],
+        ["pt-BR", ptBR],
+      ] as const) {
+        const missing = named.filter((key) => {
+          let node: unknown = bag;
+          for (const segment of key.split(".")) {
+            if (!node || typeof node !== "object") return true;
+            node = (node as Record<string, unknown>)[segment];
+          }
+          return typeof node !== "string";
+        });
+        expect(`${name}: ${missing.join(", ")}`).toBe(`${name}: `);
+      }
+    });
+  });
+
+  // Both lists above are subtracted from a key set READ OUT OF `config-health.ts`, so appending to
   // either one silences a key that has no copy, and nothing here would notice. Pinned at the size
   // each was argued into: tests/utils/ledger.ts, issue #293.
   test("the ledgers this file waives with may only shrink", () => {

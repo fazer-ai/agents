@@ -14,7 +14,6 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { setPublisher, TOPICS } from "@/api/features/realtime/realtime.service";
 import { encryptJson } from "@/api/lib/crypto";
 import logger from "@/api/lib/logger";
-import { computeConfigIssues } from "@/client/lib/configHealth";
 import { contactInboxThreadId } from "@/graph/checkpointer";
 import {
   clearTurnInFlight,
@@ -37,6 +36,7 @@ import { clearTurnOwning, markTurnOwning } from "@/graph/thread-claim";
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "@/graph/thread-state";
 import { HANDOFF_DONE_PREFIX } from "@/graph/tools/catalog";
 import type { TenantContext } from "@/lib/tenancy";
+import { computeConfigIssues } from "@/modules/agents/config-health";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
 import { reengageConversation } from "@/modules/conversations/reengage";

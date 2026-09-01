@@ -8,7 +8,17 @@ module.exports = {
   output: staging
     ? `${staging}/client/$LOCALE.json`
     : "src/client/locales/$LOCALE.json",
-  input: ["src/client/**/*.{ts,tsx}"],
+  // The console's catalog, plus the ONE server-side file that renders from it. `configIssueMessage`
+  // moved out of the editor component so the API could answer with the same sentences (#467), and
+  // the parser deletes as orphaned every key it cannot see a call for: moving those five interpolated
+  // keys' only call site out of `src/client` silently dropped them from both catalogs, leaving the
+  // console to fall back to the English default for the pt-BR reader. If that file is ever renamed
+  // or moved, the extract deletes them again — loudly, since CI runs `i18n:extract` and then fails on
+  // a dirty tree.
+  input: [
+    "src/client/**/*.{ts,tsx}",
+    "src/modules/agents/config-health-message.ts",
+  ],
   defaultNamespace: "translation",
   keySeparator: ".",
   namespaceSeparator: ":",

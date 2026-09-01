@@ -1,5 +1,6 @@
 import { Elysia, t } from "elysia";
 import { getUserById, verifyPassword } from "@/api/features/auth/auth.service";
+import { currentLocale } from "@/api/lib/i18n";
 import { doc, errors } from "@/api/lib/openapi";
 import { parseQueryText } from "@/api/lib/query-filters";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
@@ -12,6 +13,7 @@ import {
 } from "@/lib/errors";
 import { instanceIdentity } from "@/lib/instance";
 import type { TenantContext } from "@/lib/tenancy";
+import { readAgentConfigHealth } from "@/modules/agents/config-health-read";
 import {
   type AgentCreate,
   type AgentUpdate,
@@ -356,6 +358,34 @@ export const agentsController = new Elysia({
       detail: doc(
         "Get guardrail health",
         "Counts the guardrail analyses that could not run for this agent in the recent window, with the most recent one and the error it carried. Analysis is fail-open, so a check counted here caught nothing and held nothing back. It does not follow that the turn went out unscreened: the other direction may still have screened it, and a split output analysis can carry an error from one half and a violation from the other.",
+      ),
+      response: errors(400, 401, 403, 404),
+      requireRole: "TENANT_ADMIN",
+      params: t.Object({
+        id: t.String({
+          description: "Agent id, a BigInt encoded as a decimal string.",
+        }),
+      }),
+    },
+  )
+  // "Is this agent's configuration healthy?", for a caller that is not the console. The same checks
+  // the editor's warning panel runs, over the SAVED row: an agent configured entirely over this API
+  // or over MCP never rendered that panel, so until this existed those warnings were not missed,
+  // they were never computed. Issue #467.
+  .get(
+    "/:id/config-health",
+    async ({ tenantContext, params }) => ({
+      instance: instanceIdentity,
+      ...(await readAgentConfigHealth(
+        ctxOrThrow(tenantContext),
+        requireDbId(params.id),
+        { locale: currentLocale() },
+      )),
+    }),
+    {
+      detail: doc(
+        "Get agent configuration health",
+        'The configuration warnings the agent editor shows, computed server-side over the SAVED agent: a feature switched on with no credential, a credential referenced but never filled, a credential the vault no longer holds, two settings that cancel each other out, and text past the cap its reader keeps. Each issue carries a `severity` — `blocking` (the agent does not answer, or answers without a protection whose switch reads "on"), `degraded` (it answers, and a feature that is on does not run) or `advisory` (nothing is off; the operator has a choice to make) — plus the same sentence the console shows, in the language of Accept-Language. `unavailable` names the live readings this call could not take (Chatwoot, guardrail health), because both of those fail as an empty result that reads exactly like a clean one.',
       ),
       response: errors(400, 401, 403, 404),
       requireRole: "TENANT_ADMIN",

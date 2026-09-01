@@ -2,9 +2,9 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
-import { computeConfigIssues } from "@/client/lib/configHealth";
 import { formatVaultRef } from "@/client/lib/credentialRef";
 import type { TenantContext } from "@/lib/tenancy";
+import { computeConfigIssues } from "@/modules/agents/config-health";
 import {
   deleteVaultEntry,
   listVaultEntryInfos,

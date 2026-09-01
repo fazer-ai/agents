@@ -52,7 +52,6 @@ import { useFieldRefusal } from "@/client/hooks/useFieldRefusal";
 import { useTenantEvents } from "@/client/hooks/useTenantEvents";
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
-import { computeConfigIssues, issueHasAction } from "@/client/lib/configHealth";
 import {
   type EditorControlsShown,
   type EditorTab,
@@ -79,6 +78,11 @@ import { ToolEditModal } from "@/client/pages/resources/ToolEditModal";
 import { useKnowledgeManager } from "@/client/pages/resources/useKnowledgeManager";
 import { readModelFallbackConfig } from "@/graph/fallback-settings";
 import { modelOptionalFor } from "@/graph/model-defaults";
+import {
+  computeConfigIssues,
+  issueHasAction,
+} from "@/modules/agents/config-health";
+import { configIssueMessage } from "@/modules/agents/config-health-message";
 import { collectOversizedTextChanges } from "@/modules/agents/text-caps";
 import type { Schedule } from "@/modules/business-hours/hours";
 import {
@@ -2039,102 +2043,18 @@ function AgentEditor() {
   // gone" each read differently from the classic "no credential set", because the operator's next
   // move differs (fill it, pick another, set one). Kept out of the JSX so the dynamic-key lint
   // suppression sits on the t() call.
+  // The sentence for one warning, from the shared renderer (modules/agents/config-health-message.ts)
+  // so the console and the API answer with the same words. What stays here is what only this reader
+  // has: the live `t`, the operator's language for the relative timestamp, and the guardrail-health
+  // snapshot the panel already fetched.
   function issueMessage(issue: (typeof configIssues)[number]): string {
-    // Text already in the row, over its cap: whatever passes the cap is dropped by the reader, which
-    // is invisible everywhere else. The message stops at that, without claiming the model receives
-    // the rest — with the section switched off it receives none of it. When the field has no control
-    // in the editor the message says so, instead of leaving the operator hunting for a tab.
-    if (issue.key === "textCap") {
-      const params = {
-        field: issue.field ?? "",
-        len: issue.length ?? 0,
-        max: issue.max ?? 0,
-      };
-      return issue.tab
-        ? t(
-            "editor.configIssueTextCap",
-            "{{field}} holds {{len}} characters and the limit is {{max}}: everything past that is ignored.",
-            params,
-          )
-        : t(
-            "editor.configIssueTextCapNoField",
-            "{{field}} holds {{len}} characters and the limit is {{max}}: everything past that is ignored. This note has no field in the console, so it can only be shortened through the API.",
-            params,
-          );
-    }
-    if (issue.key === "knowledge") {
-      return t(
-        "editor.configIssueKnowledge",
-        'Knowledge base "{{name}}" has documents that need indexing.',
-        { name: issue.knowledgeBaseName ?? "" },
-      );
-    }
-    // A guardrail that HAS its credential and still could not run. The count is the whole point: the
-    // panel's other lines describe a state ("no key set"), this one describes what already happened,
-    // and an operator has to be told that those turns went out unscreened rather than blocked.
-    if (issue.key === "guardrailsFailing") {
-      const params = {
-        failures: issue.failures ?? 0,
-        hours: guardrailHealth?.windowHours ?? 24,
-        when: issue.lastFailureAt
-          ? formatRelativeTime(issue.lastFailureAt, i18n.language)
-          : "-",
-        error: guardrailHealth?.lastError ?? "",
-      };
-      // The vendor's own words when they survived the write, generic advice when they did not. They
-      // are what separates "look at this" from "fix this": "400 temperature is not supported" names
-      // the setting, while a list of three things to check makes the operator try all of them.
-      //
-      // The line stops at what a failure row proves, which is less than it looks. It does not say
-      // the message went out unscreened: a failed input check leaves the output check free to screen
-      // the reply, and a split output analysis merges both halves, so it can carry an error from one
-      // and a violation from the other and still replace or suppress the send. All that is certain
-      // is fail-open, and it applies to the failed check alone: that one caught nothing and held
-      // nothing back.
-      return params.error
-        ? t(
-            "editor.configIssueGuardrailsFailingCause",
-            "Guardrails are on, but {{failures}} of the Checks could not run in the last {{hours}} hours (the most recent {{when}}). A check that could not run caught nothing and held nothing back. The last one said: {{error}}",
-            params,
-          )
-        : t(
-            "editor.configIssueGuardrailsFailing",
-            "Guardrails are on, but {{failures}} of the Checks could not run in the last {{hours}} hours (the most recent {{when}}). A check that could not run caught nothing and held nothing back. Check “Guardrails model”, “Base URL” and “API key”.",
-            params,
-          );
-    }
-    // Two out-of-hours messages on one inbox, or one announcing a closure the other serves through.
-    // The inboxes are NAMED, not counted: half of every fix is on Chatwoot's screen, and "two of
-    // your inboxes" does not tell anyone which two to open there.
-    if (issue.key === "outOfHoursBoth" || issue.key === "outOfHoursChatwoot") {
-      const inboxes = (issue.inboxNames ?? []).join(", ");
-      return issue.key === "outOfHoursBoth"
-        ? t(
-            "editor.configIssueOutOfHoursBoth",
-            "Chatwoot and this agent both send out-of-hours messages on {{inboxes}}, so the customer receives both. Their schedules are configured separately, and Chatwoot's has no dates; they also conflict on holidays.",
-            { inboxes },
-          )
-        : t(
-            "editor.configIssueOutOfHoursChatwoot",
-            "Chatwoot sends an out-of-hours message on {{inboxes}}, but this agent follows only its own schedule. The customer can be told the business is closed and receive service moments later.",
-            { inboxes },
-          );
-    }
-    if (issue.pending) {
-      // biome-ignore lint/plugin/no-dynamic-i18n-key: pending keys registered via magic comments above computeConfigIssues
-      return t(`editor.configIssuePending.${issue.key}` as const, {
-        defaultValue: "This credential is referenced but not filled in yet.",
-      });
-    }
-    if (issue.unresolved) {
-      // biome-ignore lint/plugin/no-dynamic-i18n-key: unresolved keys registered via magic comments above computeConfigIssues
-      return t(`editor.configIssueUnresolved.${issue.key}` as const, {
-        defaultValue: "This credential no longer exists. Pick another one.",
-      });
-    }
-    // biome-ignore lint/plugin/no-dynamic-i18n-key: issue keys registered via magic comments above computeConfigIssues
-    return t(`editor.configIssue.${issue.key}` as const, {
-      defaultValue: "This feature is enabled but has no credential set.",
+    return configIssueMessage(issue, {
+      translate: (key, defaultValue, params) =>
+        // biome-ignore lint/plugin/no-dynamic-i18n-key: issue keys registered via magic comments above computeConfigIssues
+        t(key as never, { defaultValue, ...(params ?? {}) }),
+      guardrailWindowHours: guardrailHealth?.windowHours ?? 24,
+      guardrailLastError: guardrailHealth?.lastError ?? "",
+      formatWhen: (iso) => formatRelativeTime(iso, i18n.language),
     });
   }
 

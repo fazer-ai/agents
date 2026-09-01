@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { computeConfigIssues, issueHasAction } from "@/client/lib/configHealth";
+import {
+  computeConfigIssues,
+  issueHasAction,
+} from "@/modules/agents/config-health";
 
 // Phase E: detect features turned on without the credential they need (the import that strips
 // secrets is the common trigger), each carrying a deep-link target (tab + section anchor).

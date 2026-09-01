@@ -35,6 +35,12 @@ i18n.init({
   },
 });
 
+// The language this request asked for, for a response body that is not an error and therefore does
+// not travel through `translate`. Same store, same default, one reader.
+export function currentLocale(): Locale {
+  return requestContext.getStore()?.locale ?? "en";
+}
+
 // The key is typed against the catalog, not `string`. i18next answers an unknown key with
 // `defaultValue ?? key`, so a typo here is not an error and not a log line: it is the English
 // fallback, or the key itself, rendered to a caller who asked for pt-BR.

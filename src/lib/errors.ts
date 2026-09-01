@@ -33,7 +33,7 @@ export class AppError extends Error {
   // It is the server's vocabulary and not the caller's on purpose. The same service function is
   // reached by REST and by MCP, which spell the same write differently, so a name taken from the
   // request shape would be a different string depending on who called, and the console already
-  // maps these exact paths (TEXT_CAP_TARGETS, src/client/lib/configHealth.ts), which is the map a
+  // maps these exact paths (TEXT_CAP_TARGETS, src/modules/agents/config-health.ts), which is the map a
   // refusal wants to reuse. Absent whenever the refusal is not about one input: see
   // src/api/lib/refusal.ts for what the wire then carries. Issue #231.
   readonly field?: string;

@@ -11,6 +11,7 @@ import {
   planTurnRollback,
   type RollbackPlan,
 } from "@/graph/refused-turn";
+import { SKIP_REPLY_TOOL } from "@/graph/silence";
 
 // The decision, as a table. `undoRefusedTurn` does the reading and the writing; everything that is a
 // JUDGEMENT is here, because the write is a checkpointer round trip and a rule proven through one
@@ -32,8 +33,18 @@ function calling(id: string, name: string): BaseMessage {
     tool_calls: [{ id: `${id}-c`, name, args: {} }],
   });
 }
-function toolResult(id: string, text: string): BaseMessage {
-  return new ToolMessage({ id, content: text, tool_call_id: `${id}-c` });
+function toolResult(
+  id: string,
+  text: string,
+  // The tool NAME, which the rollback planner reads to tell an inert `skip_reply` from a real act.
+  name?: string,
+): BaseMessage {
+  return new ToolMessage({
+    id,
+    content: text,
+    tool_call_id: `${id}-c`,
+    ...(name ? { name } : {}),
+  });
 }
 function nudge(id: string): BaseMessage {
   const m = nudgeMessage("An external system event just occurred…", 900);
@@ -48,6 +59,7 @@ describe("planTurnRollback", () => {
     name: string;
     produced: BaseMessage[];
     current: BaseMessage[];
+    inert?: ReadonlySet<string>;
     expected: RollbackPlan;
   }> = [
     (() => {
@@ -71,6 +83,86 @@ describe("planTurnRollback", () => {
         produced,
         current: produced,
         expected: { action: "remove", ids: ["n1", "a2"] },
+      };
+    })(),
+    (() => {
+      // Issue #454, review round 7. `skip_reply` is the one tool that acts on NOTHING — it IS the
+      // decision to stay quiet, and since this change it is how a follow-up says so. Counting it as
+      // an act pinned the directive and its tool result in shared memory after a `/reset`, a
+      // takeover, or any post-generation refusal: the residue this planner exists to clear, reached
+      // through the silence protocol itself.
+      const produced = [
+        nudge("n1"),
+        calling("a1", "skip_reply"),
+        toolResult("t1", "Produce no message now.", "skip_reply"),
+        a("a2", ""),
+      ];
+      return {
+        name: "a turn whose only tool was skip_reply acted on nothing, so it can still be taken back",
+        produced,
+        current: produced,
+        inert: new Set([SKIP_REPLY_TOOL]),
+        expected: { action: "remove", ids: ["n1", "a1", "t1", "a2"] },
+      };
+    })(),
+    (() => {
+      // ...and the exemption is for that tool ALONE: paired with a real one, the act happened.
+      const produced = [
+        nudge("n1"),
+        calling("a1", "skip_reply"),
+        toolResult("t1", "ok", "skip_reply"),
+        calling("a2", "assign_label"),
+        toolResult("t2", "ok", "assign_label"),
+        a("a3", ""),
+      ];
+      return {
+        name: "skip_reply next to a real tool still keeps the history",
+        produced,
+        current: produced,
+        inert: new Set([SKIP_REPLY_TOOL]),
+        expected: { action: "keep", reason: "tool-ran" },
+      };
+    })(),
+    (() => {
+      // The TOOL RESULT on its own, because the AI message that requested it can be trimmed out of a
+      // slice and would otherwise carry the verdict alone — a mutation restoring the by-name check on
+      // that branch survived a table where every row had both.
+      const produced = [nudge("n1"), toolResult("t1", "ok", "skip_reply")];
+      return {
+        name: "a lone inert tool result does not pin the turn",
+        produced,
+        current: produced,
+        inert: new Set([SKIP_REPLY_TOOL]),
+        expected: { action: "remove", ids: ["n1", "t1"] },
+      };
+    })(),
+    (() => {
+      const produced = [nudge("n1"), toolResult("t1", "ok", "skip_reply")];
+      return {
+        name: "...and the same lone result pins it when nothing was inert",
+        produced,
+        current: produced,
+        inert: new Set<string>(),
+        expected: { action: "keep", reason: "tool-ran" },
+      };
+    })(),
+    (() => {
+      // Review round 8. A NAME is not an identity: `toolDefinitionCreateSchema` reserves none of the
+      // native names, so an agent with native tools disabled can grant a custom HTTP tool called
+      // `skip_reply` that really calls something. The caller names what was inert; here nothing was,
+      // and the turn is kept even though the messages look identical to the case above.
+      const produced = [
+        nudge("n1"),
+        calling("a1", "skip_reply"),
+        toolResult("t1", "ok", "skip_reply"),
+        a("a2", ""),
+      ];
+      return {
+        name: "a CUSTOM tool that borrowed the name is not inert, and keeps the history",
+        produced,
+        current: produced,
+        inert: new Set<string>(),
+        expected: { action: "keep", reason: "tool-ran" },
       };
     })(),
     (() => {
@@ -172,7 +264,9 @@ describe("planTurnRollback", () => {
 
   for (const row of ROWS) {
     test(row.name, () => {
-      expect(planTurnRollback(row.produced, row.current)).toEqual(row.expected);
+      expect(
+        planTurnRollback(row.produced, row.current, row.inert ?? new Set()),
+      ).toEqual(row.expected);
     });
   }
 });
@@ -197,6 +291,7 @@ describe("planReactiveTurnRollback", () => {
     name: string;
     produced: BaseMessage[];
     current: BaseMessage[];
+    inert?: ReadonlySet<string>;
     expected: RollbackPlan;
   }> = [
     (() => {

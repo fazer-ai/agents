@@ -537,6 +537,46 @@ describe.skipIf(!dbUp)("agent configuration health", () => {
       expect(health.issues.every((i) => i.message.length > 0)).toBe(true);
     });
 
+    // THE DOCUMENTED SHAPE IS PART OF THE TOOL, and it is read by something that cannot check it
+    // against the code: a model calls the tool, reads the description, and goes looking for the
+    // fields it named. Round 3 of review found the description promising a flat payload while the
+    // tool returned `{ health: … }`, and the same round found the REST route's OpenAPI text naming a
+    // field that had been renamed — one class, two surfaces, neither visible to any other test.
+    //
+    // So this compares the TEXT against the answer actually produced, rather than against a second
+    // list of field names that would drift the same way.
+    test("the tool's own description names the shape it returns", async () => {
+      const source = await Bun.file(
+        new URL("../../src/modules/mcp/server.ts", import.meta.url),
+      ).text();
+      const start = source.indexOf('"agent_config_health"');
+      expect(start).toBeGreaterThan(0);
+      // The registration block, up to the handler: description plus input schema.
+      const description = source.slice(start, start + 2000);
+      // A SET COMPARISON against the documented shape line, not "is each field mentioned somewhere":
+      // the description names these fields more than once, so a presence check passes with one
+      // occurrence wrong — measured on the REST twin of this fence, which is how it was written.
+      const shape = description.match(/Returns `\{ health: \{([^}]*)\}/);
+      expect(shape).not.toBeNull();
+      const documented = (shape?.[1] ?? "")
+        .split(",")
+        .map((f) => f.trim())
+        .filter(Boolean)
+        .sort();
+      const r = await agentConfigHealth(
+        principal(tenantId),
+        { agent_id: String(brokenAgent) },
+        { base: appDb },
+      );
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      // The wrapper itself, which is what round 3 found undocumented.
+      expect(Object.keys(r.data)).toEqual(["health"]);
+      expect(description).toContain("{ health:");
+      const health = r.data.health as Record<string, unknown>;
+      expect(Object.keys(health).sort()).toEqual(documented);
+    });
+
     test("the read gate applies before any of it", async () => {
       const r = await agentConfigHealth(
         { ...principal(tenantId), scopes: [] },

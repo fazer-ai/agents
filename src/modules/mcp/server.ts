@@ -433,7 +433,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "agent_config_health",
       {
         description:
-          "Whether an agent's configuration is HEALTHY, by the checks the console's editor panel runs — a feature switched on with no credential, a credential referenced but never filled (credential_create leaves one that way), two settings that cancel out. Run it at the end of an onboarding: nothing computes these until something asks, and several are silent at runtime — guardrails with no key delivers every message unscreened while the switch reads \"on\". Per issue, `severity` is `blocking` (no answer, or an unscreened one), `degraded` (answers; a feature that is on does not run) or `advisory` (nothing is off). `healthy` = no blocking and no degraded. `unchecked` names live readings this call could not take.",
+          "Whether an agent's configuration is HEALTHY, by the checks the console's editor panel runs — a feature switched on with no credential, a credential referenced but never filled (credential_create leaves one that way), two settings that cancel out. Run it at the end of an onboarding: nothing computes these until something asks, and several are silent at runtime — guardrails with no key delivers every message unscreened while the switch reads \"on\". Per issue, `severity` is `blocking` (no answer, or an unscreened one), `degraded` (answers; a feature that is on does not run) or `advisory` (nothing is off). `healthy` = no blocking and no degraded. `unchecked` names live readings this call could not take. Returns `{ health: { agentId, agentName, healthy, counts, issues, unchecked } }`.",
         inputSchema: {
           agent_id: z.string(),
         },

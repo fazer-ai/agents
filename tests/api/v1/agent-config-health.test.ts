@@ -178,6 +178,45 @@ describe.skipIf(!dbUp)("GET /v1/agents/:id/config-health", () => {
     expect(body.counts.blocking).toBeGreaterThanOrEqual(1);
   });
 
+  // The same class the MCP tool's own fence covers, on the other surface: the OpenAPI text is what a
+  // REST client reads, and nothing else checks it against the body. Round 3 caught it naming
+  // `unavailable` after the field had been renamed to `unchecked`.
+  //
+  // A SET COMPARISON, not a presence check, and the difference is the whole fence. Written first as
+  // "is every field of the body mentioned somewhere in the text", it passed with the defect put
+  // back: the paragraph names the fields twice, so one occurrence can go wrong while the other keeps
+  // the word present. What a reader acts on is the shape line, so that is what is compared — and it
+  // catches both directions, a field the body grew and a name the text got wrong.
+  test("the route's documented shape is the shape it returns", async () => {
+    const source = await Bun.file(
+      new URL("../../../src/api/v1/agents.controller.ts", import.meta.url),
+    ).text();
+    const start = source.indexOf('"/:id/config-health"');
+    expect(start).toBeGreaterThan(0);
+    const doc = source.slice(start, start + 3000);
+    const shape = doc.match(/Shape: `\{([^}]*)\}`/);
+    expect(shape).not.toBeNull();
+    const documented = (shape?.[1] ?? "")
+      .split(",")
+      .map((f) => f.trim().replace(/\[\]$/, ""))
+      .filter(Boolean)
+      .sort();
+    const res = await server.handle(
+      new BunRequest(
+        `http://localhost/api/v1/agents/${agentId}/config-health`,
+        {
+          headers: { cookie },
+        },
+      ),
+    );
+    const body = (await res.json()) as Record<string, unknown>;
+    const returned = Object.keys(body)
+      // `instance` is the envelope every v1 route carries, documented once for all of them.
+      .filter((key) => key !== "instance")
+      .sort();
+    expect(documented).toEqual(returned);
+  });
+
   test("the sentence follows Accept-Language", async () => {
     const res = await server.handle(
       new BunRequest(

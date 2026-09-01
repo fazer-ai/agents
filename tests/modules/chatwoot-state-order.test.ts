@@ -403,10 +403,12 @@ const CASES: Case[] = [
       statusClaimUntil: CLAIM_LIVE,
       statusClaimFrom: "pending",
       // Nothing stamped: the reconcile has not run, so there is no version of our own to place this
-      // against. A message carries none to keep either.
+      // against.
       statusClaimStampedAt: null,
     }),
-    want: { status: null, statusAt: null, statusClaimRefusedAt: null },
+    // Kept like every other refusal inside the gap: the payload states a version, and the reconcile
+    // is the only thing that can place it.
+    want: { status: null, statusAt: null, statusClaimRefusedAt: V_NEW },
   },
   {
     // The other way in, and it needs no exception: a delayed or companion `conversation_*` event
@@ -471,6 +473,28 @@ const CASES: Case[] = [
       statusClaimStampedAt: V_NOW,
     }),
     want: { status: null, statusAt: null },
+  },
+  {
+    // ...and that is asked of the REOPEN route too, which is the one place a message can move the
+    // status. A hand-back whose conversation event was delayed or lost leaves the next customer
+    // message carrying the new `pending` with a version of its own, and refusing it on the stored
+    // status alone leaves the mirror closed to the bot while Chatwoot has the conversation waiting
+    // for it — the message acknowledged, and nobody answering the customer (issue #468, round 7).
+    name: "a message newer than the stamped transition moves the status it restates",
+    payload: messageEvent({
+      reopensConversation: true,
+      activityAt: NOW,
+      status: "pending",
+      version: V_NEW,
+    }),
+    row: storedRow({
+      status: "open",
+      statusAt: V_NOW,
+      statusClaimUntil: CLAIM_LIVE,
+      statusClaimFrom: "pending",
+      statusClaimStampedAt: V_NOW,
+    }),
+    want: { status: "pending" },
   },
   {
     // Not a freeze of the field. An operator resolving inside the claim produces ONE event, which we
@@ -539,20 +563,22 @@ const CASES: Case[] = [
     want: { status: null, statusAt: null, statusClaimRefusedAt: V_NEW },
   },
   {
-    // ...and the reopen exception is refused for the claim's whole life anyway, because it is the one
-    // route the stamped version cannot order: it compares WHOLE SECONDS against the mark, so a message
-    // frozen in the same second as the toggle wins even against the version the reconcile just wrote.
-    // Measured live, on a toggle and a customer message that landed in the same second.
-    name: "a versioned transition still refuses the reopen exception, which no version orders",
+    // ...and a stamped claim still fences the reopen exception, which is the whole reason the claim
+    // does not simply retire at the reconcile: that route compares WHOLE SECONDS against the mark, so
+    // a message frozen in the same second as the toggle wins the ordering it is judged on. What it
+    // cannot do is beat the stamp, because the toggle wrote AFTER the message did — measured live, on
+    // a toggle and a customer message that landed in the same second.
+    name: "a stamped transition still fences a message frozen before it",
     payload: messageEvent({
       reopensConversation: true,
       activityAt: NOW,
       status: "pending",
+      version: V_OLD,
     }),
     row: storedRow({
       status: "open",
       statusAt: V_NOW,
-      statusClaimStampedAt: V_NOW - 1,
+      statusClaimStampedAt: V_NOW,
       statusClaimUntil: CLAIM_LIVE,
       statusClaimFrom: "pending",
     }),

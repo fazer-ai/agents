@@ -195,16 +195,24 @@ export function statusClaimVerdict(
   if (payload.status === null || payload.status !== row.statusClaimFrom) {
     return "apply";
   }
-  if (payload.reopens) {
-    return REOPENABLE.has(row.status) ? "apply" : "refuse";
-  }
   // STRICTLY ahead of our own transition is the only thing that can be a change made after it. Equal
   // is the reading our own reconcile took, and below it is the gap this exists to fence.
-  const afterOurs =
+  //
+  // Asked BEFORE the reopen, and of every route alike, because a version that beats the stamp is
+  // evidence on its own terms and does not care which event carried it. A hand-back whose
+  // conversation event was delayed or lost reaches us next as the customer's own message, restating
+  // the new `pending`; refused on the stored status alone, that message is acknowledged, the mirror
+  // stays closed to the bot, and nobody answers the customer (issue #468, round 7).
+  if (
     row.statusClaimStampedAt !== null &&
     payload.version !== null &&
-    payload.version > row.statusClaimStampedAt;
-  if (afterOurs) return "apply";
+    payload.version > row.statusClaimStampedAt
+  ) {
+    return "apply";
+  }
+  // The source's own reopen, which is the one route that can move a status with no version to its
+  // name, and therefore the one that has to be judged on what the row holds.
+  if (payload.reopens && REOPENABLE.has(row.status)) return "apply";
   return payload.version !== null ? "refuse-and-defer" : "refuse";
 }
 

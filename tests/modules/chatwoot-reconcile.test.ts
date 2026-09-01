@@ -203,6 +203,29 @@ describe.skipIf(!dbUp)("reconcileMirrorFromLive", () => {
     expect(result.refusedByStatusClaim).toBe(true);
   });
 
+  test("a read refused inside somebody else's gap keeps its version too", async () => {
+    // The owner's GET was issued before a hand-back and this one was answered after it, so this
+    // snapshot is the newer reading of the two. Discarding it would let the owner's stale `open`
+    // write win, and the event that would have corrected that is the one this window exists because
+    // it can be delayed or lost.
+    const id = await seedRow({
+      status: "open",
+      statusClaimUntil: new Date(Date.now() + 30_000),
+      statusClaimFrom: "pending",
+      statusClaimStampedAt: null,
+      chatwootStatusAt: T,
+    });
+    const result = await applyFor(id, { status: "pending", updatedAt: T + 9 });
+    const row = await readRow(id);
+    expect(result.refusedByStatusClaim).toBe(true);
+    expect(row.status).toBe("open");
+    expect(row.statusClaimRefusedAt).toBe(T + 9);
+    // Forward-only, like every other mark here: a second probe answered from an older snapshot must
+    // not replace the stronger evidence with its own, which the adjudication would then drop.
+    await applyFor(id, { status: "pending", updatedAt: T + 2 });
+    expect((await readRow(id)).statusClaimRefusedAt).toBe(T + 9);
+  });
+
   // ── THE OWNER'S ADJUDICATION ──
   //
   // This read is the version the source gave our own transition, so it is also the answer to

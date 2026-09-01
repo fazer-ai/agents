@@ -171,15 +171,16 @@ export async function reconcileMirrorFromLive(
           current.statusClaimUntil != null &&
           params.ownsStatusClaim.getTime() ===
             current.statusClaimUntil.getTime();
-        const claimed =
-          !ours &&
-          statusClaimVerdict(
-            current,
-            // NOTE: A live snapshot is never a message, so it can never be the source's own reopen —
-            // the same reading `clearsResolutionOrigin` is handed below, for the same reason.
-            { status: live.status, reopens: false, version: liveVersion },
-            new Date(),
-          ) !== "apply";
+        const verdict = ours
+          ? "apply"
+          : statusClaimVerdict(
+              current,
+              // NOTE: A live snapshot is never a message, so it can never be the source's own reopen
+              // — the same reading `clearsResolutionOrigin` is handed below, for the same reason.
+              { status: live.status, reopens: false, version: liveVersion },
+              new Date(),
+            );
+        const claimed = verdict !== "apply";
         result.refusedByStatusClaim = claimed;
         // NOTE: THE OWNER'S ADJUDICATION (issue #436). This read is the version the source gave our
         // own transition, so it is also the answer to everything the claim had to refuse without one.
@@ -252,6 +253,16 @@ export async function reconcileMirrorFromLive(
           liveVersion !== null &&
           current.statusClaimRefusedAt !== null
             ? { statusClaimRefusedAt: null }
+            : {}),
+          // NOTE: A read refused inside somebody else's gap is kept for exactly the reason a webhook
+          // is: it is a reading of the source the owner's own GET may be older than, and the owner
+          // would otherwise write its stale snapshot over what this one saw. Nothing else redelivers
+          // it — the event that would is the one this window exists because it can be lost.
+          ...(verdict === "refuse-and-defer" &&
+          liveVersion !== null &&
+          (current.statusClaimRefusedAt === null ||
+            liveVersion > current.statusClaimRefusedAt)
+            ? { statusClaimRefusedAt: liveVersion }
             : {}),
           // NOTE: The same rule the webhook mirror applies, from the same function: a live read always
           // speaks about status, and what it is allowed to WRITE is `statusOrdered`.

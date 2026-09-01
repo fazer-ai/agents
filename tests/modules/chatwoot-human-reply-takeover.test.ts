@@ -1171,7 +1171,26 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     expect(row?.statusClaimRefusedAt).toBe(beforeTheReply.updated_at);
   });
 
-  // ISSUE #468, ROUND 3. The claim cannot tell a conversation event frozen BEFORE our write from one
+  // ISSUE #468, ROUND 7. What the claim must NOT cost: the conversation coming back. Once the source
+  // has stamped our transition, a payload ahead of that version is a write made after ours whichever
+  // event carries it — and when the hand-back's own `conversation_*` event is delayed or lost, the
+  // next thing carrying it is the customer's own message. Asserted on the TURN, because the harm is
+  // not a wrong row: it is the message acknowledged with nobody answering the customer.
+  test("a customer message newer than the stamped claim brings the bot back", async () => {
+    const conv = 8567;
+    await deliver(conv, { ...customerSays("oi") });
+    await deliver(conv, { ...deviceReply("já te respondo") });
+    expect((await convRow(conv))?.status).toBe("open");
+    // The colleague hands the conversation back inside the claim's 45 seconds, and the event saying
+    // so never arrives.
+    liveStatus.set(conv, "pending");
+    const before = turnsRan;
+    await deliver(conv, { ...customerSays("consegue me ajudar?") });
+    expect((await convRow(conv))?.status).toBe("pending");
+    expect(turnsRan).toBe(before + 1);
+  });
+
+  // ISSUE #468, ROUND 3.  // ISSUE #468, ROUND 3. The claim cannot tell a conversation event frozen BEFORE our write from one
   // committed after it, so it refuses both — and refusing a real hand-back would lose it, since we
   // ack the event and Chatwoot never redelivers. What keeps that from being a hole is that the
   // refusal KEEPS the version: nothing older can overwrite what it announced (our own reconcile's

@@ -57,7 +57,7 @@ function lastAi(
   // token back in it (round 22).
   followup: boolean,
 ): { text: string; id?: string } {
-  // THE LAST AI MESSAGE, even when it is empty — not the last one that happens to have text. A turn
+  // NOTE: THE LAST AI MESSAGE, even when it is empty — not the last one that happens to have text. A turn
   // that ends in silence ends with an empty AI message (after `skip_reply`'s tool result), and an
   // EARLIER tool-calling AI message in the same slice can carry text; scanning past the empty one
   // returned that instead, so reopening the session showed a follow-up the live run reported silent

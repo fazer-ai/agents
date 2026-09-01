@@ -128,7 +128,7 @@ function lastBatch(history: BaseMessage[]): {
 } {
   let sawTool = false;
   let skipped = false;
-  // The CONTIGUOUS batch, not the last message: a model can emit parallel calls (`skip_reply`
+  // NOTE: The CONTIGUOUS batch, not the last message: a model can emit parallel calls (`skip_reply`
   // alongside `react_to_message`, which is the documented way to answer with a reaction alone), and
   // whichever result lands last is an ordering accident. Returning on the first `ToolMessage` read
   // the accident instead of the decision.
@@ -137,14 +137,14 @@ function lastBatch(history: BaseMessage[]): {
     const t = m?.getType();
     if (t === "tool") {
       sawTool = true;
-      // The ACK, not the name. A precondition on `skip_reply` returns a normal tool result under
+      // NOTE: The ACK, not the name. A precondition on `skip_reply` returns a normal tool result under
       // that same name saying the call did NOT run — read by name, an operator's own guard would
       // end the turn with no text where the customer is waiting for one. `skipReplyRan` recognises
       // our no-op and nothing else, so anything unrecognised falls through to "answer them".
       if (skipReplyRan(m as Parameters<typeof skipReplyRan>[0])) skipped = true;
       continue;
     }
-    // The batch ends at the AI message that requested it — anything before is an earlier round.
+    // NOTE: The batch ends at the AI message that requested it — anything before is an earlier round.
     if (sawTool) return { skipped, alone: onlySkipped(m), caller: m ?? null };
     if (t === "human") return { skipped: false, alone: false, caller: null };
   }
@@ -174,7 +174,7 @@ function lastBatch(history: BaseMessage[]): {
 function onlySkipped(caller: BaseMessage | undefined): boolean {
   const ai = caller as AIMessage | undefined;
   const calls = ai?.tool_calls ?? [];
-  // INVALID CALLS COUNT AS COMPANIONS. A provider can emit a good `skip_reply` beside a call whose
+  // NOTE: INVALID CALLS COUNT AS COMPANIONS. A provider can emit a good `skip_reply` beside a call whose
   // arguments do not parse, and LangChain files that one under `invalid_tool_calls` — so a check
   // that read `tool_calls` alone saw a batch that was nothing but the decision, ended the turn, and
   // denied the model the round where it would have seen the failure and answered (round 26).
@@ -237,7 +237,7 @@ function textlessResponseMetadata(
         (part as { type?: unknown })?.type !== "output_text" &&
         (part as { type?: unknown })?.type !== "text",
     );
-    // AN ITEM THAT WAS NOTHING BUT TEXT GOES WITH IT. Left behind with an empty content array it is
+    // NOTE: AN ITEM THAT WAS NOTHING BUT TEXT GOES WITH IT. Left behind with an empty content array it is
     // the Responses API's own version of Anthropic's empty text block: the replay is rejected and
     // the round a companion bought fails instead of running. Dropped only when the filter emptied
     // it — an item that ARRIVED empty is the provider's own and not this rule's to remove
@@ -293,12 +293,45 @@ function silenceNarration(history: BaseMessage[]): BaseMessage[] {
 //
 // A message with tool_calls is not this, whatever its content: it is the call, and removing it
 // orphans every `tool_call_id` after it.
-function isEmptyAssistantTurn(m: BaseMessage): boolean {
-  return (
-    m.getType() === "ai" &&
-    ((m as AIMessage).tool_calls?.length ?? 0) === 0 &&
-    contentToText(m.content).trim() === ""
-  );
+//
+// `invalid_tool_calls` is the opposite case, and the asymmetry is the point. A call that failed to
+// parse is never executed, so `toolsCondition` ends the graph and no `ToolMessage` ever answers it —
+// and `@langchain/openai` stores the RAW calls in `additional_kwargs.tool_calls` and replays those
+// whenever `tool_calls` is empty, so keeping such a turn hands the provider an assistant tool call
+// with no response and every later turn on that thread is rejected. Dropping it is what keeps the
+// thread usable; a repair round, not a filter exception, is what would preserve the record.
+//
+// And "no TEXT" is not the question (round 31). A provider can answer with reasoning and nothing
+// else, and Anthropic's `thinking` is signed; such a turn is output, not absence, and reading it as
+// empty deletes from every later prompt exactly what `textlessContent` above takes such care to keep.
+//
+// BUT ONLY WHERE IT SURVIVES THE TRIP (round 2 of the follow-up). A non-text block is re-serialized
+// by the vendor that emitted it and by nobody else: `@langchain/openai` builds an assistant message
+// as `contentBlocks.filter(b => b.type === "text")`, so an Anthropic `thinking` block sent to OpenAI
+// after a provider switch or a cross-vendor fallback arrives as `content: []` and the request is
+// refused — the thread then stops answering entirely, which is worse than the context this keeps.
+// So the exemption asks two things, and drops the turn (the pre-#455 behavior, always safe) whenever
+// either is unanswerable: the block came from a provider that replays its own blocks, and EVERY
+// model that can receive this turn is that same provider.
+const REPLAYS_OWN_BLOCKS: ReadonlySet<string> = new Set(["anthropic"]);
+
+function isEmptyAssistantTurn(
+  m: BaseMessage,
+  destinations: ReadonlySet<string>,
+): boolean {
+  if (m.getType() !== "ai") return false;
+  const ai = m as AIMessage;
+  if ((ai.tool_calls?.length ?? 0) > 0) return false;
+  if (Array.isArray(ai.content) && textlessContent(ai.content).length > 0) {
+    const origin = ai.response_metadata?.model_provider;
+    const survives =
+      typeof origin === "string" &&
+      REPLAYS_OWN_BLOCKS.has(origin) &&
+      destinations.size > 0 &&
+      [...destinations].every((d) => d === origin);
+    if (survives) return false;
+  }
+  return contentToText(ai.content).trim() === "";
 }
 
 // Applies the per-agent history ceiling, if there is one. Best-effort: trimming is an optimization
@@ -355,6 +388,15 @@ export function buildAgentGraph({
       : fallback?.model;
   const max = maxToolCalls ?? DEFAULT_MAX_TOOL_CALLS;
 
+  // NOTE: Every model that can receive this turn's history, not just the one that starts it: the
+  // fallback takes over mid-invocation and is handed the same array, so a turn kept for the primary
+  // alone would reach the second vendor unrenderable. See `isEmptyAssistantTurn`.
+  const destinations: ReadonlySet<string> = new Set(
+    [primary.provider, fallback?.provider].filter(
+      (p): p is string => typeof p === "string" && p.length > 0,
+    ),
+  );
+
   // ONCE THE FALLBACK HAS THE TURN, IT KEEPS IT.
   //
   // A tool call routes back through this node, and without this the node asks the primary again on
@@ -396,7 +438,7 @@ export function buildAgentGraph({
     // SystemMessage by an older build). Providers like Google reject a second one outright with
     // "System messages are only permitted as the first passed message".
     const full = state.messages.filter(
-      (m) => m.getType() !== "system" && !isEmptyAssistantTurn(m),
+      (m) => m.getType() !== "system" && !isEmptyAssistantTurn(m, destinations),
     );
 
     // NOTE: Bound the history BEFORE the tool-call budget below, so both read the same window. The
@@ -428,7 +470,7 @@ export function buildAgentGraph({
     // whenever a companion tool bought another round, and the turn could still finish silent (round
     // 20). Undelivered either way: the runtime posts the LAST assistant message.
     const narration = staySilent ? silenceNarration(history) : [];
-    // Terminal only when the decision was ALL the model did (see `onlySkipped`). `staySilent` alone
+    // NOTE: Terminal only when the decision was ALL the model did (see `onlySkipped`). `staySilent` alone
     // still suppresses the wrap-up instruction below: the model just chose silence either way.
     if (staySilent && lastBatch(history).alone) {
       if (hardLimit) reportToolLimit({ maxToolCalls: max, toolCalls });

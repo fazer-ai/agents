@@ -102,7 +102,7 @@ export function isNudgeSilent(reply: string): boolean {
   const stripped = trimmed.replace(/^["'`]+|["'`]+$/g, "").trim();
   if (stripped === SENTINEL) return true;
   if (stripped.toUpperCase() === "SKIP") return true;
-  // A reply that is ONLY a parenthetical starting with empty/nothing/none (pt-BR + EN) → silence.
+  // NOTE: A reply that is ONLY a parenthetical starting with empty/nothing/none (pt-BR + EN) → silence.
   if (/^\((?:empty|vazi|nothing|none|nada|sem|n\/a)[^)]*\)$/i.test(stripped)) {
     return true;
   }
@@ -160,7 +160,7 @@ export function withFollowupSilenceChannel<T extends FollowupSilenceConfig>(
   cfg: T,
 ): T {
   let out = cfg;
-  // THE NAME IS NOT TAKEN FROM A TOOL THE OPERATOR ALREADY HAS. `toolDefinitionCreateSchema` reserves
+  // NOTE: THE NAME IS NOT TAKEN FROM A TOOL THE OPERATOR ALREADY HAS. `toolDefinitionCreateSchema` reserves
   // no native names, so an agent with natives revoked can legitimately run a custom HTTP tool called
   // `skip_reply` — and `dropDuplicateToolNames` puts natives FIRST, so granting ours would evict
   // theirs from every follow-up turn. A tool the operator built, silently gone, to install a channel
@@ -176,7 +176,7 @@ export function withFollowupSilenceChannel<T extends FollowupSilenceConfig>(
   ) {
     return out;
   }
-  // NOTHING ELSE IS ASKED HERE, and round 12 is why. Granting used to be gated on whether any source
+  // NOTE: NOTHING ELSE IS ASKED HERE, and round 12 is why. Granting used to be gated on whether any source
   // was CONFIGURED, which is not the same question as whether any tool gets BUILT: an MCP server
   // that is down is configured and yields nothing, and the grant then handed a lone function schema
   // to an endpoint that had been running tool-less on the sentinel — the whole follow-up fails at
@@ -189,7 +189,7 @@ export function withFollowupSilenceChannel<T extends FollowupSilenceConfig>(
       nativeToolsAllow: [...out.nativeToolsAllow, SKIP_REPLY_TOOL],
     };
   }
-  // ...AND UNGUARDED, which granting alone does not buy. Preconditions are keyed by tool name, are
+  // NOTE: ...AND UNGUARDED, which granting alone does not buy. Preconditions are keyed by tool name, are
   // fail-closed, and wrap the tool at the merge point — so an operator condition on `skip_reply`
   // refuses the call the directive now depends on, and the model answers with text instead. It bites
   // hardest in the playground, which has no conversation attributes for a condition to be met by.

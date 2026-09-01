@@ -71,7 +71,7 @@ export type RollbackPlan =
 // `actedOnTheWorld` exists to preserve. So the CALLER — the only side that knows which tool was
 // actually bound — passes the set, and an empty set means nothing was inert.
 function isInertToolCall(m: BaseMessage, inert: ReadonlySet<string>): boolean {
-  // No early return on an empty set, deliberately: `inert.has` already answers false for one, and
+  // NOTE: No early return on an empty set, deliberately: `inert.has` already answers false for one, and
   // the shortcut made a by-name mutation of the branch below unobservable — the battery could not
   // tell the two implementations apart.
   if (m.getType() === "tool") {
@@ -283,7 +283,7 @@ export async function undoRefusedTurn(params: {
     let write: IngestWriteClaim | null = null;
     if (owner && base) {
       const held = await claimIngestWrite(owner, base);
-      // A turn holds the thread on some replica. The same answer the Map gives, decided from the row
+      // NOTE: A turn holds the thread on some replica. The same answer the Map gives, decided from the row
       // — which is the half that can see another process.
       if (held.state === "busy") {
         return { action: "keep", reason: "another-invoke-is-reading" };
@@ -310,7 +310,7 @@ export async function undoRefusedTurn(params: {
       return decided;
     } finally {
       clearTurnInFlight(graphThreadId);
-      // Released on every exit, including a throw: a claim left behind defers every append on this
+      // NOTE: Released on every exit, including a throw: a claim left behind defers every append on this
       // thread until its lease runs out.
       //
       // ...and BEST-EFFORT, the way ingestion releases its own. A transient failure here would

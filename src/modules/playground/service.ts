@@ -208,7 +208,7 @@ export function applyToolMocks(
   protocol: ReadonlySet<string> = new Set(),
 ): StructuredToolInterface[] {
   const names = new Set(Object.keys(mocks ?? {}));
-  // THE PROTOCOL TOOL IS NOT THE OPERATOR'S TO MOCK, the same exemption and the same reason
+  // NOTE: THE PROTOCOL TOOL IS NOT THE OPERATOR'S TO MOCK, the same exemption and the same reason
   // `buildSimulatedNativeTools` already makes for it: its RETURN is the whole tool. The runtime
   // recognises silence by that acknowledgement (`skipReplyRan`), so a canned result under this name
   // is not read as a decision to stay quiet — the graph asks the model again and the simulation
@@ -768,7 +768,7 @@ export async function runPlaygroundTurn(
   // silence token would otherwise have it rendered as the reply the operator is testing.
   const draftedTurn = customerFacingReply(lastAssistantText(result.messages));
   const raw = draftedTurn.text;
-  // ...and the token must not stay in the THREAD, which emptying the reply does not do. `graph.invoke`
+  // NOTE: ...and the token must not stay in the THREAD, which emptying the reply does not do. `graph.invoke`
   // checkpointed the raw message before this line, the playground session is multi-turn on one
   // thread, and the next turn would read one more sentinel answer — the same compounding the inbox
   // path rolls back (runtime.ts), on the surface whose whole claim is production fidelity
@@ -1147,7 +1147,7 @@ export async function runPlaygroundFollowup(
   // "stayed silent", and a stray sentinel is stripped so it never shows in the simulated reply.
   const draftedNudge = proactiveReply(lastAssistantText(result.messages));
   const drafted = draftedNudge.text;
-  // ...and the same rule production applies one line later (`takeBackUndeliveredSilence`): a silent
+  // NOTE: ...and the same rule production applies one line later (`takeBackUndeliveredSilence`): a silent
   // follow-up that WROTE something left it in the thread, and this playground session is multi-turn
   // on one thread, so the next simulated turn reads the token back as a sentence the customer was
   // told. It reaches here only for the agents that cannot bind a tool — everyone else says nothing by

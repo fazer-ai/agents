@@ -3,7 +3,7 @@ import { withEntityLock } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clearsResolutionOrigin } from "@/modules/conversations/resolution-origin";
 import type { LiveConversationState } from "./normalize";
-import { statusClaimRefuses } from "./status-claim";
+import { statusClaimVerdict } from "./status-claim";
 
 // Applies a LIVE conversation snapshot (a REST `GET /conversations/:id`) to the mirror row, under the
 // same ordering rule the webhook mirror uses.
@@ -163,13 +163,13 @@ export async function reconcileMirrorFromLive(
             current.statusClaimUntil.getTime();
         const claimed =
           !ours &&
-          statusClaimRefuses(
+          statusClaimVerdict(
             { ...current, statusAt: current.chatwootStatusAt },
             // NOTE: A live snapshot is never a message, so it can never be the source's own reopen —
             // the same reading `clearsResolutionOrigin` is handed below, for the same reason.
             { status: live.status, reopens: false },
             new Date(),
-          );
+          ) !== "apply";
         const statusRanked = orderedBy(current.chatwootStatusAt);
         const statusOrdered = !claimed && statusRanked;
         const assigneeOrdered = orderedBy(current.chatwootAssigneeAt);

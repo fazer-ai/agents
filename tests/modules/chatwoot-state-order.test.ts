@@ -419,7 +419,27 @@ const CASES: Case[] = [
       // The mark is still the one the claim was taken at: the reconcile has not run.
       statusClaimFromAt: V_NOW,
     }),
-    want: { status: null, statusAt: null },
+    // ...and the VERSION is kept, because this payload is a versioned reading of the source and the
+    // claim cannot tell one frozen before our write from one committed after it. Keeping it is what
+    // stops anything older — our own reconcile's snapshot included — from overwriting what it
+    // announced.
+    want: { status: null, statusAt: V_NEW },
+  },
+  {
+    // ...and the companion of that same write lands, which is what makes the refusal above a delay
+    // rather than a loss. A status change dispatches CONVERSATION_STATUS_CHANGED and, since `status`
+    // is in the conversation's `list_of_keys`, `conversation_updated` too, so a real hand-back
+    // arrives at least twice; the mark the first one left is what ends the claim's ordered half.
+    name: "the companion of a refused transition applies, because the mark it left ended the ordered half",
+    payload: conversationEvent({ version: V_NEW, status: "pending" }),
+    row: storedRow({
+      status: "open",
+      statusAt: V_NEW,
+      statusClaimUntil: CLAIM_LIVE,
+      statusClaimFrom: "pending",
+      statusClaimFromAt: V_NOW,
+    }),
+    want: { status: "pending" },
   },
   {
     // Not a freeze of the field. An operator resolving inside the claim produces ONE event, which we

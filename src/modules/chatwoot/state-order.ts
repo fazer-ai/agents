@@ -67,7 +67,7 @@
  * apart into one version.
  */
 
-import { statusClaimRefuses } from "./status-claim";
+import { statusClaimVerdict } from "./status-claim";
 
 export interface StatePayload {
   /** `conversation.updated_at`. Null on a Chatwoot older than 4.0.2, which sends no version. */
@@ -331,12 +331,12 @@ export function decideConversationWrites(
   // the ordinary ordered path carries the other (a delayed or companion `conversation_*` event, which
   // outranks a mark the claim never advanced). ./status-claim.ts holds the reasoning and the reason
   // this refuses ONE status rather than the field.
-  const claimed = statusClaimRefuses(
-    { ...row, statusAt: row.statusAt },
+  const claim = statusClaimVerdict(
+    row,
     { status: payload.status, reopens: payload.reopensConversation },
     now,
   );
-  const writeStatus = !claimed && (statusOrdered || reopenOrdered);
+  const writeStatus = claim === "apply" && (statusOrdered || reopenOrdered);
   const status = writeStatus ? payload.status : null;
 
   // NOTE: One rule for the EQUAL-version case, so the outcome cannot depend on delivery order. A
@@ -380,7 +380,15 @@ export function decideConversationWrites(
     status,
     assignee,
     unversioned: row.activityAt == null || eventAt >= row.activityAt,
-    statusAt: status != null ? advances(row.statusAt) : null,
+    // NOTE: `refuse-and-mark` is the one case where the mark moves for a status we did NOT write, and
+    // it is what keeps the refusal from being a hole: the payload is a versioned reading of the
+    // source, so anything older must not win over what it announced — and the mark differing from the
+    // one the claim was taken at is what ends the claim's ordered half, so the companion event of a
+    // real transition lands. ../../modules/chatwoot/status-claim.ts.
+    statusAt:
+      status != null || claim === "refuse-and-mark"
+        ? advances(row.statusAt)
+        : null,
     assigneeAt: assignee ? advances(row.assigneeAt) : null,
     redirectOrigin,
     redirectOriginAt: redirectOrigin ? advances(row.redirectOriginAt) : null,

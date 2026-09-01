@@ -67,6 +67,10 @@ const liveStatus = new Map<number, string>();
 const unversionedReads = new Set<number>();
 // Conversations whose REST show fails outright, which is a slow or broken Chatwoot.
 const failingReads = new Set<number>();
+// Conversations whose REST show answers with a PINNED version, standing for a read that was issued
+// before something else committed: the snapshot in hand is the older truth even though it came back
+// later, which is the window `reconcileMirrorFromLive` exists to guard.
+const pinnedReadVersion = new Map<number, number>();
 // Conversations whose toggle_status fails, which is the half of a broken Chatwoot that matters after
 // the row has already been claimed locally.
 const failingToggles = new Set<number>();
@@ -118,7 +122,9 @@ const stubFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       // A FLOAT of unix seconds, which is what the REST show renders (`updated_at.to_f`) and what
       // the ordering compares raw. An ISO string reads as no version at all and the reconcile is
       // silently skipped.
-      ...(unversionedReads.has(id) ? {} : { updated_at: stamp + 0.5 }),
+      ...(unversionedReads.has(id)
+        ? {}
+        : { updated_at: pinnedReadVersion.get(id) ?? stamp + 0.5 }),
     });
   }
   return new Response(JSON.stringify({}), {
@@ -1081,6 +1087,41 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
       failingReads.delete(conv);
     }
     expect((await convRow(conv))?.status).toBe("open");
+  });
+
+  // ISSUE #468, ROUND 3. The claim cannot tell a conversation event frozen BEFORE our write from one
+  // committed after it, so it refuses both — and refusing a real hand-back would lose it, since we
+  // ack the event and Chatwoot never redelivers. What keeps that from being a hole is that the
+  // refusal KEEPS the version: nothing older can overwrite what it announced (our own reconcile's
+  // snapshot included), and the mark it leaves ends the claim's ordered half, so the companion event
+  // Chatwoot dispatches for the same write lands.
+  //
+  // The live read is pinned to a version below the hand-back's, which is what a GET issued before it
+  // committed comes back with.
+  test("a hand-back committed while the toggle is on the wire survives the reconcile", async () => {
+    const conv = 8564;
+    await deliver(conv, { ...customerSays("oi") });
+    const pinned = stamp + 0.5;
+    pinnedReadVersion.set(conv, pinned);
+    whileToggling = async () => {
+      whileToggling = null;
+      stamp += 100;
+      // Both of them, because that is what a status change dispatches: CONVERSATION_STATUS_CHANGED
+      // always, and `conversation_updated` because `status` is in the conversation's `list_of_keys`.
+      await deliverConversationEvent(conv, "conversation_updated");
+      await deliverConversationEvent(conv, "conversation_status_changed");
+    };
+    try {
+      await deliver(conv, { ...deviceReply("já te respondo") });
+    } finally {
+      whileToggling = null;
+      pinnedReadVersion.delete(conv);
+    }
+    const row = await convRow(conv);
+    expect(row?.status).toBe("pending");
+    // The mark is the hand-back's, not the reconcile's: the older snapshot lost on a version the
+    // REFUSAL is what put there.
+    expect(row?.chatwootStatusAt ?? 0).toBeGreaterThan(pinned);
   });
 
   function deliverReplyOff() {

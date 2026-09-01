@@ -121,7 +121,31 @@ export function statusClaimIsLive(until: Date | null, now: Date): boolean {
 const REOPENABLE = new Set(["resolved", "snoozed"]);
 
 /**
- * Whether a live claim refuses what this payload states.
+ * What a live claim does with a payload.
+ *
+ * `"apply"` — the claim has nothing to say about it.
+ *
+ * `"refuse"` — the payload restates the status the claim is replacing, and it is evidence of nothing
+ * newer: it came through the reopen exception, which is a snapshot Chatwoot froze before our write.
+ *
+ * `"refuse-and-mark"` — the same refusal, on a payload that IS a versioned reading of the source. The
+ * status is not written and the version is, which is what keeps this from being a hole (issue #468,
+ * round 3): a conversation event committed AFTER our transition — an operator handing the
+ * conversation back inside the window — is indistinguishable here from one frozen before it, so it
+ * is refused, but the mark it leaves means nothing older can overwrite what it announced, our own
+ * reconcile's snapshot included. And because the mark then differs from the one the claim was taken
+ * at, the ordered half of the claim is over: the COMPANION of that transition applies.
+ *
+ * That companion is not luck. A status change dispatches `CONVERSATION_STATUS_CHANGED` and, since
+ * `status` is in the conversation's `list_of_keys`, `conversation_updated` as well (measured on the
+ * fork) — so a real hand-back arrives at least twice and the second one lands. A write that is NOT a
+ * status change (a label, a priority) dispatches only `conversation_updated`, so the one payload that
+ * carries the pre-takeover `pending` by accident is refused and stays refused.
+ */
+export type StatusClaimVerdict = "apply" | "refuse" | "refuse-and-mark";
+
+/**
+ * Whether a live claim refuses what this payload states, and whether the refusal keeps its version.
  *
  * Asked of the STATED status, never of the stored one: a payload that states none says nothing about
  * the transition and is not what this exists to stop.
@@ -140,7 +164,7 @@ const REOPENABLE = new Set(["resolved", "snoozed"]);
  *     is no version to order it against — from the write until the reconcile stamps the one Chatwoot
  *     produced. `statusAt === claimedFromAt` is that stretch, read off the row instead of remembered.
  */
-export function statusClaimRefuses(
+export function statusClaimVerdict(
   row: {
     /** The status currently stored. */
     status: string;
@@ -152,11 +176,13 @@ export function statusClaimRefuses(
   },
   payload: { status: string | null; reopens: boolean },
   now: Date,
-): boolean {
-  if (!statusClaimIsLive(row.statusClaimUntil, now)) return false;
+): StatusClaimVerdict {
+  if (!statusClaimIsLive(row.statusClaimUntil, now)) return "apply";
   if (payload.status === null || payload.status !== row.statusClaimFrom) {
-    return false;
+    return "apply";
   }
-  if (payload.reopens) return !REOPENABLE.has(row.status);
-  return row.statusAt === row.statusClaimFromAt;
+  if (payload.reopens) {
+    return REOPENABLE.has(row.status) ? "apply" : "refuse";
+  }
+  return row.statusAt === row.statusClaimFromAt ? "refuse-and-mark" : "apply";
 }

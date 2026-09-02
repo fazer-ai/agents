@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { computeConfigIssues, issueHasAction } from "@/client/lib/configHealth";
+import {
+  type ConfigIssueKey,
+  computeConfigIssues,
+  issueHasAction,
+} from "@/modules/agents/config-health";
 
 // Phase E: detect features turned on without the credential they need (the import that strips
 // secrets is the common trigger), each carrying a deep-link target (tab + section anchor).
@@ -9,6 +13,11 @@ const base = {
   agentEnabled: true,
   modelProvider: "openai",
   modelCredentialRef: "vault:1",
+  // The same model as the two fields above, as the bag that gets stored. The runnability check asks
+  // `modelConfigSchema` about THIS, so a row that wants an unbuildable model overrides it — and one
+  // that overrides only `modelProvider` is still judged against a bag that builds, which is what
+  // keeps the credential cases below isolated.
+  modelConfig: { provider: "openai", model: "gpt-4o-mini" },
   // What the rewrite inherits is the STORED model, which is a different input from the one above
   // (the General tab's pending edit). They agree in most rows; the ones that separate them say so.
   savedModelProvider: "openai",
@@ -37,8 +46,188 @@ describe("computeConfigIssues", () => {
       ...base,
       modelProvider: "openai-compatible",
       modelCredentialRef: "",
+      // The endpoint IS the authentication for this provider, so the case being isolated here (no
+      // credential is fine) only exists once there is somewhere to dial.
+      modelBaseURL: "http://llama:8080/v1",
     });
     expect(issues).toEqual([]);
+  });
+
+  // CAN THIS MODEL BE BUILT — the whole question, as a table, because three review rounds arrived at
+  // it one leg at a time (no provider, then no endpoint, then a bag no schema had validated). Each
+  // row is a class of stored value rather than an example: what a write boundary lets through, what
+  // an import carries in, and what the runtime then does with it.
+  //
+  // `expected` is what the primary-model checks say, and nothing else — the credential check is
+  // held constant with a live ref so a row can only fail for the reason it is about.
+  const RUNNABILITY: {
+    label: string;
+    bag: Record<string, unknown>;
+    provider: string;
+    baseURL?: string;
+    expected: ConfigIssueKey[];
+  }[] = [
+    {
+      label: "a complete bag",
+      bag: { provider: "openai", model: "gpt-4o-mini" },
+      provider: "openai",
+      expected: [],
+    },
+    {
+      // `validateModelConfigForWrite`: "modelConfig may be {} — unconfigured, the agent simply
+      // won't run until set". Every agent created without one lands here.
+      label: "the empty bag every unconfigured agent has",
+      bag: {},
+      provider: "",
+      expected: ["modelNotRunnable"],
+    },
+    {
+      // What an import carries: `agentExportSchema` takes an arbitrary record and `importAgent`
+      // stores it as it came, so a bag missing the one field its provider requires is storable.
+      label: "a provider that requires a model, with none",
+      bag: { provider: "openai", credentialRef: "vault:1" },
+      provider: "openai",
+      expected: ["modelNotRunnable"],
+    },
+    {
+      label: "a provider this build does not have",
+      bag: { provider: "notaprovider", model: "x" },
+      provider: "notaprovider",
+      expected: ["modelNotRunnable"],
+    },
+    {
+      // The one provider where an empty model is legal: single-model servers ignore the name.
+      label: "openai-compatible with no model but an endpoint",
+      bag: { provider: "openai-compatible", baseURL: "http://llama:8080/v1" },
+      provider: "openai-compatible",
+      baseURL: "http://llama:8080/v1",
+      expected: [],
+    },
+    {
+      // The schema cannot judge this one: the address is allowed to arrive on the CREDENTIAL.
+      // `createChatModel` throws, so it is silence on every message.
+      label: "openai-compatible with nowhere to dial",
+      bag: { provider: "openai-compatible", model: "" },
+      provider: "openai-compatible",
+      baseURL: "",
+      expected: ["modelNoEndpoint"],
+    },
+    {
+      // The schema does NOT catch this: `z.string().url()` accepts `llama:8080`, a valid URI with a
+      // `llama:` scheme (measured). So the bag stores, and every request goes nowhere.
+      label: "openai-compatible pointed at something no client can dial",
+      bag: { provider: "openai-compatible", model: "", baseURL: "llama:8080" },
+      provider: "openai-compatible",
+      baseURL: "llama:8080",
+      // Stated and undialable is a DIFFERENT sentence from stated-nowhere: one is a field to fill,
+      // the other a value to correct.
+      expected: ["modelBadEndpoint"],
+    },
+    {
+      // The second provider that READS the field: `cfg.baseURL || OPENROUTER_BASE_URL` hands a typed
+      // value straight to the client, so an unusable one is dialled instead of the default.
+      label: "openrouter overridden with something no client can dial",
+      bag: { provider: "openrouter", model: "x", baseURL: "llama:8080" },
+      provider: "openrouter",
+      baseURL: "llama:8080",
+      expected: ["modelBadEndpoint"],
+    },
+    {
+      // …and no endpoint at all is openrouter's normal, correct configuration.
+      label: "openrouter with no endpoint, which is its default",
+      bag: { provider: "openrouter", model: "x" },
+      provider: "openrouter",
+      baseURL: "",
+      expected: [],
+    },
+    {
+      // The other four providers never read `baseURL` (`createChatModel`, measured), so a bad value
+      // there breaks nothing — and a warning about a field with no reader is a warning that teaches
+      // the operator to ignore the panel.
+      label: "a provider that ignores the endpoint, with a bad one",
+      bag: { provider: "anthropic", model: "claude-sonnet-5" },
+      provider: "anthropic",
+      baseURL: "llama:8080",
+      expected: [],
+    },
+    {
+      // Fenced to openai by the schema, because /v1/responses is OpenAI's endpoint; the write
+      // boundary refuses it elsewhere, and an import does not.
+      label: "reasoning effort on a provider that has no such thing",
+      bag: {
+        provider: "anthropic",
+        model: "claude-sonnet-5",
+        reasoningEffort: "high",
+      },
+      provider: "anthropic",
+      expected: ["modelNotRunnable"],
+    },
+  ];
+
+  for (const row of RUNNABILITY) {
+    test(`runnability: ${row.label} → ${row.expected.join(", ") || "nothing"}`, () => {
+      const issues = computeConfigIssues({
+        ...base,
+        modelConfig: row.bag,
+        modelProvider: row.provider,
+        // Held constant and live, so the only checks that can speak are the two under test.
+        modelCredentialRef: "vault:1",
+        knownRefs: new Set(["vault:1"]),
+        ...(row.baseURL !== undefined ? { modelBaseURL: row.baseURL } : {}),
+      });
+      expect(issues.map((i) => i.key)).toEqual(row.expected);
+      for (const issue of issues) {
+        expect(issue.tab).toBe("general");
+        expect(issue.sectionId).toBe("general-model");
+      }
+    });
+  }
+
+  // The wait covers the INVALID verdict too, which is the half I had backwards for a round: the
+  // credential's base URL wins over the typed field, so a credential still unread is precisely what
+  // would replace an undialable string with a working host. The editor passes
+  // `credentialBaseUrl ?? model.baseURL`, so while the vault is unread the typed value is what
+  // arrives here — and a failed vault load leaves it that way indefinitely.
+  test("waits for the vault on an undialable endpoint too, not just a missing one", () => {
+    const unread = {
+      ...base,
+      modelConfig: { provider: "openai-compatible", model: "" },
+      modelProvider: "openai-compatible",
+      modelCredentialRef: "vault:1",
+      modelBaseURL: "llama:8080",
+    };
+    expect(computeConfigIssues({ ...unread, knownRefs: null })).toEqual([]);
+    expect(
+      computeConfigIssues({
+        ...unread,
+        knownRefs: new Set(["vault:1"]),
+      }).map((i) => i.key),
+    ).toEqual(["modelBadEndpoint"]);
+  });
+
+  // The endpoint can arrive ON the credential, and the vault answers a request after the first
+  // paint. Announcing a runnable model as broken for that one paint is the false alarm the
+  // null-until-loaded rule exists to prevent — the same wait the three model overrides take.
+  test("waits for the vault when a credential could still carry the endpoint", () => {
+    expect(
+      computeConfigIssues({
+        ...base,
+        modelProvider: "openai-compatible",
+        modelCredentialRef: "vault:1",
+        modelBaseURL: "",
+        knownRefs: null,
+      }),
+    ).toEqual([]);
+    // …and says it once the vault has answered and no endpoint came with it.
+    expect(
+      computeConfigIssues({
+        ...base,
+        modelProvider: "openai-compatible",
+        modelCredentialRef: "vault:1",
+        modelBaseURL: "",
+        knownRefs: new Set(["vault:1"]),
+      }).map((i) => i.key),
+    ).toEqual(["modelNoEndpoint"]);
   });
 
   test("flags STT/TTS/vision enabled without a credential, each to its behavior section", () => {
@@ -958,7 +1147,14 @@ describe("computeConfigIssues — noncanonical ref spellings", () => {
 // it before it looks at the provider, and returns null for the whole agent when it cannot, so the
 // agent goes silent on every message.
 describe("computeConfigIssues — an openai-compatible model with a ref of its own", () => {
-  const compat = { ...base, modelProvider: "openai-compatible" };
+  // WITH an endpoint, because this block is about the CREDENTIAL and the endpoint is now its own
+  // check: `createChatModel` throws on an openai-compatible bag with nowhere to dial, so a fixture
+  // without one would raise `modelNoEndpoint` on every case here and stop isolating what it means to.
+  const compat = {
+    ...base,
+    modelProvider: "openai-compatible",
+    modelBaseURL: "http://llama:8080/v1",
+  };
 
   test("still raises nothing when no credential is set", () => {
     expect(

@@ -91,7 +91,7 @@ describe("CredentialPicker with a noncanonical ref", () => {
 });
 
 // A referenced entry whose secret was never filled. `credential_create` and the vault both produce
-// this on purpose, and until now the only field that said so was the agent's own (configHealth), so
+// this on purpose, and until now the only field that said so was the agent's own (config-health), so
 // so an integration wired to one failed as a bare 401 with nothing said anywhere (issue #124).
 describe("CredentialPicker with a pending entry", () => {
   // The sentence shares its element with the Fill control, so match a fragment.

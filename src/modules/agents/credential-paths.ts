@@ -142,7 +142,7 @@ function bagOf(v: unknown): Record<string, unknown> | null {
 // several of them are only rendered with their section switched on, so a check over the whole bag
 // could answer 400 naming a field the operator has no way to open — and one deleted vault entry
 // would then freeze every agent that named it, down to the switch that turns the agent off. What a
-// write leaves alone is REPORTED rather than refused: configHealth already raises it as
+// write leaves alone is REPORTED rather than refused: config-health already raises it as
 // `unresolved` on the field itself. Same rule, same reason as collectOversizedTextChanges.
 export function collectCredentialRefWrites(
   next: { modelConfig?: unknown; settings?: unknown },

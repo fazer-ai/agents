@@ -1,5 +1,6 @@
 import basePrisma from "@/api/lib/prisma";
 import { AppError } from "@/lib/errors";
+import { readAgentConfigHealth } from "@/modules/agents/config-health-read";
 import { getAgent, getAgentToolSelections } from "@/modules/agents/service";
 import type { MetricsFilter } from "@/modules/analytics/service";
 import {
@@ -118,6 +119,28 @@ export async function agentGet(
   if (typeof id !== "bigint") return id;
   try {
     return ok({ agent: await getAgent(ctx, id, base) });
+  } catch (e) {
+    return failOf(e);
+  }
+}
+
+// "Is this agent's configuration healthy?" — the same warnings the console's editor panel computes,
+// for the caller that never opens it. An onboarding driven entirely through these tools is the path
+// the docs recommend, and until this existed it was also the one that ran blind: nothing on it ever
+// rendered the page those checks live on, so it finished by reporting success over a vault entry
+// nobody had filled. Issue #467.
+export async function agentConfigHealth(
+  principal: VerifiedToken,
+  args: { agent_id: string },
+  deps: WriteDeps = {},
+): Promise<WriteResult> {
+  const base = deps.base ?? basePrisma;
+  const ctx = readGate(principal);
+  if ("ok" in ctx) return ctx;
+  const id = parseMcpId(args.agent_id, "agent_id");
+  if (typeof id !== "bigint") return id;
+  try {
+    return ok({ health: await readAgentConfigHealth(ctx, id, { base }) });
   } catch (e) {
     return failOf(e);
   }

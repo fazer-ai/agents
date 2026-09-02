@@ -8,6 +8,7 @@ import {
   hasModelFallback,
   readModelFallbackConfig,
 } from "@/graph/fallback-settings";
+import { modelConfigSchema } from "@/graph/model-config";
 import { resolveModelOverride } from "@/graph/model-override";
 import { collectOversizedTextChanges } from "@/modules/agents/text-caps";
 import { readAvailabilityConfig } from "@/modules/availability/away";
@@ -25,6 +26,19 @@ import { resolveNormalizeModel } from "@/modules/tts/normalize-model";
 
 export type ConfigIssueKey =
   | "model"
+  // The PRIMARY model failing to BUILD, which the credential check above cannot see: it asks whether
+  // a configured provider has a key, and these are about the bag itself. Two keys because the fixes
+  // differ — one is the configuration, the other is an address — and both states are storable:
+  // `modelConfig` may be `{}` by design (validateModelConfigForWrite: "unconfigured — the agent
+  // simply won't run until set"), an import stores whatever record the export carried, and an
+  // openai-compatible bag with no endpoint passes every write boundary there is.
+  | "modelNotRunnable"
+  // Two spellings of one unreachable endpoint, because the operator's move differs: fill a field
+  // that is required and empty, or correct one that is filled and undialable. The wording cannot
+  // carry both — and it must not quote the value, since a base URL is one of the places a
+  // credential gets pasted (the audit projection treats it that way already).
+  | "modelNoEndpoint"
+  | "modelBadEndpoint"
   | "stt"
   | "tts"
   | "ttsNormalize"
@@ -129,6 +143,21 @@ export interface ConfigHealthInput {
   // which is a question about what the General tab is about to save.
   modelProvider: string;
   modelCredentialRef: string;
+  // The endpoint that model would DIAL, with the credential's own base URL winning over the typed
+  // field exactly as `loadAgentConfig` reads it. Only openai-compatible needs one, and it is the
+  // one provider that authenticates by URL rather than by key — so for it, this is the field a
+  // missing-credential check would otherwise be standing in for.
+  modelBaseURL?: string;
+  // The model bag AS IT WILL BE STORED, judged by the runtime's own schema rather than by a second
+  // reading of the same rules here. Required, and the compiler is the only thing that could catch a
+  // caller dropping it: a bag nobody validated is exactly the case this exists for.
+  //
+  // The three fields above are PROJECTIONS of this one, kept separate because the other checks
+  // consume them and one of them (the endpoint) is resolved against the vault rather than read off
+  // the bag. Both real callers derive all four from the same state — the editor from the form it is
+  // about to save, the server from the row — so a bag that disagrees with its own projections is not
+  // a state either of them can produce.
+  modelConfig: unknown;
   // The agent's own on/off, AS SAVED. Required rather than optional, and read by exactly one check:
   // the out-of-hours collision is the only line in this panel that claims something about what the
   // CUSTOMER receives. Every other line describes the configuration ("on, but no key"), which stays
@@ -301,6 +330,34 @@ function endpointCouldStillArrive(
   return inherits && Boolean(agent.credentialRef);
 }
 
+// Whether the endpoint this model would DIAL is unusable, asked per provider because only two of
+// the six read the field at all (`createChatModel`, measured): `openai-compatible` REQUIRES it and
+// throws without one, `openrouter` uses it when present and falls back to its own API root. The
+// other four — openai, anthropic, google, deepseek — ignore `baseURL` entirely, so a malformed value
+// there breaks nothing and flagging it would be a warning about a field with no reader.
+//
+// "Unusable" is two things with one consequence: absent where it is required, or present and not
+// dialable anywhere. The second needs saying because the write boundary does not catch it — the
+// schema's `z.string().url()` accepts `llama:8080`, a valid URI with a `llama:` scheme (measured) —
+// and because `isValidHttpUrl` answers TRUE for the empty string on purpose, leaving emptiness to
+// the caller that knows whether the field is required. This is that caller.
+function endpointVerdict(
+  provider: string,
+  baseURL: string,
+): "missing" | "invalid" | null {
+  const stated = baseURL.trim();
+  if (provider === "openai-compatible") {
+    if (!stated) return "missing";
+    return isValidHttpUrl(stated) ? null : "invalid";
+  }
+  if (provider === "openrouter") {
+    // Optional: no endpoint is the DEFAULT and is correct. One that was typed still has to work,
+    // because `cfg.baseURL || OPENROUTER_BASE_URL` hands the typed value straight to the client.
+    return stated && !isValidHttpUrl(stated) ? "invalid" : null;
+  }
+  return null;
+}
+
 export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
   const issues: ConfigIssue[] = [];
   const pending = input.pendingRefs;
@@ -320,6 +377,54 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
   // credential and nothing else: a ref that IS set is resolved by `loadAgentConfig` before the
   // provider is ever consulted, and a ref that does not resolve returns null for the whole agent,
   // which is silence on every message rather than one feature going quiet.
+  // CAN THIS MODEL BE BUILT AT ALL, asked of the two things that actually decide it at runtime
+  // rather than re-derived here. The credential check below answers a different question — does a
+  // configured provider have a key — and every state in this block passes it while the agent
+  // answers nobody.
+  //
+  // Both authorities are the runtime's own, and that is the whole design: a second copy of these
+  // rules is a second copy to drift. It is the same shape the three model OVERRIDES already use
+  // (they ask `resolveModelOverride`/`resolveNormalizeModel` and report `!runnable`); the primary
+  // model was the one that had nobody asking.
+  //
+  //   the schema     `parseModelConfig` runs this on every turn and THROWS. It covers the empty bag
+  //                  (`modelConfig` may be `{}` by design), a provider this build does not have, a
+  //                  missing `model` on a provider that requires one (openai-compatible is the only
+  //                  exemption), a malformed base URL, and `reasoningEffort` outside openai. An
+  //                  import is the common way in: `agentExportSchema` takes an arbitrary record and
+  //                  `importAgent` stores it as it came.
+  //   the endpoint   `createChatModel` throws for openai-compatible with nowhere to dial. The schema
+  //                  cannot judge this one, because the address is allowed to arrive on the
+  //                  CREDENTIAL instead of in the bag.
+  const modelTarget = {
+    key: "modelNotRunnable",
+    tab: "general",
+    sectionId: "general-model",
+  } as const;
+  if (!modelConfigSchema.safeParse(input.modelConfig).success) {
+    issues.push({ ...modelTarget });
+  } else {
+    const endpoint = endpointVerdict(
+      input.modelProvider,
+      input.modelBaseURL ?? "",
+    );
+    // An endpoint can still ARRIVE on a credential the vault has not answered for yet, and calling a
+    // runnable model broken is the false alarm the null-until-loaded rule exists to prevent. Same
+    // wait the three overrides take, and it covers BOTH verdicts.
+    //
+    // Not obvious, and I had it backwards for a round: the credential's own base URL WINS over the
+    // typed field, here and at runtime alike, so a credential still unread is exactly what would
+    // replace an undialable string with a working host. The editor makes this concrete — it passes
+    // `credentialBaseUrl ?? model.baseURL`, so while the vault is unread the typed `llama:8080` IS
+    // what arrives here, and a verdict on it is a verdict on a value the runtime will not use.
+    const owed = known === null && Boolean(input.modelCredentialRef);
+    if (endpoint !== null && !owed) {
+      issues.push({
+        ...modelTarget,
+        key: endpoint === "invalid" ? "modelBadEndpoint" : "modelNoEndpoint",
+      });
+    }
+  }
   push(
     { key: "model", tab: "general", sectionId: "general-model" },
     credIssue(

@@ -2,9 +2,9 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
-import { computeConfigIssues } from "@/client/lib/configHealth";
 import { formatVaultRef } from "@/client/lib/credentialRef";
 import type { TenantContext } from "@/lib/tenancy";
+import { computeConfigIssues } from "@/modules/agents/config-health";
 import {
   deleteVaultEntry,
   listVaultEntryInfos,
@@ -125,6 +125,7 @@ describe.skipIf(!dbUp)("a vault entry deleted out from under an agent", () => {
     const issues = computeConfigIssues({
       agentEnabled: true,
       modelProvider: "openai",
+      modelConfig: { provider: "openai", model: "gpt-4o-mini" },
       modelCredentialRef: ref(keyId),
       savedModelProvider: "openai",
       sttEnabled: false,

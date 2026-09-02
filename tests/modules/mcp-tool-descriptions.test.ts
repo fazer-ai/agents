@@ -377,6 +377,17 @@ describe("MCP tool descriptions", () => {
   // Measured after a first draft that cost 1,092: the version that ships drops the prose and keeps
   // the four facts, and the fuller wording lives on the REST/OpenAPI field, which no ceiling counts.
   // The ceiling goes to 53,000.
+  //
+  // `agent_config_health` (#467) takes the DESCRIPTION total to 27,790, and it is the first entry
+  // here that moves that number rather than the schema one: a new tool pays its whole description,
+  // where a new field on an existing tool pays only its own line. 690 characters of it, measured
+  // against a first draft of 1,102 — the cut kept the four things a caller cannot act without (when
+  // to run it, that several of these are silent at runtime, what the three severities mean, and what
+  // `healthy` is computed from) and dropped the enumeration of every issue kind, which the caller
+  // reads off the result anyway. The fuller wording lives on the REST route's OpenAPI description,
+  // which no ceiling counts. The description ceiling goes to 27,900, and the schema one to 53,100:
+  // its input is one required string, and 47 characters is what the envelope of a minimal schema
+  // costs — the floor for any tool at all, worth recording as such.
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;
@@ -385,8 +396,8 @@ describe("MCP tool descriptions", () => {
       desc += t.description.length;
       schema += t.schema.length;
     }
-    expect(desc).toBeLessThanOrEqual(27_250);
-    expect(schema).toBeLessThanOrEqual(53_000);
+    expect(desc).toBeLessThanOrEqual(27_900);
+    expect(schema).toBeLessThanOrEqual(53_100);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

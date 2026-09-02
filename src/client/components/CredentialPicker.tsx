@@ -173,7 +173,7 @@ export function CredentialPicker({
   // The entry is there and its secret is not: `credential_create` (MCP) and the vault's own "add a
   // reference now, fill it later" both produce this, deliberately: resolveSecretRef says so and
   // points at the alert that would surface it. That alert only ever existed for the agent's own
-  // credentials (configHealth), so every other field wired to a pending entry failed with nothing
+  // credentials (config-health), so every other field wired to a pending entry failed with nothing
   // said anywhere: an integration's inbound secret failed as a bare 401 (issue #124). Saying it in
   // the picker says it once, for every field that references a credential.
   const unfilled = selected?.status === "pending";

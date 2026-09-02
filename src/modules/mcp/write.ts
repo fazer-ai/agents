@@ -26,6 +26,7 @@ import {
   mergeBehaviorSettings,
   readBehaviorSettings,
 } from "@/modules/agents/behavior-settings";
+import { configHealthAfterWrite } from "@/modules/agents/config-health-read";
 import {
   credRefSlot,
   SETTINGS_CREDENTIAL_PATHS,
@@ -243,7 +244,7 @@ export async function resolveSecretRef(
   }
   // A PENDING entry (resolution.pending) intentionally resolves normally: callers may wire config to a
   // reference whose secret is not filled yet (the whole point of credential_create). The "fill it"
-  // alert is surfaced by configHealth + the vault list, not by failing the wiring here.
+  // alert is surfaced by config-health + the vault list, not by failing the wiring here.
   return { ref: resolution.ref };
 }
 
@@ -284,7 +285,7 @@ export interface CredentialCreateArgs {
 // for the operator to fill the secret in the console. The binding rule holds — this tool NEVER
 // receives a secret value. The pending entry can be referenced by other write tools immediately
 // (resolveSecretRef resolves it), but it resolves as "missing" at runtime until filled; the vault
-// list and the agent editor (configHealth) flag the pending state so the operator knows to complete it.
+// list and the agent editor (config-health) flag the pending state so the operator knows to complete it.
 export async function credentialCreate(
   principal: VerifiedToken,
   args: CredentialCreateArgs,
@@ -688,6 +689,7 @@ export async function agentSettingsSet(
       applied: true,
       target,
       diff: diffFields(beforeProj, afterAppliedProj),
+      ...(await configHealthAfterWrite(ctx, agentId, base)),
     });
   } catch (e) {
     if (e instanceof AppError) return err(e.message);

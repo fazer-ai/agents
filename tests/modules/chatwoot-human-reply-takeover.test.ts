@@ -14,7 +14,10 @@ import {
 } from "@/modules/chatwoot/normalize";
 import { STATUS_CLAIM_TTL_MS } from "@/modules/chatwoot/status-claim";
 import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
-import { returnConversationToAgent } from "@/modules/conversations/service";
+import {
+  returnConversationToAgent,
+  setConversationStatus,
+} from "@/modules/conversations/service";
 import { isFollowUpLive } from "@/modules/followups/eligibility";
 import { POLL_DEADLINE_MS } from "@/tests/utils/poll";
 import { seedChatwootInstance } from "../utils/chatwoot";
@@ -1473,6 +1476,145 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
         expect(
           posted.slice(before).filter((p) => p.url.includes("/toggle_status")),
         ).toEqual([]);
+      } finally {
+        unversionedReads.delete(conv);
+      }
+    });
+
+    // THE OTHER BUTTON THAT REACHES THE SAME DEFECT. "Return to AI" is not the only console write
+    // that hands a conversation back: pressing `pending` on a bot-owned conversation Chatwoot has as
+    // `open` says the same thing, goes through the same unversioned fallback, and was measured
+    // undone the same way (`open`, `pending`, `open` again) before this path took a reading of its
+    // own. Left to the fence's other half, #469 would close on one of its two call sites.
+    test("a status button hands back too, and is ordered the same way", async () => {
+      const conv = 8611;
+      unversionedReads.add(conv);
+      try {
+        // The first reply opens the conversation, which is the state the operator is looking at.
+        await deliver(conv, composerReply("eu assumo"));
+        expect(liveStatus.get(conv)).toBe("open");
+        // The reply Chatwoot froze next, still on the wire.
+        messageSeq += 1;
+        const frozenId = messageSeq;
+        const frozen = normalizeChatwootEvent({
+          event: "message_created",
+          id: frozenId,
+          private: false,
+          ...composerReply("já respondi por aqui"),
+          conversation: conversation(conv),
+        });
+        if (!frozen) throw new Error("payload did not normalize");
+        liveLatestMessageId.set(conv, frozenId);
+
+        const row = await convRow(conv);
+        if (!row) throw new Error("no mirrored conversation");
+        await setConversationStatus(
+          { tenantId, userId: null, role: "TENANT_ADMIN" },
+          row.id,
+          "pending",
+          deps,
+          appDb,
+        );
+        expect(liveStatus.get(conv)).toBe("pending");
+        const marked = await suDb.conversation.findFirstOrThrow({
+          where: { tenantId, chatwootConversationId: conv },
+          select: { consoleWriteAtMessageId: true },
+        });
+        expect(marked.consoleWriteAtMessageId).toBe(frozenId);
+
+        deliverySeq += 1;
+        const delivery = await suDb.chatwootWebhookDelivery.create({
+          data: {
+            tenantId,
+            chatwootInstanceId: instanceId,
+            deliveryId: `hr-${process.pid}-${deliverySeq}`,
+            event: "message_created",
+            status: "PENDING",
+          },
+          select: { id: true },
+        });
+        const before = posted.length;
+        await processChatwootDelivery({
+          tenantId,
+          instanceId,
+          deliveryRowId: delivery.id,
+          agentBotId: OUR_BOT,
+          normalized: frozen,
+          deps,
+          base: appDb,
+        });
+
+        expect(liveStatus.get(conv)).toBe("pending");
+        expect((await convRow(conv))?.status).toBe("pending");
+        expect(
+          posted.slice(before).filter((p) => p.url.includes("/toggle_status")),
+        ).toEqual([]);
+      } finally {
+        unversionedReads.delete(conv);
+      }
+    });
+
+    // And the reading is before the press on this path too, asked at the only point a test can
+    // stand: the toggle is on the wire and a message written there is strictly after the button.
+    test("a reply written during the press is not covered by the mark", async () => {
+      const conv = 8613;
+      unversionedReads.add(conv);
+      try {
+        await deliver(conv, composerReply("eu assumo"));
+        const beforePress = liveLatestMessageId.get(conv) ?? 0;
+        const during = beforePress + 7;
+        whileToggling = async () => {
+          liveLatestMessageId.set(conv, during);
+        };
+        const row = await convRow(conv);
+        if (!row) throw new Error("no mirrored conversation");
+        try {
+          await setConversationStatus(
+            { tenantId, userId: null, role: "TENANT_ADMIN" },
+            row.id,
+            "pending",
+            deps,
+            appDb,
+          );
+        } finally {
+          whileToggling = null;
+        }
+        const marked = await suDb.conversation.findFirstOrThrow({
+          where: { tenantId, chatwootConversationId: conv },
+          select: { consoleWriteAtMessageId: true },
+        });
+        expect(marked.consoleWriteAtMessageId).toBe(beforePress);
+
+        messageSeq = during;
+        await deliver(conv, composerReply("voltei, deixa comigo"));
+        expect(liveStatus.get(conv)).toBe("open");
+      } finally {
+        unversionedReads.delete(conv);
+      }
+    });
+
+    // And the same button does not swallow the other direction either: a colleague who answers AFTER
+    // the press is a real handover, exactly as after a hand-back.
+    test("a reply typed after a status button still takes over", async () => {
+      const conv = 8612;
+      unversionedReads.add(conv);
+      try {
+        await deliver(conv, composerReply("eu assumo"));
+        const row = await convRow(conv);
+        if (!row) throw new Error("no mirrored conversation");
+        await setConversationStatus(
+          { tenantId, userId: null, role: "TENANT_ADMIN" },
+          row.id,
+          "pending",
+          deps,
+          appDb,
+        );
+        expect(liveStatus.get(conv)).toBe("pending");
+
+        await deliver(conv, composerReply("voltei, deixa comigo"));
+
+        expect(liveStatus.get(conv)).toBe("open");
+        expect((await convRow(conv))?.status).toBe("open");
       } finally {
         unversionedReads.delete(conv);
       }

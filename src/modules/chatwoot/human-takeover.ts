@@ -586,12 +586,16 @@ export async function runHumanReplyTakeover(
             // version is what lets a conversation event that really is newer still outrank this write
             // when it lands; the reconcile below is what earns it one.
             //
-            // The three observed columns in the predicate are what make this a compare-and-swap
+            // The four observed columns in the predicate are what make this a compare-and-swap
             // rather than a check-then-act: the read above and this write are two statements, and
-            // another replica can commit between them. The assignee is in there for its own reason —
-            // status and assignee carry SEPARATE ordering marks, so an assignment that lands in this
-            // window leaves the conversation `pending` at the same `chatwoot_status_at` while it is no
-            // longer the bot's, and a status-and-version predicate would open it anyway.
+            // another replica can commit between them. Two of them are in there for a reason of
+            // their own, and it is the same reason twice: status and assignee carry SEPARATE
+            // ordering marks, so an assignment that lands in this window leaves the conversation
+            // `pending` at the same `chatwoot_status_at` while it is no longer the bot's; and the
+            // console mark is ordered independently of the status version too, so a hand-back that
+            // could not be versioned moves it while status, version and assignee all stay exactly
+            // as this delivery read them (issue #469). A status-and-version predicate would open
+            // the conversation anyway in both cases.
             //
             // No test in this process can pry that window open — there is nothing to await between the
             // two statements — so the mutations that drop these terms survive the suite. They stay

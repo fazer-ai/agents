@@ -679,6 +679,27 @@ interface ConsoleWriteMirror {
   } | null;
 }
 
+// THE READING THAT ORDERS A CONSOLE WRITE THAT COULD NOT BE VERSIONED (issue #469), taken by the
+// caller BEFORE its own writes to Chatwoot and handed to `mirrorConsoleWrite` as `markAt`.
+//
+// One function rather than one per console action, because the decision is one: a reading taken
+// AFTER the action would contain a colleague who replied during the round trip, and a mark built
+// from it would have the takeover's fence skip that colleague's handover, which is issue #430
+// reintroduced by the guard against this one. Written once, a mutation on it is observable from
+// every call site; written per site, the copy no test happens to reach keeps whatever it was given.
+//
+// A failed read is `null`, which stamps nothing and leaves the previous mark standing: this side
+// learned nothing new, and an older mark can only ever refuse less.
+function readLiveBeforeConsoleWrite(
+  client: ChatwootClient,
+  chatwootConversationId: number,
+): Promise<LiveConversationState | null> {
+  return client
+    .getConversation(chatwootConversationId)
+    .catch(() => null)
+    .then(parseLiveConversation);
+}
+
 async function mirrorConsoleWrite(
   ctx: TenantContext,
   base: PrismaClient,
@@ -1544,12 +1565,8 @@ export async function returnConversationToAgent(
   //
   // Falls back to the mirror when the read fails, which is where this stood before: an unreadable
   // baseline is not evidence that nobody was there.
-  const readHolder = async (): Promise<LiveConversationState | null> =>
-    parseLiveConversation(
-      await client
-        .getConversation(conv.chatwootConversationId)
-        .catch(() => null),
-    );
+  const readHolder = (): Promise<LiveConversationState | null> =>
+    readLiveBeforeConsoleWrite(client, conv.chatwootConversationId);
   // TAKEN BEFORE THE TOGGLE, and taken unconditionally, which is the whole of its correctness
   // (issue #469). The mark this hand-back leaves has to name a message that already existed when
   // the operator clicked: a reading made afterwards would include a colleague's reply typed in the
@@ -1749,6 +1766,20 @@ export async function setConversationStatus(
     ...deps,
     base,
   });
+  // THE READING THAT ORDERS AN UNVERSIONED WRITE, taken BEFORE the toggle, for the same reason the
+  // hand-back takes one (issue #469). This endpoint falls back to the same unversioned write, and a
+  // press of `pending` on a bot-owned conversation Chatwoot has as `open` is the operator giving it
+  // back to the agent by another button: measured against the fork with the version stripped, the
+  // conversation went `open` -> `pending` -> `open` again when a delivery frozen before the press
+  // landed, exactly as the hand-back did before it was ordered.
+  //
+  // Taken here rather than inside the mirror because the mirror runs after this toggle, so its own
+  // read is a post-write one and would cover a colleague who replied during the round trip. A failed
+  // read stamps nothing, which leaves the previous mark standing.
+  const before = await readLiveBeforeConsoleWrite(
+    client,
+    conv.chatwootConversationId,
+  );
   await client.toggleStatus(conv.chatwootConversationId, status, {
     asAdmin: true,
   });
@@ -1780,14 +1811,7 @@ export async function setConversationStatus(
     conv,
     client,
     { status },
-    // NO MARK. This endpoint takes no reading before its toggle, and one taken after it would be
-    // the post-write reading the parameter exists to refuse: a colleague replying in that window
-    // would be covered by it and their handover skipped. So the gap stays open on this path — an
-    // operator who sets a bot-owned conversation back to `pending` here can still be undone by a
-    // reply frozen before the click — rather than being closed with a mark that can be wrong in
-    // the direction that costs a person's conversation. Closing it means giving this path a
-    // pre-write read of its own, which is a round trip per click and its own decision to make.
-    null,
+    consoleWriteMark(before),
   );
   broadcastConversationEvent(tenantId, {
     conversationId: String(id),

@@ -10,6 +10,8 @@
 -- So every row that predates this migration keeps NULL, and both readers treat NULL as "no evidence"
 -- and fall back to the behaviour that shipped before it: the takeover's fence does not refuse, and
 -- the recovery runs unfenced. That is the pre-existing defect (issue #469), not a new one, and it
--- ends for a conversation the first time an operator clicks anything on it after the deploy.
+-- ends for a conversation the first time an operator writes its status from the console after the
+-- deploy, which is the hand-back and the plain status buttons alike. Handing a conversation to a
+-- PERSON stamps nothing and needs nothing, since the ownership check answers before the fence.
 ALTER TABLE "conversations" ADD COLUMN "console_write_at_message_id" INTEGER;
 ALTER TABLE "chatwoot_webhook_deliveries" ADD COLUMN "human_reply_message_id" INTEGER;

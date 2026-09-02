@@ -1825,13 +1825,36 @@ async function buildGrantRows(
             });
           }
         }
-        rows.push({
-          tenantId,
-          agentId,
-          source: "RAG",
-          enabledTools: g.enabledTools,
-          knowledgeBaseIds: kbs.map((k) => k.id),
-        });
+        // MERGED, NEVER APPENDED, because appending cannot work: the table carries
+        // `CREATE UNIQUE INDEX ats_rag_uq ON agent_tool_selections (agent_id) WHERE source = 'RAG'`,
+        // so a second row is refused by Postgres and the whole import dies on a constraint the
+        // caller never named. `agentExportSchema` does not stop a payload from carrying two RAG
+        // grants (nothing in the export vocabulary says "at most one"), and an export written by
+        // hand or by an older build can. Merging is what makes such a payload importable at all,
+        // and it loses nothing: one row holding both sets of bases is exactly what the console
+        // would have produced from the same intent.
+        const kbIds = kbs.map((k) => k.id);
+        const existing = rows.find((r) => r.source === "RAG");
+        if (existing) {
+          const seenKb = new Set(existing.knowledgeBaseIds as bigint[]);
+          existing.knowledgeBaseIds = [
+            ...(existing.knowledgeBaseIds as bigint[]),
+            ...kbIds.filter((id) => !seenKb.has(id)),
+          ];
+          const seenTool = new Set(existing.enabledTools as string[]);
+          existing.enabledTools = [
+            ...(existing.enabledTools as string[]),
+            ...g.enabledTools.filter((t) => !seenTool.has(t)),
+          ];
+        } else {
+          rows.push({
+            tenantId,
+            agentId,
+            source: "RAG",
+            enabledTools: g.enabledTools,
+            knowledgeBaseIds: kbIds,
+          });
+        }
         break;
       }
       case "HTTP": {

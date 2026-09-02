@@ -1587,6 +1587,12 @@ export async function listKnowledgeBasesNeedingIndex(
   base: PrismaClient = basePrisma,
 ): Promise<{ id: string; name: string }[]> {
   return runScopedOn(base, ctx, async (db) => {
+    // ONE row, and that is a fact about the table rather than a convention worth defending here:
+    // `CREATE UNIQUE INDEX ats_rag_uq ON agent_tool_selections (agent_id) WHERE source = 'RAG'`
+    // (the init migration). A second RAG grant is refused by Postgres, so reading "all of them" and
+    // merging would be code standing guard over a state that cannot exist. Written down because the
+    // question comes up looking answerable in TypeScript — `replaceAgentToolSelections` also throws
+    // `duplicate RAG grant`, which reads like the only thing holding the line, and it is not.
     const grant = await db.agentToolSelection.findFirst({
       where: { agentId, source: "RAG" },
       select: { knowledgeBaseIds: true },

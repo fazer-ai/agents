@@ -511,6 +511,62 @@ describe.skipIf(!dbUp)("agent configuration health", () => {
       ).toBe(false);
     });
 
+    // AN EXPORT CARRYING TWO RAG GRANTS. The export vocabulary does not forbid it, and the table
+    // does: `ats_rag_uq` is a unique index on (agent_id) WHERE source = 'RAG', so an import that
+    // appended would die on a constraint the caller never named. Merged, both bases land, and the
+    // health read — which reads the single row the index guarantees — sees both.
+    test("an import with two RAG grants lands as one, with both bases", async () => {
+      const a = await suDb.knowledgeBase.create({
+        data: { tenantId, name: `two-a-${process.pid}` },
+        select: { id: true },
+      });
+      const b = await suDb.knowledgeBase.create({
+        data: { tenantId, name: `two-b-${process.pid}` },
+        select: { id: true },
+      });
+      const ragGrant = (names: string[]) => ({
+        source: "RAG" as const,
+        enabledTools: ["search_knowledge"],
+        knowledgeBases: names,
+      });
+      const r = await agentImport(
+        principal(tenantId),
+        {
+          export: {
+            version: AGENT_EXPORT_VERSION,
+            kind: AGENT_EXPORT_KIND,
+            agent: {
+              name: `two-rag-${process.pid}`,
+              systemPrompt: "x",
+              modelConfig: {},
+              settings: {},
+              transferWithSummary: false,
+              businessHours: null,
+              followUpHours: null,
+              tools: [
+                ragGrant([`two-a-${process.pid}`]),
+                ragGrant([`two-b-${process.pid}`]),
+              ],
+              credentials: [],
+            },
+          },
+          dry_run: false,
+        },
+        { base: appDb },
+      );
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      const importedId = BigInt((r.data.agent as { id: string }).id);
+      const rows = await suDb.agentToolSelection.findMany({
+        where: { agentId: importedId, source: "RAG" },
+        select: { knowledgeBaseIds: true },
+      });
+      expect(rows).toHaveLength(1);
+      expect((rows[0]?.knowledgeBaseIds ?? []).map(String).sort()).toEqual(
+        [String(a.id), String(b.id)].sort(),
+      );
+    });
+
     test("an agent with no model at all is not healthy", async () => {
       const health = await readAgentConfigHealth(
         ctx(tenantId),

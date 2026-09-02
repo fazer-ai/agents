@@ -1464,7 +1464,7 @@ export async function replyToConversation(
   await client.sendMessage(conv.chatwootConversationId, content, {
     private: isPrivate,
   });
-  // The TEXT, and it is the one projection in this repo that keeps a message body. The rule it bends
+  // NOTE: The TEXT, and it is the one projection in this repo that keeps a message body. The rule it bends
   // was written for configuration rows, where the body of a customer conversation has no business
   // being; here the text IS the mutation, authored by the actor and sent by them to a customer, and
   // a row saying only "somebody replied" cannot answer the question this family exists for. Nothing
@@ -1491,7 +1491,7 @@ export async function handoffConversation(
     ...deps,
     base,
   });
-  // TWO REQUESTS, and either can fail on its own. The assignment landing and the toggle failing is a
+  // NOTE: TWO REQUESTS, and either can fail on its own. The assignment landing and the toggle failing is a
   // conversation a person now holds, in Chatwoot, irreversibly — and an "on success" row would leave
   // that with nothing on the trail saying who put them there. The row follows the EFFECT, so a
   // partial effect gets a partial row and the error still propagates.
@@ -1515,7 +1515,7 @@ export async function handoffConversation(
           assigneeType: conv.assigneeType,
           assigneeId: conv.assigneeId,
         },
-        // The status is the one this call READ, because the toggle is what failed; `partial` is what
+        // NOTE: The status is the one this call READ, because the toggle is what failed; `partial` is what
         // says the pair did not complete, rather than leaving a reader to infer it from a status
         // that did not move.
         after: {
@@ -1528,7 +1528,7 @@ export async function handoffConversation(
     }
     throw err;
   }
-  // FROM HERE THE EFFECT HAS HAPPENED, and everything below is our own bookkeeping. It can throw —
+  // NOTE: FROM HERE THE EFFECT HAS HAPPENED, and everything below is our own bookkeeping. It can throw —
   // the mirror's fallback write is a transaction like any other — and a row written only on the
   // happy path would then be missing for a conversation Chatwoot has already handed to a person.
   // So the row is written in a `finally`, from the best `after` known at that moment: the reconciled
@@ -1563,7 +1563,7 @@ export async function handoffConversation(
     // as STORED, not as asked for: the two differ when the live read came back with something else
     // (an assignment Chatwoot resolved differently, or a webhook that outranked this write), and a
     // publication of the intent would arrive last and leave the console showing a state nobody holds.
-    // WHERE THIS WRITE LANDED, resolved once and read by both the broadcast and the row. They are
+    // NOTE: WHERE THIS WRITE LANDED, resolved once and read by both the broadcast and the row. They are
     // the same fact and they must not be able to disagree: an untargeted handoff (the console's
     // ordinary one, no assignee named) never calls `assignToAgent`, so who holds the conversation
     // afterwards is Chatwoot's answer and not this call's argument. A row built from the argument
@@ -1585,7 +1585,7 @@ export async function handoffConversation(
     // trips it needs, and the row answers "what did this action move", which is the state the
     // operator was looking at when they clicked.
     //
-    // The TYPE travels with the id on both sides. `User` and `AgentBot` are separate id namespaces
+    // NOTE: The TYPE travels with the id on both sides. `User` and `AgentBot` are separate id namespaces
     // in Chatwoot (the hand-back below compares holders that way for the same reason), so a row
     // carrying only `assigneeId: 7` cannot tell one from the other, and a handoff that moved a
     // conversation from a bot to a person with the same numeric id reads as a row where nothing
@@ -1736,7 +1736,7 @@ export async function returnConversationToAgent(
         asAdmin: true,
       });
     } catch (err) {
-      // THE PARTIAL THIS FUNCTION'S OWN ORDERING CHOOSES. The status went to pending and the human
+      // NOTE: THE PARTIAL THIS FUNCTION'S OWN ORDERING CHOOSES. The status went to pending and the human
       // is still holding the conversation, which is the recoverable half of the pair (the comment on
       // the ordering above says why it is the one to fail into). Recoverable is not invisible: the
       // status of a live conversation moved, and the row is what says so.
@@ -1764,12 +1764,12 @@ export async function returnConversationToAgent(
       String(newHolder.assigneeId ?? "none"),
     );
   }
-  // FROM HERE THE EFFECT HAS HAPPENED: the status went to pending and, on the ordinary path, the
+  // NOTE: FROM HERE THE EFFECT HAS HAPPENED: the status went to pending and, on the ordinary path, the
   // human has been unassigned. Everything below is our own bookkeeping (the mirror, its fallback
   // write, the broadcast, the ownership read that names the outcome) and any of it can throw, so the
   // row is written in a `finally`.
   //
-  // What it carries then is what THIS CALL already knows, which is not the baseline: the unassign
+  // NOTE: What it carries then is what THIS CALL already knows, which is not the baseline: the unassign
   // above either ran and removed whoever was there, or was skipped because the live read found the
   // conversation free, or was withheld because somebody else is holding it. Falling back to the
   // baseline would have the row say a human is still assigned on the one path where the hand-back
@@ -1891,11 +1891,11 @@ export async function returnConversationToAgent(
     })
       ? "taken-over"
       : "returned";
-    // The OUTCOME is on the row, because it is the one action of this family whose success is not the
+    // NOTE: The OUTCOME is on the row, because it is the one action of this family whose success is not the
     // thing the caller asked for: `taken-over` means the status went to pending and the human stayed,
     // and a row that only said "returned to the agent" would be the trail disagreeing with the console
     // that was told otherwise in the same instant.
-    // Same rule as the other two: the status is where the write LANDED, and the outcome is what the
+    // NOTE: Same rule as the other two: the status is where the write LANDED, and the outcome is what the
     // caller was told. `taken-over` with a status that is not `pending` is the honest pair, and a row
     // that hard-coded `pending` would be the trail contradicting the console it answered.
     landedReturn = {
@@ -1906,7 +1906,7 @@ export async function returnConversationToAgent(
     outcomeForRow = outcome;
     return outcome;
   } finally {
-    // THE HOLDER, on both sides, because on this action it is the whole mutation: a hand-back on a
+    // NOTE: THE HOLDER, on both sides, because on this action it is the whole mutation: a hand-back on a
     // conversation that is already pending moves nothing else, and a row carrying only the status
     // would say nothing happened. `baseline` is who held it when the call started, read live rather
     // than off the mirror, and `landedReturn` is where the write ended up.
@@ -1977,7 +1977,7 @@ export async function setConversationStatus(
       base,
     });
   }
-  // The toggle has landed in Chatwoot; the rest is our own bookkeeping and can throw. Same seam as
+  // NOTE: The toggle has landed in Chatwoot; the rest is our own bookkeeping and can throw. Same seam as
   // the handoff: the row goes in a `finally`, carrying the reconciled status when the mirror got
   // there and the accepted one when it did not.
   let landedStatus = status as string;
@@ -1991,7 +1991,7 @@ export async function setConversationStatus(
       { status },
       consoleWriteMark(before),
     );
-    // WHERE IT LANDED. A row carrying the status this call ASKED for would claim the operator left
+    // NOTE: WHERE IT LANDED. A row carrying the status this call ASKED for would claim the operator left
     // the conversation resolved while the mirror and every open console say otherwise, which happens
     // whenever a webhook or another operator outranks the toggle inside `mirrorConsoleWrite`.
     landedStatus = state?.status ?? status;

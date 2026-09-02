@@ -1852,7 +1852,7 @@ async function maybeConsumeCommandOrGate(params: {
         return await run();
       } catch (err) {
         failed.push(label);
-        // The same failure in the vocabulary the AUDIT row keeps. `label` is the customer-facing
+        // NOTE: The same failure in the vocabulary the AUDIT row keeps. `label` is the customer-facing
         // bucket, in PT-BR and deliberately coarse ("card do kanban" covers three calls); `what`
         // names the step, which is what a reader of the trail is asking about a year later.
         failedSteps.push(what);
@@ -2434,16 +2434,16 @@ async function maybeConsumeCommandOrGate(params: {
       String(conversationId),
       distinctFailed.length === 0 ? "none" : distinctFailed.join("|"),
     );
-    // THE ONE RECORD THAT AN EPISODE WAS ERASED (#398).
+    // NOTE: THE ONE RECORD THAT AN EPISODE WAS ERASED (#398).
     //
-    // The family below this command records its own actions, and the hand-back is one of them, so
+    // NOTE: The family below this command records its own actions, and the hand-back is one of them, so
     // without this row the trail would show a conversation being returned to the agent and nothing
     // about the memory, the audio preference, the labels, the conversation attributes and the kanban
     // card that were wiped in the same act. That is the destructive half, it is not reversible, and
     // it was the only mutation in this file with no durable trace of any kind: not an audit row, and
     // not a flow-log line either, which only ever gets one when the command does NOT run.
     //
-    // Written even for a partial reset, with the steps that failed named: "what survived" is the
+    // NOTE: Written even for a partial reset, with the steps that failed named: "what survived" is the
     // question the operator is left with, and the acknowledgement that answers it is a chat message
     // in a conversation that can be deleted.
     await recordConversationAction(sysCtx(tenantId), base, ctx.conv.id, {
@@ -2451,7 +2451,7 @@ async function maybeConsumeCommandOrGate(params: {
       after: {
         complete: distinctFailed.length === 0,
         failed: [...new Set(failedSteps)],
-        // THREE outcomes, spelled, because the variable carries three states and two of them are
+        // NOTE: THREE outcomes, spelled, because the variable carries three states and two of them are
         // absences: `undefined` when nothing was attempted (the agent already owned the conversation,
         // or a guard withheld the hand-back) and `null` when the call threw. Written raw, the first
         // does not reach the row at all: Prisma drops an undefined property on the way into the jsonb

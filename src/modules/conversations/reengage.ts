@@ -379,11 +379,11 @@ export async function reengageConversation(
     deps,
   );
 
-  // The reply is with the customer from here, and clearing the error badge is our own bookkeeping:
+  // NOTE: The reply is with the customer from here, and clearing the error badge is our own bookkeeping:
   // it can throw, and a row written only after it would be missing for a turn that did post. Same
   // seam as the other four (`conversations/audit.ts`).
   //
-  // A DECLARED GAP, and it is upstream of this line: `coalesceAndRunTurn` advances the handled
+  // NOTE: A DECLARED GAP, and it is upstream of this line: `coalesceAndRunTurn` advances the handled
   // watermark after the post and before it returns, so a failure there rejects without ever naming
   // an outcome, and this call cannot know whether the customer was answered. No row is the honest
   // answer to that, not a guess — and the same crash loses the turn's own bookkeeping either way.
@@ -399,7 +399,7 @@ export async function reengageConversation(
       });
     }
   } finally {
-    // Recorded when the turn REACHED THE CUSTOMER, and only then, which is the one place this family
+    // NOTE: Recorded when the turn REACHED THE CUSTOMER, and only then, which is the one place this family
     // does not record every apply. The other four call Chatwoot unconditionally; this one runs a model
     // first and most of its outcomes are the button declining to act: an empty tail, a closed gate, a
     // conversation somebody else holds. Those changed nothing outside this process and the flow log

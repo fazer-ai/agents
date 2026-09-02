@@ -49,6 +49,9 @@ const suDb = su as PrismaClient;
 const INBOX_ID = 84;
 const ZAPI_INBOX_ID = 85;
 const OUR_BOT = 21;
+// A second persona's bot, which a conversation can be assigned to while the inbox is bound to the
+// first. Chatwoot fans the message to both routes and only this one's delivery passes the gate.
+const OTHER_BOT = 22;
 let tenantId = 0n;
 let instanceId = 0n;
 let agentDbId = 0n;
@@ -57,6 +60,8 @@ let messageSeq = 84_000;
 let stamp = Math.floor(Date.now() / 1000);
 
 const liveStatus = new Map<number, string>();
+// Who holds each conversation in the stub's Chatwoot, when it is not the inbox persona's bot.
+const liveHolder = new Map<number, number>();
 const failingToggles = new Set<number>();
 const posted: { url: string; method: string; body: unknown }[] = [];
 const realFetch = globalThis.fetch;
@@ -81,7 +86,7 @@ const stubFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       status: liveStatus.get(id) ?? "pending",
       meta: {
         assignee_type: "AgentBot",
-        assignee: { id: OUR_BOT, name: "Atendente" },
+        assignee: { id: liveHolder.get(id) ?? OUR_BOT, name: "Atendente" },
       },
       last_activity_at: stamp,
       updated_at: stamp + 0.5,
@@ -197,6 +202,14 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
       // customer's own next message leaves behind.
       mirrorVersion?: "behind" | "ahead";
       status?: string;
+      // The bot route the delivery arrived on, as the ledger recorded it. Omitted = the inbox
+      // persona; `null` = a row an older build wrote, which recorded none.
+      routeAgentBotId?: number | null;
+      // Who holds the conversation in the mirror, when it is not the inbox persona's bot.
+      holder?: number;
+      // A claim already held on the mirrored row, which is what an attempt whose toggle threw leaves
+      // behind: `open` locally, still `pending` at Chatwoot.
+      claimHeldMs?: number;
     } = {},
   ) {
     stamp += 1;
@@ -213,9 +226,16 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
         tenantId,
         chatwootInstanceId: instanceId,
         chatwootConversationId: convId,
-        status: over.status ?? "pending",
+        status:
+          over.status ?? (over.claimHeldMs === undefined ? "pending" : "open"),
+        ...(over.claimHeldMs === undefined
+          ? {}
+          : {
+              statusClaimFrom: "pending",
+              statusClaimUntil: new Date(Date.now() + over.claimHeldMs),
+            }),
         assigneeType: "AgentBot",
-        assigneeId: OUR_BOT,
+        assigneeId: over.holder ?? OUR_BOT,
         chatwootStatusAt: mirrorAt,
         inboxId: inbox.id,
         threadId: `chatwoot:${tenantId}:${instanceId}:${convId}`,
@@ -224,6 +244,7 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
       },
     });
     liveStatus.set(convId, over.status ?? "pending");
+    if (over.holder !== undefined) liveHolder.set(convId, over.holder);
     deliverySeq += 1;
     const row = await suDb.chatwootWebhookDelivery.create({
       data: {
@@ -237,6 +258,8 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
         receivedAt: new Date(Date.now() - 40 * 60 * 1000),
         conversationId: convId,
         humanReplyShape: over.shape === undefined ? "composer" : over.shape,
+        routeAgentBotId:
+          over.routeAgentBotId === undefined ? OUR_BOT : over.routeAgentBotId,
       },
       select: { id: true },
     });
@@ -250,6 +273,7 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
         status: true,
         statusClaimUntil: true,
         statusClaimFrom: true,
+        chatwootStatusAt: true,
       },
     });
   }
@@ -503,6 +527,119 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
     // armed from the row, so the row is what has to refuse.
     const convId = 9108;
     const rowId = await seedStranded(convId, { shape: null });
+
+    expect(
+      await recoverStrandedTakeover({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        makeClient,
+      }),
+    ).toBe("not-owed");
+    expect(togglesFor(convId)).toHaveLength(0);
+  });
+
+  test("the ROUTE's bot is what the recovery asks ownership about", async () => {
+    // ROUND 1, P1. Chatwoot fans one message to up to two bot routes — the conversation's assignee
+    // bot AND the inbox's — and only the route holding the conversation passes the gate. The
+    // stranded delivery here arrived on the assignee bot's route (OTHER_BOT holds the conversation),
+    // and deriving the identity from the inbox persona would ask a stricter question than the
+    // delivery did: refused, with the bot that DOES hold it free to answer over the person.
+    const convId = 9111;
+    const rowId = await seedStranded(convId, {
+      holder: OTHER_BOT,
+      routeAgentBotId: OTHER_BOT,
+    });
+
+    expect(
+      await recoverStrandedTakeover({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        makeClient,
+      }),
+    ).toBe("recovered");
+    expect(togglesFor(convId)).toHaveLength(1);
+    expect((await convRow(convId)).status).toBe("open");
+  });
+
+  test("a row with no recorded route falls back to the inbox persona", async () => {
+    // The rows an older build wrote. The fallback can only ever refuse — a wrong identity makes the
+    // fence answer "this is not ours" — so it is safe, and on every conversation the inbox's own bot
+    // holds it is the same answer the route would have given.
+    const convId = 9112;
+    const rowId = await seedStranded(convId, { routeAgentBotId: null });
+
+    expect(
+      await recoverStrandedTakeover({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        makeClient,
+      }),
+    ).toBe("recovered");
+    expect(togglesFor(convId)).toHaveLength(1);
+  });
+
+  test("an attempt whose toggle threw is finished, not refused", async () => {
+    // ROUND 1, P1. The claim is written BEFORE the toggle (#430), so a toggle that throws leaves the
+    // row `open` under a live claim while Chatwoot still says `pending`. Asked again, the ownership
+    // fence reads our own write as somebody else having moved the conversation on and stands down —
+    // which spends the scheduler's retry on a verdict that can never change, deletes the job, and
+    // leaves Chatwoot `pending` with the bot able to answer.
+    const convId = 9113;
+    const rowId = await seedStranded(convId, { claimHeldMs: 30_000 });
+    // Chatwoot's side of that state: the transition never landed.
+    liveStatus.set(convId, "pending");
+
+    expect(
+      await recoverStrandedTakeover({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        makeClient,
+      }),
+    ).toBe("recovered");
+    // The remote half, which is the whole point: the row already said `open`.
+    expect(togglesFor(convId)).toHaveLength(1);
+    expect(liveStatus.get(convId)).toBe("open");
+    // And the version the first attempt never earned, written through the claim it still holds.
+    expect((await convRow(convId)).chatwootStatusAt).not.toBeNull();
+  });
+
+  test("a live claim that replaced some OTHER status is not this takeover's", async () => {
+    // The three columns are the signature and none is enough alone. `open` is any human queue and
+    // the deadline says only that some claim is live; what says the write was THIS takeover is the
+    // status it replaced, which `claimOpenForHumanQueue` pins to `pending`.
+    //
+    // Unreachable today — that call is the only writer of `status_claim_from` in the tree — and
+    // asserted because the verdict must not depend on that staying true: a second claim, taken over
+    // a different transition, would otherwise be finished here with a `toggle_status: open` nobody
+    // decided.
+    const convId = 9115;
+    const rowId = await seedStranded(convId, { claimHeldMs: 30_000 });
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: convId },
+      data: { statusClaimFrom: "resolved" },
+    });
+
+    expect(
+      await recoverStrandedTakeover({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        makeClient,
+      }),
+    ).toBe("not-owed");
+    expect(togglesFor(convId)).toHaveLength(0);
+  });
+
+  test("a claim past its deadline is not ours to finish any more", async () => {
+    // The liveness is what makes the `open` ours rather than an operator's. Past the deadline the
+    // row means something else and the ownership fence is the right question again — which refuses,
+    // because the conversation is no longer the bot's.
+    const convId = 9114;
+    const rowId = await seedStranded(convId, { claimHeldMs: -1_000 });
 
     expect(
       await recoverStrandedTakeover({

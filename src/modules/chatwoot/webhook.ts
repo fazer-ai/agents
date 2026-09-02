@@ -538,7 +538,7 @@ export async function recordAndProcessChatwootDelivery(
     base,
     { tenantId: params.tenantId, instanceId: params.instanceId },
     params.deliveryId,
-    ledgerFactsOf(params.normalized),
+    ledgerFactsOf(params.normalized, params.agentBotId),
   );
   return processChatwootDelivery({
     tenantId: params.tenantId,
@@ -566,14 +566,28 @@ const LEDGER_CLAIM_BACKOFF_MS = 300;
 // EVERYTHING THE LEDGER KEEPS ABOUT ONE DELIVERY, derived from the payload in one place so the
 // insert and the fill of a legacy row cannot answer differently. Ids and shapes only: what a person
 // wrote is never held here (issue #228).
+// The nullable ones, named once so the fill cannot be written against a shorter list than the
+// insert. Spelled out rather than derived from `LedgerFacts`, because `event` is the one field that
+// is never null and must never be filled: a row's event is what it is.
+const LEDGER_FILLABLE = [
+  "conversationId",
+  "inboundMessageId",
+  "humanReplyShape",
+  "routeAgentBotId",
+] as const;
+
 interface LedgerFacts {
   event: string;
   conversationId: number | null;
   inboundMessageId: number | null;
   humanReplyShape: HumanReplyRoute | null;
+  routeAgentBotId: number | null;
 }
 
-function ledgerFactsOf(n: NormalizedChatwootEvent): LedgerFacts {
+function ledgerFactsOf(
+  n: NormalizedChatwootEvent,
+  routeAgentBotId: number | null,
+): LedgerFacts {
   return {
     event: n.event,
     conversationId: n.conversationId,
@@ -588,6 +602,13 @@ function ledgerFactsOf(n: NormalizedChatwootEvent): LedgerFacts {
     // the detached window still leaves behind the fact that a takeover was due. The provider half is
     // re-decided by the recovery, against the inbox as it stands then.
     humanReplyShape: newHumanReplyShape(n),
+    // WHO the delivery was, which the payload cannot say and the recovery cannot re-derive. Chatwoot
+    // fans a message to up to two bot routes and only the one holding the conversation passes the
+    // gate, so a recovery that resolved the identity from the inbox would ask a stricter question
+    // than the delivery did — measured on the live path when this fence was written (#430), and the
+    // same refusal, reintroduced by the recovery, leaves the conversation the person answered with
+    // the bot still on it.
+    routeAgentBotId,
   };
 }
 
@@ -666,17 +687,19 @@ async function recordDelivery(
     // redelivery of it must not be able to change them.
     // Every nullable fact, by the same rule, so a column added later cannot be the one that gets
     // left out of this list: each is filled only where the row still holds null.
-    const fill = (
-      ["conversationId", "inboundMessageId", "humanReplyShape"] as const
-    ).filter((k) => facts[k] !== null);
-    if (fill.length > 0) {
+    //
+    // ONE STATEMENT PER FACT, and that is a correction rather than a style. Filling them together
+    // puts every column in one predicate, which asks for them ALL to be null — and a rollout
+    // produces exactly the row where that is false: the build before this one wrote the two ids and
+    // no shape, so a redelivery matched nothing and the shape stayed missing on precisely the rows
+    // the new column exists for. Each fact now answers only for itself.
+    for (const key of LEDGER_FILLABLE) {
+      const value = facts[key];
+      if (value === null) continue;
       await runScopedOn(base, sysCtx(scope.tenantId), (db) =>
         db.chatwootWebhookDelivery.updateMany({
-          where: {
-            id: existing.id,
-            ...Object.fromEntries(fill.map((k) => [k, null])),
-          },
-          data: Object.fromEntries(fill.map((k) => [k, facts[k]])),
+          where: { id: existing.id, [key]: null },
+          data: { [key]: value },
         }),
       );
     }

@@ -1777,6 +1777,45 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
       where: { id: legacyReply.id },
     });
 
+    // AND THE ROW A ROLLOUT ACTUALLY PRODUCES, which is not the one above: the build immediately
+    // before this one wrote both ids and no shape, so the row is PARTLY filled. Asked as one
+    // predicate over every column, the fill wants them all null and matches nothing here — the shape
+    // stays missing on exactly the rows the column was added for, and a strand of that delivery is
+    // then read as benign. Each fact answers only for itself.
+    const partial = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `rollout-partial-${process.pid}-${messageId}`,
+        event: "message_created",
+        status: "PENDING",
+        // What the previous build recorded, and what it could not.
+        conversationId: convId,
+        inboundMessageId: null,
+        humanReplyShape: null,
+        routeAgentBotId: null,
+      },
+      select: { id: true },
+    });
+    await deliverThrough(convId, messageId + 950, "outgoing", {
+      deliveryId: `rollout-partial-${process.pid}-${messageId}`,
+      sender: { id: 5, name: "Ana", type: "user" },
+    });
+    const filled = await suDb.chatwootWebhookDelivery.findUniqueOrThrow({
+      where: { id: partial.id },
+      select: {
+        conversationId: true,
+        humanReplyShape: true,
+        routeAgentBotId: true,
+      },
+    });
+    expect(filled.humanReplyShape).toBe("composer");
+    // The route the delivery arrived on, which the recovery asks ownership about (round 1, P1).
+    expect(filled.routeAgentBotId).toBe(AGENT_BOT_ID);
+    // And the column that was already right is untouched.
+    expect(filled.conversationId).toBe(convId);
+    await suDb.chatwootWebhookDelivery.delete({ where: { id: partial.id } });
+
     // And only ever FILLS. A row this build already wrote holds the right values, and a redelivery
     // of it must not be able to move them — the ids are what the sweep and the retirement key on, so
     // a rewrite would point both at the wrong message.

@@ -1,11 +1,13 @@
 -- What a stranded delivery OWED, so the sweep can tell a benign row from one that lost a side
--- effect (issue #439).
+-- effect (issue #439), and WHO it owed it as.
 --
--- Written at INSERT, on the detached path, before anything reads the inbox: a process that dies
--- before the human-reply takeover leaves the row saying what it was about, and the recovery
--- re-decides the half that depends on the inbox (the provider) against the row as it stands then.
+-- Both are written at INSERT, on the detached path, before anything reads the inbox: a process that
+-- dies before the human-reply takeover leaves the row saying what it was about and which bot route
+-- carried it, and the recovery re-decides the half that depends on the inbox (the provider) against
+-- the row as it stands then.
 --
--- ROLLOUT: no window. One nullable column, no default, no backfill. A row the previous release wrote
--- carries NULL, which is exactly what it means — that build recorded no owed effect — and the
--- classifier reads it as the benign `no-message` it already reads today.
+-- ROLLOUT: no window. Two nullable columns, no default, no backfill. A row the previous release
+-- wrote carries NULL in both, which is exactly what it means — that build recorded no owed effect —
+-- and the classifier reads it as the benign `no-message` it already reads today.
 ALTER TABLE "chatwoot_webhook_deliveries" ADD COLUMN "human_reply_shape" TEXT;
+ALTER TABLE "chatwoot_webhook_deliveries" ADD COLUMN "route_agent_bot_id" INTEGER;

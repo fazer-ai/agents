@@ -366,6 +366,13 @@ model ChatwootWebhookDelivery {
   // Not the event body, and not a sender: the same rule the two ids above follow. What a person
   // wrote is never held here.
   humanReplyShape    String?               @map("human_reply_shape")
+  // WHICH BOT ROUTE this delivery arrived on — the Chatwoot Agent Bot id the ownership question was
+  // asked about when it was live. Chatwoot fans one message to up to TWO routes (the conversation's
+  // assignee bot AND the inbox's), and only the route that holds the conversation passes the gate,
+  // so a recovery that derived the identity from the inbox would ask a different question than the
+  // delivery did and refuse the takeover it exists to run. Null on a delivery whose route resolved
+  // to no bot, and on every row written before this column existed.
+  routeAgentBotId    Int?                  @map("route_agent_bot_id")
 
   tenant   Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   instance ChatwootInstance @relation(fields: [chatwootInstanceId], references: [id], onDelete: Cascade)

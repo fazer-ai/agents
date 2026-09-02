@@ -263,6 +263,73 @@ export async function openForHumanQueue(p: {
   }
 }
 
+// FINISHING A TAKEOVER WHOSE REMOTE HALF DID NOT LAND, which is the one state the fence above cannot
+// re-enter. The claim is written before the toggle deliberately (#430: every reader that decides
+// whether the agent may speak reads the row, so it has to move first), and a toggle that then throws
+// leaves the row `open` under a live claim while Chatwoot may still say `pending`. Asked again, the
+// fence reads its OWN write as "somebody else moved the conversation on" and stands down.
+//
+// So the retry is a different question — not "may I take this over" but "the local half is done, is
+// the remote half?" — and it skips exactly the two steps that already happened: the ownership fence,
+// which our own claim would now fail, and the claim itself, which is ours and still live. What is
+// left is idempotent in both directions: a conversation Chatwoot really did leave `pending` moves,
+// and one it had already opened is toggled to the status it already holds.
+//
+// The CLAIM's liveness is the caller's evidence and is checked there, because it is what says the
+// `open` on the row is ours to finish rather than an operator's. Past the deadline this must not
+// run: the row means something else then, and the fence is the right question again.
+export async function retryHumanQueueToggle(p: {
+  tenantId: bigint;
+  instanceId: bigint;
+  conversationId: number;
+  agentId: bigint;
+  // The claim this is finishing, which the reconcile is allowed to write THROUGH.
+  claimUntil: Date;
+  base: PrismaClient;
+  makeClient?: RuntimeDeps["makeClient"];
+}): Promise<boolean> {
+  const convLabel = String(p.conversationId);
+  try {
+    const bot = await loadAgentBot(p.tenantId, p.instanceId, p.agentId, p.base);
+    // Same reason as the fence's: without a bot row every call goes out with an empty token (#79),
+    // so there is nothing to retry with.
+    if (!bot) return false;
+    const client = await loadChatwootClient(p.tenantId, p.instanceId, {
+      base: p.base,
+      botToken: bot.accessToken,
+      makeClient: p.makeClient,
+    });
+    await client.toggleStatus(p.conversationId, "open");
+    // And the version, exactly as the first attempt would have earned it. A read with none is
+    // discarded rather than written blind: the row already says `open` without it.
+    const live = parseLiveConversation(
+      await client.getConversation(p.conversationId),
+    );
+    if (live && live.updatedAt !== null) {
+      await reconcileMirrorFromLive({
+        tenantId: p.tenantId,
+        instanceId: p.instanceId,
+        conversationId: p.conversationId,
+        live,
+        ownsStatusClaim: p.claimUntil,
+        base: p.base,
+      });
+    }
+    logger.info(
+      "chatwoot: the human-queue toggle was retried and landed (conv=%s)",
+      convLabel,
+    );
+    return true;
+  } catch (err) {
+    logger.warn(
+      "chatwoot: retrying the human-queue toggle failed (conv=%s): %s",
+      convLabel,
+      errMsg(err),
+    );
+    return false;
+  }
+}
+
 export interface HumanReplyTakeoverParams {
   tenantId: bigint;
   instanceId: bigint;

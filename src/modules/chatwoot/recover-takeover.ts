@@ -8,10 +8,12 @@ import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 import {
   conversationOwnershipNow,
+  retryHumanQueueToggle,
   runHumanReplyTakeover,
 } from "./human-takeover";
 import { agentBotChatwootId } from "./instance";
 import { resolveHumanReplyRoute } from "./normalize";
+import { statusClaimIsLive } from "./status-claim";
 import { isHumanReplyShape } from "./stranded-delivery";
 
 // Re-running the human-reply takeover a process death lost (issue #439).
@@ -135,6 +137,7 @@ export async function recoverStrandedTakeover(
         chatwootInstanceId: true,
         conversationId: true,
         humanReplyShape: true,
+        routeAgentBotId: true,
       },
     }),
   );
@@ -169,7 +172,14 @@ export async function recoverStrandedTakeover(
           chatwootConversationId: conversationId,
         },
       },
-      select: { id: true, inboxId: true, lastEventAt: true },
+      select: {
+        id: true,
+        inboxId: true,
+        lastEventAt: true,
+        status: true,
+        statusClaimUntil: true,
+        statusClaimFrom: true,
+      },
     });
     if (conv?.inboxId == null) return null;
     const inbox = await db.inbox.findUnique({
@@ -185,6 +195,9 @@ export async function recoverStrandedTakeover(
     return {
       conversationRowId: conv.id,
       lastEventAt: conv.lastEventAt,
+      status: conv.status,
+      statusClaimUntil: conv.statusClaimUntil,
+      statusClaimFrom: conv.statusClaimFrom,
       agentId: inbox.agentId,
       whatsappProvider: inbox.provider,
       mode: agent.mode,
@@ -206,16 +219,57 @@ export async function recoverStrandedTakeover(
   if (bound.mode !== "production") return "not-owed";
   if (!readTakeoverConfig(bound.settings).onHumanReply) return "not-owed";
 
-  const ourAgentBotId = await agentBotChatwootId(
-    tenantId,
-    instanceId,
-    bound.agentId,
-    base,
-  );
+  // THE ROUTE'S BOT, carried on the row, because the identity is what the ownership question is
+  // asked ABOUT and the two routes give different answers. Chatwoot fans a message to the
+  // conversation's assignee bot and to the inbox's, and only the route holding the conversation
+  // passes the gate — so on a conversation held by another persona's bot, deriving the identity from
+  // the inbox here asks a stricter question than the delivery did and refuses the takeover.
+  //
+  // The fallback is for rows an older build wrote, which carry no route: the inbox persona is the
+  // same answer on every conversation the inbox's own bot holds, which is all of them but this one
+  // case. It cannot make a takeover happen that should not — a wrong identity only ever REFUSES,
+  // because the fence asks whether the conversation is that bot's.
+  const ourAgentBotId =
+    row.routeAgentBotId ??
+    (await agentBotChatwootId(tenantId, instanceId, bound.agentId, base));
   // A CHEAP FIRST LOOK, not the fence. The fence is inside the unit below and reads Chatwoot before
   // it decides; this is the mirror answering the same question for free, so a conversation somebody
   // already moved on costs a query instead of an HTTP round trip. It can only ever refuse: what it
   // lets through is re-asked, of Chatwoot and of the mirror both, one statement before the write.
+  // OUR OWN UNFINISHED WRITE, asked before ownership because ownership cannot see it. The claim is
+  // taken before the toggle (#430), so an attempt whose toggle threw left the row `open` under a
+  // live claim from `pending` — and the fence, asked again, reads that as somebody else having moved
+  // the conversation on and stands down. Without this the scheduler's retry is spent on a verdict
+  // that can never change, the delete-on-done row disappears, and Chatwoot is left `pending` with
+  // the bot still able to answer.
+  //
+  // The three columns together are the signature and none of them is enough alone: `open` is any
+  // human queue, the claim's liveness is what makes it ours to finish, and `pending` as the status
+  // it replaced is what says the write was this takeover rather than some other claim.
+  if (
+    bound.status === "open" &&
+    bound.statusClaimFrom === "pending" &&
+    bound.statusClaimUntil !== null &&
+    statusClaimIsLive(bound.statusClaimUntil, new Date())
+  ) {
+    const landed = await retryHumanQueueToggle({
+      tenantId,
+      instanceId,
+      conversationId,
+      agentId: bound.agentId,
+      claimUntil: bound.statusClaimUntil,
+      base,
+      makeClient: params.makeClient,
+    });
+    if (!landed) return "failed";
+    logger.info(
+      "chatwoot takeover recovery: %s finished a takeover whose toggle had not landed (conversation %d)",
+      row.deliveryId,
+      conversationId,
+    );
+    return "recovered";
+  }
+
   const now = await conversationOwnershipNow({
     tenantId,
     instanceId,

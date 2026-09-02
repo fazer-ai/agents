@@ -1532,6 +1532,13 @@ export function readInboxStates(raw: unknown): {
     if (typeof item.working_hours_enabled !== "boolean") continue;
     if (
       item.working_hours_enabled &&
+      // An explicit `null` is a READ answer, not an unread one: the column is nullable and null is
+      // its default, so "working hours on, no message configured" is the ordinary state of an inbox
+      // nobody set copy for — measured against the fork, where six of six inboxes carry
+      // `out_of_office_message: null`. Rejecting it would put `chatwootOutOfOffice` into `unchecked`
+      // on almost every real install, which is the field crying wolf until nobody reads it.
+      // `undefined` (the key absent) and any other type stay unreadable.
+      item.out_of_office_message !== null &&
       typeof item.out_of_office_message !== "string"
     ) {
       continue;

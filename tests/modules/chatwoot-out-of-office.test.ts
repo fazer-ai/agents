@@ -495,6 +495,66 @@ describe.skipIf(!dbUp)("listOutOfOfficeInboxes", () => {
     expect(read.unreadable).toBe(1);
   });
 
+  // An explicit null is the ordinary state of an inbox nobody wrote copy for — the column is
+  // nullable and null is its default (measured: six of six inboxes on the local fork). Treating it
+  // as unread would fill `unchecked` on almost every real install, which is how a field like this
+  // stops being read.
+  test("working hours on with a null message is read, not unread", async () => {
+    const { makeClient } = fakeChatwoot({
+      1: {
+        payload: [
+          {
+            id: 101,
+            name: "Vendas",
+            working_hours_enabled: true,
+            out_of_office_message: null,
+          },
+          {
+            id: 102,
+            name: "WhatsApp Suporte",
+            working_hours_enabled: true,
+            out_of_office_message: "",
+          },
+        ],
+      },
+      2: ACCOUNT_2,
+    });
+    const read = await readOutOfOfficeInboxes(
+      ctx(tenantA),
+      agent1,
+      { makeClient },
+      appDb,
+    );
+    expect(read.unreadable).toBe(0);
+    // And it is read as NOT arming a reply, which is what a null message means.
+    expect(read.inboxes.map((i) => i.name)).not.toContain("Vendas");
+  });
+
+  // The key ABSENT is still unreadable: nothing said anything about this inbox's copy.
+  test("working hours on with no message key at all is unread", async () => {
+    const { makeClient } = fakeChatwoot({
+      1: {
+        payload: [
+          { id: 101, name: "Vendas", working_hours_enabled: true },
+          {
+            id: 102,
+            name: "WhatsApp Suporte",
+            working_hours_enabled: true,
+            out_of_office_message: "",
+          },
+        ],
+      },
+      2: ACCOUNT_2,
+    });
+    const read = await readOutOfOfficeInboxes(
+      ctx(tenantA),
+      agent1,
+      { makeClient },
+      appDb,
+    );
+    expect(read.unreadable).toBe(1);
+  });
+
   // The switch is on and the message is not a string: same conclusion, other field.
   test("an armed inbox with an unreadable message is unread too", async () => {
     const { makeClient } = fakeChatwoot({

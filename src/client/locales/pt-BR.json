@@ -839,6 +839,18 @@
       "ttsNormalize": "A credencial da reescrita para fala não existe mais, então o áudio sai sem a reescrita.",
       "vision": "A credencial de leitura de imagens não existe mais, então imagens e documentos não são lidos."
     },
+    "configIssueWrongKind": {
+      "contactAuth": "A credencial da autorização do contato é de um tipo que este produto nunca envia para outro serviço, então a verificação falha e o agente fica em silêncio. Escolha uma credencial capaz de autenticar uma requisição.",
+      "embedding": "Uma base de conhecimento precisa ser indexada, mas a credencial de embedding é de um tipo que não pode ser usado como chave de API. Escolha uma credencial que guarde uma única chave.",
+      "guardrails": "A credencial dos guardrails é de um tipo que não pode ser usado como chave de API, então as mensagens saem sem triagem. Escolha uma credencial que guarde uma única chave.",
+      "memoryModel": "A credencial do modelo de resumo é de um tipo que não pode ser usado como chave de API, então os atendimentos encerrados não são resumidos. Escolha uma credencial que guarde uma única chave.",
+      "model": "A credencial do modelo é de um tipo que não pode ser usado como chave de API, então o agente não consegue responder. Escolha uma credencial que guarde uma única chave.",
+      "modelFallback": "A credencial do provedor reserva é de um tipo que não pode ser usado como chave de API, então o reserva não assume nenhum turno. Escolha uma credencial que guarde uma única chave.",
+      "stt": "A credencial da transcrição é de um tipo que não pode ser usado como chave de API, então as mensagens de voz não são transcritas. Escolha uma credencial que guarde uma única chave.",
+      "tts": "A credencial da resposta em áudio é de um tipo que não pode ser usado como chave de API, então as respostas saem em texto. Escolha uma credencial que guarde uma única chave.",
+      "ttsNormalize": "A credencial da reescrita para fala é de um tipo que não pode ser usado como chave de API, então as respostas são faladas sem a reescrita. Escolha uma credencial que guarde uma única chave.",
+      "vision": "A credencial da leitura de imagens é de um tipo que não pode ser usado como chave de API, então imagens e documentos não são lidos. Escolha uma credencial que guarde uma única chave."
+    },
     "conflictToast": "Este agente foi alterado em outro lugar. Recarregue, ou salve de novo para sobrescrever.",
     "contactAuth": "Autorização do contato",
     "contactAuthCredential": "Credencial",
@@ -1003,6 +1015,7 @@
     "identitySectionHint": "Nome, prompt do sistema e se o agente está ativo.",
     "importWarning": {
       "credentialAmbiguous": "A credencial \"{{name}}\" aparece com mais de um tipo no export, então ficou em branco.",
+      "credentialKindUnusable": "A credencial ligada a \"{{field}}\" é do tipo \"{{kind}}\", que aquele campo não consegue usar. Ela ficou ligada para você ver; escolha outra ali.",
       "credentialMissingMeta": "A credencial \"{{name}}\" não está nos metadados do export, então ficou em branco.",
       "credentialNotFound": "A credencial \"{{name}}\" não foi encontrada aqui, então ficou em branco.",
       "credentialPending": "A credencial \"{{name}}\" não foi encontrada aqui, então criamos um espaço reservado. Preencha o segredo para ativá-la.",

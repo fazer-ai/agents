@@ -124,6 +124,15 @@ export function configIssueMessage(
       "This credential no longer exists. Pick another one.",
     );
   }
+  // The credential is there and filled, and its TYPE cannot serve this field. Worth its own sentence
+  // because the other three all end in "fill it in" or "it is gone", and the move here is neither:
+  // the entry is fine, it just belongs somewhere else. Issue #471.
+  if (issue.wrongKind) {
+    return t(
+      `editor.configIssueWrongKind.${issue.key}`,
+      "This credential's type cannot be used here. Pick one that holds a single API key.",
+    );
+  }
   return t(
     `editor.configIssue.${issue.key}`,
     "This feature is enabled but has no credential set.",

@@ -13,7 +13,7 @@ import {
   type FlowContext,
   withFlowStage,
 } from "@/modules/flowlog/service";
-import { tryResolveVaultEntry } from "@/modules/vault/service";
+import { tryResolveApiKeyEntry } from "@/modules/vault/service";
 import { getSttProvider } from "./providers";
 import { readSttConfig, type SttConfig } from "./settings";
 
@@ -113,9 +113,20 @@ export async function transcribeInboundAudio(
     return skip("no_credential");
   }
   const entry = await runScopedOn(base, sysCtx(params.tenantId), (db) =>
-    tryResolveVaultEntry<string>(db, cfg.credentialRef as string),
+    tryResolveApiKeyEntry(db, cfg.credentialRef as string),
   );
-  if (!entry) {
+  if (entry.state !== "ok") {
+    // Two reasons the credential cannot serve this, kept apart because the operator's move is not the
+    // same: gone or unfilled is a credential to re-pick, and the wrong KIND is one that belongs on
+    // another field (issue #471).
+    if (entry.state === "unusable") {
+      logger.warn(
+        "stt: credential %s is a %s credential, which cannot be used as an API key — skipping",
+        cfg.credentialRef,
+        entry.kind,
+      );
+      return skip("credential_unusable");
+    }
     logger.warn(
       "stt: credential %s not found in the vault — skipping",
       cfg.credentialRef,
@@ -266,9 +277,17 @@ export async function transcribePlaygroundAudio(
     );
   }
   const entry = await runScopedOn(base, params.ctx, (db) =>
-    tryResolveVaultEntry<string>(db, cfg.credentialRef as string),
+    tryResolveApiKeyEntry(db, cfg.credentialRef as string),
   );
-  if (!entry) {
+  if (entry.state !== "ok") {
+    if (entry.state === "unusable") {
+      throw new AppError(
+        `transcription credential is a "${entry.kind}" credential and cannot be used as an API key`,
+        400,
+        "errors.credentialKindUnusableAsKey",
+        { kind: entry.kind },
+      );
+    }
     throw new AppError(
       "transcription credential not found",
       400,

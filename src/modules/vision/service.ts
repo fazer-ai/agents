@@ -17,7 +17,7 @@ import {
   assertPlaygroundSpendCeiling,
   spendCeilingVerdict,
 } from "@/modules/spend-ceiling/service";
-import { tryResolveVaultEntry } from "@/modules/vault/service";
+import { tryResolveApiKeyEntry } from "@/modules/vault/service";
 import { visionAcceptsDocuments } from "./document-support";
 import {
   getVisionProvider,
@@ -238,9 +238,19 @@ export async function extractInboundFile(
     return skip("no_credential");
   }
   const entry = await runScopedOn(base, sysCtx(params.tenantId), (db) =>
-    tryResolveVaultEntry<string>(db, cfg.credentialRef as string),
+    tryResolveApiKeyEntry(db, cfg.credentialRef as string),
   );
-  if (!entry) {
+  if (entry.state !== "ok") {
+    // Gone/unfilled and wrong-KIND are separate lines because the operator's move differs: re-pick or
+    // fill one, move the other to the field it belongs on (issue #471).
+    if (entry.state === "unusable") {
+      logger.warn(
+        "vision: credential %s is a %s credential, which cannot be used as an API key — skipping",
+        cfg.credentialRef,
+        entry.kind,
+      );
+      return skip("credential_unusable");
+    }
     logger.warn(
       "vision: credential %s not found in the vault — skipping",
       cfg.credentialRef,
@@ -479,9 +489,17 @@ export async function extractPlaygroundFile(
     );
   }
   const entry = await runScopedOn(base, params.ctx, (db) =>
-    tryResolveVaultEntry<string>(db, cfg.credentialRef as string),
+    tryResolveApiKeyEntry(db, cfg.credentialRef as string),
   );
-  if (!entry) {
+  if (entry.state !== "ok") {
+    if (entry.state === "unusable") {
+      throw new AppError(
+        `vision credential is a "${entry.kind}" credential and cannot be used as an API key`,
+        400,
+        "errors.credentialKindUnusableAsKey",
+        { kind: entry.kind },
+      );
+    }
     throw new AppError(
       "vision credential not found",
       400,

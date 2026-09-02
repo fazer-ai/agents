@@ -11,9 +11,11 @@ import {
   type SecretTestResult,
 } from "./secret-test";
 import {
+  type CredentialUse,
   getSecretTypeFields,
   isManagedOAuthKind,
   isSecretTypeId,
+  secretTypeFits,
   secretTypeIsManagedBlob,
   secretTypeNeedsParamName,
   secretTypeRequiresBaseUrl,
@@ -248,10 +250,17 @@ export async function resolveVaultEntry<T = unknown>(
   };
 }
 
-export async function tryResolveVaultEntry<T = unknown>(
+// The secret comes back as `unknown` and the generic parameter is gone ON PURPOSE. It used to
+// default to `unknown` and be spelled `<string>` at ten call sites, where it was not a check but an
+// assertion: `decryptJson<T>` casts, so a `google_oauth` entry's `{ clientId, clientSecret }` was
+// typed `string` all the way into `createChatModel` (issue #471). Callers that need a string now say
+// so through `tryResolveApiKeyEntry`, or narrow it themselves; the six that already narrowed keep
+// compiling unchanged, and the ten that did not could not be missed, because the compiler is what
+// found them.
+export async function tryResolveVaultEntry(
   db: ScopedDb,
   ref: string,
-): Promise<ResolvedVaultEntry<T> | null> {
+): Promise<ResolvedVaultEntry | null> {
   const entry = await db.vaultEntry.findFirst({
     where: vaultRefWhere(ref),
     select: {
@@ -265,12 +274,43 @@ export async function tryResolveVaultEntry<T = unknown>(
   });
   if (!entry || entry.status === "pending") return null;
   return {
-    secret: decryptJson<T>(entry.secret),
+    secret: decryptJson(entry.secret),
     kind: entry.kind,
     baseUrl: entry.baseUrl,
     paramName: entry.paramName,
     name: entry.name,
   };
+}
+
+// The same resolution for a field that reads a PLAIN API KEY and hands it to somebody else's SDK —
+// the agent's model and its four model overrides, STT, TTS and vision. Three outcomes rather than
+// two, because the operator's move differs and the log line that names it is the only trace any of
+// these leave: a ref that no longer resolves is a credential to re-pick or fill, and one that
+// resolves to the wrong KIND is a credential that belongs on another field.
+//
+// The shape check is belt AND braces on the kind check, and neither is redundant. The kind is the
+// catalog's declaration; the value is what is actually stored, and the two can disagree — a legacy
+// entry created before the kind existed, or a managed blob whose connect flow never ran.
+export type ApiKeyResolution =
+  | { state: "ok"; secret: string; baseUrl: string | null }
+  // Deleted, never resolvable, or referenced with its secret not filled in yet.
+  | { state: "unresolved" }
+  // Present and filled, and this is not a credential this field can use.
+  | { state: "unusable"; kind: string };
+
+export async function tryResolveApiKeyEntry(
+  db: ScopedDb,
+  ref: string,
+): Promise<ApiKeyResolution> {
+  const entry = await tryResolveVaultEntry(db, ref);
+  if (!entry) return { state: "unresolved" };
+  if (
+    !secretTypeFits(entry.kind, "apiKey") ||
+    typeof entry.secret !== "string"
+  ) {
+    return { state: "unusable", kind: entry.kind };
+  }
+  return { state: "ok", secret: entry.secret, baseUrl: entry.baseUrl };
 }
 
 // The MCP surface speaks vault entry NAMES (agent-friendly: the operator tells the agent a name);
@@ -384,6 +424,61 @@ export async function requireVaultRef(
     );
   }
   return formatVaultRef(entry.id);
+}
+
+// `requireVaultRef` plus the question it never asked: can an entry of THIS KIND supply what the
+// field reads? The two are separate functions rather than one parameter because the ref rule reaches
+// thirteen call sites and this one does not: four of them (langfuse, the two integration credentials,
+// and the webhook/alert signing secrets) answer a THIRD question — a fixed kind, or a string consumed
+// locally and never sent anywhere — and folding those into the two-value `CredentialUse` would have
+// meant inventing a use for each just to satisfy a required parameter. What this covers is the fields
+// whose use is already declared: the agent's nine (SETTINGS_CREDENTIAL_PATHS + modelConfig) and the
+// tenant's embedding key. Issue #471.
+//
+// The field is in the English sentence as well as in `AppError.field`, which is a duplication the
+// other vault refusals do not carry. MCP hands `message` to the caller verbatim on a surface with no
+// structured error channel, and `agent_settings_set` patches several credentialled blocks in one
+// call: without the path, "credential vault:32 cannot serve this field" names no field to fix.
+//
+// Refused rather than reported, and that is the split `credential-paths.ts` already documents: the
+// operator is at the keyboard and the reference is the thing they just picked. What is ALREADY stored
+// is left alone and reported by config-health, so one unusable pairing cannot freeze every other
+// edit of the agent that holds it.
+export async function requireVaultRefFor(
+  db: ScopedDb,
+  ref: string,
+  field: string,
+  use: CredentialUse,
+): Promise<string> {
+  const canonical = await requireVaultRef(db, ref, field);
+  const entry = await db.vaultEntry.findFirst({
+    where: vaultRefWhere(canonical),
+    select: { kind: true },
+  });
+  // Gone between the two reads: `requireVaultRef` has already answered for existence, and inventing
+  // a second refusal here would report a race as a shape problem.
+  if (!entry || secretTypeFits(entry.kind, use)) return canonical;
+  // Two spellings of one refusal, written out rather than ternaried into one `new AppError`. The
+  // error-catalog fence reads the key and its interpolation values out of the SOURCE, and a key
+  // computed in the argument position is invisible to it: it reported the outbound sentence as a key
+  // nothing throws and the API-key one as thrown without its `{{kind}}`. Both readings were right
+  // about the text and wrong about the code, which is the fence doing its job.
+  if (use === "apiKey") {
+    throw new AppError(
+      `${field}: credential "${ref}" (kind "${entry.kind}") cannot serve a field that reads a plain API key`,
+      400,
+      "errors.credentialKindUnusableAsKey",
+      { kind: entry.kind },
+      field,
+    );
+  }
+  throw new AppError(
+    `${field}: credential "${ref}" (kind "${entry.kind}") is never sent outbound and cannot authenticate a request`,
+    400,
+    "errors.credentialKindUnusableOutbound",
+    { kind: entry.kind },
+    field,
+  );
 }
 
 export async function vaultNameByRef(

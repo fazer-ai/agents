@@ -260,6 +260,52 @@ export function isManagedOAuthKind(kind: string | null | undefined): boolean {
   return kind != null && MANAGED_OAUTH_KINDS.has(kind);
 }
 
+// What a field that names a credential DOES with it, and therefore what it needs the entry to be
+// able to give. The catalog knows the shapes; only the reading field knows which one it can use, and
+// until this existed nobody asked: every write boundary stopped at "does this ref resolve".
+//
+//   apiKey       The stored value IS the credential the request carries — an API key handed to a
+//                provider SDK (the agent's model and its four model overrides, STT, TTS, vision) or
+//                to a REST client. It needs the plain string itself.
+//   injectable   The value is resolved through `resolveInjectableCredentialEntry`, which hands back
+//                a FRESH access token for the managed-OAuth kinds and the stored string for the
+//                rest. It can therefore use a JSON blob it never sees (HTTP tools, MCP connections,
+//                the contact authorization gate).
+//
+// Both send the result to somebody else's endpoint, which is why `neverOutbound` fails for both:
+// mcp_env holds a perfectly good string that the stdio loader reads, and putting it in an API-key
+// field mails the operator's stdio token to a model vendor.
+export type CredentialUse = "apiKey" | "injectable";
+
+// Whether an entry of this KIND can supply what a field of this USE reads. The one question the
+// three surfaces ask — the write boundary refusing a pairing, config-health reporting a stored one,
+// the runtime declining to use it — so that they cannot answer it differently. Issue #471.
+//
+// A kind this build does not know (and a null kind, which is every entry created before the catalog)
+// is the legacy `generic` escape hatch: a plain string with no injection rule. Refusing those would
+// invalidate working installs over a catalog entry we removed.
+export function secretTypeFits(
+  kind: string | null | undefined,
+  use: CredentialUse,
+): boolean {
+  const type = getSecretType(kind);
+  if (!type) return true;
+  if (type.neverOutbound) return false;
+  if (use === "injectable") {
+    // Mirrors resolveInjectableCredentialEntry: managed OAuth resolves to a token, everything else
+    // has to already be the string.
+    return isManagedOAuthKind(type.id) || yieldsPlainString(type);
+  }
+  return yieldsPlainString(type);
+}
+
+// The two declarations that say the stored VALUE is not a string: a declared field list (the value
+// is a multi-field object) and a server-managed blob. Kept as one predicate so a third declaration
+// of the same idea has one place to be added.
+function yieldsPlainString(type: SecretType): boolean {
+  return !type.fields && !type.managedBlob;
+}
+
 export function getSecretTypeFields(
   id: string | null | undefined,
 ): { key: string; masked?: boolean }[] | null {

@@ -836,6 +836,18 @@
       "ttsNormalize": "The speech-rewrite credential no longer exists, so replies are spoken without the rewrite.",
       "vision": "The image-reading credential no longer exists, so images and documents are not read."
     },
+    "configIssueWrongKind": {
+      "contactAuth": "The contact-authorization credential is a type this product never sends to another service, so the check fails and the agent stays silent. Pick a credential that can authenticate a request.",
+      "embedding": "A knowledge base needs indexing, but the embedding credential is a type that cannot be used as an API key. Pick a credential that holds a single key.",
+      "guardrails": "The guardrails credential is a type that cannot be used as an API key, so messages go out unscreened. Pick a credential that holds a single key.",
+      "memoryModel": "The summary-model credential is a type that cannot be used as an API key, so attendances that end are not summarized. Pick a credential that holds a single key.",
+      "model": "The model credential is a type that cannot be used as an API key, so the agent cannot reply. Pick a credential that holds a single key.",
+      "modelFallback": "The fallback-provider credential is a type that cannot be used as an API key, so the fallback cannot take a turn. Pick a credential that holds a single key.",
+      "stt": "The transcription credential is a type that cannot be used as an API key, so voice messages are not transcribed. Pick a credential that holds a single key.",
+      "tts": "The audio-reply credential is a type that cannot be used as an API key, so replies are sent as text. Pick a credential that holds a single key.",
+      "ttsNormalize": "The speech-rewrite credential is a type that cannot be used as an API key, so replies are spoken without the rewrite. Pick a credential that holds a single key.",
+      "vision": "The image-reading credential is a type that cannot be used as an API key, so images and documents are not read. Pick a credential that holds a single key."
+    },
     "conflictToast": "This agent was changed elsewhere. Reload, or save again to overwrite.",
     "contactAuth": "Contact authorization",
     "contactAuthCredential": "Credential",
@@ -1000,6 +1012,7 @@
     "identitySectionHint": "Name, system prompt and whether the agent is active.",
     "importWarning": {
       "credentialAmbiguous": "Credential \"{{name}}\" appears with more than one type in the export, so it was left unset.",
+      "credentialKindUnusable": "The credential wired to \"{{field}}\" is a \"{{kind}}\" credential, which that field cannot use. It was left wired so you can see it; pick another one there.",
       "credentialMissingMeta": "Credential \"{{name}}\" is missing from the export metadata, so it was left unset.",
       "credentialNotFound": "Credential \"{{name}}\" was not found here, so it was left unset.",
       "credentialPending": "Credential \"{{name}}\" was not found here, so a placeholder was created. Fill in its secret to activate it.",

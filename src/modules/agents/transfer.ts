@@ -29,6 +29,7 @@ import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { auditSafe } from "@/modules/agents/audit-projection";
 import {
   type CredentialFieldTab,
+  collectCredentialRefWrites,
   credRefSlot,
   remapCredRefAt,
   SETTINGS_CREDENTIAL_PATHS,
@@ -62,6 +63,7 @@ import {
 import { normalizeToolShapes } from "@/modules/tool-definitions/normalize";
 import { storableResponseTemplate } from "@/modules/tool-definitions/response-template";
 import { readHttpMethod } from "@/modules/tool-definitions/service";
+import { secretTypeFits } from "@/modules/vault/secret-types";
 import {
   createPendingVaultEntry,
   formatVaultRef,
@@ -69,6 +71,7 @@ import {
   readVaultRefId,
   resolveVaultRefByName,
   VAULT_REF_PREFIX,
+  vaultRefWhere,
 } from "@/modules/vault/service";
 import { generateRouteToken } from "@/modules/webhooks/inbound/route-token";
 import {
@@ -383,6 +386,22 @@ export function credentialFieldTargets(
     if (slot) add(slot.holder[slot.key], tab, sectionId);
   }
   return out;
+}
+
+// The editor location of a credential field named by its DOTTED PATH, which is how a refusal and an
+// import warning about a stored ref name it (`settings.tts.credentialRef`). The sibling above keys
+// the same map by credential NAME, which only works while the ref is still portable — after the
+// remap there are no names left, only `vault:<id>`.
+export function fieldTargetForPath(path: string): ImportWarningTarget {
+  if (path === "modelConfig.credentialRef") {
+    return { kind: "agentField", tab: "general", sectionId: "general-model" };
+  }
+  for (const { path: p, tab, sectionId } of SETTINGS_CREDENTIAL_PATHS) {
+    if (`settings.${p.join(".")}` === path) {
+      return { kind: "agentField", tab, sectionId };
+    }
+  }
+  return { kind: "vault" };
 }
 
 // Copies of modelConfig/settings with each credential ref passed through `map` (a null mapping
@@ -1058,6 +1077,40 @@ export async function importAgent(
         return refByName.get(ref) ?? null;
       },
     );
+
+    // Every credential the bags ended up wired to, judged against what the FIELD reads it as. Only
+    // reachable through an import: the direct write boundary refuses this pairing (requireVaultRefFor),
+    // and the ref that lands here can come from a payload authored anywhere — the export carries the
+    // kind, so a bundle can name a `google_oauth` entry on the model and the (name, kind) lookup above
+    // will happily match it.
+    //
+    // Warned rather than refused, and rather than unset. Refusing would reject a whole bundle over one
+    // field, which is the rule this file already rejects for over-cap prose; unsetting would erase the
+    // only record of which credential the author meant, and the entry EXISTS, unlike the
+    // `credentialNotFound` case that unsets. So the ref stays wired, the operator is told at import
+    // time, and config-health keeps saying it until they act. Issue #471.
+    const wiredKinds = new Map<string, string | null>();
+    for (const write of collectCredentialRefWrites(
+      { modelConfig, settings },
+      {},
+    )) {
+      let kind = wiredKinds.get(write.ref);
+      if (kind === undefined) {
+        const row = await db.vaultEntry.findFirst({
+          where: vaultRefWhere(write.ref),
+          select: { kind: true },
+        });
+        kind = row?.kind ?? null;
+        wiredKinds.set(write.ref, kind);
+      }
+      if (kind !== null && !secretTypeFits(kind, write.use)) {
+        warnings.push({
+          code: "credentialKindUnusable",
+          params: { field: write.path, kind },
+          target: fieldTargetForPath(write.path),
+        });
+      }
+    }
 
     // Operator prose over its cap is CLAMPED here, not refused. A direct write refuses (the person is
     // at the keyboard and can trim it), but a bundle authored somewhere else would be rejected whole

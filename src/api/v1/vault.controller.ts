@@ -26,6 +26,8 @@ import {
 // the defaults in sync with src/api/locales/*.json.
 // translate('errors.credentialPending', 'The credential {{ref}} has not been filled yet')
 // translate('errors.credentialPendingUnsupportedKind', 'This credential type is set up via a connect flow and cannot be created as a pending reference')
+// translate('errors.credentialKindUnusableAsKey', 'This field reads an API key and the "{{kind}}" credential type cannot supply one: it either holds several fields instead of a single secret, or it is one this product never sends to another service. Pick a different credential.')
+// translate('errors.credentialKindUnusableOutbound', 'The "{{kind}}" credential type is read inside this product and is never sent to another service, so it cannot authenticate a request. Pick a different credential.')
 // translate('errors.emptyVaultSecret', 'A vault secret must not be empty.')
 // translate('errors.invalidSecretType', 'That secret type is not valid.')
 // translate('errors.invalidVaultBaseUrl', 'Base URL must be a valid http(s) URL')

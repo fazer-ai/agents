@@ -159,6 +159,10 @@ export function useVaultBaseUrls(): (ref: string) => string | null {
 export function useVaultRefs(): {
   known: Set<string> | null;
   pending: Set<string>;
+  // The KIND of every ref in `known`, keyed the same way, so a field can ask whether the entry it
+  // names can actually serve it — resolving and serving are different questions (issue #471). Null
+  // alongside `known` and for the same reason: an empty map would read as "no kind fits".
+  kinds: Map<string, string | null> | null;
   pendingEntries: VaultEntry[];
 } {
   const [entries, setEntries] = useState<VaultEntry[] | null>(null);
@@ -198,6 +202,13 @@ export function useVaultRefs(): {
     pending: useMemo(
       () => new Set(pendingEntries.map((e) => formatVaultRef(e.id))),
       [pendingEntries],
+    ),
+    kinds: useMemo(
+      () =>
+        entries
+          ? new Map(entries.map((e) => [formatVaultRef(e.id), e.kind]))
+          : null,
+      [entries],
     ),
     pendingEntries,
   };

@@ -1,3 +1,4 @@
+import type { CredentialUse } from "@/modules/vault/secret-types";
 import type { BehaviorSettingsPatch } from "./behavior-settings";
 
 // Every field of the agent settings bag that holds a vault credential ref, with WHERE the editor shows
@@ -16,38 +17,66 @@ import type { BehaviorSettingsPatch } from "./behavior-settings";
 // own), and an import warning that deep-links to a section that does not exist dismisses itself
 // without showing the field it is about.
 export const SETTINGS_CREDENTIAL_PATHS = [
-  { path: ["stt", "credentialRef"], tab: "behavior", sectionId: "stt" },
+  {
+    path: ["stt", "credentialRef"],
+    tab: "behavior",
+    sectionId: "stt",
+    use: "apiKey",
+  },
+  // The one agent field that is not an API key. It goes through
+  // `resolveInjectableCredentialEntry`, which refreshes a managed-OAuth token and injects THAT, so
+  // a `google_oauth` entry here is correct configuration and refusing it would break the feature.
   {
     path: ["contactAuth", "credentialRef"],
     tab: "behavior",
     sectionId: "contactAuth",
+    use: "injectable",
   },
-  { path: ["tts", "credentialRef"], tab: "behavior", sectionId: "tts" },
+  {
+    path: ["tts", "credentialRef"],
+    tab: "behavior",
+    sectionId: "tts",
+    use: "apiKey",
+  },
   {
     path: ["tts", "normalizeCredentialRef"],
     tab: "behavior",
     sectionId: "tts",
+    use: "apiKey",
   },
-  { path: ["vision", "credentialRef"], tab: "behavior", sectionId: "vision" },
+  {
+    path: ["vision", "credentialRef"],
+    tab: "behavior",
+    sectionId: "vision",
+    use: "apiKey",
+  },
   {
     path: ["guardrails", "credentialRef"],
     tab: "guardrails",
     sectionId: "gr-model",
+    use: "apiKey",
   },
   {
     path: ["memory", "compaction", "credentialRef"],
     tab: "behavior",
     sectionId: "memory",
+    use: "apiKey",
   },
   {
     path: ["modelFallback", "credentialRef"],
     tab: "behavior",
     sectionId: "modelFallback",
+    use: "apiKey",
   },
 ] as const satisfies ReadonlyArray<{
   path: readonly [keyof BehaviorSettingsPatch, ...string[]];
   tab: "behavior" | "guardrails";
   sectionId: string;
+  // What the field DOES with the entry, and therefore which kinds can serve it (secretTypeFits).
+  // Required, so a credential field added to this list cannot be silently exempted from the check:
+  // seven of the eight read a plain API key and the eighth does not, which is exactly the split a
+  // derived rule would have got wrong.
+  use: CredentialUse;
 }>;
 
 // A PATH, not a (block, field) pair, because a block can hold its credential inside a sub-object:
@@ -122,6 +151,9 @@ export interface CredentialRefWrite {
   // bag it lives in: `modelConfig.credentialRef`, `settings.tts.normalizeCredentialRef`.
   path: string;
   ref: string;
+  // What this field reads the entry AS, carried alongside the ref so the write boundary can refuse a
+  // kind that cannot serve it without re-deriving the field's purpose from its path.
+  use: CredentialUse;
   // Writes the canonical spelling back where the ref was found. In place, for the same reason
   // clampOversizedTextInPlace is: the caller owns a freshly parsed payload whose bags hold keys this
   // module knows nothing about, and rebuilding them from the paths listed here would drop the rest.
@@ -154,12 +186,14 @@ export function collectCredentialRefWrites(
     holder: Record<string, unknown>,
     key: string,
     storedRef: unknown,
+    use: CredentialUse,
   ): void => {
     const ref = holder[key];
     if (typeof ref !== "string" || !ref || ref === storedRef) return;
     out.push({
       path,
       ref,
+      use,
       replace: (canonical) => {
         holder[key] = canonical;
       },
@@ -174,13 +208,15 @@ export function collectCredentialRefWrites(
       nextModel,
       "credentialRef",
       bagOf(stored.modelConfig)?.credentialRef,
+      // The agent's own model key, handed to the provider SDK by `createChatModel`.
+      "apiKey",
     );
   }
   const nextSettings =
     next.settings === undefined ? null : bagOf(next.settings);
   if (nextSettings) {
     const storedSettings = bagOf(stored.settings);
-    for (const { path } of SETTINGS_CREDENTIAL_PATHS) {
+    for (const { path, use } of SETTINGS_CREDENTIAL_PATHS) {
       const slot = credRefSlot(nextSettings, path);
       if (!slot) continue;
       const storedSlot = credRefSlot(storedSettings, path);
@@ -189,6 +225,7 @@ export function collectCredentialRefWrites(
         slot.holder,
         slot.key,
         storedSlot ? storedSlot.holder[storedSlot.key] : undefined,
+        use,
       );
     }
   }

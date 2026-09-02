@@ -255,6 +255,24 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
     await collect();
   });
 
+  test("disconnecting an account that is already disconnected records nothing", async () => {
+    await clearAudit();
+    const inst = await suDb.chatwootInstance.findFirstOrThrow({
+      where: { tenantId, accountId: 2 },
+      select: { id: true, disconnectedAt: true },
+    });
+    expect(inst.disconnectedAt).not.toBeNull();
+    await softDisconnectChatwootInstance(ctx(), inst.id, appDb);
+    expect(await rows()).toEqual([]);
+    // And the moment it happened did not move: re-stamping would rewrite when the account stopped
+    // being handled.
+    const after = await suDb.chatwootInstance.findUniqueOrThrow({
+      where: { id: inst.id },
+      select: { disconnectedAt: true },
+    });
+    expect(after.disconnectedAt).toEqual(inst.disconnectedAt);
+  });
+
   // No MCP twin: the name is invented here, and the console is the only door it has.
   test("reconnecting an account records it, under a name of its own", async () => {
     await clearAudit();

@@ -631,7 +631,7 @@ export async function softDisconnectChatwootInstance(
   const inst = await runScopedOn(base, ctx, (db) =>
     db.chatwootInstance.findUnique({
       where: { id },
-      select: { id: true, accountId: true },
+      select: { id: true, accountId: true, disconnectedAt: true },
     }),
   );
   if (!inst) {
@@ -676,15 +676,20 @@ export async function softDisconnectChatwootInstance(
         data: { agentId: null },
       });
     }
-    await db.chatwootInstance.update({
-      where: { id },
-      data: { disconnectedAt: new Date() },
-    });
-    await auditMutation(db, ctx, {
-      action: "instance.disconnect",
-      target: `chatwoot_instance:${id}`,
-      before: { id: String(inst.id), accountId: inst.accountId },
-    });
+    // NOTE: The stamp and the row only where the account was still ACTIVE. The endpoint is
+    // idempotent, so a retry on an already-disconnected account changes nothing an operator can see,
+    // and re-stamping `disconnectedAt` would also move the moment it happened.
+    if (inst.disconnectedAt === null) {
+      await db.chatwootInstance.update({
+        where: { id },
+        data: { disconnectedAt: new Date() },
+      });
+      await auditMutation(db, ctx, {
+        action: "instance.disconnect",
+        target: `chatwoot_instance:${id}`,
+        before: { id: String(inst.id), accountId: inst.accountId },
+      });
+    }
   });
   // The receiver caches "this route token resolves to a live bot" by hash. Without this, events for
   // an account just disconnected would keep being processed until the entry expires.
@@ -1481,25 +1486,31 @@ export async function bindInbox(
 
   // 3. Persist the binding (scoped, no network).
   return runScopedOn(base, ctx, async (db) => {
+    // NOTE: Read INSIDE the transaction, and it is what the audit compares against. The reading
+    // taken at the top predates the Chatwoot calls, which are a window a concurrent bind fits into,
+    // so comparing against it would call a real change a no-op (or the reverse).
+    const beforeWrite = await db.inbox.findUnique({
+      where: { id: inboxId },
+      select: { agentId: true },
+    });
     await db.inbox.update({ where: { id: inboxId }, data: { agentId } });
     const row = await db.inbox.findUniqueOrThrow({
       where: { id: inboxId },
       select: INBOX_SELECT,
     });
     const dto = toInboxDto(row);
+    const wasBoundTo = beforeWrite?.agentId ?? null;
     // NOTE: BOTH SIDES, because an unbind is the same call with a null and it is the one that silences an
     // inbox. The agent the inbox is losing is only knowable from the reading taken at the top.
     //
     // And only when the binding MOVED: re-submitting the editor with the same agent reaches the
     // network branch, which deliberately does nothing, so a row would report a change that is not
     // one. Compared against the reading that predates the write.
-    if (inbox.agentId !== agentId) {
+    if (wasBoundTo !== agentId) {
       await auditMutation(db, ctx, {
         action: "inbox.bind",
         target: `inbox:${inboxId}`,
-        before: {
-          agentId: inbox.agentId === null ? null : String(inbox.agentId),
-        },
+        before: { agentId: wasBoundTo === null ? null : String(wasBoundTo) },
         after: { agentId: dto.agentId },
       });
     }

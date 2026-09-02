@@ -6,6 +6,12 @@ import { AppError, ConflictError, NotFoundError } from "@/lib/errors";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { SETTINGS_CREDENTIAL_PATHS } from "@/modules/agents/credential-paths";
 import {
+  markUndisclosed,
+  redactEndpoint,
+  undisclosedMoved,
+} from "@/modules/audit/projection";
+import { auditMutation, projectionMoved } from "@/modules/audit/service";
+import {
   runSecretTest,
   type SecretTestDeps,
   type SecretTestResult,
@@ -827,6 +833,50 @@ export interface CreateVaultEntryInput {
 }
 
 // INSERT-only create: 409 if both name and kind already exist in the tenant.
+// What a credential's audit row carries, and what it only compares.
+//
+// This is the family where the metadata and the thing that authenticates are adjacent columns, so
+// the two halves are drawn tightly. PROJECTED: the identity (`id`, `name`), the type, the lifecycle
+// and the two fields that say how the credential is used. `baseUrl` is an operator-typed URL and
+// reaches the row as its ORIGIN, by the same rule every such URL answers to (`redactEndpoint`): a
+// self-hosted API root is exactly the kind of destination that carries a token in its path, and this
+// row is append-only and outlives the entry.
+//
+// UNDISCLOSED, compared and never carried: the `secret` itself, and the whole `baseUrl` so a change
+// living in the path is still recorded as a change.
+type VaultAuditRow = {
+  id: bigint;
+  name: string;
+  kind: string;
+  status: string;
+  baseUrl: string | null;
+  paramName: string | null;
+  secret: string;
+};
+
+function auditProjection(r: VaultAuditRow) {
+  return {
+    id: String(r.id),
+    name: r.name,
+    kind: r.kind,
+    status: r.status,
+    baseUrl: r.baseUrl === null ? null : redactEndpoint(r.baseUrl),
+    paramName: r.paramName,
+  };
+}
+
+const VAULT_AUDIT_SELECT = {
+  id: true,
+  name: true,
+  kind: true,
+  status: true,
+  baseUrl: true,
+  paramName: true,
+  secret: true,
+} as const;
+
+const UNDISCLOSED = ["secret", "baseUrl"] as const;
+
 export async function createVaultEntry(
   ctx: TenantContext,
   nameOrInput: string | CreateVaultEntryInput,
@@ -919,7 +969,12 @@ export async function createVaultEntry(
           baseUrl: normalizedBaseUrl,
           paramName: normalizedParamName || null,
         },
-        select: { id: true },
+        select: VAULT_AUDIT_SELECT,
+      });
+      await auditMutation(db, ctx, {
+        action: "credential.create",
+        target: formatVaultRef(created.id),
+        after: auditProjection(created),
       });
       return { id: created.id, ref: formatVaultRef(created.id) };
     } catch (e) {
@@ -1025,7 +1080,19 @@ export async function createPendingVaultEntry(
           paramName: normalizedParamName || null,
           status: "pending",
         },
-        select: { id: true },
+        select: VAULT_AUDIT_SELECT,
+      });
+      // NOTE: The same action as a filled create, because it is the same act: a credential now
+      // exists under this name. `status` is what tells the two apart, and it is on the row.
+      //
+      // This is also where the agent import starts leaving a trail. It creates one reference-only
+      // entry per credential the bundle names and the tenant does not have, and its own `agent.import`
+      // row projects the AGENT, so six pending credentials used to appear in the vault with nothing
+      // naming where they came from. One row each, under the operator who ran the import.
+      await auditMutation(db, ctx, {
+        action: "credential.create",
+        target: formatVaultRef(created.id),
+        after: auditProjection(created),
       });
       return { id: created.id, ref: formatVaultRef(created.id) };
     } catch (e) {
@@ -1063,7 +1130,7 @@ export async function updateVaultEntry(
   return runScopedOn(base, ctx, async (db) => {
     const entry = await db.vaultEntry.findFirst({
       where: { id },
-      select: { id: true, kind: true },
+      select: VAULT_AUDIT_SELECT,
     });
     if (!entry) throw new NotFoundError(`vault entry ${id} not found`);
 
@@ -1136,6 +1203,29 @@ export async function updateVaultEntry(
       }
       throw e;
     }
+    const after = await db.vaultEntry.findUniqueOrThrow({
+      where: { id: entry.id },
+      select: VAULT_AUDIT_SELECT,
+    });
+    const beforeProj = auditProjection(entry);
+    const afterProj = auditProjection(after);
+    const undisclosed = undisclosedMoved(entry, after, UNDISCLOSED);
+    // NOTE: The action with no name on any transport before #444: replacing the value behind a live
+    // reference. Every consumer of that reference starts authenticating with something else on the
+    // next call, and nothing said so.
+    //
+    // The marker rather than the value, on both sides, because what a reader needs is that the
+    // secret moved. `undisclosedMoved` is what the write is gated on, never the marker: two
+    // identical markers move nothing, so gating on `projectionMoved` alone would drop the one row
+    // that matters most here, the save whose ONLY change was the credential itself.
+    if (undisclosed || projectionMoved(beforeProj, afterProj)) {
+      await auditMutation(db, ctx, {
+        action: "credential.update",
+        target: formatVaultRef(entry.id),
+        before: undisclosed ? markUndisclosed(beforeProj) : beforeProj,
+        after: undisclosed ? markUndisclosed(afterProj) : afterProj,
+      });
+    }
     return entry.id;
   });
 }
@@ -1145,9 +1235,24 @@ export async function deleteVaultEntry(
   id: bigint,
   base: PrismaClient = basePrisma,
 ): Promise<void> {
-  await runScopedOn(base, ctx, (db) =>
-    db.vaultEntry.deleteMany({ where: { id } }),
-  );
+  await runScopedOn(base, ctx, async (db) => {
+    // NOTE: Read before the delete, and only recorded when this call is the one that removed it:
+    // `deleteMany` is idempotent by design, and a row per attempt would put the same removal on the
+    // trail as many times as it was retried. Creating a credential was audited and removing one was
+    // not, which is the asymmetry #444 opened with.
+    const entry = await db.vaultEntry.findFirst({
+      where: { id },
+      select: VAULT_AUDIT_SELECT,
+    });
+    const { count } = await db.vaultEntry.deleteMany({ where: { id } });
+    if (entry && count > 0) {
+      await auditMutation(db, ctx, {
+        action: "credential.delete",
+        target: formatVaultRef(entry.id),
+        before: auditProjection(entry),
+      });
+    }
+  });
 }
 
 // ── credential connectivity test (test-on-save) ──

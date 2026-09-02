@@ -320,15 +320,6 @@ export async function credentialCreate(
       },
       base,
     );
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "credential.create",
-      target: ref,
-      // No secret exists yet — the audit projection carries only the reference metadata.
-      before: {},
-      after: { name: args.name, kind, status: "pending" },
-    });
     return ok({
       dryRun: false,
       applied: true,

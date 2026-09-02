@@ -281,7 +281,10 @@ describe.skipIf(!dbUp)("the tenant family records from its services", () => {
     expect(await rows({ tenantId })).toEqual([]);
   });
 
-  test("langfuse_connect records the vault fill and the settings write as the two writes they are", async () => {
+  // THREE rows since #444, and the new one is the point of that issue: the credential this tool
+  // fills is created by the vault service, which records it now. Before, `langfuse.connect` was the
+  // only trace that a credential had appeared, and it names the connection rather than the entry.
+  test("langfuse_connect records the credential, the settings write and the connection as the three writes they are", async () => {
     await clearAudit();
     const res = await langfuseConnect(
       principal(),
@@ -297,10 +300,11 @@ describe.skipIf(!dbUp)("the tenant family records from its services", () => {
     expect(res.ok).toBe(true);
     const all = await rows({ tenantId });
     expect(all.map((r) => r.action)).toEqual([
+      "credential.create",
       "tenant_settings.langfuse_set",
       "langfuse.connect",
     ]);
-    // Neither row carries either key, in any field.
+    // No row carries either key, in any field.
     const dump = projectionText(all);
     expect(dump).not.toContain("pk-lf-probe");
     expect(dump).not.toContain("sk-lf-probe");

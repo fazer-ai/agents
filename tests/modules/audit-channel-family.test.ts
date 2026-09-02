@@ -345,6 +345,12 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
       select: { id: true },
     });
     await softDisconnectChatwootInstance(ctx(), inst.id, appDb);
+    // A label the winner of the race is the one who set: this deployment's /profile only knows
+    // accounts 1 and 2, so the request below carries `null` for account 3.
+    await suDb.chatwootInstance.update({
+      where: { id: inst.id },
+      data: { accountName: "Conta C" },
+    });
     await clearAudit();
     // The operator re-submits [1, 2, 3] while another request is already reconnecting account 3.
     await setConnectedAccounts(
@@ -363,6 +369,17 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
     expect(all.map((r) => r.action)).toEqual(["instance.reconnect"]);
     expect(await rows("instance.connect")).toEqual([]);
     expect(await rows("deployment.set_accounts")).toEqual([]);
+    // And it moved nothing on the way past. The metadata refresh used to sit OUTSIDE the condition,
+    // so the request that lost the race still overwrote the label — a change with no row anywhere,
+    // and one the next sync could not report either, because by then the column already held it.
+    expect(
+      (
+        await suDb.chatwootInstance.findUniqueOrThrow({
+          where: { id: inst.id },
+          select: { accountName: true },
+        })
+      ).accountName,
+    ).toBe("Conta C");
     await collect();
   });
 
@@ -401,8 +418,58 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
     const [row] = await rows();
     expect(row?.action).toBe("instance.disconnect");
     expect(row?.target).toBe(`chatwoot_instance:${inst.id}`);
-    expect(row?.before).toMatchObject({ accountId: 2 });
+    expect(row?.before).toMatchObject({
+      accountId: 2,
+      // Both halves of what a disconnect does, and this account had no bound inbox to unbind.
+      unboundInboxes: 0,
+      stamped: true,
+    });
     await collect();
+  });
+
+  // The unbind is a mutation of its own, and a bind can pass its instance check while a disconnect
+  // is committing: the binding lands on an account already marked disconnected, and the retry that
+  // clears it finds the stamp already there. Without the OR below, that retry finishes the
+  // disconnect and leaves nothing on the trail.
+  test("clearing a binding left on a disconnected account is recorded, stamp or no stamp", async () => {
+    const inst = await suDb.chatwootInstance.findFirstOrThrow({
+      where: { tenantId, accountId: 2 },
+      select: { id: true, disconnectedAt: true },
+    });
+    expect(inst.disconnectedAt).not.toBeNull();
+    const agent = await suDb.agent.create({
+      data: { tenantId, name: "Perdido", systemPrompt: "x" },
+      select: { id: true },
+    });
+    const stray = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: inst.id,
+        chatwootInboxId: 4242,
+        name: "Órfã",
+        agentId: agent.id,
+      },
+      select: { id: true },
+    });
+    await clearAudit();
+    await softDisconnectChatwootInstance(ctx(), inst.id, appDb, {
+      makeClient: stubClient().makeClient,
+    });
+    const [row, ...rest] = await rows();
+    expect(rest).toEqual([]);
+    expect(row?.action).toBe("instance.disconnect");
+    expect(row?.before).toMatchObject({ unboundInboxes: 1, stamped: false });
+    expect(
+      (
+        await suDb.inbox.findUniqueOrThrow({
+          where: { id: stray.id },
+          select: { agentId: true },
+        })
+      ).agentId,
+    ).toBeNull();
+    await collect();
+    await suDb.inbox.delete({ where: { id: stray.id } });
+    await suDb.agent.delete({ where: { id: agent.id } });
   });
 
   test("disconnecting an account that is already disconnected records nothing", async () => {
@@ -643,6 +710,34 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
     // Back to no mirrored inbox, the way the tests after this one expect the account.
     await suDb.inbox.deleteMany({
       where: { chatwootInstanceId: inst.id, chatwootInboxId: 77 },
+    });
+  });
+
+  // Two syncs of the SAME account, overlapping for real. The Channels page auto-syncs on load while
+  // the operator can press the button, so this is the ordinary case rather than an exotic one, and a
+  // `FOR UPDATE` on the inbox row cannot cover it: the row does not exist yet, and locking an absent
+  // row locks nothing. The account row is the one lock both of them can take.
+  test("two syncs racing on a first-time inbox record one creation, not two", async () => {
+    await clearAudit();
+    const inst = await suDb.chatwootInstance.findFirstOrThrow({
+      where: { tenantId, accountId: 1 },
+      select: { id: true },
+    });
+    const deps = {
+      makeClient: stubClient({
+        listInboxes: async () => remoteInbox({ id: 88 }),
+      }).makeClient,
+    };
+    await Promise.all([
+      syncInboxes(ctx(), inst.id, deps, appDb),
+      syncInboxes(ctx(), inst.id, deps, appDb),
+    ]);
+    const all = await rows();
+    expect(all.map((r) => r.action)).toEqual(["instance.sync_inboxes"]);
+    expect(all[0]?.after).toMatchObject({ created: 1, updated: 0 });
+    await collect();
+    await suDb.inbox.deleteMany({
+      where: { chatwootInstanceId: inst.id, chatwootInboxId: 88 },
     });
   });
 

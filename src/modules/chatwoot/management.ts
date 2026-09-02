@@ -498,21 +498,20 @@ async function connectAccount(
       select: { id: true },
     });
     if (existing) {
-      // NOTE: The revival is its own conditional write, and it is what decides the row, the same way
-      // the disconnect side decides it. Two overlapping requests both read this account as
-      // disconnected under read-committed, so an unconditional `update` would let the second one
-      // through and record a second `instance.connect` for an account already connected. With the
-      // condition in the `where`, the second update re-evaluates it after the first commits, matches
-      // nothing, and stays silent.
+      // NOTE: ONE conditional write, and it is what decides the row, the same way the disconnect
+      // side decides it. Two overlapping requests both read this account as disconnected under
+      // read-committed, so an unconditional `update` would let the second one through and record a
+      // second `instance.connect` for an account already connected. With the condition in the
+      // `where`, the second update re-evaluates it after the first commits, matches nothing, and
+      // both writes nothing and records nothing.
+      //
+      // The metadata rides INSIDE that condition rather than beside it. Refreshing it
+      // unconditionally would let the request that lost the race move `accountName` with no row
+      // saying so — and the winner already wrote it, from a probe of the same deployment a moment
+      // earlier, so there is nothing to lose by not writing it twice.
       const { count } = await db.chatwootInstance.updateMany({
         where: { id: existing.id, disconnectedAt: { not: null } },
-        data: { disconnectedAt: null },
-      });
-      // The deployment it hangs from and how it is labelled are refreshed either way: they are
-      // metadata about an account already being handled, not a change of who is handled.
-      await db.chatwootInstance.update({
-        where: { id: existing.id },
-        data: { deploymentId, accountName, serverKey },
+        data: { disconnectedAt: null, deploymentId, accountName, serverKey },
       });
       if (count > 0) {
         // NOTE: In THIS transaction, not with the choice that asked for it. `setConnectedAccounts`
@@ -640,7 +639,8 @@ export async function setConnectedAccounts(
   // Disconnect active accounts the operator removed from the selection.
   for (const c of current) {
     if (c.disconnectedAt === null && !wanted.includes(c.accountId)) {
-      if (await softDisconnectChatwootInstance(ctx, c.id, base)) moved = true;
+      if (await softDisconnectChatwootInstance(ctx, c.id, base, deps))
+        moved = true;
     }
   }
   // Connect (create/reactivate) the newly-selected accounts + best-effort inbox sync.
@@ -700,6 +700,7 @@ export async function softDisconnectChatwootInstance(
   ctx: TenantContext,
   id: bigint,
   base: PrismaClient = basePrisma,
+  deps: LoadChatwootClientDeps = {},
 ): Promise<boolean> {
   if (ctx.tenantId === null) throw new AppError("tenant required", 400);
   const tenantId = ctx.tenantId;
@@ -725,7 +726,10 @@ export async function softDisconnectChatwootInstance(
   if (bound.length > 0) {
     let client: ChatwootClient | null = null;
     try {
-      client = await loadChatwootClient(tenantId, id, { base });
+      client = await loadChatwootClient(tenantId, id, {
+        base,
+        makeClient: deps.makeClient,
+      });
     } catch {
       client = null; // Chatwoot unreachable / creds gone — still unbind locally + stamp disconnected.
     }
@@ -745,11 +749,15 @@ export async function softDisconnectChatwootInstance(
   // customer messages routed to no agent and no row saying why. The Chatwoot calls above stay
   // outside it, because no transaction of ours spans somebody else's system.
   const stamped = await runScopedOn(base, ctx, async (db) => {
+    // NOTE: `agentId: { not: null }` so the count is the inboxes this call actually unbound, and not
+    // every inbox of the account. It is half of what decides the row below.
+    let unbound = 0;
     if (bound.length > 0) {
-      await db.inbox.updateMany({
-        where: { chatwootInstanceId: id },
+      const cleared = await db.inbox.updateMany({
+        where: { chatwootInstanceId: id, agentId: { not: null } },
         data: { agentId: null },
       });
+      unbound = cleared.count;
     }
     // NOTE: The stamp and the row only where the account was still ACTIVE, decided by the WRITE and
     // not by a reading before it. The endpoint is idempotent, so a retry changes nothing an operator
@@ -760,11 +768,22 @@ export async function softDisconnectChatwootInstance(
       where: { id, disconnectedAt: null },
       data: { disconnectedAt: new Date() },
     });
-    if (count > 0) {
+    // NOTE: OR the unbind, because clearing a binding is a mutation whether or not the stamp moved.
+    // A bind can pass its own active check while this disconnect is committing, which leaves an
+    // inbox bound on an account already marked disconnected; the retry that clears it finds the
+    // stamp already there and would otherwise finish the disconnect with nothing on the trail.
+    // `stamped: false` is what tells a reader that this call completed a disconnect rather than
+    // starting one.
+    if (count > 0 || unbound > 0) {
       await auditMutation(db, ctx, {
         action: "instance.disconnect",
         target: `chatwoot_instance:${id}`,
-        before: { id: String(inst.id), accountId: inst.accountId },
+        before: {
+          id: String(inst.id),
+          accountId: inst.accountId,
+          unboundInboxes: unbound,
+          stamped: count > 0,
+        },
       });
     }
     return count > 0;
@@ -2001,6 +2020,12 @@ export async function syncInboxes(
 
   // Reconcile (scoped tx, no network).
   return runScopedOn(base, ctx, async (db) => {
+    // NOTE: The whole reconcile serialises on the ACCOUNT row, which is the one lock that covers an
+    // inbox that does not exist yet: `FOR UPDATE` on an absent row locks nothing, so two first-time
+    // syncs of the same account would both read `existing` as null and both claim the creation. The
+    // Channels page auto-syncs on load while the operator can press the button, so those two overlap
+    // in ordinary use. Syncs of DIFFERENT accounts never contend.
+    await db.$queryRaw`SELECT id FROM chatwoot_instances WHERE id = ${instanceId} FOR UPDATE`;
     // NOTE: The rename is its own conditional write, so a name Chatwoot did not change does not
     // count as one. The `null` arm is not decoration: `accountName <> 'x'` is NULL for a row whose
     // name is NULL, so a plain `not` would silently skip the very rows that most need the name.
@@ -2018,17 +2043,6 @@ export async function syncInboxes(
     let created = 0;
     let updated = 0;
     for (const inbox of remote) {
-      // NOTE: LOCKED before the reading, because the reading is what decides whether this sync
-      // changed anything. The Channels page auto-syncs every account on load, so two syncs of the
-      // same account overlap routinely, and an unlocked read would let the second one count a
-      // change the first one made. A row that does not exist yet takes no lock, which is the create
-      // race the upsert below already answers.
-      await db.$queryRaw`
-        SELECT id FROM inboxes
-         WHERE tenant_id = ${tenantId}
-           AND chatwoot_instance_id = ${instanceId}
-           AND chatwoot_inbox_id = ${inbox.chatwootInboxId}
-           FOR UPDATE`;
       const existing = await db.inbox.findUnique({
         where: {
           tenantId_chatwootInstanceId_chatwootInboxId: {

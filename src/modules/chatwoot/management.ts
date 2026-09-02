@@ -313,6 +313,18 @@ export async function connectChatwootDeployment(
 
 // Rotate the deployment's admin token (the operator pasted a new one). Validated by a /profile probe
 // before it persists. Affects every account under the deployment (they share it).
+// The stored admin token as plaintext, or null when the blob cannot be read. Only ever compared,
+// never returned to a caller and never projected: an unreadable blob is a rotation waiting to
+// happen, and answering `null` makes the comparison below treat it as one.
+function readStoredToken(blob: string): string | null {
+  try {
+    const v = decryptJson(blob);
+    return typeof v === "string" ? v : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function rotateChatwootDeploymentToken(
   ctx: TenantContext,
   adminToken: string,
@@ -336,20 +348,31 @@ export async function rotateChatwootDeploymentToken(
   // Validate the new token against the live deployment before persisting it.
   await listChatwootAccounts({ baseUrl: dep.baseUrl, token }, deps);
   return runScopedOn(base, ctx, async (db) => {
+    const current = await db.chatwootDeployment.findUniqueOrThrow({
+      where: { id: dep.id },
+      select: { adminToken: true },
+    });
     const row = await db.chatwootDeployment.update({
       where: { id: dep.id },
       data: { adminToken: encryptJson(token) },
       select: DEPLOYMENT_SELECT,
     });
     const dto = toDeploymentDto(row);
-    // NOTE: THAT it moved, never what it moved to, and never what it moved from. A rotation's whole point
-    // is that the old value stops being valid, and a row that kept either end would outlive the
-    // rotation it records.
-    await auditMutation(db, ctx, {
-      action: "deployment.rotate_token",
-      target: `chatwoot_deployment:${dto.id}`,
-      after: { id: dto.id, adminTokenRotated: true },
-    });
+    // NOTE: THAT it moved, never what it moved to, and never what it moved from. A rotation's whole
+    // point is that the old value stops being valid, and a row that kept either end would outlive
+    // the rotation it records.
+    //
+    // Whether it moved is asked of the PLAINTEXT, because the ciphertext cannot answer: `encryptJson`
+    // randomizes, so re-submitting the token already stored produces a different blob and a
+    // comparison on it would report a rotation on every retry of a request that timed out.
+    const moved = readStoredToken(current.adminToken) !== token;
+    if (moved) {
+      await auditMutation(db, ctx, {
+        action: "deployment.rotate_token",
+        target: `chatwoot_deployment:${dto.id}`,
+        after: { id: dto.id, adminTokenRotated: true },
+      });
+    }
     return dto;
   });
 }
@@ -676,14 +699,16 @@ export async function softDisconnectChatwootInstance(
         data: { agentId: null },
       });
     }
-    // NOTE: The stamp and the row only where the account was still ACTIVE. The endpoint is
-    // idempotent, so a retry on an already-disconnected account changes nothing an operator can see,
-    // and re-stamping `disconnectedAt` would also move the moment it happened.
-    if (inst.disconnectedAt === null) {
-      await db.chatwootInstance.update({
-        where: { id },
-        data: { disconnectedAt: new Date() },
-      });
+    // NOTE: The stamp and the row only where the account was still ACTIVE, decided by the WRITE and
+    // not by a reading before it. The endpoint is idempotent, so a retry changes nothing an operator
+    // can see and re-stamping would move the moment it happened; and two overlapping requests both
+    // read `null` under read-committed, so a check that is not the update itself lets the second one
+    // through. `updateMany` with the condition in its `where` is that check and that write at once.
+    const { count } = await db.chatwootInstance.updateMany({
+      where: { id, disconnectedAt: null },
+      data: { disconnectedAt: new Date() },
+    });
+    if (count > 0) {
       await auditMutation(db, ctx, {
         action: "instance.disconnect",
         target: `chatwoot_instance:${id}`,
@@ -716,9 +741,16 @@ export async function reconnectChatwootInstance(
     }
     // The one-deployment invariant is structural now (the account already belongs to the tenant's
     // single deployment), so reconnecting just clears the flag.
-    const row = await db.chatwootInstance.update({
-      where: { id },
+    //
+    // NOTE: Conditional, and the condition IS the test: under read-committed two overlapping
+    // reconnects both read a non-null flag, and a check made before the write would let both record
+    // a reconnection only one of them performed.
+    const { count: cleared } = await db.chatwootInstance.updateMany({
+      where: { id, disconnectedAt: { not: null } },
       data: { disconnectedAt: null },
+    });
+    const row = await db.chatwootInstance.findUniqueOrThrow({
+      where: { id },
       select: SELECT,
     });
     const reconnected = toDto(row);
@@ -728,7 +760,7 @@ export async function reconnectChatwootInstance(
     // And only when the account WAS disconnected. The endpoint is idempotent, so a retry (or a
     // direct API client) reaching it on an active account changes nothing, and a row there would be
     // a reconnect event that never happened.
-    if (inst.disconnectedAt !== null) {
+    if (cleared > 0) {
       await auditMutation(db, ctx, {
         action: "instance.reconnect",
         target: `chatwoot_instance:${id}`,
@@ -1486,20 +1518,24 @@ export async function bindInbox(
 
   // 3. Persist the binding (scoped, no network).
   return runScopedOn(base, ctx, async (db) => {
-    // NOTE: Read INSIDE the transaction, and it is what the audit compares against. The reading
-    // taken at the top predates the Chatwoot calls, which are a window a concurrent bind fits into,
-    // so comparing against it would call a real change a no-op (or the reverse).
-    const beforeWrite = await db.inbox.findUnique({
-      where: { id: inboxId },
-      select: { agentId: true },
-    });
+    // NOTE: Read INSIDE the transaction and with the row LOCKED, because it is what the audit
+    // compares against. The reading taken at the top predates the Chatwoot calls, which are a window
+    // a concurrent bind fits into; and an unlocked read here is the same hole one level down, where
+    // two overlapping binds both see the old agent and the transition `null -> A -> B` reaches the
+    // trail as two rows that both claim to have started from null.
+    const locked = await db.$queryRaw<{ agent_id: bigint | null }[]>`
+      SELECT agent_id
+        FROM inboxes
+       WHERE id = ${inboxId}
+         FOR UPDATE`;
+    const beforeWrite = locked[0] ?? null;
     await db.inbox.update({ where: { id: inboxId }, data: { agentId } });
     const row = await db.inbox.findUniqueOrThrow({
       where: { id: inboxId },
       select: INBOX_SELECT,
     });
     const dto = toInboxDto(row);
-    const wasBoundTo = beforeWrite?.agentId ?? null;
+    const wasBoundTo = beforeWrite?.agent_id ?? null;
     // NOTE: BOTH SIDES, because an unbind is the same call with a null and it is the one that silences an
     // inbox. The agent the inbox is losing is only knowable from the reading taken at the top.
     //

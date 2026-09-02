@@ -199,6 +199,20 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
     await collect();
   });
 
+  // `encryptJson` randomizes, so the stored blob differs on every write even for the same token. The
+  // comparison has to be on the plaintext, or a retry of a request that timed out reports a rotation
+  // that never happened.
+  test("re-submitting the token already stored records nothing", async () => {
+    await clearAudit();
+    await rotateChatwootDeploymentToken(
+      ctx(),
+      ROTATED_TOKEN,
+      { fetchProfile },
+      appDb,
+    );
+    expect(await rows()).toEqual([]);
+  });
+
   test("choosing which accounts are connected records the choice", async () => {
     await clearAudit();
     await setConnectedAccounts(

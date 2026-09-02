@@ -334,12 +334,14 @@ describe.skipIf(!dbUp)("the Channels page names who wrote", () => {
     ).toBe(200);
 
     const r = await rows();
-    // Every action the journey performed, in order. `instance.sync_inboxes` appears three times
-    // because choosing the accounts syncs each one it connects, which is a change of its own.
+    // Every action the journey performed, in order. Choosing the accounts connects two and syncs
+    // each, and both of those are changes of their own: the pair repeats before the choice's row.
     expect(r.map((x) => x.action)).toEqual([
       "deployment.connect",
       "deployment.rotate_token",
+      "instance.connect",
       "instance.sync_inboxes",
+      "instance.connect",
       "instance.sync_inboxes",
       "deployment.set_accounts",
       "instance.disconnect",

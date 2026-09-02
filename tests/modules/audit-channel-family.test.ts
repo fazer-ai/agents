@@ -175,9 +175,11 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
     expect(row?.target).toBe(`chatwoot_deployment:${result.deployment.id}`);
     expect(row?.actorId).toBe(USER);
     expect(row?.actorType).toBe("user");
+    // The ORIGIN, not the URL as typed: a base URL is operator-entered and the row outlives it. The
+    // `/…` is what `redactEndpoint` leaves behind to say a path was dropped rather than absent.
     expect(row?.after).toEqual({
       id: result.deployment.id,
-      baseUrl: result.deployment.baseUrl,
+      baseUrl: "https://203.0.113.95/…",
       reachableAccounts: 2,
     });
     await collect();
@@ -208,13 +210,17 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
     // The choice AND what it did, which are not the same fact: connecting an account syncs its
     // inboxes, and that sync is a change of its own with its own row. Neither covers the other, and
     // a reader who saw only the choice could not tell whether it took effect.
+    // Each account connects in its OWN transaction and records there, so a crash between two of
+    // them leaves the account handled with a row saying so. The choice is the row on top.
     const all = await rows();
     expect(all.map((r) => r.action)).toEqual([
+      "instance.connect",
       "instance.sync_inboxes",
+      "instance.connect",
       "instance.sync_inboxes",
       "deployment.set_accounts",
     ]);
-    const row = all[2];
+    const row = all[4];
     expect(row?.after).toEqual({ accountIds: [1, 2], connected: 2 });
     await collect();
   });
@@ -395,7 +401,7 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
     expect(row?.target).toBe(`chatwoot_deployment:${dep.id}`);
     expect(row?.before).toEqual({
       id: String(dep.id),
-      baseUrl: dep.baseUrl,
+      baseUrl: "https://203.0.113.95/…",
       // The inbox this file created was removed two tests ago, which is the point of counting at
       // the moment of the delete rather than describing the deployment in the abstract.
       accounts: 1,

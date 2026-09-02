@@ -220,6 +220,12 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
       // A claim already held on the mirrored row, which is what an attempt whose toggle threw leaves
       // behind: `open` locally, still `pending` at Chatwoot.
       claimHeldMs?: number;
+      // The message the ledger recorded this takeover as being about, and the mark an unversioned
+      // console write left on the row (issue #469). Omitted = the ordinary pair, a delivery whose
+      // message nothing has handed back over; `null` for the message id = a row an older build
+      // wrote, which recorded none.
+      humanReplyMessageId?: number | null;
+      consoleWriteAtMessageId?: number;
     } = {},
   ) {
     stamp += 1;
@@ -247,6 +253,9 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
         assigneeType: "AgentBot",
         assigneeId: over.holder ?? OUR_BOT,
         chatwootStatusAt: mirrorAt,
+        ...(over.consoleWriteAtMessageId === undefined
+          ? {}
+          : { consoleWriteAtMessageId: over.consoleWriteAtMessageId }),
         inboxId: inbox.id,
         threadId: `chatwoot:${tenantId}:${instanceId}:${convId}`,
         lastEventAt: new Date(),
@@ -270,6 +279,10 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
         humanReplyShape: over.shape === undefined ? "composer" : over.shape,
         routeAgentBotId:
           over.routeAgentBotId === undefined ? OUR_BOT : over.routeAgentBotId,
+        humanReplyMessageId:
+          over.humanReplyMessageId === undefined
+            ? 500
+            : over.humanReplyMessageId,
       },
       select: { id: true },
     });
@@ -387,6 +400,110 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
 
     // And the effect the issue is about.
     expect(await customerWrites(convId)).toBe(false);
+  });
+
+  // THE HALF-HOUR THIS PATH WAITS IS THE WINDOW (issue #469). The live path races a hand-back by
+  // milliseconds; the recovery is armed only after a row has sat non-terminal for thirty minutes, so
+  // an operator clicking "Return to AI" in that stretch is not an edge case, it is the likely order
+  // of events. What the recovery would otherwise do is take a conversation back for a reply the
+  // operator had already seen and answered by handing it to the agent.
+  //
+  // The coordinate comes from the LEDGER, which is the only place it can: the payload is never
+  // stored (issue #228), and `inboundMessageId` is null on a colleague's reply by construction.
+  test("a hand-back made while the row sat stranded is not walked back", async () => {
+    const convId = 9130;
+    const rowId = await seedStranded(convId, {
+      humanReplyMessageId: 700,
+      consoleWriteAtMessageId: 700,
+    });
+    expect(
+      await recoverStrandedTakeover({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        makeClient,
+      }),
+    ).toBe("not-owed");
+    expect(togglesFor(convId)).toHaveLength(0);
+    expect((await convRow(convId)).status).toBe("pending");
+  });
+
+  test("a reply written AFTER that hand-back is still recovered", async () => {
+    const convId = 9131;
+    const rowId = await seedStranded(convId, {
+      humanReplyMessageId: 701,
+      consoleWriteAtMessageId: 700,
+    });
+    expect(
+      await recoverStrandedTakeover({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        makeClient,
+      }),
+    ).toBe("recovered");
+    expect(togglesFor(convId)).toHaveLength(1);
+  });
+
+  // A row an older build wrote names no message, and neither does a conversation nobody has clicked
+  // anything on. Each is a missing half, and each has to leave the fence with nothing to order —
+  // read as "stale" instead, the recovery issue #439 built would refuse every row it exists for.
+  test("a ledger row with no recorded message runs unfenced", async () => {
+    const convId = 9132;
+    const rowId = await seedStranded(convId, {
+      humanReplyMessageId: null,
+      consoleWriteAtMessageId: 700,
+    });
+    expect(
+      await recoverStrandedTakeover({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        makeClient,
+      }),
+    ).toBe("recovered");
+    expect(togglesFor(convId)).toHaveLength(1);
+  });
+
+  test("a conversation with no console mark runs unfenced", async () => {
+    const convId = 9133;
+    const rowId = await seedStranded(convId, { humanReplyMessageId: 700 });
+    expect(
+      await recoverStrandedTakeover({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        makeClient,
+      }),
+    ).toBe("recovered");
+    expect(togglesFor(convId)).toHaveLength(1);
+  });
+
+  // AND THE ATTEMPT WHOSE TOGGLE NEVER LANDED IS COVERED BY THE SAME BRANCH, which is why the fence
+  // sits after the finishing arm rather than before it. A hand-back writes `pending` on the ROW, so
+  // it takes the conversation OUT of the `open`-under-a-pending-claim shape the finishing arm is
+  // selected by — the claim's residue stays, and the recovery goes down the ordinary path where the
+  // fence is asked. Putting the fence in the finishing arm too would instead refuse the case where
+  // an operator OPENED the conversation themselves, a click that asks for exactly what finishing
+  // does. Measured by writing that guard first and watching this shape prove it unreachable.
+  test("a hand-back over a claim whose toggle never landed is still refused", async () => {
+    const convId = 9134;
+    const rowId = await seedStranded(convId, {
+      status: "pending",
+      claimHeldMs: -30 * 60 * 1000,
+      humanReplyMessageId: 700,
+      consoleWriteAtMessageId: 700,
+    });
+    expect(
+      await recoverStrandedTakeover({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        makeClient,
+      }),
+    ).toBe("not-owed");
+    expect(togglesFor(convId)).toHaveLength(0);
+    expect((await convRow(convId)).status).toBe("pending");
   });
 
   test("the device shape is refused on a provider that does not reserve its send ids", async () => {

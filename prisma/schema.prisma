@@ -373,6 +373,13 @@ model ChatwootWebhookDelivery {
   // delivery did and refuse the takeover it exists to run. Null on a delivery whose route resolved
   // to no bot, and on every row written before this column existed.
   routeAgentBotId    Int?                  @map("route_agent_bot_id")
+  // WHICH MESSAGE the owed takeover was about (issue #469), written at INSERT beside the shape. The
+  // recovery of issue #439 rebuilds a takeover from this row, and the fence it has to pass is
+  // ordered by the source's message sequence — a coordinate the row is the only place to hold, since
+  // the payload is never stored (issue #228) and `inboundMessageId` is null on a colleague's reply
+  // by construction. NULL on every delivery that owed no takeover, and on every row an older build
+  // wrote, where the recovery falls back to its unfenced form.
+  humanReplyMessageId Int?                 @map("human_reply_message_id")
 
   tenant   Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   instance ChatwootInstance @relation(fields: [chatwootInstanceId], references: [id], onDelete: Cascade)
@@ -694,6 +701,22 @@ model Conversation {
   // `lastHandledMessageId` above is one. Written with GREATEST, so two commands landing out of order
   // cannot move the boundary back. NULL = never reset.
   resetAtMessageId         Int?      @map("reset_at_message_id")
+  // THE CONSOLE WRITE'S PLACE IN THE SOURCE'S MESSAGE SEQUENCE (issue #469): the newest message
+  // Chatwoot knew about when this side last wrote this row WITHOUT a version. NULL = no such write
+  // has been made here, or the read that would have named one could not.
+  //
+  // The three version marks above order a field by the SOURCE's version, and the claim below is the
+  // local write announcing itself. Neither reaches a console write: the console writes to Chatwoot
+  // FIRST, so by the time it mirrors there is no transition in flight for a claim to fence, and its
+  // fallback lands with no version at all — leaving the takeover's freshness check comparing a
+  // delivery against the pre-click state and letting a payload frozen before the click undo the
+  // operator. A message id is the one coordinate both sides of that comparison can hold, and it
+  // needs no deadline because the next message expires it. See
+  // src/modules/chatwoot/console-write-order.ts.
+  //
+  // Written with GREATEST, like reset_at_message_id: two console writes are separate requests and
+  // nothing serializes them, so the older one can commit last and must not move the mark back.
+  consoleWriteAtMessageId  Int?      @map("console_write_at_message_id")
   // When the one-shot "this agent is in test mode, send /teste to activate" private note was posted
   // to a silenced conversation. Anti-spam: posted at most once per conversation (NULL = not yet).
   // /reset clears it so a fresh note can be posted on the next silenced message.

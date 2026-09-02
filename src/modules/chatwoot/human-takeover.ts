@@ -26,6 +26,7 @@ import { withEntityLock } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { emitFlowEvent } from "@/modules/flowlog/service";
 import type { ChatwootClient } from "./client";
+import { consoleWriteLandedAfter } from "./console-write-order";
 import {
   describeClosedGate,
   describeHumanTakeover,
@@ -64,6 +65,24 @@ function errMsg(err: unknown): string {
 // resolve also leaves the client with an empty bot token, which never reaches the network. The line
 // is here because the fence's answer must be right on its own terms — "we own this" is false when
 // there is no "we" — rather than right because a lookup two layers down happens to fail too.
+// EXACTLY THE COLUMNS THE FENCE ASKS FOR, named here because a test cannot identify this read any
+// other way: the config load reads the same row with a superset of them, so a probe that wanted to
+// stand in the fence's shoes has to match the projection WHOLE. Kept as one definition rather than
+// copied into each probe, because a column added to the fence would otherwise silently stop three
+// tests from injecting anything while leaving them green — and the projection was never the rule,
+// only the proxy for "this is the fence's read".
+//
+// `assigneeId` is part of the question and not decoration: without it `shouldBotHandle` cannot tell
+// OUR bot from another one. `consoleWriteAtMessageId` is a different axis from the version beside
+// it (issue #469, ./console-write-order.ts).
+export const OWNERSHIP_PROJECTION = {
+  assigneeType: true,
+  assigneeId: true,
+  status: true,
+  chatwootStatusAt: true,
+  consoleWriteAtMessageId: true,
+} as const;
+
 export async function conversationOwnershipNow(p: {
   tenantId: bigint;
   instanceId: bigint;
@@ -82,6 +101,11 @@ export async function conversationOwnershipNow(p: {
       statusAt: number | null;
       assigneeType: string | null;
       assigneeId: number | null;
+      // The fourth is a different axis, not a fourth version: where the last UNVERSIONED console
+      // write on this row stands in the source's message sequence (issue #469,
+      // ./console-write-order.ts). `statusAt` cannot answer for it, because that write left every
+      // version mark where the pre-click state put them.
+      consoleWriteAtMessageId: number | null;
     }
   | { ours: false; closed: GateCloseDetail | null }
 > {
@@ -94,14 +118,7 @@ export async function conversationOwnershipNow(p: {
           chatwootConversationId: p.conversationId,
         },
       },
-      // assigneeId is part of the question, not decoration: without it shouldBotHandle cannot tell
-      // OUR bot from another one, and a conversation handed to a different bot reads as ours.
-      select: {
-        assigneeType: true,
-        assigneeId: true,
-        status: true,
-        chatwootStatusAt: true,
-      },
+      select: OWNERSHIP_PROJECTION,
     }),
   );
   if (p.ourAgentBotId === null && conv?.assigneeType === "AgentBot") {
@@ -121,6 +138,7 @@ export async function conversationOwnershipNow(p: {
         statusAt: conv?.chatwootStatusAt ?? null,
         assigneeType: conv?.assigneeType ?? null,
         assigneeId: conv?.assigneeId ?? null,
+        consoleWriteAtMessageId: conv?.consoleWriteAtMessageId ?? null,
       }
     : {
         ours: false,
@@ -170,6 +188,13 @@ export async function claimOpenForHumanQueue(p: {
     statusAt: number | null;
     assigneeType: string | null;
     assigneeId: number | null;
+    // THE FOURTH TERM, for the same reason as the assignee beside it: it is ordered independently
+    // of the status version, so a write can move it while leaving the other three untouched. An
+    // operator setting an already-`pending`, bot-owned conversation back to `pending` from the
+    // console does exactly that — status, version and assignee all unchanged, a new mark stamped —
+    // and without this term the swap would win against a decision newer than the one it read
+    // (issue #469).
+    consoleWriteAtMessageId: number | null;
   };
   base: PrismaClient;
 }): Promise<Date | null> {
@@ -199,6 +224,7 @@ export async function claimOpenForHumanQueue(p: {
             chatwootStatusAt: p.seen.statusAt,
             assigneeType: p.seen.assigneeType,
             assigneeId: p.seen.assigneeId,
+            consoleWriteAtMessageId: p.seen.consoleWriteAtMessageId,
           },
           data: {
             status: "open",
@@ -290,6 +316,11 @@ export interface HumanReplyTakeoverParams {
   // to compare passes null and the ordering check is skipped, exactly as it is for a Chatwoot that
   // sends no `updated_at` (issue #77).
   decidedAtVersion: number | null;
+  // The Chatwoot message id this decision is ABOUT — the colleague's own reply — which is what
+  // orders it against a console write that could not be versioned (issue #469,
+  // ./console-write-order.ts). Null where the caller cannot name one: a ledger row an older build
+  // wrote, on the recovery path. The fence then has nothing to order and does not refuse.
+  decidedAtMessageId: number | null;
   // The mirror's own row id and event clock, for the console broadcast and the flow line. Null where
   // the mirror does not know the conversation, in which case neither is written.
   conversationRowId: bigint | null;
@@ -514,10 +545,6 @@ export async function runHumanReplyTakeover(
             // later answer wins. Without it the operator who just asked for the agent back watches the
             // request undone by a reply they had already sent.
             //
-            // NOTE: An unversioned hand-back is invisible to this. `mirrorConsoleWrite` falls back to
-            // a write that stamps no mark whenever its live read fails or carries none (issue #77),
-            // so the row still names the pre-click state and this comparison passes — issue #469,
-            // which the status claim below deliberately does not cover.
             if (
               now.statusAt !== null &&
               p.decidedAtVersion != null &&
@@ -525,17 +552,50 @@ export async function runHumanReplyTakeover(
             ) {
               return false;
             }
+            // AND THE HAND-BACK THAT COULD NOT BE VERSIONED, which the comparison above is blind to
+            // by construction (issue #469). `mirrorConsoleWrite` falls back to a write that stamps
+            // no version whenever its live read fails or carries none (issue #77), so the row still
+            // names the pre-click state and a delivery frozen BEFORE the click compares equal and
+            // passes — putting the agent back on a conversation the operator had just asked for it
+            // to leave, one click ago.
+            //
+            // The axis is the SOURCE's message sequence, which is the one coordinate both sides can
+            // hold: the console reads the newest message Chatwoot has, and this delivery IS a
+            // message. At or below it, the reply already existed when the operator clicked; above
+            // it, the reply was written afterwards and is a genuine handover this must still act
+            // on — the property that made a deadline-based claim the wrong instrument here, since
+            // it would skip both. ./console-write-order.ts carries why no version and no clock of
+            // ours can answer instead.
+            if (
+              consoleWriteLandedAfter(
+                p.decidedAtMessageId ?? null,
+                now.consoleWriteAtMessageId,
+              )
+            ) {
+              logger.info(
+                "chatwoot: %s handoff skipped (conv=%s) — an operator handed the conversation back after this message (msg=%s <= %s)",
+                `human reply (${p.route})`,
+                convLabel,
+                String(p.decidedAtMessageId),
+                String(now.consoleWriteAtMessageId),
+              );
+              return false;
+            }
             // UNVERSIONED, and only the field the action changed — the same fallback the console
             // takes when its live read cannot be ordered (mirrorConsoleWrite, issue #77). Claiming no
             // version is what lets a conversation event that really is newer still outrank this write
             // when it lands; the reconcile below is what earns it one.
             //
-            // The three observed columns in the predicate are what make this a compare-and-swap
+            // The four observed columns in the predicate are what make this a compare-and-swap
             // rather than a check-then-act: the read above and this write are two statements, and
-            // another replica can commit between them. The assignee is in there for its own reason —
-            // status and assignee carry SEPARATE ordering marks, so an assignment that lands in this
-            // window leaves the conversation `pending` at the same `chatwoot_status_at` while it is no
-            // longer the bot's, and a status-and-version predicate would open it anyway.
+            // another replica can commit between them. Two of them are in there for a reason of
+            // their own, and it is the same reason twice: status and assignee carry SEPARATE
+            // ordering marks, so an assignment that lands in this window leaves the conversation
+            // `pending` at the same `chatwoot_status_at` while it is no longer the bot's; and the
+            // console mark is ordered independently of the status version too, so a hand-back that
+            // could not be versioned moves it while status, version and assignee all stay exactly
+            // as this delivery read them (issue #469). A status-and-version predicate would open
+            // the conversation anyway in both cases.
             //
             // No test in this process can pry that window open — there is nothing to await between the
             // two statements — so the mutations that drop these terms survive the suite. They stay

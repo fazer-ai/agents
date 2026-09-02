@@ -27,6 +27,7 @@ import {
 import { enqueueJob } from "@/modules/scheduler/service";
 import { generateRouteToken } from "@/modules/webhooks/inbound/route-token";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { isOwnershipRead } from "../utils/ownership-read";
 
 // /reset drives real ChatwootClient calls (the command path builds its own client — no injectable
 // factory reaches it), so the double here is `globalThis.fetch` shaped like a Chatwoot server.
@@ -2571,18 +2572,7 @@ describe.skipIf(!dbUp)(
         query: {
           conversation: {
             findUnique({ args, query }) {
-              const sel = (args.select ?? {}) as Record<string, unknown>;
-              // The fence's own read, identified by the exact projection it asks for. Matched
-              // whole rather than as a subset: the config load reads the same row with more
-              // columns, and breaking that one would end the command before it reaches what this
-              // test is about.
-              if (
-                Object.keys(sel).length === 4 &&
-                sel.assigneeType === true &&
-                sel.assigneeId === true &&
-                sel.status === true &&
-                sel.chatwootStatusAt === true
-              ) {
+              if (isOwnershipRead(args.select)) {
                 fenceReads += 1;
                 return Promise.reject(new Error("connection reset"));
               }
@@ -2678,14 +2668,7 @@ describe.skipIf(!dbUp)(
         query: {
           conversation: {
             findUnique({ args, query }) {
-              const sel = (args.select ?? {}) as Record<string, unknown>;
-              if (
-                Object.keys(sel).length === 4 &&
-                sel.assigneeType === true &&
-                sel.assigneeId === true &&
-                sel.status === true &&
-                sel.chatwootStatusAt === true
-              ) {
+              if (isOwnershipRead(args.select)) {
                 fenceReads += 1;
                 return Promise.reject(new Error("connection reset"));
               }

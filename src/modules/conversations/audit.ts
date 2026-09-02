@@ -1,4 +1,5 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
+import logger from "@/api/lib/logger";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { auditMutation } from "@/modules/audit/service";
 
@@ -21,16 +22,30 @@ import { auditMutation } from "@/modules/audit/service";
 // with external effect: setting a conversation to `open` that Chatwoot already had as `open` is
 // still an operator reaching into a live conversation, and the trail is the only place that is
 // written down.
+// BEST-EFFORT, and that is the second half of the same trade. The other families raise on a failed
+// row because the row shares the mutation's transaction: a lost record there means a lost change, and
+// the caller is right to see the error. Here the change is Chatwoot's and cannot be rolled back, so
+// an error raised after the customer already has the message does not undo anything — it tells the
+// caller the action failed, and the retry sends the message a second time. On the /reset path the
+// throw would escape the delivery processor after the erase has run and strand its ledger row.
+//
+// So a row that cannot be written is LOST, loudly. `error` and not `warn`: nothing else notices, and
+// this is the one failure mode of the design.
 export async function recordConversationAction(
   ctx: TenantContext,
   base: PrismaClient,
   conversationId: bigint,
   entry: { action: string; before?: unknown; after?: unknown },
 ): Promise<void> {
-  await runScopedOn(base, ctx, (db) =>
-    auditMutation(db, ctx, {
-      target: `conversation:${conversationId}`,
-      ...entry,
-    }),
-  );
+  const target = `conversation:${conversationId}`;
+  try {
+    await runScopedOn(base, ctx, (db) =>
+      auditMutation(db, ctx, { target, ...entry }),
+    );
+  } catch (err) {
+    logger.error(
+      { err, action: entry.action, target },
+      "conversations: the action reached Chatwoot and its audit row did not",
+    );
+  }
 }

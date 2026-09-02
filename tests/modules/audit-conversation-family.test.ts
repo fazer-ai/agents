@@ -131,6 +131,40 @@ async function seedConversation(
   return c.id;
 }
 
+// A client whose audit INSERT fails and whose everything else works. The Prisma surface is proxied
+// through `$extends` and through the transaction client, because `runScopedOn` calls both before the
+// seam ever sees a delegate.
+const auditFailingBase = (client: PrismaClient): PrismaClient => {
+  // biome-ignore lint/suspicious/noExplicitAny: proxying Prisma's client surface
+  const wrap = (target: any): any =>
+    new Proxy(target, {
+      get(t, prop, receiver) {
+        if (prop === "$extends") {
+          return (...args: unknown[]) => wrap(t.$extends(...args));
+        }
+        if (prop === "$transaction") {
+          return (fn: unknown, ...rest: unknown[]) =>
+            typeof fn === "function"
+              ? t.$transaction(
+                  (tx: unknown) => (fn as (c: unknown) => unknown)(wrap(tx)),
+                  ...rest,
+                )
+              : t.$transaction(fn, ...rest);
+        }
+        if (prop === "auditLog") {
+          return {
+            ...Reflect.get(t, prop, receiver),
+            create: async () => {
+              throw new Error("audit insert failed (pool timeout)");
+            },
+          };
+        }
+        return Reflect.get(t, prop, receiver);
+      },
+    });
+  return wrap(client) as PrismaClient;
+};
+
 async function rows(action?: string) {
   return (
     (await su?.auditLog.findMany({
@@ -596,6 +630,30 @@ describe.skipIf(!dbUp)(
           appDb,
         ),
       ).rejects.toThrow();
+      expect(await rows()).toEqual([]);
+    });
+
+    // THE ROW MAY BE LOST; THE MESSAGE MAY NOT BE SENT TWICE.
+    //
+    // This is the price of recording after the effect, and it is paid deliberately. The seam's other
+    // families share the mutation's transaction, so a failed row means a failed change and the caller
+    // is right to see the error. Here the change is Chatwoot's and cannot be rolled back: an error
+    // raised after the customer already has the message tells the caller to retry, and the retry sends
+    // it again. On the /reset path it is worse, because the throw escapes the delivery processor after
+    // the erase has happened and leaves the ledger row stranded.
+    test("a row that cannot be written does not undo, or repeat, what already happened", async () => {
+      await clearAudit();
+      const id = await seedConversation(4016);
+      const stub = stubClient();
+      await replyToConversation(
+        ctx(),
+        id,
+        "chegou ao cliente",
+        false,
+        { makeClient: stub.makeClient },
+        auditFailingBase(appDb),
+      );
+      expect(stub.calls).toEqual(["sendMessage"]);
       expect(await rows()).toEqual([]);
     });
 

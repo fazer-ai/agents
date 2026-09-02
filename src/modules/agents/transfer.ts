@@ -63,7 +63,7 @@ import {
 import { normalizeToolShapes } from "@/modules/tool-definitions/normalize";
 import { storableResponseTemplate } from "@/modules/tool-definitions/response-template";
 import { readHttpMethod } from "@/modules/tool-definitions/service";
-import { secretTypeFits } from "@/modules/vault/secret-types";
+import { credentialServes } from "@/modules/vault/secret-types";
 import {
   createPendingVaultEntry,
   formatVaultRef,
@@ -1102,10 +1102,7 @@ export async function importAgent(
       }
       // The same two questions the write boundary and config-health ask, from the same helper, so an
       // import cannot admit a pairing a direct write refuses.
-      if (
-        facts !== null &&
-        (!secretTypeFits(facts.kind, write.use) || !facts.valueFitsKind)
-      ) {
+      if (facts !== null && !credentialServes(facts, write.use)) {
         warnings.push({
           code: "credentialKindUnusable",
           params: { field: write.path, kind: facts.kind },

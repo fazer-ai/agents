@@ -20,7 +20,7 @@ import { readMemoryConfig } from "@/modules/memory/settings";
 import { resolveNormalizeModel } from "@/modules/tts/normalize-model";
 import {
   type CredentialUse,
-  secretTypeFits,
+  credentialServes,
 } from "@/modules/vault/secret-types";
 
 // What the vault answers about one ref beyond "it exists". Kept as a pair rather than two parallel
@@ -347,10 +347,7 @@ function credIssue(
   // for the same reason `unresolved` waits on `known`. Issue #471.
   if (canonical !== null && vault.facts) {
     const facts = vault.facts.get(canonical);
-    if (
-      facts !== undefined &&
-      (!secretTypeFits(facts.kind, use) || !facts.valueFitsKind)
-    ) {
+    if (facts !== undefined && !credentialServes(facts, use)) {
       return { kind: "wrongKind" };
     }
   }

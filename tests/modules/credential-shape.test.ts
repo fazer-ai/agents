@@ -370,6 +370,11 @@ describe.skipIf(!dbUp)("a credential whose kind cannot serve the field", () => {
       updateEmbeddingSettings(ctx(), { credentialRef: malformedRef }, appDb),
     );
     expect(envelope).toBeNull();
+
+    // ...and the refusal it DOES make has to name the right problem. `google_oauth` travels outbound
+    // perfectly well as a refreshed token; what it cannot do is be the plain key embedding reads, so
+    // the sentence is the API-key one and not "this type is never sent to another service".
+    expect(bad?.message).toContain("reads a plain API key");
   });
 
   // An import is the one way a bad pairing can still be CREATED, because the payload is authored
@@ -457,9 +462,87 @@ describe.skipIf(!dbUp)("a credential whose kind cannot serve the field", () => {
       });
     });
 
+    // The write boundary calls an active row holding `""` unfit, so a runtime that only asked
+    // `typeof === "string"` would refuse it on the way IN and hand it to the provider as a blank key
+    // on the way OUT. Both readings come from `secretValueFitsKind` now.
+    test("an active row holding an empty string is unusable, not ok", async () => {
+      const blank = formatVaultRef(
+        String(
+          (
+            await suDb.vaultEntry.create({
+              data: {
+                tenantId,
+                name: "blank-secret",
+                kind: "openai",
+                secret: encryptJson(""),
+              },
+              select: { id: true },
+            })
+          ).id,
+        ),
+      );
+      expect(await resolve(blank)).toEqual({
+        state: "unusable",
+        kind: "openai",
+      });
+    });
+
     test("a ref the vault does not hold is unresolved", async () => {
       expect(await resolve("vault:99999999")).toEqual({ state: "unresolved" });
     });
+  });
+
+  // The exemption reaching the panel, which is where getting it wrong costs the most: a `wrongKind`
+  // on the embedding would replace the knowledge-indexing issue the operator actually has to act on.
+  test("config-health does not flag the embedding envelope the write accepts", async () => {
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: {
+        modelConfig: {
+          provider: "openai",
+          model: "gpt-4o-mini",
+          credentialRef: keyRef,
+        },
+      },
+    });
+    // The `embedding` issue only exists when a knowledge base is waiting to be indexed, so without
+    // one this asserts `undefined` on a row that was never computed — a test that would pass with
+    // the exemption removed. The base is what makes the assertion mean anything.
+    const kb = await suDb.knowledgeBase.create({
+      data: { tenantId, name: "Catálogo" },
+      select: { id: true },
+    });
+    await suDb.knowledgeDocument.create({
+      data: {
+        tenantId,
+        knowledgeBaseId: kb.id,
+        title: "tabela.pdf",
+        sourceType: "import",
+        content: "x",
+        status: "UNINDEXED",
+      },
+    });
+    await suDb.agentToolSelection.create({
+      data: {
+        tenantId,
+        agentId,
+        source: "RAG",
+        knowledgeBaseIds: [kb.id],
+        enabledTools: [],
+      },
+    });
+    await updateEmbeddingSettings(
+      ctx(),
+      { credentialRef: malformedRef },
+      appDb,
+    );
+    const h = await readAgentConfigHealth(ctx(), agentId, { base: appDb });
+    // Positive control: the reading DID reach this block, so the negative below is about the
+    // exemption and not about a check that never ran.
+    expect(h.issues.some((i) => i.key === "knowledge")).toBe(true);
+    expect(
+      h.issues.find((i) => i.key === "embedding")?.wrongKind,
+    ).toBeUndefined();
   });
 
   test("config-health reports a stored MALFORMED value the same way", async () => {

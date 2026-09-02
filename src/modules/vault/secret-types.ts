@@ -310,11 +310,40 @@ export function secretTypeFits(
   return yieldsPlainString(type);
 }
 
+// Whether this use reads a PLAIN KEY out of the entry, as opposed to resolving it through the
+// injectable path. Two of the three do, and the difference matters twice: it is the kind rule below,
+// and it is which of the two refusal sentences the write boundary throws. Those two were derived
+// separately once — `use === "apiKey"` — and the day a third use appeared it silently told an
+// operator that their `google_oauth` embedding key "is never sent outbound", which is false about
+// that kind and about that field.
+export function readsPlainKey(use: CredentialUse): boolean {
+  return use !== "injectable";
+}
+
 // Whether a field of this use holds its credential's stored VALUE to the kind's declared shape, as
 // opposed to only holding its KIND to the field's needs. Exactly one use says no, and the comment on
 // `CredentialUse` says why.
 export function valueRuleApplies(use: CredentialUse): boolean {
   return use !== "embeddingKey";
+}
+
+// CAN THIS ENTRY SERVE THIS FIELD — the whole question, in one place, because it is the question the
+// write boundary, the import warning and config-health all ask and the defect this change exists to
+// fix was those three answering it differently. Three call sites spelling out `secretTypeFits(...) &&
+// (!valueRuleApplies(...) || ...)` is three chances to drift, and it drifted twice inside one review
+// round: config-health applied the value rule to a use that is exempt from it, and the import did the
+// same in a place no test could reach yet.
+//
+// `facts` is what the vault answers about one entry beyond its existence — read through
+// `readVaultRefFacts`, or off `listVaultInfos` for the console — never the secret itself.
+export function credentialServes(
+  facts: { kind: string | null; valueFitsKind: boolean },
+  use: CredentialUse,
+): boolean {
+  return (
+    secretTypeFits(facts.kind, use) &&
+    (!valueRuleApplies(use) || facts.valueFitsKind)
+  );
 }
 
 // Whether the stored VALUE is the shape its own KIND declares. The predicate above reads the catalog;

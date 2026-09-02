@@ -12,15 +12,16 @@ import {
 } from "./secret-test";
 import {
   type CredentialUse,
+  credentialServes,
   getSecretTypeFields,
   isManagedOAuthKind,
   isSecretTypeId,
+  readsPlainKey,
   secretTypeFits,
   secretTypeIsManagedBlob,
   secretTypeNeedsParamName,
   secretTypeRequiresBaseUrl,
   secretValueFitsKind,
-  valueRuleApplies,
 } from "./secret-types";
 
 // Tenant-scoped secret vault. Secrets are encryptJson() base64 blobs in a String column
@@ -306,8 +307,13 @@ export async function tryResolveApiKeyEntry(
 ): Promise<ApiKeyResolution> {
   const entry = await tryResolveVaultEntry(db, ref);
   if (!entry) return { state: "unresolved" };
+  // The same two predicates the write boundary and config-health use, and `secretValueFitsKind`
+  // rather than a local `typeof`: the local one accepted an empty string, so an active legacy row
+  // holding `""` was refused on the way IN and handed to the provider as a blank key on the way OUT.
+  // The two readings of "unfit" have one source now, which is the only way they stay one answer.
   if (
     !secretTypeFits(entry.kind, "apiKey") ||
+    !secretValueFitsKind(entry.kind, entry.secret) ||
     typeof entry.secret !== "string"
   ) {
     return { state: "unusable", kind: entry.kind };
@@ -524,11 +530,19 @@ export async function requireVaultRefFor(
   // A PENDING entry is exempt from the value half and only from that half: it has no secret yet by
   // design (`credential_create` writes exactly that), and refusing it would break the reference-first
   // flow the write boundary admits deliberately. Its KIND is already knowable and is still checked.
+  // A PENDING entry has no value yet by design (`credential_create` writes exactly that), so it is
+  // reported as `valueFitsKind` and judged on its KIND alone — the one exemption, and only on the
+  // value half. Refusing it would break the reference-first flow the write boundary admits on purpose.
   if (
-    secretTypeFits(entry.kind, use) &&
-    (!valueRuleApplies(use) ||
-      entry.status === "pending" ||
-      vaultValueFits(entry.kind, entry.secret))
+    credentialServes(
+      {
+        kind: entry.kind,
+        valueFitsKind:
+          entry.status === "pending" ||
+          vaultValueFits(entry.kind, entry.secret),
+      },
+      use,
+    )
   ) {
     return canonical;
   }
@@ -537,7 +551,7 @@ export async function requireVaultRefFor(
   // computed in the argument position is invisible to it: it reported the outbound sentence as a key
   // nothing throws and the API-key one as thrown without its `{{kind}}`. Both readings were right
   // about the text and wrong about the code, which is the fence doing its job.
-  if (use === "apiKey") {
+  if (readsPlainKey(use)) {
     throw new AppError(
       `${field}: credential "${ref}" (kind "${entry.kind}") cannot serve a field that reads a plain API key`,
       400,

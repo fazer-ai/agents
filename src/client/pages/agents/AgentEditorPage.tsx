@@ -1773,6 +1773,7 @@ function AgentEditor() {
   const {
     known: knownRefs,
     pending: pendingRefs,
+    facts: refFacts,
     pendingEntries,
   } = useVaultRefs();
 
@@ -1909,6 +1910,23 @@ function AgentEditor() {
   // t('editor.configIssueUnresolved.modelFallback', 'The fallback-provider credential no longer exists, so the fallback cannot take a turn.')
   // t('editor.configIssueUnresolved.vision', 'The image-reading credential no longer exists, so images and documents are not read.')
   // t('editor.configIssueUnresolved.embedding', 'A knowledge base needs indexing, but the embedding credential no longer exists.')
+  // The fourth verdict: the entry is there and filled, and its TYPE cannot serve the field. Each
+  // sentence names the consequence its feature already owns, like the three families above, and ends
+  // in the one move that fixes it — which is neither "fill it in" nor "pick a new one because it is
+  // gone", but "this key belongs somewhere else". Issue #471.
+  // t('editor.configIssueWrongKind.model', 'The model credential is a type that cannot be used as an API key, so the agent cannot reply. Pick a credential that holds a single key.')
+  // t('editor.configIssueWrongKind.stt', 'The transcription credential is a type that cannot be used as an API key, so voice messages are not transcribed. Pick a credential that holds a single key.')
+  // t('editor.configIssueWrongKind.tts', 'The audio-reply credential is a type that cannot be used as an API key, so replies are sent as text. Pick a credential that holds a single key.')
+  // t('editor.configIssueWrongKind.ttsNormalize', 'The speech-rewrite credential is a type that cannot be used as an API key, so replies are spoken without the rewrite. Pick a credential that holds a single key.')
+  // t('editor.configIssueWrongKind.memoryModel', 'The summary-model credential is a type that cannot be used as an API key, so attendances that end are not summarized. Pick a credential that holds a single key.')
+  // t('editor.configIssueWrongKind.modelFallback', 'The fallback-provider credential is a type that cannot be used as an API key, so the fallback cannot take a turn. Pick a credential that holds a single key.')
+  // t('editor.configIssueWrongKind.vision', 'The image-reading credential is a type that cannot be used as an API key, so images and documents are not read. Pick a credential that holds a single key.')
+  // t('editor.configIssueWrongKind.guardrails', 'The guardrails credential is a type that cannot be used as an API key, so messages go out unscreened. Pick a credential that holds a single key.')
+  // t('editor.configIssueWrongKind.embedding', 'A knowledge base needs indexing, but the embedding credential is a type that cannot be used as an API key. Pick a credential that holds a single key.')
+  // The contact-authorization gate is the one field here that accepts a connected account, so its
+  // sentence cannot say "a single key": what it refuses is the opposite case, a credential this
+  // product only ever reads internally and never sends to another service.
+  // t('editor.configIssueWrongKind.contactAuth', 'The contact-authorization credential is a type this product never sends to another service, so the check fails and the agent stays silent. Pick a credential that can authenticate a request.')
   // Knowledge bases this agent uses (its RAG grant) that still have documents awaiting indexing —
   // surfaced as a config warning so a freshly-imported agent flags "index me" right in the editor.
   const ragGrant = grants.find((g) => g.source === "RAG");
@@ -1984,6 +2002,7 @@ function AgentEditor() {
     guardrailsLastFailureAt: guardrailHealth?.lastAt,
     pendingRefs,
     knownRefs,
+    refFacts,
     knowledgeBasesNeedingIndex,
     embeddingCredentialRef,
     redirectEnabled: channelRedirect.enabled,
@@ -2105,6 +2124,15 @@ function AgentEditor() {
         return t(
           "editor.importWarning.credentialPending",
           'Credential "{{name}}" was not found here, so a placeholder was created. Fill in its secret to activate it.',
+          p,
+        );
+      // The entry was found and wired; what does not fit is the PAIRING. Named by field rather than
+      // by credential name, unlike the four around it: the same credential can be right on one field
+      // and wrong on the next, so the name alone would not say where to look. Issue #471.
+      case "credentialKindUnusable":
+        return t(
+          "editor.importWarning.credentialKindUnusable",
+          'The credential wired to "{{field}}" is a "{{kind}}" credential, which that field cannot use. It was left wired so you can see it; pick another one there.',
           p,
         );
       case "credentialMissingMeta":

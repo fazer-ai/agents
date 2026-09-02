@@ -23,6 +23,8 @@
     "chatwootProfileFailed": "Chatwoot could not be reached with the URL and token provided.",
     "chatwootRebindFailed": "The bot could not be reconnected to Chatwoot.",
     "conversationNotFound": "Conversation not found.",
+    "credentialKindUnusableAsKey": "This field reads an API key and the \"{{kind}}\" credential type cannot supply one: it either holds several fields instead of a single secret, or it is one this product never sends to another service. Pick a different credential.",
+    "credentialKindUnusableOutbound": "The \"{{kind}}\" credential type is read inside this product and is never sent to another service, so it cannot authenticate a request. Pick a different credential.",
     "credentialNotUsable": "This credential did not provide an API key: it may be missing, empty, or of a type this provider cannot use.",
     "credentialPending": "The credential {{ref}} has not been filled yet",
     "credentialPendingUnsupportedKind": "This credential type is set up via a connect flow and cannot be created as a pending reference",

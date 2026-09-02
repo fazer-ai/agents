@@ -11,12 +11,17 @@ import {
   type SecretTestResult,
 } from "./secret-test";
 import {
+  type CredentialUse,
+  credentialServes,
   getSecretTypeFields,
   isManagedOAuthKind,
   isSecretTypeId,
+  readsPlainKey,
+  secretTypeFits,
   secretTypeIsManagedBlob,
   secretTypeNeedsParamName,
   secretTypeRequiresBaseUrl,
+  secretValueFitsKind,
 } from "./secret-types";
 
 // Tenant-scoped secret vault. Secrets are encryptJson() base64 blobs in a String column
@@ -248,10 +253,17 @@ export async function resolveVaultEntry<T = unknown>(
   };
 }
 
-export async function tryResolveVaultEntry<T = unknown>(
+// The secret comes back as `unknown` and the generic parameter is gone ON PURPOSE. It used to
+// default to `unknown` and be spelled `<string>` at ten call sites, where it was not a check but an
+// assertion: `decryptJson<T>` casts, so a `google_oauth` entry's `{ clientId, clientSecret }` was
+// typed `string` all the way into `createChatModel` (issue #471). Callers that need a string now say
+// so through `tryResolveApiKeyEntry`, or narrow it themselves; the six that already narrowed keep
+// compiling unchanged, and the ten that did not could not be missed, because the compiler is what
+// found them.
+export async function tryResolveVaultEntry(
   db: ScopedDb,
   ref: string,
-): Promise<ResolvedVaultEntry<T> | null> {
+): Promise<ResolvedVaultEntry | null> {
   const entry = await db.vaultEntry.findFirst({
     where: vaultRefWhere(ref),
     select: {
@@ -265,12 +277,48 @@ export async function tryResolveVaultEntry<T = unknown>(
   });
   if (!entry || entry.status === "pending") return null;
   return {
-    secret: decryptJson<T>(entry.secret),
+    secret: decryptJson(entry.secret),
     kind: entry.kind,
     baseUrl: entry.baseUrl,
     paramName: entry.paramName,
     name: entry.name,
   };
+}
+
+// The same resolution for a field that reads a PLAIN API KEY and hands it to somebody else's SDK —
+// the agent's model and its four model overrides, STT, TTS and vision. Three outcomes rather than
+// two, because the operator's move differs and the log line that names it is the only trace any of
+// these leave: a ref that no longer resolves is a credential to re-pick or fill, and one that
+// resolves to the wrong KIND is a credential that belongs on another field.
+//
+// The shape check is belt AND braces on the kind check, and neither is redundant. The kind is the
+// catalog's declaration; the value is what is actually stored, and the two can disagree — a legacy
+// entry created before the kind existed, or a managed blob whose connect flow never ran.
+export type ApiKeyResolution =
+  | { state: "ok"; secret: string; baseUrl: string | null }
+  // Deleted, never resolvable, or referenced with its secret not filled in yet.
+  | { state: "unresolved" }
+  // Present and filled, and this is not a credential this field can use.
+  | { state: "unusable"; kind: string };
+
+export async function tryResolveApiKeyEntry(
+  db: ScopedDb,
+  ref: string,
+): Promise<ApiKeyResolution> {
+  const entry = await tryResolveVaultEntry(db, ref);
+  if (!entry) return { state: "unresolved" };
+  // The same two predicates the write boundary and config-health use, and `secretValueFitsKind`
+  // rather than a local `typeof`: the local one accepted an empty string, so an active legacy row
+  // holding `""` was refused on the way IN and handed to the provider as a blank key on the way OUT.
+  // The two readings of "unfit" have one source now, which is the only way they stay one answer.
+  if (
+    !secretTypeFits(entry.kind, "apiKey") ||
+    !secretValueFitsKind(entry.kind, entry.secret) ||
+    typeof entry.secret !== "string"
+  ) {
+    return { state: "unusable", kind: entry.kind };
+  }
+  return { state: "ok", secret: entry.secret, baseUrl: entry.baseUrl };
 }
 
 // The MCP surface speaks vault entry NAMES (agent-friendly: the operator tells the agent a name);
@@ -384,6 +432,141 @@ export async function requireVaultRef(
     );
   }
   return formatVaultRef(entry.id);
+}
+
+// `requireVaultRef` plus the question it never asked: can an entry of THIS KIND supply what the
+// field reads? The two are separate functions rather than one parameter because the ref rule reaches
+// thirteen call sites and this one does not: four of them (langfuse, the two integration credentials,
+// and the webhook/alert signing secrets) answer a THIRD question — a fixed kind, or a string consumed
+// locally and never sent anywhere — and folding those into the two-value `CredentialUse` would have
+// meant inventing a use for each just to satisfy a required parameter. What this covers is the fields
+// whose use is already declared: the agent's nine (SETTINGS_CREDENTIAL_PATHS + modelConfig) and the
+// tenant's embedding key. Issue #471.
+//
+// The field is in the English sentence as well as in `AppError.field`, which is a duplication the
+// other vault refusals do not carry. MCP hands `message` to the caller verbatim on a surface with no
+// structured error channel, and `agent_settings_set` patches several credentialled blocks in one
+// call: without the path, "credential vault:32 cannot serve this field" names no field to fix.
+//
+// Refused rather than reported, and that is the split `credential-paths.ts` already documents: the
+// operator is at the keyboard and the reference is the thing they just picked. What is ALREADY stored
+// is left alone and reported by config-health, so one unusable pairing cannot freeze every other
+// edit of the agent that holds it.
+// Decrypts a stored blob far enough to answer "is this the shape its kind declares?", and never
+// further: the value is judged and dropped, never returned or logged.
+//
+// THREE answers, not two, and the third is the one that matters. A blob that cannot be decrypted at
+// all — a rotated `ENCRYPTION_KEY`, a truncated row — is not a malformed value, it is a value nobody
+// can read, and collapsing it into "unfit" would make a key rotation refuse every agent write in the
+// workspace while blaming the credential's TYPE for it. That is a real problem with a different
+// cause, a different fix and no verdict here today; this change is about shape, and inventing an
+// answer for it would be inventing a diagnosis. So `unreadable` never refuses and never warns, and
+// the runtime keeps failing on it exactly as it did before.
+type ValueVerdict = "fits" | "unfit" | "unreadable";
+
+function vaultValueVerdict(
+  kind: string | null,
+  encrypted: string,
+): ValueVerdict {
+  let value: unknown;
+  try {
+    value = decryptJson(encrypted);
+  } catch {
+    return "unreadable";
+  }
+  return secretValueFitsKind(kind, value) ? "fits" : "unfit";
+}
+
+// The permissive projection every caller here wants: only a value that was READ and judged wrong
+// counts against the credential.
+function vaultValueFits(kind: string | null, encrypted: string): boolean {
+  return vaultValueVerdict(kind, encrypted) !== "unfit";
+}
+
+// What the vault says about one ref beyond its existence, for the two callers that judge a PAIRING
+// without being the write boundary: the import warning and (through listVaultInfos) config-health.
+// One function so the three surfaces cannot end up asking different halves of the same question,
+// which is the defect this whole change is about. Null when the ref names no row in this tenant.
+export interface VaultEntryFacts {
+  kind: string;
+  valueFitsKind: boolean;
+}
+
+export async function readVaultRefFacts(
+  db: ScopedDb,
+  ref: string,
+): Promise<VaultEntryFacts | null> {
+  const row = await db.vaultEntry.findFirst({
+    where: vaultRefWhere(ref),
+    select: { kind: true, status: true, secret: true },
+  });
+  if (!row) return null;
+  return {
+    kind: row.kind,
+    valueFitsKind:
+      row.status === "pending" || vaultValueFits(row.kind, row.secret),
+  };
+}
+
+export async function requireVaultRefFor(
+  db: ScopedDb,
+  ref: string,
+  field: string,
+  use: CredentialUse,
+): Promise<string> {
+  const canonical = await requireVaultRef(db, ref, field);
+  const entry = await db.vaultEntry.findFirst({
+    where: vaultRefWhere(canonical),
+    select: { kind: true, status: true, secret: true },
+  });
+  // Gone between the two reads: `requireVaultRef` has already answered for existence, and inventing
+  // a second refusal here would report a race as a shape problem.
+  if (!entry) return canonical;
+  // TWO questions, because the runtime asks two and a boundary that asks fewer accepts a
+  // configuration the turn then refuses — with config-health calling it healthy in between, which is
+  // the exact asymmetry this change exists to remove. The kind is the catalog's declaration; the
+  // value is what is in the row, and `validateVaultValue` is not the only way one gets written.
+  //
+  // A PENDING entry is exempt from the value half and only from that half: it has no secret yet by
+  // design (`credential_create` writes exactly that), and refusing it would break the reference-first
+  // flow the write boundary admits deliberately. Its KIND is already knowable and is still checked.
+  // A PENDING entry has no value yet by design (`credential_create` writes exactly that), so it is
+  // reported as `valueFitsKind` and judged on its KIND alone — the one exemption, and only on the
+  // value half. Refusing it would break the reference-first flow the write boundary admits on purpose.
+  if (
+    credentialServes(
+      {
+        kind: entry.kind,
+        valueFitsKind:
+          entry.status === "pending" ||
+          vaultValueFits(entry.kind, entry.secret),
+      },
+      use,
+    )
+  ) {
+    return canonical;
+  }
+  // Two spellings of one refusal, written out rather than ternaried into one `new AppError`. The
+  // error-catalog fence reads the key and its interpolation values out of the SOURCE, and a key
+  // computed in the argument position is invisible to it: it reported the outbound sentence as a key
+  // nothing throws and the API-key one as thrown without its `{{kind}}`. Both readings were right
+  // about the text and wrong about the code, which is the fence doing its job.
+  if (readsPlainKey(use)) {
+    throw new AppError(
+      `${field}: credential "${ref}" (kind "${entry.kind}") cannot serve a field that reads a plain API key`,
+      400,
+      "errors.credentialKindUnusableAsKey",
+      { kind: entry.kind },
+      field,
+    );
+  }
+  throw new AppError(
+    `${field}: credential "${ref}" (kind "${entry.kind}") is never sent outbound and cannot authenticate a request`,
+    400,
+    "errors.credentialKindUnusableOutbound",
+    { kind: entry.kind },
+    field,
+  );
 }
 
 export async function vaultNameByRef(
@@ -571,6 +754,11 @@ export interface VaultEntryInfo {
   paramName: string | null;
   // "active" = a real secret is stored; "pending" = only the reference exists (not filled yet).
   status: string;
+  // Whether the stored value is the shape this kind declares. A VERDICT, never the value: it is
+  // computed server-side and crosses the wire as a boolean, so the console can judge a pairing the
+  // way the runtime does without the secret ever leaving the process. Always true for a `pending`
+  // entry, which has no value yet and is reported through `status` instead.
+  valueFitsKind: boolean;
 }
 
 export async function listVaultInfos(db: ScopedDb): Promise<VaultEntryInfo[]> {
@@ -582,6 +770,7 @@ export async function listVaultInfos(db: ScopedDb): Promise<VaultEntryInfo[]> {
       baseUrl: true,
       paramName: true,
       status: true,
+      secret: true,
     },
     orderBy: { name: "asc" },
   });
@@ -592,6 +781,7 @@ export async function listVaultInfos(db: ScopedDb): Promise<VaultEntryInfo[]> {
     baseUrl: r.baseUrl,
     paramName: r.paramName,
     status: r.status,
+    valueFitsKind: r.status === "pending" || vaultValueFits(r.kind, r.secret),
   }));
 }
 

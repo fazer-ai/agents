@@ -75,7 +75,7 @@ export async function listCredentialCalendars(
   const resolveEntry =
     deps.resolveEntry ??
     ((ref: string) =>
-      runScopedOn(base, ctx, (db) => tryResolveVaultEntry<unknown>(db, ref)));
+      runScopedOn(base, ctx, (db) => tryResolveVaultEntry(db, ref)));
   const entry = await resolveEntry(credentialRef);
   if (!entry)
     throw new NotFoundError(

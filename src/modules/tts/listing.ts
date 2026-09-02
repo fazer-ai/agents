@@ -4,7 +4,7 @@ import { AppError } from "@/lib/errors";
 import { assertSafeOutboundUrl as defaultAssertSafeOutboundUrl } from "@/lib/ssrf";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { readProviderJson } from "@/modules/models/provider-listing";
-import { tryResolveVaultEntry } from "@/modules/vault/service";
+import { tryResolveApiKeyEntry } from "@/modules/vault/service";
 import { TTS_PROVIDER_NAMES } from "./providers";
 
 // Lists the voices / models the editor's TTS combobox offers (item 10). OpenAI has no list endpoint
@@ -69,10 +69,12 @@ async function resolveApiKey(
   credentialRef: string,
 ): Promise<string | null> {
   const entry = await runScopedOn(base, ctx, (db) =>
-    tryResolveVaultEntry<unknown>(db, credentialRef),
+    tryResolveApiKeyEntry(db, credentialRef),
   );
-  if (!entry) return null;
-  return typeof entry.secret === "string" ? entry.secret : null;
+  // One null for three states, and that is right here: the picker's job is to list what it can, and
+  // an unusable credential produces the same empty list as a missing one. The `state` split exists
+  // for the runtime paths, where the operator needs the reason in a log line (issue #471).
+  return entry.state === "ok" ? entry.secret : null;
 }
 
 export type KeyResolver = (

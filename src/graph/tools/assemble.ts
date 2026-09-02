@@ -305,10 +305,7 @@ export async function loadToolSelections(
         let credentialKind: string | null = null;
         let credentialParamName: string | null = null;
         if (conn.credentialRef) {
-          const entry = await tryResolveVaultEntry<unknown>(
-            db,
-            conn.credentialRef,
-          );
+          const entry = await tryResolveVaultEntry(db, conn.credentialRef);
           credentialKind = entry?.kind ?? null;
           credentialParamName = entry?.paramName ?? null;
           credentialBaseUrl = entry?.baseUrl ?? null;

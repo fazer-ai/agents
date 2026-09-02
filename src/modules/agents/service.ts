@@ -44,7 +44,7 @@ import {
   getToolpackToolNames,
   getToolpackToolViews,
 } from "@/modules/integrations/toolpacks";
-import { requireVaultRef } from "@/modules/vault/service";
+import { requireVaultRefFor } from "@/modules/vault/service";
 
 // Agent configuration CRUD — the config the whole system orbits (the same core the UI config
 // screen and the MCP `prompt_get/set` tools project over). All reads/writes are tenant-scoped;
@@ -580,13 +580,20 @@ function rawFullDetailUntil(settings: unknown): unknown {
 //
 // Canonical on the way in, not merely valid: requireVaultRef returns the one spelling every reader
 // agrees on, and it is written back where the ref was found.
+//
+// And USABLE on the way in, not merely present: `requireVaultRefFor` also asks whether an entry of
+// that kind can serve the field, which nothing did. Eight of these nine fields read a plain API key
+// and hand it to a provider SDK; a `google_oauth` entry holds `{ clientId, clientSecret }`, so it
+// resolved, stored, and reached `createChatModel` as an object typed `string` (#471).
 async function assertCredentialRefsResolve(
   db: ScopedDb,
   next: { modelConfig?: unknown; settings?: unknown },
   stored: { modelConfig?: unknown; settings?: unknown },
 ): Promise<void> {
   for (const write of collectCredentialRefWrites(next, stored)) {
-    write.replace(await requireVaultRef(db, write.ref, write.path));
+    write.replace(
+      await requireVaultRefFor(db, write.ref, write.path, write.use),
+    );
   }
 }
 

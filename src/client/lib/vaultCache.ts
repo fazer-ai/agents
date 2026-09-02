@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { getActiveTenantId } from "@/client/lib/activeTenant";
 import { api } from "@/client/lib/api";
 import { canonicalVaultRef, formatVaultRef } from "@/client/lib/credentialRef";
+import type { VaultRefFacts } from "@/modules/agents/config-health";
 
 // Derived from the treaty response, never hand-mirrored (see docs/eden-treaty.md).
 export type VaultEntry = NonNullable<
@@ -159,6 +160,11 @@ export function useVaultBaseUrls(): (ref: string) => string | null {
 export function useVaultRefs(): {
   known: Set<string> | null;
   pending: Set<string>;
+  // What the vault says each ref in `known` IS, keyed the same way, so a field can ask whether the
+  // entry it names can actually serve it — resolving and serving are different questions (issue
+  // #471). The value's shape comes back as a boolean the server computed, never as the value. Null
+  // alongside `known` and for the same reason: an empty map would read as "nothing fits".
+  facts: Map<string, VaultRefFacts> | null;
   pendingEntries: VaultEntry[];
 } {
   const [entries, setEntries] = useState<VaultEntry[] | null>(null);
@@ -198,6 +204,18 @@ export function useVaultRefs(): {
     pending: useMemo(
       () => new Set(pendingEntries.map((e) => formatVaultRef(e.id))),
       [pendingEntries],
+    ),
+    facts: useMemo(
+      () =>
+        entries
+          ? new Map(
+              entries.map((e) => [
+                formatVaultRef(e.id),
+                { kind: e.kind, valueFitsKind: e.valueFitsKind },
+              ]),
+            )
+          : null,
+      [entries],
     ),
     pendingEntries,
   };

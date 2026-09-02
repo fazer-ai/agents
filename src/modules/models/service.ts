@@ -4,7 +4,7 @@ import { MODEL_PROVIDERS } from "@/graph/model-config";
 import { AppError } from "@/lib/errors";
 import { assertSafeOutboundUrl as defaultAssertSafeOutboundUrl } from "@/lib/ssrf";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
-import { tryResolveVaultEntry } from "@/modules/vault/service";
+import { tryResolveApiKeyEntry } from "@/modules/vault/service";
 import { readProviderJson } from "./provider-listing";
 
 // Non-chat model ids to filter out from OpenAI listings.
@@ -83,10 +83,12 @@ async function resolveApiKey(
   credentialRef: string,
 ): Promise<string | null> {
   const entry = await runScopedOn(base, ctx, (db) =>
-    tryResolveVaultEntry<unknown>(db, credentialRef),
+    tryResolveApiKeyEntry(db, credentialRef),
   );
-  if (!entry) return null;
-  return typeof entry.secret === "string" ? entry.secret : null;
+  // One null for three states, and that is right here: the picker's job is to list what it can, and
+  // an unusable credential produces the same empty list as a missing one. The `state` split exists
+  // for the runtime paths, where the operator needs the reason in a log line (issue #471).
+  return entry.state === "ok" ? entry.secret : null;
 }
 
 export type KeyResolver = (

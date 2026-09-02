@@ -89,7 +89,7 @@ import { llmNormalizeForSpeech } from "@/modules/tts/normalize";
 import { resolveNormalizeModel } from "@/modules/tts/normalize-model";
 import { readTtsConfig, type TtsConfig } from "@/modules/tts/settings";
 import { resolveInjectableCredential } from "@/modules/vault/injectable";
-import { tryResolveVaultEntry } from "@/modules/vault/service";
+import { tryResolveApiKeyEntry } from "@/modules/vault/service";
 import { chatwootThreadId, getCheckpointer } from "./checkpointer";
 import {
   type FallbackConfig,
@@ -367,15 +367,23 @@ export async function loadAgentConfig(
   let apiKey = "";
   let credentialBaseUrl: string | null = null;
   if (mc.credentialRef) {
-    const entry = await tryResolveVaultEntry<string>(db, mc.credentialRef);
-    if (!entry) {
+    const entry = await tryResolveApiKeyEntry(db, mc.credentialRef);
+    if (entry.state !== "ok") {
       // A credentialRef that no longer resolves (deleted / still-pending / a NAME passed where a
       // vault:<id> ref is required) otherwise makes the agent go silent with no trace — the turn just
       // returns null. Log it so the silent no-reply is diagnosable.
+      //
+      // `unusable` is the same silence for a different reason and gets its own sentence: the entry is
+      // there and filled, and its KIND cannot be an API key (a `google_oauth` pair, a managed blob, a
+      // secret the catalog says never leaves). Told apart because the fix is not the same — one is
+      // "fill or re-pick this credential", the other is "this credential belongs on another field".
       logger.warn(
-        "agent %s: model credentialRef %s did not resolve — the agent cannot reply until it is fixed",
+        entry.state === "unusable"
+          ? "agent %s: model credentialRef %s resolves to a %s credential, which cannot be used as an API key — the agent cannot reply until it is fixed"
+          : "agent %s: model credentialRef %s did not resolve — the agent cannot reply until it is fixed",
         String(args.agentId),
         mc.credentialRef,
+        entry.state === "unusable" ? entry.kind : "",
       );
       return null;
     }
@@ -389,18 +397,18 @@ export async function loadAgentConfig(
   let guardrailsApiKey = "";
   let guardrailsCredentialBaseUrl: string | null = null;
   if (guardrails.enabled && guardrails.credentialRef) {
-    const gEntry = await tryResolveVaultEntry<string>(
-      db,
-      guardrails.credentialRef,
-    );
-    if (gEntry) {
+    const gEntry = await tryResolveApiKeyEntry(db, guardrails.credentialRef);
+    if (gEntry.state === "ok") {
       guardrailsApiKey = gEntry.secret;
       guardrailsCredentialBaseUrl = gEntry.baseUrl;
     } else {
       logger.warn(
-        "agent %s: guardrails credentialRef %s did not resolve — guardrails analysis is skipped",
+        gEntry.state === "unusable"
+          ? "agent %s: guardrails credentialRef %s resolves to a %s credential, which cannot be used as an API key — guardrails analysis is skipped"
+          : "agent %s: guardrails credentialRef %s did not resolve — guardrails analysis is skipped",
         String(args.agentId),
         guardrails.credentialRef,
+        gEntry.state === "unusable" ? gEntry.kind : "",
       );
     }
   }
@@ -412,18 +420,21 @@ export async function loadAgentConfig(
   let ttsNormalizeApiKey = "";
   let ttsNormalizeCredentialBaseUrl: string | null = null;
   if (ttsCfg.normalize && ttsCfg.normalizeCredentialRef) {
-    const nEntry = await tryResolveVaultEntry<string>(
+    const nEntry = await tryResolveApiKeyEntry(
       db,
       ttsCfg.normalizeCredentialRef,
     );
-    if (nEntry) {
+    if (nEntry.state === "ok") {
       ttsNormalizeApiKey = nEntry.secret;
       ttsNormalizeCredentialBaseUrl = nEntry.baseUrl;
     } else {
       logger.warn(
-        "agent %s: tts normalize credentialRef %s did not resolve, so the speech rewrite is skipped",
+        nEntry.state === "unusable"
+          ? "agent %s: tts normalize credentialRef %s resolves to a %s credential, which cannot be used as an API key, so the speech rewrite is skipped"
+          : "agent %s: tts normalize credentialRef %s did not resolve, so the speech rewrite is skipped",
         String(args.agentId),
         ttsCfg.normalizeCredentialRef,
+        nEntry.state === "unusable" ? nEntry.kind : "",
       );
     }
   }
@@ -435,18 +446,18 @@ export async function loadAgentConfig(
   let modelFallbackApiKey = "";
   let modelFallbackCredentialBaseUrl: string | null = null;
   if (hasModelFallback(fallbackCfg) && fallbackCfg.credentialRef) {
-    const fEntry = await tryResolveVaultEntry<string>(
-      db,
-      fallbackCfg.credentialRef,
-    );
-    if (fEntry) {
+    const fEntry = await tryResolveApiKeyEntry(db, fallbackCfg.credentialRef);
+    if (fEntry.state === "ok") {
       modelFallbackApiKey = fEntry.secret;
       modelFallbackCredentialBaseUrl = fEntry.baseUrl;
     } else {
       logger.warn(
-        "agent %s: model fallback credentialRef %s did not resolve, so there is nothing behind the provider",
+        fEntry.state === "unusable"
+          ? "agent %s: model fallback credentialRef %s resolves to a %s credential, which cannot be used as an API key, so there is nothing behind the provider"
+          : "agent %s: model fallback credentialRef %s did not resolve, so there is nothing behind the provider",
         String(args.agentId),
         fallbackCfg.credentialRef,
+        fEntry.state === "unusable" ? fEntry.kind : "",
       );
     }
   }
@@ -459,18 +470,18 @@ export async function loadAgentConfig(
   let memoryCompactionApiKey = "";
   let memoryCompactionCredentialBaseUrl: string | null = null;
   if (memoryCfg.enabled && memoryCfg.credentialRef) {
-    const mEntry = await tryResolveVaultEntry<string>(
-      db,
-      memoryCfg.credentialRef,
-    );
-    if (mEntry) {
+    const mEntry = await tryResolveApiKeyEntry(db, memoryCfg.credentialRef);
+    if (mEntry.state === "ok") {
       memoryCompactionApiKey = mEntry.secret;
       memoryCompactionCredentialBaseUrl = mEntry.baseUrl;
     } else {
       logger.warn(
-        "agent %s: memory compaction credentialRef %s did not resolve, so the attendance summary is not written",
+        mEntry.state === "unusable"
+          ? "agent %s: memory compaction credentialRef %s resolves to a %s credential, which cannot be used as an API key, so the attendance summary is not written"
+          : "agent %s: memory compaction credentialRef %s did not resolve, so the attendance summary is not written",
         String(args.agentId),
         memoryCfg.credentialRef,
+        mEntry.state === "unusable" ? mEntry.kind : "",
       );
     }
   }

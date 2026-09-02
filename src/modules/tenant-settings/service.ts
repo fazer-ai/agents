@@ -11,7 +11,11 @@ import {
   type SpendCeilingConfig,
   spendCeilingSettingsSchema,
 } from "@/modules/spend-ceiling/settings";
-import { requireVaultRef, vaultRefWhere } from "@/modules/vault/service";
+import {
+  requireVaultRef,
+  requireVaultRefFor,
+  vaultRefWhere,
+} from "@/modules/vault/service";
 
 // Per-tenant settings live in the Tenant.settings JSON column. RLS scopes the row to the active
 // tenant (the runtime role may read/update its own row), so the same reader works at runtime
@@ -268,12 +272,22 @@ export async function updateEmbeddingSettings(
   // stored it and indexing then failed with no credential the operator could see was wrong (#254).
   // The block holds one field, so naming it IS changing it — there is no unrelated save to protect
   // here, unlike the agent's bags.
+  //
+  // `…For` and not the plain ref check: this key is read as a plain string and POSTed to the
+  // embedding provider, and this module's own comment in rag/documents.ts already said the kind was
+  // never checked — an operator picking the Chatwoot credential here got every chunk of their
+  // knowledge base POSTed at the Chatwoot host. Issue #471.
   const incoming = patch.credentialRef;
   const credentialRef =
     incoming == null
       ? incoming
       : await runScopedOn(base, ctx, (db) =>
-          requireVaultRef(db, incoming, "embedding.credentialRef"),
+          requireVaultRefFor(
+            db,
+            incoming,
+            "embedding.credentialRef",
+            "embeddingKey",
+          ),
         );
   return patchBlock(
     ctx,

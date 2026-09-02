@@ -515,7 +515,7 @@ export async function discoverMcpTools(
       );
     }
     const entry = conn.credentialRef
-      ? await tryResolveVaultEntry<unknown>(db, conn.credentialRef)
+      ? await tryResolveVaultEntry(db, conn.credentialRef)
       : null;
     return {
       ...conn,

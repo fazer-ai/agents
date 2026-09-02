@@ -32,7 +32,7 @@ export async function resolveInjectableCredentialEntry(
   ref: string,
 ): Promise<InjectableCredential | null> {
   const entry = await runScopedOn(base, sysCtx(tenantId), (db) =>
-    tryResolveVaultEntry<unknown>(db, ref),
+    tryResolveVaultEntry(db, ref),
   );
   if (!entry) return null;
   if (entry.kind === "google_oauth" || entry.kind === "mcp_oauth") {

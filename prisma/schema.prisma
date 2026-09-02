@@ -569,6 +569,39 @@ model Conversation {
   // conversation_updated that announces a new pairing arrives with a FROZEN activity timestamp and a
   // recency fence would discard exactly the payload that carries the answer.
   chatwootRedirectOriginAt Float?    @map("chatwoot_redirect_origin_at")
+  // THE LOCAL STATUS CLAIM (issue #436): a status this side wrote that the source has not versioned,
+  // and the instant that write stops fencing this row. NULL = no local write is outstanding.
+  //
+  // The three marks above order a field by the SOURCE's version. A local write has none to offer —
+  // the toggle endpoint renders a status blob and no `updated_at` (issue #77) — so it lands with the
+  // marks where they were, and every payload still in flight compares greater and undoes it. That is
+  // not an ordering problem with a missing number in it: a customer message advances
+  // `conversation.updated_at` on its own account, so no version can separate a snapshot taken before
+  // our write from one taken after. The claim is therefore the write announcing itself rather than
+  // borrowing a clock.
+  //
+  // A DEADLINE and not a flag, because the only thing that can end it other than the writer is the
+  // writer's death. See src/modules/chatwoot/status-claim.ts for how long and why.
+  statusClaimUntil         DateTime? @map("status_claim_until")
+  // The status the claim is still REPLACING AT THE SOURCE, and the only one it refuses. A payload
+  // restating it while the claim is live is a snapshot from before the write; a payload stating
+  // anything else is news, and refusing that would drop a resolve nothing ever redelivers.
+  //
+  // Written and cleared with the column above, always as a pair: only a write that moves the row
+  // BEFORE it calls Chatwoot can take a claim, because only then is there a transition in flight for
+  // a payload to be behind. See src/modules/chatwoot/status-claim.ts.
+  statusClaimFrom          String?   @map("status_claim_from")
+  // The version the SOURCE gave the transition this claim announced, learned from the live read the
+  // takeover makes after its toggle. NULL is the gap: until it is written there is nothing to place a
+  // payload against, and no reading of the ordering marks supplies one, since a mark that moved says
+  // only that some write arrived, never whose or when. Once it is written the question is ordinary
+  // again — strictly ahead of it was committed after our write.
+  statusClaimStampedAt     Float?    @map("status_claim_stamped_at")
+  // The newest version the claim refused while that gap was open. Kept because we ACK those events
+  // and Chatwoot never redelivers them: the reconcile that stamps the column above adjudicates this
+  // one against it, and a version ahead of ours is a transition committed after our write (a
+  // colleague handing the conversation back) whose status therefore stands. Cleared with the answer.
+  statusClaimRefusedAt     Float?    @map("status_claim_refused_at")
   // Debounce watermark: the Chatwoot message id of the last inbound message already handled
   // (responded to or deliberately skipped). The flush re-fetches and answers only ids beyond it,
   // so re-arm / retry / a concurrent claim cannot produce a duplicate reply. NULL = nothing handled.

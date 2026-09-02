@@ -8,7 +8,11 @@ import {
   normalizeChatwootEvent,
   shouldBotHandle,
 } from "@/modules/chatwoot/normalize";
-import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
+import { STATUS_CLAIM_TTL_MS } from "@/modules/chatwoot/status-claim";
+import {
+  claimOpenForHumanQueue,
+  processChatwootDelivery,
+} from "@/modules/chatwoot/webhook";
 import { isFollowUpLive } from "@/modules/followups/eligibility";
 import { POLL_DEADLINE_MS } from "@/tests/utils/poll";
 import { seedChatwootInstance } from "../utils/chatwoot";
@@ -67,6 +71,10 @@ const liveStatus = new Map<number, string>();
 const unversionedReads = new Set<number>();
 // Conversations whose REST show fails outright, which is a slow or broken Chatwoot.
 const failingReads = new Set<number>();
+// Conversations whose REST show answers with a PINNED version, standing for a read that was issued
+// before something else committed: the snapshot in hand is the older truth even though it came back
+// later, which is the window `reconcileMirrorFromLive` exists to guard.
+const pinnedReadVersion = new Map<number, number>();
 // Conversations whose toggle_status fails, which is the half of a broken Chatwoot that matters after
 // the row has already been claimed locally.
 const failingToggles = new Set<number>();
@@ -118,7 +126,9 @@ const stubFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       // A FLOAT of unix seconds, which is what the REST show renders (`updated_at.to_f`) and what
       // the ordering compares raw. An ISO string reads as no version at all and the reconcile is
       // silently skipped.
-      ...(unversionedReads.has(id) ? {} : { updated_at: stamp + 0.5 }),
+      ...(unversionedReads.has(id)
+        ? {}
+        : { updated_at: pinnedReadVersion.get(id) ?? stamp + 0.5 }),
     });
   }
   return new Response(JSON.stringify({}), {
@@ -322,6 +332,44 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     })) as "processed" | "skipped";
   }
 
+  // A CONVERSATION event, whose payload is the conversation object at top level rather than nested
+  // under a `conversation` key — the shape `mirrorChatwootEvent` orders by version, and the one a
+  // delayed or companion event arrives in.
+  async function deliverConversationEvent(
+    convId: number,
+    event: string,
+    // The conversation object to serialize from. Handed in when two events have to be the COMPANIONS
+    // of one write: Chatwoot serializes them from the same row, so they agree on `updated_at` by
+    // construction, and building one apiece would make them two different writes.
+    snapshot?: ReturnType<typeof conversation>,
+  ): Promise<"processed" | "skipped"> {
+    deliverySeq += 1;
+    const n = normalizeChatwootEvent({
+      event,
+      ...(snapshot ?? conversation(convId)),
+    });
+    if (!n) throw new Error("conversation payload did not normalize");
+    const delivery = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `hr-${process.pid}-${deliverySeq}`,
+        event,
+        status: "PENDING",
+      },
+      select: { id: true },
+    });
+    return (await processChatwootDelivery({
+      tenantId,
+      instanceId,
+      deliveryRowId: delivery.id,
+      agentBotId: OUR_BOT,
+      normalized: n,
+      deps,
+      base: appDb,
+    })) as "processed" | "skipped";
+  }
+
   // The shape the fork stores for a reply typed on the paired phone, measured off the wire:
   // outgoing, sender-less, and marked with external_sender_name.
   const deviceReply = (text: string) => ({
@@ -354,6 +402,10 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
         status: true,
         lastHandledMessageId: true,
         chatwootStatusAt: true,
+        statusClaimUntil: true,
+        statusClaimFrom: true,
+        statusClaimStampedAt: true,
+        statusClaimRefusedAt: true,
       },
     });
   }
@@ -798,10 +850,10 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
   // lost — and rolling back on the unknown puts the agent straight back to answering over the person
   // it just handed the conversation to.
   //
-  // So the claim stands, and what resolves it is the path that already exists: the next customer
-  // message carries the reopen exception, so a conversation Chatwoot really did leave `pending`
-  // comes back to the agent on its own.
-  test("a failed open keeps the claim, and the next message is what settles it", async () => {
+  // So the claim stands, and what resolves it is the deadline rather than the next message: while it
+  // is live it refuses precisely the `pending` that message carries, and once it runs out the
+  // conversation Chatwoot really did leave `pending` comes back to the agent on its own.
+  test("a failed open keeps the claim, and the next message is refused while it stands", async () => {
     const conv = 8512;
     await deliver(conv, { ...customerSays("oi") });
     failingToggles.add(conv);
@@ -814,8 +866,31 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     expect((await convRow(conv))?.status).toBe("open");
     // ...and not reported as one, because nothing established that a person was handed anything.
     expect((await takeoverRows(conv, 200)).length).toBe(0);
-    // And it does not stay stuck: Chatwoot never left `pending`, so the next customer message says
-    // so and the agent answers again.
+    const before = turnsRan;
+    await deliver(conv, { ...customerSays("continua aí?") });
+    expect(turnsRan).toBe(before);
+    expect((await convRow(conv))?.status).toBe("open");
+  });
+
+  // ...and the other half of the same sentence, which is what makes the disagreement non-durable.
+  // Same scenario with the deadline already spent, so the only difference between the two tests is
+  // the clock — which is what makes the one above about the claim rather than about the write beside
+  // it.
+  test("...and settled by the next message once the claim runs out", async () => {
+    const conv = 8563;
+    await deliver(conv, { ...customerSays("oi") });
+    failingToggles.add(conv);
+    try {
+      await deliver(conv, { ...deviceReply("já te respondo") });
+    } finally {
+      failingToggles.delete(conv);
+    }
+    const row = await convRow(conv);
+    expect(row?.status).toBe("open");
+    await suDb.conversation.update({
+      where: { id: row?.id },
+      data: { statusClaimUntil: new Date(Date.now() - 1) },
+    });
     const before = turnsRan;
     await deliver(conv, { ...customerSays("continua aí?") });
     expect(turnsRan).toBe(before + 1);
@@ -973,6 +1048,243 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
       where: { id: agentDbId },
       data: { settings: { debounce: { enabled: false } } },
     });
+  });
+
+  // ── ISSUE #436: THE CLAIM IS UNORDERABLE UNTIL THE RECONCILE STAMPS IT ──
+  //
+  // The row moves to `open` before the toggle goes out, and that write claims no version (the toggle
+  // endpoint renders none). Deliveries for one conversation are dispatched detached and never
+  // serialized, so anything committing between the claim and the reconcile does so against a row
+  // whose `chatwoot_status_at` still names the state BEFORE the claim — and wins.
+
+  // WAY IN ONE: a customer message Chatwoot serialized before it committed the toggle. Its snapshot
+  // still says `pending`, and the reopen exception is the one rule that lets a message move status.
+  //
+  // Asserted on the TURN and not on the row, because the row is repaired a moment later by the
+  // reconcile and the turn is not: by then the agent has already spoken into a conversation a
+  // colleague is holding, which is the whole of issue #430.
+  test("a customer message delivered while the toggle is on the wire drives no turn", async () => {
+    const conv = 8560;
+    await deliver(conv, { ...customerSays("oi") });
+    const markBefore = (await convRow(conv))?.chatwootStatusAt ?? null;
+    const before = turnsRan;
+    whileToggling = async () => {
+      whileToggling = null;
+      await deliver(conv, { ...customerSays("e aí, tem?") });
+    };
+    try {
+      await deliver(conv, { ...deviceReply("já te respondo") });
+    } finally {
+      whileToggling = null;
+    }
+    expect(turnsRan).toBe(before);
+    // AND THE RECONCILE STAMPED THE SOURCE'S VERSION ON IT, which is the other half of the rule: the
+    // claim refuses what it cannot place, and this is the number that ends that — everything past it
+    // is a write committed after ours. The mark the claim was taken at is where it started.
+    const claimed = await convRow(conv);
+    expect(claimed?.statusClaimStampedAt ?? 0).toBeGreaterThan(markBefore ?? 0);
+    expect(claimed?.statusClaimRefusedAt).toBeNull();
+  });
+
+  // ...AND A CLAIM STARTS EMPTY, whatever the row was carrying. Both columns belong to ONE claim: a
+  // stamp left by an earlier one would say the source has already decided this transition, and the
+  // gap would be un-fenced from its first instant.
+  test("a takeover clears what an earlier claim left on the row", async () => {
+    const conv = 8565;
+    await deliver(conv, { ...customerSays("oi") });
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: conv },
+      data: { statusClaimStampedAt: 1, statusClaimRefusedAt: 2 },
+    });
+    // With the live read failing, nothing stamps afterwards, so what the row holds at the end is
+    // exactly what the claim itself wrote.
+    failingReads.add(conv);
+    try {
+      await deliver(conv, { ...deviceReply("já te respondo") });
+    } finally {
+      failingReads.delete(conv);
+    }
+    const row = await convRow(conv);
+    expect(row?.statusClaimFrom).toBe("pending");
+    expect(row?.statusClaimStampedAt).toBeNull();
+    expect(row?.statusClaimRefusedAt).toBeNull();
+  });
+
+  // WAY IN TWO: a delayed or companion `conversation_*` event. It needs no reopen exception — it
+  // carries the pre-takeover `pending` and a version, and the claim advanced none, so the ordinary
+  // ordered path accepts it.
+  //
+  // With the live read failing, the claim is the only thing that touched the row, which is what
+  // isolates the question — the same pairing the test above this one uses.
+  test("a conversation event carrying the pre-takeover state does not walk the claim back", async () => {
+    const conv = 8561;
+    await deliver(conv, { ...customerSays("oi") });
+    failingReads.add(conv);
+    whileToggling = async () => {
+      whileToggling = null;
+      // TWO INDEPENDENT ones, which is the shape a single refusal does not cover: the first is
+      // refused and leaves its version on the mark, and the second must not ride that mark in. They
+      // are different writes — a label and a priority, say — so they carry different versions, which
+      // is exactly what tells them from the companion of one write.
+      await deliverConversationEvent(conv, "conversation_updated");
+      await deliverConversationEvent(conv, "conversation_updated");
+    };
+    try {
+      await deliver(conv, { ...deviceReply("já te respondo") });
+    } finally {
+      whileToggling = null;
+      failingReads.delete(conv);
+    }
+    expect((await convRow(conv))?.status).toBe("open");
+  });
+
+  // ISSUE #468, ROUND 6. The same way in, by the OTHER shape: two events that are companions of ONE
+  // write — the customer's own reopen, dispatched as `conversation_status_changed` and, because
+  // `status` is in the conversation's `list_of_keys`, `conversation_updated` — queued behind the
+  // reply and delivered inside the window. They agree on `updated_at` by construction, and that
+  // agreement proves only that they describe one write, never that the write came after the claim.
+  test("two companions of a write made BEFORE the claim cannot walk it back", async () => {
+    const conv = 8566;
+    await deliver(conv, { ...customerSays("oi") });
+    // ONE snapshot, serialized here: before the colleague replied, and therefore before the toggle.
+    const beforeTheReply = conversation(conv);
+    failingReads.add(conv);
+    whileToggling = async () => {
+      whileToggling = null;
+      await deliverConversationEvent(
+        conv,
+        "conversation_status_changed",
+        beforeTheReply,
+      );
+      await deliverConversationEvent(
+        conv,
+        "conversation_updated",
+        beforeTheReply,
+      );
+    };
+    try {
+      await deliver(conv, { ...deviceReply("já te respondo") });
+    } finally {
+      whileToggling = null;
+      failingReads.delete(conv);
+    }
+    const row = await convRow(conv);
+    expect(row?.status).toBe("open");
+    // Kept, not applied: the read that would adjudicate it failed, so the claim holds the version and
+    // the deadline is what ends the fence.
+    expect(row?.statusClaimRefusedAt).toBe(beforeTheReply.updated_at);
+  });
+
+  // ISSUE #468, ROUND 7. What the claim must NOT cost: the conversation coming back. Once the source
+  // has stamped our transition, a payload ahead of that version is a write made after ours whichever
+  // event carries it — and when the hand-back's own `conversation_*` event is delayed or lost, the
+  // next thing carrying it is the customer's own message. Asserted on the TURN, because the harm is
+  // not a wrong row: it is the message acknowledged with nobody answering the customer.
+  test("a customer message newer than the stamped claim brings the bot back", async () => {
+    const conv = 8567;
+    await deliver(conv, { ...customerSays("oi") });
+    await deliver(conv, { ...deviceReply("já te respondo") });
+    expect((await convRow(conv))?.status).toBe("open");
+    // The colleague hands the conversation back inside the claim's 45 seconds, and the event saying
+    // so never arrives.
+    liveStatus.set(conv, "pending");
+    const before = turnsRan;
+    await deliver(conv, { ...customerSays("consegue me ajudar?") });
+    expect((await convRow(conv))?.status).toBe("pending");
+    expect(turnsRan).toBe(before + 1);
+  });
+
+  // ISSUE #468, ROUND 8. The compare-and-swap orders this write against one that has already
+  // COMMITTED. It says nothing about a `mirrorChatwootEvent` transaction that has already READ the
+  // row — with no claim on it — and has not written yet: that one commits its own decision straight
+  // over the `open`, and the agent answers over the person. The lock is what orders those two, and it
+  // is the same lock the mirror and the reconcile take.
+  test("the claim waits for whoever holds the conversation", async () => {
+    const conv = 8568;
+    await deliver(conv, { ...customerSays("oi") });
+    const seeded = await convRow(conv);
+    const claim = () =>
+      claimOpenForHumanQueue({
+        tenantId,
+        instanceId,
+        conversationId: conv,
+        seen: {
+          statusAt: seeded?.chatwootStatusAt ?? null,
+          assigneeType: "AgentBot",
+          assigneeId: OUR_BOT,
+        },
+        base: appDb,
+      });
+    // A holder rather than a `let`, so the control-flow analysis does not narrow the answer to the
+    // `null` it starts on: the only writer is the callback below.
+    const claimed: { until: Date | null } = { until: null };
+    let running: Promise<void> | null = null;
+    const startedAt = Date.now();
+    await suDb.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`${tenantId}:${instanceId}:${conv}`})::bigint)`;
+      running = claim().then((v) => {
+        claimed.until = v;
+      });
+      // Long enough for an unlocked write to have finished several times over, and to separate the
+      // two candidate start points for the deadline below. It cannot go flaky in the direction that
+      // matters: a slow machine only delays the claim further.
+      await Bun.sleep(400);
+      expect(claimed.until).toBeNull();
+      expect((await convRow(conv))?.status).toBe("pending");
+    });
+    await running;
+    // The deadline the claim answers with is the one it WROTE, and it is stamped past the wait: the
+    // countdown is the fence's, not the queue's.
+    const row = await convRow(conv);
+    expect(row?.status).toBe("open");
+    // The deadline the claim answers with is the one it WROTE...
+    expect(claimed.until?.getTime()).toBe(row?.statusClaimUntil?.getTime());
+    // ...and the countdown starts past the wait, not at the call: a deadline stamped before the lock
+    // would land at `startedAt + TTL` and spend the queueing on the fence it promises.
+    expect(claimed.until?.getTime() ?? 0).toBeGreaterThan(
+      startedAt + STATUS_CLAIM_TTL_MS + 100,
+    );
+  });
+
+  // ISSUE #468, ROUND 3. The claim cannot tell a conversation event frozen BEFORE our write from one
+  // committed after it — the version that would separate them is our own transition's, which the
+  // toggle does not render — so it refuses both, and refusing a real hand-back would lose it, since
+  // we ack the event and Chatwoot never redelivers. What keeps that from being a hole is that the
+  // refusal is DEFERRED rather than dropped: it keeps its version, and the reconcile that finally
+  // learns ours adjudicates the two. Ahead of ours, it was a write committed after our own.
+  //
+  // The live read is pinned to a version below the hand-back's, which is what a GET issued before it
+  // committed comes back with.
+  test("a hand-back committed while the toggle is on the wire survives the reconcile", async () => {
+    const conv = 8564;
+    await deliver(conv, { ...customerSays("oi") });
+    const pinned = stamp + 0.5;
+    pinnedReadVersion.set(conv, pinned);
+    whileToggling = async () => {
+      whileToggling = null;
+      stamp += 100;
+      // Both of them, because that is what a status change dispatches: CONVERSATION_STATUS_CHANGED
+      // always, and `conversation_updated` because `status` is in the conversation's `list_of_keys`.
+      // ONE snapshot for the two, which is how Chatwoot produces them: same row, same `updated_at`.
+      const handback = conversation(conv);
+      await deliverConversationEvent(conv, "conversation_updated", handback);
+      await deliverConversationEvent(
+        conv,
+        "conversation_status_changed",
+        handback,
+      );
+    };
+    try {
+      await deliver(conv, { ...deviceReply("já te respondo") });
+    } finally {
+      whileToggling = null;
+      pinnedReadVersion.delete(conv);
+    }
+    const row = await convRow(conv);
+    expect(row?.status).toBe("pending");
+    // The mark is the hand-back's, not the reconcile's: the adjudication wrote the version the
+    // refusal had kept, over the older one our own read came back with.
+    expect(row?.chatwootStatusAt ?? 0).toBeGreaterThan(pinned);
   });
 
   function deliverReplyOff() {

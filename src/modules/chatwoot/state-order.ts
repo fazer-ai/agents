@@ -67,6 +67,8 @@
  * apart into one version.
  */
 
+import { statusClaimVerdict } from "./status-claim";
+
 export interface StatePayload {
   /** `conversation.updated_at`. Null on a Chatwoot older than 4.0.2, which sends no version. */
   version: number | null;
@@ -99,6 +101,8 @@ export interface StatePayload {
 
 /** The ordering state already stored for this conversation. Null when there is no row yet. */
 export interface StateRow {
+  /** The status currently stored, which only the claim rule below reads. */
+  status: string;
   activityAt: Date | null;
   statusAt: number | null;
   assigneeAt: number | null;
@@ -110,6 +114,18 @@ export interface StateRow {
    * having neither is silence.
    */
   redirectOriginKnown: boolean;
+  /**
+   * THE LOCAL CLAIM (issue #436): a status written on this side that the source has not versioned,
+   * and the instant it stops fencing. `from` is the status it replaced, which is the only one it
+   * refuses; `stampedAt` is the version the source gave that write once the reconcile has read it
+   * back, and null for as long as there is nothing to place a payload against; `refusedAt` is the
+   * newest version refused while that was null, kept for the reconcile to adjudicate. All null when
+   * nothing local is outstanding. See ./status-claim.ts.
+   */
+  statusClaimUntil: Date | null;
+  statusClaimFrom: string | null;
+  statusClaimStampedAt: number | null;
+  statusClaimRefusedAt: number | null;
 }
 
 export interface StateDecision {
@@ -140,6 +156,13 @@ export interface StateDecision {
   unversioned: boolean;
   /** Version to stamp on the status mark, or null to leave it where it is. */
   statusAt: number | null;
+  /**
+   * Version to record as REFUSED BY THE LOCAL CLAIM, or null to leave the stored one. Written only
+   * while the claim has no stamped version of its own, which is the window in which a refusal cannot
+   * be told from a loss: the reconcile that stamps ours adjudicates this against it. Forward-only
+   * like every mark here, so the newest refusal is the one kept. ./status-claim.ts.
+   */
+  statusClaimRefusedAt: number | null;
   /** Version to stamp on the assignee mark, or null to leave it where it is. */
   assigneeAt: number | null;
   /**
@@ -212,6 +235,7 @@ export function decideConversationWrites(
       assignee: payload.assigneeStated,
       unversioned: true,
       statusAt: payload.status != null ? payload.version : null,
+      statusClaimRefusedAt: null,
       assigneeAt: payload.assigneeStated ? payload.version : null,
       redirectOrigin: redirectOriginAnswers,
       redirectOriginAt: redirectOriginAnswers ? payload.version : null,
@@ -268,6 +292,7 @@ export function decideConversationWrites(
       assignee: false,
       unversioned: false,
       statusAt: null,
+      statusClaimRefusedAt: null,
       assigneeAt: null,
       redirectOrigin: redirectOriginAnswers && !olderThanRedirectOrigin,
       redirectOriginAt:
@@ -312,7 +337,23 @@ export function decideConversationWrites(
     payload.reopensConversation &&
     (row.statusAt === null ||
       Math.floor(eventAt.getTime() / 1000) >= Math.floor(row.statusAt));
-  const writeStatus = statusOrdered || reopenOrdered;
+  // A LOCAL CLAIM OUTRANKS BOTH ROUTES ABOVE, and it is the only rule here that is not about a
+  // version — because the write it protects had none to claim. A payload restating the status the
+  // claim replaced is a snapshot from before that write, whichever axis it would have won on: the
+  // reopen exception carries one (a customer message frozen while the toggle was on the wire), and
+  // the ordinary ordered path carries the other (a delayed or companion `conversation_*` event, which
+  // outranks a mark the claim never advanced). ./status-claim.ts holds the reasoning and the reason
+  // this refuses ONE status rather than the field.
+  const claim = statusClaimVerdict(
+    row,
+    {
+      status: payload.status,
+      reopens: payload.reopensConversation,
+      version: payload.version,
+    },
+    now,
+  );
+  const writeStatus = claim === "apply" && (statusOrdered || reopenOrdered);
   const status = writeStatus ? payload.status : null;
 
   // NOTE: One rule for the EQUAL-version case, so the outcome cannot depend on delivery order. A
@@ -357,6 +398,16 @@ export function decideConversationWrites(
     assignee,
     unversioned: row.activityAt == null || eventAt >= row.activityAt,
     statusAt: status != null ? advances(row.statusAt) : null,
+    // NOTE: A refusal the claim could not place is KEPT, on a mark of its own rather than on the
+    // status mark. Both halves matter: we ack this event and Chatwoot never redelivers it, so
+    // dropping it would lose a hand-back made while our toggle was on the wire; and putting it on the
+    // status mark instead would say the source stamped something it did not, which is the reading
+    // three rounds of review broke in three different ways (issue #468).
+    // ../../modules/chatwoot/status-claim.ts.
+    statusClaimRefusedAt:
+      claim === "refuse-and-defer"
+        ? advancesFrom(row.statusClaimRefusedAt, payload.version)
+        : null,
     assigneeAt: assignee ? advances(row.assigneeAt) : null,
     redirectOrigin,
     redirectOriginAt: redirectOrigin ? advances(row.redirectOriginAt) : null,

@@ -544,31 +544,59 @@ export async function runAgentNudge(
     // back with. On a row migrated before those columns existed the marks are null, so the next
     // delayed conversation event would be accepted as the first versioned word on a conversation
     // this GET just verified. The write below no-ops when there is genuinely nothing to store.
+    // WHAT THE ROW SAYS AFTER THE RECONCILE, not what the snapshot said. The two differ on exactly
+    // one thing and it is the thing this gate is for: a local status claim (issue #436), which is a
+    // transition this side has written and Chatwoot has not confirmed. A snapshot read while the
+    // toggle is on the wire still says `pending`, and taking it at face value here sends a follow-up
+    // into a conversation a colleague has just answered in — the mirror refuses that write and this
+    // probe would go ahead anyway.
+    //
+    // The live read stays the source of truth for everything else, which is why this gate exists at
+    // all (a lost resolve webhook leaves the mirror pending forever). `reconcileMirrorFromLive`
+    // returns the row AFTER its own ordering decided, so it IS the live read wherever the live read
+    // won.
+    let decided: {
+      status: string;
+      assigneeType: string | null;
+      assigneeId: number | null;
+    } = live;
     try {
-      await reconcileMirrorFromLive({
+      const outcome = await reconcileMirrorFromLive({
         tenantId,
         instanceId,
         conversationId,
         live,
         base,
       });
+      // ONLY when a claim is what refused it. Everything else the reconcile declines to write is
+      // declined for an ordering reason, and there the live read is still the newer word — a snapshot
+      // that says `resolved` over a mirror a delayed reopen already advanced is exactly the case this
+      // gate exists for, and taking the row there would send into a conversation the operator closed.
+      if (outcome.refusedByStatusClaim && outcome.state)
+        decided = outcome.state;
       // NOTE: Keep the in-memory snapshot in step so a second probe only re-writes on a NEW divergence.
-      loaded.status = live.status;
+      loaded.status = decided.status;
       loaded.statusAt = live.updatedAt;
-      loaded.assigneeType = live.assigneeType;
-      loaded.assigneeId = live.assigneeId;
+      loaded.assigneeType = decided.assigneeType;
+      loaded.assigneeId = decided.assigneeId;
       loaded.assigneeName = live.assigneeName;
     } catch (err) {
+      // FAILING CLOSED, like the fetch above, and for a sharper reason: the one thing this probe
+      // needs the reconcile for is the local claim, which the snapshot in hand cannot show. Carrying
+      // on with that snapshot is carrying on with the exact reading the claim exists to refuse — a
+      // pre-toggle `pending`, bot-owned — and this gate would then send over the colleague who just
+      // replied (issue #468, round 10). A skipped follow-up costs a follow-up.
       logger.warn(
         { err, conversationId: String(conversationId) },
-        "agentNudge: mirror reconcile failed",
+        "agentNudge: mirror reconcile failed — failing closed",
       );
+      return "unavailable";
     }
     const owned = shouldBotHandle(
       {
-        assigneeType: live.assigneeType,
-        status: live.status,
-        assigneeId: live.assigneeId,
+        assigneeType: decided.assigneeType,
+        status: decided.status,
+        assigneeId: decided.assigneeId,
       },
       { ourAgentBotId: cfg.agentBotId },
     );
@@ -576,8 +604,8 @@ export async function runAgentNudge(
       logger.info(
         "agentNudge: live state not bot-owned (conv=%s status=%s assignee=%s) — skipping",
         String(conversationId),
-        live.status,
-        live.assigneeType ?? "none",
+        decided.status,
+        decided.assigneeType ?? "none",
       );
     }
     return owned ? "owned" : "not-owned";

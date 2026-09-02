@@ -18,6 +18,10 @@ const LATER = new Date("2026-08-15T11:30:00.000Z");
 const V_OLD = 1_776_000_000.101;
 const V_NOW = 1_776_000_000.202;
 const V_NEW = 1_776_000_000.303;
+// A claim's deadline, either side of the caller's clock. `decideConversationWrites` is handed `NOW`,
+// so these are what "still standing" and "ran out" look like to it.
+const CLAIM_LIVE = new Date(NOW.getTime() + 30_000);
+const CLAIM_EXPIRED = new Date(NOW.getTime() - 1);
 
 function conversationEvent(over: Partial<StatePayload> = {}): StatePayload {
   return {
@@ -44,12 +48,17 @@ function messageEvent(over: Partial<StatePayload> = {}): StatePayload {
 
 function storedRow(over: Partial<StateRow> = {}): StateRow {
   return {
+    status: "open",
     activityAt: LATER,
     statusAt: V_NOW,
     assigneeAt: V_NOW,
     assigneeType: "AgentBot",
     redirectOriginAt: null,
     redirectOriginKnown: false,
+    statusClaimUntil: null,
+    statusClaimFrom: null,
+    statusClaimStampedAt: null,
+    statusClaimRefusedAt: null,
     ...over,
   };
 }
@@ -371,6 +380,222 @@ const CASES: Case[] = [
     payload: messageEvent({ redirectOriginStated: true }),
     row: null,
     want: { redirectOrigin: true, redirectOriginAt: V_NEW },
+  },
+
+  // ── THE LOCAL CLAIM (issue #436) ──
+  //
+  // A status this side wrote that the source has not versioned. It is the one ordering input here
+  // that does not come from Chatwoot, and it exists because no reading of `updated_at` can separate a
+  // snapshot taken before that write from one taken after it: a customer message advances the
+  // conversation's version on its own account. ../../src/modules/chatwoot/status-claim.ts.
+  {
+    // The takeover writes `open` over `pending` and then calls Chatwoot. The customer message
+    // Chatwoot serialized before it committed the toggle still says `pending`, and the reopen
+    // exception is the one rule that lets a message move status at all.
+    name: "a live claim refuses the status it is replacing, carried by a message",
+    payload: messageEvent({
+      reopensConversation: true,
+      activityAt: NOW,
+      status: "pending",
+    }),
+    row: storedRow({
+      status: "open",
+      statusClaimUntil: CLAIM_LIVE,
+      statusClaimFrom: "pending",
+      // Nothing stamped: the reconcile has not run, so there is no version of our own to place this
+      // against.
+      statusClaimStampedAt: null,
+    }),
+    // Kept like every other refusal inside the gap: the payload states a version, and the reconcile
+    // is the only thing that can place it.
+    want: { status: null, statusAt: null, statusClaimRefusedAt: V_NEW },
+  },
+  {
+    // The other way in, and it needs no exception: a delayed or companion `conversation_*` event
+    // carrying the same pre-takeover `pending` wins on the ordinary ordered path, because the claim
+    // advanced no mark for it to lose to.
+    name: "a live claim refuses the status it is replacing, carried by a conversation event",
+    payload: conversationEvent({ version: V_NEW, status: "pending" }),
+    row: storedRow({
+      status: "open",
+      statusClaimUntil: CLAIM_LIVE,
+      statusClaimFrom: "pending",
+      // Nothing stamped: the reconcile has not run.
+      statusClaimStampedAt: null,
+    }),
+    // ...and the VERSION IS KEPT, on the claim's own mark and not on the status one. This payload is
+    // a transition somebody dispatched and we are about to acknowledge it, so dropping it would lose
+    // a hand-back made while the toggle was on the wire; the reconcile answers it against the version
+    // the source gives our own write.
+    want: { status: null, statusAt: null, statusClaimRefusedAt: V_NEW },
+  },
+  {
+    // ...and it is the NEWEST refusal that is kept, forward-only like every other mark here: two
+    // payloads frozen before the toggle are two readings of a state we already decided to leave, and
+    // only the later one could be evidence of anything.
+    name: "a second refusal keeps only the newer version",
+    payload: conversationEvent({ version: V_NOW, status: "pending" }),
+    row: storedRow({
+      status: "open",
+      // Behind the version already kept, and AHEAD of the status mark, so this payload is a live
+      // reading and not a stale one: what stops it is the comparison, not the staleness branch.
+      statusAt: V_OLD,
+      statusClaimUntil: CLAIM_LIVE,
+      statusClaimFrom: "pending",
+      statusClaimRefusedAt: V_NEW,
+    }),
+    want: { status: null, statusClaimRefusedAt: null },
+  },
+  {
+    // ...and once the source HAS stamped our transition, the ordinary question is back: a version
+    // strictly ahead of ours was committed after our write, so it is a hand-back and it lands.
+    name: "a write committed after the stamped transition applies",
+    payload: conversationEvent({ version: V_NEW, status: "pending" }),
+    row: storedRow({
+      status: "open",
+      statusAt: V_NOW,
+      statusClaimUntil: CLAIM_LIVE,
+      statusClaimFrom: "pending",
+      statusClaimStampedAt: V_NOW,
+    }),
+    want: { status: "pending", statusAt: V_NEW, statusClaimRefusedAt: null },
+  },
+  {
+    // ...and a version the stamp has already placed as ours or older is still the gap: EQUAL is the
+    // reading our own reconcile took, and a payload restating it is that same state read twice.
+    name: "a version equal to the stamped transition is still refused",
+    payload: conversationEvent({ version: V_NOW, status: "pending" }),
+    row: storedRow({
+      status: "open",
+      statusAt: V_NOW,
+      statusClaimUntil: CLAIM_LIVE,
+      statusClaimFrom: "pending",
+      statusClaimStampedAt: V_NOW,
+    }),
+    want: { status: null, statusAt: null },
+  },
+  {
+    // ...and that is asked of the REOPEN route too, which is the one place a message can move the
+    // status. A hand-back whose conversation event was delayed or lost leaves the next customer
+    // message carrying the new `pending` with a version of its own, and refusing it on the stored
+    // status alone leaves the mirror closed to the bot while Chatwoot has the conversation waiting
+    // for it — the message acknowledged, and nobody answering the customer (issue #468, round 7).
+    name: "a message newer than the stamped transition moves the status it restates",
+    payload: messageEvent({
+      reopensConversation: true,
+      activityAt: NOW,
+      status: "pending",
+      version: V_NEW,
+    }),
+    row: storedRow({
+      status: "open",
+      statusAt: V_NOW,
+      statusClaimUntil: CLAIM_LIVE,
+      statusClaimFrom: "pending",
+      statusClaimStampedAt: V_NOW,
+    }),
+    want: { status: "pending" },
+  },
+  {
+    // Not a freeze of the field. An operator resolving inside the claim produces ONE event, which we
+    // ack and Chatwoot never redelivers, so a blanket fence would lose it with no later event on a
+    // resolved conversation to repair it.
+    name: "a live claim lets a status it is not replacing through",
+    payload: conversationEvent({ version: V_NEW, status: "resolved" }),
+    row: storedRow({
+      status: "open",
+      statusClaimUntil: CLAIM_LIVE,
+      statusClaimFrom: "pending",
+      // Nothing stamped: the reconcile has not run.
+      statusClaimStampedAt: null,
+    }),
+    want: { status: "resolved", statusAt: V_NEW },
+  },
+  {
+    // The one exception, keyed on the status the ROW holds and not on the one the payload carries:
+    // `reopen_conversation` acts on a resolved or snoozed conversation and does nothing at all to an
+    // open or pending one, so on a row we believe is resolved the payload is evidence of a change
+    // made AFTER our write. Measured on the fork, where that same act produces `pending` rather than
+    // `open` on an inbox with an active bot — which is why the rule cannot be written around the
+    // status it produces.
+    name: "a live claim does not refuse the source's own reopen of a resolved conversation",
+    payload: messageEvent({
+      reopensConversation: true,
+      activityAt: NOW,
+      status: "open",
+    }),
+    row: storedRow({
+      status: "resolved",
+      statusClaimUntil: CLAIM_LIVE,
+      statusClaimFrom: "open",
+    }),
+    want: { status: "open" },
+  },
+  {
+    // Same act, on a row nothing can reopen: the payload is carrying the conversation's status
+    // because every message payload embeds a snapshot, which is the whole of issue #61.
+    name: "the reopen exception does not rescue a payload on a row that cannot be reopened",
+    payload: messageEvent({
+      reopensConversation: true,
+      activityAt: NOW,
+      status: "pending",
+    }),
+    row: storedRow({
+      status: "pending",
+      statusClaimUntil: CLAIM_LIVE,
+      statusClaimFrom: "pending",
+    }),
+    want: { status: null },
+  },
+  {
+    // A MARK THAT MOVED IS NOT A STAMP, which is the reading three rounds of review broke in three
+    // ways (issue #468). Whatever moved the status mark here — a delivery for another field, an
+    // operator's own change — says nothing about whether the SOURCE has decided our transition, so
+    // the gap is still open and a payload restating the replaced status is still unplaceable.
+    name: "a live claim refuses a payload on a mark that moved without a stamp",
+    payload: conversationEvent({ version: V_NEW, status: "pending" }),
+    row: storedRow({
+      status: "open",
+      statusAt: V_NOW,
+      statusClaimUntil: CLAIM_LIVE,
+      statusClaimFrom: "pending",
+    }),
+    want: { status: null, statusAt: null, statusClaimRefusedAt: V_NEW },
+  },
+  {
+    // ...and a stamped claim still fences the reopen exception, which is the whole reason the claim
+    // does not simply retire at the reconcile: that route compares WHOLE SECONDS against the mark, so
+    // a message frozen in the same second as the toggle wins the ordering it is judged on. What it
+    // cannot do is beat the stamp, because the toggle wrote AFTER the message did — measured live, on
+    // a toggle and a customer message that landed in the same second.
+    name: "a stamped transition still fences a message frozen before it",
+    payload: messageEvent({
+      reopensConversation: true,
+      activityAt: NOW,
+      status: "pending",
+      version: V_OLD,
+    }),
+    row: storedRow({
+      status: "open",
+      statusAt: V_NOW,
+      statusClaimStampedAt: V_NOW,
+      statusClaimUntil: CLAIM_LIVE,
+      statusClaimFrom: "pending",
+    }),
+    want: { status: null },
+  },
+  {
+    // A claim is a deadline, not a flag: the pair is left where the writer put it, so a claim that
+    // ran out and no claim at all are the same answer. Past it, the behaviour is the one this rule
+    // replaced.
+    name: "an expired claim refuses nothing",
+    payload: conversationEvent({ version: V_NEW, status: "pending" }),
+    row: storedRow({
+      status: "open",
+      statusClaimUntil: CLAIM_EXPIRED,
+      statusClaimFrom: "pending",
+    }),
+    want: { status: "pending", statusAt: V_NEW },
   },
 ];
 

@@ -177,6 +177,12 @@ export async function mirrorChatwootEvent(
           // Read for the stale branch, which advances this watermark only when the payload really is
           // ahead of it. See the write there.
           lastInboundAt: true,
+          // The local claim, which is the one ordering input that does not come from the source
+          // (issue #436). See ./status-claim.ts.
+          statusClaimUntil: true,
+          statusClaimFrom: true,
+          statusClaimStampedAt: true,
+          statusClaimRefusedAt: true,
         },
       });
       const prevAssigneeId = existing?.assigneeId ?? null;
@@ -184,6 +190,7 @@ export async function mirrorChatwootEvent(
         statePayload,
         existing
           ? {
+              status: existing.status,
               activityAt: existing.lastEventAt,
               statusAt: existing.chatwootStatusAt,
               assigneeAt: existing.chatwootAssigneeAt,
@@ -195,6 +202,10 @@ export async function mirrorChatwootEvent(
               redirectOriginKnown:
                 existing.chatwootRedirectOriginAt != null ||
                 existing.redirectOriginDisplayId != null,
+              statusClaimUntil: existing.statusClaimUntil,
+              statusClaimFrom: existing.statusClaimFrom,
+              statusClaimStampedAt: existing.statusClaimStampedAt,
+              statusClaimRefusedAt: existing.statusClaimRefusedAt,
             }
           : null,
         now,
@@ -501,6 +512,11 @@ export async function mirrorChatwootEvent(
           lastEventAt: effectiveLastEventAt,
           ...(decision.statusAt != null
             ? { chatwootStatusAt: decision.statusAt }
+            : {}),
+          // The claim's own record of what it could not place, which the takeover's reconcile reads
+          // back and answers. See `statusClaimRefusedAt` on the decision.
+          ...(decision.statusClaimRefusedAt != null
+            ? { statusClaimRefusedAt: decision.statusClaimRefusedAt }
             : {}),
           ...(decision.assigneeAt != null
             ? { chatwootAssigneeAt: decision.assigneeAt }

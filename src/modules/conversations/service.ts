@@ -788,6 +788,10 @@ async function mirrorConsoleWrite(
               ? observed.assigneeName
               : null,
         };
+  // NOTE: This write claims no version, and nothing else here does either — so the human-reply
+  // takeover's freshness check has nothing to compare and a delivery Chatwoot serialized BEFORE the
+  // operator's click undoes it (issue #469). The status claim of issue #436 does not cover this: it
+  // fences a transition still on the wire, and by the time this runs Chatwoot has already decided.
   await updateMirror(ctx, base, id, { ...fallback, ...named });
   return { state: null, observed };
 }

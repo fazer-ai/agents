@@ -108,10 +108,18 @@ export async function armTakeoverRecovery(
 export type TakeoverRecoveryOutcome =
   // The conversation was handed over: the claim was written and Chatwoot was told.
   | "recovered"
-  // Nothing was owed after all, or nothing is owed any more. Covers every refusal that is a verdict
+  // Nothing was owed after all, or nothing is owed any more. Covers every refusal that is a VERDICT
   // rather than a failure: the row cannot be read, the shape was an echo on an unreserved provider,
-  // the agent is not in production or has the switch off, the conversation is no longer the bot's.
+  // the agent is not in production or has the switch off, the conversation is no longer the bot's,
+  // an operator resolved it. Retrying any of these asks the same question and gets the same answer.
   | "not-owed"
+  // The mirror does not know this conversation yet, which is NOT a verdict: a delivery that died
+  // before the mirror write leaves no row, and the very next event on that conversation creates one.
+  // Everything this needs — the inbox, the agent, the row the claim is a CAS on — hangs off it, and
+  // the payload that would let this path build one is the one thing the ledger cannot rebuild for an
+  // outgoing message. So it is retried on the scheduler's own ladder and announced if it runs out,
+  // rather than discarded as an answer.
+  | "unresolved"
   // The takeover ran and did not land. Already reported by the unit that tried, at the level it
   // decided; this is the caller's word for it.
   | "failed";
@@ -204,7 +212,28 @@ export async function recoverStrandedTakeover(
       settings: agent.settings,
     };
   });
-  if (!bound) return "not-owed";
+  // TWO CAUSES, and only one of them is an answer. An inbox bound to no agent owes nothing and never
+  // will; a conversation the mirror has never seen is a row that does not exist YET.
+  if (!bound) {
+    const known = await runScopedOn(base, sysCtx(tenantId), (db) =>
+      db.conversation.count({
+        where: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootConversationId: conversationId,
+        },
+      }),
+    );
+    if (known === 0) {
+      logger.warn(
+        "chatwoot takeover recovery: %s names conversation %d, which the mirror does not know yet; retrying",
+        row.deliveryId,
+        conversationId,
+      );
+      return "unresolved";
+    }
+    return "not-owed";
+  }
 
   // THE HALF THE PAYLOAD COULD NOT ANSWER. A `device` shape on a provider that does not reserve its
   // send ids is an echo of our OWN reply wearing an attendant's marker, and taking the conversation
@@ -261,7 +290,8 @@ export async function recoverStrandedTakeover(
       base,
       makeClient: params.makeClient,
     });
-    if (!landed) return "failed";
+    if (landed === "refused") return "not-owed";
+    if (landed === "failed") return "failed";
     logger.info(
       "chatwoot takeover recovery: %s finished a takeover whose toggle had not landed (conversation %d)",
       row.deliveryId,
@@ -295,7 +325,12 @@ export async function recoverStrandedTakeover(
     base,
     makeClient: params.makeClient,
   });
-  if (!opened) return "failed";
+  // A FENCE THAT STOOD DOWN IS AN ANSWER, and only a call that failed is worth a backoff. The
+  // preliminary read above is not a lock: ownership can move between it and the fence's own read,
+  // and the fence correctly refuses then — retrying that spends the ladder and dead-letters a job
+  // about a conversation that owes nothing.
+  if (opened === "refused") return "not-owed";
+  if (opened === "failed") return "failed";
   logger.info(
     "chatwoot takeover recovery: %s was stranded owing a handover (%s) and the conversation %d has now been opened for the human queue",
     row.deliveryId,
@@ -338,6 +373,16 @@ async function takeoverRecoveryHandler(
     return {
       outcome: "fail",
       error: "takeover recovery: the conversation could not be opened",
+    };
+  }
+  // Retried on the same ladder as a failure, and it is the right shape for it: what this waits on is
+  // another event creating the mirror row, which either happens within the backoff or does not
+  // happen at all. Running out reaches the dead-letter line, where `JOB_DEATH_LEVEL` says `warn` —
+  // an operator learns, and what they learn about is a conversation the bot is still holding.
+  if (outcome === "unresolved") {
+    return {
+      outcome: "fail",
+      error: "takeover recovery: the mirror does not know this conversation",
     };
   }
   return { outcome: "done" };

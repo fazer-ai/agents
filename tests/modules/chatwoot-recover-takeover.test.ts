@@ -62,6 +62,8 @@ let stamp = Math.floor(Date.now() / 1000);
 const liveStatus = new Map<number, string>();
 // Who holds each conversation in the stub's Chatwoot, when it is not the inbox persona's bot.
 const liveHolder = new Map<number, number>();
+// Conversations whose REST show fails outright, which is a slow or broken Chatwoot.
+const failingReads = new Set<number>();
 const failingToggles = new Set<number>();
 const posted: { url: string; method: string; body: unknown }[] = [];
 const realFetch = globalThis.fetch;
@@ -80,6 +82,7 @@ const stubFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   const show = url.match(/\/conversations\/(\d+)(?:\?|$)/);
   if (show && method === "GET") {
     const id = Number(show[1]);
+    if (failingReads.has(id)) return new Response("nope", { status: 502 });
     stamp += 1;
     return Response.json({
       id,
@@ -650,6 +653,150 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
       }),
     ).toBe("not-owed");
     expect(togglesFor(convId)).toHaveLength(0);
+  });
+
+  test("a conversation the mirror has never seen is retried, not answered", async () => {
+    // ROUND 2, P1. A delivery that died before the mirror write leaves no local row, and everything
+    // this path needs hangs off it — the inbox, the agent, and the row the claim is a CAS on. Read
+    // as `not-owed` the job completes, the delete-on-done row is gone, and the only recovery the
+    // conversation had disappears with it. It is not an answer: the next event on that conversation
+    // creates the row.
+    const convId = 9116;
+    const rowId = await seedStranded(convId);
+    await suDb.conversation.deleteMany({
+      where: { tenantId, chatwootConversationId: convId },
+    });
+
+    expect(
+      await recoverStrandedTakeover({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        makeClient,
+      }),
+    ).toBe("unresolved");
+    expect(togglesFor(convId)).toHaveLength(0);
+  });
+
+  test("an inbox bound to no agent owes nothing, and that IS an answer", async () => {
+    // The other cause of the same null, and the reason the two are told apart: this one never
+    // changes, so retrying it would spend a ladder on a question whose answer is fixed.
+    const convId = 9117;
+    const rowId = await seedStranded(convId);
+    const inbox = await suDb.inbox.findFirstOrThrow({
+      where: { tenantId, chatwootInboxId: INBOX_ID },
+      select: { id: true },
+    });
+    await suDb.inbox.update({
+      where: { id: inbox.id },
+      data: { agentId: null },
+    });
+    try {
+      expect(
+        await recoverStrandedTakeover({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("not-owed");
+    } finally {
+      await suDb.inbox.update({
+        where: { id: inbox.id },
+        data: { agentId: agentDbId },
+      });
+    }
+  });
+
+  test("the retry reads Chatwoot before it writes, and stands down on a resolve", async () => {
+    // ROUND 2, P1. Between the failed attempt and this retry an operator can resolve or snooze the
+    // conversation, and their webhook is still in flight — the row still says `open` under our claim
+    // while Chatwoot has moved on. An unconditional toggle reopens what they just closed, which is
+    // the attribution invariant this module is built on.
+    const convId = 9118;
+    const rowId = await seedStranded(convId, { claimHeldMs: 30_000 });
+    liveStatus.set(convId, "resolved");
+
+    expect(
+      await recoverStrandedTakeover({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        makeClient,
+      }),
+    ).toBe("not-owed");
+    expect(togglesFor(convId)).toHaveLength(0);
+    expect(liveStatus.get(convId)).toBe("resolved");
+  });
+
+  test("a first attempt whose RESPONSE was lost needs the version, not a second toggle", async () => {
+    // The other thing the live read tells apart: Chatwoot committed the transition and only the
+    // answer was lost, so the conversation is already `open` there. Nothing to toggle — what the
+    // first attempt still owes is the version, which the reconcile writes through the claim.
+    const convId = 9119;
+    const rowId = await seedStranded(convId, { claimHeldMs: 30_000 });
+    liveStatus.set(convId, "open");
+
+    expect(
+      await recoverStrandedTakeover({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        makeClient,
+      }),
+    ).toBe("recovered");
+    expect(togglesFor(convId)).toHaveLength(0);
+    expect((await convRow(convId)).chatwootStatusAt).not.toBeNull();
+  });
+
+  test("a retry that cannot read Chatwoot writes nothing", async () => {
+    // The fence lets an unreadable answer through — silence is not evidence that somebody took the
+    // conversation, and it still has a mirror CAS behind it. Here there is no second gate, so a read
+    // that fails is the one thing that must not become a blind write.
+    const convId = 9120;
+    const rowId = await seedStranded(convId, { claimHeldMs: 30_000 });
+    failingReads.add(convId);
+    try {
+      expect(
+        await recoverStrandedTakeover({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("failed");
+      expect(togglesFor(convId)).toHaveLength(0);
+    } finally {
+      failingReads.delete(convId);
+    }
+  });
+
+  test("a fence that stood down is an answer, not a failure", async () => {
+    // ROUND 2, P2. The preliminary ownership read is not a lock: Chatwoot can move the conversation
+    // between it and the fence's own read, and the fence correctly refuses then. Mapped to `failed`
+    // that spends the scheduler's backoff ladder and eventually dead-letters a job about a
+    // conversation that owes nothing.
+    //
+    // Driven through the ONE reading the preliminary check cannot make: the fence asks Chatwoot
+    // first, so a conversation the mirror still calls the bot's while Chatwoot has handed it to a
+    // person reaches the fence and is refused there.
+    const convId = 9121;
+    const rowId = await seedStranded(convId);
+    liveStatus.set(convId, "open");
+    liveHolder.set(convId, OTHER_BOT);
+    try {
+      expect(
+        await recoverStrandedTakeover({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("not-owed");
+      expect(togglesFor(convId)).toHaveLength(0);
+    } finally {
+      liveHolder.delete(convId);
+    }
   });
 
   test("a persona that cannot be loaded is a failure, not a silent success", async () => {

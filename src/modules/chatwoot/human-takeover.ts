@@ -217,6 +217,13 @@ export async function claimOpenForHumanQueue(p: {
   );
 }
 
+// WHAT HAPPENED, not just whether it worked, and the distinction is the caller's to act on: a fence
+// that stood down is a VERDICT about the conversation, while a call that threw is an unknown. The
+// live delivery does the same thing with both (nothing), which is why this was a boolean for as long
+// as it had one caller; the recovery is a scheduler job, and mapping a refusal to `fail` spends a
+// backoff ladder and dead-letters a job for a conversation that simply owes nothing.
+export type HumanQueueOutcome = "opened" | "refused" | "failed";
+
 export async function openForHumanQueue(p: {
   // Names the caller in every line this writes; it is what an operator reads to know which path
   // handed the conversation over.
@@ -226,7 +233,7 @@ export async function openForHumanQueue(p: {
   client: () => Promise<ChatwootClient>;
   teamId?: number | null;
   teamUsable?: (id: number) => Promise<boolean>;
-}): Promise<boolean> {
+}): Promise<HumanQueueOutcome> {
   const teamId = p.teamId ?? null;
   try {
     const client = await p.client();
@@ -236,7 +243,7 @@ export async function openForHumanQueue(p: {
         p.gate,
         String(p.conversationId),
       );
-      return false;
+      return "refused";
     }
     await client.toggleStatus(p.conversationId, "open");
     if (teamId !== null && (await (p.teamUsable?.(teamId) ?? true))) {
@@ -251,7 +258,7 @@ export async function openForHumanQueue(p: {
         );
       }
     }
-    return true;
+    return "opened";
   } catch (err) {
     logger.warn(
       "chatwoot: %s handoff failed (conv=%s): %s",
@@ -259,7 +266,7 @@ export async function openForHumanQueue(p: {
       String(p.conversationId),
       errMsg(err),
     );
-    return false;
+    return "failed";
   }
 }
 
@@ -287,19 +294,59 @@ export async function retryHumanQueueToggle(p: {
   claimUntil: Date;
   base: PrismaClient;
   makeClient?: RuntimeDeps["makeClient"];
-}): Promise<boolean> {
+}): Promise<HumanQueueOutcome> {
   const convLabel = String(p.conversationId);
   try {
     const bot = await loadAgentBot(p.tenantId, p.instanceId, p.agentId, p.base);
     // Same reason as the fence's: without a bot row every call goes out with an empty token (#79),
-    // so there is nothing to retry with.
-    if (!bot) return false;
+    // so there is nothing to retry with, and it is known before anything is written.
+    if (!bot) return "refused";
     const client = await loadChatwootClient(p.tenantId, p.instanceId, {
       base: p.base,
       botToken: bot.accessToken,
       makeClient: p.makeClient,
     });
-    await client.toggleStatus(p.conversationId, "open");
+    // CHATWOOT FIRST, the same rule the fence itself follows and for the same measured reason: the
+    // row can be behind, and the act guarded here is a write to Chatwoot. Between the failed attempt
+    // and this retry an operator can resolve or snooze the conversation, and their own webhook is
+    // still in flight — so the row still says `open` under our claim while Chatwoot has moved on,
+    // and an unconditional toggle reopens what they just closed.
+    //
+    // `pending` is the ONLY state this writes into, which is narrower than the fence's rule on
+    // purpose: this is not deciding a takeover, it is finishing one, so the only thing it may
+    // correct is the transition that did not land. `open` means the first attempt reached Chatwoot
+    // after all and only its response was lost — nothing to toggle, and the version below is what
+    // that attempt still owes.
+    //
+    // An UNREADABLE answer refuses here, where the fence lets one through. The fence's silence is
+    // "nobody is known to have taken this" and it still had a mirror CAS behind it; here there is no
+    // second gate, and writing blind is the one thing this must not do.
+    //
+    // NOTE: deleting this branch leaves the suite green, and the reason is worth stating rather than
+    // testing around: the next line would then dereference `null` and the catch below reports the
+    // same `failed` with no toggle sent. Same outcome, reached by an exception — what the branch buys
+    // is the line an operator reads, which would otherwise be a TypeError's stack.
+    const before = parseLiveConversation(
+      await client.getConversation(p.conversationId),
+    );
+    if (before === null) {
+      logger.warn(
+        "chatwoot: the human-queue toggle could not be retried (conv=%s) — Chatwoot did not answer",
+        convLabel,
+      );
+      return "failed";
+    }
+    if (before.status !== "pending" && before.status !== "open") {
+      logger.info(
+        "chatwoot: the human-queue toggle is no longer owed (conv=%s) — Chatwoot has moved the conversation on (%s)",
+        convLabel,
+        before.status,
+      );
+      return "refused";
+    }
+    if (before.status === "pending") {
+      await client.toggleStatus(p.conversationId, "open");
+    }
     // And the version, exactly as the first attempt would have earned it. A read with none is
     // discarded rather than written blind: the row already says `open` without it.
     const live = parseLiveConversation(
@@ -319,14 +366,14 @@ export async function retryHumanQueueToggle(p: {
       "chatwoot: the human-queue toggle was retried and landed (conv=%s)",
       convLabel,
     );
-    return true;
+    return "opened";
   } catch (err) {
     logger.warn(
       "chatwoot: retrying the human-queue toggle failed (conv=%s): %s",
       convLabel,
       errMsg(err),
     );
-    return false;
+    return "failed";
   }
 }
 
@@ -359,16 +406,19 @@ export interface HumanReplyTakeoverParams {
   makeClient?: RuntimeDeps["makeClient"];
 }
 
-// Returns whether the conversation was actually handed over. False covers every refusal and every
-// failure alike, because the caller does the same thing with them: nothing.
+// Says WHICH of the three happened, because the two callers need different amounts of it. The live
+// delivery does the same thing with `refused` and `failed` — nothing — while the recovery is a
+// scheduler job, and a refusal mapped to a failure spends its backoff ladder and dead-letters a job
+// about a conversation that owes nothing.
 export async function runHumanReplyTakeover(
   p: HumanReplyTakeoverParams,
-): Promise<boolean> {
+): Promise<HumanQueueOutcome> {
   const conversationId = p.conversationId;
   const convLabel = String(conversationId);
   // Hoisted out of the try only so the caller can be told, which the inline version had no need to
-  // do. Every road that does not reach the open leaves it false.
-  let opened = false;
+  // do. Every road that does not reach the open leaves it at the failure it started on: the one
+  // thing that can reach the catch below is the persona lookup, which throws rather than refusing.
+  let outcome: HumanQueueOutcome = "failed";
   try {
     // Resolved ONCE and handed to both halves: the token the client speaks with, and the id the
     // ownership question compares against. They are the same lookup for the reason the gate's own
@@ -419,149 +469,151 @@ export async function runHumanReplyTakeover(
     // the two halves that need it are on the other side of the fence closure: the release below,
     // and the reconcile, which is the one write allowed THROUGH a claim it owns.
     let claimHeld: Date | null = null;
-    opened =
-      !!bot &&
-      (await openForHumanQueue({
-        gate: `human reply (${p.route})`,
-        conversationId,
-        stillOurs: async () => {
-          // CHATWOOT FIRST, because the mirror can be BEHIND it and the act guarded here is a
-          // write to Chatwoot. An attendant who answers and then immediately resolves or hands
-          // the conversation back does both before this detached delivery runs; the resolve's own
-          // webhook is still in flight, so the row still says `pending` and the toggle would
-          // reopen the conversation the operator just closed. The same shape /reset guards with
-          // `refreshFromLive` before its own irreversible half.
-          //
-          // A GATE ONLY, deliberately not a reconcile. Writing this read onto the row would stamp
-          // it with a version newer than the message that decided this takeover, and the ordering
-          // check below — which exists to let a hand-back's `pending` outrank ours — would then
-          // refuse every takeover there is.
-          //
-          // An UNREADABLE answer does not block: silence is not evidence that somebody took the
-          // conversation, and the mirror fence below is the reading this path had before.
-          const live = parseLiveConversation(
-            await (await client())
-              .getConversation(conversationId)
-              .catch(() => null),
-          );
-          if (
-            live !== null &&
-            !shouldBotHandle(
-              {
-                assigneeType: live.assigneeType,
-                assigneeId: live.assigneeId,
-                status: live.status,
-              },
-              { ourAgentBotId: p.ourAgentBotId },
-            )
-          ) {
-            logger.info(
-              "chatwoot: %s handoff skipped (conv=%s) — Chatwoot already moved the conversation on (%s)",
-              `human reply (${p.route})`,
-              convLabel,
-              live.status,
-            );
-            return false;
-          }
-          const now = await conversationOwnershipNow({
-            tenantId: p.tenantId,
-            instanceId: p.instanceId,
-            conversationId,
-            // THE ROUTE's bot, which is the identity `act` asked about, and asking a different
-            // one here turns the re-check into a second, stricter gate. Measured: Chatwoot fans a
-            // message to the conversation's assigned bot AND the inbox's, so on a conversation
-            // held by another persona's bot the assigned-bot delivery passes `act` and this fence
-            // — asked about the inbox persona — would reject it, while the inbox-bot delivery
-            // never passes `act` at all. Neither takes over, and the conversation a person just
-            // answered stays `pending`.
+    // NO PERSONA IS A REFUSAL, not a failure: it is decided here, from the row, before anything is
+    // written or called, which is exactly what makes it a verdict.
+    outcome = !bot
+      ? "refused"
+      : await openForHumanQueue({
+          gate: `human reply (${p.route})`,
+          conversationId,
+          stillOurs: async () => {
+            // CHATWOOT FIRST, because the mirror can be BEHIND it and the act guarded here is a
+            // write to Chatwoot. An attendant who answers and then immediately resolves or hands
+            // the conversation back does both before this detached delivery runs; the resolve's own
+            // webhook is still in flight, so the row still says `pending` and the toggle would
+            // reopen the conversation the operator just closed. The same shape /reset guards with
+            // `refreshFromLive` before its own irreversible half.
             //
-            // The TOKEN below stays the inbox persona's, and the two are not in conflict because
-            // they answer different questions: the fence asks whether THIS DELIVERY may still act,
-            // and the token asks who we are on this instance. The write is a conversation's state,
-            // not a persona's utterance.
-            ourAgentBotId: p.ourAgentBotId,
-            base: p.base,
-          });
-          if (!now.ours) return false;
-          // AND IS THIS DECISION STILL THE MOST RECENT ONE? Ownership alone cannot answer that,
-          // because the state that would overrule us is `pending` and bot-owned too: a hand-back
-          // ("Return to AI", conversations/service.ts) puts the conversation back exactly there. So
-          // the two `pending`s are told apart the way every other out-of-order question in this
-          // module is — by version, with the rule state-order.ts states: a row stamped AHEAD of the
-          // payload that drove this decision is a later answer about the same conversation, and a
-          // later answer wins. Without it the operator who just asked for the agent back watches the
-          // request undone by a reply they had already sent.
-          //
-          // NOTE: An unversioned hand-back is invisible to this. `mirrorConsoleWrite` falls back to
-          // a write that stamps no mark whenever its live read fails or carries none (issue #77),
-          // so the row still names the pre-click state and this comparison passes — issue #469,
-          // which the status claim below deliberately does not cover.
-          if (
-            now.statusAt !== null &&
-            p.decidedAtVersion != null &&
-            p.decidedAtVersion < now.statusAt
-          ) {
-            return false;
-          }
-          // UNVERSIONED, and only the field the action changed — the same fallback the console
-          // takes when its live read cannot be ordered (mirrorConsoleWrite, issue #77). Claiming no
-          // version is what lets a conversation event that really is newer still outrank this write
-          // when it lands; the reconcile below is what earns it one.
-          //
-          // The three observed columns in the predicate are what make this a compare-and-swap
-          // rather than a check-then-act: the read above and this write are two statements, and
-          // another replica can commit between them. The assignee is in there for its own reason —
-          // status and assignee carry SEPARATE ordering marks, so an assignment that lands in this
-          // window leaves the conversation `pending` at the same `chatwoot_status_at` while it is no
-          // longer the bot's, and a status-and-version predicate would open it anyway.
-          //
-          // No test in this process can pry that window open — there is nothing to await between the
-          // two statements — so the mutations that drop these terms survive the suite. They stay
-          // because the window is real, not because a test asks for them.
-          //
-          // AND THE WRITE ANNOUNCES ITSELF, in the same statement that makes it, because that is
-          // the whole of issue #436: this `open` claims no version, so until the reconcile earns
-          // one for it every payload still in flight compares greater and walks it back — a
-          // customer message through the reopen exception, a delayed `conversation_*` event
-          // through the ordinary ordered path. The claim says which status this write replaced and
-          // how long it refuses that status, and ../../modules/chatwoot/status-claim.ts holds why
-          // it can be neither a version nor a permanent flag.
-          //
-          const claimUntil = await claimOpenForHumanQueue({
-            tenantId: p.tenantId,
-            instanceId: p.instanceId,
-            conversationId,
-            seen: now,
-            base: p.base,
-          });
-          // A LOST CAS IS A CLOSED FENCE, reported by the shared unit exactly like an ownership
-          // refusal, because that is what it is: something newer than the state this delivery
-          // decided on now holds the row.
-          if (claimUntil === null) return false;
-          claimHeld = claimUntil;
-          // AND THE CONSOLES HEAR ABOUT IT, from the write that happened rather than from the
-          // call that may not. This delivery already broadcast the mirror's post-write snapshot
-          // upstream, and that one still said `pending` — the claim had not been taken yet — so
-          // without this every open Conversations page keeps naming the bot as the owner while
-          // the row and the gate say a person is on it. After a successful open Chatwoot's own
-          // conversation event corrects it a moment later; after a failed one nothing ever does,
-          // and a failed open deliberately keeps the claim.
-          //
-          // The assignee is the one the fence just read, not a re-read: this write moved status
-          // and nothing else, so anything else would be describing a different moment.
-          if (p.conversationRowId !== null) {
-            broadcastConversationEvent(p.tenantId, {
-              conversationId: String(p.conversationRowId),
-              status: "open",
-              assigneeId: now.assigneeId,
-              assigneeType: now.assigneeType,
-              lastEventAt: p.lastEventAt ? p.lastEventAt.toISOString() : null,
+            // A GATE ONLY, deliberately not a reconcile. Writing this read onto the row would stamp
+            // it with a version newer than the message that decided this takeover, and the ordering
+            // check below — which exists to let a hand-back's `pending` outrank ours — would then
+            // refuse every takeover there is.
+            //
+            // An UNREADABLE answer does not block: silence is not evidence that somebody took the
+            // conversation, and the mirror fence below is the reading this path had before.
+            const live = parseLiveConversation(
+              await (await client())
+                .getConversation(conversationId)
+                .catch(() => null),
+            );
+            if (
+              live !== null &&
+              !shouldBotHandle(
+                {
+                  assigneeType: live.assigneeType,
+                  assigneeId: live.assigneeId,
+                  status: live.status,
+                },
+                { ourAgentBotId: p.ourAgentBotId },
+              )
+            ) {
+              logger.info(
+                "chatwoot: %s handoff skipped (conv=%s) — Chatwoot already moved the conversation on (%s)",
+                `human reply (${p.route})`,
+                convLabel,
+                live.status,
+              );
+              return false;
+            }
+            const now = await conversationOwnershipNow({
+              tenantId: p.tenantId,
+              instanceId: p.instanceId,
+              conversationId,
+              // THE ROUTE's bot, which is the identity `act` asked about, and asking a different
+              // one here turns the re-check into a second, stricter gate. Measured: Chatwoot fans a
+              // message to the conversation's assigned bot AND the inbox's, so on a conversation
+              // held by another persona's bot the assigned-bot delivery passes `act` and this fence
+              // — asked about the inbox persona — would reject it, while the inbox-bot delivery
+              // never passes `act` at all. Neither takes over, and the conversation a person just
+              // answered stays `pending`.
+              //
+              // The TOKEN below stays the inbox persona's, and the two are not in conflict because
+              // they answer different questions: the fence asks whether THIS DELIVERY may still act,
+              // and the token asks who we are on this instance. The write is a conversation's state,
+              // not a persona's utterance.
+              ourAgentBotId: p.ourAgentBotId,
+              base: p.base,
             });
-          }
-          return true;
-        },
-        client,
-      }));
+            if (!now.ours) return false;
+            // AND IS THIS DECISION STILL THE MOST RECENT ONE? Ownership alone cannot answer that,
+            // because the state that would overrule us is `pending` and bot-owned too: a hand-back
+            // ("Return to AI", conversations/service.ts) puts the conversation back exactly there. So
+            // the two `pending`s are told apart the way every other out-of-order question in this
+            // module is — by version, with the rule state-order.ts states: a row stamped AHEAD of the
+            // payload that drove this decision is a later answer about the same conversation, and a
+            // later answer wins. Without it the operator who just asked for the agent back watches the
+            // request undone by a reply they had already sent.
+            //
+            // NOTE: An unversioned hand-back is invisible to this. `mirrorConsoleWrite` falls back to
+            // a write that stamps no mark whenever its live read fails or carries none (issue #77),
+            // so the row still names the pre-click state and this comparison passes — issue #469,
+            // which the status claim below deliberately does not cover.
+            if (
+              now.statusAt !== null &&
+              p.decidedAtVersion != null &&
+              p.decidedAtVersion < now.statusAt
+            ) {
+              return false;
+            }
+            // UNVERSIONED, and only the field the action changed — the same fallback the console
+            // takes when its live read cannot be ordered (mirrorConsoleWrite, issue #77). Claiming no
+            // version is what lets a conversation event that really is newer still outrank this write
+            // when it lands; the reconcile below is what earns it one.
+            //
+            // The three observed columns in the predicate are what make this a compare-and-swap
+            // rather than a check-then-act: the read above and this write are two statements, and
+            // another replica can commit between them. The assignee is in there for its own reason —
+            // status and assignee carry SEPARATE ordering marks, so an assignment that lands in this
+            // window leaves the conversation `pending` at the same `chatwoot_status_at` while it is no
+            // longer the bot's, and a status-and-version predicate would open it anyway.
+            //
+            // No test in this process can pry that window open — there is nothing to await between the
+            // two statements — so the mutations that drop these terms survive the suite. They stay
+            // because the window is real, not because a test asks for them.
+            //
+            // AND THE WRITE ANNOUNCES ITSELF, in the same statement that makes it, because that is
+            // the whole of issue #436: this `open` claims no version, so until the reconcile earns
+            // one for it every payload still in flight compares greater and walks it back — a
+            // customer message through the reopen exception, a delayed `conversation_*` event
+            // through the ordinary ordered path. The claim says which status this write replaced and
+            // how long it refuses that status, and ../../modules/chatwoot/status-claim.ts holds why
+            // it can be neither a version nor a permanent flag.
+            //
+            const claimUntil = await claimOpenForHumanQueue({
+              tenantId: p.tenantId,
+              instanceId: p.instanceId,
+              conversationId,
+              seen: now,
+              base: p.base,
+            });
+            // A LOST CAS IS A CLOSED FENCE, reported by the shared unit exactly like an ownership
+            // refusal, because that is what it is: something newer than the state this delivery
+            // decided on now holds the row.
+            if (claimUntil === null) return false;
+            claimHeld = claimUntil;
+            // AND THE CONSOLES HEAR ABOUT IT, from the write that happened rather than from the
+            // call that may not. This delivery already broadcast the mirror's post-write snapshot
+            // upstream, and that one still said `pending` — the claim had not been taken yet — so
+            // without this every open Conversations page keeps naming the bot as the owner while
+            // the row and the gate say a person is on it. After a successful open Chatwoot's own
+            // conversation event corrects it a moment later; after a failed one nothing ever does,
+            // and a failed open deliberately keeps the claim.
+            //
+            // The assignee is the one the fence just read, not a re-read: this write moved status
+            // and nothing else, so anything else would be describing a different moment.
+            if (p.conversationRowId !== null) {
+              broadcastConversationEvent(p.tenantId, {
+                conversationId: String(p.conversationRowId),
+                status: "open",
+                assigneeId: now.assigneeId,
+                assigneeType: now.assigneeType,
+                lastEventAt: p.lastEventAt ? p.lastEventAt.toISOString() : null,
+              });
+            }
+            return true;
+          },
+          client,
+        });
     // AND A FAILED OPEN KEEPS THE CLAIM. The tempting compensation is to hand it back — the row
     // says `open` while Chatwoot may still say `pending`, and nobody was handed anything — but a
     // failed call is an UNKNOWN outcome, not a refusal: Chatwoot commits the transition and then
@@ -604,7 +656,7 @@ export async function runHumanReplyTakeover(
     // Refused by the fence, or the write failed: both are already reported by the shared unit, and
     // neither is a takeover — so nothing below runs. NOT a `return`: the delivery still has its
     // memory ingestion to arm and its row to mark processed.
-    if (opened) {
+    if (outcome === "opened") {
       // AND THEN FROM A LIVE READ, which is what claims a version for it — the toggle endpoint
       // renders a status blob and no `updated_at`, so there is none to write from the call itself
       // (mirrorConsoleWrite, issue #77).
@@ -682,5 +734,5 @@ export async function runHumanReplyTakeover(
       errMsg(err),
     );
   }
-  return opened;
+  return outcome;
 }

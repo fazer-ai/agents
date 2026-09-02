@@ -1605,19 +1605,22 @@ async function maybeConsumeCommandOrGate(params: {
 
   // The shared unit above, bound to this gate's conversation, persona and fence. Kept as a local
   // three-argument call so the sites below read the way they always did.
-  const openConversationForHumans = (
+  const openConversationForHumans = async (
     gate: string,
     teamId: number | null,
     teamUsable?: (id: number) => Promise<boolean>,
   ): Promise<boolean> =>
-    openForHumanQueue({
+    // Collapsed to a boolean HERE and nowhere else. This gate does the same thing with a fence that
+    // stood down and a call that threw, so the distinction the unit now reports (issue #439, for the
+    // scheduler job that has to tell a verdict from an unknown) is one this caller has no use for.
+    (await openForHumanQueue({
       gate,
       conversationId,
       stillOurs,
       client: personaClient,
       teamId,
       teamUsable,
-    });
+    })) === "opened";
 
   // ── Redirect cross-link: on the widget conversation's first inbound after the merge, link it to its
   //    WhatsApp sibling — propagate that side's /teste activation + post cross-link private notes, once.

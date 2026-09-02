@@ -1572,7 +1572,15 @@ export async function handoffConversation(
     landed = {
       status: state?.status ?? "open",
       assigneeId: state ? state.assigneeId : (assigneeId ?? conv.assigneeId),
-      assigneeType: state ? state.assigneeType : "User",
+      // NOTE: `User` only where THIS call put one there. An untargeted handoff makes no assignment
+      // request at all, and the open toggle does not auto-assign anybody (measured on 4.17.0,
+      // `docs/chatwoot.md`), so with no usable post-write state the holder is the one the
+      // conversation already had. The broadcast reads the same value and inherits the correction.
+      assigneeType: state
+        ? state.assigneeType
+        : assigneeId !== null
+          ? "User"
+          : conv.assigneeType,
     };
     broadcastConversationEvent(tenantId, {
       conversationId: String(id),
@@ -1821,6 +1829,15 @@ export async function returnConversationToAgent(
       ? { assigneeType: state.assigneeType, assigneeId: state.assigneeId }
       : (holderOtherThan(observed) ??
         newHolder ?? { assigneeType: null, assigneeId: null });
+    // NOTE: The row's `after` takes it HERE, the moment it is known, and not at the end: everything
+    // below (the mirror's fallback write, the broadcast, the ownership read that names the outcome)
+    // can throw, and the `finally` would then fall back to the pre-unassign reading and lose the
+    // holder this call actually found.
+    landedReturn = {
+      status: state?.status ?? "pending",
+      assigneeType: finalHolder.assigneeType,
+      assigneeId: finalHolder.assigneeId,
+    };
     // And the ROW, which is the half a return value cannot fix. Where `observed` is what corrected the
     // answer, `mirrorConsoleWrite` has already written its fallback — status pending, no assignee —
     // because that is what this call asked for before anybody claimed the conversation. Leaving it
@@ -1898,11 +1915,6 @@ export async function returnConversationToAgent(
     // NOTE: Same rule as the other two: the status is where the write LANDED, and the outcome is what the
     // caller was told. `taken-over` with a status that is not `pending` is the honest pair, and a row
     // that hard-coded `pending` would be the trail contradicting the console it answered.
-    landedReturn = {
-      status: state?.status ?? "pending",
-      assigneeType: finalHolder.assigneeType,
-      assigneeId: finalHolder.assigneeId,
-    };
     outcomeForRow = outcome;
     return outcome;
   } finally {

@@ -772,6 +772,28 @@ describe.skipIf(!dbUp)(
       });
     });
 
+    // An untargeted handoff makes no assignment request, and the open toggle does not auto-assign
+    // anybody (measured on 4.17.0). With the post-write state unusable, the row must not invent a
+    // human: the holder is the one the conversation already had.
+    test("an untargeted handoff with no usable state does not invent a holder", async () => {
+      await clearAudit();
+      const id = await seedConversation(4020, { status: "pending" });
+      const stub = stubClient();
+      await handoffConversation(
+        ctx(),
+        id,
+        null,
+        { makeClient: stub.makeClient },
+        appDb,
+      );
+      const [row] = await rows();
+      expect(row?.after).toEqual({
+        status: "open",
+        assigneeType: null,
+        assigneeId: null,
+      });
+    });
+
     test("the door is carried by the actor, not by the action", async () => {
       await clearAudit();
       const id = await seedConversation(4007);

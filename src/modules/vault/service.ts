@@ -877,6 +877,28 @@ const VAULT_AUDIT_SELECT = {
 
 const UNDISCLOSED = ["secret", "baseUrl"] as const;
 
+// Whether the credential BEHIND the reference moved, asked of the plaintext.
+//
+// The ciphertext cannot answer it: `encryptJson` randomizes, so re-submitting the value already
+// stored produces a different blob every time, and a comparison on the column would report a
+// rotation on every save of an unchanged credential. A blob that cannot be read counts as moved:
+// the write replaces it, and an unreadable secret becoming a readable one is a change.
+function secretMoved(before: string, after: string): boolean {
+  let a: unknown;
+  let b: unknown;
+  try {
+    a = decryptJson(before);
+  } catch {
+    return true;
+  }
+  try {
+    b = decryptJson(after);
+  } catch {
+    return true;
+  }
+  return JSON.stringify(a) !== JSON.stringify(b);
+}
+
 export async function createVaultEntry(
   ctx: TenantContext,
   nameOrInput: string | CreateVaultEntryInput,
@@ -1128,6 +1150,11 @@ export async function updateVaultEntry(
 ): Promise<bigint> {
   if (ctx.tenantId === null) throw new AppError("tenant required", 400);
   return runScopedOn(base, ctx, async (db) => {
+    // NOTE: LOCKED before it is read, because this snapshot is what the row's `before` reports. Two
+    // overlapping saves both read the same entry otherwise, and the second wakes to an `after` that
+    // includes the first one's changes: its row then claims a transition, or a rotation, that its
+    // actor never performed.
+    await db.$queryRaw`SELECT id FROM vault_entries WHERE id = ${id} FOR UPDATE`;
     const entry = await db.vaultEntry.findFirst({
       where: { id },
       select: VAULT_AUDIT_SELECT,
@@ -1209,7 +1236,13 @@ export async function updateVaultEntry(
     });
     const beforeProj = auditProjection(entry);
     const afterProj = auditProjection(after);
-    const undisclosed = undisclosedMoved(entry, after, UNDISCLOSED);
+    // NOTE: Over the declared list, so a column added to it later is compared without anyone having
+    // to remember this line; `secret` is the one whose comparison cannot be a column comparison.
+    const undisclosed = UNDISCLOSED.some((c) =>
+      c === "secret"
+        ? secretMoved(entry.secret, after.secret)
+        : undisclosedMoved(entry, after, [c]),
+    );
     // NOTE: The action with no name on any transport before #444: replacing the value behind a live
     // reference. Every consumer of that reference starts authenticating with something else on the
     // next call, and nothing said so.
@@ -1236,10 +1269,14 @@ export async function deleteVaultEntry(
   base: PrismaClient = basePrisma,
 ): Promise<void> {
   await runScopedOn(base, ctx, async (db) => {
-    // NOTE: Read before the delete, and only recorded when this call is the one that removed it:
+    // NOTE: Read before the delete with the row LOCKED, so the row describes the version actually
+    // removed: an update committing between the read and the delete would otherwise leave the trail
+    // describing the credential as it was two saves ago. And only recorded when this call is the one
+    // that removed it:
     // `deleteMany` is idempotent by design, and a row per attempt would put the same removal on the
     // trail as many times as it was retried. Creating a credential was audited and removing one was
     // not, which is the asymmetry #444 opened with.
+    await db.$queryRaw`SELECT id FROM vault_entries WHERE id = ${id} FOR UPDATE`;
     const entry = await db.vaultEntry.findFirst({
       where: { id },
       select: VAULT_AUDIT_SELECT,

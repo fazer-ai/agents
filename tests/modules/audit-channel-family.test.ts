@@ -1,0 +1,423 @@
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { PrismaPg } from "@prisma/adapter-pg";
+import { PrismaClient } from "@/../generated/prisma/client";
+import type { TenantContext } from "@/lib/tenancy";
+import {
+  ChatwootApiError,
+  type ChatwootClient,
+} from "@/modules/chatwoot/client";
+import {
+  bindInbox,
+  connectChatwootDeployment,
+  disconnectChatwootDeployment,
+  reconcileInboxBots,
+  reconnectChatwootInstance,
+  reconnectInbox,
+  removeChatwootInstance,
+  removeInbox,
+  rotateChatwootDeploymentToken,
+  setConnectedAccounts,
+  softDisconnectChatwootInstance,
+  syncInboxes,
+} from "@/modules/chatwoot/management";
+
+// THE CHANNEL-MANAGEMENT FAMILY (issue #395), whose trail was written by the MCP transport and by
+// nothing else. The Channels page speaks `chatwoot-admin.controller.ts`, eleven mutating routes, none
+// of which contained the string `audit`: connecting a deployment, rotating its token, disconnecting
+// it, binding or removing an inbox all left nothing.
+//
+// Three of those routes had no MCP twin at all and get an action name here:
+// `deployment.disconnect`, `instance.reconnect` and `instance.remove`.
+//
+// The other thing this family carries is the secret. The deployment admin token is one of the two
+// documented raw-secret carve-outs (`docs/mcp.md`) and the MCP rows kept metadata only; the console
+// path has to redact identically, which is what the fence at the bottom of this file measures over
+// every row the file produced.
+
+const appUrl = process.env.TEST_APP_DATABASE_URL;
+const suUrl = process.env.MIGRATION_DATABASE_URL;
+
+let dbUp = false;
+let su: PrismaClient | undefined;
+let app: PrismaClient | undefined;
+
+if (appUrl && suUrl) {
+  try {
+    su = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: suUrl }),
+    });
+    await su.$queryRaw`SELECT 1`;
+    app = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: appUrl }),
+    });
+    await app.$queryRaw`SELECT 1`;
+    dbUp = true;
+  } catch {
+    dbUp = false;
+  }
+}
+
+const appDb = app as PrismaClient;
+const suDb = su as PrismaClient;
+
+let tenantId = 0n;
+
+const USER = 9395n;
+// The one string that must never reach a row. Distinctive on purpose: the fence greps every row this
+// file wrote for it.
+const ADMIN_TOKEN = "cw-admin-token-9395-secret";
+const ROTATED_TOKEN = "cw-rotated-token-9395-secret";
+// TEST-NET-3 (RFC 5737, reserved for documentation): an IP literal keeps the SSRF guard off DNS and
+// is public enough to pass its blocked-range check, which loopback is not under the test config.
+// Nothing is dialed: every call that would reach the network is injected below.
+const BASE_URL = "https://203.0.113.95";
+
+const ctx = (over: Partial<TenantContext> = {}): TenantContext => ({
+  tenantId,
+  userId: USER,
+  role: "TENANT_ADMIN",
+  ...over,
+});
+
+// A Chatwoot whose /profile answers with two accounts, which is what connect and rotate probe.
+const fetchProfile = async () => ({
+  accounts: [
+    { id: 1, name: "Conta A" },
+    { id: 2, name: "Conta B" },
+  ],
+});
+
+function stubClient(over: Record<string, unknown> = {}) {
+  const calls: string[] = [];
+  const client = {
+    getInbox: async (id: number) => {
+      calls.push(`getInbox:${id}`);
+      return { id };
+    },
+    listInboxes: async () => {
+      calls.push("listInboxes");
+      return [];
+    },
+    setInboxAgentBot: async () => {
+      calls.push("setInboxAgentBot");
+      return {};
+    },
+    // Provisioning, which `bindInbox` runs before it persists anything: the bot has to exist in
+    // Chatwoot for the binding to mean something.
+    listAgentBots: async () => {
+      calls.push("listAgentBots");
+      return [];
+    },
+    createAgentBot: async () => {
+      calls.push("createAgentBot");
+      return { id: 900, access_token: "bot-token", secret: "bot-secret" };
+    },
+    updateAgentBot: async () => {
+      calls.push("updateAgentBot");
+      return {};
+    },
+    ...over,
+  };
+  return { calls, makeClient: async () => client as unknown as ChatwootClient };
+}
+
+async function rows(action?: string) {
+  return (
+    (await su?.auditLog.findMany({
+      where: { tenantId, ...(action ? { action } : {}) },
+      orderBy: { id: "asc" },
+    })) ?? []
+  );
+}
+
+async function clearAudit() {
+  await su?.$executeRawUnsafe(
+    `DELETE FROM audit_logs WHERE tenant_id = ${tenantId}`,
+  );
+}
+
+// Everything this file wrote, kept for the redaction fence at the end. The fence is over the WHOLE
+// run rather than per test, because a secret leaking into one row of twelve is exactly the shape a
+// per-test assertion misses.
+const everyRow: unknown[] = [];
+
+async function collect() {
+  everyRow.push(...(await rows()));
+}
+
+describe.skipIf(!dbUp)("the channel family records its own changes", () => {
+  beforeAll(async () => {
+    const t = await suDb.tenant.create({
+      data: { name: "AUD395", slug: `aud395-${process.pid}` },
+    });
+    tenantId = t.id;
+  });
+
+  afterAll(async () => {
+    if (su && tenantId) {
+      await su.$executeRawUnsafe(`DELETE FROM tenants WHERE id = ${tenantId}`);
+    }
+    await su?.$disconnect();
+    await app?.$disconnect();
+  });
+
+  test("connecting a deployment records the server, and never the token", async () => {
+    await clearAudit();
+    const result = await connectChatwootDeployment(
+      ctx(),
+      { baseUrl: `${BASE_URL}/p${process.pid}`, adminToken: ADMIN_TOKEN },
+      { fetchProfile },
+      appDb,
+    );
+    const [row, ...rest] = await rows();
+    expect(rest).toEqual([]);
+    expect(row?.action).toBe("deployment.connect");
+    expect(row?.target).toBe(`chatwoot_deployment:${result.deployment.id}`);
+    expect(row?.actorId).toBe(USER);
+    expect(row?.actorType).toBe("user");
+    expect(row?.after).toEqual({
+      id: result.deployment.id,
+      baseUrl: result.deployment.baseUrl,
+      reachableAccounts: 2,
+    });
+    await collect();
+  });
+
+  test("rotating the token records that it moved, not what it moved to", async () => {
+    await clearAudit();
+    const updated = await rotateChatwootDeploymentToken(
+      ctx(),
+      ROTATED_TOKEN,
+      { fetchProfile },
+      appDb,
+    );
+    const [row] = await rows();
+    expect(row?.action).toBe("deployment.rotate_token");
+    expect(row?.after).toEqual({ id: updated.id, adminTokenRotated: true });
+    await collect();
+  });
+
+  test("choosing which accounts are connected records the choice", async () => {
+    await clearAudit();
+    await setConnectedAccounts(
+      ctx(),
+      [1, 2],
+      { fetchProfile, makeClient: stubClient().makeClient },
+      appDb,
+    );
+    // The choice AND what it did, which are not the same fact: connecting an account syncs its
+    // inboxes, and that sync is a change of its own with its own row. Neither covers the other, and
+    // a reader who saw only the choice could not tell whether it took effect.
+    const all = await rows();
+    expect(all.map((r) => r.action)).toEqual([
+      "instance.sync_inboxes",
+      "instance.sync_inboxes",
+      "deployment.set_accounts",
+    ]);
+    const row = all[2];
+    expect(row?.after).toEqual({ accountIds: [1, 2], connected: 2 });
+    await collect();
+  });
+
+  test("disconnecting an account records what it was", async () => {
+    await clearAudit();
+    const inst = await suDb.chatwootInstance.findFirstOrThrow({
+      where: { tenantId, accountId: 2 },
+      select: { id: true, accountId: true, accountName: true },
+    });
+    // No injectable client here: the service builds its own and the unbind is best-effort, so the
+    // loopback refusal above is exactly the shape it already tolerates.
+    await softDisconnectChatwootInstance(ctx(), inst.id, appDb);
+    const [row] = await rows();
+    expect(row?.action).toBe("instance.disconnect");
+    expect(row?.target).toBe(`chatwoot_instance:${inst.id}`);
+    expect(row?.before).toMatchObject({ accountId: 2 });
+    await collect();
+  });
+
+  // No MCP twin: the name is invented here, and the console is the only door it has.
+  test("reconnecting an account records it, under a name of its own", async () => {
+    await clearAudit();
+    const inst = await suDb.chatwootInstance.findFirstOrThrow({
+      where: { tenantId, accountId: 2 },
+      select: { id: true },
+    });
+    await reconnectChatwootInstance(ctx(), inst.id, appDb);
+    const [row] = await rows();
+    expect(row?.action).toBe("instance.reconnect");
+    expect(row?.target).toBe(`chatwoot_instance:${inst.id}`);
+    expect(row?.after).toMatchObject({ accountId: 2, disconnectedAt: null });
+    await collect();
+  });
+
+  test("removing an account records what went with it", async () => {
+    await clearAudit();
+    const inst = await suDb.chatwootInstance.findFirstOrThrow({
+      where: { tenantId, accountId: 2 },
+      select: { id: true },
+    });
+    await removeChatwootInstance(ctx(), inst.id, appDb);
+    const [row] = await rows();
+    expect(row?.action).toBe("instance.remove");
+    expect(row?.target).toBe(`chatwoot_instance:${inst.id}`);
+    expect(row?.before).toMatchObject({ accountId: 2 });
+    expect(await suDb.chatwootInstance.count({ where: { id: inst.id } })).toBe(
+      0,
+    );
+    await collect();
+  });
+
+  test("binding an inbox to an agent records both sides", async () => {
+    await clearAudit();
+    const inst = await suDb.chatwootInstance.findFirstOrThrow({
+      where: { tenantId, accountId: 1 },
+      select: { id: true },
+    });
+    const agent = await suDb.agent.create({
+      data: { tenantId, name: "Atendente", systemPrompt: "x" },
+      select: { id: true },
+    });
+    const inbox = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: inst.id,
+        chatwootInboxId: 71,
+        name: "WhatsApp",
+      },
+      select: { id: true },
+    });
+    await bindInbox(
+      ctx(),
+      inbox.id,
+      agent.id,
+      { makeClient: stubClient().makeClient },
+      appDb,
+    );
+    const [row] = await rows();
+    expect(row?.action).toBe("inbox.bind");
+    expect(row?.target).toBe(`inbox:${inbox.id}`);
+    expect(row?.before).toEqual({ agentId: null });
+    expect(row?.after).toEqual({ agentId: String(agent.id) });
+    await collect();
+  });
+
+  test("unbinding an inbox records the agent it lost", async () => {
+    await clearAudit();
+    const inbox = await suDb.inbox.findFirstOrThrow({
+      where: { tenantId, chatwootInboxId: 71 },
+      select: { id: true, agentId: true },
+    });
+    await reconnectInbox(
+      ctx(),
+      inbox.id,
+      { makeClient: stubClient().makeClient },
+      appDb,
+    );
+    const [row] = await rows();
+    expect(row?.action).toBe("inbox.reconnect");
+    expect(row?.target).toBe(`inbox:${inbox.id}`);
+    await collect();
+  });
+
+  test("removing an inbox records what it was", async () => {
+    await clearAudit();
+    const inbox = await suDb.inbox.findFirstOrThrow({
+      where: { tenantId, chatwootInboxId: 71 },
+      select: { id: true },
+    });
+    await removeInbox(
+      ctx(),
+      inbox.id,
+      {
+        makeClient: stubClient({
+          // A 404 is how the fork says the inbox is gone, and this path REFUSES to remove a mirror
+          // whose inbox still exists, so a generic throw reads as "could not confirm" instead.
+          getInbox: async () => {
+            throw new ChatwootApiError(404, "GET /inboxes/71");
+          },
+        }).makeClient,
+      },
+      appDb,
+    );
+    const [row] = await rows();
+    expect(row?.action).toBe("inbox.remove");
+    expect(row?.target).toBe(`inbox:${inbox.id}`);
+    expect(row?.before).toMatchObject({ chatwootInboxId: 71 });
+    await collect();
+  });
+
+  test("syncing an account's inboxes records the counts", async () => {
+    await clearAudit();
+    const inst = await suDb.chatwootInstance.findFirstOrThrow({
+      where: { tenantId, accountId: 1 },
+      select: { id: true },
+    });
+    await syncInboxes(
+      ctx(),
+      inst.id,
+      { makeClient: stubClient().makeClient },
+      appDb,
+    );
+    const [row] = await rows();
+    expect(row?.action).toBe("instance.sync_inboxes");
+    expect(row?.target).toBe(`chatwoot_instance:${inst.id}`);
+    await collect();
+  });
+
+  // The one action of the nine that does NOT move down, and the reason is measured rather than
+  // stylistic: `reconcileInboxBots` lists inboxes, lists bots, asks Chatwoot which are live and
+  // returns a status map. Nothing is written on either side, and its REST twin is a GET. The row the
+  // MCP transport used to write was a read on the trail, which is the same call `webhook_test` and
+  // `mcp_connection_discover` already answer with silence (#397, #399).
+  test("reading which bots are live records nothing", async () => {
+    await clearAudit();
+    const statuses = await reconcileInboxBots(
+      ctx(),
+      { makeClient: stubClient().makeClient },
+      appDb,
+    );
+    expect(typeof statuses).toBe("object");
+    expect(await rows()).toEqual([]);
+  });
+
+  // LAST, and it is destructive on a scale nothing else here is: the deployment cascades every
+  // account, inbox, bot and conversation of the tenant, and the contacts are deleted first because no
+  // cascade reaches them. Its row is the only thing that survives it.
+  test("disconnecting the deployment records what it destroyed", async () => {
+    await clearAudit();
+    const dep = await suDb.chatwootDeployment.findFirstOrThrow({
+      where: { tenantId },
+      select: { id: true, baseUrl: true },
+    });
+    await disconnectChatwootDeployment(ctx(), appDb);
+    const [row] = await rows();
+    expect(row?.action).toBe("deployment.disconnect");
+    expect(row?.target).toBe(`chatwoot_deployment:${dep.id}`);
+    expect(row?.before).toEqual({
+      id: String(dep.id),
+      baseUrl: dep.baseUrl,
+      // The inbox this file created was removed two tests ago, which is the point of counting at
+      // the moment of the delete rather than describing the deployment in the abstract.
+      accounts: 1,
+      inboxes: 0,
+      contacts: 0,
+    });
+    expect(await suDb.chatwootDeployment.count({ where: { tenantId } })).toBe(
+      0,
+    );
+    await collect();
+  });
+
+  // The fence, over every row the file wrote. `docs/mcp.md` names the deployment admin token as one
+  // of the two raw-secret carve-outs, and the point of moving the row down a layer is that the
+  // console now writes it too: a projection that kept the token would put it in an append-only table
+  // a tenant admin can read.
+  test("no row anywhere in this family carries the token", () => {
+    expect(everyRow.length).toBeGreaterThan(8);
+    const dumped = JSON.stringify(everyRow, (_k, v) =>
+      typeof v === "bigint" ? String(v) : v,
+    );
+    expect(dumped).not.toContain(ADMIN_TOKEN);
+    expect(dumped).not.toContain(ROTATED_TOKEN);
+  });
+});

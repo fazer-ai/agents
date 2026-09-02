@@ -7,6 +7,7 @@ import { AppError, ConflictError, NotFoundError } from "@/lib/errors";
 import { parseInput } from "@/lib/parse-input";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { auditMutation } from "@/modules/audit/service";
 import {
   classifyWidgetHealth,
   type WidgetHealth,
@@ -170,13 +171,38 @@ export async function disconnectChatwootDeployment(
 ): Promise<void> {
   if (ctx.tenantId === null) throw new AppError("tenant required", 400);
   await runScopedOn(base, ctx, async (db) => {
-    const dep = await db.chatwootDeployment.findFirst({ select: { id: true } });
+    const dep = await db.chatwootDeployment.findFirst({
+      select: { id: true, baseUrl: true },
+    });
     if (!dep) {
       throw new NotFoundError(
         "no chatwoot deployment connected",
         "errors.chatwootDeploymentNotFound",
       );
     }
+    // WHAT WENT WITH IT, counted before the delete, because after it there is nothing left to count.
+    // This is the widest destructive act the console offers: the cascade reaches every account,
+    // inbox, agent bot and conversation of the tenant, and the contacts are deleted by hand first
+    // because no cascade reaches them. The row is the only thing that survives it.
+    //
+    // Recorded BEFORE the delete rather than after, and it stays: `audit_logs.tenant_id` cascades on
+    // the TENANT, which is not what is being deleted here.
+    const [accounts, inboxes, contacts] = await Promise.all([
+      db.chatwootInstance.count(),
+      db.inbox.count(),
+      db.contact.count(),
+    ]);
+    await auditMutation(db, ctx, {
+      action: "deployment.disconnect",
+      target: `chatwoot_deployment:${dep.id}`,
+      before: {
+        id: String(dep.id),
+        baseUrl: dep.baseUrl,
+        accounts,
+        inboxes,
+        contacts,
+      },
+    });
     // Contacts first (no cascade reaches them), then the deployment (cascades everything else).
     await db.contact.deleteMany({});
     await db.chatwootDeployment.delete({ where: { id: dep.id } });
@@ -249,23 +275,34 @@ export async function connectChatwootDeployment(
         "errors.chatwootDifferentDeployment",
       );
     }
-    if (existing) {
-      const row = await db.chatwootDeployment.update({
-        where: { id: existing.id },
-        data: { adminToken: encryptJson(data.adminToken) },
-        select: DEPLOYMENT_SELECT,
-      });
-      return toDeploymentDto(row);
-    }
-    const row = await db.chatwootDeployment.create({
-      data: {
-        tenantId,
-        baseUrl: data.baseUrl,
-        adminToken: encryptJson(data.adminToken),
+    const row = existing
+      ? await db.chatwootDeployment.update({
+          where: { id: existing.id },
+          data: { adminToken: encryptJson(data.adminToken) },
+          select: DEPLOYMENT_SELECT,
+        })
+      : await db.chatwootDeployment.create({
+          data: {
+            tenantId,
+            baseUrl: data.baseUrl,
+            adminToken: encryptJson(data.adminToken),
+          },
+          select: DEPLOYMENT_SELECT,
+        });
+    const dto = toDeploymentDto(row);
+    // The server and how many accounts the token could reach, and NEVER the token itself: it is one
+    // of the two documented raw-secret carve-outs (`docs/mcp.md`), and this row outlives the
+    // deployment it describes.
+    await auditMutation(db, ctx, {
+      action: "deployment.connect",
+      target: `chatwoot_deployment:${dto.id}`,
+      after: {
+        id: dto.id,
+        baseUrl: dto.baseUrl,
+        reachableAccounts: accounts.length,
       },
-      select: DEPLOYMENT_SELECT,
     });
-    return toDeploymentDto(row);
+    return dto;
   });
   return { deployment, accounts };
 }
@@ -300,7 +337,16 @@ export async function rotateChatwootDeploymentToken(
       data: { adminToken: encryptJson(token) },
       select: DEPLOYMENT_SELECT,
     });
-    return toDeploymentDto(row);
+    const dto = toDeploymentDto(row);
+    // THAT it moved, never what it moved to, and never what it moved from. A rotation's whole point
+    // is that the old value stops being valid, and a row that kept either end would outlive the
+    // rotation it records.
+    await auditMutation(db, ctx, {
+      action: "deployment.rotate_token",
+      target: `chatwoot_deployment:${dto.id}`,
+      after: { id: dto.id, adminTokenRotated: true },
+    });
+    return dto;
   });
 }
 
@@ -526,7 +572,21 @@ export async function setConnectedAccounts(
       // best-effort: inboxes can be synced manually later
     }
   }
-  return listChatwootInstances(ctx, base);
+  const instances = await listChatwootInstances(ctx, base);
+  // THE CHOICE, as one row, on top of whatever the accounts it dropped recorded for themselves. The
+  // two are not the same fact and neither covers the other: each `instance.disconnect` says an
+  // account stopped being handled, and this says which set the operator asked for.
+  await runScopedOn(base, ctx, (db) =>
+    auditMutation(db, ctx, {
+      action: "deployment.set_accounts",
+      target: `chatwoot_deployment:${dep.id}`,
+      after: {
+        accountIds: wanted,
+        connected: instances.filter((a) => a.disconnectedAt === null).length,
+      },
+    }),
+  );
+  return instances;
 }
 
 // Soft-disconnect an account: unbind every agent from its inboxes (detaching the persona bots in
@@ -544,7 +604,7 @@ export async function softDisconnectChatwootInstance(
   const inst = await runScopedOn(base, ctx, (db) =>
     db.chatwootInstance.findUnique({
       where: { id },
-      select: { id: true },
+      select: { id: true, accountId: true },
     }),
   );
   if (!inst) {
@@ -583,12 +643,17 @@ export async function softDisconnectChatwootInstance(
       }),
     );
   }
-  await runScopedOn(base, ctx, (db) =>
-    db.chatwootInstance.update({
+  await runScopedOn(base, ctx, async (db) => {
+    await db.chatwootInstance.update({
       where: { id },
       data: { disconnectedAt: new Date() },
-    }),
-  );
+    });
+    await auditMutation(db, ctx, {
+      action: "instance.disconnect",
+      target: `chatwoot_instance:${id}`,
+      before: { id: String(inst.id), accountId: inst.accountId },
+    });
+  });
   // The receiver caches "this route token resolves to a live bot" by hash. Without this, events for
   // an account just disconnected would keep being processed until the entry expires.
   invalidateRouteTokenCache();
@@ -619,7 +684,19 @@ export async function reconnectChatwootInstance(
       data: { disconnectedAt: null },
       select: SELECT,
     });
-    return toDto(row);
+    const reconnected = toDto(row);
+    // No MCP twin: this action reaches the trail through this name and nothing else, because the
+    // console is its only door.
+    await auditMutation(db, ctx, {
+      action: "instance.reconnect",
+      target: `chatwoot_instance:${id}`,
+      after: {
+        id: reconnected.id,
+        accountId: reconnected.accountId,
+        disconnectedAt: null,
+      },
+    });
+    return reconnected;
   });
   // NOTE: Mirrors the disconnect, and outside the transaction for the same reason: an event arriving
   // between the clear and the commit would re-cache the refusal it just read.
@@ -642,7 +719,7 @@ export async function removeChatwootInstance(
   await runScopedOn(base, ctx, async (db) => {
     const inst = await db.chatwootInstance.findUnique({
       where: { id },
-      select: { id: true },
+      select: { id: true, accountId: true, accountName: true },
     });
     if (!inst) {
       throw new NotFoundError(
@@ -650,6 +727,19 @@ export async function removeChatwootInstance(
         "errors.chatwootInstanceNotFound",
       );
     }
+    // BEFORE the delete, and counted: the cascade takes this account's inboxes and agent bots with
+    // it, so afterwards there is nothing left to describe. No MCP twin either, so this name is the
+    // only record the action has ever had.
+    await auditMutation(db, ctx, {
+      action: "instance.remove",
+      target: `chatwoot_instance:${id}`,
+      before: {
+        id: String(inst.id),
+        accountId: inst.accountId,
+        accountName: inst.accountName,
+        inboxes: await db.inbox.count({ where: { chatwootInstanceId: id } }),
+      },
+    });
     await db.chatwootInstance.delete({ where: { id } });
   });
   // NOTE: The delete cascades this instance's ChatwootAgentBot rows (schema.prisma: `onDelete: Cascade`),
@@ -993,7 +1083,15 @@ export async function reconnectInbox(
       where: { id: inboxId },
       select: INBOX_SELECT,
     });
-    return toInboxDto(row);
+    const dto = toInboxDto(row);
+    // The local binding did not move: this re-points CHATWOOT at the bot the inbox already names,
+    // which is why the row has no `before`. What it records is that somebody repaired the link.
+    await auditMutation(db, ctx, {
+      action: "inbox.reconnect",
+      target: `inbox:${inboxId}`,
+      after: { id: dto.id, agentId: dto.agentId },
+    });
+    return dto;
   });
 }
 
@@ -1350,7 +1448,18 @@ export async function bindInbox(
       where: { id: inboxId },
       select: INBOX_SELECT,
     });
-    return toInboxDto(row);
+    const dto = toInboxDto(row);
+    // BOTH SIDES, because an unbind is the same call with a null and it is the one that silences an
+    // inbox. The agent the inbox is losing is only knowable from the reading taken at the top.
+    await auditMutation(db, ctx, {
+      action: "inbox.bind",
+      target: `inbox:${inboxId}`,
+      before: {
+        agentId: inbox.agentId === null ? null : String(inbox.agentId),
+      },
+      after: { agentId: dto.agentId },
+    });
+    return dto;
   });
 }
 
@@ -1447,7 +1556,7 @@ export async function removeInbox(
   deps: LoadChatwootClientDeps = {},
   base: PrismaClient = basePrisma,
 ): Promise<void> {
-  const { gone } = await loadInboxAndAsk(ctx, inboxId, deps, base);
+  const { inbox, gone } = await loadInboxAndAsk(ctx, inboxId, deps, base);
   if (!gone) {
     throw new AppError(
       "this inbox still exists in Chatwoot; delete it there first",
@@ -1470,7 +1579,22 @@ export async function removeInbox(
   // operators doing the same correct thing. A DELETE is idempotent, and "it is already gone" is the
   // outcome the caller asked for.
   await runScopedOn(base, ctx, async (db) => {
-    await db.inbox.deleteMany({ where: { id: inboxId } });
+    const { count } = await db.inbox.deleteMany({ where: { id: inboxId } });
+    // Only when THIS call is the one that removed it. `deleteMany` is idempotent on purpose (two
+    // operators doing the same correct thing must not produce a 500), and a row per attempt would
+    // put the same removal on the trail as many times as it was retried.
+    if (count > 0) {
+      await auditMutation(db, ctx, {
+        action: "inbox.remove",
+        target: `inbox:${inboxId}`,
+        before: {
+          id: inbox.id,
+          name: inbox.name,
+          chatwootInboxId: inbox.chatwootInboxId,
+          agentId: inbox.agentId,
+        },
+      });
+    }
   });
 }
 
@@ -1766,6 +1890,12 @@ export async function syncInboxes(
       if (existing) updated++;
       else created++;
     }
-    return { total: remote.length, created, updated };
+    const result = { total: remote.length, created, updated };
+    await auditMutation(db, ctx, {
+      action: "instance.sync_inboxes",
+      target: `chatwoot_instance:${instanceId}`,
+      after: result,
+    });
+    return result;
   });
 }

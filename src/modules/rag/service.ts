@@ -3,6 +3,7 @@ import basePrisma from "@/api/lib/prisma";
 import { parseDbId } from "@/lib/db-id";
 import { AppError, NotFoundError } from "@/lib/errors";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { auditMutation, projectionMoved } from "@/modules/audit/service";
 import { readEmbeddingSettings } from "@/modules/tenant-settings/service";
 import {
   cancelPendingJob,
@@ -104,6 +105,41 @@ export async function listKnowledgeBases(
   });
 }
 
+// What a knowledge base's audit row carries.
+//
+// Identity and the indexing policy: the name, the description, the embedding model and the two chunk
+// parameters, all of which an operator sets and any of which changes what a search returns. Nothing
+// here is content: the documents are the payload, and they have their own action and their own rule
+// (`documents.ts`).
+type KbAuditRow = {
+  id: bigint;
+  name: string;
+  description: string | null;
+  embeddingModel: string;
+  chunkSize: number;
+  chunkOverlap: number;
+};
+
+function auditProjection(r: KbAuditRow) {
+  return {
+    id: String(r.id),
+    name: r.name,
+    description: r.description,
+    embeddingModel: r.embeddingModel,
+    chunkSize: r.chunkSize,
+    chunkOverlap: r.chunkOverlap,
+  };
+}
+
+const KB_AUDIT_SELECT = {
+  id: true,
+  name: true,
+  description: true,
+  embeddingModel: true,
+  chunkSize: true,
+  chunkOverlap: true,
+} as const;
+
 // Every text this module stores is held to what its column can hold, at the core rather than at a
 // transport, because three roads reach these writes: REST, the MCP write tools, and the agent's own
 // suggestion tool. Refused rather than repaired: the writer here reads the answer and can send the
@@ -134,7 +170,12 @@ export async function createKnowledgeBase(params: {
         description: params.description,
         embeddingModel,
       },
-      select: { id: true },
+      select: KB_AUDIT_SELECT,
+    });
+    await auditMutation(db, params.ctx, {
+      action: "knowledge.create",
+      target: `knowledge_base:${kb.id}`,
+      after: auditProjection(kb),
     });
     return { id: kb.id };
   });
@@ -368,6 +409,22 @@ export async function editApprovalItem(
       where: { id: params.id, status: { in: ["PENDING", "EDITED"] } },
       data,
     });
+    // NOTE: WHICH fields the operator rewrote, never what they wrote. An edit before approval is the
+    // operator putting their words into what the agent proposed, and the trail's business is that it
+    // happened; the text lands in the knowledge base, which is where it is read.
+    if (res.count > 0) {
+      await auditMutation(db, params.ctx, {
+        action: "knowledge.edit",
+        target: `approval:${params.id}`,
+        after: {
+          id: String(params.id),
+          status: "EDITED",
+          fields: Object.keys(data)
+            .filter((k) => k !== "status")
+            .sort(),
+        },
+      });
+    }
     return res.count > 0 ? "updated" : "not-pending";
   });
 }
@@ -394,24 +451,37 @@ export async function claimApprovalForStorage(
   id: bigint,
   base: PrismaClient = basePrisma,
 ): Promise<ClaimedApproval | null> {
-  const rows = await runScopedOn(
-    base,
-    ctx,
-    (db) =>
-      db.$queryRaw<
-        {
-          knowledge_base_id: bigint;
-          proposed_title: string | null;
-          proposed_content: string;
-        }[]
-      >`
+  const rows = await runScopedOn(base, ctx, async (db) => {
+    const claimed = await db.$queryRaw<
+      {
+        knowledge_base_id: bigint;
+        proposed_title: string | null;
+        proposed_content: string;
+      }[]
+    >`
       UPDATE approval_queue_items
          SET status = 'APPROVED', updated_at = now()
        WHERE id = ${id}
          AND status IN ('PENDING', 'EDITED')
       RETURNING knowledge_base_id, proposed_title, proposed_content
-    `,
-  );
+    `;
+    // NOTE: In the claim's own transaction, and only when the claim WON: the statement above is what
+    // makes an approval exclusive, so a second operator racing it gets no row and records nothing.
+    // The document this approval becomes records itself separately (`knowledge_document.create`),
+    // which is where the text goes; this row is the decision.
+    if (claimed[0]) {
+      await auditMutation(db, ctx, {
+        action: "knowledge.approve",
+        target: `approval:${id}`,
+        after: {
+          id: String(id),
+          knowledgeBaseId: String(claimed[0].knowledge_base_id),
+          status: "APPROVED",
+        },
+      });
+    }
+    return claimed;
+  });
   const row = rows[0];
   if (!row) return null;
   return {
@@ -508,6 +578,16 @@ export async function rejectApprovalItem(params: {
       where: { id: params.id, status: { in: ["PENDING", "EDITED"] } },
       data: { status: "REJECTED" },
     });
+    // NOTE: The condition IS the test, so a retry on an item somebody else already decided records
+    // nothing. What the row carries is the DECISION and never the proposal's text: the body is what
+    // the agent suggested about a customer, and this row outlives the queue item.
+    if (res.count > 0) {
+      await auditMutation(db, params.ctx, {
+        action: "knowledge.reject",
+        target: `approval:${params.id}`,
+        after: { id: String(params.id), status: "REJECTED" },
+      });
+    }
     return res.count > 0 ? "rejected" : "not-pending";
   });
 }
@@ -584,6 +664,20 @@ export async function updateKnowledgeBase(params: {
   }
 
   await runScopedOn(base, params.ctx, async (db) => {
+    // NOTE: LOCKED and read before the write, because this snapshot is the row's `before`. Two
+    // overlapping saves would otherwise both read the same base and the second would report a
+    // transition its actor never made.
+    await db.$queryRaw`SELECT id FROM knowledge_bases WHERE id = ${params.id} FOR UPDATE`;
+    const before = await db.knowledgeBase.findUnique({
+      where: { id: params.id },
+      select: KB_AUDIT_SELECT,
+    });
+    if (!before) {
+      throw new NotFoundError(
+        "knowledge base not found",
+        "errors.knowledgeBaseNotFound",
+      );
+    }
     const res = await db.knowledgeBase.updateMany({
       where: { id: params.id },
       data: {
@@ -605,6 +699,22 @@ export async function updateKnowledgeBase(params: {
         "errors.knowledgeBaseNotFound",
       );
     }
+    const after = await db.knowledgeBase.findUniqueOrThrow({
+      where: { id: params.id },
+      select: KB_AUDIT_SELECT,
+    });
+    const beforeProj = auditProjection(before);
+    const afterProj = auditProjection(after);
+    // NOTE: A row only when something moved. The console PATCHes the whole form on every save, and
+    // the chunk parameters are the half an operator re-submits without touching.
+    if (projectionMoved(beforeProj, afterProj)) {
+      await auditMutation(db, params.ctx, {
+        action: "knowledge.update",
+        target: `knowledge_base:${params.id}`,
+        before: beforeProj,
+        after: afterProj,
+      });
+    }
   });
 }
 
@@ -615,6 +725,19 @@ export async function deleteKnowledgeBase(params: {
 }): Promise<void> {
   const base = params.base ?? basePrisma;
   await runScopedOn(base, params.ctx, async (db) => {
+    // NOTE: Read with the row LOCKED before the delete, so the row describes the base actually
+    // removed and counts what went with it: the chunks and the documents cascade, and afterwards
+    // there is nothing left to count.
+    await db.$queryRaw`SELECT id FROM knowledge_bases WHERE id = ${params.id} FOR UPDATE`;
+    const before = await db.knowledgeBase.findUnique({
+      where: { id: params.id },
+      select: KB_AUDIT_SELECT,
+    });
+    const documents = before
+      ? await db.knowledgeDocument.count({
+          where: { knowledgeBaseId: params.id },
+        })
+      : 0;
     // KnowledgeChunk cascades via its FK to KnowledgeBase.
     const res = await db.knowledgeBase.deleteMany({ where: { id: params.id } });
     if (res.count === 0) {
@@ -622,6 +745,13 @@ export async function deleteKnowledgeBase(params: {
         "knowledge base not found",
         "errors.knowledgeBaseNotFound",
       );
+    }
+    if (before) {
+      await auditMutation(db, params.ctx, {
+        action: "knowledge.delete",
+        target: `knowledge_base:${params.id}`,
+        before: { ...auditProjection(before), documents },
+      });
     }
   });
 }

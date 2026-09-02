@@ -10,6 +10,7 @@ import { AppError, NotFoundError } from "@/lib/errors";
 import { sanitizeErrorMessage } from "@/lib/redact";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { firstUnstorableField } from "@/lib/text";
+import { auditMutation, projectionMoved } from "@/modules/audit/service";
 import { emitDeadLetter } from "@/modules/flowlog/dead-letter";
 import { cancelPendingJob, enqueueJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
@@ -178,6 +179,48 @@ export interface CreateDocumentParams {
   base?: PrismaClient;
 }
 
+// What a document's audit row carries, and the one thing it never does.
+//
+// Identity and shape: which base it belongs to, its title, where it came from, the file it arrived
+// as, and its indexing status. NEVER `content`. This is the payload most likely to carry a
+// customer's data, the row is append-only and readable by every tenant admin, and it outlives the
+// document — so the body is not in the projection and is not compared either: `chars` says a text
+// moved and how big it is, which is what a reader of the trail needs from it.
+type DocAuditRow = {
+  id: bigint;
+  knowledgeBaseId: bigint;
+  title: string;
+  sourceType: string;
+  fileName: string | null;
+  mimeType: string | null;
+  status: string;
+  content: string;
+};
+
+function docAuditProjection(r: DocAuditRow) {
+  return {
+    id: String(r.id),
+    knowledgeBaseId: String(r.knowledgeBaseId),
+    title: r.title,
+    sourceType: r.sourceType,
+    fileName: r.fileName,
+    mimeType: r.mimeType,
+    status: r.status,
+    chars: r.content.length,
+  };
+}
+
+const DOC_AUDIT_SELECT = {
+  id: true,
+  knowledgeBaseId: true,
+  title: true,
+  sourceType: true,
+  fileName: true,
+  mimeType: true,
+  status: true,
+  content: true,
+} as const;
+
 // The whole write is held to what the columns can store, before anything is read or enqueued. It is
 // not a hypothetical shape: `extractText` decodes an uploaded .txt with `TextDecoder("utf-8")`, so a
 // file carrying a 0x00 byte hands a NUL straight to `content`, and Postgres refuses one in a `text`
@@ -208,7 +251,7 @@ export async function createDocument(
       select: { id: true },
     });
     if (!kb) throw new NotFoundError("knowledge base not found");
-    return db.knowledgeDocument.create({
+    const created = await db.knowledgeDocument.create({
       data: {
         tenantId,
         knowledgeBaseId,
@@ -219,8 +262,14 @@ export async function createDocument(
         content: params.text,
         status: "PENDING",
       },
-      select: { id: true, status: true },
+      select: DOC_AUDIT_SELECT,
     });
+    await auditMutation(db, ctx, {
+      action: "knowledge_document.create",
+      target: `knowledge_document:${created.id}`,
+      after: docAuditProjection(created),
+    });
+    return created;
   });
 
   await enqueueJob({
@@ -326,8 +375,22 @@ export async function deleteDocument(
   base: PrismaClient = basePrisma,
 ): Promise<void> {
   await runScopedOn(base, ctx, async (db) => {
+    // NOTE: Read with the row LOCKED before the delete, so the row describes the document actually
+    // removed rather than a version an edit replaced in between.
+    await db.$queryRaw`SELECT id FROM knowledge_documents WHERE id = ${id} FOR UPDATE`;
+    const existing = await db.knowledgeDocument.findUnique({
+      where: { id },
+      select: DOC_AUDIT_SELECT,
+    });
     const res = await db.knowledgeDocument.deleteMany({ where: { id } });
     if (res.count === 0) throw new NotFoundError("document not found");
+    if (existing) {
+      await auditMutation(db, ctx, {
+        action: "knowledge_document.delete",
+        target: `knowledge_document:${id}`,
+        before: docAuditProjection(existing),
+      });
+    }
   });
 }
 
@@ -357,9 +420,12 @@ export async function updateDocument(
   ]);
 
   const { doc, reingest } = await runScopedOn(base, ctx, async (db) => {
+    // NOTE: LOCKED, because this reading is both the reingest decision and the row's `before`, and
+    // two overlapping edits would otherwise each compare against a text the other one replaced.
+    await db.$queryRaw`SELECT id FROM knowledge_documents WHERE id = ${id} FOR UPDATE`;
     const existing = await db.knowledgeDocument.findUnique({
       where: { id },
-      select: { id: true, content: true },
+      select: DOC_AUDIT_SELECT,
     });
     if (!existing) throw new NotFoundError("document not found");
     const reingest = hasText && params.text !== existing.content;
@@ -371,8 +437,22 @@ export async function updateDocument(
           ? { content: params.text, status: "PENDING", error: null }
           : {}),
       },
-      select: { id: true, status: true, knowledgeBaseId: true },
+      select: DOC_AUDIT_SELECT,
     });
+    const beforeProj = docAuditProjection(existing);
+    const afterProj = docAuditProjection(updated);
+    // NOTE: The action this issue invents: `PATCH /v1/knowledge/documents/:id` has no MCP twin, so
+    // an edit to a document reached the trail through nothing at all. Recorded only when it moved,
+    // which for a body means its LENGTH moved or the title did: the text itself is neither carried
+    // nor compared here (`reingest` above compares it, and that is the ingest's business).
+    if (reingest || projectionMoved(beforeProj, afterProj)) {
+      await auditMutation(db, ctx, {
+        action: "knowledge_document.update",
+        target: `knowledge_document:${id}`,
+        before: beforeProj,
+        after: { ...afterProj, reindexed: reingest },
+      });
+    }
     return { doc: updated, reingest };
   });
 
@@ -406,6 +486,10 @@ export async function retryDocument(
 ): Promise<void> {
   const tenantId = ctx.tenantId as bigint;
   const doc = await runScopedOn(base, ctx, async (db) => {
+    // NOTE: LOCKED, because the status read here is the row's `before` and the 409 above it. Without
+    // it a concurrent ingest can move the document between the reading and the write, and the row
+    // would name a state this retry did not leave.
+    await db.$queryRaw`SELECT id FROM knowledge_documents WHERE id = ${id} FOR UPDATE`;
     const existing = await db.knowledgeDocument.findUnique({
       where: { id },
       select: { id: true, status: true, knowledgeBaseId: true },
@@ -419,10 +503,20 @@ export async function retryDocument(
         409,
       );
     }
-    await db.knowledgeDocument.updateMany({
+    const { count } = await db.knowledgeDocument.updateMany({
       where: { id, status: { in: ["FAILED", "UNINDEXED"] } },
       data: { status: "PENDING", error: null },
     });
+    // NOTE: The condition IS the test: two operators pressing the button on the same failed document
+    // would otherwise both record a retry only one of them started.
+    if (count > 0) {
+      await auditMutation(db, ctx, {
+        action: "knowledge_document.retry",
+        target: `knowledge_document:${id}`,
+        before: { id: String(id), status: existing.status },
+        after: { id: String(id), status: "PENDING" },
+      });
+    }
     return existing;
   });
 
@@ -534,10 +628,20 @@ export async function reindexKnowledgeBase(
     if (!emb.ok) return { docs: targets, blocked: emb };
     // dry-run previews the count (below) without touching the docs.
     if (opts.dryRun) return { docs: targets, blocked: undefined };
-    await db.knowledgeDocument.updateMany({
+    const { count } = await db.knowledgeDocument.updateMany({
       where: { knowledgeBaseId, status: { in: statuses } },
       data: { status: "PENDING", error: null },
     });
+    // NOTE: How many the WRITE moved, not how many the listing above found. Two operators pressing
+    // reindex on the same base both see the same targets, and the second one moves none of them; a
+    // row built from `targets` would report a queue it did not fill.
+    if (count > 0) {
+      await auditMutation(db, ctx, {
+        action: "knowledge.reindex",
+        target: `knowledge_base:${knowledgeBaseId}`,
+        after: { queued: count, includeFailed: opts.includeFailed === true },
+      });
+    }
     return { docs: targets, blocked: undefined };
   });
 

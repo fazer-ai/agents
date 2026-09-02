@@ -225,6 +225,20 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
     await collect();
   });
 
+  // The other half of the same rule, and the one a re-submitted form exercises every day: both loops
+  // above skip every account when the selection already matches, so nothing happened and nothing is
+  // recorded.
+  test("choosing the same accounts again records nothing", async () => {
+    await clearAudit();
+    await setConnectedAccounts(
+      ctx(),
+      [1, 2],
+      { fetchProfile, makeClient: stubClient().makeClient },
+      appDb,
+    );
+    expect(await rows()).toEqual([]);
+  });
+
   test("disconnecting an account records what it was", async () => {
     await clearAudit();
     const inst = await suDb.chatwootInstance.findFirstOrThrow({
@@ -305,6 +319,22 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
     expect(row?.before).toEqual({ agentId: null });
     expect(row?.after).toEqual({ agentId: String(agent.id) });
     await collect();
+  });
+
+  test("binding the same agent again records nothing", async () => {
+    await clearAudit();
+    const inbox = await suDb.inbox.findFirstOrThrow({
+      where: { tenantId, chatwootInboxId: 71 },
+      select: { id: true, agentId: true },
+    });
+    await bindInbox(
+      ctx(),
+      inbox.id,
+      inbox.agentId,
+      { makeClient: stubClient().makeClient },
+      appDb,
+    );
+    expect(await rows()).toEqual([]);
   });
 
   test("unbinding an inbox records the agent it lost", async () => {

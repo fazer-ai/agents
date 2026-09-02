@@ -1915,7 +1915,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "inbox_reconcile",
       {
         description:
-          "Report which bound inboxes have a live bot in Chatwoot and which do not. Calls Chatwoot; changes nothing. Repair one with inbox_reconnect.",
+          "Report which bound inboxes have a live bot in Chatwoot and which do not, ONLY when dry_run is false. Calls Chatwoot; changes nothing. Repair one with inbox_reconnect.",
         inputSchema: { dry_run: z.boolean().optional() },
       },
       async (args: { dry_run?: boolean }, eff) =>

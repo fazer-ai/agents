@@ -591,19 +591,28 @@ export async function setConnectedAccounts(
     }
   }
   const instances = await listChatwootInstances(ctx, base);
-  // NOTE: THE CHOICE, as one row, on top of whatever the accounts it dropped recorded for themselves. The
-  // two are not the same fact and neither covers the other: each `instance.disconnect` says an
-  // account stopped being handled, and this says which set the operator asked for.
-  await runScopedOn(base, ctx, (db) =>
-    auditMutation(db, ctx, {
-      action: "deployment.set_accounts",
-      target: `chatwoot_deployment:${dep.id}`,
-      after: {
-        accountIds: wanted,
-        connected: instances.filter((a) => a.disconnectedAt === null).length,
-      },
-    }),
-  );
+  // NOTE: THE CHOICE, as one row, on top of whatever the accounts it dropped or connected recorded
+  // for themselves. The three are not the same fact and none covers the others: an
+  // `instance.connect`/`instance.disconnect` says one account started or stopped being handled, and
+  // this says which set the operator asked for.
+  //
+  // And only when the set MOVED. Both loops above skip every account when the selection already
+  // matches, so a re-submitted form (or an idempotent retry) reaches here having changed nothing,
+  // and a row for it would be the trail reporting a mutation that did not happen.
+  const selectionMoved =
+    wanted.length !== activeIds.size || wanted.some((id) => !activeIds.has(id));
+  if (selectionMoved) {
+    await runScopedOn(base, ctx, (db) =>
+      auditMutation(db, ctx, {
+        action: "deployment.set_accounts",
+        target: `chatwoot_deployment:${dep.id}`,
+        after: {
+          accountIds: wanted,
+          connected: instances.filter((a) => a.disconnectedAt === null).length,
+        },
+      }),
+    );
+  }
   return instances;
 }
 
@@ -1469,14 +1478,20 @@ export async function bindInbox(
     const dto = toInboxDto(row);
     // NOTE: BOTH SIDES, because an unbind is the same call with a null and it is the one that silences an
     // inbox. The agent the inbox is losing is only knowable from the reading taken at the top.
-    await auditMutation(db, ctx, {
-      action: "inbox.bind",
-      target: `inbox:${inboxId}`,
-      before: {
-        agentId: inbox.agentId === null ? null : String(inbox.agentId),
-      },
-      after: { agentId: dto.agentId },
-    });
+    //
+    // And only when the binding MOVED: re-submitting the editor with the same agent reaches the
+    // network branch, which deliberately does nothing, so a row would report a change that is not
+    // one. Compared against the reading that predates the write.
+    if (inbox.agentId !== agentId) {
+      await auditMutation(db, ctx, {
+        action: "inbox.bind",
+        target: `inbox:${inboxId}`,
+        before: {
+          agentId: inbox.agentId === null ? null : String(inbox.agentId),
+        },
+        after: { agentId: dto.agentId },
+      });
+    }
     return dto;
   });
 }

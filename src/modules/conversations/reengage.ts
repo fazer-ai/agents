@@ -382,6 +382,13 @@ export async function reengageConversation(
   // The reply is with the customer from here, and clearing the error badge is our own bookkeeping:
   // it can throw, and a row written only after it would be missing for a turn that did post. Same
   // seam as the other four (`conversations/audit.ts`).
+  //
+  // A DECLARED GAP, and it is upstream of this line: `coalesceAndRunTurn` advances the handled
+  // watermark after the post and before it returns, so a failure there rejects without ever naming
+  // an outcome, and this call cannot know whether the customer was answered. No row is the honest
+  // answer to that, not a guess — and the same crash loses the turn's own bookkeeping either way.
+  // Closing it means recording at the posting seam itself, which is the turn's business rather than
+  // this button's.
   try {
     if (outcome === "posted") {
       await clearConversationError({

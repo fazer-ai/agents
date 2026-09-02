@@ -1767,16 +1767,21 @@ export async function returnConversationToAgent(
   // FROM HERE THE EFFECT HAS HAPPENED: the status went to pending and, on the ordinary path, the
   // human has been unassigned. Everything below is our own bookkeeping (the mirror, its fallback
   // write, the broadcast, the ownership read that names the outcome) and any of it can throw, so the
-  // row is written in a `finally`. What it carries then is what this call knows: pending, and the
-  // holder it started from.
+  // row is written in a `finally`.
+  //
+  // What it carries then is what THIS CALL already knows, which is not the baseline: the unassign
+  // above either ran and removed whoever was there, or was skipped because the live read found the
+  // conversation free, or was withheld because somebody else is holding it. Falling back to the
+  // baseline would have the row say a human is still assigned on the one path where the hand-back
+  // demonstrably worked.
   let landedReturn: {
     status: string;
     assigneeType: string | null;
     assigneeId: number | null;
   } = {
     status: "pending",
-    assigneeType: baseline.assigneeType,
-    assigneeId: baseline.assigneeId,
+    assigneeType: newHolder?.assigneeType ?? null,
+    assigneeId: newHolder?.assigneeId ?? null,
   };
   let outcomeForRow: ReturnToAgentOutcome | null = null;
   try {

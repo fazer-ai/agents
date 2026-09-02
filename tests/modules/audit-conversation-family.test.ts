@@ -742,6 +742,36 @@ describe.skipIf(!dbUp)(
       });
     });
 
+    // The hand-back's own version of the same case, and the fallback here has to be what the call
+    // KNOWS rather than where it started: the unassign ran, so the human is gone, and a row falling
+    // back to the baseline would say they are still holding a conversation this call just freed.
+    test("a hand-back whose mirror write fails records the holder it removed", async () => {
+      await clearAudit();
+      const id = await seedConversation(4019, {
+        status: "open",
+        assigneeType: "User",
+        assigneeId: 21,
+      });
+      const stub = stubClient();
+      await expect(
+        returnConversationToAgent(
+          ctx(),
+          id,
+          { makeClient: stub.makeClient },
+          mirrorFailingBase(appDb),
+        ),
+      ).rejects.toThrow();
+      expect(stub.calls).toContain("unassignConversation");
+      const [row, ...rest] = await rows();
+      expect(rest).toEqual([]);
+      expect(row?.action).toBe("conversation.return");
+      expect(row?.after).toEqual({
+        status: "pending",
+        assigneeType: null,
+        assigneeId: null,
+      });
+    });
+
     test("the door is carried by the actor, not by the action", async () => {
       await clearAudit();
       const id = await seedConversation(4007);

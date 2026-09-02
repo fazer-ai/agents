@@ -1,4 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
@@ -8,9 +10,21 @@ import {
   configHealthAfterWrite,
   readAgentConfigHealth,
 } from "@/modules/agents/config-health-read";
+import {
+  AGENT_EXPORT_KIND,
+  AGENT_EXPORT_VERSION,
+} from "@/modules/agents/transfer";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import { agentConfigHealth } from "@/modules/mcp/read";
+import { buildMcpServer } from "@/modules/mcp/server";
 import { agentSettingsSet } from "@/modules/mcp/write";
+import {
+  agentClone,
+  agentCreate,
+  agentImport,
+  agentToolsSet,
+  agentUpdate,
+} from "@/modules/mcp/write-agents";
 
 // The same warnings the console's editor panel computes, asked for by something that is not a
 // browser. Issue #467.
@@ -666,6 +680,39 @@ describe.skipIf(!dbUp)("agent configuration health", () => {
       expect(Object.keys(health).sort()).toEqual(documented);
     });
 
+    // OVER A REAL MCP CLIENT, which is the one thing calling the function directly cannot show: that
+    // the tool is registered, that its input schema is what a client sees, and that a call reaches
+    // the handler. The transport is the SDK's own in-memory pair, the same one the tools/list checks
+    // use.
+    //
+    // Driven with an unparseable id on purpose: the answer comes from `parseMcpId` inside the
+    // handler, which proves the whole path without this case needing a database of its own — the
+    // behaviour WITH data is what every other case here covers.
+    test("a real MCP client can list it and call it", async () => {
+      const server = buildMcpServer(principal(tenantId));
+      const [clientT, serverT] = InMemoryTransport.createLinkedPair();
+      await server.connect(serverT);
+      const client = new Client({ name: "config-health", version: "0" });
+      await client.connect(clientT);
+      try {
+        const tool = (await client.listTools()).tools.find(
+          (t) => t.name === "agent_config_health",
+        );
+        expect(tool).toBeDefined();
+        const schema = tool?.inputSchema as
+          | { properties?: Record<string, unknown> }
+          | undefined;
+        expect(Object.keys(schema?.properties ?? {})).toContain("agent_id");
+        const called = (await client.callTool({
+          name: "agent_config_health",
+          arguments: { agent_id: "not-a-number" },
+        })) as { content: { type: string; text: string }[] };
+        expect(called.content[0]?.text ?? "").toContain("invalid agent_id");
+      } finally {
+        await client.close();
+      }
+    });
+
     test("the read gate applies before any of it", async () => {
       const r = await agentConfigHealth(
         { ...principal(tenantId), scopes: [] },
@@ -723,6 +770,84 @@ describe.skipIf(!dbUp)("agent configuration health", () => {
       expect(after.configHealth.unchecked).toContain("configHealth");
       // Absent, never clean: an empty issue list next to `healthy: null` says nobody looked.
       expect(after.configHealth.issues).toEqual([]);
+    });
+
+    // ALL SIX WRITES, not just the one. They share a helper and a call shape, which is exactly the
+    // argument that reads as sufficient right up until one of them is written without it — the
+    // block is a promise the tool's own contract makes, so each tool has to keep it.
+    //
+    // Every arm applies for real (`dry_run: false`) against an agent whose model is unconfigured, so
+    // the answer is the same non-empty one everywhere and a tool that dropped the block shows up as
+    // `undefined` rather than as a different-but-plausible reading.
+    test("every agent write that applies carries the block", async () => {
+      const blockOf = (r: Awaited<ReturnType<typeof agentSettingsSet>>) =>
+        r.ok
+          ? (r.data.configHealth as { healthy: boolean | null } | undefined)
+          : undefined;
+      const p = principal(tenantId);
+      const created = await agentCreate(
+        p,
+        { name: `written-${process.pid}`, dry_run: false },
+        { base: appDb },
+      );
+      expect(blockOf(created)?.healthy).toBe(false);
+      const newId = String(
+        (created.ok ? (created.data.agent as { id: string }) : { id: "0" }).id,
+      );
+
+      const updated = await agentUpdate(
+        p,
+        { agent_id: newId, name: `renamed-${process.pid}`, dry_run: false },
+        { base: appDb },
+      );
+      expect(blockOf(updated)?.healthy).toBe(false);
+
+      const cloned = await agentClone(
+        p,
+        { agent_id: newId, name: `cloned-${process.pid}`, dry_run: false },
+        { base: appDb },
+      );
+      expect(blockOf(cloned)?.healthy).toBe(false);
+
+      const grants = await agentToolsSet(
+        p,
+        { agent_id: newId, grants: [], dry_run: false },
+        { base: appDb },
+      );
+      expect(blockOf(grants)?.healthy).toBe(false);
+
+      const settings = await agentSettingsSet(
+        p,
+        { agent_id: newId, stt: { enabled: false }, dry_run: false },
+        { base: appDb },
+      );
+      expect(blockOf(settings)?.healthy).toBe(false);
+
+      const imported = await agentImport(
+        p,
+        {
+          export: {
+            version: AGENT_EXPORT_VERSION,
+            kind: AGENT_EXPORT_KIND,
+            agent: {
+              name: `imported-${process.pid}`,
+              systemPrompt: "x",
+              // The bag an export is allowed to carry, and the reason this whole family of checks
+              // exists: `agentExportSchema` takes an arbitrary record here.
+              modelConfig: {},
+              settings: {},
+              transferWithSummary: false,
+              businessHours: null,
+              followUpHours: null,
+              tools: [],
+              credentials: [],
+            },
+          },
+          dry_run: false,
+        },
+        { base: appDb },
+      );
+      expect(blockOf(imported)?.healthy).toBe(false);
     });
 
     test("advisory issues are counted but do not ride along on a write", async () => {

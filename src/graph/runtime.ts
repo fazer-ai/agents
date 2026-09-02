@@ -222,6 +222,14 @@ export interface RunLoadedTurnParams {
   // Chatwoot id of the triggering message, surfaced to HTTP tools as {{message_id}}. Direct path: the
   // incoming message id; debounce flush: the burst watermark. Omitted ⇒ {{message_id}} stays unset.
   messageId?: number;
+  // Every inbound message this turn is answering, for the WhatsApp read receipt. A debounce flush
+  // passes the whole burst; the direct path passes its single message. Empty ⇒ no receipt is sent.
+  //
+  // MANDATORY, and that is the point. Optional, a third entry point that coalesces messages would
+  // compile while acknowledging only the newest of them, leaving every earlier message of the burst
+  // on grey ticks — a silent loss the type system is perfectly able to prevent. Required, `tsc`
+  // names the site.
+  readMessageIds: number[];
   // Whether the customer's turn included a voice note — drives the "mirror" TTS reply mode.
   userSentAudio?: boolean;
   base?: PrismaClient;
@@ -628,6 +636,31 @@ async function runTurnBody(
     makeClient: params.deps?.makeClient,
     botToken: loaded.agentBotToken ?? undefined,
   });
+
+  // Blue-ticks the contact's messages on WhatsApp. Here because this is the tail BOTH entry points
+  // share, so the direct path and the debounce flush get it from one site instead of two that can
+  // drift; and because a turn reaching this line has read the messages, which is exactly what the
+  // tick claims. It says nothing about a reply coming, so a turn that later defers, hands off or is
+  // silenced keeps it honest.
+  //
+  // Deliberately NOT driven by `lastHandledMessageId`. That watermark also advances for a burst the
+  // bot skipped on purpose (nothing renders to answerable text, a mid-turn takeover, a guardrail
+  // silence), and ticking those would tell the contact somebody read what nobody read.
+  //
+  // `conversationId > 0` keeps the playground out: it runs turns against a dummy client and id 0.
+  // Best-effort, because a Chatwoot older than the endpoint answers 401 (its bot allowlist predates
+  // `read_receipt`) or 404 (no route), and no blue tick is worth failing a turn over.
+  if (params.conversationId > 0) {
+    // try/catch and NOT `.catch()`: the latter only covers a rejected promise, and the failure this
+    // has to survive can happen while INVOKING — a client that predates the method (a test double,
+    // an older build) throws TypeError synchronously and walks straight past a `.catch()`. Measured:
+    // the first version of this line took 95 turn tests down with it.
+    try {
+      await client.markRead(params.conversationId, params.readMessageIds);
+    } catch {
+      // Swallowed on purpose: see above.
+    }
+  }
   // The question, and it is asked AT each outward write rather than somewhere upstream of it. Four
   // review rounds found the same defect in four different places, and every one of them was an ask
   // that sat next to its effect when it was written and then had a round trip grow between the two:
@@ -2156,6 +2189,8 @@ export async function runAgentTurn(
       : undefined;
 
   const outcome = await runLoadedTurn({
+    // The direct path answers exactly one message, so the receipt set is that message.
+    readMessageIds: typeof n.message?.id === "number" ? [n.message.id] : [],
     // Nothing QUEUED this turn — it is the delivery itself, arriving from the webhook — so there is
     // no job for /reset to retire. What names this run instead is the EPISODE, read off the message
     // it is answering, and ./reset-episode.ts carries the measurement: without it the operator's

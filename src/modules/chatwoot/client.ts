@@ -748,6 +748,30 @@ export class ChatwootClient {
     );
   }
 
+  // Tells WhatsApp the contact's messages were read, which is what turns the ticks blue on their
+  // phone. `read_receipt` IS in the fork's BOT_ACCESSIBLE_ENDPOINTS (same allowlist as
+  // `toggle_typing_status`), so the bot token carries it and the receipt is attributed to us.
+  //
+  // It writes NO read state inside Chatwoot: the conversation keeps its unread badge for the human
+  // agents, so a bot acknowledging a message it is about to answer does not hand a human a thread
+  // that already looks read. Naming the ids matters — omitting them makes the endpoint fall back to
+  // a window over the thread, and we always know exactly which messages this turn took.
+  //
+  // Best-effort at every call site, and the reason is version skew: an instance older than the
+  // endpoint answers 401 (its bot allowlist predates `read_receipt`) or 404 (no route), and a blue
+  // tick is never worth failing a turn over.
+  markRead(conversationId: number, messageIds: number[]): Promise<unknown> {
+    const ids = messageIds.filter((id) => Number.isInteger(id) && id > 0);
+    // An empty list means "I processed nothing", which acknowledges nothing. Not a call.
+    if (ids.length === 0) return Promise.resolve(undefined);
+    return this.request(
+      this.config.botToken,
+      "POST",
+      `/conversations/${conversationId}/read_receipt`,
+      { message_ids: ids },
+    );
+  }
+
   // ── admin-token (history, provisioning, anything outside the bot allowlist) ──
 
   getConversation(conversationId: number): Promise<unknown> {

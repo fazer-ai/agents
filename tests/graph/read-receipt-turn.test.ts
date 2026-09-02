@@ -115,13 +115,18 @@ const incoming = (
   message: { id: messageId, content, messageType: "incoming", private: false },
 });
 
-async function seedConversation(convId: number, inboxDbId?: bigint) {
+async function seedConversation(
+  convId: number,
+  inboxDbId?: bigint,
+  assignee?: { assigneeType: string; assigneeId: number },
+) {
   await suDb.conversation.create({
     data: {
       tenantId,
       chatwootInstanceId: instanceId,
       chatwootConversationId: convId,
       ...(inboxDbId === undefined ? {} : { inboxId: inboxDbId }),
+      ...(assignee ?? {}),
       status: "pending",
       threadId: `${tenantId}:${instanceId}:${convId}`,
       lastEventAt: new Date(),
@@ -278,7 +283,14 @@ describe.skipIf(!dbUp)("the WhatsApp read receipt of a turn", () => {
 
   // The playground runs turns against a dummy client on conversation 0. A receipt there would be a
   // request to `/conversations/0/read_receipt` on every operator test-drive.
+  //
+  // The mirror row for id 0 is what makes this test about the playground guard and nothing else.
+  // Without it the ownership read finds no conversation, answers "not ours" and closes the gate for
+  // its own reasons — so the test passed either way and `conversationId > 0` was pinned by nobody.
+  // Measured: mutating it to `>= 0` left all 11 green. With an owned row seeded there, the guard is
+  // the only thing standing between the playground and a tick.
   test("the playground sends no receipt", async () => {
+    await seedConversation(0, whatsappInboxDbId);
     const sent: number[] = [];
     const receipts: Receipt[] = [];
 
@@ -483,6 +495,47 @@ describe.skipIf(!dbUp)("the WhatsApp read receipt of a turn", () => {
     });
 
     expect(receipts).toEqual([{ conversationId: convId, messageIds: [6002] }]);
+  });
+
+  // The third question the turn already asks before its other outward writes, and the receipt was
+  // not asking it either. The receiver's gate proved bot ownership before the turn was queued; a
+  // person taking the conversation over inside the window that follows leaves that answer stale, and
+  // the post-generation recheck suppresses the SEND without being able to unwrite a tick. Same
+  // window `botOwnsItNow` was added for in issue #457 (hand-back note, review round 7), so the
+  // receipt asks the same read at the moment it writes.
+  test("a conversation a human took over gets no receipt", async () => {
+    const convId = 8110;
+    await seedConversation(convId, whatsappInboxDbId, {
+      assigneeType: "User",
+      assigneeId: 42,
+    });
+    const sent: number[] = [];
+    const receipts: Receipt[] = [];
+
+    const outcome = await runLoadedTurn({
+      stillWanted: null,
+      loaded: await loadFor(convId),
+      authContext: null,
+      tenantId,
+      instanceId,
+      conversationId: convId,
+      agentBotId: 9,
+      threadId: `${tenantId}:${instanceId}:${convId}`,
+      text: "oi, tem alguem ai?",
+      messageId: 6101,
+      readMessageIds: [6101],
+      base: appDb,
+      deps: {
+        makeModel: () => new StubModel() as unknown as BaseChatModel,
+        makeClient: stubClient(sent, receipts),
+        checkpointer: new MemorySaver(),
+      },
+      claimReply: null,
+    });
+
+    expect(receipts).toEqual([]);
+    expect(sent).toEqual([]);
+    expect(outcome).toBe("taken-over");
   });
 
   // The whole point of the feature surviving a version-skewed fleet. Asserting only that no

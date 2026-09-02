@@ -132,6 +132,46 @@ describe("ChatwootClient", () => {
     expect(calls[0]?.headers["api-access-token"]).toBe("BOT_TOK");
   });
 
+  test("markRead uses the bot token (read_receipt is bot-accessible)", async () => {
+    const { fetchImpl, calls } = stub();
+    const client = await createChatwootClient(baseConfig, {
+      fetchImpl,
+      assertSafe: passthroughSafe,
+    });
+    await client.markRead(42, [7, 9]);
+    expect(calls[0]?.url).toContain("/conversations/42/read_receipt");
+    expect(calls[0]?.body).toMatchObject({ message_ids: [7, 9] });
+    expect(calls[0]?.headers["api-access-token"]).toBe("BOT_TOK");
+  });
+
+  // An empty list is the endpoint's "I processed nothing", which acknowledges nothing. Sending it
+  // would be a wasted round trip on every turn that has no ids to name, so the call never happens.
+  test("markRead sends nothing when there are no message ids", async () => {
+    const { fetchImpl, calls } = stub();
+    const client = await createChatwootClient(baseConfig, {
+      fetchImpl,
+      assertSafe: passthroughSafe,
+    });
+    await client.markRead(42, []);
+    expect(calls.length).toBe(0);
+  });
+
+  // A Chatwoot older than the endpoint answers 401 (the bot allowlist has no `read_receipt`) or 404
+  // (no route at all). The client reports it like any other failure; swallowing it is the caller's
+  // job, and every call site does exactly that.
+  test("markRead surfaces the failure of a Chatwoot without the endpoint", async () => {
+    for (const status of [401, 404]) {
+      const { fetchImpl } = stub(status, { error: "nope" });
+      const client = await createChatwootClient(baseConfig, {
+        fetchImpl,
+        assertSafe: passthroughSafe,
+      });
+      await expect(client.markRead(42, [7])).rejects.toBeInstanceOf(
+        ChatwootApiError,
+      );
+    }
+  });
+
   test("read methods use the admin token", async () => {
     const { fetchImpl, calls } = stub(200, { id: 42 });
     const client = await createChatwootClient(baseConfig, {

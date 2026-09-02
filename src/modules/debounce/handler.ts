@@ -310,6 +310,9 @@ export async function coalesceAndRunTurn(
     text,
     // The id of the burst's most recent message, exposed to tools as {{message_id}}.
     messageId: lastMessageId,
+    // The WHOLE burst for the read receipt, not just the id above: WhatsApp acknowledges the
+    // messages it is given, so passing only the newest leaves the ones before it on grey ticks.
+    readMessageIds: pending.map((m) => m.id),
     userSentAudio: pending.some((m) => m.attachmentTypes.includes("audio")),
     base,
     deps,

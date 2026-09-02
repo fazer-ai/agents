@@ -222,6 +222,14 @@ export interface RunLoadedTurnParams {
   // Chatwoot id of the triggering message, surfaced to HTTP tools as {{message_id}}. Direct path: the
   // incoming message id; debounce flush: the burst watermark. Omitted ⇒ {{message_id}} stays unset.
   messageId?: number;
+  // Every inbound message this turn is answering, for the WhatsApp read receipt. A debounce flush
+  // passes the whole burst; the direct path passes its single message. Empty ⇒ no receipt is sent.
+  //
+  // MANDATORY, and that is the point. Optional, a third entry point that coalesces messages would
+  // compile while acknowledging only the newest of them, leaving every earlier message of the burst
+  // on grey ticks — a silent loss the type system is perfectly able to prevent. Required, `tsc`
+  // names the site.
+  readMessageIds: number[];
   // Whether the customer's turn included a voice note — drives the "mirror" TTS reply mode.
   userSentAudio?: boolean;
   base?: PrismaClient;
@@ -592,6 +600,19 @@ type RunTurnBodyParams = RunLoadedTurnParams & {
   claimBeforeSend?: () => Promise<boolean>;
 };
 
+// Whether a read receipt on this channel can reach anything. Written as "not known to be something
+// else" rather than `=== "Channel::Whatsapp"`, because the question has THREE answers and the third
+// is the common one: `channelType` is mirrored from Chatwoot into the local Inbox row and stays null
+// until a sync populates it, so the strict form would silently drop the tick on a real WhatsApp
+// conversation whose mirror lags — the single outcome this feature exists to produce. The two
+// mistakes are not the same size. Treating unknown as WhatsApp costs one request that Chatwoot
+// answers 200 and its listener drops (`return unless channel.respond_to?(:read_messages)`), so
+// Api/Instagram/WebWidget never reach a provider; treating unknown as not-WhatsApp costs the
+// feature, without a log line to say so.
+function channelCanReadReceipt(channelType: string | null): boolean {
+  return channelType === null || channelType === "Channel::Whatsapp";
+}
+
 async function runTurnBody(
   params: RunTurnBodyParams,
 ): Promise<RunAgentTurnOutcome> {
@@ -628,6 +649,7 @@ async function runTurnBody(
     makeClient: params.deps?.makeClient,
     botToken: loaded.agentBotToken ?? undefined,
   });
+
   // The question, and it is asked AT each outward write rather than somewhere upstream of it. Four
   // review rounds found the same defect in four different places, and every one of them was an ask
   // that sat next to its effect when it was written and then had a round trip grow between the two:
@@ -637,6 +659,97 @@ async function runTurnBody(
   const writeCalledOff = async (): Promise<boolean> =>
     params.stillWanted !== null &&
     !(await params.stillWanted({ strict: false }));
+
+  // WHO OWNS IT ACCORDING TO THE MIRROR, RIGHT NOW (issue #457, review round 7). The receiver's gate
+  // proved bot ownership before this turn was queued, and the note is written much later — after the
+  // toolset is built, after the ingestion drain, and after a claim that WAITS on an append's lease
+  // and on the row lock a /reset holds. A person taking the conversation over inside that window
+  // leaves the gate's answer saying the bot owns it, and the note would then state that a human
+  // attendance ended while the human is in it. The post-generation recheck suppresses the SEND and
+  // cannot unwrite a message. Same read that recheck makes, asked at the moment this writes; a read
+  // that fails leaves the note OWED, which costs nothing because nothing is consumed to write it.
+  const botOwnsItNow = async (): Promise<boolean> =>
+    await runScopedOn(base, sysCtx(tenantId), async (db) => {
+      const conv = await db.conversation.findUnique({
+        where: {
+          tenantId_chatwootInstanceId_chatwootConversationId: {
+            tenantId,
+            chatwootInstanceId: instanceId,
+            chatwootConversationId: conversationId,
+          },
+        },
+        select: { assigneeType: true, assigneeId: true, status: true },
+      });
+      return shouldBotHandle(
+        {
+          assigneeType: conv?.assigneeType ?? null,
+          assigneeId: conv?.assigneeId ?? null,
+          status: conv?.status ?? null,
+        },
+        { ourAgentBotId: loaded.agentBotId ?? agentBotId },
+      );
+    }).catch((err) => {
+      logger.warn(
+        { err, conv: conversationId },
+        "hand-back note: ownership read failed; leaving the note owed",
+      );
+      return false;
+    });
+
+  // Blue-ticks the contact's messages on WhatsApp. Here because this is the tail BOTH entry points
+  // share, so the direct path and the debounce flush get it from one site instead of two that can
+  // drift; and because a turn reaching this line has read the messages, which is exactly what the
+  // tick claims. It says nothing about a reply coming, so a turn that later defers, hands off or is
+  // silenced keeps it honest.
+  //
+  // Deliberately NOT driven by `lastHandledMessageId`. That watermark also advances for a burst the
+  // bot skipped on purpose (nothing renders to answerable text, a mid-turn takeover, a guardrail
+  // silence), and ticking those would tell the contact somebody read what nobody read.
+  //
+  // `conversationId > 0` keeps the playground out: it runs turns against a dummy client and id 0.
+  // Best-effort, because a Chatwoot older than the endpoint answers 401 (its bot allowlist predates
+  // `read_receipt`) or 404 (no route), and no blue tick is worth failing a turn over.
+  //
+  // A blue tick is an outward write, so it asks what every other outward write in this function asks,
+  // AT the write. Two review rounds arrived here one question at a time; the set is enumerated from
+  // the decision rather than grepped from the code, and it is closed:
+  //
+  //   1. a real conversation      `conversationId > 0`   — the playground runs on a dummy client, id 0
+  //   2. a channel that can show it  `channelCanReadReceipt`
+  //   3. the caller still wants the turn  `writeCalledOff` — `/reset`, or a retired job
+  //   4. the bot still holds the conversation  `botOwnsItNow` — a human took it over mid-turn
+  //   5. something to acknowledge  — inside `markRead`, which does not call on an empty list
+  //
+  // And deliberately NOT `shouldPost`/`claimBeforeSend`, the sixth question the send path asks. That
+  // one CLAIMS the burst as its CAS, advancing the handled watermark; a tick that claimed would mark
+  // messages handled on the way to acknowledging them, which is the defect the watermark rule exists
+  // to prevent. A receipt observes, it does not consume.
+  //
+  // (3) and (4) both suppress the SEND further down and neither can unwrite a tick, which is the
+  // whole reason they are asked here instead. `strict: false` on the fence for the same reason every
+  // other write uses it: an unreadable fence is not evidence that anybody withdrew the run. (4) is
+  // fail-closed, inherited from the read's existing caller and left that way on purpose — "a human
+  // owns it" and "cannot tell" are the same answer to a customer-visible claim made by a bot that
+  // may already have stood down.
+  //
+  // Nothing is lost to (3): a job is retired because a NEWER burst took over, and that flush
+  // acknowledges a superset of these ids.
+  if (
+    params.conversationId > 0 &&
+    channelCanReadReceipt(loaded.channelType) &&
+    !(await writeCalledOff()) &&
+    (await botOwnsItNow())
+  ) {
+    // try/catch and NOT `.catch()`: the latter only covers a rejected promise, and the failure this
+    // has to survive can happen while INVOKING — a client that predates the method (a test double,
+    // an older build) throws TypeError synchronously and walks straight past a `.catch()`. Measured:
+    // the first version of this line took 95 turn tests down with it.
+    try {
+      await client.markRead(params.conversationId, params.readMessageIds);
+    } catch {
+      // Swallowed on purpose: see above.
+    }
+  }
 
   // The two gates that stand between this turn and a post, and neither is the fence — the fences are
   // the asks at the sends themselves. This is where a run that is already called off stops before
@@ -1069,41 +1182,6 @@ async function runTurnBody(
   // this turn reading a transfer with no ending — which is the silence this whole PR is about, on
   // the first turn after the return, for the customer who is waiting right now.
   let handbackDeferred = false;
-  // WHO OWNS IT ACCORDING TO THE MIRROR, RIGHT NOW (issue #457, review round 7). The receiver's gate
-  // proved bot ownership before this turn was queued, and the note is written much later — after the
-  // toolset is built, after the ingestion drain, and after a claim that WAITS on an append's lease
-  // and on the row lock a /reset holds. A person taking the conversation over inside that window
-  // leaves the gate's answer saying the bot owns it, and the note would then state that a human
-  // attendance ended while the human is in it. The post-generation recheck suppresses the SEND and
-  // cannot unwrite a message. Same read that recheck makes, asked at the moment this writes; a read
-  // that fails leaves the note OWED, which costs nothing because nothing is consumed to write it.
-  const botOwnsItNow = async (): Promise<boolean> =>
-    await runScopedOn(base, sysCtx(tenantId), async (db) => {
-      const conv = await db.conversation.findUnique({
-        where: {
-          tenantId_chatwootInstanceId_chatwootConversationId: {
-            tenantId,
-            chatwootInstanceId: instanceId,
-            chatwootConversationId: conversationId,
-          },
-        },
-        select: { assigneeType: true, assigneeId: true, status: true },
-      });
-      return shouldBotHandle(
-        {
-          assigneeType: conv?.assigneeType ?? null,
-          assigneeId: conv?.assigneeId ?? null,
-          status: conv?.status ?? null,
-        },
-        { ourAgentBotId: loaded.agentBotId ?? agentBotId },
-      );
-    }).catch((err) => {
-      logger.warn(
-        { err, conv: conversationId },
-        "hand-back note: ownership read failed; leaving the note owed",
-      );
-      return false;
-    });
   try {
     // ── Attendance boundary. A NEW conversation reusing this contact-inbox thread gets the
     //    "fresh attendance" divider, and the attendance it replaced becomes compactable.
@@ -2156,6 +2234,8 @@ export async function runAgentTurn(
       : undefined;
 
   const outcome = await runLoadedTurn({
+    // The direct path answers exactly one message, so the receipt set is that message.
+    readMessageIds: typeof n.message?.id === "number" ? [n.message.id] : [],
     // Nothing QUEUED this turn — it is the delivery itself, arriving from the webhook — so there is
     // no job for /reset to retire. What names this run instead is the EPISODE, read off the message
     // it is answering, and ./reset-episode.ts carries the measurement: without it the operator's

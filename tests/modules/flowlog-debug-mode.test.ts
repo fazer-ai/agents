@@ -666,8 +666,14 @@ const NO_LONG_STRING: Record<string, string> = {
   "modules/conversations/reengage.ts": "closed vocabulary",
   // `{ coalesced: number }` and `GateCloseDetail` (`{ outcome, status }`, `gate-close.ts`).
   "modules/debounce/handler.ts": "closed vocabulary",
-  // The same `GateCloseDetail`, on the handoff line.
+  // The same `GateCloseDetail`, on the gate's handoff lines.
   "modules/chatwoot/webhook.ts": "closed vocabulary",
+  // `describeHumanTakeover`, which is that same `GateCloseDetail` (`{ outcome, via }`). The line
+  // moved here from `webhook.ts` when the takeover became a unit of its own (issue #439), and the
+  // exemption had to move with it: an exemption keyed by FILE is inherited by whatever the file
+  // holds next and lost by whatever leaves, so the reason is restated against the site that is here
+  // rather than carried over.
+  "modules/chatwoot/human-takeover.ts": "closed vocabulary",
 };
 
 // Every `FlowContext` object literal in a file, with the twelve lines that follow it: the playground

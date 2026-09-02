@@ -37,6 +37,9 @@ function verdict(row: {
   conversationId?: number | null;
   // When the two clocks disagree: how long ago the row was RECEIVED, against `ageMs` as the claim.
   receivedAgoMs?: number;
+  // What the delivery OWED: the human-reply shape the payload carried, or null for every delivery
+  // that owed nothing and for every row a build without the column wrote.
+  humanReplyShape?: string | null;
 }): StrandedVerdict {
   const at = new Date(NOW.getTime() - row.ageMs);
   const claimed = row.claimed ?? true;
@@ -49,6 +52,7 @@ function verdict(row: {
       conversationId:
         row.conversationId === undefined ? 41 : row.conversationId,
       inboundMessageId: row.inboundMessageId,
+      humanReplyShape: row.humanReplyShape ?? null,
     },
     { now: NOW, staleAfterMs: STALE_MS },
   );
@@ -64,6 +68,7 @@ describe("classifying a delivery stranded non-terminal", () => {
     claimed?: boolean;
     conversationId?: number | null;
     receivedAgoMs?: number;
+    humanReplyShape?: string | null;
     expected: StrandedVerdict;
   }> = [
     {
@@ -231,6 +236,69 @@ describe("classifying a delivery stranded non-terminal", () => {
       expected: "lost",
     },
     {
+      // ISSUE #439. The same row as "carried no inbound message" above, plus the one column that
+      // tells the two apart: this `message_created` was a COLLEAGUE answering the customer, and
+      // since issue #430 that delivery is what steps the agent off the conversation. Closed as
+      // benign, the conversation stays `pending` and the agent answers over the person.
+      name: "carried no message but owed the takeover: a side effect to recover",
+      ageMs: STALE_MS * 3,
+      inboundMessageId: null,
+      humanReplyShape: "composer",
+      expected: "owed-takeover",
+    },
+    {
+      // Both routes, because both are a person: the second one is a reply typed on the paired phone,
+      // and whether THAT shape is a person or an echo of our own reply is a question about the
+      // inbox's provider, which the recovery asks and this cannot.
+      name: "the device route owes the same takeover the composer does",
+      ageMs: STALE_MS * 3,
+      inboundMessageId: null,
+      humanReplyShape: "device",
+      expected: "owed-takeover",
+    },
+    {
+      // The column is a String and only this build writes it, so the reader answers for what is
+      // actually in the row rather than for what it expects: a shape a later build spells and this
+      // one does not know is not something to act on.
+      name: "a shape this build does not know is not a takeover to run",
+      ageMs: STALE_MS * 3,
+      inboundMessageId: null,
+      humanReplyShape: "carrier-pigeon",
+      expected: "no-message",
+    },
+    {
+      // The order matters and this is where it is fixed: `in-flight` outranks the owed effect too,
+      // because a live process may still be about to write the takeover itself.
+      name: "fresh outranks the owed takeover as well",
+      ageMs: 1_000,
+      inboundMessageId: null,
+      humanReplyShape: "composer",
+      expected: "in-flight",
+    },
+    {
+      // Without a conversation there is nothing to take over, and the recovery would have no key to
+      // act on. A row THIS build wrote (it carries a claim) and that still names none, which is the
+      // only way to reach this line: unclaimed, the build fence above answers first. Same verdict
+      // the shape-less row gets, because that is what it is — a delivery with nothing outstanding.
+      name: "a shape with no conversation names nothing to take over",
+      ageMs: STALE_MS * 3,
+      inboundMessageId: null,
+      conversationId: null,
+      humanReplyShape: "composer",
+      status: "PROCESSING",
+      expected: "no-message",
+    },
+    {
+      // And the shape never turns a customer's loss into a side effect. A row carrying an inbound
+      // message is `lost` whatever else it owed: the recovery for THAT re-runs the delivery path,
+      // which runs the takeover on its way through.
+      name: "an inbound message outranks the owed takeover",
+      ageMs: STALE_MS * 3,
+      inboundMessageId: 50,
+      humanReplyShape: "composer",
+      expected: "lost",
+    },
+    {
       name: "stranded with a customer message is a loss",
       ageMs: STALE_MS * 3,
       inboundMessageId: 50,
@@ -257,6 +325,7 @@ describe("classifying a delivery stranded non-terminal", () => {
           claimed: c.claimed,
           conversationId: c.conversationId,
           receivedAgoMs: c.receivedAgoMs,
+          humanReplyShape: c.humanReplyShape,
         }),
       ).toBe(c.expected);
     });

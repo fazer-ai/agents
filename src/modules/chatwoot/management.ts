@@ -738,7 +738,7 @@ export async function readOutOfOfficeInboxes(
   agentId: bigint,
   deps: LoadChatwootClientDeps = {},
   base: PrismaClient = basePrisma,
-): Promise<{ inboxes: { id: string; name: string }[]; unreachable: number }> {
+): Promise<{ inboxes: { id: string; name: string }[]; unreadable: number }> {
   if (ctx.tenantId === null) throw new AppError("tenant required", 400);
   const tenantId = ctx.tenantId;
   const bound = await runScopedOn(base, ctx, (db) =>
@@ -766,17 +766,14 @@ export async function readOutOfOfficeInboxes(
             base,
             makeClient: deps.makeClient,
           });
-          const listed = readInboxList(await client.listInboxes());
-          // An answer we did not fully understand is not an empty account: counted as unreached
-          // rather than reported as "nothing armed here". See the header on `readInboxList`.
-          if (!listed.understood) return null;
+          const listed = readInboxStates(await client.listInboxes());
           const armed = new Map<number, string>();
           for (const remote of listed.inboxes) {
             if (chatwootAutoRepliesOutOfHours(remote)) {
               armed.set(remote.chatwootInboxId, remote.name);
             }
           }
-          return [instanceId, armed] as const;
+          return [instanceId, { armed, decided: listed.decided }] as const;
         } catch {
           // unreachable / unauthorized — say nothing about this account's inboxes, and do not let it
           // decide the answer for the others. Counted rather than merely dropped: see the header.
@@ -785,23 +782,26 @@ export async function readOutOfOfficeInboxes(
       },
     ),
   );
-  const armedByInstance = new Map(
-    perInstance.filter((entry) => entry !== null),
-  );
+  const byInstance = new Map(perInstance.filter((entry) => entry !== null));
 
   // Chatwoot's name, not the mirror's: this reading exists because the mirror can be stale, and the
   // inbox the operator has to go find is the one named on the other side.
+  //
+  // And the coverage is counted PER BOUND INBOX, over the same loop: an inbox whose account never
+  // answered, whose entry never came back, or whose out-of-hours fields could not be read is one
+  // this call cannot vouch for — while every inbox beside it is still reported normally.
   const inboxes: { id: string; name: string }[] = [];
+  let unreadable = 0;
   for (const row of bound) {
-    const name = armedByInstance
-      .get(row.chatwootInstanceId)
-      ?.get(row.chatwootInboxId);
+    const account = byInstance.get(row.chatwootInstanceId);
+    if (!account?.decided?.has(row.chatwootInboxId)) {
+      unreadable += 1;
+      continue;
+    }
+    const name = account.armed.get(row.chatwootInboxId);
     if (name !== undefined) inboxes.push({ id: String(row.id), name });
   }
-  return {
-    inboxes,
-    unreachable: perInstance.filter((entry) => entry === null).length,
-  };
+  return { inboxes, unreadable };
 }
 
 // The same reading for a caller that has nowhere to put the failure count: the editor's panel, whose
@@ -1496,23 +1496,49 @@ export interface RemoteInbox {
 // Pure parse of the Chatwoot inbox-list response. Confirmed against the chatwoot-pro fork:
 // `{ payload: [{ id, name, channel_type, … }] }`. Tolerant of a bare array and of
 // missing name/channel_type; skips entries without a numeric id.
-// DID WE UNDERSTAND EVERYTHING CHATWOOT SAID — one question, asked once, instead of a list of the
-// ways an answer can be unintelligible.
+// DID WE READ THIS INBOX'S OUT-OF-HOURS STATE — asked per inbox, which is the unit the answer is
+// actually about, and the reason this is a map rather than a flag on the account.
 //
-// `parseInboxList` drops what it cannot read: a body that is not a list becomes an empty one, and an
-// entry with no numeric id is skipped. Both are the right default for a caller that DRAWS the
-// result — a shape change must never invent an inbox — and both are wrong for a caller that reports
-// its own coverage, because "nothing is armed here" and "we could not read the answer" arrive as the
-// same value. Two review rounds found those two spellings separately; this counts instead, so the
-// third spelling of an unreadable answer is covered before somebody finds it.
-export function readInboxList(raw: unknown): {
+// It arrived as a flag first and four review rounds took it apart one spelling at a time: an account
+// that threw, a body that was not a list, an entry with no id, and a field the parser defaults
+// silently. Each was answered with another condition, and the fourth found the flag ALSO throwing
+// away the inboxes it had read correctly — an account-wide verdict cannot help doing that.
+//
+// Per inbox there is no such trade. `parseInboxList` keeps dropping what it cannot read, which stays
+// right for the caller that DRAWS the result; this says which ids it managed to decide, so a caller
+// that reports its own coverage can name the ones it did not, and still use the ones it did.
+//
+// "Decided" means the two fields the rule reads (`chatwootAutoRepliesOutOfHours`) arrived in a shape
+// the wire format promises: a boolean switch, and — when it is on — a string message. A default
+// standing in for an unreadable value is exactly the silence this whole field exists to break.
+export function readInboxStates(raw: unknown): {
   inboxes: RemoteInbox[];
-  understood: boolean;
+  decided: Set<number> | null;
 } {
   const payload = isRecord(raw) ? raw.payload : raw;
-  if (!Array.isArray(payload)) return { inboxes: [], understood: false };
-  const inboxes = parseInboxList(raw);
-  return { inboxes, understood: inboxes.length === payload.length };
+  // Not a list at all: nothing was decided, and there is no id to name. The caller reads `null` as
+  // "this account said nothing I could use", which is different from an account that listed zero.
+  if (!Array.isArray(payload)) return { inboxes: [], decided: null };
+  const decided = new Set<number>();
+  for (const item of payload) {
+    if (!isRecord(item)) continue;
+    const id =
+      typeof item.id === "number"
+        ? item.id
+        : typeof item.id === "string" && /^\d+$/.test(item.id)
+          ? Number(item.id)
+          : null;
+    if (id === null) continue;
+    if (typeof item.working_hours_enabled !== "boolean") continue;
+    if (
+      item.working_hours_enabled &&
+      typeof item.out_of_office_message !== "string"
+    ) {
+      continue;
+    }
+    decided.add(id);
+  }
+  return { inboxes: parseInboxList(raw), decided };
 }
 
 export function parseInboxList(raw: unknown): RemoteInbox[] {

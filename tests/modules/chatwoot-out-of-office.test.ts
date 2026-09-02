@@ -377,11 +377,14 @@ describe.skipIf(!dbUp)("listOutOfOfficeInboxes", () => {
   // So the scope on the bound-inbox read is the first of two fences and the second is load-bearing
   // today. It stays because it is the read that hands rows to the caller, and because a fence whose
   // only guarantee is a downstream detail is one refactor away from not being a fence at all.
+  // COUNTED PER BOUND INBOX, not per account, which is the unit the answer is about: the caller asks
+  // "did you read the out-of-hours state of this agent's inboxes", and an account is only the place
+  // that state comes from. Every case below reports how many of THIS AGENT's inboxes went unread.
+  //
   // A 200 whose body is not a list. `parseInboxList` answers that with an empty array on purpose —
   // a shape change must never invent an inbox — and for a caller that REPORTS ITS OWN COVERAGE that
-  // default is indistinguishable from an account where nothing is armed. The reading has to be able
-  // to say it did not understand the answer.
-  test("a body that is not a list counts as unreached, not as empty", async () => {
+  // default is indistinguishable from an account where nothing is armed.
+  test("a body that is not a list leaves that account's inboxes unread", async () => {
     const { makeClient } = fakeChatwoot({
       1: { unexpected: "shape" },
       2: ACCOUNT_2,
@@ -392,18 +395,29 @@ describe.skipIf(!dbUp)("listOutOfOfficeInboxes", () => {
       { makeClient },
       appDb,
     );
-    expect(read.unreachable).toBe(1);
+    // Both of this agent's inboxes on account 1; the account said nothing usable about either.
+    expect(read.unreadable).toBe(2);
     // And the account that DID answer is still reported: one unreadable server must not decide for
     // the others.
     expect(read.inboxes.length).toBeGreaterThan(0);
   });
 
-  // The second spelling of the same thing, and the reason the check counts instead of testing the
-  // shape: a list whose ENTRIES cannot be read parses to fewer inboxes than it contained, and one of
-  // the dropped ones may be the inbox that answers out of hours.
-  test("entries it could not read make the account unreached too", async () => {
+  // An entry with no id cannot be matched to a bound inbox at all, so the inboxes it should have
+  // described stay unread — while everything the same payload DID describe is still used. That last
+  // half is the part an account-wide verdict got wrong: it threw away the readable entries too.
+  test("an unreadable entry costs its own inbox, not the account", async () => {
     const { makeClient } = fakeChatwoot({
-      1: { payload: [{ name: "no id at all" }] },
+      1: {
+        payload: [
+          { name: "no id at all" },
+          {
+            id: 101,
+            name: "WhatsApp Vendas (Chatwoot)",
+            working_hours_enabled: true,
+            out_of_office_message: "Estamos fechados.",
+          },
+        ],
+      },
       2: ACCOUNT_2,
     });
     const read = await readOutOfOfficeInboxes(
@@ -412,7 +426,103 @@ describe.skipIf(!dbUp)("listOutOfOfficeInboxes", () => {
       { makeClient },
       appDb,
     );
-    expect(read.unreachable).toBe(1);
+    // Inbox 101 was described and IS armed, so it is still reported…
+    expect(read.inboxes.map((i) => i.name)).toContain(
+      "WhatsApp Vendas (Chatwoot)",
+    );
+    // …and the bound inbox nothing described is the one that counts as unread.
+    expect(read.unreadable).toBe(1);
+  });
+
+  // The field half of the same question: an id that parses, with a switch that does not. The parser
+  // defaults it to off, which reads as "this inbox answers nothing" — a conclusion nobody may draw
+  // from a value they could not read.
+  test("an inbox whose out-of-hours fields are unreadable is unread", async () => {
+    const { makeClient } = fakeChatwoot({
+      1: {
+        payload: [
+          { id: 101, name: "Vendas", working_hours_enabled: "yes" },
+          {
+            id: 102,
+            name: "WhatsApp Suporte",
+            working_hours_enabled: true,
+            out_of_office_message: "",
+          },
+        ],
+      },
+      2: ACCOUNT_2,
+    });
+    const read = await readOutOfOfficeInboxes(
+      ctx(tenantA),
+      agent1,
+      { makeClient },
+      appDb,
+    );
+    expect(read.unreadable).toBe(1);
+    // 102 was read and is NOT armed (working hours on, empty message), which is a real answer.
+    expect(read.inboxes.map((i) => i.name)).not.toContain("WhatsApp Suporte");
+  });
+
+  // The switch alone, with a perfectly good message beside it. Measured: without this case the
+  // switch check can be deleted and every other test stays green, because the message check catches
+  // the truthy-non-boolean spellings — this is the one that only the switch check sees.
+  test("an unreadable switch is unread even when the message is fine", async () => {
+    const { makeClient } = fakeChatwoot({
+      1: {
+        payload: [
+          {
+            id: 101,
+            name: "Vendas",
+            working_hours_enabled: "no",
+            out_of_office_message: "Estamos fechados.",
+          },
+          {
+            id: 102,
+            name: "WhatsApp Suporte",
+            working_hours_enabled: true,
+            out_of_office_message: "",
+          },
+        ],
+      },
+      2: ACCOUNT_2,
+    });
+    const read = await readOutOfOfficeInboxes(
+      ctx(tenantA),
+      agent1,
+      { makeClient },
+      appDb,
+    );
+    expect(read.unreadable).toBe(1);
+  });
+
+  // The switch is on and the message is not a string: same conclusion, other field.
+  test("an armed inbox with an unreadable message is unread too", async () => {
+    const { makeClient } = fakeChatwoot({
+      1: {
+        payload: [
+          {
+            id: 101,
+            name: "Vendas",
+            working_hours_enabled: true,
+            out_of_office_message: { pt: "Fechado" },
+          },
+          {
+            id: 102,
+            name: "WhatsApp Suporte",
+            working_hours_enabled: true,
+            out_of_office_message: "",
+          },
+        ],
+      },
+      2: ACCOUNT_2,
+    });
+    const read = await readOutOfOfficeInboxes(
+      ctx(tenantA),
+      agent1,
+      { makeClient },
+      appDb,
+    );
+    expect(read.unreadable).toBe(1);
   });
 
   test("another tenant's context sees nothing, agent id or not", async () => {

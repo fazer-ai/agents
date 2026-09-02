@@ -181,11 +181,13 @@ export async function readAgentConfigHealth(
     live
       ? readOutOfOfficeInboxes(ctx, agentId, {}, base)
           .then((r) => {
-            // A per-account failure is absorbed INSIDE that reader — it answers with a short list,
-            // not a rejection — so the catch below never sees the case this field exists to report.
-            // The count is what makes "no inbox answers out of hours" distinguishable from "the
-            // server that would have said so is down".
-            if (r.unreachable > 0) unchecked.push("chatwootOutOfOffice");
+            // A failure is absorbed INSIDE that reader — it answers with a short list, not a
+            // rejection — so the catch below never sees the case this field exists to report. The
+            // count is per BOUND INBOX and covers every way one can go unread (the account never
+            // answered, its entry never came back, its out-of-hours fields were not readable), which
+            // is what makes "no inbox answers out of hours" distinguishable from "the state of one
+            // was never seen".
+            if (r.unreadable > 0) unchecked.push("chatwootOutOfOffice");
             return r.inboxes;
           })
           .catch(() => {

@@ -1491,14 +1491,43 @@ export async function handoffConversation(
     ...deps,
     base,
   });
-  if (assigneeId !== null) {
-    await client.assignToAgent(conv.chatwootConversationId, assigneeId, {
+  // TWO REQUESTS, and either can fail on its own. The assignment landing and the toggle failing is a
+  // conversation a person now holds, in Chatwoot, irreversibly — and an "on success" row would leave
+  // that with nothing on the trail saying who put them there. The row follows the EFFECT, so a
+  // partial effect gets a partial row and the error still propagates.
+  let assigned = false;
+  try {
+    if (assigneeId !== null) {
+      await client.assignToAgent(conv.chatwootConversationId, assigneeId, {
+        asAdmin: true,
+      });
+      assigned = true;
+    }
+    await client.toggleStatus(conv.chatwootConversationId, "open", {
       asAdmin: true,
     });
+  } catch (err) {
+    if (assigned) {
+      await recordConversationAction(ctx, base, id, {
+        action: "conversation.handoff",
+        before: {
+          status: conv.status,
+          assigneeType: conv.assigneeType,
+          assigneeId: conv.assigneeId,
+        },
+        // The status is the one this call READ, because the toggle is what failed; `partial` is what
+        // says the pair did not complete, rather than leaving a reader to infer it from a status
+        // that did not move.
+        after: {
+          status: conv.status,
+          assigneeType: "User",
+          assigneeId,
+          partial: true,
+        },
+      });
+    }
+    throw err;
   }
-  await client.toggleStatus(conv.chatwootConversationId, "open", {
-    asAdmin: true,
-  });
   const { state } = await mirrorConsoleWrite(
     ctx,
     base,
@@ -1539,10 +1568,22 @@ export async function handoffConversation(
   // it needs, and the row answers "what did this action move", which is the state the operator was
   // looking at when they clicked. The transport used to read live for its dry-run preview and reuse
   // that reading here, which is a different question asked for a different reason.
+  // The TYPE travels with the id on both sides. `User` and `AgentBot` are separate id namespaces in
+  // Chatwoot (the hand-back below compares holders that way for the same reason), so a row carrying
+  // only `assigneeId: 7` cannot tell one from the other, and a handoff that moved a conversation
+  // from a bot to a person with the same numeric id reads as a row where nothing changed.
   await recordConversationAction(ctx, base, id, {
     action: "conversation.handoff",
-    before: { status: conv.status, assigneeId: conv.assigneeId },
-    after: { status: landed.status, assigneeId: landed.assigneeId },
+    before: {
+      status: conv.status,
+      assigneeType: conv.assigneeType,
+      assigneeId: conv.assigneeId,
+    },
+    after: {
+      status: landed.status,
+      assigneeType: landed.assigneeType,
+      assigneeId: landed.assigneeId,
+    },
   });
 }
 
@@ -1675,9 +1716,31 @@ export async function returnConversationToAgent(
   // asked for it back.
   const nobodyToRemove = live !== null && live.assigneeType === null;
   if (newHolder === null && !nobodyToRemove) {
-    await client.unassignConversation(conv.chatwootConversationId, {
-      asAdmin: true,
-    });
+    try {
+      await client.unassignConversation(conv.chatwootConversationId, {
+        asAdmin: true,
+      });
+    } catch (err) {
+      // THE PARTIAL THIS FUNCTION'S OWN ORDERING CHOOSES. The status went to pending and the human
+      // is still holding the conversation, which is the recoverable half of the pair (the comment on
+      // the ordering above says why it is the one to fail into). Recoverable is not invisible: the
+      // status of a live conversation moved, and the row is what says so.
+      await recordConversationAction(ctx, base, id, {
+        action: "conversation.return",
+        before: {
+          status: conv.status,
+          assigneeType: baseline.assigneeType,
+          assigneeId: baseline.assigneeId,
+        },
+        after: {
+          status: "pending",
+          assigneeType: baseline.assigneeType,
+          assigneeId: baseline.assigneeId,
+          partial: true,
+        },
+      });
+      throw err;
+    }
   } else if (newHolder !== null) {
     logger.info(
       "conversations: hand-back left the conversation with its new holder (conv=%d, %s=%s)",
@@ -1799,10 +1862,23 @@ export async function returnConversationToAgent(
   // Same rule as the other two: the status is where the write LANDED, and the outcome is what the
   // caller was told. `taken-over` with a status that is not `pending` is the honest pair, and a row
   // that hard-coded `pending` would be the trail contradicting the console it answered.
+  // THE HOLDER, on both sides, because on this action it is the whole mutation: a hand-back on a
+  // conversation that is already pending moves nothing else, and a row carrying only the status
+  // would say nothing happened. `baseline` is who held it when the call started, read live rather
+  // than off the mirror, and `finalHolder` is who holds it now.
   await recordConversationAction(ctx, base, id, {
     action: "conversation.return",
-    before: { status: conv.status },
-    after: { status: state?.status ?? "pending", outcome },
+    before: {
+      status: conv.status,
+      assigneeType: baseline.assigneeType,
+      assigneeId: baseline.assigneeId,
+    },
+    after: {
+      status: state?.status ?? "pending",
+      assigneeType: finalHolder.assigneeType,
+      assigneeId: finalHolder.assigneeId,
+      outcome,
+    },
   });
   return outcome;
 }

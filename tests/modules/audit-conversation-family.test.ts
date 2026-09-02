@@ -273,8 +273,16 @@ describe.skipIf(!dbUp)(
       );
       const [row] = await rows();
       expect(row?.action).toBe("conversation.handoff");
-      expect(row?.before).toEqual({ status: "pending", assigneeId: null });
-      expect(row?.after).toEqual({ status: "open", assigneeId: 77 });
+      expect(row?.before).toEqual({
+        status: "pending",
+        assigneeType: null,
+        assigneeId: null,
+      });
+      expect(row?.after).toEqual({
+        status: "open",
+        assigneeType: "User",
+        assigneeId: 77,
+      });
     });
 
     // An untargeted handoff is the console's ordinary one: it asks for a human without naming which,
@@ -310,7 +318,11 @@ describe.skipIf(!dbUp)(
       expect(stub.calls).toEqual(["toggleStatus"]);
       expect(seen).toEqual(["getConversation"]);
       const [row] = await rows();
-      expect(row?.after).toEqual({ status: "open", assigneeId: 42 });
+      expect(row?.after).toEqual({
+        status: "open",
+        assigneeType: "User",
+        assigneeId: 42,
+      });
     });
 
     test("a hand-back records the outcome, because taken-over is not the outcome asked for", async () => {
@@ -329,8 +341,17 @@ describe.skipIf(!dbUp)(
       );
       const [row] = await rows();
       expect(row?.action).toBe("conversation.return");
-      expect(row?.before).toEqual({ status: "open" });
-      expect(row?.after).toEqual({ status: "pending", outcome });
+      expect(row?.before).toEqual({
+        status: "open",
+        assigneeType: "User",
+        assigneeId: 5,
+      });
+      expect(row?.after).toEqual({
+        status: "pending",
+        assigneeType: null,
+        assigneeId: null,
+        outcome,
+      });
     });
 
     // THE MATRIX, and it is here because the same finding arrived twice: a row that carries what the
@@ -397,7 +418,144 @@ describe.skipIf(!dbUp)(
       // for, and the status the row carries is the one the mirror ended up with.
       expect(outcome).toBe("taken-over");
       const [row] = await rows();
-      expect(row?.after).toEqual({ status: "open", outcome: "taken-over" });
+      expect(row?.after).toEqual({
+        status: "open",
+        assigneeType: "User",
+        assigneeId: 5,
+        outcome: "taken-over",
+      });
+    });
+
+    // WHO HELD IT, on both sides, and not just the id. `User` and `AgentBot` are separate id namespaces
+    // in Chatwoot — `returnConversationToAgent` says so in as many words where it compares holders — so
+    // a row carrying `assigneeId: 7` cannot tell AgentBot 7 from User 7, and a handoff that only
+    // changes the type reads as a row where nothing moved.
+    test("a handoff records the holder's type, not only the id", async () => {
+      await clearAudit();
+      const id = await seedConversation(4012, {
+        status: "pending",
+        assigneeType: "AgentBot",
+        assigneeId: 7,
+      });
+      const stub = stubClient({
+        getConversation: async () =>
+          liveConversation({ status: "open", assigneeId: 7 }),
+      });
+      await handoffConversation(
+        ctx(),
+        id,
+        7,
+        { makeClient: stub.makeClient },
+        appDb,
+      );
+      const [row] = await rows();
+      expect(row?.before).toEqual({
+        status: "pending",
+        assigneeType: "AgentBot",
+        assigneeId: 7,
+      });
+      expect(row?.after).toEqual({
+        status: "open",
+        assigneeType: "User",
+        assigneeId: 7,
+      });
+    });
+
+    // A hand-back on a conversation that is ALREADY pending moves nothing but the holder, so a row
+    // carrying only the status is a row that says nothing happened.
+    test("a hand-back records the holder it removed", async () => {
+      await clearAudit();
+      const id = await seedConversation(4013, {
+        status: "pending",
+        assigneeType: "User",
+        assigneeId: 9,
+      });
+      const stub = stubClient();
+      const outcome = await returnConversationToAgent(
+        ctx(),
+        id,
+        { makeClient: stub.makeClient },
+        appDb,
+      );
+      expect(outcome).toBe("returned");
+      const [row] = await rows();
+      expect(row?.before).toEqual({
+        status: "pending",
+        assigneeType: "User",
+        assigneeId: 9,
+      });
+      expect(row?.after).toEqual({
+        status: "pending",
+        assigneeType: null,
+        assigneeId: null,
+        outcome: "returned",
+      });
+    });
+
+    // THE PARTIAL, which is the half an "on success" row cannot reach. The two Chatwoot calls of a
+    // targeted handoff are separate requests: the assignment can land and the status toggle fail, and
+    // then a person is holding a conversation with nothing on the trail saying who put them there.
+    test("a handoff that half happened is still recorded", async () => {
+      await clearAudit();
+      const id = await seedConversation(4014, { status: "pending" });
+      const stub = stubClient({
+        toggleStatus: async () => {
+          throw new Error("Chatwoot API 502 for POST /toggle_status");
+        },
+      });
+      await expect(
+        handoffConversation(
+          ctx(),
+          id,
+          33,
+          { makeClient: stub.makeClient },
+          appDb,
+        ),
+      ).rejects.toThrow();
+      const [row, ...rest] = await rows();
+      expect(rest).toEqual([]);
+      expect(row?.action).toBe("conversation.handoff");
+      expect(row?.after).toEqual({
+        status: "pending",
+        assigneeType: "User",
+        assigneeId: 33,
+        partial: true,
+      });
+    });
+
+    // The same seam on the hand-back, whose own documentation calls this partial the recoverable one:
+    // the status went to pending and the human is still there.
+    test("a hand-back that half happened is still recorded", async () => {
+      await clearAudit();
+      const id = await seedConversation(4015, {
+        status: "open",
+        assigneeType: "User",
+        assigneeId: 12,
+      });
+      const stub = stubClient({
+        getConversation: async () =>
+          liveConversation({ status: "pending", assigneeId: 12 }),
+        unassignConversation: async () => {
+          throw new Error("Chatwoot API 502 for POST /assignments");
+        },
+      });
+      await expect(
+        returnConversationToAgent(
+          ctx(),
+          id,
+          { makeClient: stub.makeClient },
+          appDb,
+        ),
+      ).rejects.toThrow();
+      const [row, ...rest] = await rows();
+      expect(rest).toEqual([]);
+      expect(row?.action).toBe("conversation.return");
+      expect(row?.after).toEqual({
+        status: "pending",
+        assigneeType: "User",
+        assigneeId: 12,
+        partial: true,
+      });
     });
 
     test("a status change records both sides", async () => {

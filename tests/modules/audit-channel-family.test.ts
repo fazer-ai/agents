@@ -121,6 +121,54 @@ function stubClient(over: Record<string, unknown> = {}) {
   return { calls, makeClient: async () => client as unknown as ChatwootClient };
 }
 
+// A client that lets a CONCURRENT request land in the one window `setConnectedAccounts` cannot see:
+// between the snapshot it reads of which accounts are active and the writes it derives from it. Each
+// step of that function runs in its own transaction, so the window is real and two overlapping
+// requests give it to each other; the hook makes the interleaving deterministic instead of timing-
+// dependent.
+//
+// It fires on the snapshot read and on nothing else: it is the only `chatwootInstance.findMany` on
+// this path that asks for `disconnectedAt` (the claims lookup reads `accountId`/`tenantId`, and the
+// listing that closes the function runs after the flag is already spent).
+function afterSnapshot(
+  client: PrismaClient,
+  hook: () => Promise<unknown>,
+): PrismaClient {
+  let fired = false;
+  // biome-ignore lint/suspicious/noExplicitAny: proxying Prisma's client surface
+  const wrap = (target: any): any =>
+    new Proxy(target, {
+      get(t, prop, recv) {
+        if (prop === "$extends") {
+          return (...a: unknown[]) => wrap(t.$extends(...a));
+        }
+        if (prop === "$transaction") {
+          return (fn: (tx: unknown) => unknown, ...rest: unknown[]) =>
+            t.$transaction((tx: unknown) => fn(wrap(tx)), ...rest);
+        }
+        if (prop !== "chatwootInstance") return Reflect.get(t, prop, recv);
+        const delegate = Reflect.get(t, prop, recv);
+        return new Proxy(delegate, {
+          get(d, k, r) {
+            const inner = Reflect.get(d, k, r);
+            if (k !== "findMany") return inner;
+            return async (args: { select?: Record<string, unknown> }) => {
+              const res = await (
+                inner as (a: unknown) => Promise<unknown>
+              ).call(d, args);
+              if (!fired && args?.select?.disconnectedAt === true) {
+                fired = true;
+                await hook();
+              }
+              return res;
+            };
+          },
+        });
+      },
+    });
+  return wrap(client);
+}
+
 async function rows(action?: string) {
   return (
     (await su?.auditLog.findMany({
@@ -251,6 +299,68 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
       appDb,
     );
     expect(await rows()).toEqual([]);
+  });
+
+  // THE SNAPSHOT IS NOT THE WRITE, and these two tests are the pair that says so. `activeIds` is read
+  // once, before either loop, and two overlapping copies of the same request read the SAME one: if
+  // the rows were derived from it, the request that lost every race would still record a connect, a
+  // disconnect and the choice on top of them.
+  test("a connection that landed first is not recorded a second time", async () => {
+    await setConnectedAccounts(
+      ctx(),
+      [1, 2, 3],
+      { fetchProfile, makeClient: stubClient().makeClient },
+      appDb,
+    );
+    const inst = await suDb.chatwootInstance.findFirstOrThrow({
+      where: { tenantId, accountId: 3 },
+      select: { id: true },
+    });
+    await softDisconnectChatwootInstance(ctx(), inst.id, appDb);
+    await clearAudit();
+    // The operator re-submits [1, 2, 3] while another request is already reconnecting account 3.
+    await setConnectedAccounts(
+      ctx(),
+      [1, 2, 3],
+      { fetchProfile, makeClient: stubClient().makeClient },
+      afterSnapshot(appDb, () =>
+        reconnectChatwootInstance(ctx(), inst.id, appDb),
+      ),
+    );
+    const all = await rows();
+    // The reconnect that WON is on the trail, once. The sync ran either way (it is idempotent and
+    // the operator asked for it), and neither `instance.connect` nor the choice is recorded, because
+    // by the time this request reached the row the account was already being handled.
+    expect(all.map((r) => r.action)).toEqual([
+      "instance.reconnect",
+      "instance.sync_inboxes",
+    ]);
+    expect(await rows("instance.connect")).toEqual([]);
+    expect(await rows("deployment.set_accounts")).toEqual([]);
+    await collect();
+  });
+
+  test("a de-selection that landed first is not recorded a second time", async () => {
+    const inst = await suDb.chatwootInstance.findFirstOrThrow({
+      where: { tenantId, accountId: 3 },
+      select: { id: true },
+    });
+    await clearAudit();
+    // The operator drops account 3 while another request is already dropping it.
+    await setConnectedAccounts(
+      ctx(),
+      [1, 2],
+      { fetchProfile, makeClient: stubClient().makeClient },
+      afterSnapshot(appDb, () =>
+        softDisconnectChatwootInstance(ctx(), inst.id, appDb),
+      ),
+    );
+    expect((await rows()).map((r) => r.action)).toEqual([
+      "instance.disconnect",
+    ]);
+    await collect();
+    // Back to the two accounts the rest of the file expects.
+    await removeChatwootInstance(ctx(), inst.id, appDb);
   });
 
   test("disconnecting an account records what it was", async () => {

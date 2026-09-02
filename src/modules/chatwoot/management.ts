@@ -276,6 +276,19 @@ export async function connectChatwootDeployment(
         "errors.chatwootDifferentDeployment",
       );
     }
+    if (existing) {
+      await db.$queryRaw`SELECT id FROM chatwoot_deployments WHERE id = ${existing.id} FOR UPDATE`;
+    }
+    const storedToken = existing
+      ? readStoredToken(
+          (
+            await db.chatwootDeployment.findUniqueOrThrow({
+              where: { id: existing.id },
+              select: { adminToken: true },
+            })
+          ).adminToken,
+        )
+      : null;
     const row = existing
       ? await db.chatwootDeployment.update({
           where: { id: existing.id },
@@ -291,21 +304,28 @@ export async function connectChatwootDeployment(
           select: DEPLOYMENT_SELECT,
         });
     const dto = toDeploymentDto(row);
-    // NOTE: The server and how many accounts the token could reach, and NEVER the token itself: it is one
-    // of the two documented raw-secret carve-outs (`docs/mcp.md`), and this row outlives the
+    // NOTE: The server and how many accounts the token could reach, and NEVER the token itself: it
+    // is one of the two documented raw-secret carve-outs (`docs/mcp.md`), and this row outlives the
     // deployment it describes.
-    await auditMutation(db, ctx, {
-      action: "deployment.connect",
-      target: `chatwoot_deployment:${dto.id}`,
-      after: {
-        id: dto.id,
-        // NOTE: The ORIGIN, by the same rule every operator-entered URL answers to: this one is
-        // typed by hand, `normalizeChatwootBaseUrl` keeps whatever path and userinfo came with it,
-        // and the row outlives the deployment it names.
-        baseUrl: redactEndpoint(dto.baseUrl),
-        reachableAccounts: accounts.length,
-      },
-    });
+    //
+    // A re-connect with the SAME token is the idempotent case (the form re-submitted, a retry after
+    // a timeout) and records nothing. Asked of the plaintext, because `encryptJson` randomizes and
+    // the column always differs.
+    const changed = existing === null || storedToken !== data.adminToken;
+    if (changed) {
+      await auditMutation(db, ctx, {
+        action: "deployment.connect",
+        target: `chatwoot_deployment:${dto.id}`,
+        after: {
+          id: dto.id,
+          // NOTE: The ORIGIN, by the same rule every operator-entered URL answers to: this one is
+          // typed by hand, `normalizeChatwootBaseUrl` keeps whatever path and userinfo came with
+          // it, and the row outlives the deployment it names.
+          baseUrl: redactEndpoint(dto.baseUrl),
+          reachableAccounts: accounts.length,
+        },
+      });
+    }
     return dto;
   });
   return { deployment, accounts };
@@ -348,6 +368,9 @@ export async function rotateChatwootDeploymentToken(
   // Validate the new token against the live deployment before persisting it.
   await listChatwootAccounts({ baseUrl: dep.baseUrl, token }, deps);
   return runScopedOn(base, ctx, async (db) => {
+    // NOTE: LOCKED before the token is read, or two identical rotations both read the old value and
+    // both record a rotation only one of them performed.
+    await db.$queryRaw`SELECT id FROM chatwoot_deployments WHERE id = ${dep.id} FOR UPDATE`;
     const current = await db.chatwootDeployment.findUniqueOrThrow({
       where: { id: dep.id },
       select: { adminToken: true },
@@ -443,7 +466,9 @@ async function listAccountClaims(
 
 // Internal: connect ONE account under the deployment (create, or reactivate a soft-disconnected row).
 // No network, no token (those live on the deployment); scoped. Returns the local instance id so the
-// caller can sync its inboxes. accountName comes from the /profile probe (best-effort display only).
+// caller can sync its inboxes, and whether this call is the one that put the account under the
+// fleet: a concurrent request may have connected it first, and then this one changed nothing.
+// accountName comes from the /profile probe (best-effort display only).
 async function connectAccount(
   ctx: TenantContext,
   deploymentId: bigint,
@@ -451,7 +476,7 @@ async function connectAccount(
   accountName: string | null,
   serverKey: string,
   base: PrismaClient,
-): Promise<bigint> {
+): Promise<{ id: bigint; changed: boolean }> {
   const tenantId = ctx.tenantId;
   if (tenantId === null) throw new AppError("tenant required", 400);
   // A Chatwoot account belongs to ONE tenant fleet-wide. RLS hides another tenant's claim from the
@@ -469,20 +494,34 @@ async function connectAccount(
       select: { id: true },
     });
     if (existing) {
+      // NOTE: The revival is its own conditional write, and it is what decides the row, the same way
+      // the disconnect side decides it. Two overlapping requests both read this account as
+      // disconnected under read-committed, so an unconditional `update` would let the second one
+      // through and record a second `instance.connect` for an account already connected. With the
+      // condition in the `where`, the second update re-evaluates it after the first commits, matches
+      // nothing, and stays silent.
+      const { count } = await db.chatwootInstance.updateMany({
+        where: { id: existing.id, disconnectedAt: { not: null } },
+        data: { disconnectedAt: null },
+      });
+      // The deployment it hangs from and how it is labelled are refreshed either way: they are
+      // metadata about an account already being handled, not a change of who is handled.
       await db.chatwootInstance.update({
         where: { id: existing.id },
-        data: { disconnectedAt: null, deploymentId, accountName, serverKey },
+        data: { deploymentId, accountName, serverKey },
       });
-      // NOTE: In THIS transaction, not with the choice that asked for it. `setConnectedAccounts`
-      // connects one account per iteration and syncs each, so a crash between two of them leaves an
-      // account handled with the operator's choice not yet recorded. The disconnect side has had a
-      // row per account since the MCP tools; this is the same fact in the other direction.
-      await auditMutation(db, ctx, {
-        action: "instance.connect",
-        target: `chatwoot_instance:${existing.id}`,
-        after: { id: String(existing.id), accountId, accountName },
-      });
-      return { id: existing.id, reconnected: true };
+      if (count > 0) {
+        // NOTE: In THIS transaction, not with the choice that asked for it. `setConnectedAccounts`
+        // connects one account per iteration and syncs each, so a crash between two of them leaves an
+        // account handled with the operator's choice not yet recorded. The disconnect side has had a
+        // row per account since the MCP tools; this is the same fact in the other direction.
+        await auditMutation(db, ctx, {
+          action: "instance.connect",
+          target: `chatwoot_instance:${existing.id}`,
+          after: { id: String(existing.id), accountId, accountName },
+        });
+      }
+      return { id: existing.id, reconnected: count > 0, changed: count > 0 };
     }
     try {
       const row = await db.chatwootInstance.create({
@@ -494,7 +533,7 @@ async function connectAccount(
         target: `chatwoot_instance:${row.id}`,
         after: { id: String(row.id), accountId, accountName },
       });
-      return { id: row.id, reconnected: false };
+      return { id: row.id, reconnected: false, changed: true };
     } catch (err) {
       if (
         err instanceof Prisma.PrismaClientKnownRequestError &&
@@ -523,7 +562,7 @@ async function connectAccount(
       "delivery sweep arm failed on Chatwoot connect; continuing",
     );
   }
-  return result.id;
+  return { id: result.id, changed: result.changed };
 }
 
 function accountTakenError(): ConflictError {
@@ -590,16 +629,20 @@ export async function setConnectedAccounts(
   const activeIds = new Set(
     current.filter((c) => c.disconnectedAt === null).map((c) => c.accountId),
   );
+  // Whether this invocation is the one that moved the set. Each write below decides it for itself,
+  // because the snapshot above cannot: two identical requests read the same `activeIds`, and only
+  // one of them gets to change a row.
+  let moved = false;
   // Disconnect active accounts the operator removed from the selection.
   for (const c of current) {
     if (c.disconnectedAt === null && !wanted.includes(c.accountId)) {
-      await softDisconnectChatwootInstance(ctx, c.id, base);
+      if (await softDisconnectChatwootInstance(ctx, c.id, base)) moved = true;
     }
   }
   // Connect (create/reactivate) the newly-selected accounts + best-effort inbox sync.
   for (const accountId of wanted) {
     if (activeIds.has(accountId)) continue; // already active — nothing to do
-    const id = await connectAccount(
+    const { id, changed } = await connectAccount(
       ctx,
       dep.id,
       accountId,
@@ -607,6 +650,7 @@ export async function setConnectedAccounts(
       serverKey,
       base,
     );
+    if (changed) moved = true;
     try {
       await syncInboxes(ctx, id, deps, base);
     } catch {
@@ -619,12 +663,12 @@ export async function setConnectedAccounts(
   // `instance.connect`/`instance.disconnect` says one account started or stopped being handled, and
   // this says which set the operator asked for.
   //
-  // And only when the set MOVED. Both loops above skip every account when the selection already
-  // matches, so a re-submitted form (or an idempotent retry) reaches here having changed nothing,
-  // and a row for it would be the trail reporting a mutation that did not happen.
-  const selectionMoved =
-    wanted.length !== activeIds.size || wanted.some((id) => !activeIds.has(id));
-  if (selectionMoved) {
+  // And only when the set MOVED, decided by the WRITES and not by the snapshot that preceded them.
+  // A re-submitted form (or an idempotent retry) skips both loops entirely and a row for it would be
+  // the trail reporting a mutation that did not happen; two overlapping copies of the same change
+  // both enter the loops with the same stale snapshot, and only the one whose conditional write
+  // matched a row actually changed the fleet.
+  if (moved) {
     await runScopedOn(base, ctx, (db) =>
       auditMutation(db, ctx, {
         action: "deployment.set_accounts",
@@ -644,11 +688,15 @@ export async function setConnectedAccounts(
 // (conversations / inboxes / contacts / analytics) are KEPT so history and the dashboard stay intact;
 // the webhook/runtime then ignore the account. Best-effort on the Chatwoot side: an unreachable
 // deployment still gets the local unbind + the disconnect stamp.
+//
+// Returns whether THIS call is the one that stamped it. The endpoint is idempotent, so a retry and
+// the loser of two overlapping requests both get `false`, which is what lets a caller say whether
+// anything moved instead of assuming it did.
 export async function softDisconnectChatwootInstance(
   ctx: TenantContext,
   id: bigint,
   base: PrismaClient = basePrisma,
-): Promise<void> {
+): Promise<boolean> {
   if (ctx.tenantId === null) throw new AppError("tenant required", 400);
   const tenantId = ctx.tenantId;
   const inst = await runScopedOn(base, ctx, (db) =>
@@ -692,7 +740,7 @@ export async function softDisconnectChatwootInstance(
   // either of the others left inboxes bound to nobody on an account still marked active, with
   // customer messages routed to no agent and no row saying why. The Chatwoot calls above stay
   // outside it, because no transaction of ours spans somebody else's system.
-  await runScopedOn(base, ctx, async (db) => {
+  const stamped = await runScopedOn(base, ctx, async (db) => {
     if (bound.length > 0) {
       await db.inbox.updateMany({
         where: { chatwootInstanceId: id },
@@ -715,10 +763,12 @@ export async function softDisconnectChatwootInstance(
         before: { id: String(inst.id), accountId: inst.accountId },
       });
     }
+    return count > 0;
   });
   // The receiver caches "this route token resolves to a live bot" by hash. Without this, events for
   // an account just disconnected would keep being processed until the entry expires.
   invalidateRouteTokenCache();
+  return stamped;
 }
 
 // Reconnect a soft-disconnected account: clear disconnectedAt (reusing the stored admin token). The

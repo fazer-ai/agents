@@ -191,8 +191,6 @@ describe.skipIf(!dbUp)("the vault family records its own changes", () => {
     await collect();
   });
 
-<<<<<<< ours
-=======
   // `encryptJson` randomizes, so the stored blob differs on every write even for an unchanged value.
   // Comparing the column would report a rotation on every save, which is the opposite of what the
   // marker is for.
@@ -211,7 +209,6 @@ describe.skipIf(!dbUp)("the vault family records its own changes", () => {
     expect(await rows()).toEqual([]);
   });
 
->>>>>>> theirs
   test("a rename records both names", async () => {
     await clearAudit();
     const name = `r${uniq()}`;

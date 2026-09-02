@@ -46,8 +46,25 @@
  *
  * MEASURED, and this is what makes the axis available on the population that needs it: `json.messages`
  * has been in the REST show partial since 2020-03-06, while `json.updated_at conversation.updated_at.to_f`
- * arrived 2025-02-10 (upstream #10875, released in 4.0.2). Every deployment whose fallback is the
- * ONLY path — the ones too old to send a version at all — renders the sequence this orders by.
+ * arrived 2025-02-10 (upstream #10875, released in 4.0.2). Confirmed by reading the partial at v2.16.0
+ * and v3.0.0, which render `messages` and `last_non_activity_message` and no `updated_at` at all: every
+ * deployment whose fallback is the ONLY path renders the sequence this orders by.
+ *
+ * ## What the sequence does NOT promise, measured rather than assumed
+ *
+ * The mark comes from `dashboard_seed_message`, which Chatwoot selects with `ORDER BY created_at DESC,
+ * id DESC` — an order that is not the id order. Counted on the local fork's account 1, over 6315
+ * conversations: the seed IS the conversation's highest id in 6218 of them and sits BELOW it in 97
+ * (1.5%), all of them conversations that received a bulk write carrying past timestamps (1626 messages
+ * with a high id and a `created_at` over a month old; 127 conversations where the id order and the
+ * `created_at` order disagree internally).
+ *
+ * That costs coverage and nothing else, because of the asymmetry above: the seed is always a message
+ * that EXISTS, so the mark can land below the newest id but never above it. On those conversations a
+ * reply frozen between the mark and the true maximum still gets through, which is the defect as it
+ * stands. The opposite — a reply written after the click landing at or below the mark, which would
+ * skip a real handover — would need the mark to name a message that does not exist yet, and no
+ * reading of that endpoint can produce one.
  *
  * ## Where it does not reach, stated rather than implied
  *

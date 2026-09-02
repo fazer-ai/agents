@@ -446,6 +446,7 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
         statusClaimFrom: true,
         statusClaimStampedAt: true,
         statusClaimRefusedAt: true,
+        consoleWriteAtMessageId: true,
       },
     });
   }
@@ -1239,6 +1240,54 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
   // row — with no claim on it — and has not written yet: that one commits its own decision straight
   // over the `open`, and the agent answers over the person. The lock is what orders those two, and it
   // is the same lock the mirror and the reconcile take.
+  // AND THE MARK IS ONE OF THE TERMS IT SWAPS ON, for the same reason the assignee is: it is ordered
+  // independently of the status version, so a console write can move it while status, version and
+  // assignee all stay exactly as this delivery read them. An operator setting an already-`pending`,
+  // bot-owned conversation back to `pending` is precisely that write, and without the term the swap
+  // would win against a decision newer than the one it read (issue #469).
+  //
+  // Asked of the swap DIRECTLY, because the window it closes cannot be pried open from inside this
+  // process: nothing is awaited between the fence's read and this statement. That is the same reason
+  // the assignee term's own mutation survives the suite.
+  test("the claim loses to a console write that moved only the mark", async () => {
+    const conv = 8569;
+    await deliver(conv, { ...customerSays("oi") });
+    const seeded = await convRow(conv);
+    const seen = {
+      statusAt: seeded?.chatwootStatusAt ?? null,
+      assigneeType: "AgentBot",
+      assigneeId: OUR_BOT,
+      consoleWriteAtMessageId: seeded?.consoleWriteAtMessageId ?? null,
+    };
+    // The console write lands: status, version and assignee all untouched, a new mark stamped.
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: conv },
+      data: { consoleWriteAtMessageId: 99_999 },
+    });
+    expect(
+      await claimOpenForHumanQueue({
+        tenantId,
+        instanceId,
+        conversationId: conv,
+        seen,
+        base: appDb,
+      }),
+    ).toBeNull();
+    expect((await convRow(conv))?.status).toBe("pending");
+    // A positive control on the same row, so the null above is the term and not the fixture: read
+    // the mark as it now stands and the same swap succeeds.
+    expect(
+      await claimOpenForHumanQueue({
+        tenantId,
+        instanceId,
+        conversationId: conv,
+        seen: { ...seen, consoleWriteAtMessageId: 99_999 },
+        base: appDb,
+      }),
+    ).not.toBeNull();
+    expect((await convRow(conv))?.status).toBe("open");
+  });
+
   test("the claim waits for whoever holds the conversation", async () => {
     const conv = 8568;
     await deliver(conv, { ...customerSays("oi") });
@@ -1252,6 +1301,7 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
           statusAt: seeded?.chatwootStatusAt ?? null,
           assigneeType: "AgentBot",
           assigneeId: OUR_BOT,
+          consoleWriteAtMessageId: seeded?.consoleWriteAtMessageId ?? null,
         },
         base: appDb,
       });
@@ -1534,6 +1584,45 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
             })
           ).consoleWriteAtMessageId,
         ).toBe(newest);
+      } finally {
+        unversionedReads.delete(conv);
+      }
+    });
+
+    // THE READING IS TAKEN BEFORE THE ACTION, and that is what keeps this fence from becoming the
+    // defect it guards against. `mirrorConsoleWrite` runs after its caller's Chatwoot calls, so a
+    // reading it took itself would include a colleague who replied during the round trip — and the
+    // mark would then cover that reply and have the takeover skip a real handover (issue #430).
+    //
+    // Driven through the toggle's own in-flight window, which is the only place a test can stand:
+    // the request is on the wire, Chatwoot has not committed it, and a message written there is
+    // strictly after the click.
+    test("a reply written during the click is not covered by the mark", async () => {
+      const conv = 8605;
+      unversionedReads.add(conv);
+      try {
+        await deliver(conv, composerReply("eu assumo"));
+        const beforeClick = liveLatestMessageId.get(conv) ?? 0;
+        // The colleague comes back while the hand-back's toggle is in flight.
+        const during = beforeClick + 7;
+        whileToggling = async () => {
+          liveLatestMessageId.set(conv, during);
+        };
+        try {
+          expect(await handBack(conv)).toBe("returned");
+        } finally {
+          whileToggling = null;
+        }
+        const marked = await suDb.conversation.findFirstOrThrow({
+          where: { tenantId, chatwootConversationId: conv },
+          select: { consoleWriteAtMessageId: true },
+        });
+        expect(marked.consoleWriteAtMessageId).toBe(beforeClick);
+
+        // And the effect: that reply still takes the conversation over.
+        messageSeq = during;
+        await deliver(conv, composerReply("voltei, deixa comigo"));
+        expect(liveStatus.get(conv)).toBe("open");
       } finally {
         unversionedReads.delete(conv);
       }

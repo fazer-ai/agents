@@ -188,6 +188,13 @@ export async function claimOpenForHumanQueue(p: {
     statusAt: number | null;
     assigneeType: string | null;
     assigneeId: number | null;
+    // THE FOURTH TERM, for the same reason as the assignee beside it: it is ordered independently
+    // of the status version, so a write can move it while leaving the other three untouched. An
+    // operator setting an already-`pending`, bot-owned conversation back to `pending` from the
+    // console does exactly that — status, version and assignee all unchanged, a new mark stamped —
+    // and without this term the swap would win against a decision newer than the one it read
+    // (issue #469).
+    consoleWriteAtMessageId: number | null;
   };
   base: PrismaClient;
 }): Promise<Date | null> {
@@ -217,6 +224,7 @@ export async function claimOpenForHumanQueue(p: {
             chatwootStatusAt: p.seen.statusAt,
             assigneeType: p.seen.assigneeType,
             assigneeId: p.seen.assigneeId,
+            consoleWriteAtMessageId: p.seen.consoleWriteAtMessageId,
           },
           data: {
             status: "open",

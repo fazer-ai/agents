@@ -695,6 +695,16 @@ async function mirrorConsoleWrite(
     assigneeId?: number | null;
     assigneeType?: string | null;
   },
+  // WHERE THE SOURCE'S MESSAGE SEQUENCE STOOD BEFORE THIS ACTION WAS APPLIED (issue #469), or null
+  // when the caller took no reading before its own writes.
+  //
+  // REQUIRED, and it cannot be derived here: this function runs AFTER its caller's Chatwoot calls,
+  // so its own live read is a post-write one. A colleague replying between the click and that read
+  // would land INSIDE it, the mark would cover their reply, and the fence would then skip the very
+  // handover it must act on — trading the defect this closes for the one #430 closes. The reading
+  // has to be at or before the mutation, which only the caller can take, and asking for it by
+  // parameter is what makes each call site say whether it has one.
+  markAt: number | null,
 ): Promise<ConsoleWriteMirror> {
   const tenantId = requireTenant(ctx);
   // NOTE: An operator commanding a non-resolved status ends the resolution, and that is decided HERE
@@ -713,16 +723,12 @@ async function mirrorConsoleWrite(
       }),
     );
   }
-  // Held outside the try so a throw after the read still hands back what was seen. `observedLive` is
-  // the same read kept whole, for the ordering mark below: `observed` is the assignee triple a
-  // caller acts on, and narrowing to it here was what left the mark with nothing to read.
+  // Held outside the try so a throw after the read still hands back what was seen.
   let observed: ConsoleWriteMirror["observed"] = null;
-  let observedLive: LiveConversationState | null = null;
   try {
     const live = parseLiveConversation(
       await client.getConversation(conv.chatwootConversationId),
     );
-    observedLive = live;
     if (live) {
       observed = {
         assigneeType: live.assigneeType,
@@ -811,16 +817,16 @@ async function mirrorConsoleWrite(
   // that no longer describes the newest click. `GREATEST` ignores a NULL, so the first write stamps
   // its own value.
   //
-  // Only from a read that named a message. A failed read leaves the previous mark standing, which
-  // is the honest answer: this side saw nothing new, and an older mark can only ever refuse less.
-  const mark = consoleWriteMark(observedLive);
-  if (mark !== null) {
+  // Only from a reading that named a message. Nothing to stamp leaves the previous mark standing,
+  // which is the honest answer: this side learned nothing new, and an older mark can only ever
+  // refuse less.
+  if (markAt !== null) {
     await runScopedOn(
       base,
       ctx,
       (db) => db.$executeRaw`
       UPDATE conversations
-         SET console_write_at_message_id = GREATEST(console_write_at_message_id, ${mark})
+         SET console_write_at_message_id = GREATEST(console_write_at_message_id, ${markAt})
        WHERE id = ${id}`,
     );
   }
@@ -1449,11 +1455,22 @@ export async function handoffConversation(
   await client.toggleStatus(conv.chatwootConversationId, "open", {
     asAdmin: true,
   });
-  const { state } = await mirrorConsoleWrite(ctx, base, id, conv, client, {
-    status: "open",
-    assigneeType: "User",
-    ...(assigneeId !== null ? { assigneeId } : {}),
-  });
+  const { state } = await mirrorConsoleWrite(
+    ctx,
+    base,
+    id,
+    conv,
+    client,
+    {
+      status: "open",
+      assigneeType: "User",
+      ...(assigneeId !== null ? { assigneeId } : {}),
+    },
+    // NO MARK, and it costs nothing here: this action hands the conversation to a PERSON, so the
+    // fence the mark feeds is never reached — `conversationOwnershipNow` answers "not ours" first.
+    // Taking a reading before the write would buy a round trip for a comparison nobody makes.
+    null,
+  );
   // Optimistic realtime feedback (the inbound webhook reconciles canonically). It announces the row
   // as STORED, not as asked for: the two differ when the live read came back with something else
   // (an assignment Chatwoot resolved differently, or a webhook that outranked this write), and a
@@ -1527,21 +1544,29 @@ export async function returnConversationToAgent(
   //
   // Falls back to the mirror when the read fails, which is where this stood before: an unreadable
   // baseline is not evidence that nobody was there.
-  const readHolder = async (): Promise<{
-    assigneeType: string | null;
-    assigneeId: number | null;
-  } | null> => {
-    const live = parseLiveConversation(
+  const readHolder = async (): Promise<LiveConversationState | null> =>
+    parseLiveConversation(
       await client
         .getConversation(conv.chatwootConversationId)
         .catch(() => null),
     );
-    return live === null
-      ? null
-      : { assigneeType: live.assigneeType, assigneeId: live.assigneeId };
-  };
+  // TAKEN BEFORE THE TOGGLE, and taken unconditionally, which is the whole of its correctness
+  // (issue #469). The mark this hand-back leaves has to name a message that already existed when
+  // the operator clicked: a reading made afterwards would include a colleague's reply typed in the
+  // round trip, and the fence would then skip that reply as though it predated the click — the
+  // defect of issue #430, reintroduced by the guard against this one.
+  //
+  // Unconditional even when `expectedHolder` spares the baseline read, because that caller (/reset)
+  // is a hand-back like any other and its conversation needs the same mark; a mark taken only on
+  // the path that happens to read for another reason is a fence that exists on some clicks.
+  const before = await readHolder();
   const baseline = expectedHolder ??
-    (await readHolder()) ?? {
+    (before === null
+      ? null
+      : {
+          assigneeType: before.assigneeType,
+          assigneeId: before.assigneeId,
+        }) ?? {
       assigneeType: conv.assigneeType,
       assigneeId: conv.assigneeId,
     };
@@ -1614,6 +1639,7 @@ export async function returnConversationToAgent(
       status: "pending",
       ...(newHolder ?? { assigneeId: null, assigneeType: null }),
     },
+    consoleWriteMark(before),
   );
   // Who the mirror ends up naming, resolved ONCE and read by both the event and the return below.
   // It is the LAST thing that looked at the conversation, not the first: `mirrorConsoleWrite` does
@@ -1747,9 +1773,22 @@ export async function setConversationStatus(
       base,
     });
   }
-  const { state } = await mirrorConsoleWrite(ctx, base, id, conv, client, {
-    status,
-  });
+  const { state } = await mirrorConsoleWrite(
+    ctx,
+    base,
+    id,
+    conv,
+    client,
+    { status },
+    // NO MARK. This endpoint takes no reading before its toggle, and one taken after it would be
+    // the post-write reading the parameter exists to refuse: a colleague replying in that window
+    // would be covered by it and their handover skipped. So the gap stays open on this path — an
+    // operator who sets a bot-owned conversation back to `pending` here can still be undone by a
+    // reply frozen before the click — rather than being closed with a mark that can be wrong in
+    // the direction that costs a person's conversation. Closing it means giving this path a
+    // pre-write read of its own, which is a round trip per click and its own decision to make.
+    null,
+  );
   broadcastConversationEvent(tenantId, {
     conversationId: String(id),
     status: state?.status ?? status,

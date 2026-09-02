@@ -840,6 +840,69 @@ describe.skipIf(!dbUp)(
       expect(ack).not.toContain("Alguém assumiu");
     });
 
+    // #398. Everything above is what the operator sees; this is the only thing that survives the
+    // conversation being deleted. The command erases an episode, and until now it left no durable
+    // record of any kind.
+    test("the erase, and the hand-back inside it, are on the trail", async () => {
+      await suDb.$executeRawUnsafe(
+        `DELETE FROM audit_logs WHERE tenant_id = ${tenantId}`,
+      );
+      const cw = fakeChatwoot();
+      globalThis.fetch = cw.impl;
+      await sendReset("/reset", CONV_ID, {
+        status: "open",
+        assigneeType: "User",
+      });
+
+      const rows = await suDb.auditLog.findMany({
+        where: { tenantId },
+        orderBy: { id: "asc" },
+      });
+      // Two acts, two rows, and neither is the other: the hand-back is the state change a console
+      // button also performs, and the reset is the erase that has no button at all.
+      expect(rows.map((r) => r.action)).toEqual([
+        "conversation.return",
+        "conversation.reset",
+      ]);
+      // NOT `user`, which is what an unset actorType defaults to. /reset is only recognized on an
+      // INCOMING message, so the person who typed it is the contact, who is nobody in `users`, and
+      // a row reading `user` with a null id would say the platform could not identify an operator
+      // rather than that there was none.
+      expect(rows.every((r) => r.actorType === "system")).toBe(true);
+      expect(rows.every((r) => r.actorId === null)).toBe(true);
+      const reset = rows[1];
+      expect(reset?.after).toEqual({
+        complete: true,
+        failed: [],
+        handBack: "returned",
+      });
+    });
+
+    test("a partial erase names the steps that did not run", async () => {
+      await suDb.$executeRawUnsafe(
+        `DELETE FROM audit_logs WHERE tenant_id = ${tenantId}`,
+      );
+      const cw = fakeChatwoot(/\/custom_attributes$/);
+      globalThis.fetch = cw.impl;
+      await sendReset();
+
+      const [row, ...rest] = await suDb.auditLog.findMany({
+        where: { tenantId, action: "conversation.reset" },
+        orderBy: { id: "asc" },
+      });
+      expect(rest).toEqual([]);
+      const after = row?.after as {
+        complete: boolean;
+        failed: string[];
+        handBack: string | null;
+      };
+      expect(after.complete).toBe(false);
+      expect(after.failed).toContain("clear custom attributes");
+      // The steps that DID run are not in the list, which is what makes it readable as "what
+      // survived" rather than as "the reset failed".
+      expect(after.failed).not.toContain("clear labels");
+    });
+
     // The other way the conversation can still be a human's when the reset ends: the assignment call
     // itself failed. The command has to name THAT — a partial reset — and not the switch, which is on.
     test("a failed hand-back is reported as a failure, not as a disabled agent", async () => {

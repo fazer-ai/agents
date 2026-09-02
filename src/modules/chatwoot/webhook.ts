@@ -69,6 +69,7 @@ import {
   contactAuthNoticeKey,
   releaseContactAuthNotice,
 } from "@/modules/contact-auth/state";
+import { recordConversationAction } from "@/modules/conversations/audit";
 import {
   clearConversationError,
   recordConversationError,
@@ -177,8 +178,22 @@ import type { NormalizedChatwootEvent } from "./types";
 // normalized event to the runtime seam. The ledger does NOT store the payload (it is
 // PII-bearing); the normalized event is passed in-memory to the detached processor.
 
+// The context this file's writes run under: an inbound webhook, so there is no principal to name.
+//
+// `actorType: "system"` is load-bearing since #398, and it is the whole attribution answer for this
+// door. The conversation services record their own rows now, and one of them, the hand-back, is
+// called from here, by /reset. Left unset the row would default to `user` with a null actor, which
+// reads as a person who cannot be identified rather than as no person at all. There is no third
+// option: /reset is only recognized on an INCOMING message, so whoever typed it is the CONTACT, who
+// has no row in `users` and is not a principal of this system. What that person did is recorded as
+// the action (`conversation.reset`) and in the projection, never as the actor.
 function sysCtx(tenantId: bigint): TenantContext {
-  return { tenantId, userId: null, role: "TENANT_ADMIN" };
+  return {
+    tenantId,
+    userId: null,
+    role: "TENANT_ADMIN",
+    actorType: "system",
+  };
 }
 
 function isUniqueViolation(err: unknown): boolean {
@@ -1827,6 +1842,7 @@ async function maybeConsumeCommandOrGate(params: {
       );
     };
     const failed: string[] = [];
+    const failedSteps: string[] = [];
     const step = async <T>(
       what: string,
       label: string,
@@ -1836,6 +1852,10 @@ async function maybeConsumeCommandOrGate(params: {
         return await run();
       } catch (err) {
         failed.push(label);
+        // The same failure in the vocabulary the AUDIT row keeps. `label` is the customer-facing
+        // bucket, in PT-BR and deliberately coarse ("card do kanban" covers three calls); `what`
+        // names the step, which is what a reader of the trail is asking about a year later.
+        failedSteps.push(what);
         logger.warn(
           "chatwoot: /reset %s failed (conv=%s): %s",
           what,
@@ -2414,6 +2434,29 @@ async function maybeConsumeCommandOrGate(params: {
       String(conversationId),
       distinctFailed.length === 0 ? "none" : distinctFailed.join("|"),
     );
+    // THE ONE RECORD THAT AN EPISODE WAS ERASED (#398).
+    //
+    // The family below this command records its own actions, and the hand-back is one of them, so
+    // without this row the trail would show a conversation being returned to the agent and nothing
+    // about the memory, the audio preference, the labels, the conversation attributes and the kanban
+    // card that were wiped in the same act. That is the destructive half, it is not reversible, and
+    // it was the only mutation in this file with no durable trace of any kind: not an audit row, and
+    // not a flow-log line either, which only ever gets one when the command does NOT run.
+    //
+    // Written even for a partial reset, with the steps that failed named: "what survived" is the
+    // question the operator is left with, and the acknowledgement that answers it is a chat message
+    // in a conversation that can be deleted.
+    await recordConversationAction(sysCtx(tenantId), base, ctx.conv.id, {
+      action: "conversation.reset",
+      after: {
+        complete: distinctFailed.length === 0,
+        failed: [...new Set(failedSteps)],
+        // Null covers the two cases that never called it (the agent already owned the conversation,
+        // or a guard withheld the hand-back) as well as the call that threw; `failed` above tells
+        // the third apart from the first two.
+        handBack,
+      },
+    });
     return true;
   }
   // A /reset typed while test mode is NOT yet active for this conversation (no /teste) must not wipe

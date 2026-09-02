@@ -152,6 +152,14 @@ the operator-facing gates in a fixed order: redirect **cross-link** → **test-m
 delivery still advances the handled watermark, and the message is folded into the memory thread
 like any other unanswered one.
 
+**`/reset` leaves an audit row, and it is the only durable trace the command has** (#398,
+[`api-and-fleet.md`](api-and-fleet.md)). The acknowledgement it posts is a chat message in a
+conversation that can be deleted, and the flow log only ever gets a line when the command does NOT
+run. `conversation.reset` names the steps that failed and the hand-back's outcome; the hand-back
+itself is the service's own `conversation.return`. Both are `actorType: "system"`, because the
+command is recognized only on an INCOMING message and the person who typed it is the contact, who
+is no principal of this system.
+
 ## Attribution gate (`shouldBotHandle`)
 
 The bot owns a conversation only while it is `pending` **and** no human is assigned. The gate is ours to enforce: Chatwoot delivers the event even when a human is assigned. With multiple bots, Chatwoot also delivers to a conversation's `assignee_agent_bot`, so we additionally require, when `ourAgentBotId` is known, that the conversation be unassigned or assigned to **our** bot — never to a different `AgentBot`:

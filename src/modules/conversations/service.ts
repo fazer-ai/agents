@@ -33,6 +33,7 @@ import {
   parseLiveConversation,
 } from "@/modules/chatwoot/normalize";
 import { reconcileMirrorFromLive } from "@/modules/chatwoot/reconcile";
+import { recordConversationAction } from "@/modules/conversations/audit";
 import { recordResolutionOrigin } from "@/modules/conversations/record-resolution";
 import { appointmentPauseApplies } from "@/modules/followups/appointment-pause";
 import { isFollowUpLive } from "@/modules/followups/eligibility";
@@ -1463,6 +1464,15 @@ export async function replyToConversation(
   await client.sendMessage(conv.chatwootConversationId, content, {
     private: isPrivate,
   });
+  // The TEXT, and it is the one projection in this repo that keeps a message body. The rule it bends
+  // was written for configuration rows, where the body of a customer conversation has no business
+  // being; here the text IS the mutation, authored by the actor and sent by them to a customer, and
+  // a row saying only "somebody replied" cannot answer the question this family exists for. Nothing
+  // the CUSTOMER wrote is ever recorded, on any path.
+  await recordConversationAction(ctx, base, id, {
+    action: "conversation.reply",
+    after: { private: isPrivate, content },
+  });
 }
 
 // Handoff: optionally assign a specific human, then set status open so the attribution gate stops
@@ -1516,6 +1526,15 @@ export async function handoffConversation(
     assigneeType: state ? state.assigneeType : "User",
     lastEventAt:
       (state ? state.lastEventAt : conv.lastEventAt)?.toISOString() ?? null,
+  });
+  // `before` off the mirror rather than off a live read: this call already made the only round trips
+  // it needs, and the row answers "what did this action move", which is the state the operator was
+  // looking at when they clicked. The transport used to read live for its dry-run preview and reuse
+  // that reading here, which is a different question asked for a different reason.
+  await recordConversationAction(ctx, base, id, {
+    action: "conversation.handoff",
+    before: { status: conv.status, assigneeId: conv.assigneeId },
+    after: { status: "open", assigneeId },
   });
 }
 
@@ -1760,9 +1779,21 @@ export async function returnConversationToAgent(
           )
         )?.chatwootAgentBotId ?? null)
       : null;
-  return heldByAnotherParty(finalHolder, { ourAgentBotId })
+  const outcome: ReturnToAgentOutcome = heldByAnotherParty(finalHolder, {
+    ourAgentBotId,
+  })
     ? "taken-over"
     : "returned";
+  // The OUTCOME is on the row, because it is the one action of this family whose success is not the
+  // thing the caller asked for: `taken-over` means the status went to pending and the human stayed,
+  // and a row that only said "returned to the agent" would be the trail disagreeing with the console
+  // that was told otherwise in the same instant.
+  await recordConversationAction(ctx, base, id, {
+    action: "conversation.return",
+    before: { status: conv.status },
+    after: { status: "pending", outcome },
+  });
+  return outcome;
 }
 
 export async function setConversationStatus(
@@ -1833,5 +1864,10 @@ export async function setConversationStatus(
     assigneeType: state ? state.assigneeType : conv.assigneeType,
     lastEventAt:
       (state ? state.lastEventAt : conv.lastEventAt)?.toISOString() ?? null,
+  });
+  await recordConversationAction(ctx, base, id, {
+    action: "conversation.status",
+    before: { status: conv.status },
+    after: { status },
   });
 }

@@ -1,4 +1,4 @@
-import type { PrismaClient } from "@/../generated/prisma/client";
+import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import { broadcastDocumentEvent } from "@/api/features/realtime/realtime.service";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
@@ -628,21 +628,34 @@ export async function reindexKnowledgeBase(
     if (!emb.ok) return { docs: targets, blocked: emb };
     // dry-run previews the count (below) without touching the docs.
     if (opts.dryRun) return { docs: targets, blocked: undefined };
-    const { count } = await db.knowledgeDocument.updateMany({
-      where: { knowledgeBaseId, status: { in: statuses } },
-      data: { status: "PENDING", error: null },
-    });
-    // NOTE: How many the WRITE moved, not how many the listing above found. Two operators pressing
-    // reindex on the same base both see the same targets, and the second one moves none of them; a
-    // row built from `targets` would report a queue it did not fill.
-    if (count > 0) {
+    // NOTE: WHICH documents the write moved, not which ones the listing above found. Two operators
+    // pressing reindex on the same base both read the same `targets`, and the second one moves none
+    // of them: it must neither record a queue it did not fill NOR re-arm the jobs below, which is
+    // why the ids come back from the UPDATE itself rather than from the snapshot.
+    //
+    // TODO: The jobs are enqueued AFTER this transaction commits (the pattern every write in this
+    // module follows, because `enqueueJob` takes a client and not a tx). A failure partway through
+    // that loop leaves documents PENDING with no job, and the row here already says they were
+    // queued. The row is true about the transition it names; the queue is what the next reindex
+    // repairs.
+    const moved = await db.$queryRaw<{ id: bigint }[]>`
+      UPDATE knowledge_documents
+         SET status = 'PENDING', error = NULL, updated_at = now()
+       WHERE tenant_id = ${tenantId}
+         AND knowledge_base_id = ${knowledgeBaseId}
+         AND status IN (${Prisma.join(statuses.map((v) => Prisma.sql`${v}`))})
+      RETURNING id`;
+    if (moved.length > 0) {
       await auditMutation(db, ctx, {
         action: "knowledge.reindex",
         target: `knowledge_base:${knowledgeBaseId}`,
-        after: { queued: count, includeFailed: opts.includeFailed === true },
+        after: {
+          queued: moved.length,
+          includeFailed: opts.includeFailed === true,
+        },
       });
     }
-    return { docs: targets, blocked: undefined };
+    return { docs: moved, blocked: undefined };
   });
 
   if (outcome.blocked) {

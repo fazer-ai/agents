@@ -99,6 +99,50 @@ async function collect() {
   everyRow.push(...(await rows()));
 }
 
+// A client that lets a CONCURRENT request land between the listing `reindexKnowledgeBase` takes of
+// what needs indexing and the write it derives from it. That window is real (the reads and the
+// update are separate statements under read-committed) and this makes the interleaving
+// deterministic. It fires on the targets read and on nothing else: it is the only
+// `knowledgeDocument.findMany` on that path.
+function afterTargets(
+  client: PrismaClient,
+  hook: () => Promise<unknown>,
+): PrismaClient {
+  let fired = false;
+  // biome-ignore lint/suspicious/noExplicitAny: proxying Prisma's client surface
+  const wrap = (target: any): any =>
+    new Proxy(target, {
+      get(t, prop, recv) {
+        if (prop === "$extends") {
+          return (...a: unknown[]) => wrap(t.$extends(...a));
+        }
+        if (prop === "$transaction") {
+          return (fn: (tx: unknown) => unknown, ...rest: unknown[]) =>
+            t.$transaction((tx: unknown) => fn(wrap(tx)), ...rest);
+        }
+        if (prop !== "knowledgeDocument") return Reflect.get(t, prop, recv);
+        const delegate = Reflect.get(t, prop, recv);
+        return new Proxy(delegate, {
+          get(d, k, r) {
+            const inner = Reflect.get(d, k, r);
+            if (k !== "findMany") return inner;
+            return async (args: unknown) => {
+              const res = await (
+                inner as (a: unknown) => Promise<unknown>
+              ).call(d, args);
+              if (!fired) {
+                fired = true;
+                await hook();
+              }
+              return res;
+            };
+          },
+        });
+      },
+    });
+  return wrap(client);
+}
+
 const uniq = () => `${process.pid}${Math.floor(Math.random() * 1e6)}`;
 
 // The rows carry BigInt columns, which `JSON.stringify` refuses outright.
@@ -335,6 +379,32 @@ describe.skipIf(!dbUp)("the knowledge family records its own changes", () => {
     await collect();
   });
 
+  test("a re-index whose documents were already queued records nothing", async () => {
+    const a = await makeDoc();
+    const b = await makeDoc();
+    await suDb.knowledgeDocument.updateMany({
+      where: { id: { in: [a.id, b.id] } },
+      data: { status: "UNINDEXED" },
+    });
+    await clearAudit();
+    // Another operator presses re-index first and moves both documents.
+    const res = await reindexKnowledgeBase(
+      ctx(),
+      kbId,
+      afterTargets(appDb, () =>
+        suDb.knowledgeDocument.updateMany({
+          where: { id: { in: [a.id, b.id] } },
+          data: { status: "PENDING" },
+        }),
+      ),
+    );
+    // Nothing moved, so nothing was queued and nothing is on the trail. Both halves matter: a row
+    // built from the LISTING would have claimed two, and a job re-armed from it would have
+    // re-queued documents this request never touched.
+    expect(res.queued).toBe(0);
+    expect(await rows()).toEqual([]);
+  });
+
   // A preview is a read: it counts what WOULD be queued and touches nothing.
   test("previewing a re-index records nothing", async () => {
     const doc = await makeDoc();
@@ -403,6 +473,44 @@ describe.skipIf(!dbUp)("the knowledge family records its own changes", () => {
     });
     expect(dump(row)).not.toContain(PROPOSAL);
     await collect();
+  });
+
+  test("an edit that names no field is refused before anything is written", async () => {
+    const item = await makeSuggestion();
+    await clearAudit();
+    expect(
+      editApprovalItem({ ctx: ctx(), id: item.id, base: appDb }),
+    ).rejects.toThrow(AppError);
+    expect(await rows()).toEqual([]);
+  });
+
+  test("re-submitting a proposal unchanged records nothing, and does not mark it edited", async () => {
+    const item = await makeSuggestion();
+    const stored = await suDb.approvalQueueItem.findUniqueOrThrow({
+      where: { id: item.id },
+      select: { proposedTitle: true, proposedContent: true, status: true },
+    });
+    expect(stored.status).toBe("PENDING");
+    await clearAudit();
+    const outcome = await editApprovalItem({
+      ctx: ctx(),
+      id: item.id,
+      proposedTitle: stored.proposedTitle ?? undefined,
+      proposedContent: stored.proposedContent,
+      base: appDb,
+    });
+    expect(outcome).toBe("updated");
+    expect(await rows()).toEqual([]);
+    // An item marked EDITED because somebody opened it and saved it back says a human rewrote a
+    // proposal they did not touch, which is what the Approvals page shows the next reviewer.
+    expect(
+      (
+        await suDb.approvalQueueItem.findUniqueOrThrow({
+          where: { id: item.id },
+          select: { status: true },
+        })
+      ).status,
+    ).toBe("PENDING");
   });
 
   test("approving a proposal records the decision and the document it becomes", async () => {

@@ -398,16 +398,43 @@ export async function editApprovalItem(
     ["content", params.proposedContent],
     ["rationale", params.rationale],
   ]);
-  const data: Record<string, unknown> = { status: "EDITED" };
+  const patch: Record<string, unknown> = {};
   if (params.proposedTitle !== undefined)
-    data.proposedTitle = params.proposedTitle;
+    patch.proposedTitle = params.proposedTitle;
   if (params.proposedContent !== undefined)
-    data.proposedContent = params.proposedContent;
-  if (params.rationale !== undefined) data.rationale = params.rationale;
+    patch.proposedContent = params.proposedContent;
+  if (params.rationale !== undefined) patch.rationale = params.rationale;
+  // The same refusal `updateDocument` gives: a patch that names no field is a request the caller
+  // can only have made by mistake, and the route's body makes all three optional.
+  if (Object.keys(patch).length === 0) {
+    throw new AppError("nothing to update", 400);
+  }
   return runScopedOn(base, params.ctx, async (db) => {
+    // NOTE: LOCKED and read before the write, because WHICH fields moved is what the row carries and
+    // two reviewers editing the same proposal would otherwise each report the other's change as
+    // their own.
+    await db.$queryRaw`SELECT id FROM approval_queue_items WHERE id = ${params.id} FOR UPDATE`;
+    const current = await db.approvalQueueItem.findFirst({
+      where: { id: params.id, status: { in: ["PENDING", "EDITED"] } },
+      select: {
+        status: true,
+        proposedTitle: true,
+        proposedContent: true,
+        rationale: true,
+      },
+    });
+    if (!current) return "not-pending";
+    const before = current as unknown as Record<string, unknown>;
+    const fields = Object.keys(patch)
+      .filter((k) => patch[k] !== before[k])
+      .sort();
+    // A form re-submitted unchanged reaches here with every field equal, and the status is not a
+    // change of its own: an item marked EDITED because somebody opened it and saved it back says a
+    // human rewrote a proposal they did not touch.
+    if (fields.length === 0) return "updated";
     const res = await db.approvalQueueItem.updateMany({
       where: { id: params.id, status: { in: ["PENDING", "EDITED"] } },
-      data,
+      data: { ...patch, status: "EDITED" },
     });
     // NOTE: WHICH fields the operator rewrote, never what they wrote. An edit before approval is the
     // operator putting their words into what the agent proposed, and the trail's business is that it
@@ -416,13 +443,7 @@ export async function editApprovalItem(
       await auditMutation(db, params.ctx, {
         action: "knowledge.edit",
         target: `approval:${params.id}`,
-        after: {
-          id: String(params.id),
-          status: "EDITED",
-          fields: Object.keys(data)
-            .filter((k) => k !== "status")
-            .sort(),
-        },
+        after: { id: String(params.id), status: "EDITED", fields },
       });
     }
     return res.count > 0 ? "updated" : "not-pending";

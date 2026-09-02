@@ -261,6 +261,35 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
     expect(await rows()).toEqual([]);
   });
 
+  // The comparison reads the STORED plaintext, so it is also the first thing to meet a blob that
+  // will not decrypt. It refuses, and that is the rule the whole repo follows for these columns: the
+  // client loader, the webhook and the disconnect all throw on the same blob, so a connect that
+  // swallowed it would report success on a deployment still broken everywhere it is actually used.
+  test("a stored token that cannot be decrypted refuses the write instead of overwriting it", async () => {
+    await clearAudit();
+    const dep = await suDb.chatwootDeployment.findFirstOrThrow({
+      where: { tenantId },
+      select: { id: true, adminToken: true },
+    });
+    await suDb.chatwootDeployment.update({
+      where: { id: dep.id },
+      data: { adminToken: "isto-nao-e-um-blob" },
+    });
+    expect(
+      rotateChatwootDeploymentToken(
+        ctx(),
+        "cw-outro-token",
+        { fetchProfile },
+        appDb,
+      ),
+    ).rejects.toThrow();
+    expect(await rows()).toEqual([]);
+    await suDb.chatwootDeployment.update({
+      where: { id: dep.id },
+      data: { adminToken: dep.adminToken },
+    });
+  });
+
   test("choosing which accounts are connected records the choice", async () => {
     await clearAudit();
     await setConnectedAccounts(
@@ -269,20 +298,19 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
       { fetchProfile, makeClient: stubClient().makeClient },
       appDb,
     );
-    // The choice AND what it did, which are not the same fact: connecting an account syncs its
-    // inboxes, and that sync is a change of its own with its own row. Neither covers the other, and
-    // a reader who saw only the choice could not tell whether it took effect.
-    // Each account connects in its OWN transaction and records there, so a crash between two of
-    // them leaves the account handled with a row saying so. The choice is the row on top.
+    // The choice AND what it did, which are not the same fact: a reader who saw only the choice
+    // could not tell which accounts it actually moved. Each account connects in its OWN
+    // transaction and records there, so a crash between two of them leaves the account handled
+    // with a row saying so. The choice is the row on top.
     const all = await rows();
     expect(all.map((r) => r.action)).toEqual([
       "instance.connect",
-      "instance.sync_inboxes",
       "instance.connect",
-      "instance.sync_inboxes",
       "deployment.set_accounts",
     ]);
-    const row = all[4];
+    // No `instance.sync_inboxes` between them: the sync runs for each account and this Chatwoot has
+    // no inboxes, so it reconciled a mirror that was already correct and changed nothing.
+    const row = all[2];
     expect(row?.after).toEqual({ accountIds: [1, 2], connected: 2 });
     await collect();
   });
@@ -329,12 +357,10 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
     );
     const all = await rows();
     // The reconnect that WON is on the trail, once. The sync ran either way (it is idempotent and
-    // the operator asked for it), and neither `instance.connect` nor the choice is recorded, because
-    // by the time this request reached the row the account was already being handled.
-    expect(all.map((r) => r.action)).toEqual([
-      "instance.reconnect",
-      "instance.sync_inboxes",
-    ]);
+    // the operator asked for it) and moved nothing, so it left no row; and neither `instance.connect`
+    // nor the choice is recorded, because by the time this request reached the row the account was
+    // already being handled.
+    expect(all.map((r) => r.action)).toEqual(["instance.reconnect"]);
     expect(await rows("instance.connect")).toEqual([]);
     expect(await rows("deployment.set_accounts")).toEqual([]);
     await collect();
@@ -535,7 +561,18 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
     await collect();
   });
 
-  test("syncing an account's inboxes records the counts", async () => {
+  // The remote list a sync reconciles against, as Chatwoot spells it.
+  const remoteInbox = (over: Record<string, unknown> = {}) => [
+    {
+      id: 77,
+      name: "Suporte",
+      channel_type: "Channel::Api",
+      provider: null,
+      ...over,
+    },
+  ];
+
+  test("syncing an account's inboxes records what the reconcile created", async () => {
     await clearAudit();
     const inst = await suDb.chatwootInstance.findFirstOrThrow({
       where: { tenantId, accountId: 1 },
@@ -544,13 +581,69 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
     await syncInboxes(
       ctx(),
       inst.id,
-      { makeClient: stubClient().makeClient },
+      {
+        makeClient: stubClient({ listInboxes: async () => remoteInbox() })
+          .makeClient,
+      },
+      appDb,
+    );
+    const [row, ...rest] = await rows();
+    expect(rest).toEqual([]);
+    expect(row?.action).toBe("instance.sync_inboxes");
+    expect(row?.target).toBe(`chatwoot_instance:${inst.id}`);
+    expect(row?.after).toEqual({
+      total: 1,
+      created: 1,
+      updated: 0,
+      accountRenamed: false,
+    });
+    await collect();
+  });
+
+  test("a reconcile that finds the mirror already correct records nothing", async () => {
+    await clearAudit();
+    const inst = await suDb.chatwootInstance.findFirstOrThrow({
+      where: { tenantId, accountId: 1 },
+      select: { id: true },
+    });
+    await syncInboxes(
+      ctx(),
+      inst.id,
+      {
+        makeClient: stubClient({ listInboxes: async () => remoteInbox() })
+          .makeClient,
+      },
+      appDb,
+    );
+    // This is the every-page-load case, not an exotic one: the Channels page syncs every active
+    // account when it opens, so an unconditional row would put one per account per visit into an
+    // append-only table nobody asked to grow.
+    expect(await rows()).toEqual([]);
+  });
+
+  test("a reconcile that finds an inbox renamed upstream records it as a change", async () => {
+    await clearAudit();
+    const inst = await suDb.chatwootInstance.findFirstOrThrow({
+      where: { tenantId, accountId: 1 },
+      select: { id: true },
+    });
+    await syncInboxes(
+      ctx(),
+      inst.id,
+      {
+        makeClient: stubClient({
+          listInboxes: async () => remoteInbox({ name: "Suporte 24h" }),
+        }).makeClient,
+      },
       appDb,
     );
     const [row] = await rows();
-    expect(row?.action).toBe("instance.sync_inboxes");
-    expect(row?.target).toBe(`chatwoot_instance:${inst.id}`);
+    expect(row?.after).toMatchObject({ total: 1, created: 0, updated: 1 });
     await collect();
+    // Back to no mirrored inbox, the way the tests after this one expect the account.
+    await suDb.inbox.deleteMany({
+      where: { chatwootInstanceId: inst.id, chatwootInboxId: 77 },
+    });
   });
 
   // The one action of the nine that does NOT move down, and the reason is measured rather than

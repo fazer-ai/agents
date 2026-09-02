@@ -333,16 +333,20 @@ export async function connectChatwootDeployment(
 
 // Rotate the deployment's admin token (the operator pasted a new one). Validated by a /profile probe
 // before it persists. Affects every account under the deployment (they share it).
-// The stored admin token as plaintext, or null when the blob cannot be read. Only ever compared,
-// never returned to a caller and never projected: an unreadable blob is a rotation waiting to
-// happen, and answering `null` makes the comparison below treat it as one.
-function readStoredToken(blob: string): string | null {
-  try {
-    const v = decryptJson(blob);
-    return typeof v === "string" ? v : null;
-  } catch {
-    return null;
+// The stored admin token as plaintext. Only ever compared, never returned to a caller and never
+// projected.
+//
+// `decryptJson` is allowed to throw, by the rule every other reader of these columns already
+// follows: a blob that will not decrypt is a key or integrity problem, not an empty value. Swallowing
+// it here would be worse than the failure it hides, because it only fixes the comparison: the client
+// loader, the webhook and the disconnect all decrypt this same column and all still throw, so connect
+// would report success on a deployment that stays broken everywhere the operator actually uses it.
+function readStoredToken(blob: string): string {
+  const v = decryptJson(blob);
+  if (typeof v !== "string") {
+    throw new AppError("stored Chatwoot admin token is not a string", 500);
   }
+  return v;
 }
 
 export async function rotateChatwootDeploymentToken(
@@ -1697,7 +1701,7 @@ export async function removeInbox(
   deps: LoadChatwootClientDeps = {},
   base: PrismaClient = basePrisma,
 ): Promise<void> {
-  const { inbox, gone } = await loadInboxAndAsk(ctx, inboxId, deps, base);
+  const { gone } = await loadInboxAndAsk(ctx, inboxId, deps, base);
   if (!gone) {
     throw new AppError(
       "this inbox still exists in Chatwoot; delete it there first",
@@ -1720,19 +1724,34 @@ export async function removeInbox(
   // operators doing the same correct thing. A DELETE is idempotent, and "it is already gone" is the
   // outcome the caller asked for.
   await runScopedOn(base, ctx, async (db) => {
+    // NOTE: Re-read under the row LOCK, and not from `inbox` above. That snapshot was taken before
+    // the network question, and the window the comment above deliberately leaves open is exactly
+    // the one a sync or a bind writes in: the row that gets deleted here can carry a name or an
+    // agent the snapshot never saw, and the trail has to describe what was removed rather than what
+    // was read.
+    await db.$queryRaw`SELECT id FROM inboxes WHERE id = ${inboxId} FOR UPDATE`;
+    const current = await db.inbox.findUnique({
+      where: { id: inboxId },
+      select: {
+        id: true,
+        name: true,
+        chatwootInboxId: true,
+        agentId: true,
+      },
+    });
     const { count } = await db.inbox.deleteMany({ where: { id: inboxId } });
     // NOTE: Only when THIS call is the one that removed it. `deleteMany` is idempotent on purpose (two
     // operators doing the same correct thing must not produce a 500), and a row per attempt would
     // put the same removal on the trail as many times as it was retried.
-    if (count > 0) {
+    if (count > 0 && current) {
       await auditMutation(db, ctx, {
         action: "inbox.remove",
         target: `inbox:${inboxId}`,
         before: {
-          id: inbox.id,
-          name: inbox.name,
-          chatwootInboxId: inbox.chatwootInboxId,
-          agentId: inbox.agentId,
+          id: String(current.id),
+          name: current.name,
+          chatwootInboxId: current.chatwootInboxId,
+          agentId: current.agentId === null ? null : String(current.agentId),
         },
       });
     }
@@ -1982,15 +2001,34 @@ export async function syncInboxes(
 
   // Reconcile (scoped tx, no network).
   return runScopedOn(base, ctx, async (db) => {
+    // NOTE: The rename is its own conditional write, so a name Chatwoot did not change does not
+    // count as one. The `null` arm is not decoration: `accountName <> 'x'` is NULL for a row whose
+    // name is NULL, so a plain `not` would silently skip the very rows that most need the name.
+    let renamed = false;
     if (accountName !== undefined) {
-      await db.chatwootInstance.update({
-        where: { id: instanceId },
+      const { count } = await db.chatwootInstance.updateMany({
+        where: {
+          id: instanceId,
+          OR: [{ accountName: null }, { accountName: { not: accountName } }],
+        },
         data: { accountName },
       });
+      renamed = count > 0;
     }
     let created = 0;
     let updated = 0;
     for (const inbox of remote) {
+      // NOTE: LOCKED before the reading, because the reading is what decides whether this sync
+      // changed anything. The Channels page auto-syncs every account on load, so two syncs of the
+      // same account overlap routinely, and an unlocked read would let the second one count a
+      // change the first one made. A row that does not exist yet takes no lock, which is the create
+      // race the upsert below already answers.
+      await db.$queryRaw`
+        SELECT id FROM inboxes
+         WHERE tenant_id = ${tenantId}
+           AND chatwoot_instance_id = ${instanceId}
+           AND chatwoot_inbox_id = ${inbox.chatwootInboxId}
+           FOR UPDATE`;
       const existing = await db.inbox.findUnique({
         where: {
           tenantId_chatwootInstanceId_chatwootInboxId: {
@@ -1999,7 +2037,7 @@ export async function syncInboxes(
             chatwootInboxId: inbox.chatwootInboxId,
           },
         },
-        select: { id: true },
+        select: { name: true, channelType: true, provider: true },
       });
       // Atomic INSERT … ON CONFLICT: concurrent syncs (the load-time auto-sync and the manual
       // button) can race on the unique key, and a failed create inside this scoped $transaction
@@ -2028,15 +2066,28 @@ export async function syncInboxes(
           provider: inbox.provider,
         },
       });
-      if (existing) updated++;
-      else created++;
+      if (!existing) created++;
+      else if (
+        existing.name !== inbox.name ||
+        existing.channelType !== inbox.channelType ||
+        existing.provider !== inbox.provider
+      ) {
+        updated++;
+      }
     }
     const result = { total: remote.length, created, updated };
-    await auditMutation(db, ctx, {
-      action: "instance.sync_inboxes",
-      target: `chatwoot_instance:${instanceId}`,
-      after: result,
-    });
+    // NOTE: `updated` counts the inboxes this sync CHANGED, not the ones that already existed. It
+    // used to be the latter, and both readers were wrong for it: the toast said "3 updated" after
+    // a reconcile that moved nothing, and the trail got a row on every page load, because the
+    // Channels page auto-syncs every active account when it opens. A reconcile that found the
+    // mirror already correct is a read, and reads do not get rows.
+    if (created > 0 || updated > 0 || renamed) {
+      await auditMutation(db, ctx, {
+        action: "instance.sync_inboxes",
+        target: `chatwoot_instance:${instanceId}`,
+        after: { ...result, accountRenamed: renamed },
+      });
+    }
     return result;
   });
 }

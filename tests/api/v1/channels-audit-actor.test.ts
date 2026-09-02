@@ -60,6 +60,11 @@ const fetchProfile = async () => ({
   ],
 });
 
+// What Chatwoot answers `listInboxes` with, flipped by the journey below. It starts empty because
+// the two syncs `PUT /deployment/accounts` performs happen before any inbox exists upstream, and a
+// reconcile that changes nothing leaves no row.
+let remoteInboxes: unknown[] = [];
+
 const makeClient = async () =>
   ({
     // 404 is how the fork says an inbox is gone, and the removal REFUSES a mirror whose inbox still
@@ -67,7 +72,7 @@ const makeClient = async () =>
     getInbox: async () => {
       throw new ChatwootApiError(404, "GET /inboxes/94");
     },
-    listInboxes: async () => [],
+    listInboxes: async () => remoteInboxes,
     setInboxAgentBot: async () => ({}),
     listAgentBots: async () => [],
     createAgentBot: async () => ({
@@ -262,6 +267,17 @@ describe.skipIf(!dbUp)("the Channels page names who wrote", () => {
         )
       ).status,
     ).toBe(200);
+    // The mirror is built by the sync route itself rather than by hand: the inbox the journey then
+    // binds, reconnects and removes is the one the reconcile created, so its rows describe a row the
+    // console actually produced.
+    remoteInboxes = [
+      {
+        id: 94,
+        name: "WhatsApp",
+        channel_type: "Channel::Whatsapp",
+        provider: "whatsapp_cloud",
+      },
+    ];
     expect(
       (
         await server.handle(
@@ -274,13 +290,8 @@ describe.skipIf(!dbUp)("the Channels page names who wrote", () => {
       data: { tenantId, name: "Atendente", systemPrompt: "x" },
       select: { id: true },
     });
-    const inbox = await su?.inbox.create({
-      data: {
-        tenantId,
-        chatwootInstanceId: instance?.id ?? 0n,
-        chatwootInboxId: 94,
-        name: "WhatsApp",
-      },
+    const inbox = await su?.inbox.findFirstOrThrow({
+      where: { tenantId, chatwootInboxId: 94 },
       select: { id: true },
     });
     const inboxId = String(inbox?.id);
@@ -334,15 +345,14 @@ describe.skipIf(!dbUp)("the Channels page names who wrote", () => {
     ).toBe(200);
 
     const r = await rows();
-    // Every action the journey performed, in order. Choosing the accounts connects two and syncs
-    // each, and both of those are changes of their own: the pair repeats before the choice's row.
+    // Every action the journey performed, in order. The two syncs that `PUT /deployment/accounts`
+    // runs are absent because they reconciled against an empty Chatwoot and moved nothing; the one
+    // that is here created the inbox everything after it operates on.
     expect(r.map((x) => x.action)).toEqual([
       "deployment.connect",
       "deployment.rotate_token",
       "instance.connect",
-      "instance.sync_inboxes",
       "instance.connect",
-      "instance.sync_inboxes",
       "deployment.set_accounts",
       "instance.disconnect",
       "instance.reconnect",

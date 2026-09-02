@@ -728,6 +728,36 @@ async function mirrorConsoleWrite(
   markAt: number | null,
 ): Promise<ConsoleWriteMirror> {
   const tenantId = requireTenant(ctx);
+  // THE MARK, STAMPED BEFORE ANYTHING HERE CAN RETURN (issue #469). It says which message Chatwoot
+  // already had when the operator's action was applied, which is what lets the human-reply takeover
+  // tell a reply that predates the click from one typed after it — the distinction a deadline
+  // cannot draw.
+  //
+  // ON EVERY PATH, including the one that reconciles with a real version, and that is not belt and
+  // braces: the recovery of issue #439 carries NO version by construction (`chatwoot_status_at` is
+  // a mark that advances on redeclaration, so it cannot serve as one there — recover-takeover.ts
+  // states why), and it runs at least half an hour after the delivery it rebuilds. On a versioned
+  // Chatwoot the reconcile below returns early, so a mark written only on the unversioned tail
+  // would leave exactly the deployment that HAS versions with nothing to fence the recovery with,
+  // and a hand-back made inside that half hour undone. Measured as a review finding, not supposed.
+  // On the live path it costs nothing: a versioned delivery is refused by the version check first,
+  // and one that gets past it was written after the click, so its id is above this mark.
+  //
+  // In a statement of its own because it must never move BACKWARDS: two console writes are separate
+  // requests, nothing serializes them, and an older one committing last would hand the fence a mark
+  // that no longer describes the newest click. `GREATEST` ignores a NULL, so the first write stamps
+  // its own value. `null` stamps nothing and leaves the previous mark standing, which is the honest
+  // answer when this side learned nothing new.
+  if (markAt !== null) {
+    await runScopedOn(
+      base,
+      ctx,
+      (db) => db.$executeRaw`
+      UPDATE conversations
+         SET console_write_at_message_id = GREATEST(console_write_at_message_id, ${markAt})
+       WHERE id = ${id}`,
+    );
+  }
   // NOTE: An operator commanding a non-resolved status ends the resolution, and that is decided HERE
   // rather than inside either write below. Deliberately NOT `clearsResolutionOrigin`: that function
   // answers "did the ordering leave this close standing?", and a click has no ordering to consult.
@@ -825,32 +855,11 @@ async function mirrorConsoleWrite(
   // assignment endpoints render no `updated_at` (issue #77) and the read that would have supplied
   // one is the read that just failed. So the ordering marks stay where the pre-click state left
   // them, and the human-reply takeover's freshness check, which compares a delivery against one of
-  // them, lets a payload Chatwoot serialized BEFORE the operator's click pass and undo it.
+  // them, would let a payload Chatwoot serialized BEFORE the operator's click pass and undo it —
+  // which is what the mark stamped at the top of this function answers (issue #469).
   //
   // The status claim of issue #436 does not cover it and was measured not to: it fences a
   // transition still on the wire, and by the time this runs Chatwoot has already decided.
-  //
-  // WHAT DOES is the source's own message sequence (issue #469). The mark below says which message
-  // Chatwoot already had when this write was made, so the takeover can tell a reply that predates
-  // the click from one typed after it — the distinction a deadline cannot draw. It is stamped in a
-  // statement of its own because it must never move BACKWARDS: two console writes are separate
-  // requests, nothing serializes them, and an older one committing last would hand the fence a mark
-  // that no longer describes the newest click. `GREATEST` ignores a NULL, so the first write stamps
-  // its own value.
-  //
-  // Only from a reading that named a message. Nothing to stamp leaves the previous mark standing,
-  // which is the honest answer: this side learned nothing new, and an older mark can only ever
-  // refuse less.
-  if (markAt !== null) {
-    await runScopedOn(
-      base,
-      ctx,
-      (db) => db.$executeRaw`
-      UPDATE conversations
-         SET console_write_at_message_id = GREATEST(console_write_at_message_id, ${markAt})
-       WHERE id = ${id}`,
-    );
-  }
   await updateMirror(ctx, base, id, { ...fallback, ...named });
   return { state: null, observed };
 }

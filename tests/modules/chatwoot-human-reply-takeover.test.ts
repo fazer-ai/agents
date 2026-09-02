@@ -1770,22 +1770,29 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
       }
     });
 
-    // A VERSIONED Chatwoot reconciles instead of falling back, so it stamps no mark at all — the
-    // ordering there is the one that already worked, and a mark written on that path would be a
-    // second fence nobody asked for.
-    test("a versioned console write stamps no mark", async () => {
+    // A VERSIONED Chatwoot reconciles instead of falling back, and it stamps the mark ANYWAY. That
+    // is not belt and braces, and it is the one thing this fence got wrong on the first pass: the
+    // recovery of issue #439 carries no version by construction, so on a versioned deployment a mark
+    // written only on the fallback would leave the recovery with nothing to order against — a
+    // hand-back made inside its half-hour window undone, on precisely the installs that HAVE
+    // versions. The consequence is asserted where the recovery lives
+    // (tests/modules/chatwoot-recover-takeover.test.ts); the stamp is asserted here, at the write.
+    //
+    // On the live path it changes nothing: a delivery that carries a version is refused by the
+    // version check before the fence is asked, and one that gets past it was written after the
+    // click, so its id is above this mark.
+    test("a versioned console write stamps the mark too", async () => {
       const conv = 8604;
       await deliver(conv, composerReply("eu assumo"));
       liveLatestMessageId.set(conv, messageSeq);
       expect(await handBack(conv)).toBe("returned");
-      expect(
-        (
-          await suDb.conversation.findFirstOrThrow({
-            where: { tenantId, chatwootConversationId: conv },
-            select: { consoleWriteAtMessageId: true },
-          })
-        ).consoleWriteAtMessageId,
-      ).toBeNull();
+      // Reconciled, not fallen back: the row carries a version from the live read.
+      const row = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: conv },
+        select: { consoleWriteAtMessageId: true, chatwootStatusAt: true },
+      });
+      expect(row.chatwootStatusAt).not.toBeNull();
+      expect(row.consoleWriteAtMessageId).toBe(messageSeq);
     });
   });
 });

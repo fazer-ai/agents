@@ -9,6 +9,7 @@ import {
   releaseAwayMessage,
 } from "@/modules/chatwoot/webhook";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { isOwnershipRead } from "../utils/ownership-read";
 
 // Issue #153, wiring end. The availability gate silenced the agent and told only the OPERATOR, so the
 // customer's side of a closed schedule was indistinguishable from the business ignoring them. What the
@@ -705,15 +706,7 @@ describe.skipIf(!dbUp)("out-of-hours away message (issue #153)", () => {
       query: {
         conversation: {
           async findUnique({ args, query }) {
-            // The fence's read is the narrow one: assigneeType + assigneeId + status + the status
-            // version, and nothing else. The mirror also reads assigneeId, but along with the row id
-            // and its clocks.
-            const sel = args.select as Record<string, unknown> | undefined;
-            if (
-              sel?.assigneeId === true &&
-              sel?.chatwootStatusAt === true &&
-              Object.keys(sel).length === 4
-            ) {
+            if (isOwnershipRead(args.select)) {
               fenceReads += 1;
               throw new Error("ownership read exploded");
             }

@@ -312,6 +312,13 @@ export interface LiveConversationState {
   // that wrote newer state without it would leave the row ahead of its own marks, and the next
   // delayed conversation event would look newer than them. null on a Chatwoot too old to send it.
   updatedAt: number | null;
+  // NOTE: The newest message id this payload names — the axis a console write that cannot be
+  // versioned is ordered by (issue #469, ./console-write-order.ts). The REST show renders
+  // `messages` (the `dashboard_seed_message`: the newest renderable message, seeded as the
+  // dashboard's pagination cursor) and `last_non_activity_message`; the highest id across both is
+  // taken, because each is a message that DEMONSTRABLY exists and this mark may only ever be too
+  // low. null when the payload names none.
+  latestMessageId: number | null;
 }
 
 export function parseLiveConversation(
@@ -339,7 +346,33 @@ export function parseLiveConversation(
     assigneeName: assignee ? str(assignee.name) : null,
     lastActivityAt: activitySec !== null ? new Date(activitySec * 1000) : null,
     updatedAt: num(raw.updated_at),
+    latestMessageId: latestMessageId(raw),
   };
+}
+
+// The highest message id a conversation payload names, across the two lists the REST show renders.
+//
+// MEASURED against the fork (4.17.0) on the show endpoint: `messages` comes back as a ONE-element
+// array holding `dashboard_seed_message` — the newest renderable message, which doubles as the
+// dashboard's `before` cursor — and `last_non_activity_message` is an object holding the newest
+// message that is not an activity line. The two differ exactly when the newest message IS an
+// activity line, so reading both and taking the maximum keeps the answer at the newest message the
+// source actually has.
+//
+// Read defensively rather than by shape: this parses a payload from a deployment whose version is
+// not ours to choose, and a list that is absent, empty, or holds something other than a record
+// simply names no message. Too low is the safe direction for every caller
+// (./console-write-order.ts); a number invented from a malformed payload is not.
+function latestMessageId(raw: Record<string, unknown>): number | null {
+  let best: number | null = null;
+  const consider = (v: unknown): void => {
+    if (!isRecord(v)) return;
+    const id = num(v.id);
+    if (id !== null && (best === null || id > best)) best = id;
+  };
+  if (Array.isArray(raw.messages)) for (const m of raw.messages) consider(m);
+  consider(raw.last_non_activity_message);
+  return best;
 }
 
 // Attribution = source of truth. The bot owns a conversation only while NO human is assigned

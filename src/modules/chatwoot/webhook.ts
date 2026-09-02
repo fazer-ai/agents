@@ -574,6 +574,7 @@ const LEDGER_FILLABLE = [
   "inboundMessageId",
   "humanReplyShape",
   "routeAgentBotId",
+  "humanReplyMessageId",
 ] as const;
 
 interface LedgerFacts {
@@ -582,12 +583,17 @@ interface LedgerFacts {
   inboundMessageId: number | null;
   humanReplyShape: HumanReplyRoute | null;
   routeAgentBotId: number | null;
+  humanReplyMessageId: number | null;
 }
 
 function ledgerFactsOf(
   n: NormalizedChatwootEvent,
   routeAgentBotId: number | null,
 ): LedgerFacts {
+  // Asked ONCE and read twice below, because the two fields it decides are a pair: a row saying a
+  // takeover was owed while naming no message for it would leave the recovery's fence blank on the
+  // exact rows the fence exists for, and two calls are two chances to diverge.
+  const humanReplyShape = newHumanReplyShape(n);
   return {
     event: n.event,
     conversationId: n.conversationId,
@@ -601,7 +607,7 @@ function ledgerFactsOf(
     // the human-reply route, written before anything has read an inbox, so a process that dies in
     // the detached window still leaves behind the fact that a takeover was due. The provider half is
     // re-decided by the recovery, against the inbox as it stands then.
-    humanReplyShape: newHumanReplyShape(n),
+    humanReplyShape,
     // WHO the delivery was, which the payload cannot say and the recovery cannot re-derive. Chatwoot
     // fans a message to up to two bot routes and only the one holding the conversation passes the
     // gate, so a recovery that resolved the identity from the inbox would ask a stricter question
@@ -609,6 +615,14 @@ function ledgerFactsOf(
     // same refusal, reintroduced by the recovery, leaves the conversation the person answered with
     // the bot still on it.
     routeAgentBotId,
+    // WHICH MESSAGE it was about, which is what the recovery's fence orders by (issue #469). The
+    // payload is never stored (issue #228) and `inboundMessageId` is null here by construction — a
+    // colleague's reply is outgoing — so without this the recovery has no coordinate to compare
+    // against a hand-back an operator made in the half hour it waits, and walks it back.
+    //
+    // Written under the same condition as the shape above, from the same answer.
+    humanReplyMessageId:
+      humanReplyShape !== null ? (n.message?.id ?? null) : null,
   };
 }
 
@@ -4064,6 +4078,7 @@ export async function processChatwootDelivery(
       ourAgentBotId: params.agentBotId,
       agentId: rt.agentId,
       decidedAtVersion: n.conversationUpdatedAt ?? null,
+      decidedAtMessageId: n.message?.id ?? null,
       conversationRowId: mirror.conversationRowId,
       lastEventAt: mirror.lastEventAt,
       base,

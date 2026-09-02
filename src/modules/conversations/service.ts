@@ -21,6 +21,7 @@ import {
 import { episodeTestActivatedAt } from "@/modules/channel-redirect/episode";
 import { readChannelRedirectConfig } from "@/modules/channel-redirect/service";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
+import { consoleWriteMark } from "@/modules/chatwoot/console-write-order";
 import {
   type LoadChatwootClientDeps,
   loadAgentBot,
@@ -28,6 +29,7 @@ import {
 } from "@/modules/chatwoot/instance";
 import {
   heldByAnotherParty,
+  type LiveConversationState,
   parseLiveConversation,
 } from "@/modules/chatwoot/normalize";
 import { reconcileMirrorFromLive } from "@/modules/chatwoot/reconcile";
@@ -711,12 +713,16 @@ async function mirrorConsoleWrite(
       }),
     );
   }
-  // Held outside the try so a throw after the read still hands back what was seen.
+  // Held outside the try so a throw after the read still hands back what was seen. `observedLive` is
+  // the same read kept whole, for the ordering mark below: `observed` is the assignee triple a
+  // caller acts on, and narrowing to it here was what left the mark with nothing to read.
   let observed: ConsoleWriteMirror["observed"] = null;
+  let observedLive: LiveConversationState | null = null;
   try {
     const live = parseLiveConversation(
       await client.getConversation(conv.chatwootConversationId),
     );
+    observedLive = live;
     if (live) {
       observed = {
         assigneeType: live.assigneeType,
@@ -788,10 +794,36 @@ async function mirrorConsoleWrite(
               ? observed.assigneeName
               : null,
         };
-  // NOTE: This write claims no version, and nothing else here does either — so the human-reply
-  // takeover's freshness check has nothing to compare and a delivery Chatwoot serialized BEFORE the
-  // operator's click undoes it (issue #469). The status claim of issue #436 does not cover this: it
-  // fences a transition still on the wire, and by the time this runs Chatwoot has already decided.
+  // THIS WRITE CLAIMS NO VERSION, and nothing else on this branch does either — the toggle and the
+  // assignment endpoints render no `updated_at` (issue #77) and the read that would have supplied
+  // one is the read that just failed. So the ordering marks stay where the pre-click state left
+  // them, and the human-reply takeover's freshness check, which compares a delivery against one of
+  // them, lets a payload Chatwoot serialized BEFORE the operator's click pass and undo it.
+  //
+  // The status claim of issue #436 does not cover it and was measured not to: it fences a
+  // transition still on the wire, and by the time this runs Chatwoot has already decided.
+  //
+  // WHAT DOES is the source's own message sequence (issue #469). The mark below says which message
+  // Chatwoot already had when this write was made, so the takeover can tell a reply that predates
+  // the click from one typed after it — the distinction a deadline cannot draw. It is stamped in a
+  // statement of its own because it must never move BACKWARDS: two console writes are separate
+  // requests, nothing serializes them, and an older one committing last would hand the fence a mark
+  // that no longer describes the newest click. `GREATEST` ignores a NULL, so the first write stamps
+  // its own value.
+  //
+  // Only from a read that named a message. A failed read leaves the previous mark standing, which
+  // is the honest answer: this side saw nothing new, and an older mark can only ever refuse less.
+  const mark = consoleWriteMark(observedLive);
+  if (mark !== null) {
+    await runScopedOn(
+      base,
+      ctx,
+      (db) => db.$executeRaw`
+      UPDATE conversations
+         SET console_write_at_message_id = GREATEST(console_write_at_message_id, ${mark})
+       WHERE id = ${id}`,
+    );
+  }
   await updateMirror(ctx, base, id, { ...fallback, ...named });
   return { state: null, observed };
 }

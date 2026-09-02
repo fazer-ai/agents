@@ -4,13 +4,17 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { setPublisher } from "@/api/features/realtime/realtime.service";
 import { encryptJson } from "@/api/lib/crypto";
 import { createChatwootClient } from "@/modules/chatwoot/client";
-import { claimOpenForHumanQueue } from "@/modules/chatwoot/human-takeover";
+import {
+  claimOpenForHumanQueue,
+  OWNERSHIP_PROJECTION,
+} from "@/modules/chatwoot/human-takeover";
 import {
   normalizeChatwootEvent,
   shouldBotHandle,
 } from "@/modules/chatwoot/normalize";
 import { STATUS_CLAIM_TTL_MS } from "@/modules/chatwoot/status-claim";
 import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
+import { returnConversationToAgent } from "@/modules/conversations/service";
 import { isFollowUpLive } from "@/modules/followups/eligibility";
 import { POLL_DEADLINE_MS } from "@/tests/utils/poll";
 import { seedChatwootInstance } from "../utils/chatwoot";
@@ -78,6 +82,11 @@ const pinnedReadVersion = new Map<number, number>();
 const failingToggles = new Set<number>();
 // Who holds each conversation in the stub's Chatwoot, when it is not our own bot.
 const liveHolder = new Map<number, number>();
+// The newest message id the stub's Chatwoot has for a conversation, which is what the REST show
+// renders as `messages` and what a console write ordered by the source's sequence stamps (issue
+// #469). Driven by the fixture the same way `liveStatus` is: the deliveries below move it, so the
+// mark the console reads is one the test never writes by hand.
+const liveLatestMessageId = new Map<number, number>();
 // Work that runs while the client is being built, which is where the real round trip is: building a
 // client resolves the base URL's host. It is the window a person can claim, resolve or reassign the
 // conversation in, and the only place a test can stand in it.
@@ -127,6 +136,12 @@ const stubFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       ...(unversionedReads.has(id)
         ? {}
         : { updated_at: pinnedReadVersion.get(id) ?? stamp + 0.5 }),
+      // The one-element array the show partial renders (`dashboard_seed_message`), which has been
+      // there since 2020 and is therefore present on exactly the deployments too old to render
+      // `updated_at` above.
+      ...(liveLatestMessageId.has(id)
+        ? { messages: [{ id: liveLatestMessageId.get(id) }] }
+        : {}),
     });
   }
   return new Response(JSON.stringify({}), {
@@ -147,6 +162,31 @@ const deps = {
     });
   },
 };
+
+// WHAT THE FENCE ASKS THE ROW, as a fact of its own. The probes in chatwoot-reset and
+// availability-away identify the fence's read by comparing against `OWNERSHIP_PROJECTION`, which is
+// what keeps them injecting when a column is ADDED — and costs them the other half: a column
+// REMOVED would move the definition with them and stay green. So that half is asserted here, where
+// it is a statement about the fence rather than about a probe.
+//
+// Each entry names the question it answers, and none of them is decoration:
+describe("the ownership fence's projection", () => {
+  test("asks for the four facts the decision needs, and nothing more", () => {
+    expect(Object.keys(OWNERSHIP_PROJECTION).sort()).toEqual(
+      [
+        // who holds it — the pair, since User and AgentBot are separate id namespaces
+        "assigneeId",
+        "assigneeType",
+        // where the last unversioned console write stands in the source's sequence (issue #469)
+        "consoleWriteAtMessageId",
+        // the status version, which orders this decision against a later one
+        "chatwootStatusAt",
+        // whether it is still open to the bot at all
+        "status",
+      ].sort(),
+    );
+  });
+});
 
 describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
   beforeAll(async () => {
@@ -298,6 +338,8 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     deliverySeq += 1;
     messageSeq += 1;
     const event = (over.event as string) ?? "message_created";
+    // The stub's Chatwoot now holds this message, which is what a live read after it would see.
+    liveLatestMessageId.set(convId, messageSeq);
     const n = normalizeChatwootEvent({
       event,
       id: messageSeq,
@@ -1288,4 +1330,231 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
   function deliverReplyOff() {
     return deviceReply("já te respondo");
   }
+
+  // AN OPERATOR ASKED FOR THE AGENT BACK, and a reply frozen before that click must not undo it
+  // (issue #469).
+  //
+  // Driven through the real console function, not through a hand-written row: the defect lives in
+  // what `mirrorConsoleWrite` writes when its live read cannot be versioned, so a fixture that
+  // stamped the mark itself would be testing the fence against an input the console never produces.
+  //
+  // `unversionedReads` is what makes the branch reachable, and it is the deployment the issue names
+  // as the common case: a Chatwoot older than 4.0.2 renders no `updated_at` at all, so for it the
+  // fallback is not the exceptional path, it is every path.
+  describe("an unversioned hand-back outranks a reply frozen before it", () => {
+    // The click, with the delivery's payload captured BEFORE it — which is the ordering the issue is
+    // about: Chatwoot serialized the reply, then the operator clicked, then the reply arrived.
+    async function handBack(convId: number): Promise<string> {
+      const row = await convRow(convId);
+      if (!row) throw new Error("no mirrored conversation");
+      return returnConversationToAgent(
+        { tenantId, userId: null, role: "TENANT_ADMIN" },
+        row.id,
+        deps,
+        appDb,
+      );
+    }
+
+    test("the reply that was already there does not reopen the conversation", async () => {
+      const conv = 8600;
+      unversionedReads.add(conv);
+      try {
+        // A first human reply, so the conversation is `open` and the mirror knows it — the state an
+        // operator is looking at when they click.
+        await deliver(conv, composerReply("eu assumo"));
+        expect(liveStatus.get(conv)).toBe("open");
+        // The reply Chatwoot froze next, still on the wire. Built here and delivered after the
+        // click, which is the whole of the race.
+        messageSeq += 1;
+        const frozenId = messageSeq;
+        const frozen = normalizeChatwootEvent({
+          event: "message_created",
+          id: frozenId,
+          private: false,
+          ...composerReply("já respondi por aqui"),
+          conversation: conversation(conv),
+        });
+        if (!frozen) throw new Error("payload did not normalize");
+        liveLatestMessageId.set(conv, frozenId);
+
+        expect(await handBack(conv)).toBe("returned");
+        expect(liveStatus.get(conv)).toBe("pending");
+        const afterClick = await convRow(conv);
+        expect(afterClick?.status).toBe("pending");
+        // The mark the console left, read off the row rather than assumed: it names the message the
+        // source already had, which is the frozen delivery's own.
+        const marked = await suDb.conversation.findFirstOrThrow({
+          where: { tenantId, chatwootConversationId: conv },
+          select: { consoleWriteAtMessageId: true, chatwootStatusAt: true },
+        });
+        expect(marked.consoleWriteAtMessageId).toBe(frozenId);
+
+        deliverySeq += 1;
+        const delivery = await suDb.chatwootWebhookDelivery.create({
+          data: {
+            tenantId,
+            chatwootInstanceId: instanceId,
+            deliveryId: `hr-${process.pid}-${deliverySeq}`,
+            event: "message_created",
+            status: "PENDING",
+          },
+          select: { id: true },
+        });
+        // From here on, every reopen this delivery could ask for. The count is taken as a WINDOW
+        // rather than over the whole run, because the first reply legitimately opened this
+        // conversation and a total would be one either way.
+        const before = posted.length;
+        await processChatwootDelivery({
+          tenantId,
+          instanceId,
+          deliveryRowId: delivery.id,
+          agentBotId: OUR_BOT,
+          normalized: frozen,
+          deps,
+          base: appDb,
+        });
+
+        // THE EFFECT, read off the stub's Chatwoot and off the row: the operator's click stands.
+        expect(liveStatus.get(conv)).toBe("pending");
+        const after = await convRow(conv);
+        expect(after?.status).toBe("pending");
+        // And nothing was even ASKED of Chatwoot, which is what says the takeover stood down at the
+        // fence rather than being undone by something downstream of it.
+        expect(
+          posted.slice(before).filter((p) => p.url.includes("/toggle_status")),
+        ).toEqual([]);
+      } finally {
+        unversionedReads.delete(conv);
+      }
+    });
+
+    // The other direction, and the reason a deadline could not be the instrument: a colleague who
+    // answers AFTER the operator hands back is a real handover, and the agent has to step off.
+    test("a reply typed after the click still takes the conversation over", async () => {
+      const conv = 8601;
+      unversionedReads.add(conv);
+      try {
+        await deliver(conv, composerReply("eu assumo"));
+        expect(await handBack(conv)).toBe("returned");
+        expect(liveStatus.get(conv)).toBe("pending");
+
+        await deliver(conv, composerReply("voltei, deixa comigo"));
+
+        expect(liveStatus.get(conv)).toBe("open");
+        const after = await convRow(conv);
+        expect(after?.status).toBe("open");
+      } finally {
+        unversionedReads.delete(conv);
+      }
+    });
+
+    // THE HALF THIS DOES NOT REACH, asserted so it cannot be read as covered. A live read that fails
+    // outright names no message, so there is no mark, and the fence has nothing to order — the
+    // behaviour that shipped before this file existed. The id the mark would need is the id of a
+    // message Chatwoot has and we have not seen, so no watermark of ours can supply it.
+    test("a console read that failed outright leaves the gap open", async () => {
+      const conv = 8602;
+      failingReads.add(conv);
+      try {
+        await deliver(conv, composerReply("eu assumo"));
+        messageSeq += 1;
+        const frozenId = messageSeq;
+        const frozen = normalizeChatwootEvent({
+          event: "message_created",
+          id: frozenId,
+          private: false,
+          ...composerReply("já respondi por aqui"),
+          conversation: conversation(conv),
+        });
+        if (!frozen) throw new Error("payload did not normalize");
+        liveLatestMessageId.set(conv, frozenId);
+
+        expect(await handBack(conv)).toBe("returned");
+        const marked = await suDb.conversation.findFirstOrThrow({
+          where: { tenantId, chatwootConversationId: conv },
+          select: { consoleWriteAtMessageId: true },
+        });
+        expect(marked.consoleWriteAtMessageId).toBeNull();
+
+        deliverySeq += 1;
+        const delivery = await suDb.chatwootWebhookDelivery.create({
+          data: {
+            tenantId,
+            chatwootInstanceId: instanceId,
+            deliveryId: `hr-${process.pid}-${deliverySeq}`,
+            event: "message_created",
+            status: "PENDING",
+          },
+          select: { id: true },
+        });
+        await processChatwootDelivery({
+          tenantId,
+          instanceId,
+          deliveryRowId: delivery.id,
+          agentBotId: OUR_BOT,
+          normalized: frozen,
+          deps,
+          base: appDb,
+        });
+        // Still the defect, and named as such: with no coordinate on either side, the reply wins.
+        expect(liveStatus.get(conv)).toBe("open");
+      } finally {
+        failingReads.delete(conv);
+      }
+    });
+
+    // NEVER BACKWARDS. Two console writes are separate requests and nothing serializes them, so the
+    // older one can commit last; assigned rather than GREATEST it would move the mark back and let
+    // every reply between the two clicks through.
+    test("an older console write cannot move the mark back", async () => {
+      const conv = 8603;
+      unversionedReads.add(conv);
+      try {
+        await deliver(conv, composerReply("eu assumo"));
+        const newest = messageSeq;
+        liveLatestMessageId.set(conv, newest);
+        await handBack(conv);
+        expect(
+          (
+            await suDb.conversation.findFirstOrThrow({
+              where: { tenantId, chatwootConversationId: conv },
+              select: { consoleWriteAtMessageId: true },
+            })
+          ).consoleWriteAtMessageId,
+        ).toBe(newest);
+
+        // The straggler: a read that came back naming an OLDER message.
+        liveLatestMessageId.set(conv, newest - 5);
+        await handBack(conv);
+        expect(
+          (
+            await suDb.conversation.findFirstOrThrow({
+              where: { tenantId, chatwootConversationId: conv },
+              select: { consoleWriteAtMessageId: true },
+            })
+          ).consoleWriteAtMessageId,
+        ).toBe(newest);
+      } finally {
+        unversionedReads.delete(conv);
+      }
+    });
+
+    // A VERSIONED Chatwoot reconciles instead of falling back, so it stamps no mark at all — the
+    // ordering there is the one that already worked, and a mark written on that path would be a
+    // second fence nobody asked for.
+    test("a versioned console write stamps no mark", async () => {
+      const conv = 8604;
+      await deliver(conv, composerReply("eu assumo"));
+      liveLatestMessageId.set(conv, messageSeq);
+      expect(await handBack(conv)).toBe("returned");
+      expect(
+        (
+          await suDb.conversation.findFirstOrThrow({
+            where: { tenantId, chatwootConversationId: conv },
+            select: { consoleWriteAtMessageId: true },
+          })
+        ).consoleWriteAtMessageId,
+      ).toBeNull();
+    });
+  });
 });

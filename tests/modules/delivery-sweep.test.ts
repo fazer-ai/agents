@@ -1807,11 +1807,15 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
         conversationId: true,
         humanReplyShape: true,
         routeAgentBotId: true,
+        humanReplyMessageId: true,
       },
     });
     expect(filled.humanReplyShape).toBe("composer");
     // The route the delivery arrived on, which the recovery asks ownership about (round 1, P1).
     expect(filled.routeAgentBotId).toBe(AGENT_BOT_ID);
+    // And the message the fence orders by, filled by the same pass — a rollout row that gained the
+    // shape and not the coordinate would be a row the recovery reads as owed and cannot fence.
+    expect(filled.humanReplyMessageId).toBe(messageId + 950);
     // And the column that was already right is untouched.
     expect(filled.conversationId).toBe(convId);
     await suDb.chatwootWebhookDelivery.delete({ where: { id: partial.id } });
@@ -2068,6 +2072,10 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
       deliveryId: `owed-composer-${process.pid}`,
     });
     expect(composer.humanReplyShape).toBe("composer");
+    // And WHICH message it was, the coordinate the recovery's fence orders by (issue #469). Written
+    // beside the shape and from the same answer, so a row can never say a takeover was owed while
+    // leaving the fence for it blank.
+    expect(composer.humanReplyMessageId).toBe(9941);
     // A reply typed on the paired phone, which the fork stores sender-less with the session marker.
     // Stored as a SHAPE and not as a verdict: whether it is a person or an echo of our own reply is
     // a question about the inbox's provider, and the recovery asks that one.
@@ -2080,6 +2088,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
       deliveryId: `owed-device-${process.pid}`,
     });
     expect(device.humanReplyShape).toBe("device");
+    expect(device.humanReplyMessageId).toBe(9942);
     // Our own reply coming back around. Same event, same direction, and nothing owed — the case the
     // classifier has always read as benign and still must.
     const ours = await deliverThrough(convId, 9943, "outgoing", {
@@ -2087,11 +2096,14 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
       deliveryId: `owed-bot-${process.pid}`,
     });
     expect(ours.humanReplyShape).toBeNull();
+    // Nothing owed, nothing to order: the message id is recorded only where a takeover was.
+    expect(ours.humanReplyMessageId).toBeNull();
     // And the customer's own message, which owes a TURN and not a side effect.
     const incoming = await deliverThrough(convId, 9944, "incoming", {
       deliveryId: `owed-incoming-${process.pid}`,
     });
     expect(incoming.humanReplyShape).toBeNull();
+    expect(incoming.humanReplyMessageId).toBeNull();
     expect(incoming.inboundMessageId).toBe(9944);
   });
 
@@ -2159,6 +2171,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
         claimedAt: true,
         receivedAt: true,
         humanReplyShape: true,
+        humanReplyMessageId: true,
       },
     });
   }

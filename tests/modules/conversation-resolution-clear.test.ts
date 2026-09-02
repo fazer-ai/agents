@@ -653,6 +653,7 @@ describe.skipIf(!dbUp)(
           assigneeName: null,
           lastActivityAt: new Date(updatedAt * 1000),
           updatedAt,
+          latestMessageId: null,
         },
         base: appDb,
       });

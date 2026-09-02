@@ -144,6 +144,7 @@ export async function recoverStrandedTakeover(
         conversationId: true,
         humanReplyShape: true,
         routeAgentBotId: true,
+        humanReplyMessageId: true,
       },
     }),
   );
@@ -302,6 +303,15 @@ export async function recoverStrandedTakeover(
       ourAgentBotId,
       agentId: bound.agentId,
       decidedAtVersion: null,
+      // AND NO MESSAGE COORDINATE EITHER, because the fence it feeds is one of the steps finishing
+      // skips — and it is skipped here for a reason rather than by omission. A hand-back writes
+      // `pending` on the ROW, which takes the conversation out of the `open`-under-a-pending-claim
+      // shape this branch is selected by, so the case the fence exists for goes down the ordinary
+      // path below and IS asked there. What reaching this branch with a console mark means instead
+      // is an operator who opened the conversation themselves, and finishing the toggle is exactly
+      // what that click asked for. Passing the id here was written first and the mutation battery
+      // showed it changed nothing: no test could tell it from null, because no test can.
+      decidedAtMessageId: null,
       conversationRowId: bound.conversationRowId,
       lastEventAt: bound.lastEventAt,
       // The row's own deadline, expired or not: it travels to the reconcile, which compares it for
@@ -340,6 +350,13 @@ export async function recoverStrandedTakeover(
     // hold a position, and the mark this would be compared against advances on every payload that
     // declares a status rather than only on the ones that change it.
     decidedAtVersion: null,
+    // THE OTHER AXIS IS NOT NULL, and it is what closes the half of #469 this path owns. The
+    // recovery runs at least half an hour after the delivery it rebuilds, so a hand-back an
+    // operator made in that stretch is exactly the write it must not walk back — and the ledger
+    // kept the one coordinate that says so, the message this takeover was about. A row an older
+    // build wrote names none, and there the fence has nothing to order, which is the behaviour that
+    // shipped with issue #439.
+    decidedAtMessageId: row.humanReplyMessageId,
     conversationRowId: bound.conversationRowId,
     lastEventAt: bound.lastEventAt,
     base,

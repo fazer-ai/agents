@@ -8,7 +8,6 @@ import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 import {
   conversationOwnershipNow,
-  retryHumanQueueToggle,
   runHumanReplyTakeover,
 } from "./human-takeover";
 import { agentBotChatwootId } from "./instance";
@@ -286,20 +285,33 @@ export async function recoverStrandedTakeover(
   // `pending` as the status the claim replaced stays in the predicate: it is what says the `open` on
   // this row came from this takeover rather than from some other claim a later build might take.
   if (bound.status === "open" && bound.statusClaimFrom === "pending") {
-    const landed = await retryHumanQueueToggle({
+    // FINISHING rather than deciding, through the SAME unit and not a second copy of it. The claim
+    // is written before the toggle (#430), so a process that died between the two left the row
+    // `open` from `pending` with Chatwoot never told; the ownership fence, asked again, would read
+    // our own write as somebody else's and stand down, the job would complete as an answer, and the
+    // delete-on-done row would take the only recovery with it.
+    //
+    // `pending` as the status the claim replaced is what says the `open` on this row came from THIS
+    // takeover rather than from some other claim a later build might take. The deadline is not asked
+    // about: it is 45 seconds and nothing reaches here before 30 minutes.
+    const finished = await runHumanReplyTakeover({
       tenantId,
       instanceId,
       conversationId,
+      route,
+      ourAgentBotId,
       agentId: bound.agentId,
-      // The row's own deadline, expired or not: `reconcileMirrorFromLive` compares it for EQUALITY
-      // against the stored one to know the write is the claim's owner, and a claim past its deadline
-      // refuses nothing anyway (status-claim.ts).
-      claimUntil: bound.statusClaimUntil,
+      decidedAtVersion: null,
+      conversationRowId: bound.conversationRowId,
+      lastEventAt: bound.lastEventAt,
+      // The row's own deadline, expired or not: it travels to the reconcile, which compares it for
+      // equality to know the write is the claim's owner.
+      heldClaimUntil: bound.statusClaimUntil,
       base,
       makeClient: params.makeClient,
     });
-    if (landed === "refused") return "not-owed";
-    if (landed === "failed") return "failed";
+    if (finished === "refused") return "not-owed";
+    if (finished === "failed") return "failed";
     logger.info(
       "chatwoot takeover recovery: %s finished a takeover whose toggle had not landed (conversation %d)",
       row.deliveryId,

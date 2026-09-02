@@ -34,6 +34,7 @@ import {
 import { loadAgentBot, loadChatwootClient } from "./instance";
 import {
   type HumanReplyRoute,
+  heldByAnotherParty,
   parseLiveConversation,
   shouldBotHandle,
 } from "./normalize";
@@ -270,117 +271,6 @@ export async function openForHumanQueue(p: {
   }
 }
 
-// FINISHING A TAKEOVER WHOSE REMOTE HALF DID NOT LAND, which is the one state the fence above cannot
-// re-enter. The claim is written before the toggle deliberately (#430: every reader that decides
-// whether the agent may speak reads the row, so it has to move first), and a toggle that then throws
-// leaves the row `open` under a live claim while Chatwoot may still say `pending`. Asked again, the
-// fence reads its OWN write as "somebody else moved the conversation on" and stands down.
-//
-// So the retry is a different question — not "may I take this over" but "the local half is done, is
-// the remote half?" — and it skips exactly the two steps that already happened: the ownership fence,
-// which our own claim would now fail, and the claim itself, which is ours and still live. What is
-// left is idempotent in both directions: a conversation Chatwoot really did leave `pending` moves,
-// and one it had already opened is toggled to the status it already holds.
-//
-// WHAT AUTHORISES IT is the live read below, not the claim's deadline. The claim stands for 45
-// seconds and a delivery is not called stranded for 30 minutes, so anything reaching here does so
-// long after the deadline; gating on liveness would make this a branch that never runs. The local
-// `open` says a takeover claimed the conversation, and Chatwoot's own answer says whether the
-// transition landed — `pending` there is the signature of the write that was lost.
-export async function retryHumanQueueToggle(p: {
-  tenantId: bigint;
-  instanceId: bigint;
-  conversationId: number;
-  agentId: bigint;
-  // The claim this is finishing, which the reconcile is allowed to write THROUGH — the row's stored
-  // deadline, compared there for equality, expired or not. Null on a row that carries none, where
-  // the reconcile simply decides by the ordinary rule.
-  claimUntil: Date | null;
-  base: PrismaClient;
-  makeClient?: RuntimeDeps["makeClient"];
-}): Promise<HumanQueueOutcome> {
-  const convLabel = String(p.conversationId);
-  try {
-    const bot = await loadAgentBot(p.tenantId, p.instanceId, p.agentId, p.base);
-    // Same reason as the fence's: without a bot row every call goes out with an empty token (#79),
-    // so there is nothing to retry with, and it is known before anything is written.
-    if (!bot) return "refused";
-    const client = await loadChatwootClient(p.tenantId, p.instanceId, {
-      base: p.base,
-      botToken: bot.accessToken,
-      makeClient: p.makeClient,
-    });
-    // CHATWOOT FIRST, the same rule the fence itself follows and for the same measured reason: the
-    // row can be behind, and the act guarded here is a write to Chatwoot. Between the failed attempt
-    // and this retry an operator can resolve or snooze the conversation, and their own webhook is
-    // still in flight — so the row still says `open` under our claim while Chatwoot has moved on,
-    // and an unconditional toggle reopens what they just closed.
-    //
-    // `pending` is the ONLY state this writes into, which is narrower than the fence's rule on
-    // purpose: this is not deciding a takeover, it is finishing one, so the only thing it may
-    // correct is the transition that did not land. `open` means the first attempt reached Chatwoot
-    // after all and only its response was lost — nothing to toggle, and the version below is what
-    // that attempt still owes.
-    //
-    // An UNREADABLE answer refuses here, where the fence lets one through. The fence's silence is
-    // "nobody is known to have taken this" and it still had a mirror CAS behind it; here there is no
-    // second gate, and writing blind is the one thing this must not do.
-    //
-    // NOTE: deleting this branch leaves the suite green, and the reason is worth stating rather than
-    // testing around: the next line would then dereference `null` and the catch below reports the
-    // same `failed` with no toggle sent. Same outcome, reached by an exception — what the branch buys
-    // is the line an operator reads, which would otherwise be a TypeError's stack.
-    const before = parseLiveConversation(
-      await client.getConversation(p.conversationId),
-    );
-    if (before === null) {
-      logger.warn(
-        "chatwoot: the human-queue toggle could not be retried (conv=%s) — Chatwoot did not answer",
-        convLabel,
-      );
-      return "failed";
-    }
-    if (before.status !== "pending" && before.status !== "open") {
-      logger.info(
-        "chatwoot: the human-queue toggle is no longer owed (conv=%s) — Chatwoot has moved the conversation on (%s)",
-        convLabel,
-        before.status,
-      );
-      return "refused";
-    }
-    if (before.status === "pending") {
-      await client.toggleStatus(p.conversationId, "open");
-    }
-    // And the version, exactly as the first attempt would have earned it. A read with none is
-    // discarded rather than written blind: the row already says `open` without it.
-    const live = parseLiveConversation(
-      await client.getConversation(p.conversationId),
-    );
-    if (live && live.updatedAt !== null) {
-      await reconcileMirrorFromLive({
-        tenantId: p.tenantId,
-        instanceId: p.instanceId,
-        conversationId: p.conversationId,
-        live,
-        ownsStatusClaim: p.claimUntil,
-        base: p.base,
-      });
-    }
-    logger.info(
-      "chatwoot: the human-queue toggle was retried and landed (conv=%s)",
-      convLabel,
-    );
-    return "opened";
-  } catch (err) {
-    logger.warn(
-      "chatwoot: retrying the human-queue toggle failed (conv=%s): %s",
-      convLabel,
-      errMsg(err),
-    );
-    return "failed";
-  }
-}
-
 export interface HumanReplyTakeoverParams {
   tenantId: bigint;
   instanceId: bigint;
@@ -408,6 +298,24 @@ export interface HumanReplyTakeoverParams {
   // The client factory, injectable exactly the way the runtime injects it, so a test drives this
   // unit against a fake Chatwoot without a second seam.
   makeClient?: RuntimeDeps["makeClient"];
+  // FINISHING A TAKEOVER WHOSE REMOTE HALF DID NOT LAND, rather than deciding a new one. Present
+  // (even as `null`) puts this in that mode; absent is the ordinary live delivery.
+  //
+  // The claim is written before the toggle (#430), so a process that died between the two — the
+  // widest gap in the block, and therefore the likeliest death — left the row `open` from `pending`
+  // with Chatwoot never told. Two steps then do not apply and exactly two: the mirror's ownership
+  // read, which would see our own `open` and call it somebody else's, and the claim CAS, which would
+  // find the row already moved. Everything else is the same code, because everything else is the
+  // same question — and a version of this that reimplemented "just the toggle and the reconcile"
+  // spent three review rounds rediscovering, one at a time, the things the fence does that it did
+  // not: the live ownership check, the flow line, and the fact that it could never run at all.
+  //
+  // The value is the row's stored deadline, expired or not, and it travels only to the reconcile,
+  // which compares it for EQUALITY to know the write is the claim's owner. It is NOT a liveness
+  // test: the claim stands for 45 seconds (STATUS_CLAIM_TTL_MS) and the sweep does not call a
+  // delivery stranded for 30 minutes (STALE_AFTER_MS), so anything finishing one arrives long after
+  // the deadline. What authorises the write is the live read, as it is in the other mode.
+  heldClaimUntil?: Date | null;
 }
 
 // Says WHICH of the three happened, because the two callers need different amounts of it. The live
@@ -423,6 +331,9 @@ export async function runHumanReplyTakeover(
   // do. Every road that does not reach the open leaves it at the failure it started on: the one
   // thing that can reach the catch below is the persona lookup, which throws rather than refusing.
   let outcome: HumanQueueOutcome = "failed";
+  // Present at all — `null` included — is the finishing mode. A boolean of its own would be a second
+  // thing to keep in step with the value it describes.
+  const finishing = p.heldClaimUntil !== undefined;
   try {
     // Resolved ONCE and handed to both halves: the token the client speaks with, and the id the
     // ownership question compares against. They are the same lookup for the reason the gate's own
@@ -495,22 +406,59 @@ export async function runHumanReplyTakeover(
             //
             // An UNREADABLE answer does not block: silence is not evidence that somebody took the
             // conversation, and the mirror fence below is the reading this path had before.
+            //
+            // AN UNREADABLE ANSWER DOES NOT BLOCK when a takeover is being DECIDED: silence is not
+            // evidence that somebody took the conversation, and the mirror fence below is the
+            // reading this path had before. When one is being FINISHED it does block, and it blocks
+            // by throwing: there is no mirror fence left to fall back on in that mode — our own
+            // `open` is what it would read — so a blind write is the one thing left to prevent, and
+            // an unknown is a `failed` for the scheduler rather than a verdict.
+            //
+            // TWO SHAPES OF "no answer", and only one of them is an exception. A refused or timed
+            // out request throws on its own here (no `.catch` in this mode). A 200 whose body is not
+            // a conversation — a proxy's error page, a truncated response — parses to `null`, and
+            // that is what the guard below is for.
             const live = parseLiveConversation(
-              await (await client())
-                .getConversation(conversationId)
-                .catch(() => null),
+              finishing
+                ? await (await client()).getConversation(conversationId)
+                : await (await client())
+                    .getConversation(conversationId)
+                    .catch(() => null),
             );
-            if (
-              live !== null &&
-              !shouldBotHandle(
-                {
-                  assigneeType: live.assigneeType,
-                  assigneeId: live.assigneeId,
-                  status: live.status,
-                },
-                { ourAgentBotId: p.ourAgentBotId },
-              )
-            ) {
+            if (finishing && live === null) {
+              throw new Error("Chatwoot did not answer");
+            }
+            // THE SAME OWNERSHIP QUESTION IN BOTH MODES, which is the whole of round 4's P1: a
+            // conversation Chatwoot reassigned while the row sat stranded is still `pending` there,
+            // and a check that read only the STATUS would toggle it out of another bot's or
+            // person's queue.
+            //
+            // The STATUS half is where the two modes legitimately differ, and it is the only place
+            // they do. Deciding a takeover means the conversation must still be `pending` — that is
+            // `shouldBotHandle`, unchanged. FINISHING one also accepts `open`, because that is what
+            // our own first attempt would have left if it reached Chatwoot and only its response was
+            // lost. The POSSESSION half is literally the same predicate in both, not a second
+            // spelling of it.
+            const stillPossible =
+              live === null ||
+              (finishing
+                ? (live.status === "pending" || live.status === "open") &&
+                  !heldByAnotherParty(
+                    {
+                      assigneeType: live.assigneeType,
+                      assigneeId: live.assigneeId,
+                    },
+                    { ourAgentBotId: p.ourAgentBotId },
+                  )
+                : shouldBotHandle(
+                    {
+                      assigneeType: live.assigneeType,
+                      assigneeId: live.assigneeId,
+                      status: live.status,
+                    },
+                    { ourAgentBotId: p.ourAgentBotId },
+                  ));
+            if (live !== null && !stillPossible) {
               logger.info(
                 "chatwoot: %s handoff skipped (conv=%s) — Chatwoot already moved the conversation on (%s)",
                 `human reply (${p.route})`,
@@ -518,6 +466,24 @@ export async function runHumanReplyTakeover(
                 live.status,
               );
               return false;
+            }
+            // THE TWO STEPS THAT DO NOT APPLY WHEN FINISHING, and nothing else is skipped. The
+            // mirror says `open` because WE wrote it, so the ownership read would answer about our
+            // own write; and the claim CAS is a `pending -> open` that has already happened.
+            if (finishing) {
+              claimHeld = p.heldClaimUntil ?? null;
+              if (p.conversationRowId !== null && live !== null) {
+                broadcastConversationEvent(p.tenantId, {
+                  conversationId: String(p.conversationRowId),
+                  status: "open",
+                  assigneeId: live.assigneeId,
+                  assigneeType: live.assigneeType,
+                  lastEventAt: p.lastEventAt
+                    ? p.lastEventAt.toISOString()
+                    : null,
+                });
+              }
+              return true;
             }
             const now = await conversationOwnershipNow({
               tenantId: p.tenantId,

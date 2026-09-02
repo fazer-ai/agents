@@ -6,7 +6,9 @@ import { createChatwootClient } from "@/modules/chatwoot/client";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import { recoverStrandedTakeover } from "@/modules/chatwoot/recover-takeover";
 import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
+import { POLL_DEADLINE_MS } from "@/tests/utils/poll";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { flowLogRows } from "../utils/flowlog";
 
 // A PROCESS DEATH LOST THE TAKEOVER, and the recovery re-runs it (issue #439).
 //
@@ -64,6 +66,10 @@ const liveStatus = new Map<number, string>();
 const liveHolder = new Map<number, number>();
 // Conversations whose REST show fails outright, which is a slow or broken Chatwoot.
 const failingReads = new Set<number>();
+// Conversations whose REST show answers 200 with a body that does not parse as a conversation, which
+// is what a proxy's error page or a truncated response looks like from here: not an exception, and
+// not an answer either.
+const unparseableReads = new Set<number>();
 const failingToggles = new Set<number>();
 const posted: { url: string; method: string; body: unknown }[] = [];
 const realFetch = globalThis.fetch;
@@ -83,6 +89,7 @@ const stubFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   if (show && method === "GET") {
     const id = Number(show[1]);
     if (failingReads.has(id)) return new Response("nope", { status: 502 });
+    if (unparseableReads.has(id)) return Response.json({ nothing: true });
     stamp += 1;
     return Response.json({
       id,
@@ -637,6 +644,47 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
     expect(togglesFor(convId)).toHaveLength(0);
   });
 
+  test("a finished takeover leaves the operator the same trail a live one does", async () => {
+    // ROUND 4, P2. The sweep deliberately writes no line for an owed takeover — nothing was lost, so
+    // nothing may page anybody — which means the ONLY durable record that a person took this
+    // conversation is the `handoff` line the takeover itself writes. Finished through a second
+    // implementation it was not written at all, and the operator was left with an agent that stopped
+    // answering and nothing anywhere saying why. Running the same unit is what fixes it.
+    const convId = 9123;
+    const rowId = await seedStranded(convId, { claimHeldMs: -30 * 60 * 1000 });
+    liveStatus.set(convId, "pending");
+
+    expect(
+      await recoverStrandedTakeover({
+        tenantId,
+        deliveryRowId: rowId,
+        base: appDb,
+        makeClient,
+      }),
+    ).toBe("recovered");
+
+    const conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+      select: { id: true },
+    });
+    const deadline = Date.now() + POLL_DEADLINE_MS;
+    let rows: Array<{ detail: unknown }> = [];
+    while (Date.now() < deadline) {
+      rows = await flowLogRows(suDb, {
+        where: { tenantId, conversationId: conv.id, stage: "handoff" },
+        select: { detail: true },
+      });
+      if (rows.length > 0) break;
+      await Bun.sleep(25);
+    }
+    expect(rows).toHaveLength(1);
+    const line = rows[0];
+    if (line === undefined) throw new Error("no handoff line was written");
+    // `via` names the route, which is what an operator reads to know where to look — the CRM or
+    // somebody's phone.
+    expect((line.detail as Record<string, unknown>).via).toBe("composer");
+  });
+
   test("a claim long past its deadline is still the write this recovery finishes", async () => {
     // ROUND 3, P1, and it is arithmetic rather than judgement. Round 1 gated the retry on a LIVE
     // claim; the claim stands for 45 seconds (STATUS_CLAIM_TTL_MS) and the sweep does not call a
@@ -739,12 +787,18 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
     expect(liveStatus.get(convId)).toBe("resolved");
   });
 
-  test("a first attempt whose RESPONSE was lost needs the version, not a second toggle", async () => {
+  test("a first attempt whose RESPONSE was lost is finished, not refused", async () => {
     // The other thing the live read tells apart: Chatwoot committed the transition and only the
-    // answer was lost, so the conversation is already `open` there. Nothing to toggle — what the
-    // first attempt still owes is the version, which the reconcile writes through the claim.
+    // answer was lost, so the conversation is already `open` there. That is the one status a
+    // takeover being DECIDED would refuse and one being FINISHED must accept — it is our own write
+    // coming back. What the first attempt still owes is the version, which the reconcile writes
+    // through the claim it named.
+    //
+    // The toggle runs anyway and is deliberately not asserted away: `toggle_status: open` on an
+    // already-open conversation is a no-op at Chatwoot, and a branch to skip it would be a second
+    // reading of a state the fence above has already decided.
     const convId = 9119;
-    const rowId = await seedStranded(convId, { claimHeldMs: 30_000 });
+    const rowId = await seedStranded(convId, { claimHeldMs: -30 * 60 * 1000 });
     liveStatus.set(convId, "open");
 
     expect(
@@ -755,8 +809,60 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
         makeClient,
       }),
     ).toBe("recovered");
-    expect(togglesFor(convId)).toHaveLength(0);
+    expect(liveStatus.get(convId)).toBe("open");
     expect((await convRow(convId)).chatwootStatusAt).not.toBeNull();
+  });
+
+  test("a conversation Chatwoot reassigned is not toggled out of somebody else's queue", async () => {
+    // ROUND 4, P1. The row says `open` under our claim and Chatwoot still says `pending`, which is
+    // the signature of the write that was lost — but `pending` at Chatwoot is also where a
+    // conversation sits after being handed to ANOTHER bot or person. A check that read only the
+    // status would toggle it into the open queue on their behalf.
+    //
+    // The possession half of the fence is the same predicate in both modes; only the STATUS domain
+    // differs, and that is what this pins.
+    const convId = 9122;
+    const rowId = await seedStranded(convId, { claimHeldMs: -30 * 60 * 1000 });
+    liveStatus.set(convId, "pending");
+    liveHolder.set(convId, OTHER_BOT);
+    try {
+      expect(
+        await recoverStrandedTakeover({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("not-owed");
+      expect(togglesFor(convId)).toHaveLength(0);
+      expect(liveStatus.get(convId)).toBe("pending");
+    } finally {
+      liveHolder.delete(convId);
+    }
+  });
+
+  test("a finishing read that came back unreadable writes nothing", async () => {
+    // The other shape of "no answer", and the one the exception does not cover: Chatwoot returns 200
+    // with a body that is not a conversation. When a takeover is being DECIDED that does not block —
+    // silence is not evidence somebody took it, and the mirror fence is the reading behind it — but
+    // when one is being FINISHED there is no mirror fence left, because our own `open` is what it
+    // would read. Writing blind is the one thing left to prevent.
+    const convId = 9124;
+    const rowId = await seedStranded(convId, { claimHeldMs: -30 * 60 * 1000 });
+    unparseableReads.add(convId);
+    try {
+      expect(
+        await recoverStrandedTakeover({
+          tenantId,
+          deliveryRowId: rowId,
+          base: appDb,
+          makeClient,
+        }),
+      ).toBe("failed");
+      expect(togglesFor(convId)).toHaveLength(0);
+    } finally {
+      unparseableReads.delete(convId);
+    }
   });
 
   test("a retry that cannot read Chatwoot writes nothing", async () => {

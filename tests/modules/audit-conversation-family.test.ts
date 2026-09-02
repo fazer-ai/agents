@@ -131,6 +131,43 @@ async function seedConversation(
   return c.id;
 }
 
+// A client whose MIRROR write fails and whose everything else works, for the case where Chatwoot has
+// already accepted the action and our own bookkeeping is what breaks.
+const mirrorFailingBase = (client: PrismaClient): PrismaClient => {
+  // biome-ignore lint/suspicious/noExplicitAny: proxying Prisma's client surface
+  const wrap = (target: any): any =>
+    new Proxy(target, {
+      get(t, prop, receiver) {
+        if (prop === "$extends") {
+          return (...args: unknown[]) => wrap(t.$extends(...args));
+        }
+        if (prop === "$transaction") {
+          return (fn: unknown, ...rest: unknown[]) =>
+            typeof fn === "function"
+              ? t.$transaction(
+                  (tx: unknown) => (fn as (c: unknown) => unknown)(wrap(tx)),
+                  ...rest,
+                )
+              : t.$transaction(fn, ...rest);
+        }
+        if (prop === "conversation") {
+          const real = Reflect.get(t, prop, receiver);
+          return {
+            ...real,
+            update: async () => {
+              throw new Error("mirror write failed (pool timeout)");
+            },
+            updateMany: async () => {
+              throw new Error("mirror write failed (pool timeout)");
+            },
+          };
+        }
+        return Reflect.get(t, prop, receiver);
+      },
+    });
+  return wrap(client) as PrismaClient;
+};
+
 // A client whose audit INSERT fails and whose everything else works. The Prisma surface is proxied
 // through `$extends` and through the transaction client, because `runScopedOn` calls both before the
 // seam ever sees a delegate.
@@ -655,6 +692,54 @@ describe.skipIf(!dbUp)(
       );
       expect(stub.calls).toEqual(["sendMessage"]);
       expect(await rows()).toEqual([]);
+    });
+
+    // THE OTHER HALF OF THE SAME TRADE. Chatwoot accepted the toggle, and the mirror write after it
+    // threw. Everything below that line is our own bookkeeping, so a row written only on the happy
+    // path would be missing for a status change that really happened, in somebody else's system.
+    test("a status change whose mirror write fails is still recorded", async () => {
+      await clearAudit();
+      const id = await seedConversation(4017, { status: "pending" });
+      const stub = stubClient();
+      await expect(
+        setConversationStatus(
+          ctx(),
+          id,
+          "resolved",
+          { makeClient: stub.makeClient },
+          mirrorFailingBase(appDb),
+        ),
+      ).rejects.toThrow();
+      expect(stub.calls).toContain("toggleStatus");
+      const [row, ...rest] = await rows();
+      expect(rest).toEqual([]);
+      expect(row?.action).toBe("conversation.status");
+      // The status Chatwoot ACCEPTED, because the reconciled one was never read.
+      expect(row?.after).toEqual({ status: "resolved" });
+    });
+
+    test("a handoff whose mirror write fails is still recorded", async () => {
+      await clearAudit();
+      const id = await seedConversation(4018, { status: "pending" });
+      const stub = stubClient();
+      await expect(
+        handoffConversation(
+          ctx(),
+          id,
+          55,
+          { makeClient: stub.makeClient },
+          mirrorFailingBase(appDb),
+        ),
+      ).rejects.toThrow();
+      expect(stub.calls).toEqual(["assignToAgent", "toggleStatus"]);
+      const [row, ...rest] = await rows();
+      expect(rest).toEqual([]);
+      expect(row?.action).toBe("conversation.handoff");
+      expect(row?.after).toEqual({
+        status: "open",
+        assigneeType: "User",
+        assigneeId: 55,
+      });
     });
 
     test("the door is carried by the actor, not by the action", async () => {

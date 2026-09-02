@@ -379,25 +379,31 @@ export async function reengageConversation(
     deps,
   );
 
-  if (outcome === "posted") {
-    await clearConversationError({
-      tenantId,
-      instanceId: resolved.instanceId,
-      chatwootConversationId: resolved.conversationId,
-      base,
-    });
-  }
-  // Recorded when the turn REACHED THE CUSTOMER, and only then, which is the one place this family
-  // does not record every apply. The other four call Chatwoot unconditionally; this one runs a model
-  // first and most of its outcomes are the button declining to act: an empty tail, a closed gate, a
-  // conversation somebody else holds. Those changed nothing outside this process and the flow log
-  // already narrates them for the operator asking why nothing happened (#317). `posted-partial` is
-  // on this side of the line because part of the reply IS with the customer.
-  if (outcome === "posted" || outcome === "posted-partial") {
-    await recordConversationAction(ctx, base, conversationDbId, {
-      action: "conversation.reengage",
-      after: { outcome },
-    });
+  // The reply is with the customer from here, and clearing the error badge is our own bookkeeping:
+  // it can throw, and a row written only after it would be missing for a turn that did post. Same
+  // seam as the other four (`conversations/audit.ts`).
+  try {
+    if (outcome === "posted") {
+      await clearConversationError({
+        tenantId,
+        instanceId: resolved.instanceId,
+        chatwootConversationId: resolved.conversationId,
+        base,
+      });
+    }
+  } finally {
+    // Recorded when the turn REACHED THE CUSTOMER, and only then, which is the one place this family
+    // does not record every apply. The other four call Chatwoot unconditionally; this one runs a model
+    // first and most of its outcomes are the button declining to act: an empty tail, a closed gate, a
+    // conversation somebody else holds. Those changed nothing outside this process and the flow log
+    // already narrates them for the operator asking why nothing happened (#317). `posted-partial` is
+    // on this side of the line because part of the reply IS with the customer.
+    if (outcome === "posted" || outcome === "posted-partial") {
+      await recordConversationAction(ctx, base, conversationDbId, {
+        action: "conversation.reengage",
+        after: { outcome },
+      });
+    }
   }
   return { outcome };
 }

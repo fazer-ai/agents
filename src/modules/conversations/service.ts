@@ -1528,63 +1528,78 @@ export async function handoffConversation(
     }
     throw err;
   }
-  const { state } = await mirrorConsoleWrite(
-    ctx,
-    base,
-    id,
-    conv,
-    client,
-    {
-      status: "open",
-      assigneeType: "User",
-      ...(assigneeId !== null ? { assigneeId } : {}),
-    },
-    // NO MARK, and it costs nothing here: this action hands the conversation to a PERSON, so the
-    // fence the mark feeds is never reached — `conversationOwnershipNow` answers "not ours" first.
-    // Taking a reading before the write would buy a round trip for a comparison nobody makes.
-    null,
-  );
-  // Optimistic realtime feedback (the inbound webhook reconciles canonically). It announces the row
-  // as STORED, not as asked for: the two differ when the live read came back with something else
-  // (an assignment Chatwoot resolved differently, or a webhook that outranked this write), and a
-  // publication of the intent would arrive last and leave the console showing a state nobody holds.
-  // WHERE THIS WRITE LANDED, resolved once and read by both the broadcast and the row. They are the
-  // same fact and they must not be able to disagree: an untargeted handoff (the console's ordinary
-  // one, no assignee named) never calls `assignToAgent`, so who holds the conversation afterwards is
-  // Chatwoot's answer and not this call's argument. A row built from the argument would say `null`
-  // about a conversation a person is holding, one line under a broadcast that names them.
-  const landed = {
-    status: state?.status ?? "open",
-    assigneeId: state ? state.assigneeId : (assigneeId ?? conv.assigneeId),
-    assigneeType: state ? state.assigneeType : "User",
+  // FROM HERE THE EFFECT HAS HAPPENED, and everything below is our own bookkeeping. It can throw —
+  // the mirror's fallback write is a transaction like any other — and a row written only on the
+  // happy path would then be missing for a conversation Chatwoot has already handed to a person.
+  // So the row is written in a `finally`, from the best `after` known at that moment: the reconciled
+  // state when the mirror got there, and the state Chatwoot accepted when it did not.
+  let landed: {
+    status: string;
+    assigneeType: string | null;
+    assigneeId: number | null;
+  } = {
+    status: "open",
+    assigneeType: assigneeId !== null ? "User" : conv.assigneeType,
+    assigneeId: assigneeId ?? conv.assigneeId,
   };
-  broadcastConversationEvent(tenantId, {
-    conversationId: String(id),
-    ...landed,
-    lastEventAt:
-      (state ? state.lastEventAt : conv.lastEventAt)?.toISOString() ?? null,
-  });
-  // `before` off the mirror rather than off a live read: this call already made the only round trips
-  // it needs, and the row answers "what did this action move", which is the state the operator was
-  // looking at when they clicked. The transport used to read live for its dry-run preview and reuse
-  // that reading here, which is a different question asked for a different reason.
-  // The TYPE travels with the id on both sides. `User` and `AgentBot` are separate id namespaces in
-  // Chatwoot (the hand-back below compares holders that way for the same reason), so a row carrying
-  // only `assigneeId: 7` cannot tell one from the other, and a handoff that moved a conversation
-  // from a bot to a person with the same numeric id reads as a row where nothing changed.
-  await recordConversationAction(ctx, base, id, {
-    action: "conversation.handoff",
-    before: {
-      status: conv.status,
-      assigneeType: conv.assigneeType,
-      assigneeId: conv.assigneeId,
-    },
-    after: {
-      status: landed.status,
-      assigneeType: landed.assigneeType,
-      assigneeId: landed.assigneeId,
-    },
-  });
+  try {
+    const { state } = await mirrorConsoleWrite(
+      ctx,
+      base,
+      id,
+      conv,
+      client,
+      {
+        status: "open",
+        assigneeType: "User",
+        ...(assigneeId !== null ? { assigneeId } : {}),
+      },
+      // NO MARK, and it costs nothing here: this action hands the conversation to a PERSON, so the
+      // fence the mark feeds is never reached — `conversationOwnershipNow` answers "not ours" first.
+      // Taking a reading before the write would buy a round trip for a comparison nobody makes.
+      null,
+    );
+    // Optimistic realtime feedback (the inbound webhook reconciles canonically). It announces the row
+    // as STORED, not as asked for: the two differ when the live read came back with something else
+    // (an assignment Chatwoot resolved differently, or a webhook that outranked this write), and a
+    // publication of the intent would arrive last and leave the console showing a state nobody holds.
+    // WHERE THIS WRITE LANDED, resolved once and read by both the broadcast and the row. They are
+    // the same fact and they must not be able to disagree: an untargeted handoff (the console's
+    // ordinary one, no assignee named) never calls `assignToAgent`, so who holds the conversation
+    // afterwards is Chatwoot's answer and not this call's argument. A row built from the argument
+    // would say `null` about a conversation a person is holding, one line under a broadcast that
+    // names them.
+    landed = {
+      status: state?.status ?? "open",
+      assigneeId: state ? state.assigneeId : (assigneeId ?? conv.assigneeId),
+      assigneeType: state ? state.assigneeType : "User",
+    };
+    broadcastConversationEvent(tenantId, {
+      conversationId: String(id),
+      ...landed,
+      lastEventAt:
+        (state ? state.lastEventAt : conv.lastEventAt)?.toISOString() ?? null,
+    });
+  } finally {
+    // `before` off the mirror rather than off a live read: this call already made the only round
+    // trips it needs, and the row answers "what did this action move", which is the state the
+    // operator was looking at when they clicked.
+    //
+    // The TYPE travels with the id on both sides. `User` and `AgentBot` are separate id namespaces
+    // in Chatwoot (the hand-back below compares holders that way for the same reason), so a row
+    // carrying only `assigneeId: 7` cannot tell one from the other, and a handoff that moved a
+    // conversation from a bot to a person with the same numeric id reads as a row where nothing
+    // changed.
+    await recordConversationAction(ctx, base, id, {
+      action: "conversation.handoff",
+      before: {
+        status: conv.status,
+        assigneeType: conv.assigneeType,
+        assigneeId: conv.assigneeId,
+      },
+      after: landed,
+    });
+  }
 }
 
 // Return to the bot: set status pending AND unassign the human (the gate requires BOTH
@@ -1749,138 +1764,160 @@ export async function returnConversationToAgent(
       String(newHolder.assigneeId ?? "none"),
     );
   }
-  const { state, observed } = await mirrorConsoleWrite(
-    ctx,
-    base,
-    id,
-    conv,
-    client,
-    {
-      status: "pending",
-      ...(newHolder ?? { assigneeId: null, assigneeType: null }),
-    },
-    consoleWriteMark(before),
-  );
-  // Who the mirror ends up naming, resolved ONCE and read by both the event and the return below.
-  // It is the LAST thing that looked at the conversation, not the first: `mirrorConsoleWrite` does
-  // its own live read AFTER the unassign, so a human who claimed it in that window is here and
-  // nowhere in `newHolder` — and the row and the broadcast already say so.
-  //
-  // Three sources, most-decided first, and the middle one is the whole point of `observed`.
-  //
-  // `state` is the stored row after a versioned reconcile: decided, so it wins.
-  //
-  // `observed` is what Chatwoot said on that same read when it could not be versioned (a deployment
-  // older than 4.0.2 sends no `updated_at`). Falling straight past it to `newHolder` treats "I could
-  // not decide" as "nobody is there", and the window it hides is precisely the one this function
-  // cannot see any other way: a human who claimed the conversation AFTER the unassign went out.
-  // `newHolder` is null there by construction — it was read before the unassign — so the answer
-  // would be "returned" while a person holds it, which is the one answer the caller acts on.
-  //
-  // `newHolder` last: the holder read BEFORE the unassign, which is right when the live read failed
-  // outright and `mirrorConsoleWrite` has already written that same holder to the row. A null here
-  // would tell every open console the conversation is unassigned while Chatwoot and the mirror both
-  // say a human has it.
-  const finalHolder = state
-    ? { assigneeType: state.assigneeType, assigneeId: state.assigneeId }
-    : (holderOtherThan(observed) ??
-      newHolder ?? { assigneeType: null, assigneeId: null });
-  // And the ROW, which is the half a return value cannot fix. Where `observed` is what corrected the
-  // answer, `mirrorConsoleWrite` has already written its fallback — status pending, no assignee —
-  // because that is what this call asked for before anybody claimed the conversation. Leaving it
-  // there makes the disagreement worse than the one just closed: the response and every open console
-  // name the human, while the row that `shouldBotHandle` reads says the conversation is the bot's,
-  // and the agent answers over them until an assignment webhook happens to arrive. It is the same
-  // fallback-is-not-nobody reasoning one layer down, applied to the durable copy.
-  if (state === null && finalHolder.assigneeType !== null) {
-    await updateMirror(ctx, base, id, {
-      assigneeType: finalHolder.assigneeType,
+  // FROM HERE THE EFFECT HAS HAPPENED: the status went to pending and, on the ordinary path, the
+  // human has been unassigned. Everything below is our own bookkeeping (the mirror, its fallback
+  // write, the broadcast, the ownership read that names the outcome) and any of it can throw, so the
+  // row is written in a `finally`. What it carries then is what this call knows: pending, and the
+  // holder it started from.
+  let landedReturn: {
+    status: string;
+    assigneeType: string | null;
+    assigneeId: number | null;
+  } = {
+    status: "pending",
+    assigneeType: baseline.assigneeType,
+    assigneeId: baseline.assigneeId,
+  };
+  let outcomeForRow: ReturnToAgentOutcome | null = null;
+  try {
+    const { state, observed } = await mirrorConsoleWrite(
+      ctx,
+      base,
+      id,
+      conv,
+      client,
+      {
+        status: "pending",
+        ...(newHolder ?? { assigneeId: null, assigneeType: null }),
+      },
+      consoleWriteMark(before),
+    );
+    // Who the mirror ends up naming, resolved ONCE and read by both the event and the return below.
+    // It is the LAST thing that looked at the conversation, not the first: `mirrorConsoleWrite` does
+    // its own live read AFTER the unassign, so a human who claimed it in that window is here and
+    // nowhere in `newHolder` — and the row and the broadcast already say so.
+    //
+    // Three sources, most-decided first, and the middle one is the whole point of `observed`.
+    //
+    // `state` is the stored row after a versioned reconcile: decided, so it wins.
+    //
+    // `observed` is what Chatwoot said on that same read when it could not be versioned (a deployment
+    // older than 4.0.2 sends no `updated_at`). Falling straight past it to `newHolder` treats "I could
+    // not decide" as "nobody is there", and the window it hides is precisely the one this function
+    // cannot see any other way: a human who claimed the conversation AFTER the unassign went out.
+    // `newHolder` is null there by construction — it was read before the unassign — so the answer
+    // would be "returned" while a person holds it, which is the one answer the caller acts on.
+    //
+    // `newHolder` last: the holder read BEFORE the unassign, which is right when the live read failed
+    // outright and `mirrorConsoleWrite` has already written that same holder to the row. A null here
+    // would tell every open console the conversation is unassigned while Chatwoot and the mirror both
+    // say a human has it.
+    const finalHolder = state
+      ? { assigneeType: state.assigneeType, assigneeId: state.assigneeId }
+      : (holderOtherThan(observed) ??
+        newHolder ?? { assigneeType: null, assigneeId: null });
+    // And the ROW, which is the half a return value cannot fix. Where `observed` is what corrected the
+    // answer, `mirrorConsoleWrite` has already written its fallback — status pending, no assignee —
+    // because that is what this call asked for before anybody claimed the conversation. Leaving it
+    // there makes the disagreement worse than the one just closed: the response and every open console
+    // name the human, while the row that `shouldBotHandle` reads says the conversation is the bot's,
+    // and the agent answers over them until an assignment webhook happens to arrive. It is the same
+    // fallback-is-not-nobody reasoning one layer down, applied to the durable copy.
+    if (state === null && finalHolder.assigneeType !== null) {
+      await updateMirror(ctx, base, id, {
+        assigneeType: finalHolder.assigneeType,
+        assigneeId: finalHolder.assigneeId,
+        // Same rule as the fallback inside `mirrorConsoleWrite`, for the same reason: this write moves
+        // the holder, so the name has to move with it. Only the live read that SAW this holder can
+        // name them — `newHolder`, the other source `finalHolder` can come from, was read before the
+        // unassign and carries no name — and anything else is written as unknown rather than left
+        // reading as the person who was here before.
+        assigneeName:
+          observed !== null &&
+          observed.assigneeType === finalHolder.assigneeType &&
+          observed.assigneeId === finalHolder.assigneeId
+            ? observed.assigneeName
+            : null,
+      });
+    }
+    broadcastConversationEvent(tenantId, {
+      conversationId: String(id),
+      status: state?.status ?? "pending",
       assigneeId: finalHolder.assigneeId,
-      // Same rule as the fallback inside `mirrorConsoleWrite`, for the same reason: this write moves
-      // the holder, so the name has to move with it. Only the live read that SAW this holder can
-      // name them — `newHolder`, the other source `finalHolder` can come from, was read before the
-      // unassign and carries no name — and anything else is written as unknown rather than left
-      // reading as the person who was here before.
-      assigneeName:
-        observed !== null &&
-        observed.assigneeType === finalHolder.assigneeType &&
-        observed.assigneeId === finalHolder.assigneeId
-          ? observed.assigneeName
-          : null,
+      assigneeType: finalHolder.assigneeType,
+      lastEventAt:
+        (state ? state.lastEventAt : conv.lastEventAt)?.toISOString() ?? null,
     });
-  }
-  broadcastConversationEvent(tenantId, {
-    conversationId: String(id),
-    status: state?.status ?? "pending",
-    assigneeId: finalHolder.assigneeId,
-    assigneeType: finalHolder.assigneeType,
-    lastEventAt:
-      (state ? state.lastEventAt : conv.lastEventAt)?.toISOString() ?? null,
-  });
-  // The outcome, because "taken over" is not a failure and every caller would otherwise report the
-  // hand-back it asked for as having happened. Nothing throws on this path: the status WAS set to
-  // pending and the mirror WAS corrected — the one thing withheld is the unassign, which is exactly
-  // what the caller told its operator it was doing.
-  //
-  // Read off the same value the console just received, because the two answering differently is the
-  // defect rather than a detail: a caller told "returned" while the row it triggered names a person
-  // has nothing to notice the disagreement with.
-  //
-  // And asked with the OWNERSHIP rule rather than "is there a type here", because the success state
-  // of this very function can carry one: the pending transition, or a concurrent assignment, can
-  // leave the conversation on the inbox's own agent bot — which the gate reads as the AI holding it,
-  // exactly what the caller asked for. Answering "taken-over" there warns the operator that somebody
-  // claimed a conversation the intended agent owns, and takes away the re-engage offer with it.
-  //
-  // A holder whose id never arrived is still a holder: `heldByAnotherParty` keeps that direction for
-  // `User` (any human counts) while an unidentifiable AgentBot stays uncounted, which is the same
-  // answer the unassign above already gives.
-  const ourAgentBotId =
-    conv.inbox?.agentId != null
-      ? ((
-          await runScopedOn(base, ctx, (db) =>
-            db.chatwootAgentBot.findFirst({
-              where: {
-                tenantId,
-                chatwootInstanceId: conv.chatwootInstanceId,
-                agentId: conv.inbox?.agentId ?? 0n,
-              },
-              select: { chatwootAgentBotId: true },
-            }),
-          )
-        )?.chatwootAgentBotId ?? null)
-      : null;
-  const outcome: ReturnToAgentOutcome = heldByAnotherParty(finalHolder, {
-    ourAgentBotId,
-  })
-    ? "taken-over"
-    : "returned";
-  // The OUTCOME is on the row, because it is the one action of this family whose success is not the
-  // thing the caller asked for: `taken-over` means the status went to pending and the human stayed,
-  // and a row that only said "returned to the agent" would be the trail disagreeing with the console
-  // that was told otherwise in the same instant.
-  // Same rule as the other two: the status is where the write LANDED, and the outcome is what the
-  // caller was told. `taken-over` with a status that is not `pending` is the honest pair, and a row
-  // that hard-coded `pending` would be the trail contradicting the console it answered.
-  // THE HOLDER, on both sides, because on this action it is the whole mutation: a hand-back on a
-  // conversation that is already pending moves nothing else, and a row carrying only the status
-  // would say nothing happened. `baseline` is who held it when the call started, read live rather
-  // than off the mirror, and `finalHolder` is who holds it now.
-  await recordConversationAction(ctx, base, id, {
-    action: "conversation.return",
-    before: {
-      status: conv.status,
-      assigneeType: baseline.assigneeType,
-      assigneeId: baseline.assigneeId,
-    },
-    after: {
+    // The outcome, because "taken over" is not a failure and every caller would otherwise report the
+    // hand-back it asked for as having happened. Nothing throws on this path: the status WAS set to
+    // pending and the mirror WAS corrected — the one thing withheld is the unassign, which is exactly
+    // what the caller told its operator it was doing.
+    //
+    // Read off the same value the console just received, because the two answering differently is the
+    // defect rather than a detail: a caller told "returned" while the row it triggered names a person
+    // has nothing to notice the disagreement with.
+    //
+    // And asked with the OWNERSHIP rule rather than "is there a type here", because the success state
+    // of this very function can carry one: the pending transition, or a concurrent assignment, can
+    // leave the conversation on the inbox's own agent bot — which the gate reads as the AI holding it,
+    // exactly what the caller asked for. Answering "taken-over" there warns the operator that somebody
+    // claimed a conversation the intended agent owns, and takes away the re-engage offer with it.
+    //
+    // A holder whose id never arrived is still a holder: `heldByAnotherParty` keeps that direction for
+    // `User` (any human counts) while an unidentifiable AgentBot stays uncounted, which is the same
+    // answer the unassign above already gives.
+    const ourAgentBotId =
+      conv.inbox?.agentId != null
+        ? ((
+            await runScopedOn(base, ctx, (db) =>
+              db.chatwootAgentBot.findFirst({
+                where: {
+                  tenantId,
+                  chatwootInstanceId: conv.chatwootInstanceId,
+                  agentId: conv.inbox?.agentId ?? 0n,
+                },
+                select: { chatwootAgentBotId: true },
+              }),
+            )
+          )?.chatwootAgentBotId ?? null)
+        : null;
+    const outcome: ReturnToAgentOutcome = heldByAnotherParty(finalHolder, {
+      ourAgentBotId,
+    })
+      ? "taken-over"
+      : "returned";
+    // The OUTCOME is on the row, because it is the one action of this family whose success is not the
+    // thing the caller asked for: `taken-over` means the status went to pending and the human stayed,
+    // and a row that only said "returned to the agent" would be the trail disagreeing with the console
+    // that was told otherwise in the same instant.
+    // Same rule as the other two: the status is where the write LANDED, and the outcome is what the
+    // caller was told. `taken-over` with a status that is not `pending` is the honest pair, and a row
+    // that hard-coded `pending` would be the trail contradicting the console it answered.
+    landedReturn = {
       status: state?.status ?? "pending",
       assigneeType: finalHolder.assigneeType,
       assigneeId: finalHolder.assigneeId,
-      outcome,
-    },
-  });
-  return outcome;
+    };
+    outcomeForRow = outcome;
+    return outcome;
+  } finally {
+    // THE HOLDER, on both sides, because on this action it is the whole mutation: a hand-back on a
+    // conversation that is already pending moves nothing else, and a row carrying only the status
+    // would say nothing happened. `baseline` is who held it when the call started, read live rather
+    // than off the mirror, and `landedReturn` is where the write ended up.
+    await recordConversationAction(ctx, base, id, {
+      action: "conversation.return",
+      before: {
+        status: conv.status,
+        assigneeType: baseline.assigneeType,
+        assigneeId: baseline.assigneeId,
+      },
+      after: {
+        ...landedReturn,
+        ...(outcomeForRow !== null ? { outcome: outcomeForRow } : {}),
+      },
+    });
+  }
 }
 
 export async function setConversationStatus(
@@ -1935,30 +1972,37 @@ export async function setConversationStatus(
       base,
     });
   }
-  const { state } = await mirrorConsoleWrite(
-    ctx,
-    base,
-    id,
-    conv,
-    client,
-    { status },
-    consoleWriteMark(before),
-  );
-  broadcastConversationEvent(tenantId, {
-    conversationId: String(id),
-    status: state?.status ?? status,
-    assigneeId: state ? state.assigneeId : conv.assigneeId,
-    assigneeType: state ? state.assigneeType : conv.assigneeType,
-    lastEventAt:
-      (state ? state.lastEventAt : conv.lastEventAt)?.toISOString() ?? null,
-  });
-  // WHERE IT LANDED, the same value the broadcast just published. A row carrying the status this
-  // call ASKED for would claim the operator left the conversation resolved while the mirror and every
-  // open console say otherwise, which happens whenever a webhook or another operator outranks the
-  // toggle inside `mirrorConsoleWrite`.
-  await recordConversationAction(ctx, base, id, {
-    action: "conversation.status",
-    before: { status: conv.status },
-    after: { status: state?.status ?? status },
-  });
+  // The toggle has landed in Chatwoot; the rest is our own bookkeeping and can throw. Same seam as
+  // the handoff: the row goes in a `finally`, carrying the reconciled status when the mirror got
+  // there and the accepted one when it did not.
+  let landedStatus = status as string;
+  try {
+    const { state } = await mirrorConsoleWrite(
+      ctx,
+      base,
+      id,
+      conv,
+      client,
+      { status },
+      consoleWriteMark(before),
+    );
+    // WHERE IT LANDED. A row carrying the status this call ASKED for would claim the operator left
+    // the conversation resolved while the mirror and every open console say otherwise, which happens
+    // whenever a webhook or another operator outranks the toggle inside `mirrorConsoleWrite`.
+    landedStatus = state?.status ?? status;
+    broadcastConversationEvent(tenantId, {
+      conversationId: String(id),
+      status: landedStatus,
+      assigneeId: state ? state.assigneeId : conv.assigneeId,
+      assigneeType: state ? state.assigneeType : conv.assigneeType,
+      lastEventAt:
+        (state ? state.lastEventAt : conv.lastEventAt)?.toISOString() ?? null,
+    });
+  } finally {
+    await recordConversationAction(ctx, base, id, {
+      action: "conversation.status",
+      before: { status: conv.status },
+      after: { status: landedStatus },
+    });
+  }
 }

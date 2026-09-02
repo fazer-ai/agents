@@ -13,6 +13,7 @@ import { configIssueTranslator } from "@/modules/agents/config-health-copy";
 import { configIssueMessage } from "@/modules/agents/config-health-message";
 import {
   type ConfigIssueSeverity,
+  SEVERITY_ORDER,
   severityOf,
 } from "@/modules/agents/config-health-severity";
 import {
@@ -298,6 +299,20 @@ export async function readAgentConfigHealth(
       ...(issue.max !== undefined ? { max: issue.max } : {}),
     };
   });
+
+  // WORST FIRST, which `SEVERITY_ORDER` declares and nothing was applying. The console orders by
+  // feature — its panel is a page you scan, and the section a warning belongs to is what you scroll
+  // to — but a caller reading JSON has no page, and the first entries are the ones it prints or
+  // stops on.
+  //
+  // Sorted HERE and not inside `computeConfigIssues`, so the editor keeps the order it renders in.
+  // And stable by construction: `Array.prototype.sort` has been required to be stable since ES2019,
+  // and every key has a severity (the Record is exhaustive by type), so there is no element the
+  // comparator leaves unplaced — which is what keeps the feature order INSIDE each severity.
+  out.sort(
+    (a, b) =>
+      SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity),
+  );
 
   return {
     agentId: agent.id,

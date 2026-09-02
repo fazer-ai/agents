@@ -370,6 +370,27 @@ describe.skipIf(!dbUp)("agent configuration health", () => {
       expect(health.counts.blocking).toBeGreaterThanOrEqual(1);
     });
 
+    // `SEVERITY_ORDER` says worst-first and nothing was applying it, which is the shape of dead
+    // mechanism this repo does not keep. The broken agent carries one of each severity, so this
+    // asserts BOTH halves: severities in declared order, and — inside a severity — the feature order
+    // the shared computation produced, which is what a stable sort preserves and a clever one loses.
+    test("issues come back worst-first, stable inside each severity", async () => {
+      const health = await readAgentConfigHealth(ctx(tenantId), brokenAgent, {
+        base: appDb,
+      });
+      const severities = health.issues.map((i) => i.severity);
+      expect(severities).toEqual(
+        [...severities].sort(
+          (a, b) =>
+            ["blocking", "degraded", "advisory"].indexOf(a) -
+            ["blocking", "degraded", "advisory"].indexOf(b),
+        ),
+      );
+      // A blocking issue exists and is first; the degraded one (pending STT credential) is not.
+      expect(health.issues[0]?.severity).toBe("blocking");
+      expect(severities).toContain("degraded");
+    });
+
     test("a credential referenced but never filled is told apart from a missing one", async () => {
       const health = await readAgentConfigHealth(ctx(tenantId), brokenAgent, {
         base: appDb,

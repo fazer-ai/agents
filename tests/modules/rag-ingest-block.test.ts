@@ -192,7 +192,7 @@ describe.skipIf(!dbUp)(
           name: "embed-blank",
           kind: "generic",
           status: "active",
-          secret: encryptJson(""),
+          secret: encryptJson("sk-live"),
         },
       });
       await updateEmbeddingSettings(
@@ -200,6 +200,14 @@ describe.skipIf(!dbUp)(
         { credentialRef: `vault:${row.id}` },
         appDb,
       );
+      // Emptied AFTER it was wired, because that is the only way this state is reachable now: the
+      // write boundary refuses a ref whose value is not the shape its kind declares (issue #471), so
+      // a blank active secret can be arrived at but never chosen. What it does not change is what
+      // this test is about — the reader still has to tell `empty` from `pending` and from `gone`.
+      await suDb.vaultEntry.update({
+        where: { id: row.id },
+        data: { secret: encryptJson("") },
+      });
       expect((await readEmbeddingBlock(ctxOf(id), appDb))?.reason).toBe(
         "credential_empty",
       );

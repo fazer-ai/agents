@@ -139,10 +139,16 @@ export async function readAgentConfigHealth(
       .filter((e) => e.status === "pending")
       .map((e) => formatVaultRef(e.id)),
   );
-  // The fourth question over the same list: an entry that exists and is filled can still be the wrong
-  // TYPE for the field naming it (issue #471). Read from the same rows as the three above, so the
-  // four answers cannot disagree about which refs the vault holds.
-  const refKinds = new Map(vault.map((e) => [formatVaultRef(e.id), e.kind]));
+  // The fourth question over the same list: an entry that exists and is filled can still be unable to
+  // serve the field naming it, by its TYPE or by holding a value that type does not describe (issue
+  // #471). Read from the same rows as the three above, so the four answers cannot disagree about
+  // which refs the vault holds.
+  const refFacts = new Map(
+    vault.map((e) => [
+      formatVaultRef(e.id),
+      { kind: e.kind, valueFitsKind: e.valueFitsKind },
+    ]),
+  );
   const baseUrlByRef = new Map(
     vault.map((e) => [formatVaultRef(e.id), e.baseUrl]),
   );
@@ -264,7 +270,7 @@ export async function readAgentConfigHealth(
     guardrailsLastFailureAt: guardrailHealth?.lastAt,
     pendingRefs,
     knownRefs,
-    refKinds,
+    refFacts,
     knowledgeBasesNeedingIndex,
     embeddingCredentialRef: tenantSettings.embedding.credentialRef ?? "",
     redirectEnabled: redirect.enabled,

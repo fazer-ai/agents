@@ -1773,7 +1773,7 @@ function AgentEditor() {
   const {
     known: knownRefs,
     pending: pendingRefs,
-    kinds: refKinds,
+    facts: refFacts,
     pendingEntries,
   } = useVaultRefs();
 
@@ -2002,7 +2002,7 @@ function AgentEditor() {
     guardrailsLastFailureAt: guardrailHealth?.lastAt,
     pendingRefs,
     knownRefs,
-    refKinds,
+    refFacts,
     knowledgeBasesNeedingIndex,
     embeddingCredentialRef,
     redirectEnabled: channelRedirect.enabled,

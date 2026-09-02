@@ -23,6 +23,16 @@ import {
   secretTypeFits,
 } from "@/modules/vault/secret-types";
 
+// What the vault answers about one ref beyond "it exists". Kept as a pair rather than two parallel
+// maps because the two are read together and a caller that had one and not the other would be
+// asking the half-question this module exists to stop asking.
+export interface VaultRefFacts {
+  kind: string | null;
+  // Whether the stored value is the shape `kind` declares (secretValueFitsKind, computed server-side
+  // so no secret crosses the wire). True for a pending entry, which has no value yet.
+  valueFitsKind: boolean;
+}
+
 // Live configuration-health checks for the agent editor (item 1): detect features that are turned on
 // but missing the credential they need to actually run. The common trigger is importing an agent —
 // the import never carries secrets, so every credential ref comes back unset. Each issue carries a
@@ -242,12 +252,12 @@ export interface ConfigHealthInput {
   // Under-reporting for a moment is the safe direction here; over-reporting trains the operator to
   // ignore the panel.
   knownRefs?: Set<string> | null;
-  // The KIND of each ref in `knownRefs`, keyed the same way. Resolving is not the same question as
-  // serving: an entry can exist, be filled, and still hold a shape the reading field cannot use
-  // (issue #471). `null`/absent has the same meaning it has for `knownRefs` — the vault has not
-  // answered yet — and for the same reason: reporting on an empty map would flag every credentialled
-  // field on the page for the first paint.
-  refKinds?: Map<string, string | null> | null;
+  // What each ref in `knownRefs` IS, keyed the same way. Resolving is not the same question as
+  // serving: an entry can exist, be filled, and still be unusable — by its type, or by holding a
+  // value that type does not describe (issue #471). `null`/absent has the same meaning it has for
+  // `knownRefs` — the vault has not answered yet — and for the same reason: reporting on an empty
+  // map would flag every credentialled field on the page for the first paint.
+  refFacts?: Map<string, VaultRefFacts> | null;
   // Knowledge bases this agent uses that still have documents awaiting indexing (status UNINDEXED),
   // e.g. right after an import that bundled the source text. Each becomes a "knowledge" issue — unless
   // the embedding prerequisite below is missing, in which case a single "embedding" issue is raised.
@@ -286,10 +296,12 @@ type CredVerdict =
 interface VaultView {
   pending: Set<string> | undefined;
   known: Set<string> | null | undefined;
-  // The kind of every ref in `known`, so a ref that resolves can still be told apart from one that
-  // can SERVE the field. Absent (not merely empty) until the vault answers, exactly like `known`:
-  // an empty map would read as "no kind fits" and flag every credential on the page for one paint.
-  kinds: Map<string, string | null> | null | undefined;
+  // What the vault knows about each ref in `known` beyond its existence: the kind it declares, and
+  // whether its stored value is the shape that kind describes. Both, because the runtime asks both
+  // and a panel that asks fewer calls an agent healthy on a configuration the turn refuses. Absent
+  // (not merely empty) until the vault answers, exactly like `known`: an empty map would read as
+  // "nothing fits" and flag every credential on the page for one paint.
+  facts: Map<string, VaultRefFacts> | null | undefined;
 }
 
 // For one credentialed feature, decides which issue (if any) to raise:
@@ -323,15 +335,22 @@ function credIssue(
   if (vault.known && (canonical === null || !vault.known.has(canonical))) {
     return { kind: "unresolved" };
   }
-  // Present, filled, and the wrong TYPE for this field: a multi-field or managed-blob entry where a
-  // plain API key is read, or one the catalog says never leaves in a request. The write boundary
-  // refuses this pairing now (requireVaultRefFor), so what reaches here is what was already stored —
-  // an import, or a row that predates the rule. Reported last of the four because the other three
-  // are about the entry itself and this one is about the pairing; and only once the kinds have
-  // arrived, for the same reason `unresolved` waits on `known`. Issue #471.
-  if (canonical !== null && vault.kinds) {
-    const kind = vault.kinds.get(canonical);
-    if (kind !== undefined && !secretTypeFits(kind, use)) {
+  // Present, filled, and unable to serve this field. Two ways, one verdict: the TYPE cannot supply
+  // what the field reads (a multi-field or managed-blob entry where a plain API key goes, or one the
+  // catalog says never leaves in a request), or the stored VALUE is not the shape its own type
+  // declares. Both are what `tryResolveApiKeyEntry` refuses at the turn, and asking one of the two
+  // here would put the panel back to calling an agent healthy on a configuration the runtime drops.
+  //
+  // The write boundary refuses both now, so what reaches here is what was already stored — an
+  // import, or a row that predates the rule. Reported last of the four because the other three are
+  // about the entry itself and this one is about the pairing; and only once the vault has answered,
+  // for the same reason `unresolved` waits on `known`. Issue #471.
+  if (canonical !== null && vault.facts) {
+    const facts = vault.facts.get(canonical);
+    if (
+      facts !== undefined &&
+      (!secretTypeFits(facts.kind, use) || !facts.valueFitsKind)
+    ) {
       return { kind: "wrongKind" };
     }
   }
@@ -403,7 +422,7 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
   const vault: VaultView = {
     pending: input.pendingRefs,
     known: input.knownRefs,
-    kinds: input.refKinds,
+    facts: input.refFacts,
   };
   const push = (base: ConfigIssue, res: CredVerdict | null): void => {
     if (!res) return;
@@ -839,7 +858,10 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
     const embedding = credIssue(
       true,
       input.embeddingCredentialRef ?? "",
-      "apiKey",
+      // Not `apiKey`: this field's reader takes `{ apiKey, baseURL }` as well as the plain string,
+      // so holding its value to the kind here would put a warning on a working configuration. The
+      // KIND rule is the same one — a `google_oauth` entry is still flagged.
+      "embeddingKey",
       vault,
     );
     if (embedding) {

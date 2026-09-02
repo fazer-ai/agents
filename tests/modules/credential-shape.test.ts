@@ -60,6 +60,7 @@ let oauthRef = "";
 let blobRef = "";
 let envRef = "";
 let keyRef = "";
+let malformedRef = "";
 
 const ctx = (): TenantContext => ({
   tenantId,
@@ -137,6 +138,10 @@ describe.skipIf(!dbUp)("a credential whose kind cannot serve the field", () => {
       paramName: "API_TOKEN",
     });
     keyRef = await mk("model-key", "openai", "sk-live");
+    // A kind that DECLARES a plain string, holding something else. `validateVaultValue` refuses this
+    // shape today, so it can only exist from before the kind did — or from a path that does not go
+    // through it. The catalog cannot see it: only the value can.
+    malformedRef = await mk("legacy-shaped", "generic", { apiKey: "sk-x" });
     agentId = (
       await suDb.agent.create({
         data: {
@@ -201,6 +206,64 @@ describe.skipIf(!dbUp)("a credential whose kind cannot serve the field", () => {
       );
       expect(r?.status).toBe(400);
       expect(r?.field).toBe("settings.tts.credentialRef");
+    });
+
+    // The finding that made this section grow: the boundary asked the KIND and the runtime asked the
+    // kind AND the value, so there was a configuration the write accepted, config-health called
+    // healthy, and the turn then dropped. Three surfaces, one question.
+    test("a kind that should hold a string, holding something else, is refused", async () => {
+      const r = await refused(() =>
+        updateAgent(
+          ctx(),
+          agentId,
+          {
+            modelConfig: {
+              provider: "openai",
+              model: "gpt-4o-mini",
+              credentialRef: malformedRef,
+            },
+          },
+          appDb,
+        ),
+      );
+      expect(r?.status).toBe(400);
+      expect(r?.field).toBe("modelConfig.credentialRef");
+    });
+
+    // The one exemption on the VALUE half, and only that half: a reference-only entry has no secret
+    // yet by design, and refusing it would break the flow `credential_create` exists for.
+    test("a pending entry is still accepted", async () => {
+      const pending = formatVaultRef(
+        String(
+          (
+            await suDb.vaultEntry.create({
+              data: {
+                tenantId,
+                name: "not-filled-yet",
+                kind: "openai",
+                secret: encryptJson({}),
+                status: "pending",
+              },
+              select: { id: true },
+            })
+          ).id,
+        ),
+      );
+      const r = await refused(() =>
+        updateAgent(
+          ctx(),
+          agentId,
+          {
+            modelConfig: {
+              provider: "openai",
+              model: "gpt-4o-mini",
+              credentialRef: pending,
+            },
+          },
+          appDb,
+        ),
+      );
+      expect(r).toBeNull();
     });
 
     test("a usable kind still passes", async () => {
@@ -298,6 +361,15 @@ describe.skipIf(!dbUp)("a credential whose kind cannot serve the field", () => {
       updateEmbeddingSettings(ctx(), { credentialRef: keyRef }, appDb),
     );
     expect(good).toBeNull();
+
+    // ...and the one place the VALUE rule does NOT apply. `resolveEmbeddingStatus` reads
+    // `{ apiKey, baseURL }` as well as a plain string, a second form the catalog does not declare,
+    // so holding this field's value to its kind would refuse a shape that reader has always taken.
+    // The KIND rule still applies to it, which is what the first half of this test proves.
+    const envelope = await refused(() =>
+      updateEmbeddingSettings(ctx(), { credentialRef: malformedRef }, appDb),
+    );
+    expect(envelope).toBeNull();
   });
 
   // An import is the one way a bad pairing can still be CREATED, because the payload is authored
@@ -379,22 +451,7 @@ describe.skipIf(!dbUp)("a credential whose kind cannot serve the field", () => {
     // row is not one. Reachable for an entry written before its kind existed, or by any path that
     // stores a value the kind does not describe.
     test("a kind that should hold a string, holding something else, is unusable", async () => {
-      const odd = formatVaultRef(
-        String(
-          (
-            await suDb.vaultEntry.create({
-              data: {
-                tenantId,
-                name: "legacy-shaped",
-                kind: "generic",
-                secret: encryptJson({ apiKey: "sk-x" }),
-              },
-              select: { id: true },
-            })
-          ).id,
-        ),
-      );
-      expect(await resolve(odd)).toEqual({
+      expect(await resolve(malformedRef)).toEqual({
         state: "unusable",
         kind: "generic",
       });
@@ -403,6 +460,22 @@ describe.skipIf(!dbUp)("a credential whose kind cannot serve the field", () => {
     test("a ref the vault does not hold is unresolved", async () => {
       expect(await resolve("vault:99999999")).toEqual({ state: "unresolved" });
     });
+  });
+
+  test("config-health reports a stored MALFORMED value the same way", async () => {
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: {
+        modelConfig: {
+          provider: "openai",
+          model: "gpt-4o-mini",
+          credentialRef: malformedRef,
+        },
+      },
+    });
+    const h = await readAgentConfigHealth(ctx(), agentId, { base: appDb });
+    expect(h.healthy).toBe(false);
+    expect(h.issues.find((i) => i.key === "model")?.wrongKind).toBe(true);
   });
 
   test("config-health reports a STORED one instead of calling the agent healthy", async () => {

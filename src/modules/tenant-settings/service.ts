@@ -282,7 +282,12 @@ export async function updateEmbeddingSettings(
     incoming == null
       ? incoming
       : await runScopedOn(base, ctx, (db) =>
-          requireVaultRefFor(db, incoming, "embedding.credentialRef", "apiKey"),
+          requireVaultRefFor(
+            db,
+            incoming,
+            "embedding.credentialRef",
+            "embeddingKey",
+          ),
         );
   return patchBlock(
     ctx,

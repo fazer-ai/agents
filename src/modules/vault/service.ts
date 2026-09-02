@@ -19,6 +19,8 @@ import {
   secretTypeIsManagedBlob,
   secretTypeNeedsParamName,
   secretTypeRequiresBaseUrl,
+  secretValueFitsKind,
+  valueRuleApplies,
 } from "./secret-types";
 
 // Tenant-scoped secret vault. Secrets are encryptJson() base64 blobs in a String column
@@ -444,6 +446,62 @@ export async function requireVaultRef(
 // operator is at the keyboard and the reference is the thing they just picked. What is ALREADY stored
 // is left alone and reported by config-health, so one unusable pairing cannot freeze every other
 // edit of the agent that holds it.
+// Decrypts a stored blob far enough to answer "is this the shape its kind declares?", and never
+// further: the value is judged and dropped, never returned or logged.
+//
+// THREE answers, not two, and the third is the one that matters. A blob that cannot be decrypted at
+// all — a rotated `ENCRYPTION_KEY`, a truncated row — is not a malformed value, it is a value nobody
+// can read, and collapsing it into "unfit" would make a key rotation refuse every agent write in the
+// workspace while blaming the credential's TYPE for it. That is a real problem with a different
+// cause, a different fix and no verdict here today; this change is about shape, and inventing an
+// answer for it would be inventing a diagnosis. So `unreadable` never refuses and never warns, and
+// the runtime keeps failing on it exactly as it did before.
+type ValueVerdict = "fits" | "unfit" | "unreadable";
+
+function vaultValueVerdict(
+  kind: string | null,
+  encrypted: string,
+): ValueVerdict {
+  let value: unknown;
+  try {
+    value = decryptJson(encrypted);
+  } catch {
+    return "unreadable";
+  }
+  return secretValueFitsKind(kind, value) ? "fits" : "unfit";
+}
+
+// The permissive projection every caller here wants: only a value that was READ and judged wrong
+// counts against the credential.
+function vaultValueFits(kind: string | null, encrypted: string): boolean {
+  return vaultValueVerdict(kind, encrypted) !== "unfit";
+}
+
+// What the vault says about one ref beyond its existence, for the two callers that judge a PAIRING
+// without being the write boundary: the import warning and (through listVaultInfos) config-health.
+// One function so the three surfaces cannot end up asking different halves of the same question,
+// which is the defect this whole change is about. Null when the ref names no row in this tenant.
+export interface VaultEntryFacts {
+  kind: string;
+  valueFitsKind: boolean;
+}
+
+export async function readVaultRefFacts(
+  db: ScopedDb,
+  ref: string,
+): Promise<VaultEntryFacts | null> {
+  const row = await db.vaultEntry.findFirst({
+    where: vaultRefWhere(ref),
+    select: { kind: true, status: true, secret: true },
+  });
+  if (!row) return null;
+  return {
+    kind: row.kind,
+    valueFitsKind:
+      row.status === "pending" || vaultValueFits(row.kind, row.secret),
+  };
+}
+
 export async function requireVaultRefFor(
   db: ScopedDb,
   ref: string,
@@ -453,11 +511,27 @@ export async function requireVaultRefFor(
   const canonical = await requireVaultRef(db, ref, field);
   const entry = await db.vaultEntry.findFirst({
     where: vaultRefWhere(canonical),
-    select: { kind: true },
+    select: { kind: true, status: true, secret: true },
   });
   // Gone between the two reads: `requireVaultRef` has already answered for existence, and inventing
   // a second refusal here would report a race as a shape problem.
-  if (!entry || secretTypeFits(entry.kind, use)) return canonical;
+  if (!entry) return canonical;
+  // TWO questions, because the runtime asks two and a boundary that asks fewer accepts a
+  // configuration the turn then refuses — with config-health calling it healthy in between, which is
+  // the exact asymmetry this change exists to remove. The kind is the catalog's declaration; the
+  // value is what is in the row, and `validateVaultValue` is not the only way one gets written.
+  //
+  // A PENDING entry is exempt from the value half and only from that half: it has no secret yet by
+  // design (`credential_create` writes exactly that), and refusing it would break the reference-first
+  // flow the write boundary admits deliberately. Its KIND is already knowable and is still checked.
+  if (
+    secretTypeFits(entry.kind, use) &&
+    (!valueRuleApplies(use) ||
+      entry.status === "pending" ||
+      vaultValueFits(entry.kind, entry.secret))
+  ) {
+    return canonical;
+  }
   // Two spellings of one refusal, written out rather than ternaried into one `new AppError`. The
   // error-catalog fence reads the key and its interpolation values out of the SOURCE, and a key
   // computed in the argument position is invisible to it: it reported the outbound sentence as a key
@@ -666,6 +740,11 @@ export interface VaultEntryInfo {
   paramName: string | null;
   // "active" = a real secret is stored; "pending" = only the reference exists (not filled yet).
   status: string;
+  // Whether the stored value is the shape this kind declares. A VERDICT, never the value: it is
+  // computed server-side and crosses the wire as a boolean, so the console can judge a pairing the
+  // way the runtime does without the secret ever leaving the process. Always true for a `pending`
+  // entry, which has no value yet and is reported through `status` instead.
+  valueFitsKind: boolean;
 }
 
 export async function listVaultInfos(db: ScopedDb): Promise<VaultEntryInfo[]> {
@@ -677,6 +756,7 @@ export async function listVaultInfos(db: ScopedDb): Promise<VaultEntryInfo[]> {
       baseUrl: true,
       paramName: true,
       status: true,
+      secret: true,
     },
     orderBy: { name: "asc" },
   });
@@ -687,6 +767,7 @@ export async function listVaultInfos(db: ScopedDb): Promise<VaultEntryInfo[]> {
     baseUrl: r.baseUrl,
     paramName: r.paramName,
     status: r.status,
+    valueFitsKind: r.status === "pending" || vaultValueFits(r.kind, r.secret),
   }));
 }
 

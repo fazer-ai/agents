@@ -68,10 +68,11 @@ import {
   createPendingVaultEntry,
   formatVaultRef,
   isVaultIdRef,
+  readVaultRefFacts,
   readVaultRefId,
   resolveVaultRefByName,
   VAULT_REF_PREFIX,
-  vaultRefWhere,
+  type VaultEntryFacts,
 } from "@/modules/vault/service";
 import { generateRouteToken } from "@/modules/webhooks/inbound/route-token";
 import {
@@ -1089,24 +1090,25 @@ export async function importAgent(
     // only record of which credential the author meant, and the entry EXISTS, unlike the
     // `credentialNotFound` case that unsets. So the ref stays wired, the operator is told at import
     // time, and config-health keeps saying it until they act. Issue #471.
-    const wiredKinds = new Map<string, string | null>();
+    const wiredFacts = new Map<string, VaultEntryFacts | null>();
     for (const write of collectCredentialRefWrites(
       { modelConfig, settings },
       {},
     )) {
-      let kind = wiredKinds.get(write.ref);
-      if (kind === undefined) {
-        const row = await db.vaultEntry.findFirst({
-          where: vaultRefWhere(write.ref),
-          select: { kind: true },
-        });
-        kind = row?.kind ?? null;
-        wiredKinds.set(write.ref, kind);
+      let facts = wiredFacts.get(write.ref);
+      if (facts === undefined) {
+        facts = await readVaultRefFacts(db, write.ref);
+        wiredFacts.set(write.ref, facts);
       }
-      if (kind !== null && !secretTypeFits(kind, write.use)) {
+      // The same two questions the write boundary and config-health ask, from the same helper, so an
+      // import cannot admit a pairing a direct write refuses.
+      if (
+        facts !== null &&
+        (!secretTypeFits(facts.kind, write.use) || !facts.valueFitsKind)
+      ) {
         warnings.push({
           code: "credentialKindUnusable",
-          params: { field: write.path, kind },
+          params: { field: write.path, kind: facts.kind },
           target: fieldTargetForPath(write.path),
         });
       }

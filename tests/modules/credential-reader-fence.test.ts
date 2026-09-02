@@ -32,15 +32,27 @@ const ALLOWED: Record<string, string> = {
   "src/modules/integrations/google-calendar.service.ts":
     "asks for one specific kind (google_oauth) by name and refuses everything else",
   "src/modules/integrations/google-drive.service.ts": "same as google-calendar",
-  "src/modules/tenant-settings/service.ts":
-    "reads the entry to assert a fixed kind (langfuse) at the write boundary; no secret is used",
 };
+
+// Comments are not usage, and a fence that counts them lies in the direction that matters: it lets a
+// file stay on the list for a MENTION and then covers a real raw read added there later. Measured on
+// the first version of this file — `tenant-settings/service.ts` was listed and exempted while its
+// only occurrence was a note about which resolver it does not use.
+//
+// Line and block comments are stripped, string literals are not: a file that names the resolver
+// inside a string is doing something worth listing.
+function stripComments(src: string): string {
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
+}
 
 async function rawReaders(root: string): Promise<string[]> {
   const out: string[] = [];
   for await (const rel of new Glob("**/*.{ts,tsx}").scan(root)) {
     const path = `${root}/${rel}`;
-    if ((await Bun.file(path).text()).includes(RAW_READER)) out.push(path);
+    const code = stripComments(await Bun.file(path).text());
+    if (code.includes(RAW_READER)) out.push(path);
   }
   return out.sort();
 }
@@ -71,6 +83,24 @@ describe("who may read a vault secret without asking what it is for", () => {
     }
   });
 
+  // The other direction, and the one the first version of this fence got wrong: a file whose only
+  // occurrence is a comment must NOT read as a reader, or an exemption granted for a mention keeps
+  // standing over the real read somebody adds under it later.
+  test("a file that only mentions the resolver in a comment is not a reader", async () => {
+    const path = `src/modules/vault/__fence_mention_${process.pid}.ts`;
+    await Bun.write(
+      path,
+      `// a note about ${RAW_READER} and why this file does not use it\n` +
+        `/* ${RAW_READER} again, in a block */\n` +
+        `export const y = 1;\n`,
+    );
+    try {
+      expect(await rawReaders("src")).not.toContain(path);
+    } finally {
+      await Bun.file(path).delete();
+    }
+  });
+
   // The other half of the rule, and the reason the list above is not just "these files are old": the
   // modules that DO send a secret outbound resolve it through the use-aware entry point.
   test("the API-key readers go through the use-aware resolver", async () => {
@@ -83,7 +113,10 @@ describe("who may read a vault secret without asking what it is for", () => {
       "src/modules/vision/service.ts",
     ];
     for (const path of expected) {
-      expect(await Bun.file(path).text()).toContain("tryResolveApiKeyEntry");
+      // Stripped for the same reason as above: a comment naming the resolver is not a call to it.
+      expect(stripComments(await Bun.file(path).text())).toContain(
+        "tryResolveApiKeyEntry",
+      );
     }
   });
 });

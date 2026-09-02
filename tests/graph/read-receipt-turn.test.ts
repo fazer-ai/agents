@@ -129,6 +129,25 @@ async function seedConversation(convId: number, inboxDbId?: bigint) {
   });
 }
 
+// `runLoadedTurn` is the parameter the debounce flush fills in, so the tests that drive the flush's
+// side of the contract go through it and need the config the caller would already hold.
+async function loadFor(convId: number) {
+  const loaded = await runScopedOn(
+    appDb,
+    { tenantId, userId: null, role: "TENANT_ADMIN" } as TenantContext,
+    (db) =>
+      loadAgentConfig(db, {
+        tenantId,
+        instanceId,
+        conversationId: convId,
+        agentId,
+        threadId: `${tenantId}:${instanceId}:${convId}`,
+      }),
+  );
+  if (!loaded) throw new Error("agent config did not load");
+  return loaded;
+}
+
 describe.skipIf(!dbUp)("the WhatsApp read receipt of a turn", () => {
   beforeAll(async () => {
     const t = await suDb.tenant.create({
@@ -366,19 +385,7 @@ describe.skipIf(!dbUp)("the WhatsApp read receipt of a turn", () => {
     await seedConversation(convId);
     const sent: number[] = [];
     const receipts: Receipt[] = [];
-    const loadedConfig = await runScopedOn(
-      appDb,
-      { tenantId, userId: null, role: "TENANT_ADMIN" } as TenantContext,
-      (db) =>
-        loadAgentConfig(db, {
-          tenantId,
-          instanceId,
-          conversationId: convId,
-          agentId,
-          threadId: `${tenantId}:${instanceId}:${convId}`,
-        }),
-    );
-    if (!loadedConfig) throw new Error("agent config did not load");
+    const loadedConfig = await loadFor(convId);
 
     await runLoadedTurn({
       stillWanted: null,
@@ -404,6 +411,78 @@ describe.skipIf(!dbUp)("the WhatsApp read receipt of a turn", () => {
     expect(receipts).toEqual([
       { conversationId: convId, messageIds: [5801, 5802, 5803] },
     ]);
+  });
+
+  // A blue tick is an outward write, and `docs/graph.md` requires every one of them to ask whether
+  // the caller still wants this turn — the receipt was the only write in `runTurnBody` reaching the
+  // wire before the first ask. The window is real on the debounce path: `/reset` (or a retirement)
+  // landing between the claim and this line left the contact looking at ticks from a turn that then
+  // returned "stale" and answered nothing. Nothing is lost by skipping: a retired job was retired
+  // because a NEWER burst took over, and that flush acknowledges a superset of these ids.
+  test("a turn the caller withdrew sends no receipt", async () => {
+    const convId = 8108;
+    await seedConversation(convId, whatsappInboxDbId);
+    const sent: number[] = [];
+    const receipts: Receipt[] = [];
+    const loadedConfig = await loadFor(convId);
+
+    const outcome = await runLoadedTurn({
+      stillWanted: async () => false,
+      loaded: loadedConfig,
+      authContext: null,
+      tenantId,
+      instanceId,
+      conversationId: convId,
+      agentBotId: 9,
+      threadId: `${tenantId}:${instanceId}:${convId}`,
+      text: "oi, ainda precisa?",
+      messageId: 6001,
+      readMessageIds: [6001],
+      base: appDb,
+      deps: {
+        makeModel: () => new StubModel() as unknown as BaseChatModel,
+        makeClient: stubClient(sent, receipts),
+        checkpointer: new MemorySaver(),
+      },
+      claimReply: null,
+    });
+
+    expect(receipts).toEqual([]);
+    expect(sent).toEqual([]);
+    expect(outcome).toBe("stale");
+  });
+
+  // The control for the one above: the same call shape with a fence that says yes still ticks, so
+  // "no receipt" is the withdrawal talking and not the fence's mere presence.
+  test("a live fence does not block the receipt", async () => {
+    const convId = 8109;
+    await seedConversation(convId, whatsappInboxDbId);
+    const sent: number[] = [];
+    const receipts: Receipt[] = [];
+    const loadedConfig = await loadFor(convId);
+
+    await runLoadedTurn({
+      stillWanted: async () => true,
+      loaded: loadedConfig,
+      authContext: null,
+      tenantId,
+      instanceId,
+      conversationId: convId,
+      agentBotId: 9,
+      threadId: `${tenantId}:${instanceId}:${convId}`,
+      text: "oi, ainda precisa?",
+      messageId: 6002,
+      readMessageIds: [6002],
+      base: appDb,
+      deps: {
+        makeModel: () => new StubModel() as unknown as BaseChatModel,
+        makeClient: stubClient(sent, receipts),
+        checkpointer: new MemorySaver(),
+      },
+      claimReply: null,
+    });
+
+    expect(receipts).toEqual([{ conversationId: convId, messageIds: [6002] }]);
   });
 
   // The whole point of the feature surviving a version-skewed fleet. Asserting only that no

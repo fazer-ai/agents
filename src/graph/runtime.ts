@@ -650,6 +650,16 @@ async function runTurnBody(
     botToken: loaded.agentBotToken ?? undefined,
   });
 
+  // The question, and it is asked AT each outward write rather than somewhere upstream of it. Four
+  // review rounds found the same defect in four different places, and every one of them was an ask
+  // that sat next to its effect when it was written and then had a round trip grow between the two:
+  // the output guardrail, the supersede re-fetch, the speech normalizer, the synthesis call.
+  // Adjacency is not something a call site can be trusted to keep — it has to be where the question
+  // is asked.
+  const writeCalledOff = async (): Promise<boolean> =>
+    params.stillWanted !== null &&
+    !(await params.stillWanted({ strict: false }));
+
   // Blue-ticks the contact's messages on WhatsApp. Here because this is the tail BOTH entry points
   // share, so the direct path and the debounce flush get it from one site instead of two that can
   // drift; and because a turn reaching this line has read the messages, which is exactly what the
@@ -663,7 +673,19 @@ async function runTurnBody(
   // `conversationId > 0` keeps the playground out: it runs turns against a dummy client and id 0.
   // Best-effort, because a Chatwoot older than the endpoint answers 401 (its bot allowlist predates
   // `read_receipt`) or 404 (no route), and no blue tick is worth failing a turn over.
-  if (params.conversationId > 0 && channelCanReadReceipt(loaded.channelType)) {
+  //
+  // Asked BEFORE the tick, because a blue tick is an outward write like any other and `docs/graph.md`
+  // requires every one of them to ask. This was the only write in this function that reached the wire
+  // ahead of the first ask: a `/reset` (or a retirement) landing between the debounce claim and this
+  // line left the contact looking at ticks from a turn that then returned "stale" and answered
+  // nothing. `strict: false` for the same reason every other write here uses it — an unreadable fence
+  // is not evidence that anybody withdrew the run. And nothing is lost by skipping: a job is retired
+  // because a NEWER burst took over, and that flush acknowledges a superset of these ids.
+  if (
+    params.conversationId > 0 &&
+    channelCanReadReceipt(loaded.channelType) &&
+    !(await writeCalledOff())
+  ) {
     // try/catch and NOT `.catch()`: the latter only covers a rejected promise, and the failure this
     // has to survive can happen while INVOKING — a client that predates the method (a test double,
     // an older build) throws TypeError synchronously and walks straight past a `.catch()`. Measured:
@@ -674,15 +696,6 @@ async function runTurnBody(
       // Swallowed on purpose: see above.
     }
   }
-  // The question, and it is asked AT each outward write rather than somewhere upstream of it. Four
-  // review rounds found the same defect in four different places, and every one of them was an ask
-  // that sat next to its effect when it was written and then had a round trip grow between the two:
-  // the output guardrail, the supersede re-fetch, the speech normalizer, the synthesis call.
-  // Adjacency is not something a call site can be trusted to keep — it has to be where the question
-  // is asked.
-  const writeCalledOff = async (): Promise<boolean> =>
-    params.stillWanted !== null &&
-    !(await params.stillWanted({ strict: false }));
 
   // The two gates that stand between this turn and a post, and neither is the fence — the fences are
   // the asks at the sends themselves. This is where a run that is already called off stops before

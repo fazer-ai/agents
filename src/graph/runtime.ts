@@ -600,6 +600,19 @@ type RunTurnBodyParams = RunLoadedTurnParams & {
   claimBeforeSend?: () => Promise<boolean>;
 };
 
+// Whether a read receipt on this channel can reach anything. Written as "not known to be something
+// else" rather than `=== "Channel::Whatsapp"`, because the question has THREE answers and the third
+// is the common one: `channelType` is mirrored from Chatwoot into the local Inbox row and stays null
+// until a sync populates it, so the strict form would silently drop the tick on a real WhatsApp
+// conversation whose mirror lags — the single outcome this feature exists to produce. The two
+// mistakes are not the same size. Treating unknown as WhatsApp costs one request that Chatwoot
+// answers 200 and its listener drops (`return unless channel.respond_to?(:read_messages)`), so
+// Api/Instagram/WebWidget never reach a provider; treating unknown as not-WhatsApp costs the
+// feature, without a log line to say so.
+function channelCanReadReceipt(channelType: string | null): boolean {
+  return channelType === null || channelType === "Channel::Whatsapp";
+}
+
 async function runTurnBody(
   params: RunTurnBodyParams,
 ): Promise<RunAgentTurnOutcome> {
@@ -650,7 +663,7 @@ async function runTurnBody(
   // `conversationId > 0` keeps the playground out: it runs turns against a dummy client and id 0.
   // Best-effort, because a Chatwoot older than the endpoint answers 401 (its bot allowlist predates
   // `read_receipt`) or 404 (no route), and no blue tick is worth failing a turn over.
-  if (params.conversationId > 0) {
+  if (params.conversationId > 0 && channelCanReadReceipt(loaded.channelType)) {
     // try/catch and NOT `.catch()`: the latter only covers a rejected promise, and the failure this
     // has to survive can happen while INVOKING — a client that predates the method (a test double,
     // an older build) throws TypeError synchronously and walks straight past a `.catch()`. Measured:

@@ -55,6 +55,9 @@ const suDb = su as PrismaClient;
 let tenantId = 0n;
 let instanceId = 0n;
 let agentId = 0n;
+let whatsappInboxDbId = 0n;
+let apiInboxDbId = 0n;
+let unclassifiedInboxDbId = 0n;
 
 const REPLY = "Claro, já verifico.";
 
@@ -112,12 +115,13 @@ const incoming = (
   message: { id: messageId, content, messageType: "incoming", private: false },
 });
 
-async function seedConversation(convId: number) {
+async function seedConversation(convId: number, inboxDbId?: bigint) {
   await suDb.conversation.create({
     data: {
       tenantId,
       chatwootInstanceId: instanceId,
       chatwootConversationId: convId,
+      ...(inboxDbId === undefined ? {} : { inboxId: inboxDbId }),
       status: "pending",
       threadId: `${tenantId}:${instanceId}:${convId}`,
       lastEventAt: new Date(),
@@ -177,6 +181,31 @@ describe.skipIf(!dbUp)("the WhatsApp read receipt of a turn", () => {
         agentId: agent.id,
       },
     });
+    // Three mirror rows for the three answers `channelType` can give, because the gate has three
+    // branches and not two: WhatsApp, a channel that is known NOT to be WhatsApp, and a row the
+    // mirror has not classified. The conversation's own `inboxId` is what carries the answer into
+    // the turn (`loadAgentConfig` reads `conversation.inbox.channelType`); the event's `inboxId`
+    // resolves the AGENT, which is a different lookup and stays on inbox 7 throughout.
+    const mirrored = async (
+      chatwootInboxId: number,
+      channelType: string | null,
+    ) =>
+      (
+        await suDb.inbox.create({
+          data: {
+            tenantId,
+            chatwootInstanceId: instanceId,
+            chatwootInboxId,
+            name: `Mirror ${chatwootInboxId}`,
+            agentId: agent.id,
+            ...(channelType === null ? {} : { channelType }),
+          },
+          select: { id: true },
+        })
+      ).id;
+    whatsappInboxDbId = await mirrored(17, "Channel::Whatsapp");
+    apiInboxDbId = await mirrored(27, "Channel::Api");
+    unclassifiedInboxDbId = await mirrored(37, null);
   });
 
   afterAll(async () => {
@@ -248,6 +277,84 @@ describe.skipIf(!dbUp)("the WhatsApp read receipt of a turn", () => {
     });
 
     expect(receipts).toEqual([]);
+  });
+
+  // A read receipt is a WhatsApp gesture, and a turn on any other channel would spend a Chatwoot
+  // round trip on the hot path before every model invocation to achieve nothing: the endpoint
+  // answers 200 and its listener returns unless the channel responds to `read_messages`, so
+  // Api/Instagram/WebWidget never reach a provider. Asserting `sent` too, because "no receipt" is
+  // also what a turn that died on the gate would produce.
+  test("a channel that is not WhatsApp gets no receipt", async () => {
+    const convId = 8105;
+    await seedConversation(convId, apiInboxDbId);
+    const sent: number[] = [];
+    const receipts: Receipt[] = [];
+
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming(convId, 5901, "oi pelo app"),
+      base: appDb,
+      deps: {
+        makeModel: () => new StubModel() as unknown as BaseChatModel,
+        makeClient: stubClient(sent, receipts),
+        checkpointer: new MemorySaver(),
+      },
+    });
+
+    expect(receipts).toEqual([]);
+    expect(outcome).toBe("posted");
+    expect(sent).toEqual([convId]);
+  });
+
+  test("a WhatsApp inbox gets the receipt", async () => {
+    const convId = 8106;
+    await seedConversation(convId, whatsappInboxDbId);
+    const sent: number[] = [];
+    const receipts: Receipt[] = [];
+
+    await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming(convId, 5902, "oi pelo whats"),
+      base: appDb,
+      deps: {
+        makeModel: () => new StubModel() as unknown as BaseChatModel,
+        makeClient: stubClient(sent, receipts),
+        checkpointer: new MemorySaver(),
+      },
+    });
+
+    expect(receipts).toEqual([{ conversationId: convId, messageIds: [5902] }]);
+  });
+
+  // The third branch, and the reason the gate is written as "skip what is known not to be WhatsApp"
+  // instead of "send only to Channel::Whatsapp". `channelType` comes from the local inbox mirror,
+  // which lags Chatwoot and is null until a sync populates it, so the strict form would silently
+  // drop the tick on a real WhatsApp conversation — the exact outcome this feature exists to
+  // produce. Unknown costs a 200 that does nothing; unknown-treated-as-no costs the feature.
+  test("an inbox the mirror has not classified still gets the receipt", async () => {
+    const convId = 8107;
+    await seedConversation(convId, unclassifiedInboxDbId);
+    const sent: number[] = [];
+    const receipts: Receipt[] = [];
+
+    await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming(convId, 5903, "oi, e por aqui?"),
+      base: appDb,
+      deps: {
+        makeModel: () => new StubModel() as unknown as BaseChatModel,
+        makeClient: stubClient(sent, receipts),
+        checkpointer: new MemorySaver(),
+      },
+    });
+
+    expect(receipts).toEqual([{ conversationId: convId, messageIds: [5903] }]);
   });
 
   // A debounce flush hands the WHOLE burst, and that is not the same set as the triggering id:

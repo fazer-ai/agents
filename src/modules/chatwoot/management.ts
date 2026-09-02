@@ -749,6 +749,13 @@ export async function softDisconnectChatwootInstance(
   // customer messages routed to no agent and no row saying why. The Chatwoot calls above stay
   // outside it, because no transaction of ours spans somebody else's system.
   const stamped = await runScopedOn(base, ctx, async (db) => {
+    // NOTE: The ACCOUNT row first, before any inbox of it. `syncInboxes` takes the same lock and
+    // then upserts the inboxes; taking them in the other order here is an ABBA deadlock between two
+    // ordinary operations (the page auto-syncs on load, and a disconnect is a click away). The abort
+    // would not be symmetric either: the bots were already detached in Chatwoot, outside this
+    // transaction, so a rolled-back disconnect leaves the account active locally and answering
+    // nowhere.
+    await db.$queryRaw`SELECT id FROM chatwoot_instances WHERE id = ${id} FOR UPDATE`;
     // NOTE: `agentId: { not: null }` so the count is the inboxes this call actually unbound, and not
     // every inbox of the account. It is half of what decides the row below.
     let unbound = 0;

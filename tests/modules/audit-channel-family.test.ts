@@ -785,6 +785,37 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
     await collect();
   });
 
+  // A LOCK-ORDER fence, and it is a source fence because the failure it guards has no green test:
+  // two transactions that take the same two rows in opposite orders deadlock only when they
+  // interleave, so a runtime test for it is a coin flip. `syncInboxes` takes the account row and
+  // then the inboxes under it; `softDisconnectChatwootInstance` unbinds those inboxes and then
+  // stamps the account, which is the same pair backwards, and both are ordinary operations (the
+  // page auto-syncs when it opens and a disconnect is one click). The abort is not symmetric
+  // either: the bots are detached in Chatwoot outside the transaction, so a rolled-back disconnect
+  // leaves the account active locally and answering nowhere.
+  test("every path that takes both locks takes the account row first", async () => {
+    const src = await Bun.file(
+      new URL("../../src/modules/chatwoot/management.ts", import.meta.url),
+    ).text();
+    // Function bodies, split on the top-level declarations this file is written with.
+    const parts = src.split(/\n(?=(?:export )?async function )/);
+    let checked = 0;
+    for (const body of parts) {
+      const account = body.indexOf("FROM chatwoot_instances");
+      if (account === -1) continue;
+      const inbox = body.search(
+        /db\.inbox\.(update|updateMany|upsert|delete|deleteMany)|FROM inboxes/,
+      );
+      if (inbox === -1) continue;
+      checked++;
+      const name = body.match(/async function (\w+)/)?.[1] ?? "?";
+      expect([name, account < inbox]).toEqual([name, true]);
+    }
+    // The fence is worthless if it matched nothing, which is how a refactor that renames the lock
+    // turns it green forever.
+    expect(checked).toBeGreaterThanOrEqual(2);
+  });
+
   // The fence, over every row the file wrote. `docs/mcp.md` names the deployment admin token as one
   // of the two raw-secret carve-outs, and the point of moving the row down a layer is that the
   // console now writes it too: a projection that kept the token would put it in an append-only table

@@ -792,6 +792,17 @@ describe.skipIf(!dbUp)(
         assigneeType: null,
         assigneeId: null,
       });
+      // And the MIRROR agrees, which is the half the row alone cannot show: the fallback write must
+      // not stamp a person onto a conversation that has none.
+      const mirrored = await suDb.conversation.findUniqueOrThrow({
+        where: { id },
+        select: { status: true, assigneeType: true, assigneeId: true },
+      });
+      expect(mirrored).toEqual({
+        status: "open",
+        assigneeType: null,
+        assigneeId: null,
+      });
     });
 
     test("the door is carried by the actor, not by the action", async () => {

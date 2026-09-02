@@ -1549,10 +1549,13 @@ export async function handoffConversation(
       id,
       conv,
       client,
+      // NOTE: The holder is only part of what this write ASKED FOR when it named one. An untargeted
+      // handoff sends no assignment request and the open toggle assigns nobody, so claiming `User`
+      // in the fallback had the mirror stamp a person onto a conversation that had none whenever the
+      // post-write read came back unusable, and the row one line down said otherwise.
       {
         status: "open",
-        assigneeType: "User",
-        ...(assigneeId !== null ? { assigneeId } : {}),
+        ...(assigneeId !== null ? { assigneeType: "User", assigneeId } : {}),
       },
       // NO MARK, and it costs nothing here: this action hands the conversation to a PERSON, so the
       // fence the mark feeds is never reached — `conversationOwnershipNow` answers "not ours" first.

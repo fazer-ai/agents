@@ -15,14 +15,30 @@ sec DOCKER;    docker --version || echo absent
 sec CONTAINERS; docker ps -a --format '{{.Names}}	{{.Image}}	{{.Status}}	[{{.Label "com.docker.compose.project"}}]'
 sec PORTS;     ss -tlnp | awk 'NR>1{n=split($4,a,":");print a[n]}' | sort -un | tr '\n' ' '; echo
 sec COOLIFY;   curl -s -m5 -o /dev/null -w 'api8000=%{http_code}\n' http://localhost:8000/api/health
-sec IMAGES;    docker ps -a --format '{{.Image}}' | sort -u | grep -iE 'coolify|chatwoot|langfuse|agents|pgvector|clickhouse|minio|traefik|caddy|nginx'
+sec IMAGES;    docker ps -a --format '{{.Image}}' | sort -u | grep -iE 'coolify|chatwoot|langfuse|agents|pgvector|clickhouse|minio|traefik|caddy|nginx|n8n'
+sec V3;        for c in $(docker ps --format '{{.Names}} {{.Image}}' | grep -iE 'postgres|pgvector' | awk '{print $1}'); do
+                 u=$(docker inspect "$c" --format '{{range .Config.Env}}{{println .}}{{end}}' \
+                   | sed -n 's/^POSTGRES_USER=//p'); u=${u:-postgres}
+                 for db in $(docker exec "$c" psql -U "$u" -d postgres -tAc \
+                     "select datname from pg_database where datallowconn;" 2>/dev/null); do
+                   docker exec "$c" psql -U "$u" -d "$db" -tA -F' ' -c \
+                     "select table_schema, count(*), string_agg(table_name, ',' order by table_name)
+                        from information_schema.tables
+                       where table_name in ('n8n_historico_mensagens','n8n_fila_mensagens','n8n_status_atendimento')
+                       group by table_schema;" 2>/dev/null \
+                   | while read -r sch n t; do
+                       if [ "$n" = 3 ]; then echo "v3 $c/$db schema=$sch: $t"
+                       else echo "parcial $c/$db schema=$sch: $n de 3: $t"; fi
+                     done
+                 done
+               done
 ```
 
 ```sh
 python3 scripts/remote.py --ssh root@<VPS_IP> --ssh-opts "-i <chave>" --script-file recon.sh
 ```
 
-> **Tier B (Portainer):** quando a plataforma é Portainer, a sondagem é **via API do Portainer** (`GET /api/stacks`, `GET /api/endpoints/{id}/docker/containers/json`), não `coolify-db`. A lógica é a mesma (fingerprint por imagem + matriz da seção 3); use `scripts/portainer-brownfield.py` (já detecta quem ocupa 80/443 → se há ingress, o Caddy bundled conflita, reusar ou ir de `templates/docker-compose.prod.yml` BYO-proxy). Ver [`deploy-b-portainer.md`](deploy-b-portainer.md).
+> **Tier B (Portainer):** quando a plataforma é Portainer, a sondagem é **via API do Portainer** (`GET /api/stacks`, `GET /api/endpoints/{id}/docker/containers/json`), não `coolify-db`. A lógica é a mesma (fingerprint por imagem + matriz da seção 3); use `scripts/portainer-brownfield.py` (já detecta quem ocupa 80/443 → se há ingress, o Caddy bundled conflita, reusar ou ir de `templates/docker-compose.prod.yml` BYO-proxy). Ver [`deploy-b-portainer.md`](deploy-b-portainer.md). **A sondagem da v3 não vem de graça aqui**: o `portainer-brownfield.py` faz fingerprint por imagem e não consulta banco nenhum, então ele não enxerga as três tabelas. Em Portainer, pergunte pela v3 explicitamente e rode a checagem das tabelas à mão, no contêiner de Postgres que a listagem da API mostrar.
 
 ## 2. Ler os sinais
 
@@ -34,8 +50,25 @@ python3 scripts/remote.py --ssh root@<VPS_IP> --ssh-opts "-i <chave>" --script-f
 | **Chatwoot** | imagem com `chatwoot` (+ `sidekiq`, e `baileys-api` para WhatsApp) | `chatwoot` + `sidekiq` Up | tag (`:latest` → ver via `/version`) |
 | **Langfuse** | `langfuse/langfuse` (+ `-worker`, `clickhouse`, **`minio`**) | web+worker+clickhouse+minio Up | tag (ex. `:3`) |
 | **fazer.ai agents** | `ghcr.io/fazer-ai/agents` (+ `pgvector`) | container Up + `/api/health` | tag |
+| **Secretária v3** | `n8nio/n8n` (+ `n8nio/runners`), **e** as tabelas `n8n_historico_mensagens`, `n8n_fila_mensagens`, `n8n_status_atendimento` no Postgres dele | container Up | tag |
 
 As portas das apps **não** ficam expostas no host (atrás do Traefik); só Coolify (`:8000`) e o proxy (`:80`/`:443`) escutam. `curl localhost:80` sem o Host certo dá 404/503 (esperado). Pra health de uma app, use o FQDN dela.
+
+## 2b. Achou n8n com as três tabelas: é uma Secretária v3
+
+As três tabelas juntas (`n8n_historico_mensagens`, `n8n_fila_mensagens`, `n8n_status_atendimento`) são a assinatura: é a v3 rodando, não um n8n qualquer. **A v3 não entra na matriz da seção 3**: ela não é serviço para reusar nem para instalar, é a configuração do agente do usuário morando em outra ferramenta, e vira **fonte de leitura** para a etapa 8.
+
+**Juntas quer dizer as três, no mesmo schema, e é isso que a sondagem imprime como `v3`.** Uma ou duas saem como `parcial`, e `parcial` não é v3: pode ser uma v3 meio desmontada, um banco compartilhado com outra coisa, ou um nome parecido por coincidência. Nesse caso não entre na migração, pergunte ao usuário o que é aquilo. Ir para a jornada de migração com base em uma tabela solta custa caro no fim, porque a seção 7 desliga o que ela acredita ser a v3.
+
+Achando, **ofereça a migração como caminho padrão** e siga [`migracao-v3.md`](migracao-v3.md). A alternativa (montar o agente do zero, ignorando a v3) é escolha legítima de quem acha o próprio prompt ruim, mas o usuário precisa dizer isso explicitamente. **Desligar a v3 não é opção nesta jornada em hipótese nenhuma**: ela intacta é o plano de rollback, e sai de cena depois, com a V4 provada.
+
+**Não achou o n8n aqui, pergunte assim mesmo.** A v3 pode estar em outra VPS: "você já roda a Secretária v3, aqui ou em outro servidor?".
+
+**Estando em outro servidor, o que importa não é onde o n8n roda, é qual Chatwoot ela atende.** O cutover troca quem responde **numa conta de Chatwoot**, então ele só existe se a V4 for vinculada àquela mesma conta, com as caixas e as conversas que já estão lá. Levante a **URL** dela, porque a jornada precisa entrar no caminho de Chatwoot **existente**. O token não: esse é o Caso B do [`09-chatwoot-bind.md`](09-chatwoot-bind.md), em que o agente não recebe o token e manda o usuário colá-lo no console pelo deep-link. Pedir o token aqui é o caminho curto que põe um admin token no transcript.
+
+**E o Chatwoot é só metade: a v3 mora numa VPS que não é esta.** Ler os workflows, drenar a fila e desativar o gatilho pedem acesso àquele servidor, e o escopo desta jornada é a VPS que o usuário indicou, só ela. Então isso se resolve **antes** de prometer a migração, e tem dois desfechos legítimos: o usuário autoriza explicitamente a segunda VPS, e ela passa a ser alvo declarado, ou ele não autoriza, e aí a migração é **operada por ele**, com você entregando o que extrair e o roteiro de cutover para ele executar. O que não existe é a terceira via de tocar em servidor que ninguém liberou. Deixar a matriz da seção 3 classificá-lo como ausente provisiona um Chatwoot novo e vazio, e aí não há cutover a fazer: há uma migração de canal, que é outro trabalho e outra conversa com o usuário.
+
+**Se o `onboarding.json` já marcou `chatwootSource: "new"`, pare aqui e resolva com o usuário.** O marcador é escolha explícita dele e a seção 1 manda respeitá-lo, então não invente um inventário que o contradiz: as duas leituras são incompatíveis e só ele decide qual vale. Subir um Chatwoot novo é legítimo, só não é cutover, e ele precisa saber que está escolhendo entre as duas coisas.
 
 ## 3. Matriz de decisão (por serviço)
 

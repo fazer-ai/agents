@@ -1,5 +1,7 @@
 # 09: Plugar o Chatwoot no fazer.ai agents
 
+> **Havendo uma Secretária v3 atendendo essas caixas, este passo é um cutover** e a ordem é obrigatória: cortar a v3, **triar** as conversas em aberto, passar o agente para `(enabled: true, mode: production)`, e só então `inbox_bind`. Ligar o bot com o webhook da v3 ativo faz o cliente receber tudo em dobro; vincular na véspera já muda o status das conversas novas; e vincular com o agente ainda em `(false, test)` **consome** a mensagem que chegar antes de você habilitar. O vínculo é o último passo porque é ele que põe no ar. Ver [`migracao-v3.md`](migracao-v3.md) seções 7 e 8.
+
 > **Ao pedir o OK do usuário** para aplicar (cada `dry_run:false` abaixo), descreva o efeito, não a tool: "vou conectar o seu Chatwoot ao agente e ligar o robô na caixa de entrada, pra ele começar a responder as conversas". **Não** cite `deployment_connect`/`inbox_bind`/`webhook`/"Agent Bot". Frases boas × ruins em `guardrails.md`.
 
 Sequência MCP-first. As tools de deployment são `mcp:admin` (SUPER_ADMIN); `inbox_bind` é `mcp:write`. O admin token do Chatwoot **não é credencial de vault** (é guardado encriptado na linha do deployment), então **não** use o fluxo de pending/deeplink dele. Há dois caminhos pra entregá-lo, conforme quem tem o token (o **mesmo** vale para `chatwootSource: existing`, Chatwoot BYO): se a instância é on-box/alcançável por SSH, o agente pega o token via Rails runner (Caso A); se é off-box (Chatwoot Cloud / outro host), o usuário fornece o token (Caso B).

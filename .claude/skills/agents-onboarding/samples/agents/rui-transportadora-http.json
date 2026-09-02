@@ -1,0 +1,129 @@
+{
+  "version": 1,
+  "kind": "fazer-ai.agent",
+  "agent": {
+    "name": "Rui (Transportadora Exemplo)",
+    "systemPrompt": "# PAPEL\n\n<papel>\n  Você é o Rui, do atendimento da Transportadora Exemplo. Sua função é uma só:\n  confirmar o endereço de destino de uma entrega a partir do CEP. Qualquer outra\n  coisa, inclusive onde a encomenda está agora, você passa para uma pessoa da\n  equipe. Você não tem como consultar rastreio, e não deve responder de cabeça.\n</papel>\n\n# FERRAMENTAS DISPONÍVEIS\n\n<ferramentas>\n  ### consultar_cep\n\n  <ferramenta id=\"consultar_cep\">\n    **Uso**: Descobrir a cidade e o estado de um CEP, para confirmar o destino com o cliente\n    **Quando**: Sempre que a pessoa informar um CEP\n    **Parâmetros obrigatórios**:\n      * cep: apenas os oito dígitos, sem hífen\n    **Importante**: um campo que voltar como \"(not returned)\" não existe. Não deduza o\n    valor dele: diga que não conseguiu confirmar e escale\n  </ferramenta>\n\n  ### handoff_to_human\n\n  <ferramenta id=\"handoff_to_human\">\n    **Uso**: Passar a conversa para uma pessoa da equipe\n    **Quando**: Qualquer pergunta que não seja confirmar destino por CEP, rastreio de\n    encomenda incluído\n    **Importante**: avise a pessoa antes de chamar. Nunca escale em silêncio\n  </ferramenta>\n</ferramentas>\n\n# OBSERVAÇÕES FINAIS\n\n<observacoes-finais>\n  * Uma pergunta por mensagem\n  * Mensagens curtas\n  * Não use emoji\n  * Não escreva marcação de formatação: o canal cuida disso\n</observacoes-finais>\n",
+    "modelConfig": {
+      "model": "gpt-5.4-mini",
+      "provider": "openai",
+      "temperature": 0.3,
+      "credentialRef": "OpenAI"
+    },
+    "settings": {
+      "stt": {
+        "model": "whisper-1",
+        "baseURL": null,
+        "enabled": true,
+        "language": "pt",
+        "provider": "openai",
+        "credentialRef": "OpenAI"
+      },
+      "tts": {
+        "mode": "never",
+        "enabled": false
+      },
+      "split": {
+        "enabled": true,
+        "maxChars": 300,
+        "maxChunks": 4,
+        "typingWpm": 150,
+        "maxDelayMs": 2000,
+        "minDelayMs": 500
+      },
+      "limits": {
+        "maxToolCalls": 10
+      },
+      "vision": {
+        "enabled": false
+      },
+      "handoff": {
+        "mode": "route",
+        "instructions": "Escale quando a pergunta não for confirmar destino por CEP: rastreio de encomenda, prazo, cotação, coleta, avaria ou extravio, pedido de atendente, reclamação e negociação de valor. Escale também quando a consulta de CEP não confirmar o destino. Avise antes de transferir.",
+        "targetTeamId": null,
+        "targetAgentId": null,
+        "targetInstanceId": null
+      },
+      "debounce": {
+        "enabled": true,
+        "windowSeconds": 8,
+        "maxWindowSeconds": 60,
+        "maxMessagesPerBurst": 10
+      },
+      "attributeContext": {
+        "task": [],
+        "contact": [
+          "cidade_destino",
+          "codigo_rastreio"
+        ],
+        "conversation": []
+      }
+    },
+    "transferWithSummary": true,
+    "businessHours": null,
+    "followUpHours": null,
+    "tools": [
+      {
+        "source": "NATIVE",
+        "enabledTools": [
+          "handoff_to_human",
+          "set_custom_attribute",
+          "skip_reply",
+          "get_current_time"
+        ]
+      },
+      {
+        "source": "HTTP",
+        "tool": "consultar_cep",
+        "enabledTools": [
+          "consultar_cep"
+        ]
+      }
+    ],
+    "credentials": [
+      {
+        "name": "OpenAI",
+        "kind": "openai"
+      }
+    ]
+  },
+  "components": {
+    "httpTools": [
+      {
+        "name": "consultar_cep",
+        "label": "Consultar CEP",
+        "description": "Devolve cidade, estado, bairro e rua de um CEP brasileiro.",
+        "method": "GET",
+        "urlTemplate": "https://brasilapi.com.br/api/cep/v2/{{cep}}",
+        "allowedHosts": [
+          "brasilapi.com.br"
+        ],
+        "headers": {},
+        "query": {},
+        "body": {},
+        "inputSchema": {
+          "cep": {
+            "type": "string",
+            "required": true,
+            "description": "CEP com oito dígitos, só números"
+          }
+        },
+        "outputSchema": {
+          "mode": "template",
+          "template": "Cidade: {{city}}\nEstado: {{state}}\nBairro: {{neighborhood}}\nRua: {{street}}"
+        },
+        "expectedStatuses": [
+          404
+        ],
+        "ackEnabled": false,
+        "ackMessage": null,
+        "credentialRef": null,
+        "enabled": true
+      }
+    ],
+    "mcpServers": [],
+    "integrations": [],
+    "knowledgeBases": [],
+    "businessHours": []
+  }
+}

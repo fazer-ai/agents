@@ -6,6 +6,7 @@ Exemplos de agentes no schema de export **`fazer-ai.agent` v1** (o mesmo formato
 | Arquivo | Persona |
 | --- | --- |
 | `maria-clinica-moreira.json` | "Maria", recepção de uma clínica fictícia (Clínica Moreira): agendamento, FAQ, voz, KB. |
+| `rui-transportadora-http.json` | "Rui", atendimento de uma transportadora fictícia. **O menor bundle com ferramenta HTTP declarativa**: `urlTemplate`, `allowedHosts`, contrato de entrada, `expectedStatuses` e template de resposta. É a forma que uma migração de v3 produz para o `toolWorkflow` que faz **uma chamada HTTP**. Os outros formatos não viram isto: consulta a banco, nó de código, integração nativa e subfluxo de vários passos ou vão para ferramenta nativa da V4, ou são mapeamento manual. Sem credencial: a API é pública. |
 
 ## Credenciais são por NOME, não por valor
 

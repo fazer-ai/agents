@@ -249,13 +249,21 @@ describe("the test database's name belongs to ONE checkout", () => {
 // The checksum is a real one of the name, so a fixture never accidentally matches a DIFFERENT
 // name's file: `sameSql` below builds the local side from the same function.
 const sumOf = (name: string) => createHash("sha256").update(name).digest("hex");
-const done = (...names: string[]): MigrationRow[] =>
-  names.map((migration_name) => ({
+// One stamp for the whole batch, taken BEFORE the map. `new Date()` per row lets the ARRAY's order
+// leak into `finished_at` whenever the clock ticks mid-map, and `finished_at` is exactly what
+// `appliedOutOfOrder` sorts on — so a deliberately shuffled fixture reported an inversion on a
+// loaded runner and none on a fast one. That is a flake about the fixture, not a finding about the
+// database. Deliberate ordering is expressed with `at(name, tick)` further down, which is what the
+// ordering tests use; `done` only means "these are applied".
+const done = (...names: string[]): MigrationRow[] => {
+  const finished_at = new Date();
+  return names.map((migration_name) => ({
     migration_name,
     checksum: sumOf(migration_name),
-    finished_at: new Date(),
+    finished_at,
     rolled_back_at: null,
   }));
+};
 const halfWay = (migration_name: string): MigrationRow => ({
   migration_name,
   checksum: sumOf(migration_name),

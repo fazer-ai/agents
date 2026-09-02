@@ -333,6 +333,73 @@ describe.skipIf(!dbUp)(
       expect(row?.after).toEqual({ status: "pending", outcome });
     });
 
+    // THE MATRIX, and it is here because the same finding arrived twice: a row that carries what the
+    // caller ASKED for instead of where the write LANDED. Every action of this family that writes
+    // through `mirrorConsoleWrite` gets a row from the same value the broadcast publishes, so the two
+    // cannot disagree about the same instant, and each one is measured on a conversation whose live
+    // state answers something other than the request.
+    const liveConversation = (over: {
+      status: string;
+      assigneeId?: number | null;
+    }) => ({
+      id: 1,
+      status: over.status,
+      meta:
+        over.assigneeId == null
+          ? { assignee_type: null, assignee: null }
+          : {
+              assignee_type: "User",
+              assignee: { id: over.assigneeId, name: "Ana" },
+            },
+      // NEWER than the mirrored row, or the reconcile refuses the reading and `state` comes back null.
+      last_activity_at: Math.floor(Date.now() / 1000) + 60,
+      updated_at: Math.floor(Date.now() / 1000) + 60.5,
+    });
+
+    test("a status change records where it landed, not what it asked for", async () => {
+      await clearAudit();
+      const id = await seedConversation(4010, { status: "pending" });
+      const stub = stubClient({
+        // A webhook outranked the toggle: Chatwoot answers `open` to a request for `resolved`.
+        getConversation: async () => liveConversation({ status: "open" }),
+      });
+      await setConversationStatus(
+        ctx(),
+        id,
+        "resolved",
+        { makeClient: stub.makeClient },
+        appDb,
+      );
+      const [row] = await rows();
+      expect(row?.action).toBe("conversation.status");
+      expect(row?.before).toEqual({ status: "pending" });
+      expect(row?.after).toEqual({ status: "open" });
+    });
+
+    test("a hand-back records where it landed too", async () => {
+      await clearAudit();
+      const id = await seedConversation(4011, {
+        status: "open",
+        assigneeType: "User",
+        assigneeId: 5,
+      });
+      const stub = stubClient({
+        getConversation: async () =>
+          liveConversation({ status: "open", assigneeId: 5 }),
+      });
+      const outcome = await returnConversationToAgent(
+        ctx(),
+        id,
+        { makeClient: stub.makeClient },
+        appDb,
+      );
+      // The holder never left, so the hand-back reports the takeover rather than the return it asked
+      // for, and the status the row carries is the one the mirror ended up with.
+      expect(outcome).toBe("taken-over");
+      const [row] = await rows();
+      expect(row?.after).toEqual({ status: "open", outcome: "taken-over" });
+    });
+
     test("a status change records both sides", async () => {
       await clearAudit();
       const id = await seedConversation(4005, { status: "open" });

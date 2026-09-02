@@ -1796,10 +1796,13 @@ export async function returnConversationToAgent(
   // thing the caller asked for: `taken-over` means the status went to pending and the human stayed,
   // and a row that only said "returned to the agent" would be the trail disagreeing with the console
   // that was told otherwise in the same instant.
+  // Same rule as the other two: the status is where the write LANDED, and the outcome is what the
+  // caller was told. `taken-over` with a status that is not `pending` is the honest pair, and a row
+  // that hard-coded `pending` would be the trail contradicting the console it answered.
   await recordConversationAction(ctx, base, id, {
     action: "conversation.return",
     before: { status: conv.status },
-    after: { status: "pending", outcome },
+    after: { status: state?.status ?? "pending", outcome },
   });
   return outcome;
 }
@@ -1873,9 +1876,13 @@ export async function setConversationStatus(
     lastEventAt:
       (state ? state.lastEventAt : conv.lastEventAt)?.toISOString() ?? null,
   });
+  // WHERE IT LANDED, the same value the broadcast just published. A row carrying the status this
+  // call ASKED for would claim the operator left the conversation resolved while the mirror and every
+  // open console say otherwise, which happens whenever a webhook or another operator outranks the
+  // toggle inside `mirrorConsoleWrite`.
   await recordConversationAction(ctx, base, id, {
     action: "conversation.status",
     before: { status: conv.status },
-    after: { status },
+    after: { status: state?.status ?? status },
   });
 }

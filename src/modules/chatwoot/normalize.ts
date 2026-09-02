@@ -573,19 +573,23 @@ export function isDeviceAttendantMessage(
   // unsafe. `null` (unknown, or not a WhatsApp inbox) refuses.
   opts: { whatsappProvider: string | null },
 ): boolean {
+  // Through `resolveHumanReplyRoute`, so the provider rule has ONE spelling: this predicate and the
+  // recovery that asks it of a stored shape (issue #439) must not be able to disagree about which
+  // providers the marker can be trusted on.
   return (
-    providerReservesEchoIds(opts.whatsappProvider) && hasDeviceAttendantShape(e)
+    resolveHumanReplyRoute(
+      hasDeviceAttendantShape(e) ? "device" : null,
+      opts,
+    ) !== null
   );
 }
 
 // COULD this event be a person answering the customer, before the inbox row has been read? The
-// superset above, joined with the composer route, which needs no provider because it is
-// sender-typed. Used only to decide whether resolving the inbox's agent is worth a query.
+// shape below, which is the same question without the provider. Used to decide whether resolving the
+// inbox's agent is worth a query, and — since issue #439 — to decide whether the ledger row records
+// a takeover as owed.
 export function mayBeNewHumanReply(e: NormalizedChatwootEvent): boolean {
-  return (
-    e.event === "message_created" &&
-    (isHumanAgentMessage(e) || hasDeviceAttendantShape(e))
-  );
+  return newHumanReplyShape(e) !== null;
 }
 
 // A PERSON answered the customer here, by either route, and WHICH route it was. The two halves are
@@ -601,13 +605,50 @@ export function mayBeNewHumanReply(e: NormalizedChatwootEvent): boolean {
 // from the same two predicates rather than re-tested, so it cannot disagree with the gate that acted.
 export type HumanReplyRoute = "composer" | "device";
 
+// THE HALF THE PAYLOAD ANSWERS, split out because the two halves are answered at different MOMENTS
+// and, since issue #439, in different processes. `device` here is a shape and not yet a verdict: the
+// echo an unreserved provider produces wears exactly this shape, and only the inbox row can tell the
+// two apart (see providerReservesEchoIds).
+//
+// Split rather than inlined a second time. The ledger records this shape at INSERT — before anything
+// has read the inbox — so a delivery a process death strands still says what it was about, and the
+// recovery asks the second half against the inbox row as it stands then. Two spellings of these
+// clauses is how one of them comes to be missing from one of the two.
+export function humanReplyShape(
+  e: NormalizedChatwootEvent,
+): HumanReplyRoute | null {
+  if (isHumanAgentMessage(e)) return "composer";
+  if (hasDeviceAttendantShape(e)) return "device";
+  return null;
+}
+
+// message_created only, for the reason isNewHumanAgentMessage gives.
+export function newHumanReplyShape(
+  e: NormalizedChatwootEvent,
+): HumanReplyRoute | null {
+  return e.event === "message_created" ? humanReplyShape(e) : null;
+}
+
+// THE HALF THE INBOX ANSWERS. `composer` is sender-typed and stands on the payload alone; `device`
+// is only a person on a provider whose send path reserves its ids, so an unknown or unreserved
+// provider refuses it — the same refusal `isDeviceAttendantMessage` makes, asked of the shape
+// instead of the event, so a caller that no longer HAS the event can still ask it.
+export function resolveHumanReplyRoute(
+  shape: HumanReplyRoute | null,
+  opts: { whatsappProvider: string | null },
+): HumanReplyRoute | null {
+  if (shape === "composer") return "composer";
+  if (shape === "device" && providerReservesEchoIds(opts.whatsappProvider)) {
+    return "device";
+  }
+  return null;
+}
+
 export function humanReplyRoute(
   e: NormalizedChatwootEvent,
   opts: { whatsappProvider: string | null },
 ): HumanReplyRoute | null {
-  if (isHumanAgentMessage(e)) return "composer";
-  if (isDeviceAttendantMessage(e, opts)) return "device";
-  return null;
+  return resolveHumanReplyRoute(humanReplyShape(e), opts);
 }
 
 // message_created only, for the reason isNewHumanAgentMessage gives: an update is our own write-back
@@ -618,7 +659,7 @@ export function newHumanReplyRoute(
   e: NormalizedChatwootEvent,
   opts: { whatsappProvider: string | null },
 ): HumanReplyRoute | null {
-  return e.event === "message_created" ? humanReplyRoute(e, opts) : null;
+  return resolveHumanReplyRoute(newHumanReplyShape(e), opts);
 }
 
 export function isNewHumanReplyToCustomer(

@@ -27,6 +27,7 @@
 // that message's ledger row itself, so a row still non-terminal is one nothing covered. The sweep
 // and that retirement are both in ./delivery-sweep.ts.
 
+import type { HumanReplyRoute } from "./normalize";
 import { TURN_BEARING_EVENT } from "./normalize";
 
 export interface StrandedDeliveryRow {
@@ -50,6 +51,11 @@ export interface StrandedDeliveryRow {
   // a customer message — a conversation update, the bot's own reply coming back around — and those
   // are the rows where nothing was lost no matter how long they sat.
   inboundMessageId: number | null;
+  // WHAT THIS DELIVERY OWED, when what it owed was the human-reply takeover (issue #439): the shape
+  // the payload had, `composer` or `device`, written at INSERT. Null on every other delivery AND on
+  // every row an older build wrote — which is why it is read only where the answer would otherwise
+  // be the benign `no-message`, never as evidence about a customer message.
+  humanReplyShape: string | null;
 }
 
 export interface StrandedDeliveryPolicy {
@@ -66,15 +72,27 @@ export type StrandedVerdict =
   // could and this one did not (our own reply coming back around). Terminal and benign: nothing a
   // customer sent is at stake, so it must NOT appear in the list of lost messages.
   //
-  // BENIGN IS ABOUT THE CUSTOMER'S MESSAGE, and since issue #430 that is no longer the same as "no
-  // effect was owed": an OUTGOING message can be a colleague answering from the composer or the
-  // paired phone, and the delivery that carries it is what steps the agent off the conversation. A
-  // crash in the detached window strands that row here, it is closed without replay, and the
-  // conversation stays `pending` until the next human reply takes it over instead. Not classified
-  // `lost`, which would be wrong in both directions — it pages an operator about a message nobody
-  // lost, and arms a model turn to answer a reply that was ours. Recovering the SIDE EFFECT rather
-  // than the message is a mechanism this file does not have — issue #439.
+  // BENIGN IS ABOUT THE CUSTOMER'S MESSAGE, and it is not the same as "no effect was owed" — the
+  // verdict below is what carries that other half.
   | "no-message"
+  // Stranded carrying no customer message, and owing a HUMAN-REPLY TAKEOVER that never ran (issue
+  // #439). The delivery is a colleague's own reply — from the composer or the paired phone — and
+  // since issue #430 that is the delivery that steps the agent off the conversation. A process that
+  // died in the detached window leaves the conversation `pending` and still the bot's, so the next
+  // customer message drives a full turn and the agent answers over the person.
+  //
+  // A VERDICT OF ITS OWN because neither neighbour fits, in opposite directions. `no-message` closes
+  // the row and replays nothing, which is what shipped and is the defect. `lost` is wrong twice
+  // over: it marks the row DEAD and DISPATCHES an alert about a message nobody lost, and it arms a
+  // recovery that spends a model turn answering a reply that was ours. What is owed here is a side
+  // effect, and the recovery for it re-runs the takeover and nothing else.
+  //
+  // The SHAPE is not yet the route: `device` is also what an echo of our own reply looks like on a
+  // provider that does not reserve its ids. That half is decided by the recovery, against the inbox
+  // row (resolveHumanReplyRoute) — asking it here would mean reading an inbox per row inside a scan
+  // sized for indexed queries, and answering it wrong in the safe direction costs the takeover this
+  // verdict exists to recover.
+  | "owed-takeover"
   // Stranded with a customer message nothing ever covered, or stranded by a build whose columns
   // cannot be read. Nothing will answer it.
   //
@@ -128,6 +146,20 @@ export function classifyStrandedDelivery(
   ) {
     return "lost";
   }
-  if (row.inboundMessageId === null) return "no-message";
+  if (row.inboundMessageId === null) {
+    // The one place the column is read, and only from the arm that was already going to answer
+    // benign: a row that carries a customer message is `lost` whatever it also owed, because the
+    // recovery for THAT re-runs the delivery path, takeover included.
+    return isHumanReplyShape(row.humanReplyShape) && row.conversationId !== null
+      ? "owed-takeover"
+      : "no-message";
+  }
   return "lost";
+}
+
+// Whether the stored shape is one this build can act on. A String column rather than an enum, like
+// `event` beside it, so the reader answers for what is actually in the row: null from an older
+// build, and anything else from a build that spells a shape this one does not know.
+export function isHumanReplyShape(v: string | null): v is HumanReplyRoute {
+  return v === "composer" || v === "device";
 }

@@ -1,0 +1,11 @@
+-- The recovery that re-runs a human-reply takeover a process death lost (issue #439).
+--
+-- A kind of its own rather than a second shape of DELIVERY_RECOVERY: the four per-kind policies in
+-- ../../src/modules/scheduler/lanes.ts answer differently for it — it spends no model, its rows are
+-- not traffic-proportional in the same way, and what its death means to an operator is a warning
+-- about a conversation, not a lost customer message.
+--
+-- Alone in its own migration because Postgres refuses to use a value added to an enum inside the
+-- same transaction that added it, and Prisma runs one migration file per transaction. The next
+-- migration is free to reference 'TAKEOVER_RECOVERY'; this one must not.
+ALTER TYPE "SchedulerJobKind" ADD VALUE 'TAKEOVER_RECOVERY';

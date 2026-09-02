@@ -4,15 +4,13 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { setPublisher } from "@/api/features/realtime/realtime.service";
 import { encryptJson } from "@/api/lib/crypto";
 import { createChatwootClient } from "@/modules/chatwoot/client";
+import { claimOpenForHumanQueue } from "@/modules/chatwoot/human-takeover";
 import {
   normalizeChatwootEvent,
   shouldBotHandle,
 } from "@/modules/chatwoot/normalize";
 import { STATUS_CLAIM_TTL_MS } from "@/modules/chatwoot/status-claim";
-import {
-  claimOpenForHumanQueue,
-  processChatwootDelivery,
-} from "@/modules/chatwoot/webhook";
+import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
 import { isFollowUpLive } from "@/modules/followups/eligibility";
 import { POLL_DEADLINE_MS } from "@/tests/utils/poll";
 import { seedChatwootInstance } from "../utils/chatwoot";

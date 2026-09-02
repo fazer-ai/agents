@@ -6,6 +6,7 @@ import { writeFlowEvent } from "@/modules/flowlog/service";
 import { type ClaimedJob, enqueueJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 import { armDeliveryRecovery, isRecoverableStrand } from "./recover-delivery";
+import { armTakeoverRecovery } from "./recover-takeover";
 import {
   classifyStrandedDelivery,
   type StrandedVerdict,
@@ -315,6 +316,7 @@ interface StrandedRow {
   claimedAt: Date | null;
   conversationId: number | null;
   inboundMessageId: number | null;
+  humanReplyShape: string | null;
 }
 
 export interface SweepCounts {
@@ -322,6 +324,11 @@ export interface SweepCounts {
   closed: number;
   // Terminal, a customer message lost.
   lost: number;
+  // Terminal and nothing lost, but a SIDE EFFECT was owed and never ran: the delivery carried a
+  // colleague's reply, so the takeover it should have written is armed for recovery (issue #439).
+  // Counted apart from `closed` because they are opposite outcomes wearing the same terminal state —
+  // one is a row that needed nothing, the other a row that needed something and got it late.
+  owed: number;
   // The row moved under the sweep (a redelivery claimed it) between the scan and the write.
   raced: number;
 }
@@ -417,7 +424,7 @@ export async function sweepStrandedDeliveries(
   // Overridable so the batch's FAIRNESS can be asked with three rows instead of five hundred. A test
   // that has to build a real backlog to reach the boundary is a test nobody writes.
   const batch = params.batch ?? BATCH;
-  const counts: SweepCounts = { closed: 0, lost: 0, raced: 0 };
+  const counts: SweepCounts = { closed: 0, lost: 0, owed: 0, raced: 0 };
 
   // BOTH non-terminal states, because both strand and for the same reason. The ack is spent before
   // the ledger row is even written, so a death between the insert and the CAS leaves PENDING — and
@@ -459,6 +466,7 @@ export async function sweepStrandedDeliveries(
         claimedAt: true,
         conversationId: true,
         inboundMessageId: true,
+        humanReplyShape: true,
       },
     }),
   )) as StrandedRow[];
@@ -474,11 +482,12 @@ export async function sweepStrandedDeliveries(
     // where a fresh row would be marked terminal.
     if (verdict === "in-flight") continue;
     // Read the mirror only for a row that is going in the loss list: it is where the line is filed,
-    // and a row that carried no message writes no line. A saved query per benign row, not a rule —
+    // and neither terminal-but-benign verdict writes one. A saved query per such row, not a rule —
     // `record` returns before the line for any other verdict, so reading it anyway changes no
-    // outcome and no test can hold this.
+    // outcome and no test can hold this (a mutation that widens it to the owed row survives the
+    // suite, which is what the sentence says).
     const mirror =
-      verdict === "no-message" ? null : await mirrorOf(row, tenantId, base);
+      verdict === "lost" ? await mirrorOf(row, tenantId, base) : null;
     await record(verdict, row, tenantId, mirror, counts, base);
   }
   return counts;
@@ -496,6 +505,35 @@ async function record(
   if (verdict !== "lost") {
     if (!(await finish(row, tenantId, "PROCESSED", base))) {
       counts.raced += 1;
+      return;
+    }
+    // PROCESSED IN BOTH ARMS, including the one that owes a takeover, and the reason is what DEAD
+    // means here: it is the `WHERE status = 'DEAD'` worklist of customers who wrote and were never
+    // answered (issue #228). A colleague's own reply belongs on no such list. The record that
+    // something was owed is the job armed below plus the line it writes if it lands, and if that job
+    // never runs the state is the one every install had before issue #430 — a conversation the next
+    // reply takes over on its own.
+    if (verdict === "owed-takeover") {
+      counts.owed += 1;
+      // BEST-EFFORT, and armed AFTER the CAS for the same reason the loss recovery is armed after
+      // its own: winning the CAS is what makes this row nobody else's. A failure here leaves the
+      // conversation as it was, which is the pre-#430 behaviour rather than a new harm, so it is
+      // logged at `warn` and not `error` — nothing was lost that an operator has to go find.
+      try {
+        await armTakeoverRecovery(tenantId, row.id, base);
+      } catch (error) {
+        logger.warn(
+          { error },
+          `chatwoot delivery sweep: ${label} was stranded owing a handover and its recovery could not be armed; the conversation stays with the bot until the next human reply`,
+        );
+      }
+      logger.info(
+        "chatwoot delivery sweep: %s stranded on %s owing a human-reply handover (%s) on conversation %s; closing and arming the recovery",
+        label,
+        row.status,
+        String(row.humanReplyShape),
+        String(row.conversationId),
+      );
       return;
     }
     counts.closed += 1;

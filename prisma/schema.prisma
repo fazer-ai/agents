@@ -68,6 +68,7 @@ enum SchedulerJobKind {
   INGEST_MESSAGE
   DELIVERY_SWEEP
   DELIVERY_RECOVERY
+  TAKEOVER_RECOVERY
 }
 
 enum SchedulerJobStatus {
@@ -353,6 +354,18 @@ model ChatwootWebhookDelivery {
   // Matched by id when a turn retires the rows it covered, never read for content: an id, like the
   // column above, and nothing here can hold what the customer wrote.
   inboundMessageId   Int?                  @map("inbound_message_id")
+  // WHAT THIS DELIVERY OWED, when what it owed was a human-reply takeover (issue #439). `composer`
+  // or `device`, from `humanReplyShape` — the half of the route the PAYLOAD answers, written at
+  // INSERT so a process that dies before the takeover still leaves the fact behind. Null on every
+  // other delivery, and on every row written before this column existed.
+  //
+  // A SHAPE and not a verdict: `device` is also what an echo of our own reply looks like on a
+  // provider that does not reserve its ids, and only the inbox row tells the two apart. The recovery
+  // asks that half itself, against the inbox as it stands then (resolveHumanReplyRoute).
+  //
+  // Not the event body, and not a sender: the same rule the two ids above follow. What a person
+  // wrote is never held here.
+  humanReplyShape    String?               @map("human_reply_shape")
 
   tenant   Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   instance ChatwootInstance @relation(fields: [chatwootInstanceId], references: [id], onDelete: Cascade)

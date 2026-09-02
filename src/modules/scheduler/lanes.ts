@@ -63,6 +63,12 @@ export const JOB_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   // concurrency (below), not a tick of its own — a lane would give it a budget INDEPENDENT of the
   // turns a live customer is queueing for, which is the opposite of what a recovery should get.
   DELIVERY_RECOVERY: "shared",
+  // Shared, and neither reason applies — for the opposite mix of reasons to its neighbour above.
+  // Cadence: what it recovers is a status, and the conversation has already been sitting in the
+  // wrong one for the sweep's whole staleness window, so a shared tick changes nothing a person
+  // notices. Budget: it spends no model at all, only two or three Chatwoot calls, and the shared
+  // lane's provider concurrency is not the resource that bounds those.
+  TAKEOVER_RECOVERY: "shared",
 };
 
 // Whether ONE job of this kind spends capacity at an external provider that the rest of the product
@@ -104,6 +110,11 @@ export const JOB_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
   // turn decides to use. The whole reason it is a kind of its own rather than work the sweep does
   // inline.
   DELIVERY_RECOVERY: true,
+  // The other half of why it is not the same kind as the one above (issue #439): it re-runs the
+  // TAKEOVER and nothing else — a fence, a claim, a toggle and a reconcile — and never reaches a
+  // model. Folded into DELIVERY_RECOVERY it would take a permit from the semaphore a customer's turn
+  // queues on, to make two HTTP calls.
+  TAKEOVER_RECOVERY: false,
 };
 
 // How many provider-spending jobs the shared lane may run at once, out of the model budget. NEVER
@@ -142,6 +153,9 @@ export const JOB_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
   // count is bounded by how many deliveries have ever been stranded. What the record of the work is
   // here is the ledger row itself, which is terminal either way.
   DELIVERY_RECOVERY: true,
+  // Same key, same shape, same answer: it names ONE ledger row, nothing reuses it, and the row that
+  // records the work is the ledger row.
+  TAKEOVER_RECOVERY: true,
 };
 
 // Whether the NUMBER of rows of this kind follows inbound traffic, rather than a population the
@@ -187,6 +201,15 @@ export const JOB_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
   // right answer for a different reason: a reply that late is stale whatever delayed it. Reserving
   // capacity here would be mechanism for a backlog nobody has measured.
   DELIVERY_RECOVERY: true,
+  // Armed by the same pass, from the same deploy, off the same traffic: one row per delivery that
+  // was carrying a colleague's reply when the process died. Fewer than of the kind above — most
+  // stranded deliveries carry a customer message, not a reply — but what decides this answer is that
+  // the number follows inbound traffic rather than a population the install controls.
+  //
+  // The cost paragraph above does NOT carry over, and the difference is worth naming: this kind has
+  // no age ceiling to discard it, because what it recovers does not go stale (recover-takeover.ts).
+  // A conversation the agent is wrongly holding stays wrong however long the queue was.
+  TAKEOVER_RECOVERY: true,
 };
 
 // WHAT ONE KIND'S DEATH MEANS TO THE OPERATOR, at the only moment the scheduler can state it
@@ -254,6 +277,13 @@ export const JOB_DEATH_LEVEL: Record<SchedulerJobKind, FlowLevel> = {
   // second `error` would be the same customer message waking somebody twice, which is how a channel
   // stops being read.
   DELIVERY_RECOVERY: "warn",
+  // `warn`, and by the same rule read the other way round: nothing paged anybody about this row in
+  // the first place, because nothing was lost to page about — the sweep closed it PROCESSED and
+  // wrote no loss line. What dies with the job is a conversation left `pending` on the bot after a
+  // person answered on it: the state every install had for the whole life of issue #430, and one the
+  // NEXT reply from that person takes over on its own. An `error` here would announce, at the level
+  // of a customer's lost message, something that self-heals.
+  TAKEOVER_RECOVERY: "warn",
 };
 
 export function kindsInLane(

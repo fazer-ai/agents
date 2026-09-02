@@ -663,14 +663,19 @@ export async function softDisconnectChatwootInstance(
         }
       }
     }
-    await runScopedOn(base, ctx, (db) =>
-      db.inbox.updateMany({
+  }
+  // NOTE: ONE transaction for the three local writes: clearing the bindings, stamping the account as
+  // disconnected, and the row that records it. Split, the unbind committed first and a failure on
+  // either of the others left inboxes bound to nobody on an account still marked active, with
+  // customer messages routed to no agent and no row saying why. The Chatwoot calls above stay
+  // outside it, because no transaction of ours spans somebody else's system.
+  await runScopedOn(base, ctx, async (db) => {
+    if (bound.length > 0) {
+      await db.inbox.updateMany({
         where: { chatwootInstanceId: id },
         data: { agentId: null },
-      }),
-    );
-  }
-  await runScopedOn(base, ctx, async (db) => {
+      });
+    }
     await db.chatwootInstance.update({
       where: { id },
       data: { disconnectedAt: new Date() },
@@ -696,7 +701,7 @@ export async function reconnectChatwootInstance(
   const dto = await runScopedOn(base, ctx, async (db) => {
     const inst = await db.chatwootInstance.findUnique({
       where: { id },
-      select: { id: true },
+      select: { id: true, disconnectedAt: true },
     });
     if (!inst) {
       throw new NotFoundError(
@@ -712,17 +717,23 @@ export async function reconnectChatwootInstance(
       select: SELECT,
     });
     const reconnected = toDto(row);
-    // NOTE: No MCP twin: this action reaches the trail through this name and nothing else, because the
-    // console is its only door.
-    await auditMutation(db, ctx, {
-      action: "instance.reconnect",
-      target: `chatwoot_instance:${id}`,
-      after: {
-        id: reconnected.id,
-        accountId: reconnected.accountId,
-        disconnectedAt: null,
-      },
-    });
+    // NOTE: No MCP twin: this action reaches the trail through this name and nothing else, because
+    // the console is its only door.
+    //
+    // And only when the account WAS disconnected. The endpoint is idempotent, so a retry (or a
+    // direct API client) reaching it on an active account changes nothing, and a row there would be
+    // a reconnect event that never happened.
+    if (inst.disconnectedAt !== null) {
+      await auditMutation(db, ctx, {
+        action: "instance.reconnect",
+        target: `chatwoot_instance:${id}`,
+        after: {
+          id: reconnected.id,
+          accountId: reconnected.accountId,
+          disconnectedAt: null,
+        },
+      });
+    }
     return reconnected;
   });
   // NOTE: Mirrors the disconnect, and outside the transaction for the same reason: an event arriving

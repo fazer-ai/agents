@@ -270,6 +270,17 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
     await collect();
   });
 
+  test("reconnecting an account that was never disconnected records nothing", async () => {
+    await clearAudit();
+    const inst = await suDb.chatwootInstance.findFirstOrThrow({
+      where: { tenantId, accountId: 2 },
+      select: { id: true, disconnectedAt: true },
+    });
+    expect(inst.disconnectedAt).toBeNull();
+    await reconnectChatwootInstance(ctx(), inst.id, appDb);
+    expect(await rows()).toEqual([]);
+  });
+
   test("removing an account records what went with it", async () => {
     await clearAudit();
     const inst = await suDb.chatwootInstance.findFirstOrThrow({

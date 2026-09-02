@@ -66,6 +66,27 @@
  * skip a real handover — would need the mark to name a message that does not exist yet, and no
  * reading of that endpoint can produce one.
  *
+ * ## Allocation order, not commit order, and why the costly direction is still closed
+ *
+ * A sequence hands out an id when the INSERT runs, not when it commits, so a message with a LOWER id
+ * can become visible AFTER one with a higher id: a colleague's reply still uncommitted while our read
+ * runs is absent from that read and yet compares at-or-below the mark the read produced. The fence
+ * then treats it as pre-click and skips the takeover.
+ *
+ * It is treated that way because it IS pre-click in the only order the source records: the colleague
+ * pressed send before the operator clicked. What the operator lacked is SIGHT of it, and no scalar
+ * can give them that, for the reason the delivery sweep's three deleted marks give (a high-water
+ * value cannot answer a per-MESSAGE question).
+ *
+ * The direction that costs a person's conversation stays closed, and the argument is about
+ * ALLOCATION rather than visibility. MEASURED on the fork: `messages_id_seq` is `CACHE 1`,
+ * `INCREMENT 1`, no cycle, which is the Rails default. With no per-session preallocation, `nextval`
+ * hands values out in call order across every backend. The mark came off a message the read could
+ * see, so that message's `nextval` preceded the read; a reply written after the click calls `nextval`
+ * after the read; so its id is strictly greater, and the fence lets it through however the commits
+ * interleaved. A deployment that raised that cache would break the argument, by letting one backend
+ * hold a block of ids while another advances past it. Chatwoot's schema exposes no such knob.
+ *
  * ## Where it does not reach, stated rather than implied
  *
  * The other half of the fallback: a live read that FAILED outright leaves no mark, because the id

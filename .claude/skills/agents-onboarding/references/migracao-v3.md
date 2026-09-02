@@ -233,6 +233,8 @@ Cubra todas as ferramentas da origem, uma a uma, e o ramo de erro de cada uma.
 
 **A ordem não é estética. Quatro passos, nesta sequência:**
 
+**Esta sequência pressupõe janela de baixo volume, e isso é pré-condição, não preferência.** Entre o corte e o vínculo ninguém atende, e a triagem leva minutos: mensagem que chega nesse intervalo fica visível na conversa, sem ninguém avisado. Quem não pode ter essa janela, uma operação de plantão ou 24/7, não segue isto direto: levante e classifique as conversas **antes** do passo 1, com a v3 ainda no ar, e deixe para a janela só reler a lista e aplicar. Encurta o intervalo ao mínimo sem inverter a ordem.
+
 **Antes de tudo, confirme que a migração é do tráfego inteiro da v3.** Os dois caminhos de corte são globais: o webhook é **de conta** e o workflow é um só. Se a v3 atende alguma caixa que não entra nesta migração, cortar derruba o atendimento dela também, e não existe meia-dose aqui. Levante quais caixas a v3 serve e compare com as que vão ser vinculadas; sobrando alguma, **pare e diga ao usuário**: migração parcial não é esta jornada.
 
 1. **Corte a v3** por um dos dois caminhos: apagar o webhook de conta no Chatwoot, ou desativar o workflow no n8n. Medido: ~120 ms. **Antes de apagar, anote o que o rollback vai precisar**: os eventos assinados, o id, e **qual dos dois caminhos você usou**, porque o rollback desfaz esse e só esse. **A URL não entra no registro**: webhook de n8n sem autenticação é credencial, e o guardrail de segredo vale para ela igual. Ela é redescobrível na hora, no nó de gatilho do workflow, que continua de pé.

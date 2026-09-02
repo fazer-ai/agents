@@ -884,6 +884,10 @@ const UNDISCLOSED = ["secret", "baseUrl"] as const;
 // rotation on every save of an unchanged credential. A blob that cannot be read counts as moved:
 // the write replaces it, and an unreadable secret becoming a readable one is a change.
 function secretMoved(before: string, after: string): boolean {
+  // The column UNCHANGED is the one answer the ciphertext can give: a metadata-only save leaves the
+  // blob byte-identical, and asking anything else about it (including whether it can be read) would
+  // report a rotation on every edit of a row whose key has since changed.
+  if (before === after) return false;
   let a: unknown;
   let b: unknown;
   try {
@@ -896,7 +900,22 @@ function secretMoved(before: string, after: string): boolean {
   } catch {
     return true;
   }
-  return JSON.stringify(a) !== JSON.stringify(b);
+  return stableJson(a) !== stableJson(b);
+}
+
+// Key order is not part of a credential. A multi-field secret is stored as an object and read by
+// key, so `{publicKey, secretKey}` and `{secretKey, publicKey}` are the same credential and a
+// comparison that says otherwise reports a rotation nobody performed.
+function stableJson(v: unknown): string {
+  return JSON.stringify(v, (_k, val) =>
+    val && typeof val === "object" && !Array.isArray(val)
+      ? Object.fromEntries(
+          Object.entries(val as Record<string, unknown>).sort(([x], [y]) =>
+            x < y ? -1 : x > y ? 1 : 0,
+          ),
+        )
+      : val,
+  );
 }
 
 export async function createVaultEntry(
@@ -1260,6 +1279,42 @@ export async function updateVaultEntry(
       });
     }
     return entry.id;
+  });
+}
+
+// Replace the secret behind an existing entry, recording it like any other credential edit.
+//
+// The OAuth flows write `vaultEntry.secret` themselves — connecting merges the tokens in,
+// disconnecting strips them back out — and they are operator actions on a credential like any
+// other. Reaching the column directly is what left them off the trail: this is the same write, with
+// the seam around it, so the row says a credential moved without saying what it moved to.
+//
+// The value is never projected. `credential.update` carries the marker and the metadata, exactly as
+// the console's own edit does.
+export async function replaceVaultSecret(
+  ctx: TenantContext,
+  id: bigint,
+  value: unknown,
+  base: PrismaClient = basePrisma,
+): Promise<void> {
+  await runScopedOn(base, ctx, async (db) => {
+    await db.$queryRaw`SELECT id FROM vault_entries WHERE id = ${id} FOR UPDATE`;
+    const before = await db.vaultEntry.findFirst({
+      where: { id },
+      select: VAULT_AUDIT_SELECT,
+    });
+    if (!before) throw new NotFoundError(`vault entry ${id} not found`);
+    const blob = encryptJson(value);
+    await db.vaultEntry.updateMany({ where: { id }, data: { secret: blob } });
+    if (secretMoved(before.secret, blob)) {
+      const proj = auditProjection(before);
+      await auditMutation(db, ctx, {
+        action: "credential.update",
+        target: formatVaultRef(id),
+        before: markUndisclosed(proj),
+        after: markUndisclosed(proj),
+      });
+    }
   });
 }
 

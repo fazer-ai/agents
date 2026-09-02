@@ -1,6 +1,6 @@
 import { Elysia, t } from "elysia";
 import { authPlugin } from "@/api/lib/auth";
-import { decryptJson, encryptJson } from "@/api/lib/crypto";
+import { decryptJson } from "@/api/lib/crypto";
 import logger from "@/api/lib/logger";
 import { doc, errors, htmlResponse } from "@/api/lib/openapi";
 import basePrisma from "@/api/lib/prisma";
@@ -29,7 +29,7 @@ import {
   revokeGoogleToken,
   validateScopes,
 } from "@/modules/vault/google-oauth";
-import { vaultRefWhere } from "@/modules/vault/service";
+import { replaceVaultSecret, vaultRefWhere } from "@/modules/vault/service";
 
 // Google OAuth consent flow for the `google_oauth` vault kind. Two controllers:
 //   - oauthGoogleVaultController: authorize / status / disconnect, mounted alongside vault under the
@@ -170,12 +170,7 @@ export const oauthGoogleVaultController = new Elysia({
         clientId: cred.clientId,
         clientSecret: cred.clientSecret,
       };
-      await runScopedOn(basePrisma, ctx, async (db) => {
-        await db.vaultEntry.updateMany({
-          where: { id },
-          data: { secret: encryptJson(stripped) },
-        });
-      });
+      await replaceVaultSecret(ctx, id, stripped);
       return { instance: instanceIdentity, ...projectStatus(stripped) };
     },
     {
@@ -293,12 +288,18 @@ export const oauthGoogleCallbackController = new Elysia({
           scopes: tokens.scopes.length > 0 ? tokens.scopes : state.scopes,
           email: tokens.email || undefined,
         };
-        await asSuperAdmin(async (db) => {
-          await db.vaultEntry.updateMany({
-            where: vaultRefWhere(`vault:${entryId}`),
-            data: { secret: encryptJson(merged) },
-          });
-        });
+        // NOTE: The consent came back to the operator who started it (`state.userId` is checked
+        // above), so the write is theirs and the row names them. Through the vault's own seam, or
+        // connecting a Google account would move a credential with nothing on the trail.
+        await replaceVaultSecret(
+          {
+            tenantId: requireDbId(state.tenantId),
+            userId: user.id,
+            role: user.role,
+          },
+          entryId,
+          merged,
+        );
 
         return htmlSuccess(origin);
       } catch (err) {

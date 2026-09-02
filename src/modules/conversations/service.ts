@@ -740,8 +740,12 @@ async function mirrorConsoleWrite(
   // Chatwoot the reconcile below returns early, so a mark written only on the unversioned tail
   // would leave exactly the deployment that HAS versions with nothing to fence the recovery with,
   // and a hand-back made inside that half hour undone. Measured as a review finding, not supposed.
-  // On the live path it costs nothing: a versioned delivery is refused by the version check first,
-  // and one that gets past it was written after the click, so its id is above this mark.
+  // On the live path it takes nothing away, which is not the same as changing nothing: a delivery
+  // whose version predates the click is already refused by the version check, and one written after
+  // the click sits above this mark. The two predicates disagree in exactly one shape — a payload
+  // whose version compares EQUAL, which is what a console write that did not move `updated_at`
+  // leaves — and there the version check passes it (the comparison is strict) and the mark refuses
+  // it, which is the fence doing its job rather than a side effect. Measured, with a control.
   //
   // In a statement of its own because it must never move BACKWARDS: two console writes are separate
   // requests, nothing serializes them, and an older one committing last would hand the fence a mark

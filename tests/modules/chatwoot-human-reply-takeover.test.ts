@@ -1781,6 +1781,74 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     // On the live path it changes nothing: a delivery that carries a version is refused by the
     // version check before the fence is asked, and one that gets past it was written after the
     // click, so its id is above this mark.
+    // AND ON A VERSIONED DEPLOYMENT THE MARK IS NOT INERT, which is the correction to the sentence
+    // the round-4 fix was first written with ("on the live path it changes nothing"). The two
+    // predicates disagree in one shape: a payload whose version compares EQUAL to the row's, which
+    // is what a console write that did not move `updated_at` leaves. The version check is strict
+    // (`decidedAtVersion < now.statusAt`), so equal PASSES it, and then the mark is the only thing
+    // between a reply that predates the click and the takeover. It refuses, which is what this
+    // fence exists for; the claim it changes nothing was the overstatement.
+    test("a versioned delivery whose version ties is still ordered by the mark", async () => {
+      const conv = 8614;
+      await deliver(conv, composerReply("eu assumo"));
+      messageSeq += 1;
+      const frozenId = messageSeq;
+      liveLatestMessageId.set(conv, frozenId);
+      expect(await handBack(conv)).toBe("returned");
+      const afterClick = await convRow(conv);
+      expect(afterClick?.consoleWriteAtMessageId).toBe(frozenId);
+      const tie = afterClick?.chatwootStatusAt;
+      if (tie === null || tie === undefined) throw new Error("no version");
+
+      // The frozen reply, carrying EXACTLY the version the row now holds.
+      const build = () => {
+        const n = normalizeChatwootEvent({
+          event: "message_created",
+          id: frozenId,
+          private: false,
+          ...composerReply("já respondi por aqui"),
+          conversation: { ...conversation(conv), updated_at: tie },
+        });
+        if (!n) throw new Error("payload did not normalize");
+        return n;
+      };
+      const send = async (n: ReturnType<typeof build>) => {
+        deliverySeq += 1;
+        const delivery = await suDb.chatwootWebhookDelivery.create({
+          data: {
+            tenantId,
+            chatwootInstanceId: instanceId,
+            deliveryId: `hr-${process.pid}-${deliverySeq}`,
+            event: "message_created",
+            status: "PENDING",
+          },
+          select: { id: true },
+        });
+        await processChatwootDelivery({
+          tenantId,
+          instanceId,
+          deliveryRowId: delivery.id,
+          agentBotId: OUR_BOT,
+          normalized: n,
+          deps,
+          base: appDb,
+        });
+      };
+
+      await send(build());
+      expect(liveStatus.get(conv)).toBe("pending");
+      expect((await convRow(conv))?.status).toBe("pending");
+
+      // The control that says it was the MARK and not the tie: clear the mark, send the same
+      // payload, and the same delivery takes the conversation over.
+      await suDb.conversation.updateMany({
+        where: { tenantId, chatwootConversationId: conv },
+        data: { consoleWriteAtMessageId: null },
+      });
+      await send(build());
+      expect(liveStatus.get(conv)).toBe("open");
+    });
+
     test("a versioned console write stamps the mark too", async () => {
       const conv = 8604;
       await deliver(conv, composerReply("eu assumo"));

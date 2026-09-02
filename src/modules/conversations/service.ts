@@ -1519,11 +1519,19 @@ export async function handoffConversation(
   // as STORED, not as asked for: the two differ when the live read came back with something else
   // (an assignment Chatwoot resolved differently, or a webhook that outranked this write), and a
   // publication of the intent would arrive last and leave the console showing a state nobody holds.
-  broadcastConversationEvent(tenantId, {
-    conversationId: String(id),
+  // WHERE THIS WRITE LANDED, resolved once and read by both the broadcast and the row. They are the
+  // same fact and they must not be able to disagree: an untargeted handoff (the console's ordinary
+  // one, no assignee named) never calls `assignToAgent`, so who holds the conversation afterwards is
+  // Chatwoot's answer and not this call's argument. A row built from the argument would say `null`
+  // about a conversation a person is holding, one line under a broadcast that names them.
+  const landed = {
     status: state?.status ?? "open",
     assigneeId: state ? state.assigneeId : (assigneeId ?? conv.assigneeId),
     assigneeType: state ? state.assigneeType : "User",
+  };
+  broadcastConversationEvent(tenantId, {
+    conversationId: String(id),
+    ...landed,
     lastEventAt:
       (state ? state.lastEventAt : conv.lastEventAt)?.toISOString() ?? null,
   });
@@ -1534,7 +1542,7 @@ export async function handoffConversation(
   await recordConversationAction(ctx, base, id, {
     action: "conversation.handoff",
     before: { status: conv.status, assigneeId: conv.assigneeId },
-    after: { status: "open", assigneeId },
+    after: { status: landed.status, assigneeId: landed.assigneeId },
   });
 }
 

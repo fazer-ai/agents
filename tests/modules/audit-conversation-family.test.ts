@@ -277,6 +277,42 @@ describe.skipIf(!dbUp)(
       expect(row?.after).toEqual({ status: "open", assigneeId: 77 });
     });
 
+    // An untargeted handoff is the console's ordinary one: it asks for a human without naming which,
+    // so `assignToAgent` never runs and who ends up holding the conversation is Chatwoot's answer, not
+    // the caller's argument. A row built from the argument says `null` about a conversation somebody is
+    // holding, and it disagrees with the broadcast published one line above it from the same write.
+    test("an untargeted handoff records who ended up holding it", async () => {
+      await clearAudit();
+      const id = await seedConversation(4009, { status: "pending" });
+      const seen: string[] = [];
+      const stub = stubClient({
+        getConversation: async () => {
+          seen.push("getConversation");
+          return {
+            id: 4009,
+            status: "open",
+            meta: { assignee_type: "User", assignee: { id: 42, name: "Ana" } },
+            // NEWER than the mirrored row, or the reconcile refuses the reading and `state` comes back
+            // null: this case is about the row that a SUCCESSFUL live read produced.
+            last_activity_at: Math.floor(Date.now() / 1000) + 60,
+            updated_at: Math.floor(Date.now() / 1000) + 60.5,
+          };
+        },
+      });
+      await handoffConversation(
+        ctx(),
+        id,
+        null,
+        { makeClient: stub.makeClient },
+        appDb,
+      );
+      // No `assignToAgent`: nobody was named, which is the whole point of the case.
+      expect(stub.calls).toEqual(["toggleStatus"]);
+      expect(seen).toEqual(["getConversation"]);
+      const [row] = await rows();
+      expect(row?.after).toEqual({ status: "open", assigneeId: 42 });
+    });
+
     test("a hand-back records the outcome, because taken-over is not the outcome asked for", async () => {
       await clearAudit();
       const id = await seedConversation(4004, {

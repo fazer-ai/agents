@@ -878,6 +878,29 @@ describe.skipIf(!dbUp)(
       });
     });
 
+    // The hand-back has THREE outcomes and `undefined` is one of them: the conversation was already
+    // the agent's, so nothing was attempted. Left as it came, Prisma drops the key on the way into
+    // the jsonb column and the row simply lacks the field the other rows carry.
+    test("a reset with nothing to hand back still says so", async () => {
+      await suDb.$executeRawUnsafe(
+        `DELETE FROM audit_logs WHERE tenant_id = ${tenantId}`,
+      );
+      const cw = fakeChatwoot();
+      globalThis.fetch = cw.impl;
+      await sendReset();
+
+      const rows = await suDb.auditLog.findMany({
+        where: { tenantId },
+        orderBy: { id: "asc" },
+      });
+      expect(rows.map((r) => r.action)).toEqual(["conversation.reset"]);
+      expect(rows[0]?.after).toEqual({
+        complete: true,
+        failed: [],
+        handBack: "not-attempted",
+      });
+    });
+
     test("a partial erase names the steps that did not run", async () => {
       await suDb.$executeRawUnsafe(
         `DELETE FROM audit_logs WHERE tenant_id = ${tenantId}`,

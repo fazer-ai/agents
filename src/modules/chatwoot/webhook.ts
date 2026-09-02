@@ -2451,10 +2451,17 @@ async function maybeConsumeCommandOrGate(params: {
       after: {
         complete: distinctFailed.length === 0,
         failed: [...new Set(failedSteps)],
-        // Null covers the two cases that never called it (the agent already owned the conversation,
-        // or a guard withheld the hand-back) as well as the call that threw; `failed` above tells
-        // the third apart from the first two.
-        handBack,
+        // THREE outcomes, spelled, because the variable carries three states and two of them are
+        // absences: `undefined` when nothing was attempted (the agent already owned the conversation,
+        // or a guard withheld the hand-back) and `null` when the call threw. Written raw, the first
+        // does not reach the row at all: Prisma drops an undefined property on the way into the jsonb
+        // column, so the field the other rows carry would simply be missing from the common case.
+        handBack:
+          handBack === undefined
+            ? "not-attempted"
+            : handBack === null
+              ? "failed"
+              : handBack,
       },
     });
     return true;

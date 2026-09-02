@@ -620,7 +620,7 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
     // a different transition, would otherwise be finished here with a `toggle_status: open` nobody
     // decided.
     const convId = 9115;
-    const rowId = await seedStranded(convId, { claimHeldMs: 30_000 });
+    const rowId = await seedStranded(convId, { claimHeldMs: -30 * 60 * 1000 });
     await suDb.conversation.updateMany({
       where: { tenantId, chatwootConversationId: convId },
       data: { statusClaimFrom: "resolved" },
@@ -637,12 +637,19 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
     expect(togglesFor(convId)).toHaveLength(0);
   });
 
-  test("a claim past its deadline is not ours to finish any more", async () => {
-    // The liveness is what makes the `open` ours rather than an operator's. Past the deadline the
-    // row means something else and the ownership fence is the right question again — which refuses,
-    // because the conversation is no longer the bot's.
+  test("a claim long past its deadline is still the write this recovery finishes", async () => {
+    // ROUND 3, P1, and it is arithmetic rather than judgement. Round 1 gated the retry on a LIVE
+    // claim; the claim stands for 45 seconds (STATUS_CLAIM_TTL_MS) and the sweep does not call a
+    // delivery stranded for 30 minutes (STALE_AFTER_MS), so that branch could never run on a real
+    // strand — the deadline is gone before anything reaches it. This is the shape a real one has:
+    // `open` on the row, the claim expired long ago, and Chatwoot never told.
+    //
+    // The authority is the live read inside the retry, not the deadline. What the deadline is still
+    // for is the reconcile's ownership comparison, which is by equality and does not care that the
+    // instant has passed.
     const convId = 9114;
-    const rowId = await seedStranded(convId, { claimHeldMs: -1_000 });
+    const rowId = await seedStranded(convId, { claimHeldMs: -30 * 60 * 1000 });
+    liveStatus.set(convId, "pending");
 
     expect(
       await recoverStrandedTakeover({
@@ -651,8 +658,11 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
         base: appDb,
         makeClient,
       }),
-    ).toBe("not-owed");
-    expect(togglesFor(convId)).toHaveLength(0);
+    ).toBe("recovered");
+    expect(togglesFor(convId)).toHaveLength(1);
+    expect(liveStatus.get(convId)).toBe("open");
+    // And the version the first attempt never earned, written through the claim it still names.
+    expect((await convRow(convId)).chatwootStatusAt).not.toBeNull();
   });
 
   test("a conversation the mirror has never seen is retried, not answered", async () => {

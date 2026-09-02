@@ -282,16 +282,20 @@ export async function openForHumanQueue(p: {
 // left is idempotent in both directions: a conversation Chatwoot really did leave `pending` moves,
 // and one it had already opened is toggled to the status it already holds.
 //
-// The CLAIM's liveness is the caller's evidence and is checked there, because it is what says the
-// `open` on the row is ours to finish rather than an operator's. Past the deadline this must not
-// run: the row means something else then, and the fence is the right question again.
+// WHAT AUTHORISES IT is the live read below, not the claim's deadline. The claim stands for 45
+// seconds and a delivery is not called stranded for 30 minutes, so anything reaching here does so
+// long after the deadline; gating on liveness would make this a branch that never runs. The local
+// `open` says a takeover claimed the conversation, and Chatwoot's own answer says whether the
+// transition landed — `pending` there is the signature of the write that was lost.
 export async function retryHumanQueueToggle(p: {
   tenantId: bigint;
   instanceId: bigint;
   conversationId: number;
   agentId: bigint;
-  // The claim this is finishing, which the reconcile is allowed to write THROUGH.
-  claimUntil: Date;
+  // The claim this is finishing, which the reconcile is allowed to write THROUGH — the row's stored
+  // deadline, compared there for equality, expired or not. Null on a row that carries none, where
+  // the reconcile simply decides by the ordinary rule.
+  claimUntil: Date | null;
   base: PrismaClient;
   makeClient?: RuntimeDeps["makeClient"];
 }): Promise<HumanQueueOutcome> {

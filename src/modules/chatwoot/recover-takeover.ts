@@ -13,7 +13,6 @@ import {
 } from "./human-takeover";
 import { agentBotChatwootId } from "./instance";
 import { resolveHumanReplyRoute } from "./normalize";
-import { statusClaimIsLive } from "./status-claim";
 import { isHumanReplyShape } from "./stranded-delivery";
 
 // Re-running the human-reply takeover a process death lost (issue #439).
@@ -266,26 +265,35 @@ export async function recoverStrandedTakeover(
   // already moved on costs a query instead of an HTTP round trip. It can only ever refuse: what it
   // lets through is re-asked, of Chatwoot and of the mirror both, one statement before the write.
   // OUR OWN UNFINISHED WRITE, asked before ownership because ownership cannot see it. The claim is
-  // taken before the toggle (#430), so an attempt whose toggle threw left the row `open` under a
-  // live claim from `pending` — and the fence, asked again, reads that as somebody else having moved
-  // the conversation on and stands down. Without this the scheduler's retry is spent on a verdict
-  // that can never change, the delete-on-done row disappears, and Chatwoot is left `pending` with
-  // the bot still able to answer.
+  // taken before the toggle (#430), so a process that died between the two — the widest gap in the
+  // block, and therefore the likeliest death — left the row `open` from `pending` with Chatwoot
+  // never told. The fence, asked again, reads that as somebody else having moved the conversation on
+  // and stands down; the job then completes as an answer, the delete-on-done row disappears, and
+  // Chatwoot is left `pending` with the bot free to speak.
   //
-  // The three columns together are the signature and none of them is enough alone: `open` is any
-  // human queue, the claim's liveness is what makes it ours to finish, and `pending` as the status
-  // it replaced is what says the write was this takeover rather than some other claim.
-  if (
-    bound.status === "open" &&
-    bound.statusClaimFrom === "pending" &&
-    bound.statusClaimUntil !== null &&
-    statusClaimIsLive(bound.statusClaimUntil, new Date())
-  ) {
+  // NOT GATED ON THE CLAIM'S DEADLINE, and that is an arithmetic correction rather than a
+  // preference: the claim stands for 45 seconds (STATUS_CLAIM_TTL_MS) and the sweep does not call a
+  // delivery stranded for 30 minutes (STALE_AFTER_MS), so by the time anything reaches this line the
+  // deadline has been gone for twenty-nine of them. A liveness test here is not a stricter rule, it
+  // is a branch that never runs.
+  //
+  // What stands in for it is the LIVE READ inside the retry: the local `open` says a takeover
+  // claimed this conversation, and Chatwoot's own answer says whether the transition ever landed.
+  // `pending` there against `open` here is the signature of exactly the write that was lost, and
+  // nothing else produces it — a hand-back writes `pending` on the ROW, and a person who opened the
+  // conversation left Chatwoot `open` too.
+  //
+  // `pending` as the status the claim replaced stays in the predicate: it is what says the `open` on
+  // this row came from this takeover rather than from some other claim a later build might take.
+  if (bound.status === "open" && bound.statusClaimFrom === "pending") {
     const landed = await retryHumanQueueToggle({
       tenantId,
       instanceId,
       conversationId,
       agentId: bound.agentId,
+      // The row's own deadline, expired or not: `reconcileMirrorFromLive` compares it for EQUALITY
+      // against the stored one to know the write is the claim's owner, and a claim past its deadline
+      // refuses nothing anyway (status-claim.ts).
       claimUntil: bound.statusClaimUntil,
       base,
       makeClient: params.makeClient,

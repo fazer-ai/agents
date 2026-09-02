@@ -6,8 +6,25 @@
 -- carried it, and the recovery re-decides the half that depends on the inbox (the provider) against
 -- the row as it stands then.
 --
--- ROLLOUT: no window. Two nullable columns, no default, no backfill. A row the previous release
--- wrote carries NULL in both, which is exactly what it means — that build recorded no owed effect —
--- and the classifier reads it as the benign `no-message` it already reads today.
+-- ROLLOUT: additive and reversible — two nullable columns, no default, no backfill, nothing the
+-- previous release reads. It does NOT mean the fix covers every row from the first second, and the
+-- gap is named rather than implied.
+--
+-- The previous release performs the takeover and writes neither column, so a delivery IT inserted
+-- and then lost to the very restart that is deploying this one carries `conversation_id` with both
+-- `inbound_message_id` and `human_reply_shape` null. The classifier reads that as the benign
+-- `no-message` it has always read, closes the row, and arms nothing: for those deliveries the
+-- behaviour during the changeover is exactly the behaviour before this change, which is what issue
+-- #439 describes. No row is made worse; some rows are not yet made better.
+--
+-- Staging it across two releases would shorten that window and was weighed against what it costs: a
+-- whole deploy cycle to narrow a window that is already bounded by one restart AND requires a
+-- process death inside it AND requires that death to land on a colleague's reply rather than on a
+-- customer message. The recovery for a customer message (#295) is unaffected either way, since the
+-- ids it reads are columns the previous release already writes.
+--
+-- WHY NO BACKFILL CAN CLOSE IT EITHER, said here so the next reader does not reach for one: the
+-- shape is a fact about the event body, and the ledger deliberately stores no body. There is nothing
+-- on the row, or anywhere else at rest, from which a past delivery's shape could be recovered.
 ALTER TABLE "chatwoot_webhook_deliveries" ADD COLUMN "human_reply_shape" TEXT;
 ALTER TABLE "chatwoot_webhook_deliveries" ADD COLUMN "route_agent_bot_id" INTEGER;

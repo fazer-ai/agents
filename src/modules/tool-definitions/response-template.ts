@@ -80,10 +80,14 @@ const BLOCK = /\{\{\s*(?:#each(?:[ \t]+([^{}]*?))?|(\/each))\s*\}\}/g;
 // The current scope, which is the item inside a block and the body outside one.
 export const ITEM_SELF = ".";
 
-// How many items a block renders before it COUNTS the rest instead. At the 4,000-char cap, 50 items
-// leave 80 characters each (about one line of a search result), and past that the clip below would
-// cut mid-item anyway; a count beats a cut. The remainder is never dropped silently: a model reading
-// "and 120 more" knows to ask for a narrower query, and one reading a list that simply ends does not.
+// How many items a block renders before it COUNTS the rest instead. Two bounds, on two different
+// things. This one bounds WORK: a list of one-character items would otherwise render thousands of
+// them under the text budget. The budget in `renderResponseTemplate` bounds TEXT: an item is only
+// appended while it fits under the model's clip with room left for the count of what follows, so
+// the count survives to the model instead of being the first thing the clip removes (round 1 of
+// review: 100 rows of ~100 characters rendered 40 and cut the marker off with them). The remainder
+// is never dropped silently either way: a model reading "and 120 more" knows to ask for a narrower
+// query, and one reading a list that simply ends does not.
 export const MAX_EACH_ITEMS = 50;
 
 // What the model sees where the list came back with nothing in it. Not the absent marker: the path
@@ -133,9 +137,18 @@ function standaloneBounds(
   let e = end;
   while (e < template.length && (template[e] === " " || template[e] === "\t"))
     e++;
-  const atLineEnd = e === template.length || template[e] === "\n";
-  if (!atLineStart || !atLineEnd) return [start, end];
-  return [s, template[e] === "\n" ? e + 1 : e];
+  // A template typed in the console ends its lines with `\n`; one sent over REST or MCP from a
+  // Windows editor may end them with `\r\n`, and the rule has to read both as "end of line".
+  const eol =
+    e === template.length
+      ? 0
+      : template[e] === "\n"
+        ? 1
+        : template[e] === "\r" && template[e + 1] === "\n"
+          ? 2
+          : -1;
+  if (!atLineStart || eol === -1) return [start, end];
+  return [s, e + eol];
 }
 
 export function parseTemplate(template: string): ParsedTemplate {
@@ -437,6 +450,7 @@ export function projectToolResponse(
   outputSchema: unknown,
   status: number,
   rawBody: string,
+  opts: RenderOptions = {},
 ): ProjectedResponse {
   const tpl = readResponseTemplate(outputSchema);
   if (!tpl) return { text: null, missing: [], skipped: "no-template" };
@@ -450,7 +464,7 @@ export function projectToolResponse(
   // gated on the body PARSING: the endpoint that most wants a constant answer is the one returning
   // 204 with nothing in it.
   if (!templateNeedsBody(tpl.template)) {
-    return { ...renderResponseTemplate(tpl, undefined), skipped: null };
+    return { ...renderResponseTemplate(tpl, undefined, opts), skipped: null };
   }
   let body: unknown;
   try {
@@ -458,7 +472,7 @@ export function projectToolResponse(
   } catch {
     return { text: null, missing: [], skipped: "not-json" };
   }
-  return { ...renderResponseTemplate(tpl, body), skipped: null };
+  return { ...renderResponseTemplate(tpl, body, opts), skipped: null };
 }
 
 // The clip the model's input gets, whoever is applying it. Returns the flag as well as the text
@@ -522,7 +536,10 @@ function renderTokens(
       const self = path === ITEM_SELF;
       if (at === null) report(path, path);
       else {
-        const here = `${at.path}.${at.index}`;
+        // A root list (`{{#each .}}`) labels its items by index alone: `..0.name` is not a path
+        // the grammar accepts, and the label exists to be pasted into the path fields.
+        const here =
+          at.path === ITEM_SELF ? String(at.index) : `${at.path}.${at.index}`;
         report(
           self ? here : `${here}.${path}`,
           `${at.path}[]${self ? "" : `.${path}`}`,
@@ -533,10 +550,18 @@ function renderTokens(
   });
 }
 
+export interface RenderOptions {
+  // The clip the rendered text will meet, which a block has to render UNDER. The runtime passes its
+  // own; the preview takes the default, which is the same number, so the two agree.
+  maxChars?: number;
+}
+
 export function renderResponseTemplate(
   tpl: ResponseTemplate,
   body: unknown,
+  opts: RenderOptions = {},
 ): RenderedResponse {
+  const budget = opts.maxChars ?? MODEL_RESPONSE_CHAR_LIMIT;
   const missing: string[] = [];
   const seen = new Set<string>();
   const report = (label: string, key: string) => {
@@ -574,13 +599,28 @@ export function renderResponseTemplate(
       text += EMPTY_LIST_MARKER;
       continue;
     }
-    const shown = node.slice(0, MAX_EACH_ITEMS);
-    shown.forEach((item, index) => {
-      text += renderTokens(seg.body, item, { path: seg.path, index }, report);
-    });
-    if (node.length > shown.length) {
-      text += moreItemsMarker(node.length - shown.length);
+    // Item by item, each appended only if it fits under the budget WITH the count of what would
+    // follow it, so the count is never what the clip removes. A miss inside an item is reported
+    // only once the item is kept: naming a field absent from a row the model never saw sends the
+    // operator to fix a line that did not render.
+    let index = 0;
+    for (; index < node.length && index < MAX_EACH_ITEMS; index++) {
+      const pending: [string, string][] = [];
+      const piece = renderTokens(
+        seg.body,
+        node[index],
+        { path: seg.path, index },
+        (label, key) => {
+          pending.push([label, key]);
+        },
+      );
+      const after = node.length - index - 1;
+      const reserve = after > 0 ? moreItemsMarker(after).length : 0;
+      if (text.length + piece.length + reserve > budget) break;
+      text += piece;
+      for (const [label, key] of pending) report(label, key);
     }
+    if (index < node.length) text += moreItemsMarker(node.length - index);
   }
   return { text, missing };
 }

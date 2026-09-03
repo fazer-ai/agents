@@ -483,6 +483,8 @@ function projectResponse(
     def.outputSchema,
     status,
     rawBody,
+    // The clip this text will meet, so a block renders under it with its count intact.
+    { maxChars: deps.maxResponseChars ?? MODEL_RESPONSE_CHAR_LIMIT },
   );
   const report = (err: Error, detail?: Record<string, unknown>) =>
     deps.onSideEffectError?.({

@@ -1542,6 +1542,32 @@ describe("a list of unknown length renders through a block (#459)", () => {
     expect(notes).toEqual([]);
   });
 
+  test("rows too long for fifty still leave the model a count, not a cut", async () => {
+    // Round 1 of review: 100 rows of ~100 characters rendered forty and the clip took the count.
+    const long = Array.from({ length: 100 }, (_, i) => ({
+      id: i + 1,
+      descricao: "d".repeat(80),
+    }));
+    const notes: string[] = [];
+    const tool = buildHttpTool(
+      def({
+        outputSchema: {
+          mode: "template",
+          template: "{{#each itens}}- #{{id}} {{descricao}}\n{{/each}}",
+        },
+      }),
+      {
+        resolveCredential: async () => null,
+        fetchImpl: stubFetch({}, 200, JSON.stringify({ itens: long })),
+        onSideEffectError: (e) => notes.push(e.phase),
+      },
+    );
+    const text = String(await tool.invoke({}));
+    expect(text).not.toContain("…[truncated]");
+    expect(text).toMatch(/\(and \d+ more not shown\)$/);
+    expect(notes).toEqual([]);
+  });
+
   test("a field a row lacks is named to the operator at the row that lacks it", async () => {
     const notes: { phase: string; detail?: Record<string, unknown> }[] = [];
     const tool = buildHttpTool(

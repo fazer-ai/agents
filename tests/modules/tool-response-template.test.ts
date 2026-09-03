@@ -6,6 +6,7 @@ import {
   enclosingBlock,
   MAX_EACH_ITEMS,
   MAX_TEMPLATE_CHARS,
+  MODEL_RESPONSE_CHAR_LIMIT,
   moreItemsMarker,
   parseTemplate,
   projectToolResponse,
@@ -451,6 +452,63 @@ describe("a list block (#459)", () => {
     ).not.toContain("more");
   });
 
+  // Round 1 of review, finding 1. Fifty items of ~100 characters is 5,000, so the clip below
+  // removed the last ten AND the count after them: the model read a list that simply ended.
+  test("a block renders UNDER the clip, and the count of the rest survives it", () => {
+    const items = Array.from({ length: 100 }, (_, i) => ({
+      id: i + 1,
+      descricao: "d".repeat(80),
+    }));
+    const got = render("{{#each .}}- #{{id}} {{descricao}}\n{{/each}}", items);
+    expect(got.text.length).toBeLessThanOrEqual(MODEL_RESPONSE_CHAR_LIMIT);
+    const shown = (got.text.match(/^- #/gm) ?? []).length;
+    expect(shown).toBeGreaterThan(30);
+    expect(shown).toBeLessThan(MAX_EACH_ITEMS);
+    expect(got.text.endsWith(moreItemsMarker(100 - shown))).toBe(true);
+    // The runtime's own clip is what it renders under, so a smaller one shows fewer.
+    const small = renderResponseTemplate(
+      { template: "{{#each .}}- #{{id}} {{descricao}}\n{{/each}}" },
+      items,
+      { maxChars: 400 },
+    );
+    expect(small.text.length).toBeLessThanOrEqual(400);
+    expect((small.text.match(/^- #/gm) ?? []).length).toBeLessThan(shown);
+    expect(small.text).toContain("more not shown)");
+  });
+
+  test("text before the block counts against the same budget", () => {
+    const items = Array.from({ length: 20 }, (_, i) => ({ n: i }));
+    const lead = "x".repeat(MODEL_RESPONSE_CHAR_LIMIT - 40);
+    const got = render(`${lead}\n{{#each .}}{{n}},{{/each}}`, items);
+    expect(got.text.length).toBeLessThanOrEqual(MODEL_RESPONSE_CHAR_LIMIT);
+    expect(got.text).toContain("more not shown)");
+  });
+
+  test("a miss inside an item the budget dropped is not reported", () => {
+    const items = [
+      { id: 1, x: "a" },
+      { id: 2, x: "b" },
+      { id: "3".repeat(30) },
+    ];
+    // Room for two items and the count, not for the third, which is the one lacking `x`.
+    const got = renderResponseTemplate(
+      { template: "{{#each .}}{{id}}{{x}};{{/each}}" },
+      items,
+      { maxChars: 30 },
+    );
+    expect(got.text).toBe(`1a;2b;${moreItemsMarker(1)}`);
+    expect(got.missing).toEqual([]);
+  });
+
+  test("a root list labels its items by index alone", () => {
+    // Round 1 of review, finding 2: `..0.name` is not a path the grammar accepts, and the label
+    // exists to be pasted into the path fields.
+    expect(render("{{#each .}}{{name}}{{/each}}", [{}]).missing).toEqual([
+      "0.name",
+    ]);
+    expect(render("{{#each .}}{{.}}{{/each}}", [{}]).missing).toEqual(["0"]);
+  });
+
   test("a block needs the body even with no token inside it", () => {
     expect(templateNeedsBody("{{#each a}}x{{/each}}")).toBe(true);
     expect(templateNeedsBody("{{a}}")).toBe(true);
@@ -545,6 +603,16 @@ describe("parseTemplate refuses a broken structure, and the reader carries the r
       { kind: "each", path: "x", body: "b" },
       { kind: "text", text: " c" },
     ]);
+  });
+
+  test("a standalone marker ending in \\r\\n takes the whole line, as with \\n", () => {
+    // A template sent over REST or MCP from a Windows editor.
+    expect(
+      renderResponseTemplate(
+        { template: "a\r\n{{#each xs}}\r\n- {{.}}\r\n{{/each}}\r\nb" },
+        { xs: [1, 2] },
+      ).text,
+    ).toBe("a\r\n- 1\r\n- 2\r\nb");
   });
 
   test("{{.}} outside a block is the body itself, which is usually not a scalar", () => {

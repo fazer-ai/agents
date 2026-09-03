@@ -3,7 +3,13 @@
 -- with a flow-log line as the only trace. The service now refuses such a name where it is typed and
 -- the import renames a bundled tool that carries one; this moves the rows written before either
 -- check existed, to the first free `<name>_N` in their own tenant. The grant references the row by
--- id and follows it. The label, which is what the console shows, is untouched.
+-- id and follows it. The label follows the name where the console would derive the old name from
+-- it: the console submits `normalizeToolName(label)` as the name on every save (the label is its
+-- single source of truth), so a moved row whose label still derived the reserved name could never
+-- be saved again from there (round 20). "Run code" becomes "Run code 3" for `run_code_3`; a label
+-- that never derived the name is the operator's own and does not move. The derivation below is
+-- the console's without its NFD step (no unaccent here): a label that reaches a native name only
+-- by shedding diacritics keeps its label, and the console will then rename the row on its next save.
 --
 -- What the rename cannot follow is a PROMPT that names the tool: after this, "chame run_code" reaches
 -- the native, or a name no tool answers to. So the move is written to the audit trail under the
@@ -28,10 +34,11 @@ DECLARE
   r RECORD;
   ag RECORD;
   candidate TEXT;
+  new_label TEXT;
   n INTEGER;
 BEGIN
   FOR r IN
-    SELECT id, tenant_id, name
+    SELECT id, tenant_id, name, label
     FROM "tool_definitions"
     WHERE name IN (
       'handoff_to_human', 'private_note', 'set_custom_attribute', 'assign_label',
@@ -48,11 +55,16 @@ BEGIN
       );
       n := n + 1;
     END LOOP;
-    UPDATE "tool_definitions" SET name = candidate, updated_at = NOW() WHERE id = r.id;
+    new_label := CASE
+      WHEN regexp_replace(regexp_replace(regexp_replace(lower(r.label), '[^a-z0-9_-]', '_', 'g'), '_+', '_', 'g'), '^_+|_+$', '', 'g') = r.name
+        THEN r.label || ' ' || n
+      ELSE r.label
+    END;
+    UPDATE "tool_definitions" SET name = candidate, label = new_label, updated_at = NOW() WHERE id = r.id;
     INSERT INTO "audit_logs" (tenant_id, actor_id, actor_type, action, target, "before", "after", created_at)
     VALUES (
       r.tenant_id, NULL, 'system', 'tool.renamed_by_upgrade', 'tool:' || r.id,
-      jsonb_build_object('name', r.name), jsonb_build_object('name', candidate), NOW()
+      jsonb_build_object('name', r.name, 'label', r.label), jsonb_build_object('name', candidate, 'label', new_label), NOW()
     );
     -- strpos, not LIKE: the underscore in every one of these names is a LIKE wildcard.
     FOR ag IN

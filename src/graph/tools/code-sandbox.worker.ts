@@ -17,7 +17,7 @@ import {
   type QuickJSHandle,
   shouldInterruptAfterDeadline,
 } from "quickjs-emscripten-core";
-import { clipText } from "@/lib/text";
+import { clipText, makeStorable } from "@/lib/text";
 import { zoneFormatter, zoneOffsetSeconds } from "./zone-offset";
 
 declare var self: Worker;
@@ -166,6 +166,12 @@ function makeRenderer(vm: QuickJSContext): {
   };
 }
 
+// A NUL or half a character the snippet built (`String.fromCharCode(0)`, a lone surrogate) would
+// ride a console line or an error message into the ToolMessage, whose checkpoint is a jsonb write
+// Postgres refuses — the turn would fail instead of returning the result (round 20). Repaired here,
+// where the strings are made, the way every other third-party writer's text is.
+const storable = makeStorable;
+
 function clip(s: string, max: number): string {
   return s.length <= max ? s : `${clipText(s, max)}…[truncated]`;
 }
@@ -180,7 +186,17 @@ function clip(s: string, max: number): string {
 const CONSOLE_SOURCE = `(function (emit, render, maxChars) {
   var total = 0;
   // One past the budget, so the host still sees the overflow and writes its marker.
-  function cut(s) { return s.length > maxChars ? s.slice(0, maxChars + 1) : s; }
+  function cut(s) {
+    // Cut first, repair after, on the bounded text: a NUL is dropped HERE, inside the interpreter,
+    // because the host reads a line as a C string and a NUL that crossed ended the line where it
+    // stood ("a\\0b" arrived as "a", measured, round 20); half a character is one U+FFFD here,
+    // where the host's byte-wise decoding made three of it. The cut itself can leave half a
+    // character at the edge, which the same repair covers.
+    var c = s.length > maxChars ? s.slice(0, maxChars + 1) : s;
+    if (c.indexOf("\\u0000") >= 0) c = c.replace(/\\u0000/g, "");
+    if (/[\\uD800-\\uDFFF]/.test(c)) c = c.replace(/[\\uD800-\\uDBFF](?![\\uDC00-\\uDFFF])|(?<![\\uD800-\\uDBFF])[\\uDC00-\\uDFFF]/g, "\\uFFFD");
+    return c;
+  }
   function line(args) {
     var parts = [];
     for (var i = 0; i < args.length; i++) {
@@ -1020,7 +1036,12 @@ function run(req: SandboxRequest): SandboxReply {
       renewDeadline();
       const value = clip(render(out.value, req.maxChars), req.maxChars);
       out.value.dispose();
-      return { kind: "value", value, logs, ms };
+      return {
+        kind: "value",
+        value: storable(value),
+        logs: logs.map(storable),
+        ms,
+      };
     }
     const e = out.error as ThrownValue;
     // NOTE: The name is the snippet's too (`e.name = "x".repeat(1e6)` is one assignment), so it is
@@ -1030,9 +1051,9 @@ function run(req: SandboxRequest): SandboxReply {
     unwound = out.unwound === true;
     return {
       kind: "error",
-      name,
-      message: clip(message, req.maxChars),
-      logs,
+      name: storable(name),
+      message: storable(clip(message, req.maxChars)),
+      logs: logs.map(storable),
       ms,
       ...(out.limit ? { limit: out.limit } : {}),
     };

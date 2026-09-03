@@ -3,6 +3,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { z } from "zod";
 import { PrismaClient } from "@/../generated/prisma/client";
 import config from "@/config";
+import { normalizeToolName } from "@/graph/tools/toolName";
 import type { TenantContext } from "@/lib/tenancy";
 import { TOOL_INSTRUCTIONS_MAX } from "@/modules/agents/text-caps";
 import {
@@ -1931,6 +1932,29 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     expect(grants.map((g) => g.toolDefinitionId)).toEqual([
       rows[0]?.id ?? null,
     ]);
+  });
+
+  // Round 20: the console derives the name from the label on every save, so a renamed row whose
+  // label still derived the reserved name could not be saved again from there. The label follows
+  // the name where it derived the old one, and is the operator's own otherwise.
+  test("a renamed tool's label follows the name where the console would derive the old one", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const bundle = structuredClone(exp);
+    const tool = bundle.components?.httpTools.find(
+      (h) => h.name === "lookup_order",
+    );
+    if (!tool) throw new Error("bundle missing lookup_order");
+    tool.name = "private_note";
+    tool.label = "Private note";
+    await importAgent(dstCtx(), bundle, appDb);
+    const row = await suDb.toolDefinition.findFirst({
+      where: { tenantId: dstTenant, name: "private_note_2" },
+      select: { label: true },
+    });
+    expect(row?.label).toBe("Private note 2");
+    expect(normalizeToolName(row?.label ?? "")).toBe("private_note_2");
   });
 
   // Round 16: the rename was recorded and reported before the checks that can skip the component,

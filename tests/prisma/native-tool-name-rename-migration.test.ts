@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Client } from "pg";
+import { normalizeToolName } from "@/graph/tools/toolName";
 
 // Runs the ACTUAL migration file against the test database (a copy pasted here would drift, and
 // $executeRawUnsafe rejects multiple statements). What it pins: a row named after a native is moved
@@ -32,13 +33,25 @@ const tenants: bigint[] = [];
 const ids: Record<string, bigint> = {};
 let agentId = 0n;
 
-async function tool(tenantId: bigint, name: string): Promise<bigint> {
+async function tool(
+  tenantId: bigint,
+  name: string,
+  label = name,
+): Promise<bigint> {
   const r = await suDb.query(
     `INSERT INTO "tool_definitions" (tenant_id, name, label, url_template, allowed_hosts, created_at, updated_at)
-     VALUES ($1, $2, $2, 'https://api.example.com/x', '{api.example.com}', NOW(), NOW()) RETURNING id`,
-    [String(tenantId), name],
+     VALUES ($1, $2, $3, 'https://api.example.com/x', '{api.example.com}', NOW(), NOW()) RETURNING id`,
+    [String(tenantId), name, label],
   );
   return BigInt(r.rows[0].id);
+}
+
+async function rowOf(id: bigint): Promise<{ name: string; label: string }> {
+  const r = await suDb.query(
+    'SELECT name, label FROM "tool_definitions" WHERE id = $1',
+    [String(id)],
+  );
+  return r.rows[0];
 }
 
 async function agent(
@@ -91,12 +104,15 @@ describe.skipIf(!dbUp)(
       }
       const [a, b] = tenants as [bigint, bigint];
       // Tenant A: the native name, its `_2` already taken, a second native name, and a bystander.
-      ids.a_run_code = await tool(a, "run_code");
+      // The console derives the name from the label (`normalizeToolName`, the single source of truth
+      // there), so the label decides whether the row can be saved again: "Run code" derives the
+      // reserved name and must follow; a label that never derived it is left alone.
+      ids.a_run_code = await tool(a, "run_code", "Run code");
       ids.a_run_code_2 = await tool(a, "run_code_2");
       ids.a_handoff = await tool(a, "handoff_to_human");
       ids.a_lookup = await tool(a, "lookup_order");
       // Tenant B: the same native name, and nothing in the way — uniqueness is per tenant.
-      ids.b_run_code = await tool(b, "run_code");
+      ids.b_run_code = await tool(b, "run_code", "Validador");
       agentId = await agent(a, "granted", "p");
       await suDb.query(
         `INSERT INTO "agent_tool_selections" (tenant_id, agent_id, source, tool_definition_id, knowledge_base_ids, enabled_tools, created_at, updated_at)
@@ -136,6 +152,26 @@ describe.skipIf(!dbUp)(
       expect(await nameOf(ids.b_run_code as bigint)).toBe("run_code_2");
     });
 
+    // Round 20: `ToolEditModal.payloadOf` submits `normalizeToolName(label)` as the name on every
+    // save, so a moved row whose label still derived the reserved name could never be saved again
+    // from the console — an unrelated edit would submit `run_code` and meet the refusal.
+    test("the label follows the name where the console would derive the old one from it", async () => {
+      const a = await rowOf(ids.a_run_code as bigint);
+      expect(a).toEqual({ name: "run_code_3", label: "Run code 3" });
+      expect(normalizeToolName(a.label)).toBe(a.name);
+      const h = await rowOf(ids.a_handoff as bigint);
+      expect(h).toEqual({
+        name: "handoff_to_human_2",
+        label: "handoff_to_human 2",
+      });
+      expect(normalizeToolName(h.label)).toBe(h.name);
+      // A label that never derived the name is the operator's own; it does not move.
+      expect(await rowOf(ids.b_run_code as bigint)).toEqual({
+        name: "run_code_2",
+        label: "Validador",
+      });
+    });
+
     test("leaves every other row alone, the one already carrying the suffix included", async () => {
       expect(await nameOf(ids.a_run_code_2 as bigint)).toBe("run_code_2");
       expect(await nameOf(ids.a_lookup as bigint)).toBe("lookup_order");
@@ -165,15 +201,15 @@ describe.skipIf(!dbUp)(
             actor_type: "system",
             action: "tool.renamed_by_upgrade",
             target: `tool:${ids.a_run_code}`,
-            before: { name: "run_code" },
-            after: { name: "run_code_3" },
+            before: { name: "run_code", label: "Run code" },
+            after: { name: "run_code_3", label: "Run code 3" },
           },
           {
             actor_type: "system",
             action: "tool.renamed_by_upgrade",
             target: `tool:${ids.a_handoff}`,
-            before: { name: "handoff_to_human" },
-            after: { name: "handoff_to_human_2" },
+            before: { name: "handoff_to_human", label: "handoff_to_human" },
+            after: { name: "handoff_to_human_2", label: "handoff_to_human 2" },
           },
         ],
       );

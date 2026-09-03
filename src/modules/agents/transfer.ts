@@ -19,6 +19,7 @@ import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
 import { isNativeToolName } from "@/graph/tools/catalog";
 import { normalizeExpectedStatuses } from "@/graph/tools/http-status";
+import { normalizeToolName } from "@/graph/tools/toolName";
 import { parseDbId } from "@/lib/db-id";
 import { AppError, NotFoundError } from "@/lib/errors";
 import {
@@ -1462,6 +1463,15 @@ async function createMissingComponents(
       : tdef.name;
     chosen.set(tdef.name, name);
     taken.add(name);
+    // The label follows the name where the console would derive the old one from it: the console
+    // submits `normalizeToolName(label)` as the name on every save, so a renamed row whose label
+    // still derived the reserved name could not be saved again from there (round 20). A label
+    // that never derived it is the operator's own. Same rule as the migration's.
+    const bundledLabel = tdef.label ?? tdef.name;
+    const label =
+      name !== tdef.name && normalizeToolName(bundledLabel) === tdef.name
+        ? `${bundledLabel} ${name.slice(tdef.name.length + 1)}`
+        : bundledLabel;
     // Recorded once a row under the new name EXISTS — written below, or found by the pre-check
     // or the race — and not before: a component the checks below skip was otherwise announced
     // as imported under a name no row carries, next to the warning that it was not (round 16).
@@ -1532,7 +1542,7 @@ async function createMissingComponents(
           tenantId,
           name,
           // label is required now; legacy exports without one fall back to the identifier.
-          label: tdef.label ?? tdef.name,
+          label,
           description: tdef.description ?? null,
           method,
           urlTemplate: (shapes.urlTemplate ?? tdef.urlTemplate) as string,

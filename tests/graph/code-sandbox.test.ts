@@ -10,6 +10,7 @@ import {
   type SandboxOutcome,
   SandboxQueue,
 } from "@/graph/tools/code-sandbox";
+import { replaceLoneSurrogates } from "@/lib/text";
 
 // The snippet the issue is about, as a model writes it: normalise, weigh, `%11%10`, and END with
 // the verdict. `12351612850` is the reporter's own number, valid, second check digit through the
@@ -904,6 +905,26 @@ describe("runSandboxedCode", () => {
         { maxChars: 500 },
       ).length,
     ).toBeLessThan(400);
+  });
+
+  // Round 20: a snippet can build a NUL or half a character (`String.fromCharCode(0)`, a lone
+  // `\\ud800`), and the strings it leaves in a console line or an error message become the
+  // ToolMessage's content, which the checkpoint writes as jsonb — and Postgres refuses a NUL and an
+  // unpaired surrogate in jsonb, failing the turn instead of returning the result. Repaired where
+  // the strings are made, before they cross the thread boundary, like every other writer here.
+  test("a NUL or half a character made by the snippet does not cross the thread boundary", async () => {
+    const out = await runSandboxedCode(
+      `console.log("a" + String.fromCharCode(0) + "b" + "\\ud800");
+       throw new Error("m" + String.fromCharCode(0) + "\\udc00")`,
+    );
+    expect(out).toMatchObject({
+      kind: "error",
+      logs: ["ab\uFFFD"],
+      message: expect.stringMatching(/^m\uFFFD \(line 2/),
+    });
+    const text = JSON.stringify(out);
+    expect(text.includes("\u0000")).toBe(false);
+    expect(replaceLoneSurrogates(text)).toBe(text);
   });
 
   test("a thread that cannot boot is the sandbox's failure, reported as such", async () => {

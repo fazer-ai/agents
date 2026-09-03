@@ -10,6 +10,7 @@ import { buildMcpServer } from "@/modules/mcp/server";
 import * as writeRoot from "@/modules/mcp/write";
 import * as writeAgents from "@/modules/mcp/write-agents";
 import * as writeChannels from "@/modules/mcp/write-channels";
+import * as writeCodeTools from "@/modules/mcp/write-code-tools";
 import * as writeConversations from "@/modules/mcp/write-conversations";
 import * as writeDocuments from "@/modules/mcp/write-documents";
 import * as writeFleet from "@/modules/mcp/write-fleet";
@@ -147,6 +148,31 @@ const TABLE: Record<string, Row> = {
   deployment_set_accounts: {
     args: { account_ids: [999999999] },
     why: "no Chatwoot deployment is connected",
+  },
+  code_tool_create: {
+    // NOTE: the NAME, like tool_create's row: `code` is never PARSED to decide the write (an
+    // invalid body is saved on purpose and reported in `warnings`), so a body that does not
+    // compile is a row both halves would answer ok.
+    args: {
+      name: "not a valid name!",
+      description: "d",
+      code: "return 1",
+    },
+    why: "name is not [A-Za-z0-9_-]{1,64}",
+    also: [
+      {
+        args: { name: "calculator", description: "d", code: "return 1" },
+        why: "calculator is a native tool's name",
+      },
+    ],
+  },
+  code_tool_delete: {
+    args: { code_tool_id: NOPE },
+    why: "code tool does not exist",
+  },
+  code_tool_update: {
+    args: { code_tool_id: NOPE, label: "x" },
+    why: "code tool does not exist",
   },
   document_template_create: { args: { name: "" }, why: "empty name" },
   document_template_delete: {
@@ -348,6 +374,7 @@ type WriteFn = (
 const FNS = {
   ...writeAgents,
   ...writeChannels,
+  ...writeCodeTools,
   ...writeConversations,
   ...writeDocuments,
   ...writeFleet,

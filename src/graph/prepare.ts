@@ -122,11 +122,13 @@ import { type AuditedSection, buildPromptAudit } from "./prompt-audit";
 import { DEFAULT_TIMEZONE, zonedWallClockToInstant } from "./time";
 import {
   buildHttpTools,
+  type LoadedCodeToolDef,
   type LoadedHttpToolDef,
   loadToolSelections,
   type RagConfig,
 } from "./tools/assemble";
 import { NATIVE_TOOL_NAMES, type NativeToolName } from "./tools/catalog";
+import { buildCodeTools } from "./tools/code";
 import { buildDocumentTools, type DocumentSelection } from "./tools/documents";
 import {
   buildMcpContextSection,
@@ -197,6 +199,8 @@ export interface AgentConfig {
   transferWithSummary: boolean;
   nativeToolsAllow?: string[];
   httpToolDefs: LoadedHttpToolDef[];
+  // Operator-authored code tools granted to this agent (issue #363).
+  codeToolDefs: LoadedCodeToolDef[];
   mcpSelections: McpSelection[];
   integrationSelections: IntegrationSelection[];
   documentSelections: DocumentSelection[];
@@ -774,6 +778,7 @@ export async function loadAgentConfig(
     transferWithSummary: agent.transferWithSummary,
     nativeToolsAllow: sel.nativeToolsAllow,
     httpToolDefs: sel.httpToolDefs,
+    codeToolDefs: sel.codeToolDefs,
     mcpSelections: sel.mcpSelections,
     integrationSelections: sel.integrationSelections,
     documentSelections: sel.documentSelections,
@@ -1186,6 +1191,17 @@ export async function buildToolset(
   // the ones it did are already first in the list and win by order. See unique-names.ts for why the
   // reservation cannot be left to ordering alone.
   const builtNativeNames = new Set(nativeTools.map((t) => t.name));
+  // The conversation variables an HTTP tool's {{context}} placeholders read and a code tool's
+  // `context` argument carries: one object, so the two kinds cannot disagree about a name.
+  const turnContext = {
+    ...(ctx.conversationId > 0
+      ? { conversation_id: String(ctx.conversationId) }
+      : {}),
+    ...(ctx.messageId && ctx.messageId > 0
+      ? { message_id: String(ctx.messageId) }
+      : {}),
+    ...cfg.httpToolContext,
+  };
   const { tools, dropped } = dropDuplicateToolNames(
     [
       ...nativeTools,
@@ -1212,15 +1228,7 @@ export async function buildToolset(
         // default) operators legitimately point tools at local http services (see .env.example); prod
         // keeps the flag false → https-only. Ties the two so a local HTTP tool works without extra config.
         allowHttp: config.ssrf.allowPrivateTargets,
-        context: {
-          ...(ctx.conversationId > 0
-            ? { conversation_id: String(ctx.conversationId) }
-            : {}),
-          ...(ctx.messageId && ctx.messageId > 0
-            ? { message_id: String(ctx.messageId) }
-            : {}),
-          ...cfg.httpToolContext,
-        },
+        context: turnContext,
         // The zone an offset-less start from a declared response is read in. Same value the documents
         // tool gets, and for the same reason: two readers of the operator's own wall clock must not
         // disagree by three hours.
@@ -1231,6 +1239,19 @@ export async function buildToolset(
         appointmentBooked: appointmentBookedFn,
         cancelAppointment: cancelAppointmentFn,
         onSideEffectError,
+      }),
+      ...buildCodeTools(cfg.codeToolDefs, {
+        timezone: cfg.timezone,
+        context: turnContext,
+        // The two attribute bags, read when the tool is CALLED, through the same loader a
+        // precondition uses (tool-preconditions.ts is the one vocabulary for both). Off a real
+        // conversation the ids are null and the bags come back empty.
+        loadState: preconditionStateLoader({
+          base: ctx.base,
+          tenantId: ctx.tenantId,
+          conversationDbId: cfg.conversationDbId ?? null,
+          contactDbId: cfg.contactDbId ?? null,
+        }),
       }),
       ...mcpTools,
       ...toolpackTools,

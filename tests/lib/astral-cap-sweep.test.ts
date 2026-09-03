@@ -398,11 +398,6 @@ const BARE_SLICES: Record<
   "src/graph/tools/mcp.ts": [5, "ascii"],
   // The spend ceiling's project key is the head of a hex digest (#426).
   "src/modules/spend-ceiling/poll.ts": [1, "ascii"],
-  // `withTrailingObjectWrapped`: the one line that splits the snippet at the brace indexes its own
-  // lexer found, to put parentheses around a trailing object literal. `{` and `}` are ASCII, so
-  // neither side of a cut can be half of a surrogate pair; nothing is dropped, the three pieces
-  // are joined back whole.
-  "src/graph/tools/code-sandbox.worker.ts": [1, "index"],
   "src/graph/tools/native.ts": [4, "array"],
   "src/graph/tools/toolName.ts": [1, "ascii"],
   "src/graph/trace.ts": [2, "array + index"],

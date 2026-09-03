@@ -6,6 +6,8 @@ import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import {
   agentGet,
   apiKeyList,
+  codeToolGet,
+  codeToolList,
   instanceList,
   toolList,
   vaultList,
@@ -114,6 +116,9 @@ describe.skipIf(!dbUp)("MCP read tools (DB)", () => {
         `DELETE FROM chatwoot_instances WHERE tenant_id = ${tid}`,
       );
       await suDb.$executeRawUnsafe(
+        `DELETE FROM code_tool_definitions WHERE tenant_id = ${tid}`,
+      );
+      await suDb.$executeRawUnsafe(
         `DELETE FROM vault_entries WHERE tenant_id = ${tid}`,
       );
       await suDb.$executeRawUnsafe(
@@ -184,6 +189,47 @@ describe.skipIf(!dbUp)("MCP read tools (DB)", () => {
     const r = await toolList(principal({ tenantId: tenantB }), { base: appDb });
     expect(r.ok).toBe(true);
     if (r.ok) expect((r.data.tools as unknown[]).length).toBe(0);
+  });
+
+  test("code_tool_list / code_tool_get answer an mcp:read principal, tenant-fenced", async () => {
+    const created = await suDb.codeToolDefinition.create({
+      data: {
+        tenantId: tenantA,
+        name: "validar_cpf",
+        label: "Validar CPF",
+        description: "Valida um CPF.",
+        inputSchema: { cpf: { type: "string", required: true } },
+        code: "return validateCpf(input.cpf)",
+      },
+      select: { id: true },
+    });
+    const readOnly = { tenantId: tenantA, scopes: ["mcp:read"] };
+    const list = await codeToolList(principal(readOnly), { base: appDb });
+    expect(list.ok).toBe(true);
+    if (list.ok) {
+      const tools = list.data.tools as Record<string, unknown>[];
+      expect(tools.map((t) => t.name)).toEqual(["validar_cpf"]);
+      // The body is code_tool_get's to return.
+      expect("code" in (tools[0] ?? {})).toBe(false);
+    }
+    const got = await codeToolGet(
+      principal(readOnly),
+      { code_tool_id: String(created.id) },
+      { base: appDb },
+    );
+    expect(got.ok).toBe(true);
+    if (got.ok) {
+      const tool = got.data.tool as { id: string; code: string };
+      expect(tool.id).toBe(String(created.id));
+      expect(tool.code).toBe("return validateCpf(input.cpf)");
+    }
+    const fenced = await codeToolGet(
+      principal({ tenantId: tenantB, scopes: ["mcp:read"] }),
+      { code_tool_id: String(created.id) },
+      { base: appDb },
+    );
+    expect(fenced.ok).toBe(false);
+    if (!fenced.ok) expect(fenced.error).toContain("not found");
   });
 
   test("api_key_list returns no secrets for a fresh tenant", async () => {

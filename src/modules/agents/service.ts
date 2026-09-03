@@ -1143,6 +1143,7 @@ export async function cloneAgent(
         mcpServerConnectionId: true,
         integrationInstanceId: true,
         documentTemplateId: true,
+        codeToolDefinitionId: true,
         knowledgeBaseIds: true,
         enabledTools: true,
       },
@@ -1172,6 +1173,7 @@ export async function cloneAgent(
           mcpServerConnectionId: g.mcpServerConnectionId,
           integrationInstanceId: g.integrationInstanceId,
           documentTemplateId: g.documentTemplateId,
+          codeToolDefinitionId: g.codeToolDefinitionId,
           knowledgeBaseIds: g.knowledgeBaseIds,
           enabledTools: g.enabledTools,
         })),
@@ -1200,6 +1202,7 @@ const AGENT_TOOL_SOURCES = [
   "MCP",
   "INTEGRATION",
   "DOCUMENT",
+  "CODE",
 ] as const;
 type AgentToolSourceLit = (typeof AGENT_TOOL_SOURCES)[number];
 
@@ -1209,6 +1212,7 @@ export interface ToolGrantInput {
   mcpServerConnectionId?: string | null;
   integrationInstanceId?: string | null;
   documentTemplateId?: string | null;
+  codeToolDefinitionId?: string | null;
   knowledgeBaseIds?: string[];
   enabledTools?: string[];
 }
@@ -1219,6 +1223,7 @@ export interface ToolGrantDto {
   mcpServerConnectionId: string | null;
   integrationInstanceId: string | null;
   documentTemplateId: string | null;
+  codeToolDefinitionId: string | null;
   knowledgeBaseIds: string[];
   enabledTools: string[];
 }
@@ -1246,6 +1251,8 @@ export interface ToolSelectionView {
         args: { name: string; description?: string; required: boolean }[];
       }[];
     }[];
+    // Operator-authored code tools (issue #363); `name` is what the agent calls.
+    codeTools: { id: string; name: string; label: string; enabled: boolean }[];
     documentTemplates: {
       id: string;
       name: string;
@@ -1283,6 +1290,7 @@ interface NormalizedGrant {
   mcpServerConnectionId: bigint | null;
   integrationInstanceId: bigint | null;
   documentTemplateId: bigint | null;
+  codeToolDefinitionId: bigint | null;
   knowledgeBaseIds: bigint[];
   enabledTools: string[];
 }
@@ -1322,6 +1330,7 @@ function normalizeGrants(input: ToolGrantInput[]): NormalizedGrant[] {
   let sawNative = false;
   let sawRag = false;
   const httpSeen = new Set<string>();
+  const codeSeen = new Set<string>();
   const mcpSeen = new Set<string>();
   const intSeen = new Set<string>();
   const docSeen = new Set<string>();
@@ -1357,6 +1366,7 @@ function normalizeGrants(input: ToolGrantInput[]): NormalizedGrant[] {
           mcpServerConnectionId: null,
           integrationInstanceId: null,
           documentTemplateId: null,
+          codeToolDefinitionId: null,
           knowledgeBaseIds: [],
           enabledTools,
         });
@@ -1398,6 +1408,7 @@ function normalizeGrants(input: ToolGrantInput[]): NormalizedGrant[] {
           mcpServerConnectionId: null,
           integrationInstanceId: null,
           documentTemplateId: null,
+          codeToolDefinitionId: null,
           knowledgeBaseIds,
           enabledTools: ragTools,
         });
@@ -1420,6 +1431,7 @@ function normalizeGrants(input: ToolGrantInput[]): NormalizedGrant[] {
           mcpServerConnectionId: null,
           integrationInstanceId: null,
           documentTemplateId: null,
+          codeToolDefinitionId: null,
           knowledgeBaseIds: [],
           enabledTools: [],
         });
@@ -1442,6 +1454,7 @@ function normalizeGrants(input: ToolGrantInput[]): NormalizedGrant[] {
           mcpServerConnectionId: id,
           integrationInstanceId: null,
           documentTemplateId: null,
+          codeToolDefinitionId: null,
           knowledgeBaseIds: [],
           enabledTools,
         });
@@ -1464,6 +1477,7 @@ function normalizeGrants(input: ToolGrantInput[]): NormalizedGrant[] {
           mcpServerConnectionId: null,
           integrationInstanceId: id,
           documentTemplateId: null,
+          codeToolDefinitionId: null,
           knowledgeBaseIds: [],
           enabledTools,
         });
@@ -1486,9 +1500,34 @@ function normalizeGrants(input: ToolGrantInput[]): NormalizedGrant[] {
           mcpServerConnectionId: null,
           integrationInstanceId: null,
           documentTemplateId: id,
+          codeToolDefinitionId: null,
           // NOTE: no enabledTools. A template grant exposes exactly one tool — the one derived from
           // that template — so there is nothing to narrow, and an allowlist here would be a second
           // switch for the grant itself.
+          knowledgeBaseIds: [],
+          enabledTools: [],
+        });
+        break;
+      }
+      case "CODE": {
+        const id = bigOrThrow(g.codeToolDefinitionId, "codeToolDefinitionId");
+        if (codeSeen.has(String(id))) {
+          throw new AppError(
+            "duplicate CODE grant",
+            400,
+            "errors.toolGrantDuplicate",
+            { source: "CODE" },
+          );
+        }
+        codeSeen.add(String(id));
+        out.push({
+          source: "CODE",
+          toolDefinitionId: null,
+          mcpServerConnectionId: null,
+          integrationInstanceId: null,
+          documentTemplateId: null,
+          codeToolDefinitionId: id,
+          // NOTE: one tool per grant, like a document template: nothing to narrow.
           knowledgeBaseIds: [],
           enabledTools: [],
         });
@@ -1512,6 +1551,7 @@ function toGrantDto(g: {
   mcpServerConnectionId: bigint | null;
   integrationInstanceId: bigint | null;
   documentTemplateId: bigint | null;
+  codeToolDefinitionId: bigint | null;
   knowledgeBaseIds: bigint[];
   enabledTools: string[];
 }): ToolGrantDto {
@@ -1525,6 +1565,8 @@ function toGrantDto(g: {
       g.integrationInstanceId === null ? null : String(g.integrationInstanceId),
     documentTemplateId:
       g.documentTemplateId === null ? null : String(g.documentTemplateId),
+    codeToolDefinitionId:
+      g.codeToolDefinitionId === null ? null : String(g.codeToolDefinitionId),
     knowledgeBaseIds: g.knowledgeBaseIds.map((k) => String(k)),
     enabledTools: g.enabledTools,
   };
@@ -1546,6 +1588,7 @@ async function readGrantSet(
       mcpServerConnectionId: true,
       integrationInstanceId: true,
       documentTemplateId: true,
+      codeToolDefinitionId: true,
       knowledgeBaseIds: true,
       enabledTools: true,
     },
@@ -1566,6 +1609,7 @@ async function buildToolSelectionView(
       mcpServerConnectionId: true,
       integrationInstanceId: true,
       documentTemplateId: true,
+      codeToolDefinitionId: true,
       knowledgeBaseIds: true,
       enabledTools: true,
     },
@@ -1590,6 +1634,10 @@ async function buildToolSelectionView(
   });
   const knowledgeBases = await db.knowledgeBase.findMany({
     select: { id: true, name: true, description: true },
+    orderBy: { name: "asc" },
+  });
+  const codeTools = await db.codeToolDefinition.findMany({
+    select: { id: true, name: true, label: true, enabled: true },
     orderBy: { name: "asc" },
   });
   const documentTemplates = await db.documentTemplate.findMany({
@@ -1653,6 +1701,12 @@ async function buildToolSelectionView(
         name: k.name,
         description: k.description,
         unindexedCount: unindexedByKb.get(k.id) ?? 0,
+      })),
+      codeTools: codeTools.map((c) => ({
+        id: String(c.id),
+        name: c.name,
+        label: c.label,
+        enabled: c.enabled,
       })),
       documentTemplates: documentTemplates.map((d) => ({
         id: String(d.id),
@@ -1798,6 +1852,13 @@ export async function replaceAgentToolSelections(
           .map((g) => g.documentTemplateId as bigint),
       ),
     ];
+    const codeIds = [
+      ...new Set(
+        grants
+          .filter((g) => g.source === "CODE")
+          .map((g) => g.codeToolDefinitionId as bigint),
+      ),
+    ];
     const kbIds = [...new Set(grants.flatMap((g) => g.knowledgeBaseIds))];
 
     if (tdIds.length > 0) {
@@ -1830,6 +1891,17 @@ export async function replaceAgentToolSelections(
         throw new NotFoundError(
           "document template not found",
           "errors.documentTemplateNotFound",
+        );
+      }
+    }
+    if (codeIds.length > 0) {
+      const found = await db.codeToolDefinition.count({
+        where: { id: { in: codeIds } },
+      });
+      if (found !== codeIds.length) {
+        throw new NotFoundError(
+          "code tool not found",
+          "errors.codeToolNotFound",
         );
       }
     }
@@ -1890,6 +1962,7 @@ export async function replaceAgentToolSelections(
           mcpServerConnectionId: g.mcpServerConnectionId,
           integrationInstanceId: g.integrationInstanceId,
           documentTemplateId: g.documentTemplateId,
+          codeToolDefinitionId: g.codeToolDefinitionId,
           knowledgeBaseIds: g.knowledgeBaseIds,
           enabledTools: g.enabledTools,
         })),

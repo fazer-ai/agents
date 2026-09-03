@@ -17,6 +17,7 @@ import {
   getChatwootInstance,
   listInboxes,
 } from "@/modules/chatwoot/management";
+import { getCodeTool, listCodeTools } from "@/modules/code-tools/service";
 import {
   getConversationDetail,
   getConversationMessages,
@@ -193,6 +194,45 @@ export async function toolGet(
   if (typeof id !== "bigint") return id;
   try {
     return ok({ tool: await getToolDefinition(ctx, id, base) });
+  } catch (e) {
+    return failOf(e);
+  }
+}
+
+// ── code tools (operator-authored, issue #363) ──
+
+export async function codeToolList(
+  principal: VerifiedToken,
+  deps: WriteDeps = {},
+): Promise<WriteResult> {
+  const base = deps.base ?? basePrisma;
+  const ctx = readGate(principal);
+  if ("ok" in ctx) return ctx;
+  try {
+    const tools = await listCodeTools(ctx, base);
+    // The body is dropped from the LIST for the reason the document list drops its blocks: it is
+    // the bulk of the row (20k characters at most, each) and nobody browsing the list reads it.
+    // code_tool_get returns the whole thing.
+    return ok({
+      tools: tools.map(({ code: _code, ...rest }) => rest),
+    });
+  } catch (e) {
+    return failOf(e);
+  }
+}
+
+export async function codeToolGet(
+  principal: VerifiedToken,
+  args: { code_tool_id: string },
+  deps: WriteDeps = {},
+): Promise<WriteResult> {
+  const base = deps.base ?? basePrisma;
+  const ctx = readGate(principal);
+  if ("ok" in ctx) return ctx;
+  const id = parseMcpId(args.code_tool_id, "code_tool_id");
+  if (typeof id !== "bigint") return id;
+  try {
+    return ok({ tool: await getCodeTool(ctx, id, base) });
   } catch (e) {
     return failOf(e);
   }

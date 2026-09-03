@@ -51,6 +51,7 @@ export function makeConfig(
     transferWithSummary: false,
     nativeToolsAllow: undefined,
     httpToolDefs: [],
+    codeToolDefs: [],
     mcpSelections: [],
     integrationSelections: [],
     documentSelections: [],

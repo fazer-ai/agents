@@ -1,6 +1,6 @@
-// The thread that runs ONE model-authored snippet and exits. Spawned per call by code-sandbox.ts,
-// which explains why a thread and why a fresh one; this file is the interpreter side of that
-// contract and knows nothing about the tool.
+// The thread that runs ONE operator-authored code tool body and exits. Spawned per call by
+// code-sandbox.ts, which explains why a thread and why a fresh one; this file is the interpreter
+// side of that contract and knows nothing about the tool.
 //
 // The interpreter is QuickJS compiled to WebAssembly (quickjs-emscripten): a real JavaScript engine
 // with no ambient authority. Its global object has exactly what ECMAScript defines plus the
@@ -35,6 +35,15 @@ export interface SandboxRequest {
   // without these "today" is tomorrow's date every evening in Brazil. The zone arrives RESOLVED:
   // the host already fell back to UTC for one Intl does not know.
   clock: { timezone: string; nowLocal: string };
+  // Present for a code tool's call: the body runs as `function (input, context)` and answers with
+  // `return`. Absent: the source runs as a bare script (the engine tests' harness).
+  call?: SandboxCall;
+}
+
+// Both JSON text, produced by the host from the tool's validated arguments and the turn's context.
+export interface SandboxCall {
+  input: string;
+  context: string;
 }
 
 export type SandboxReply =
@@ -517,252 +526,46 @@ function installClock(
   }
 }
 
-// A snippet is evaluated as a script, so its result is the completion value: the last expression,
-// REPL-style, which is how the tool description tells the model to end it. A snippet that ends in
-// `return` instead is a SyntaxError as a script and a perfectly good function body, and a model told
-// "return the verdict" writes exactly that, so the one specific SyntaxError that means "you wrote
-// a function body" gets the snippet re-run as one. Any other error is the snippet's own.
-const RETURN_AT_TOP_LEVEL = /return not in a function/;
-
-// A snippet that ends with an object literal in statement position — `…; { day, days }` — is a
-// BLOCK to the parser, so its value is the last expression in it (or a SyntaxError once a property
-// has a key), and a model that wanted the object back gets a number or a parse error. Measured live
-// (PR #485): 2 of 3 date answers went wrong this way, one of them through three SyntaxError round
-// trips before the model added parentheses. So a trailing `{…}` that sits at a statement boundary
-// (start of code, `;`, `}` or a line break — not after `)`, `=>`, `else`, `try`…) is tried first with
-// parentheses around it, and the original source is what runs if that does not parse.
-// Characters a `/` can follow and still open a regex literal rather than divide; plus the keywords
-// below, tracked as the previous word.
-const REGEX_AFTER_CHAR = /[(,=:[!&|?{};+\-*%<>~^]/;
-const REGEX_AFTER_WORD = new Set([
-  "return",
-  "typeof",
-  "case",
-  "in",
-  "of",
-  "delete",
-  "void",
-  "throw",
-  "new",
-  "instanceof",
-  "do",
-  "else",
-]);
-// A `{` right after one of these is a block, whatever the line break says.
-const BLOCK_AFTER_WORD = new Set(["else", "try", "finally", "do"]);
-// A `{` after the `)` that closes one of these headers is a block too, on the next line as well
-// (Allman style; PR #485, round 9: `if (false)\n{ valid: true }` had become the object,
-// unconditionally). The `)` of a call — `compute()\n{ valid }` — is still a boundary.
-const CONTROL_HEADERS = new Set([
-  "if",
-  "for",
-  "while",
-  "switch",
-  "with",
-  "catch",
-]);
-
-function skipQuoted(code: string, at: number): number {
-  const quote = code[at];
-  let i = at + 1;
-  while (i < code.length) {
-    const c = code[i];
-    if (c === "\\") i += 2;
-    else if (c === quote) return i + 1;
-    else if (quote === "`" && c === "$" && code[i + 1] === "{")
-      i = skipTemplateHole(code, i + 2);
-    else i++;
+// The tool's call, in function-body mode: `input` (the model's arguments, validated by the tool's
+// schema) and `context` (what the turn knows about the conversation), each crossing as JSON text —
+// one copy, no host object reference, the same discipline as the clock strings. `__takeArgs`
+// parses both and deletes the three names before the body runs (arguments are evaluated before the
+// call), so the body sees `input` and `context` as parameters and nothing new on the global object.
+function installCall(vm: QuickJSContext, call: SandboxCall): void {
+  for (const [name, value] of [
+    ["__INPUT_JSON", call.input],
+    ["__CONTEXT_JSON", call.context],
+  ] as const) {
+    const handle = vm.newString(value);
+    vm.setProp(vm.global, name, handle);
+    handle.dispose();
   }
-  return code.length;
+  vm.unwrapResult(vm.evalCode(TAKE_ARGS_SOURCE, "args.js")).dispose();
 }
 
-// A template hole is code, so what the outer pass skips is skipped here too — a string, a comment,
-// a regex — with the same reading of a slash: a regex where an operand is expected, a division
-// after one. Round 17: `${/{/.test("{")}` counted the brace inside the regex as a hole brace and
-// read the rest of the snippet as the template.
-function skipTemplateHole(code: string, at: number): number {
-  let depth = 1;
-  let i = at;
-  let prevChar = "";
-  let word = "";
-  let prevWord = "";
-  while (i < code.length) {
-    const c = code[i] as string;
-    const next = code[i + 1];
-    if (c === "\\") i += 2;
-    else if (c === "/" && next === "/") {
-      const nl = code.indexOf("\n", i);
-      i = nl < 0 ? code.length : nl;
-    } else if (c === "/" && next === "*") {
-      const close = code.indexOf("*/", i + 2);
-      i = close < 0 ? code.length : close + 2;
-    } else if (/\s/.test(c)) {
-      if (word) {
-        prevWord = word;
-        word = "";
-      }
-      i++;
-    } else if (c === '"' || c === "'" || c === "`") {
-      i = skipQuoted(code, i);
-      prevChar = c;
-      prevWord = word = "";
-    } else if (
-      c === "/" &&
-      (prevChar === "" ||
-        REGEX_AFTER_CHAR.test(prevChar) ||
-        REGEX_AFTER_WORD.has(prevWord))
-    ) {
-      i = skipRegex(code, i);
-      prevChar = "/";
-      prevWord = word = "";
-    } else {
-      if (/[A-Za-z0-9_$]/.test(c)) word += c;
-      else if (word) {
-        prevWord = word;
-        word = "";
-      }
-      if (c === "{") depth++;
-      else if (c === "}") {
-        depth--;
-        if (depth === 0) return i + 1;
-      }
-      prevChar = c;
-      i++;
-    }
-  }
-  return code.length;
-}
-
-function skipRegex(code: string, at: number): number {
-  let i = at + 1;
-  let inClass = false;
-  while (i < code.length) {
-    const c = code[i];
-    if (c === "\\") i += 2;
-    else if (c === "\n") return i;
-    else if (c === "[") {
-      inClass = true;
-      i++;
-    } else if (c === "]") {
-      inClass = false;
-      i++;
-    } else if (c === "/" && !inClass) {
-      i++;
-      while (i < code.length && /[a-z]/i.test(code[i] as string)) i++;
-      return i;
-    } else i++;
-  }
-  return code.length;
-}
-
-// One pass over the source that skips what is not syntax — strings, template literals, regex
-// literals, comments — and keeps the top-level brace pairs, so a `}` inside a string or a comment
-// after the object cannot move the cut (PR #485, round 7: \`{ valid, reason: "ok" } // verdict\` was
-// not wrapped, and a reason holding "}" picked the wrong opening brace).
-function withTrailingObjectWrapped(code: string): string | undefined {
-  type Open = {
-    at: number;
-    prevChar: string;
-    prevAt: number;
-    prevWord: string;
-    header: string;
+const TAKE_ARGS_SOURCE = `(function () {
+  var parse = JSON.parse;
+  globalThis.__takeArgs = function () {
+    var args = [parse(globalThis.__INPUT_JSON), parse(globalThis.__CONTEXT_JSON)];
+    delete globalThis.__INPUT_JSON;
+    delete globalThis.__CONTEXT_JSON;
+    delete globalThis.__takeArgs;
+    return args;
   };
-  const opens: Open[] = [];
-  const parens: string[] = [];
-  let lastParenWord = "";
-  let last: (Open & { closeAt: number }) | undefined;
-  let end = -1;
-  let prevChar = "";
-  let prevAt = -1;
-  let word = "";
-  let prevWord = "";
-  let i = 0;
-  while (i < code.length) {
-    const c = code[i] as string;
-    const next = code[i + 1];
-    if (c === "/" && next === "/") {
-      const nl = code.indexOf("\n", i);
-      i = nl < 0 ? code.length : nl;
-      continue;
-    }
-    if (c === "/" && next === "*") {
-      const close = code.indexOf("*/", i + 2);
-      i = close < 0 ? code.length : close + 2;
-      continue;
-    }
-    if (/\s/.test(c)) {
-      if (word) {
-        prevWord = word;
-        word = "";
-      }
-      i++;
-      continue;
-    }
-    if (c === '"' || c === "'" || c === "`") {
-      i = skipQuoted(code, i);
-      end = i - 1;
-      prevChar = c;
-      prevAt = i - 1;
-      prevWord = word = "";
-      continue;
-    }
-    if (
-      c === "/" &&
-      (prevChar === "" ||
-        REGEX_AFTER_CHAR.test(prevChar) ||
-        REGEX_AFTER_WORD.has(prevWord) ||
-        // After the `)` of a control header a `/` starts a regex (`if (x) /{/.test(s)`), and after
-        // the `)` of a call or a group it divides; the header word was recorded when its
-        // parenthesis opened (round 16: the brace inside the regex counted as a source brace).
-        (prevChar === ")" && CONTROL_HEADERS.has(lastParenWord)))
-    ) {
-      i = skipRegex(code, i);
-      end = i - 1;
-      prevChar = "/";
-      prevAt = i - 1;
-      prevWord = word = "";
-      continue;
-    }
-    if (/[A-Za-z0-9_$]/.test(c)) word += c;
-    else {
-      if (word) {
-        prevWord = word;
-        word = "";
-      }
-      if (c === "(") parens.push(prevWord);
-      else if (c === ")") lastParenWord = parens.pop() ?? "";
-      if (c === "{") {
-        opens.push({
-          at: i,
-          prevChar,
-          prevAt,
-          prevWord,
-          header: prevChar === ")" ? lastParenWord : "",
-        });
-      } else if (c === "}") {
-        const open = opens.pop();
-        last = open ? { ...open, closeAt: i } : undefined;
-      }
-    }
-    if (c !== ";") end = i;
-    prevChar = c;
-    prevAt = i;
-    i++;
-  }
-  if (!last || end !== last.closeAt || opens.length > 0) return undefined;
-  const nl = code.indexOf("\n", last.prevAt + 1);
-  const boundary =
-    last.prevChar === "" ||
-    last.prevChar === ";" ||
-    last.prevChar === "}" ||
-    (nl >= 0 && nl < last.at);
-  if (!boundary || BLOCK_AFTER_WORD.has(last.prevWord)) return undefined;
-  if (CONTROL_HEADERS.has(last.header)) return undefined;
-  // NOTE: A separator as well as the parenthesis. Without one, a snippet that leaves semicolons out
-  // (`const r = compute()\n{ valid: r.valid }`) reads on as a call — `compute()({…})` — which
-  // parses, and then fails at run time, past the fallback (PR #485, round 6).
-  return `${code.slice(0, last.at)};(${code.slice(last.at, end + 1)})${code.slice(end + 1)}`;
+})()`;
+
+// The body runs as a FUNCTION, so `return` is how it answers and the wrapper's opening line is the
+// only line above it (the consumer sits on the last line): a line the engine reports is the body's
+// line plus one. Without a call the source runs as a bare script and its completion value is the
+// result — the engine tests' harness, not a production path.
+function wrap(code: string, call: boolean): { source: string; offset: number } {
+  if (!call) return { source: code, offset: 0 };
+  return {
+    source: `(function (input, context) {\n${code}\n})(...__takeArgs())`,
+    offset: 1,
+  };
 }
+
 const RENDER_BUDGET_MS = 200;
 const ERROR_NAME_MAX_CHARS = 100;
 
@@ -782,21 +585,6 @@ const HOST_STACK_LIMIT = {
   unwound: true,
 } as const;
 
-// Whether a source parses, without running any of it.
-function compiles(vm: QuickJSContext, source: string): boolean {
-  try {
-    const r = vm.evalCode(source, "snippet.js", { compileOnly: true });
-    if (r.error) {
-      r.error.dispose();
-      return false;
-    }
-    r.value.dispose();
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 function evalOrUnwind(
   vm: QuickJSContext,
   source: string,
@@ -813,50 +601,20 @@ function evaluate(
   vm: QuickJSContext,
   code: string,
   readError: (handle: QuickJSHandle) => ThrownValue,
+  call: boolean,
 ):
   | { ok: true; value: QuickJSHandle }
   | { ok: false; error: ThrownValue; limit?: SandboxLimit; unwound?: true } {
-  // NOTE: The wrapped form is COMPILED first, without running, and only a form that compiles runs;
-  // otherwise the original source runs, once. Falling back on a SyntaxError from the run itself
-  // (`JSON.parse("{bad")` throws one) re-ran the original on top of the first run's bindings and
-  // answered "redeclaration of data" with the console output doubled (PR #485, round 12).
-  const wrapped = withTrailingObjectWrapped(code);
-  if (wrapped !== undefined && compiles(vm, wrapped)) {
-    const asObject = evalOrUnwind(vm, wrapped);
-    if (asObject === undefined) return HOST_STACK_LIMIT;
-    if (!asObject.error) return { ok: true, value: asObject.value };
-    const err = readError(asObject.error);
-    return {
-      ok: false,
-      error: withSourceLine(err, code, 0),
-      limit: limitOf(err),
-    };
-  }
-  const first = evalOrUnwind(vm, code);
-  if (first === undefined) return HOST_STACK_LIMIT;
-  if (!first.error) return { ok: true, value: first.value };
-  const error = readError(first.error);
-  if (
-    error.name !== "SyntaxError" ||
-    !RETURN_AT_TOP_LEVEL.test(error.message)
-  ) {
-    return {
-      ok: false,
-      error: withSourceLine(error, code, 0),
-      limit: limitOf(error),
-    };
-  }
-  const second = evalOrUnwind(vm, `(function () {\n${code}\n})()`);
-  if (second === undefined) return HOST_STACK_LIMIT;
-  if (second.error) {
-    const err = readError(second.error);
-    return {
-      ok: false,
-      error: withSourceLine(err, code, 1),
-      limit: limitOf(err),
-    };
-  }
-  return { ok: true, value: second.value };
+  const { source, offset } = wrap(code, call);
+  const r = evalOrUnwind(vm, source);
+  if (r === undefined) return HOST_STACK_LIMIT;
+  if (!r.error) return { ok: true, value: r.value };
+  const err = readError(r.error);
+  return {
+    ok: false,
+    error: withSourceLine(err, code, offset),
+    limit: limitOf(err),
+  };
 }
 
 // Reading a thrown value RUNS the snippet's code again: `message` can be a getter, `toString` a
@@ -969,8 +727,13 @@ function withSourceLine(
         ? Number(fromStack)
         : undefined;
   if (reported === undefined) return error;
-  const line = reported - offset;
-  const text = code.split("\n")[line - 1];
+  const lines = code.split("\n");
+  // NOTE: In function-body mode an error at the end of the body (an unfinished `input.cpf.`, an
+  // unclosed brace) is reported on the wrapper's closing line, past the body; it lands on the
+  // body's last line instead.
+  const line =
+    offset > 0 ? Math.min(reported - offset, lines.length) : reported - offset;
+  const text = lines[line - 1];
   if (text === undefined) return error;
   return {
     ...e,
@@ -1003,6 +766,7 @@ function open(req: SandboxRequest): Session {
   installZone(vm, req.clock.timezone);
   installPrelude(vm);
   installClock(vm, req.clock);
+  if (req.call) installCall(vm, req.call);
   return { runtime, vm, renderer, errors, logs };
 }
 
@@ -1027,7 +791,7 @@ function run(req: SandboxRequest): SandboxReply {
     );
   let unwound = false;
   try {
-    const out = evaluate(vm, req.code, errors.read);
+    const out = evaluate(vm, req.code, errors.read, req.call !== undefined);
     const ms = Math.round(performance.now() - started);
     if (out.ok) {
       // NOTE: Rendering runs interpreter code too, on its own short deadline: a snippet that spent its

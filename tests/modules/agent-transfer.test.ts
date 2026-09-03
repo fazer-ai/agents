@@ -9,6 +9,7 @@ import { TOOL_INSTRUCTIONS_MAX } from "@/modules/agents/text-caps";
 import {
   type AgentExport,
   configBusinessHoursId,
+  EXPORTED_COMPONENT_KEYS,
   exportAgent,
   importAgent,
   remapConfigBusinessHoursIdToName,
@@ -91,6 +92,14 @@ describe("the schedule an integration config references", () => {
     // An id no bundled schedule matches is left exactly as it was, config and all.
     const untouched = { businessHoursId: "9", timeZone: "UTC" };
     expect(remapConfigBusinessHoursIdToName(untouched, names)).toBe(untouched);
+  });
+});
+
+// A dry run discloses every component array a bundle can carry, and the list is read off the
+// schema so it cannot forget one. Code tools (issue #363) are one of them.
+describe("the component arrays a bundle can carry", () => {
+  test("include code tools", () => {
+    expect(EXPORTED_COMPONENT_KEYS).toContain("codeTools");
   });
 });
 
@@ -733,6 +742,19 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
       },
       appDb,
     );
+    // A code tool the agent is granted (issue #363). Its body is the "wiring", the way an HTTP
+    // tool's request is, and it travels in the bundle for the same reason; the grant names it by
+    // NAME, like every other component.
+    const codeTool = await suDb.codeToolDefinition.create({
+      data: {
+        tenantId: srcTenant,
+        name: "validar_cpf",
+        label: "Validar CPF",
+        description: "Valida o dígito verificador de um CPF.",
+        inputSchema: { cpf: { type: "string", description: "CPF" } },
+        code: "return { valid: /^\\d{11}$/.test(input.cpf) };",
+      },
+    });
     await suDb.agentToolSelection.createMany({
       data: [
         {
@@ -740,6 +762,14 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
           agentId: srcAgentId,
           source: "HTTP",
           toolDefinitionId: td.id,
+          enabledTools: [],
+          knowledgeBaseIds: [],
+        },
+        {
+          tenantId: srcTenant,
+          agentId: srcAgentId,
+          source: "CODE",
+          codeToolDefinitionId: codeTool.id,
           enabledTools: [],
           knowledgeBaseIds: [],
         },
@@ -793,6 +823,7 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
         "agent_tool_selections",
         "agents",
         "tool_definitions",
+        "code_tool_definitions",
         "mcp_server_connections",
         "integration_instances",
         "knowledge_bases",
@@ -1113,6 +1144,7 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
       select: { source: true },
     });
     expect(grants.map((g) => g.source).sort()).toEqual([
+      "CODE",
       "DOCUMENT",
       "DOCUMENT",
       "HTTP",
@@ -1730,18 +1762,18 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
       (h) => h.name === "lookup_order",
     );
     if (!tool) throw new Error("bundle missing lookup_order");
-    tool.name = "run_code";
+    tool.name = "skip_reply";
     const grant = bundle.agent.tools.find(
       (g) => g?.source === "HTTP" && g.tool === "lookup_order",
     );
-    if (grant?.source === "HTTP") grant.tool = "run_code";
-    // `run_code_2` already exists on the destination: it is REUSED, warned, the way any same-name
+    if (grant?.source === "HTTP") grant.tool = "skip_reply";
+    // `skip_reply_2` already exists on the destination: it is REUSED, warned, the way any same-name
     // component is — a second import of the same bundle lands on the same row (round 17), and the
     // bundle's tool is not stored under a third name.
     const existing = await suDb.toolDefinition.create({
       data: {
         tenantId: dstTenant,
-        name: "run_code_2",
+        name: "skip_reply_2",
         label: "Já existia",
         method: "GET",
         urlTemplate: "https://api.example.com/x",
@@ -1750,7 +1782,7 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     });
     const { agent, warnings } = await importAgent(dstCtx(), bundle, appDb);
     const row = await suDb.toolDefinition.findFirst({
-      where: { tenantId: dstTenant, name: "run_code_2" },
+      where: { tenantId: dstTenant, name: "skip_reply_2" },
     });
     expect(row?.id).toBe(existing.id);
     expect(row?.label).toBe("Já existia");
@@ -1758,7 +1790,7 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
       await suDb.toolDefinition.count({
         where: {
           tenantId: dstTenant,
-          name: { in: ["run_code", "run_code_3"] },
+          name: { in: ["skip_reply", "skip_reply_3"] },
         },
       }),
     ).toBe(0);
@@ -1766,13 +1798,13 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
       warnings.some(
         (w) =>
           w.code === "httpToolRenamed" &&
-          w.params?.name === "run_code" &&
-          w.params?.renamed === "run_code_2",
+          w.params?.name === "skip_reply" &&
+          w.params?.renamed === "skip_reply_2",
       ),
     ).toBe(true);
     expect(
       warnings.some(
-        (w) => w.code === "httpToolReused" && w.params?.name === "run_code_2",
+        (w) => w.code === "httpToolReused" && w.params?.name === "skip_reply_2",
       ),
     ).toBe(true);
     const grants = await suDb.agentToolSelection.findMany({
@@ -2021,6 +2053,285 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
           w.params?.name === "get_current_time",
       ),
     ).toBe(true);
+  });
+
+  // Issue #363: a code tool is a component like an HTTP tool. The body travels with the bundle
+  // (it is the tool; a bundle without it imports a grant pointing at nothing) and the grant names
+  // the tool by NAME. The body stays under the secret scanner: a key pasted into a comparison is
+  // exactly what the scanner exists to catch, and there is no credential to name instead.
+  test("export bundles the granted code tool, body included, and its grant by name", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const code = exp.components?.codeTools?.find(
+      (c) => c.name === "validar_cpf",
+    );
+    expect(code?.code).toContain("input.cpf");
+    expect(code?.label).toBe("Validar CPF");
+    expect(code?.description).toBe("Valida o dígito verificador de um CPF.");
+    expect(code?.enabled).toBe(true);
+    expect(Object.keys(code?.inputSchema ?? {})).toEqual(["cpf"]);
+    expect(exp.agent.tools).toContainEqual({
+      source: "CODE",
+      tool: "validar_cpf",
+    });
+    // The grant travels without the components too: it is a reference, and the component is what
+    // makes the reference resolvable on a destination that never saw the tool.
+    const bare = await exportAgent(srcCtx(), srcAgentId, appDb);
+    expect(bare.agent.tools).toContainEqual({
+      source: "CODE",
+      tool: "validar_cpf",
+    });
+  });
+
+  test("import creates the bundled code tool and its grant; a second import reuses the row, warned", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const bundle = structuredClone(exp);
+    const code = bundle.components?.codeTools?.find(
+      (c) => c.name === "validar_cpf",
+    );
+    if (!code) throw new Error("bundle missing validar_cpf");
+    // NOTE: a name of its own, so this test owns the row it asserts on whatever imported before
+    // it.
+    code.name = "validar_cnpj";
+    code.label = "Validar CNPJ";
+    // NOTE: JSON-Schema-shaped, the way a hand-edited bundle spells it: the import writes past
+    // the service, so it canonicalizes on the way in the way the service does.
+    code.inputSchema = {
+      type: "object",
+      properties: { cnpj: { type: "string", description: "CNPJ" } },
+      required: ["cnpj"],
+    };
+    const grant = bundle.agent.tools.find(
+      (g) => g?.source === "CODE" && g.tool === "validar_cpf",
+    );
+    if (grant?.source !== "CODE") throw new Error("bundle missing the grant");
+    grant.tool = "validar_cnpj";
+    const first = await importAgent(dstCtx(), structuredClone(bundle), appDb);
+    const row = await suDb.codeToolDefinition.findFirst({
+      where: { tenantId: dstTenant, name: "validar_cnpj" },
+    });
+    expect(row?.label).toBe("Validar CNPJ");
+    expect(row?.description).toBe("Valida o dígito verificador de um CPF.");
+    expect(row?.code).toBe(code.code);
+    expect(row?.enabled).toBe(true);
+    expect(Object.keys(row?.inputSchema as object)).toEqual(["cnpj"]);
+    expect(first.warnings.some((w) => w.code === "codeToolReused")).toBe(false);
+    expect(first.warnings.some((w) => w.code === "codeGrantNotFound")).toBe(
+      false,
+    );
+    const second = await importAgent(dstCtx(), structuredClone(bundle), appDb);
+    expect(
+      await suDb.codeToolDefinition.count({
+        where: { tenantId: dstTenant, name: "validar_cnpj" },
+      }),
+    ).toBe(1);
+    expect(second.warnings).toContainEqual({
+      code: "codeToolReused",
+      params: { name: "validar_cnpj" },
+      target: { kind: "codeTool", name: "validar_cnpj" },
+    });
+    for (const { agent } of [first, second]) {
+      const grants = await suDb.agentToolSelection.findMany({
+        where: { agentId: BigInt(agent.id), source: "CODE" },
+        select: { codeToolDefinitionId: true },
+      });
+      expect(grants.map((g) => g.codeToolDefinitionId)).toEqual([
+        row?.id ?? null,
+      ]);
+    }
+  });
+
+  // The same two rules an HTTP tool answers to, and a third one of its own. A native's name is
+  // reserved by the assembly (#457), so the tool moves to the first free `<name>_N`. And ONE
+  // namespace reaches the model: the service refuses a code tool named like an HTTP tool where it
+  // is typed (code-tools/service.ts), so a stored HTTP row under the name cannot be reused the way
+  // a same-kind row is, and the tool moves to a free name too. Either way the grant follows.
+  test("a bundled code tool named after a native, or like an HTTP tool the destination has, lands under a free name and its grant follows", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const bundle = structuredClone(exp);
+    const code = bundle.components?.codeTools?.find(
+      (c) => c.name === "validar_cpf",
+    );
+    if (!code || !bundle.components?.codeTools) {
+      throw new Error("bundle missing validar_cpf");
+    }
+    code.name = "assign_label";
+    code.label = "Assign label";
+    bundle.components.codeTools.push({
+      ...structuredClone(code),
+      name: "consultar_cep",
+      label: "Consultar CEP",
+    });
+    const grant = bundle.agent.tools.find(
+      (g) => g?.source === "CODE" && g.tool === "validar_cpf",
+    );
+    if (grant?.source !== "CODE") throw new Error("bundle missing the grant");
+    grant.tool = "assign_label";
+    bundle.agent.tools.push({ source: "CODE", tool: "consultar_cep" });
+    await suDb.toolDefinition.create({
+      data: {
+        tenantId: dstTenant,
+        name: "consultar_cep",
+        label: "Consultar CEP (HTTP)",
+        method: "GET",
+        urlTemplate: "https://api.example.com/cep",
+        allowedHosts: ["api.example.com"],
+      },
+    });
+    const { agent, warnings } = await importAgent(dstCtx(), bundle, appDb);
+    const rows = await suDb.codeToolDefinition.findMany({
+      where: {
+        tenantId: dstTenant,
+        OR: [
+          { name: { startsWith: "assign_label" } },
+          { name: { startsWith: "consultar_cep" } },
+        ],
+      },
+      select: { id: true, name: true, label: true },
+      orderBy: { name: "asc" },
+    });
+    // NOTE: the label follows the name where the console would derive the old one from it, the
+    // same rule as an HTTP tool's (round 20 of PR #485).
+    expect(rows.map((r) => [r.name, r.label])).toEqual([
+      ["assign_label_2", "Assign label 2"],
+      ["consultar_cep_2", "Consultar CEP 2"],
+    ]);
+    expect(warnings).toContainEqual({
+      code: "codeToolRenamed",
+      params: { name: "assign_label", renamed: "assign_label_2" },
+      target: { kind: "codeTool", name: "assign_label_2" },
+    });
+    expect(warnings).toContainEqual({
+      code: "codeToolRenamed",
+      params: { name: "consultar_cep", renamed: "consultar_cep_2" },
+      target: { kind: "codeTool", name: "consultar_cep_2" },
+    });
+    expect(warnings.some((w) => w.code === "codeToolReused")).toBe(false);
+    expect(warnings.some((w) => w.code === "codeGrantNotFound")).toBe(false);
+    const grants = await suDb.agentToolSelection.findMany({
+      where: { agentId: BigInt(agent.id), source: "CODE" },
+      select: { codeToolDefinitionId: true },
+    });
+    expect(new Set(grants.map((g) => g.codeToolDefinitionId))).toEqual(
+      new Set(rows.map((r) => r.id)),
+    );
+  });
+
+  // The mirror of the cross-kind rule above. The HTTP service refuses a name a code tool holds
+  // where it is typed (tool-definitions/service.ts asks the code table), and this path writes
+  // past the service, so a bundled HTTP tool named like a code tool the destination stores would
+  // land as a pair the assembly drops one of. It moves to the first free `<name>_N` instead, and
+  // a second import of the same bundle lands on that row.
+  test("a bundled HTTP tool named like a code tool the destination has lands under a free name, warned, and its grant follows", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const bundle = structuredClone(exp);
+    const tool = bundle.components?.httpTools.find(
+      (h) => h.name === "lookup_order",
+    );
+    if (!tool) throw new Error("bundle missing lookup_order");
+    tool.name = "calcular_frete";
+    tool.label = "Calcular frete";
+    const grant = bundle.agent.tools.find(
+      (g) => g?.source === "HTTP" && g.tool === "lookup_order",
+    );
+    if (grant?.source === "HTTP") grant.tool = "calcular_frete";
+    const held = await suDb.codeToolDefinition.create({
+      data: {
+        tenantId: dstTenant,
+        name: "calcular_frete",
+        label: "Calcular frete (código)",
+        description: "Calcula o frete.",
+        code: "return 0;",
+      },
+    });
+    const first = await importAgent(dstCtx(), structuredClone(bundle), appDb);
+    const rows = await suDb.toolDefinition.findMany({
+      where: { tenantId: dstTenant, name: { startsWith: "calcular_frete" } },
+      select: { id: true, name: true, label: true },
+    });
+    expect(rows.map((r) => [r.name, r.label])).toEqual([
+      ["calcular_frete_2", "Calcular frete 2"],
+    ]);
+    expect(first.warnings).toContainEqual({
+      code: "httpToolRenamed",
+      params: { name: "calcular_frete", renamed: "calcular_frete_2" },
+      target: { kind: "tool", name: "calcular_frete_2" },
+    });
+    expect(first.warnings.some((w) => w.code === "httpToolReused")).toBe(false);
+    // The code tool the destination had is untouched: the rename was the bundled tool's.
+    expect(
+      await suDb.codeToolDefinition.findUnique({
+        where: { id: held.id },
+        select: { name: true },
+      }),
+    ).toEqual({ name: "calcular_frete" });
+    const second = await importAgent(dstCtx(), structuredClone(bundle), appDb);
+    expect(
+      second.warnings.some(
+        (w) =>
+          w.code === "httpToolReused" && w.params?.name === "calcular_frete_2",
+      ),
+    ).toBe(true);
+    for (const { agent } of [first, second]) {
+      const grants = await suDb.agentToolSelection.findMany({
+        where: { agentId: BigInt(agent.id), source: "HTTP" },
+        select: { toolDefinitionId: true },
+      });
+      expect(grants.map((g) => g.toolDefinitionId)).toEqual([
+        rows[0]?.id ?? null,
+      ]);
+    }
+  });
+
+  // A grant naming a code tool the destination does not have (a bundle exported without
+  // components) is dropped with a warning naming it, like an HTTP grant is.
+  test("a CODE grant with no tool to land on is dropped, warned", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb);
+    const bundle = structuredClone(exp);
+    // NOTE: only the unresolvable grant, so the count below is about it and not about the
+    // fixture's own code tool, which earlier imports already stored on the destination.
+    bundle.agent.tools = bundle.agent.tools.filter((g) => g?.source !== "CODE");
+    bundle.agent.tools.push({ source: "CODE", tool: "nunca_existiu" });
+    const { agent, warnings } = await importAgent(dstCtx(), bundle, appDb);
+    expect(warnings).toContainEqual({
+      code: "codeGrantNotFound",
+      params: { name: "nunca_existiu" },
+      target: { kind: "codeTool", name: "nunca_existiu" },
+    });
+    expect(
+      await suDb.agentToolSelection.count({
+        where: { agentId: BigInt(agent.id), source: "CODE" },
+      }),
+    ).toBe(0);
+  });
+
+  // `run_code` was a native between PR #485 and issue #363, so a bundle exported in that window
+  // names it in the NATIVE allowlist. The write boundary refuses an unknown native where it is
+  // typed; here the name is dropped, said, and the rest of the allowlist lands.
+  test("a NATIVE grant naming a tool this build does not have imports without it, warned", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb);
+    const bundle = structuredClone(exp);
+    bundle.agent.tools.push({
+      source: "NATIVE",
+      enabledTools: ["run_code", "calculator"],
+    });
+    const { agent, warnings } = await importAgent(dstCtx(), bundle, appDb);
+    const native = await suDb.agentToolSelection.findFirst({
+      where: { agentId: BigInt(agent.id), source: "NATIVE" },
+      select: { enabledTools: true },
+    });
+    expect(native?.enabledTools).toEqual(["calculator"]);
+    expect(warnings).toContainEqual({
+      code: "nativeToolUnknown",
+      params: { name: "run_code" },
+    });
   });
 });
 

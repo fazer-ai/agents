@@ -14,6 +14,7 @@ import { auditController } from "@/api/v1/audit.controller";
 import { businessHoursController } from "@/api/v1/business-hours.controller";
 import { chatwootController } from "@/api/v1/chatwoot.controller";
 import { chatwootAdminController } from "@/api/v1/chatwoot-admin.controller";
+import { codeToolsController } from "@/api/v1/code-tools.controller";
 import { documentTemplatesController } from "@/api/v1/document-templates.controller";
 import { documentsController } from "@/api/v1/documents.controller";
 import { experimentsController } from "@/api/v1/experiments.controller";
@@ -226,6 +227,7 @@ const api = new Elysia()
   .use(v1Controller)
   .use(agentsController)
   .use(toolsController)
+  .use(codeToolsController)
   .use(mcpConnectionsController)
   .use(businessHoursController)
   .use(experimentsController)

@@ -17,7 +17,6 @@ export const NATIVE_TOOL_NAMES = [
   "skip_reply",
   "calculator",
   "get_current_time",
-  "run_code",
 ] as const;
 export type NativeToolName = (typeof NATIVE_TOOL_NAMES)[number];
 
@@ -34,8 +33,7 @@ export function isNativeToolName(name: string): name is NativeToolName {
 
 // Native tools split into two families: `conversation` tools act on the current Chatwoot
 // conversation (handoff/note/resolve/…) and need a live client + conversation id; `utility` tools
-// are context-free (calculator, clock, code sandbox) and therefore safe to expose in the playground
-// too.
+// are context-free (calculator, clock) and therefore safe to expose in the playground too.
 export type NativeToolCategory = "conversation" | "utility";
 
 export const NATIVE_TOOL_CATEGORY: Record<NativeToolName, NativeToolCategory> =
@@ -53,7 +51,6 @@ export const NATIVE_TOOL_CATEGORY: Record<NativeToolName, NativeToolCategory> =
     skip_reply: "conversation",
     calculator: "utility",
     get_current_time: "utility",
-    run_code: "utility",
   };
 
 export const UTILITY_NATIVE_TOOL_NAMES = NATIVE_TOOL_NAMES.filter(

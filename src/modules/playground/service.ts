@@ -436,6 +436,7 @@ export type PlaygroundToolCategory =
   | "utility" // native utility (calculator/clock; runs for real)
   | "knowledge" // RAG (search_knowledge / suggest_kb_entry)
   | "http" // custom HTTP tool
+  | "code" // operator-authored code tool (runs for real: the sandbox has no side effect)
   | "mcp" // MCP server tool
   | "integration" // toolpack integration
   | "external"; // unclassified external tool
@@ -492,6 +493,11 @@ export async function listPlaygroundTools(params: {
   );
   const knowledge = new Set(loaded.ragConfig?.tools ?? []);
   const http = new Set(loaded.httpToolDefs.map((d) => d.name));
+  // Runs for real, like an HTTP tool: the sandbox reaches nothing outside the thread, so there is
+  // no side effect to simulate, and the operator is here to see what their function returns.
+  // Asked before the HTTP set because both kinds share the model's namespace and the service
+  // keeps them apart at write time; the assembly would have dropped one of a colliding pair.
+  const code = new Set(loaded.codeToolDefs.map((d) => d.name));
   const mcp = new Set(loaded.mcpSelections.flatMap((s) => s.enabledTools));
   const integration = new Set(
     loaded.integrationSelections.flatMap((s) => s.enabledTools),
@@ -508,6 +514,8 @@ export async function listPlaygroundTools(params: {
       return { name, description, category: "utility", simulated: false };
     if (knowledge.has(name))
       return { name, description, category: "knowledge", simulated: false };
+    if (code.has(name))
+      return { name, description, category: "code", simulated: false };
     if (http.has(name))
       return { name, description, category: "http", simulated: false };
     if (mcp.has(name))

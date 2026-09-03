@@ -73,6 +73,7 @@ import {
   useVaultBaseUrls,
   useVaultRefs,
 } from "@/client/lib/vaultCache";
+import { CodeToolEditModal } from "@/client/pages/resources/CodeToolEditModal";
 import { IntegrationEditModal } from "@/client/pages/resources/IntegrationEditModal";
 import { McpEditModal } from "@/client/pages/resources/McpEditModal";
 import { ToolEditModal } from "@/client/pages/resources/ToolEditModal";
@@ -236,6 +237,8 @@ function mapGrants(grants: ToolSelectionView["grants"]): GrantState[] {
     toolDefinitionId: g.toolDefinitionId,
     mcpServerConnectionId: g.mcpServerConnectionId,
     integrationInstanceId: g.integrationInstanceId,
+    documentTemplateId: g.documentTemplateId,
+    codeToolDefinitionId: g.codeToolDefinitionId,
     knowledgeBaseIds: [...g.knowledgeBaseIds],
     enabledTools: [...g.enabledTools],
   }));
@@ -253,12 +256,14 @@ function canonicalGrants(grants: GrantState[]): string {
       toolDefinitionId: g.toolDefinitionId ?? null,
       mcpServerConnectionId: g.mcpServerConnectionId ?? null,
       integrationInstanceId: g.integrationInstanceId ?? null,
+      documentTemplateId: g.documentTemplateId ?? null,
+      codeToolDefinitionId: g.codeToolDefinitionId ?? null,
       knowledgeBaseIds: [...(g.knowledgeBaseIds ?? [])].sort(),
       enabledTools: [...(g.enabledTools ?? [])].sort(),
     }))
     .sort((a, b) =>
-      `${a.source}:${a.toolDefinitionId}:${a.mcpServerConnectionId}:${a.integrationInstanceId}`.localeCompare(
-        `${b.source}:${b.toolDefinitionId}:${b.mcpServerConnectionId}:${b.integrationInstanceId}`,
+      `${a.source}:${a.toolDefinitionId}:${a.mcpServerConnectionId}:${a.integrationInstanceId}:${a.documentTemplateId}:${a.codeToolDefinitionId}`.localeCompare(
+        `${b.source}:${b.toolDefinitionId}:${b.mcpServerConnectionId}:${b.integrationInstanceId}:${b.documentTemplateId}:${b.codeToolDefinitionId}`,
       ),
     );
   return JSON.stringify(norm);
@@ -643,7 +648,7 @@ function AgentEditor() {
   //
   // `section` is the form whose write produced it, so a later success elsewhere cannot take it down.
   // `named` is the value the server refused, when it named one, so the banner can say WHY it offers
-  // no way to it: `toolGuidance` takes a note for all fourteen native tools and the console draws
+  // no way to it: `toolGuidance` takes a note for all thirteen native tools and the console draws
   // three, and the server's sentence names the field without knowing that.
   //
   // Written by every `capture` and read only while the holder has a sentence, so neither can go stale
@@ -1484,6 +1489,7 @@ function AgentEditor() {
   // opens its OWN editor right here (view the merged result) instead of bouncing to the resources page.
   // They fetch the full record by id; onSaved refetches the catalog so any tweak reflects immediately.
   const toolEditModal = useModalController<{ id?: string }>();
+  const codeToolEditModal = useModalController<{ id?: string }>();
   const mcpEditModal = useModalController<{ id?: string }>();
   const integrationEditModal = useModalController<{ id?: string }>();
   // A reused-schedule "Review" opens the schedule's OWN editor in place (a business-hours warning has
@@ -2291,6 +2297,30 @@ function AgentEditor() {
           'Integration "{{name}}" was not found, so its grant was skipped.',
           p,
         );
+      case "codeToolRenamed":
+        return t(
+          "editor.importWarning.codeToolRenamed",
+          'Code tool "{{name}}" carries the name of a built-in tool, so it was imported as "{{renamed}}"; a prompt that names it must follow.',
+          p,
+        );
+      case "codeToolReused":
+        return t(
+          "editor.importWarning.codeToolReused",
+          'Code tool "{{name}}" already existed and was reused; check it is right.',
+          p,
+        );
+      case "codeGrantNotFound":
+        return t(
+          "editor.importWarning.codeGrantNotFound",
+          'Code tool "{{name}}" was not found, so its grant was skipped.',
+          p,
+        );
+      case "nativeToolUnknown":
+        return t(
+          "editor.importWarning.nativeToolUnknown",
+          'Built-in tool "{{name}}" is not one this version has, so it was left out of the agent.',
+          p,
+        );
       default:
         return w.code;
     }
@@ -2339,6 +2369,12 @@ function AgentEditor() {
             (x) => x.name === target.name,
           );
           if (tool) toolEditModal.open({ id: tool.id });
+          else navigate("/resources/tools");
+          break;
+        }
+        case "codeTool": {
+          const ct = catalog?.codeTools.find((x) => x.name === target.name);
+          if (ct) codeToolEditModal.open({ id: ct.id });
           else navigate("/resources/tools");
           break;
         }
@@ -3783,6 +3819,12 @@ function AgentEditor() {
           by id and refetch the catalog on save so any in-place tweak reflects without a reload. */}
       <ToolEditModal
         modal={toolEditModal}
+        onSaved={() => {
+          void refreshCatalog();
+        }}
+      />
+      <CodeToolEditModal
+        modal={codeToolEditModal}
         onSaved={() => {
           void refreshCatalog();
         }}

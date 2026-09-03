@@ -331,6 +331,7 @@ export async function agentImport(
         integrations: comps?.integrations.length ?? 0,
         knowledgeBases: comps?.knowledgeBases.length ?? 0,
         documentTemplates: comps?.documentTemplates?.length ?? 0,
+        codeTools: comps?.codeTools?.length ?? 0,
         businessHours: comps?.businessHours?.length ?? 0,
       },
     });
@@ -391,6 +392,8 @@ export interface AgentToolsSetArgs {
     // template over MCP and then had no way to grant it to an agent — the operator ended one step
     // short of a working document tool, in the transport the whole feature is authored from.
     documentTemplateId?: string | null;
+    // The code tool a CODE grant points at (code_tool_list), for the same reason.
+    codeToolDefinitionId?: string | null;
     knowledgeBaseIds?: string[];
     enabledTools?: string[];
   }>;
@@ -413,6 +416,7 @@ export async function agentToolsSet(
     mcpServerConnectionId: g.mcpServerConnectionId ?? null,
     integrationInstanceId: g.integrationInstanceId ?? null,
     documentTemplateId: g.documentTemplateId ?? null,
+    codeToolDefinitionId: g.codeToolDefinitionId ?? null,
     knowledgeBaseIds: g.knowledgeBaseIds ?? [],
     enabledTools: g.enabledTools ?? [],
   }));

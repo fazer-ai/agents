@@ -73,6 +73,15 @@ export interface LoadedHttpToolDef {
   outputSchema: unknown;
 }
 
+// An operator-authored code tool, as the turn builds it (tools/code.ts). Required fields for the
+// same reason `LoadedHttpToolDef` keeps them required: the `select` below enumerates the columns.
+export interface LoadedCodeToolDef {
+  name: string;
+  description: string;
+  inputSchema: unknown;
+  code: string;
+}
+
 export interface AgentToolSelections {
   // undefined ⇒ all native tools (NO NATIVE row — the permissive default for legacy/new agents).
   // An explicit NATIVE row yields exactly its allowlist (an empty array ⇒ NO native tools), so the
@@ -82,6 +91,7 @@ export interface AgentToolSelections {
   // undefined ⇒ no RAG (no RAG row, or an empty tool allowlist — fail-closed).
   ragConfig?: RagConfig;
   httpToolDefs: LoadedHttpToolDef[];
+  codeToolDefs: LoadedCodeToolDef[];
   mcpSelections: McpSelection[];
   integrationSelections: IntegrationSelection[];
   // Fail-closed like HTTP/MCP/integration/RAG: a document template the agent was not granted is
@@ -135,14 +145,16 @@ export interface AgentToolSelections {
 // within one catalog type the name is already a total order. Adding the catalogType key first killed
 // no test in the mutation battery, which is what a rule with no observable effect looks like.
 //
-// HTTP and document grants stay on the id: their exposed names are the definition's name and
-// `send_<slug>`, both unique per tenant, so no two of them can contest a name and the order is
-// invisible either way (asserted in tests/graph/tool-grant-order.test.ts).
+// HTTP, code and document grants stay on the id: their exposed names are the definition's name
+// (unique per tenant across the HTTP and code tables, checked in the services) and `send_<slug>`,
+// so no two of them can contest a name and the order is invisible either way (asserted in
+// tests/graph/tool-grant-order.test.ts).
 const GRANT_ORDER: Prisma.AgentToolSelectionOrderByWithRelationInput[] = [
   { source: "asc" },
   { mcpServerConnectionId: "asc" },
   { integrationInstanceId: "asc" },
   { toolDefinitionId: "asc" },
+  { codeToolDefinitionId: "asc" },
   { documentTemplateId: "asc" },
 ];
 
@@ -232,6 +244,15 @@ export async function loadToolSelections(
           enabled: true,
         },
       },
+      codeToolDefinition: {
+        select: {
+          name: true,
+          description: true,
+          inputSchema: true,
+          code: true,
+          enabled: true,
+        },
+      },
       documentTemplate: {
         select: {
           id: true,
@@ -252,6 +273,7 @@ export async function loadToolSelections(
 
   const result: AgentToolSelections = {
     httpToolDefs: [],
+    codeToolDefs: [],
     mcpSelections: [],
     integrationSelections: [],
     documentSelections: [],
@@ -342,6 +364,17 @@ export async function loadToolSelections(
           config: (inst.config ?? {}) as Record<string, unknown>,
           credentialRef: inst.credentialRef,
           enabledTools: row.enabledTools,
+        });
+        break;
+      }
+      case "CODE": {
+        const cd = row.codeToolDefinition;
+        if (!cd?.enabled) break;
+        result.codeToolDefs.push({
+          name: cd.name,
+          description: cd.description,
+          inputSchema: cd.inputSchema,
+          code: cd.code,
         });
         break;
       }

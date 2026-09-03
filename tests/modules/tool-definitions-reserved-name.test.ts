@@ -11,7 +11,7 @@ import {
 
 // Round 15 of PR #485. The assembly reserves every native name (#457, unique-names.ts): another tool
 // that claims one is dropped, and the drop is a flow-log line. Nothing refused the name where it is
-// TYPED, so an HTTP tool named `run_code` — or `handoff_to_human` — could be written, granted, shown
+// TYPED, so an HTTP tool named `calculator` — or `handoff_to_human` — could be written, granted, shown
 // in the console, and never reach the model. A document slug is refused at write time for the same
 // collision (documents/slug.ts); this is the HTTP tool's equivalent, and REST, the console and MCP
 // all land in the service.
@@ -96,14 +96,14 @@ describe.skipIf(!dbUp)("an HTTP tool cannot take a native tool's name", () => {
   test("renaming one onto a native name is refused, and the row keeps its name", async () => {
     const created = await createToolDefinition(
       ctx(),
-      toolInput("run_code_custom") as never,
+      toolInput("calculator_custom") as never,
       appDb,
     );
     const err = await refusal(
       updateToolDefinition(
         ctx(),
         BigInt(created.id),
-        { name: "run_code" } as never,
+        { name: "calculator" } as never,
         appDb,
       ),
     );
@@ -111,14 +111,14 @@ describe.skipIf(!dbUp)("an HTTP tool cannot take a native tool's name", () => {
     const row = await suDb.toolDefinition.findUnique({
       where: { id: BigInt(created.id) },
     });
-    expect(row?.name).toBe("run_code_custom");
+    expect(row?.name).toBe("calculator_custom");
     // A rename to a free, non-native name is what the check must not touch.
     const renamed = await updateToolDefinition(
       ctx(),
       BigInt(created.id),
-      { name: "run_code_http" } as never,
+      { name: "calculator_http" } as never,
       appDb,
     );
-    expect(renamed.name).toBe("run_code_http");
+    expect(renamed.name).toBe("calculator_http");
   });
 });

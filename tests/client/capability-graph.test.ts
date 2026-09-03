@@ -78,6 +78,9 @@ describe("buildGroups — every grant source is drawn", () => {
     knowledgeBases: [{ id: "1", name: "Base" }],
     toolDefinitions: [{ id: "2", label: "Look up order" }],
     mcpConnections: [{ id: "3", name: "Sheets" }],
+    codeTools: [
+      { id: "8", name: "lookup_cpf", label: "Look up CPF", enabled: true },
+    ],
     integrationInstances: [
       { id: "4", name: "CRM", tools: [{ name: "crm_lookup" }] },
     ],
@@ -116,6 +119,7 @@ describe("buildGroups — every grant source is drawn", () => {
     MCP: { source: "MCP", mcpServerConnectionId: "3" },
     INTEGRATION: { source: "INTEGRATION", integrationInstanceId: "4" },
     DOCUMENT: { source: "DOCUMENT", documentTemplateId: "5" },
+    CODE: { source: "CODE", codeToolDefinitionId: "8" },
   };
 
   test("every source in the enum produces a group", () => {
@@ -152,6 +156,21 @@ describe("buildGroups — every grant source is drawn", () => {
     const groups = buildGroups(catalog, [grantFor.DOCUMENT as GrantState], t);
     const documents = groups.find((g) => g.key === "document");
     expect(documents?.items).toEqual(["send_orcamento"]);
+  });
+
+  test("a code grant is drawn by its display label", () => {
+    const groups = buildGroups(catalog, [grantFor.CODE as GrantState], t);
+    const code = groups.find((g) => g.key === "code");
+    expect(code?.items).toEqual(["Look up CPF"]);
+  });
+
+  test("a code grant whose tool no longer exists draws nothing", () => {
+    const groups = buildGroups(
+      catalog,
+      [{ source: "CODE", codeToolDefinitionId: "999" }],
+      t,
+    );
+    expect(groups.find((g) => g.key === "code")).toBeUndefined();
   });
 
   // A grant the ASSEMBLY would skip draws nothing either, and it has to answer to both ways that

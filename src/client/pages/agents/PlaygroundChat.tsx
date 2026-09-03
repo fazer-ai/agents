@@ -335,6 +335,7 @@ export function PlaygroundChat({
 // t('playground.toolsim.cat.native','Native')
 // t('playground.toolsim.cat.utility','Utility')
 // t('playground.toolsim.cat.knowledge','Knowledge')
+// t('playground.toolsim.cat.code','Code')
 // t('playground.toolsim.cat.http','HTTP')
 // t('playground.toolsim.cat.mcp','MCP')
 // t('playground.toolsim.cat.integration','Integration')

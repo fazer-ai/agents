@@ -1,4 +1,12 @@
-import { Plug, Puzzle, ShieldCheck, Webhook, Wrench } from "lucide-react";
+import {
+  Code2,
+  FileText,
+  Plug,
+  Puzzle,
+  ShieldCheck,
+  Webhook,
+  Wrench,
+} from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { DiscoveredMcpTool } from "@/client/components/mcp/DiscoveredMcpTools";
 import { SectionNav } from "./SectionNav";
@@ -115,6 +123,11 @@ export function ToolsTab({
       label: t("editor.tools.http", "HTTP tools"),
     },
     {
+      id: "tools-code",
+      icon: Code2,
+      label: t("editor.tools.code", "Code tools"),
+    },
+    {
       id: "tools-mcp",
       icon: Plug,
       label: t("editor.tools.mcp", "MCP servers"),
@@ -123,6 +136,11 @@ export function ToolsTab({
       id: "tools-integrations",
       icon: Puzzle,
       label: t("editor.tools.integrations", "Integrations"),
+    },
+    {
+      id: "tools-documents",
+      icon: FileText,
+      label: t("editor.tools.documents", "Documents"),
     },
     {
       id: "tools-native",

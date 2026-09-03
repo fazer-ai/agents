@@ -55,104 +55,6 @@ describe("runSandboxedCode", () => {
     });
   });
 
-  // Measured live (PR #485, round 4): `…; { day, days }` at the end is a block to the parser, and
-  // 2 of 3 date answers went wrong through it — one returned the last name's value and the model
-  // narrated a date that was never computed, the other cost three SyntaxError round trips.
-  test("an object literal at the end is the result, not a block", async () => {
-    const cases: Array<[string, string]> = [
-      ["const d = 8; { day: d, ok: true }", '{"day":8,"ok":true}'],
-      ["const a = 1, b = 2; { a, b }", '{"a":1,"b":2}'],
-      [
-        "const a = 1;\n{ a, nested: { b: [1, 2] } };",
-        '{"a":1,"nested":{"b":[1,2]}}',
-      ],
-      ["({ a: 1 })", '{"a":1}'],
-      // After a block: the shape measured live once the model guards a month roll-over first.
-      ["let y = 0; if (true) { y = 1 } { y, ok: true }", '{"y":1,"ok":true}'],
-      // No semicolons at all (round 6): with only the parenthesis added, the object read on as a
-      // call of the previous line — `compute()({…})` — and failed at run time, past the fallback.
-      [
-        "function compute() { return { valid: true } }\nconst result = compute()\n{ valid: result.valid }",
-        '{"valid":true}',
-      ],
-      ["const a = { b: 1 }\n{ a }", '{"a":{"b":1}}'],
-      // Round 7: what is not syntax must not move the cut — a comment after the object, a "}" in
-      // a string or a regex, a template with a hole — and a block keyword before it is a block.
-      [
-        'const valid = true; { valid, reason: "ok" } // verdict',
-        '{"valid":true,"reason":"ok"}',
-      ],
-      ['({ reason: "a } b" })', '{"reason":"a } b"}'],
-      ['const r = /}/; { ok: r.test("}") }', '{"ok":true}'],
-      ['const p = /{/; { ok: p.test("{") }', '{"ok":true}'],
-      ["const s = '{'; { s }", '{"s":"{"}'],
-      // Split so the lint does not read the snippet's template hole as this file's.
-      [`const t = \`}$${"{'}'}"}\`; { t }`, '{"t":"}}"}'],
-      ["/* c */ { a: 1 } /* d */", '{"a":1}'],
-      ["let z = 2; if (false) {} else { z = 3 }", "3"],
-      // A block after `else`, even across a line break, even when it would parse as an object.
-      ["let q = 0; if (false) {} else\n{ q: 1 }", "1"],
-      // Allman style (round 9): the `)` of a control header is not a boundary across a line break
-      // either, while the `)` of a call still is (the semicolon-less case above).
-      ["if (false)\n{ valid: true }", "undefined"],
-      ["let seen = []; for (const i of [1, 2])\n{ x: seen.push(i) }", "2"],
-      ["try { throw 1 } catch (e)\n{ caught: e }", "1"],
-      ["const u = 'x'; { u }; // done", '{"u":"x"}'],
-      // Round 16: after the `)` of a control header a `/` starts a regex, not a division, so the
-      // brace inside it is not a source brace; after the `)` of a call or a group it is a division.
-      ['if (true) /{/.test("{"); { ok: true }', '{"ok":true}'],
-      ["let w = 0; while (w < 1) /{/.test('{') ? w++ : 0; { w }", '{"w":1}'],
-      ["const n = (4) / 2; { n }", '{"n":2}'],
-      // Round 17: a template hole is code, so a regex, a comment and a division inside it read as
-      // in the outer pass; the brace inside the regex or the comment is not a hole brace. Split
-      // like the hole above, so the lint does not read the snippet's hole as this file's.
-      [
-        `const s = \`$${"{"}/{/.test("{")}\`; const valid = true; { valid }`,
-        '{"valid":true}',
-      ],
-      [`const s = \`$${"{"}1 /* } */}\`; { s }`, '{"s":"1"}'],
-      [`const s = \`$${"{"}(4) / 2}\`; { s }`, '{"s":"2"}'],
-      // Not an object: a real block, and braces that belong to a statement, run as written.
-      ["{ let x = 1; x + 1 }", "2"],
-      ["if (true) { 5 }", "5"],
-      ["function f() { return 3 }\nf()", "3"],
-      ["let n = 0; for (const i of [1, 2]) { n += i }", "3"],
-    ];
-    for (const [code, want] of cases) {
-      const out = await runSandboxedCode(code);
-      expect(out, code).toMatchObject({ kind: "value", value: want });
-    }
-    // Round 12: a SyntaxError thrown by the RUN (JSON.parse) is not a parse failure. The wrapped
-    // form is compiled first and only a form that compiles runs, so nothing runs twice: no
-    // "redeclaration", no doubled console line.
-    const runtimeSyntax = await runSandboxedCode(
-      'console.log("once"); const data = JSON.parse("{bad"); { valid: true, data }',
-    );
-    expect(runtimeSyntax).toMatchObject({
-      kind: "error",
-      name: "SyntaxError",
-      logs: ["once"],
-    });
-    expect((runtimeSyntax as { message: string }).message).not.toContain(
-      "redeclaration",
-    );
-    // A runtime error with the parentheses on is the snippet's error once, not twice.
-    const thrown = await runSandboxedCode(
-      "let calls = 0; function g() { calls++; throw new Error('boom ' + calls) }\n{ v: g() }",
-    );
-    expect(thrown).toMatchObject({
-      kind: "error",
-      message: expect.stringContaining("boom 1"),
-    });
-  });
-
-  test("a top-level `return` is accepted as a function body", async () => {
-    const out = await runSandboxedCode(
-      `const v = 2 * 21;\nreturn { answer: v };`,
-    );
-    expect(out).toMatchObject({ kind: "value", value: '{"answer":42}' });
-  });
-
   test("renders what JSON cannot say instead of lying about it", async () => {
     const cases: Array<[string, string]> = [
       ["10n ** 20n", "100000000000000000000"],
@@ -226,8 +128,10 @@ describe("runSandboxedCode", () => {
     expect((out as { message: string }).message).toContain(
       "(line 2: const b = ;)",
     );
-    // Through the function-body retry the line is still the snippet's own.
-    const wrapped = await runSandboxedCode(`return 1;\nconst c = ;`);
+    // In function-body mode the line is still the body's own, not the wrapper's.
+    const wrapped = await runSandboxedCode(`return 1;\nconst c = ;`, {
+      call: { input: {}, context: {} },
+    });
     expect((wrapped as { message: string }).message).toContain(
       "(line 2: const c = ;)",
     );
@@ -1130,24 +1034,26 @@ describe("formatSandboxResult", () => {
     ],
     [
       { kind: "error", name: "TypeError", message: "boom", logs: [], ms: 1 },
-      [/^Error: TypeError: boom/, /call run_code again/],
+      [/^Error: TypeError: boom$/],
     ],
     [
       { kind: "limit", limit: "time", logs: [] },
-      [
-        new RegExp(`stopped after ${SANDBOX_TIMEOUT_MS} ms`),
-        /call run_code again/,
-      ],
+      [new RegExp(`^Execution stopped after ${SANDBOX_TIMEOUT_MS} ms`)],
     ],
     [
       { kind: "limit", limit: "memory", logs: ["partial"] },
       [
-        /^Output:\npartial/,
-        new RegExp(`${SANDBOX_MEMORY_BYTES / (1024 * 1024)} MB`),
+        new RegExp(
+          `^Execution exceeded the ${SANDBOX_MEMORY_BYTES / (1024 * 1024)} MB`,
+        ),
+        /\n\nOutput:\npartial$/,
       ],
     ],
-    [{ kind: "limit", limit: "stack", logs: [] }, [/recursion/, /iteratively/]],
-    [{ kind: "limit", limit: "aborted", logs: [] }, [/aborted/, /Simplify/]],
+    [
+      { kind: "limit", limit: "stack", logs: [] },
+      [/^Execution overflowed/, /recursion/],
+    ],
+    [{ kind: "limit", limit: "aborted", logs: [] }, [/^Execution was aborted/]],
   ];
   for (const [outcome, expectations] of rows) {
     test(`${outcome.kind}${"limit" in outcome ? `/${outcome.limit}` : ""}`, () => {
@@ -1182,9 +1088,9 @@ describe("formatSandboxResult", () => {
       { kind: "error", name: "TypeError", message: "boom", logs, ms: 1 },
       { maxChars: 500 },
     );
-    expect(err).toMatch(
-      /Error: TypeError: boom\nThe code did not finish\. Fix it and call run_code again\.$/,
-    );
+    // A failure leads with its reason: the flow log keeps the first line as the cause.
+    expect(err.startsWith("Error: TypeError: boom\n\nOutput:\n")).toBe(true);
+    expect(err).toContain("…[output truncated]");
     expect(err.length).toBeLessThanOrEqual(500);
 
     // Output that FITS is shown whole, and a tail that leaves no room drops the output rather than
@@ -1199,5 +1105,128 @@ describe("formatSandboxResult", () => {
       { maxChars: 500 },
     );
     expect(noRoom).toBe(`Result: ${"v".repeat(480)}`);
+  });
+});
+
+// The production mode: a code tool's body runs as `function (input, context)` and answers with
+// `return`. `input` is what the model passed (validated by the tool's schema), `context` what the
+// turn knows; both cross as JSON text and are parsed inside before the body runs.
+describe("function-body mode (a code tool's call)", () => {
+  const call = (input: unknown, context: unknown = {}) => ({
+    call: { input, context },
+  });
+
+  test("the return value is the result, and input is the parsed argument object", async () => {
+    const out = await runSandboxedCode(
+      "return input.a + input.b",
+      call({ a: 40, b: 2 }),
+    );
+    expect(out).toMatchObject({ kind: "value", value: "42" });
+  });
+
+  test("input and context arrive whole: nested, unicode, null, a __proto__ key", async () => {
+    const input = {
+      cpf: "123.516.128-50",
+      list: [1, "dois", null, { deep: true }],
+      nome: "José 🙂",
+      __proto__: { polluted: 1 },
+    };
+    const context = {
+      contact_name: "Maria",
+      conversationAttributes: { vip: true },
+    };
+    const out = await runSandboxedCode(
+      "return [JSON.stringify(input), JSON.stringify(context), Object.getPrototypeOf(input) === Object.prototype]",
+      call(input, context),
+    );
+    expect(out).toMatchObject({
+      kind: "value",
+      value: JSON.stringify([
+        JSON.stringify(input),
+        JSON.stringify(context),
+        true,
+      ]),
+    });
+  });
+
+  test("the helpers, the clock and the zone are there for the body", async () => {
+    const out = await runSandboxedCode(
+      "return { cpf: validateCpf(input.cpf).valid, tz: TIMEZONE, offset: new Date(NOW_LOCAL).getTimezoneOffset() }",
+      {
+        ...call({ cpf: "12351612850" }),
+        clock: { timezone: "America/Sao_Paulo" },
+      },
+    );
+    expect(out).toMatchObject({
+      kind: "value",
+      value: '{"cpf":true,"tz":"America/Sao_Paulo","offset":180}',
+    });
+  });
+
+  test("a body runs ONCE (no re-evaluation), and one without return answers undefined", async () => {
+    const once = await runSandboxedCode(
+      'console.log("once"); const x = { a: 1 }; { x }',
+      call({}),
+    );
+    expect(once).toMatchObject({
+      kind: "value",
+      value: "undefined",
+      logs: ["once"],
+    });
+  });
+
+  test("an error names the body's own line, not the wrapper's", async () => {
+    const syntax = await runSandboxedCode(
+      "const ok = 1;\nconst x = ;",
+      call({}),
+    );
+    expect(syntax).toMatchObject({ kind: "error", name: "SyntaxError" });
+    expect((syntax as { message: string }).message).toMatch(
+      /\(line 2: const x = ;\)$/,
+    );
+    const thrown = await runSandboxedCode(
+      '\n\nthrow new Error("boom")',
+      call({}),
+    );
+    expect(thrown).toMatchObject({ kind: "error", name: "Error" });
+    expect((thrown as { message: string }).message).toBe(
+      'boom (line 3: throw new Error("boom"))',
+    );
+  });
+
+  test("the body sees input and context as parameters and nothing new on the global object", async () => {
+    const out = await runSandboxedCode(
+      "return [typeof __INPUT_JSON, typeof __CONTEXT_JSON, typeof __takeArgs, Object.getOwnPropertyNames(globalThis).filter((n) => !/^[A-Z]/.test(n)).sort().join(',')]",
+      call({ a: 1 }),
+    );
+    expect(out).toMatchObject({
+      kind: "value",
+      value: JSON.stringify([
+        "undefined",
+        "undefined",
+        "undefined",
+        "console,decodeURI,decodeURIComponent,encodeURI,encodeURIComponent,escape,eval,globalThis,isFinite,isNaN,parseFloat,parseInt,undefined,unescape,validateCnpj,validateCpf",
+      ]),
+    });
+  });
+
+  test("the limits classify the same way in this mode", async () => {
+    const loop = await runSandboxedCode("while (true) {}", {
+      ...call({}),
+      timeoutMs: 200,
+    });
+    expect(loop).toMatchObject({ kind: "limit", limit: "time" });
+    const deep = await runSandboxedCode(
+      "function f() { return f() } return f()",
+      call({}),
+    );
+    expect(deep).toMatchObject({ kind: "limit", limit: "stack" });
+  });
+
+  test("an undefined argument crosses as null rather than as the text 'undefined'", async () => {
+    const out = await runSandboxedCode("return [input, context]", {
+      call: { input: undefined, context: undefined },
+    });
+    expect(out).toMatchObject({ kind: "value", value: "[null,null]" });
   });
 });

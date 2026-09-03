@@ -31,6 +31,7 @@ const TENANT_SCOPED_MODELS = new Set<string>([
   "ApprovalQueueItem",
   "VaultEntry",
   "ToolDefinition",
+  "CodeToolDefinition",
   "McpServerConnection",
   "IntegrationInstance",
   "AgentToolSelection",

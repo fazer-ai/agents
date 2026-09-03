@@ -353,11 +353,13 @@ async function assertNameFree(
       "name",
     );
   }
-  const existing = await db.toolDefinition.findFirst({
-    where: { name },
-    select: { id: true },
-  });
-  if (existing && existing.id !== exceptId) {
+  // One namespace reaches the model, so a code tool's name is taken here too (code-tools/service.ts
+  // asks this table the same question).
+  const [existing, code] = await Promise.all([
+    db.toolDefinition.findFirst({ where: { name }, select: { id: true } }),
+    db.codeToolDefinition.findFirst({ where: { name }, select: { id: true } }),
+  ]);
+  if ((existing && existing.id !== exceptId) || code) {
     throw new ConflictError(
       "tool name already in use",
       "errors.toolNameTaken",

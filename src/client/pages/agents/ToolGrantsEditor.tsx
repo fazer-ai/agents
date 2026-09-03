@@ -1,6 +1,7 @@
 import {
   Check,
   ChevronDown,
+  Code2,
   FileText,
   Loader2,
   type LucideIcon,
@@ -40,6 +41,7 @@ import {
   withToolpackArgNotes,
 } from "@/client/lib/toolpackTools";
 import { cn } from "@/client/lib/utils";
+import { CodeToolEditModal } from "@/client/pages/resources/CodeToolEditModal";
 import {
   DocumentTemplateModal,
   type TemplateModalPayload,
@@ -477,6 +479,7 @@ export function ToolGrantsEditor({
   // Create/edit a resource without leaving the agent editor. On save the catalog refetches; a
   // newly-created one is auto-granted to this agent (still needs the Tools-tab save to persist).
   const toolModal = useModalController<{ id?: string }>();
+  const codeToolModal = useModalController<{ id?: string }>();
   const mcpModal = useModalController<{ id?: string }>();
   const integrationModal = useModalController<{ id?: string }>();
   // Documents are the one grant whose target has a PICTURE, and the row alone (name, tool name, one
@@ -511,10 +514,17 @@ export function ToolGrantsEditor({
 
   const nativeGrant = grants.find((g) => g.source === "NATIVE");
   const allNativeNames = catalog.native.map((n) => n.name);
+  const allNativeSet = new Set(allNativeNames);
   // No explicit NATIVE row ⇒ all native tools (the permissive default for new/legacy agents). The
   // first toggle persists an explicit allowlist (which may even become empty = no native tools).
+  //
+  // Intersected with the catalog's names on the way in, so a stored allowlist carrying a native that
+  // no longer exists (e.g. `run_code`, removed when code tools replaced it) does not have that stale
+  // name re-sent on the next save — the toggle rebuilds the set from this one.
   const selectedNative = nativeGrant
-    ? new Set(nativeGrant.enabledTools ?? [])
+    ? new Set(
+        (nativeGrant.enabledTools ?? []).filter((n) => allNativeSet.has(n)),
+      )
     : new Set(allNativeNames);
   const handoffEnabled = selectedNative.has(HANDOFF_TOOL);
   // handoff_to_human + kanban_move_card carry their own settings; rendered as configurable cards
@@ -675,6 +685,36 @@ export function ToolGrantsEditor({
   ) {
     await onCatalogChange();
     if (isNew) selectHttp(saved.id);
+  }
+
+  function toggleCode(id: string) {
+    const exists = nonRag.some(
+      (g) => g.source === "CODE" && g.codeToolDefinitionId === id,
+    );
+    emit(
+      exists
+        ? nonRag.filter(
+            (g) => !(g.source === "CODE" && g.codeToolDefinitionId === id),
+          )
+        : [...nonRag, { source: "CODE", codeToolDefinitionId: id }],
+    );
+  }
+
+  // Idempotent grant-on (used to auto-select a just-created code tool, vs the toggle above).
+  function selectCode(id: string) {
+    if (
+      nonRag.some((g) => g.source === "CODE" && g.codeToolDefinitionId === id)
+    )
+      return;
+    emit([...nonRag, { source: "CODE", codeToolDefinitionId: id }]);
+  }
+
+  async function onCodeToolSaved(
+    saved: { id: string; name: string },
+    isNew: boolean,
+  ) {
+    await onCatalogChange();
+    if (isNew) selectCode(saved.id);
   }
 
   // Idempotent grant-on for a just-created MCP server (empty tool subset; the operator then discovers
@@ -910,6 +950,58 @@ export function ToolGrantsEditor({
                   title={td.label}
                   badge={
                     !td.enabled ? (
+                      <Badge variant="secondary">
+                        {t("common.disabled", "Disabled")}
+                      </Badge>
+                    ) : undefined
+                  }
+                />
+              </EditableCard>
+            ))}
+          </div>
+        )}
+      </Section>
+
+      <Section
+        id="tools-code"
+        icon={Code2}
+        title={t("editor.tools.code", "Code tools")}
+        description={t(
+          "editor.tools.codeDesc",
+          "Small functions you wrote, called with typed arguments.",
+        )}
+        action={
+          <CreateButton
+            label={t("editor.tools.createNew", "New")}
+            onClick={() => codeToolModal.open({})}
+          />
+        }
+      >
+        {catalog.codeTools.length === 0 ? (
+          <p className="text-text-muted text-xs">
+            {t(
+              "editor.tools.noCode",
+              "No code tools yet. Create some in Components.",
+            )}
+          </p>
+        ) : (
+          <div className="grid gap-2 sm:grid-cols-2">
+            {catalog.codeTools.map((ct) => (
+              <EditableCard
+                key={ct.id}
+                editLabel={t("common.edit", "Edit")}
+                onEdit={() => codeToolModal.open({ id: ct.id })}
+              >
+                <SelectableCard
+                  selected={nonRag.some(
+                    (g) =>
+                      g.source === "CODE" && g.codeToolDefinitionId === ct.id,
+                  )}
+                  onToggle={() => toggleCode(ct.id)}
+                  icon={Code2}
+                  title={ct.label}
+                  badge={
+                    !ct.enabled ? (
                       <Badge variant="secondary">
                         {t("common.disabled", "Disabled")}
                       </Badge>
@@ -1620,6 +1712,11 @@ export function ToolGrantsEditor({
       </CollapsibleSection>
 
       <ToolEditModal modal={toolModal} sharedNotice onSaved={onToolSaved} />
+      <CodeToolEditModal
+        modal={codeToolModal}
+        sharedNotice
+        onSaved={onCodeToolSaved}
+      />
       <McpEditModal modal={mcpModal} sharedNotice onSaved={onMcpSaved} />
       <IntegrationEditModal
         modal={integrationModal}

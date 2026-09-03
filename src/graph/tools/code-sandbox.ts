@@ -5,17 +5,23 @@ import {
 } from "@/modules/tool-definitions/response-template";
 import type { SandboxReply, SandboxRequest } from "./code-sandbox.worker";
 import {
+  SANDBOX_MEMORY_BYTES,
+  SANDBOX_STACK_BYTES,
+  SANDBOX_TIMEOUT_MS,
+} from "./code-sandbox-limits";
+import {
   resolveTimezone,
   wallClock,
   zoneFormatter,
   zoneOffsetMinutes,
 } from "./zone-offset";
 
-// Runs a model-authored JavaScript snippet where it can compute and decide, and cannot reach
-// anything else (issue #363). The tool exists because a verdict left to the model is periodically
-// wrong even when every number it holds is right: the CPF case that opened the issue had the two
-// check digits computed correctly by `calculator` on every run and the model still answering "does
-// not match". Code that RETURNS the verdict leaves nothing to compare.
+// Runs the body of an operator-authored code tool (tools/code.ts) where it can compute and decide,
+// and cannot reach anything else (issue #363). The tool kind exists because a verdict left to the
+// model is periodically wrong even when every number it holds is right: the CPF case that opened
+// the issue had the two check digits computed correctly by `calculator` on every run and the model
+// still answering "does not match". A body the OPERATOR wrote once, that RETURNS the verdict, leaves
+// nothing for the model to compare and nothing for it to author: the model supplies arguments.
 //
 // Each call gets its own thread (code-sandbox.worker.ts) and the thread gets a fresh interpreter,
 // which costs 13–16 ms measured end to end and buys three things the in-thread design could not:
@@ -40,12 +46,13 @@ import {
 // still maps the host's RangeError to the stack limit for a thread with less. The CPU deadline is
 // polled and lands within a few ms of the figure.
 
-export const SANDBOX_TIMEOUT_MS = 1000;
-export const SANDBOX_MEMORY_BYTES = 32 * 1024 * 1024;
-export const SANDBOX_STACK_BYTES = 256 * 1024;
-// The snippet itself: a model does not write more than a few hundred lines in one call, and the
-// bound keeps a runaway generation from being handed to a thread as a megabyte of source.
-export const SANDBOX_CODE_MAX_CHARS = 20_000;
+export {
+  CODE_TOOL_INPUT_MAX_CHARS,
+  SANDBOX_CODE_MAX_CHARS,
+  SANDBOX_MEMORY_BYTES,
+  SANDBOX_STACK_BYTES,
+  SANDBOX_TIMEOUT_MS,
+} from "./code-sandbox-limits";
 // How many sandbox threads may run at once, process-wide. Without a cap every call spawns its own
 // thread the moment it arrives — a ToolNode runs a turn's calls in parallel, and turns run in
 // parallel — and the ceiling is the machine's, not ours. Measured with 50 at once on an 18-core
@@ -60,12 +67,12 @@ export const SANDBOX_MAX_CONCURRENCY = 8;
 const HARD_KILL_GRACE_MS = 1500;
 
 export type SandboxOutcome =
-  // The snippet finished; `value` is the rendered completion value (JSON where possible).
+  // The code finished; `value` is the rendered return value (JSON where possible).
   | { kind: "value"; value: string; logs: string[]; ms: number }
-  // The snippet threw, or did not parse. Its own fault, reported as such.
+  // The code threw, or did not parse. The code's own fault, reported as such.
   | { kind: "error"; name: string; message: string; logs: string[]; ms: number }
   // A limit stopped it. `aborted` is the interpreter giving up in a way its own error path did not
-  // catch (the thread died); the snippet is still the cause.
+  // catch (the thread died); the code is still the cause.
   | {
       kind: "limit";
       limit: "time" | "memory" | "stack" | "aborted";
@@ -73,8 +80,7 @@ export type SandboxOutcome =
     }
   // The sandbox itself could not start — the thread died before it ever said it was ready — or
   // the interpreter could not be set up for the request (a runtime, a context, a prelude failing
-  // before the snippet ran). This is the one outcome that is ours and not the snippet's, and the
-  // tool reports it as a failure.
+  // before the code ran). This is the one outcome that is ours and not the code's.
   | { kind: "unavailable"; reason: string };
 
 export interface SandboxOptions {
@@ -84,6 +90,10 @@ export interface SandboxOptions {
   maxChars?: number;
   // The agent's clock, exposed inside as `TIMEZONE` and `NOW_LOCAL`. Absent ⇒ UTC, now.
   clock?: { timezone: string; now?: Date };
+  // A code tool's call: the body runs as `function (input, context)` and answers with `return`.
+  // Both cross the thread boundary as JSON text (`undefined` becomes `null`). Absent, the source
+  // runs as a bare script whose completion value is the result — the engine tests' harness.
+  call?: { input: unknown; context: unknown };
 }
 
 export interface SandboxDeps {
@@ -181,6 +191,14 @@ function spawnAndRun(
     stackBytes: opts.stackBytes ?? SANDBOX_STACK_BYTES,
     maxChars: opts.maxChars ?? MODEL_RESPONSE_CHAR_LIMIT,
     clock: { timezone, nowLocal: localIsoNow(timezone, opts.clock?.now) },
+    ...(opts.call
+      ? {
+          call: {
+            input: asJsonText(opts.call.input),
+            context: asJsonText(opts.call.context),
+          },
+        }
+      : {}),
   };
   return new Promise((resolve) => {
     let worker: Worker;
@@ -266,14 +284,22 @@ function describe(e: unknown): string {
   return String(e);
 }
 
-// The text the model reads. Output first (it was produced first), the result or the reason last,
-// and every branch says what to do next in one clause, because the model calls again on what it
-// reads here and a bare "interrupted" gives it nothing to change.
+// JSON text for the thread, with the two values JSON.stringify has no text for folded into `null`:
+// a stringify that answered `undefined` would post the string "undefined" and `JSON.parse` inside
+// would throw on the operator's behalf.
+function asJsonText(value: unknown): string {
+  return JSON.stringify(value === undefined ? null : value) ?? "null";
+}
+
+// The text the model reads for a value, and the text the operator reads for a failure. A value
+// puts the output first (it was produced first) and `Result:` last, where the model reads it; a
+// failure puts the reason FIRST, because the flow log keeps the first line of a failure as its
+// cause, and the output after it.
 //
-// The tail is what the tool exists to deliver, so it is never the part that gets cut: the output
-// block is given whatever budget the tail leaves, and clipped on its own. A single head-first clip
-// over the whole text (the first version of this) let 4,000 characters of `console.log` push the
-// `Result:` line — or the error and its retry instruction — off the end (PR #485, round 1).
+// The result or the reason is what the tool exists to deliver, so it is never the part that gets
+// cut: the output block is given whatever budget the main line leaves, and clipped on its own. A
+// single head-first clip over the whole text (the first version of this) let 4,000 characters of
+// `console.log` push the `Result:` line off the end (PR #485, round 1).
 export function formatSandboxResult(
   out: Exclude<SandboxOutcome, { kind: "unavailable" }>,
   opts: { timeoutMs?: number; memoryBytes?: number; maxChars?: number } = {},
@@ -283,42 +309,42 @@ export function formatSandboxResult(
     (opts.memoryBytes ?? SANDBOX_MEMORY_BYTES) / (1024 * 1024),
   );
   const maxChars = opts.maxChars ?? MODEL_RESPONSE_CHAR_LIMIT;
-  let tail: string;
+  let main: string;
   switch (out.kind) {
     case "value":
-      tail = `Result: ${clipToModelLimit(out.value, maxChars).text}`;
+      main = `Result: ${clipToModelLimit(out.value, maxChars).text}`;
       break;
     case "error":
-      tail = `Error: ${clipText(out.name, 100)}: ${clipToModelLimit(out.message, maxChars).text}\nThe code did not finish. Fix it and call run_code again.`;
+      main = `Error: ${clipText(out.name, 100)}: ${clipToModelLimit(out.message, maxChars).text}`;
       break;
     case "limit":
       switch (out.limit) {
         case "time":
-          tail = `Execution stopped after ${timeoutMs} ms without finishing. Do less work per call (smaller loops, no busy-waiting) and call run_code again.`;
+          main = `Execution stopped after ${timeoutMs} ms without finishing.`;
           break;
         case "memory":
-          tail = `Execution exceeded the ${memoryMb} MB memory limit. Build smaller structures and call run_code again.`;
+          main = `Execution exceeded the ${memoryMb} MB memory limit.`;
           break;
         case "stack":
-          tail =
-            "Execution overflowed the call stack (too much recursion). Rewrite it iteratively and call run_code again.";
+          main = "Execution overflowed the call stack (too much recursion).";
           break;
         case "aborted":
-          tail =
-            "Execution was aborted before finishing. Simplify the code and call run_code again.";
+          main = "Execution was aborted before finishing.";
           break;
       }
   }
-  if (out.logs.length === 0) return tail;
+  if (out.logs.length === 0) return main;
   const joined = out.logs.join("\n");
   const frame = "Output:\n\n\n".length + OUTPUT_TRUNCATED.length;
-  const budget = maxChars - tail.length - frame;
-  if (budget < 40) return tail;
+  const budget = maxChars - main.length - frame;
+  if (budget < 40) return main;
   const body =
     joined.length <= budget
       ? joined
       : `${clipText(joined, budget)}${OUTPUT_TRUNCATED}`;
-  return `Output:\n${body}\n\n${tail}`;
+  return out.kind === "value"
+    ? `Output:\n${body}\n\n${main}`
+    : `${main}\n\nOutput:\n${body}`;
 }
 
 const OUTPUT_TRUNCATED = "…[output truncated]";

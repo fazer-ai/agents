@@ -15,15 +15,14 @@
 // stays open: a closed set of conditions translates mechanically into an expression later, while an
 // expression published to operators is a contract that cannot be taken back.
 
-// [code-tool] This type is the STATE NAMESPACE — the one piece a future sandboxed code tool
-// genuinely shares with this file, because "what can a rule see about the conversation" is the same
-// question for both and it is the expensive half to get right. When that tool lands, reconcile HERE
-// rather than growing a second vocabulary: a rule that reads `conversationAttributes` in one place
-// and `conversation.attributes` in another is a migration of operator configuration later.
-// What must NOT be shared is the LANGUAGE. Code-tool code is authored by the MODEL, per turn, and
-// may loop, call out and fail; a precondition is authored by the OPERATOR, once, and has to always
-// terminate and always answer, because its answer decides whether a call happens at all. Letting the
-// model author the rule that binds the model is the failure mode issue #363 measured one layer down.
+// This type is the STATE NAMESPACE shared with the operator-authored code tools (graph/tools/
+// code.ts): "what can a rule see about the conversation" is the same question for both, and the
+// code tool's `context` carries these two bags under these two names, read at call time through
+// `preconditionStateLoader`, so a rule that reads `conversationAttributes` here and the body that
+// reads `context.conversationAttributes` there are one vocabulary. What is NOT shared is the
+// LANGUAGE: a code tool's body may loop, throw and hit a limit, and its failure is reported; a
+// precondition has to always terminate and always answer, because its answer decides whether a call
+// happens at all, so it stays a closed set of typed conditions.
 import { NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
 
 export interface PreconditionState {

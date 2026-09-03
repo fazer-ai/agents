@@ -24,8 +24,10 @@
 import { clipText, unstorableCodePoints } from "@/lib/text";
 import {
   collectLeaves,
+  collectLists,
   isUsablePath,
   type SampleLeaf,
+  type SampleList,
   walkPath,
 } from "@/modules/tool-definitions/json-path";
 
@@ -55,17 +57,177 @@ export const ABSENT_MARKER = "(not returned)";
 // input as literal text.
 const TOKEN = /\{\{([^{}]*)\}\}/g;
 
+// A LIST OF UNKNOWN LENGTH (#459). One token addresses one value, so a tool whose response is N
+// rows could not be projected at all and kept the raw clip, with the invention risk this module
+// exists to remove, on exactly the tools operators write most: a product search, a slot lookup, an
+// order history. A block repeats its content once per item of the list its path names:
+//
+//   {{#each resultados}}
+//   - {{nome}} — R$ {{preco}}
+//   {{/each}}
+//
+// Inside it a path is RELATIVE to the item, and `{{.}}` is the item itself, the one thing a list
+// of strings has to address. The same spelling names the body outside a block (`{{#each .}}` walks
+// a response that IS the list), so "a path is relative to the current scope, and `.` is the scope"
+// stays one sentence. Blocks do not nest, deliberately: the second level is where "relative to
+// which item" stops being one sentence, and no tool measured so far needed it.
+//
+// Both markers are well-formed tokens to TOKEN, which is why the block scan runs FIRST and the
+// token scan sees only what is left: a `{{/each}}` judged as a path would be refused as malformed,
+// and a `{{#each a}}` left to the token render would reach the model as literal text.
+const BLOCK = /\{\{\s*(?:#each(?:[ \t]+([^{}]*?))?|(\/each))\s*\}\}/g;
+
+// The current scope, which is the item inside a block and the body outside one.
+export const ITEM_SELF = ".";
+
+// How many items a block renders before it COUNTS the rest instead. Two bounds, on two different
+// things. This one bounds WORK: a list of one-character items would otherwise render thousands of
+// them under the text budget. The budget in `renderResponseTemplate` bounds TEXT: an item is only
+// appended while it fits under the model's clip with room left for the count of what follows, so
+// the block's own items are never what pushes the count past the clip (round 1 of review: 100 rows
+// of ~100 characters rendered 40 and cut the marker off with them). The remainder is never dropped
+// silently either way: a model reading "and 120 more" knows to ask for a narrower query, and one
+// reading a list that simply ends does not.
+//
+// What the budget does NOT cover is text BEFORE the block: two values at MAX_VALUE_CHARS already
+// fill the clip, and then no list and no count fits after them. That is #456's per-value clip
+// doing what it always did to any field after them, not something a block makes worse, and the
+// clip's own backstop answers it on both sides: `…[truncated]` where the cut happened for the
+// model, and the `response_clipped` note with "shorten the template" for the operator. Shrinking
+// earlier values to make room would be a second cap deciding what the operator's template says.
+export const MAX_EACH_ITEMS = 50;
+
+// What the model sees where the list came back with nothing in it. Not the absent marker: the path
+// was right and the API answered, so this is "no results", which is an answer. And never a blank:
+// a label followed by nothing is the gap this module exists to close.
+export const EMPTY_LIST_MARKER = "(none)";
+
+export function moreItemsMarker(n: number): string {
+  return `(and ${n} more not shown)`;
+}
+
 export interface ResponseTemplate {
   template: string;
 }
 
+// A template path: the grammar the appointment declaration shares, plus the scope itself.
+export function isTemplatePath(p: unknown): p is string {
+  return p === ITEM_SELF || isUsablePath(p);
+}
+
+function resolveTemplatePath(scope: unknown, path: string): unknown {
+  return path === ITEM_SELF ? scope : walkPath(scope, path);
+}
+
+export type TemplateSegment =
+  | { kind: "text"; text: string }
+  | { kind: "each"; path: string; body: string };
+
+export interface ParsedTemplate {
+  segments: TemplateSegment[];
+  // Why the template cannot be rendered as written, phrased to follow "outputSchema.template", or
+  // null. A STRUCTURAL problem, which the token scan cannot see: to it both markers are well-formed.
+  problem: string | null;
+}
+
+// A marker alone on its line takes the line with it (Handlebars calls this "standalone"), so the
+// block written the natural way (marker, line per item, marker) renders one line per item, not a
+// blank line between every two. A marker sharing its line with content keeps the line as written.
+function standaloneBounds(
+  template: string,
+  start: number,
+  end: number,
+): [number, number] {
+  let s = start;
+  while (s > 0 && (template[s - 1] === " " || template[s - 1] === "\t")) s--;
+  const atLineStart = s === 0 || template[s - 1] === "\n";
+  let e = end;
+  while (e < template.length && (template[e] === " " || template[e] === "\t"))
+    e++;
+  // A template typed in the console ends its lines with `\n`; one sent over REST or MCP from a
+  // Windows editor may end them with `\r\n`, and the rule has to read both as "end of line".
+  const eol =
+    e === template.length
+      ? 0
+      : template[e] === "\n"
+        ? 1
+        : template[e] === "\r" && template[e + 1] === "\n"
+          ? 2
+          : -1;
+  if (!atLineStart || eol === -1) return [start, end];
+  return [s, e + eol];
+}
+
+export function parseTemplate(template: string): ParsedTemplate {
+  const segments: TemplateSegment[] = [];
+  const text = (s: string) => {
+    if (s !== "") segments.push({ kind: "text", text: s });
+  };
+  let last = 0;
+  let open: { path: string; bodyStart: number; marker: string } | null = null;
+  for (const m of template.matchAll(BLOCK)) {
+    const marker = m[0].trim();
+    const [start, end] = standaloneBounds(
+      template,
+      m.index,
+      m.index + m[0].length,
+    );
+    if (m[2] !== undefined) {
+      if (open === null) {
+        return {
+          segments,
+          problem: `has a {{/each}} with no {{#each …}} before it`,
+        };
+      }
+      const body = template.slice(open.bodyStart, start);
+      // A block with nothing to repeat renders a non-empty list as NOTHING: the tool answered and
+      // the model reads an empty body. It is also exactly what the picker inserts (marker, empty
+      // line, marker), so it is the shape a tool gets saved in when the operator stops one step
+      // early; refused here, the Save gate says what to write instead of storing the silence.
+      if (body.trim() === "") {
+        return {
+          segments,
+          problem: `has ${open.marker} with nothing to repeat before {{/each}}; write the line for one item between the markers`,
+        };
+      }
+      segments.push({ kind: "each", path: open.path, body });
+      open = null;
+    } else {
+      if (open !== null) {
+        return {
+          segments,
+          problem: `has ${marker} inside ${open.marker}; a list block cannot contain another`,
+        };
+      }
+      const path = (m[1] ?? "").trim();
+      if (!isTemplatePath(path)) {
+        return {
+          segments,
+          problem: `has ${marker}, which does not name a list in the response; write {{#each path.to.list}}`,
+        };
+      }
+      text(template.slice(last, start));
+      open = { path, bodyStart: end, marker };
+    }
+    last = end;
+  }
+  if (open !== null) {
+    return {
+      segments,
+      problem: `has ${open.marker} with no {{/each}} after it`,
+    };
+  }
+  text(template.slice(last));
+  return { segments, problem: null };
+}
+
 // The tokens a template writes, in document order, deduped. Includes malformed ones — the caller
 // decides what to do with them, and both callers (the write refusal and the form gate) need to name
-// them.
+// them. Block markers are NOT tokens: they name a list, and `parseTemplate` judges them.
 export function templateTokens(template: string): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
-  for (const m of template.matchAll(TOKEN)) {
+  for (const m of template.replace(BLOCK, "").matchAll(TOKEN)) {
     const raw = (m[1] ?? "").trim();
     if (seen.has(raw)) continue;
     seen.add(raw);
@@ -75,7 +237,33 @@ export function templateTokens(template: string): string[] {
 }
 
 export function unusableTemplateTokens(template: string): string[] {
-  return templateTokens(template).filter((t) => !isUsablePath(t));
+  return templateTokens(template).filter((t) => !isTemplatePath(t));
+}
+
+// Whether rendering needs the response body at all. A template with neither a token nor a block
+// says the same thing whatever came back, and the endpoint that most wants that is the one
+// answering 204 with nothing in it. A block with no token inside still needs the body: how many
+// times its content repeats is the body's answer.
+export function templateNeedsBody(template: string): boolean {
+  // `search` ignores the global flag's lastIndex, which `test` on a /g pattern would not.
+  return templateTokens(template).length > 0 || template.search(BLOCK) !== -1;
+}
+
+// The block whose content the caret sits in, for the editor's picker: the path after `#each`, or
+// null outside every block. LENIENT where `parseTemplate` refuses, on purpose: the operator has
+// just typed `{{#each qsa}}` and opened the picker, and the block is unclosed at exactly that
+// moment; refusing to answer would hide the item fields when they are most wanted. A marker the
+// caret is inside of counts as not yet passed.
+export function enclosingBlock(
+  template: string,
+  cursor: number,
+): string | null {
+  let open: string | null = null;
+  for (const m of template.matchAll(BLOCK)) {
+    if (m.index + m[0].length > cursor) break;
+    open = m[2] !== undefined ? null : (m[1] ?? "").trim();
+  }
+  return open;
 }
 
 // A `{{` or a `}}` that is not part of a token, which is a typo the token scan cannot see: `{{a}`
@@ -119,6 +307,45 @@ function renderScalar(node: unknown): string | undefined {
 // worse than no picker — and `json-path.ts` carries the reasoning.
 export function templateLeaves(root: unknown, max = 200): SampleLeaf[] {
   return collectLeaves(root, renderScalar, max);
+}
+
+// The lists a `{{#each}}` may repeat over, for the picker.
+export function templateLists(root: unknown, max = 50): SampleList[] {
+  return collectLists(root, max);
+}
+
+// What a token INSIDE a block may point at, relative to the item: the union of the first few items'
+// leaves rather than the first item's alone, because a field the first row happens to lack (an
+// optional note, a discount) is still a field of the list. A list of scalars has one thing to
+// address, the item itself, offered as `.`. Paired with `renderTokens` the way `templateLeaves` is
+// paired with the scalar rule: every offer here renders.
+export function templateItemLeaves(
+  items: unknown[],
+  opts: { sampleItems?: number; max?: number } = {},
+): SampleLeaf[] {
+  const out: SampleLeaf[] = [];
+  const seen = new Set<string>();
+  for (const item of items.slice(0, opts.sampleItems ?? 10)) {
+    const self = renderScalar(item);
+    const leaves =
+      self !== undefined
+        ? [{ path: ITEM_SELF, value: self }]
+        : templateLeaves(item);
+    for (const leaf of leaves) {
+      if (out.length >= (opts.max ?? 200)) return out;
+      if (seen.has(leaf.path)) continue;
+      seen.add(leaf.path);
+      out.push(leaf);
+    }
+  }
+  return out;
+}
+
+// The items a block over `path` would repeat over in `body`, or null when there is no list there.
+// The picker's question, answered by the same resolution the renderer uses.
+export function templateListAt(body: unknown, path: string): unknown[] | null {
+  const node = resolveTemplatePath(body, path);
+  return Array.isArray(node) ? node : null;
 }
 
 export type ResponseTemplateRead =
@@ -180,6 +407,12 @@ export function readResponseTemplateResult(raw: unknown): ResponseTemplateRead {
       `outputSchema.template has an unmatched delimiter near "${stray}"; a field is written {{path}}, and a stray {{ or }} would reach the model as literal text`,
     );
   }
+  // Structure before tokens: a `{{/each}}` judged as a token is "not a path", which sends the
+  // operator to fix a spelling that is right.
+  const parsed = parseTemplate(template);
+  if (parsed.problem !== null) {
+    return fail(`outputSchema.template ${parsed.problem}`);
+  }
   const unusable = unusableTemplateTokens(template);
   if (unusable.length > 0) {
     return fail(
@@ -187,7 +420,7 @@ export function readResponseTemplateResult(raw: unknown): ResponseTemplateRead {
         .map((t) => `{{${t}}}`)
         .join(
           ", ",
-        )}. A path is dot-separated keys with a number for a list position, e.g. data.items.0.name`,
+        )}. A path is dot-separated keys with a number for a list position, e.g. data.items.0.name; inside {{#each list}}…{{/each}} it is relative to the item, and {{.}} is the item itself`,
     );
   }
   return { declared: true, ok: true, template };
@@ -231,6 +464,7 @@ export function projectToolResponse(
   outputSchema: unknown,
   status: number,
   rawBody: string,
+  opts: RenderOptions = {},
 ): ProjectedResponse {
   const tpl = readResponseTemplate(outputSchema);
   if (!tpl) return { text: null, missing: [], skipped: "no-template" };
@@ -240,11 +474,11 @@ export function projectToolResponse(
   if (status < 200 || status >= 300) {
     return { text: null, missing: [], skipped: "not-2xx" };
   }
-  // A template with no tokens says the same thing whatever the body is, so it must not be gated on
-  // the body PARSING: the endpoint that most wants a constant answer is the one returning 204 with
-  // nothing in it.
-  if (templateTokens(tpl.template).length === 0) {
-    return { ...renderResponseTemplate(tpl, undefined), skipped: null };
+  // A template that reads nothing says the same thing whatever the body is, so it must not be
+  // gated on the body PARSING: the endpoint that most wants a constant answer is the one returning
+  // 204 with nothing in it.
+  if (!templateNeedsBody(tpl.template)) {
+    return { ...renderResponseTemplate(tpl, undefined, opts), skipped: null };
   }
   let body: unknown;
   try {
@@ -252,7 +486,7 @@ export function projectToolResponse(
   } catch {
     return { text: null, missing: [], skipped: "not-json" };
   }
-  return { ...renderResponseTemplate(tpl, body), skipped: null };
+  return { ...renderResponseTemplate(tpl, body, opts), skipped: null };
 }
 
 // The clip the model's input gets, whoever is applying it. Returns the flag as well as the text
@@ -286,30 +520,133 @@ export interface RenderedResponse {
   missing: string[];
 }
 
-export function renderResponseTemplate(
-  tpl: ResponseTemplate,
-  body: unknown,
-): RenderedResponse {
-  const missing: string[] = [];
-  const seen = new Set<string>();
-  const text = tpl.template.replace(TOKEN, (whole, rawToken: string) => {
+// Where a token sits: at the top level, or inside the block over `path` at item `index`. Decides
+// what a miss is REPORTED as. Inside a block the label is the absolute path at the first index that
+// lacked the field (`resultados.3.preco`), in-grammar so the operator can paste it into the
+// sample field and see for themselves, and the report is deduped per FIELD, not per item, or a
+// fifty-row list missing one column would name it fifty times.
+type TokenScope = { path: string; index: number } | null;
+
+function renderTokens(
+  text: string,
+  scope: unknown,
+  at: TokenScope,
+  report: (label: string, key: string) => void,
+): string {
+  return text.replace(TOKEN, (whole, rawToken: string) => {
     const path = (rawToken ?? "").trim();
     // Unreachable for a stored template (the reader refuses one that has such a token) and left
     // literal rather than thrown on, so a template reaching here by some other road degrades into
     // the text the operator typed instead of failing a tool call that already succeeded.
-    if (!isUsablePath(path)) return whole;
-    const node = walkPath(body, path);
+    if (!isTemplatePath(path)) return whole;
+    const node = resolveTemplatePath(scope, path);
     const value = renderScalar(node);
     if (value !== undefined && value !== "") {
       return value.length > MAX_VALUE_CHARS
         ? `${clipText(value, MAX_VALUE_CHARS)}…[truncated]`
         : value;
     }
-    if (value === undefined && node !== null && !seen.has(path)) {
-      seen.add(path);
-      missing.push(path);
+    if (value === undefined && node !== null) {
+      const self = path === ITEM_SELF;
+      if (at === null) report(path, path);
+      else {
+        // A root list (`{{#each .}}`) labels its items by index alone: `..0.name` is not a path
+        // the grammar accepts, and the label exists to be pasted into the path fields.
+        const here =
+          at.path === ITEM_SELF ? String(at.index) : `${at.path}.${at.index}`;
+        report(
+          self ? here : `${here}.${path}`,
+          `${at.path}[]${self ? "" : `.${path}`}`,
+        );
+      }
     }
     return ABSENT_MARKER;
   });
+}
+
+export interface RenderOptions {
+  // The clip the rendered text will meet, which a block has to render UNDER. The runtime passes its
+  // own; the preview takes the default, which is the same number, so the two agree.
+  maxChars?: number;
+}
+
+export function renderResponseTemplate(
+  tpl: ResponseTemplate,
+  body: unknown,
+  opts: RenderOptions = {},
+): RenderedResponse {
+  const budget = opts.maxChars ?? MODEL_RESPONSE_CHAR_LIMIT;
+  const missing: string[] = [];
+  const seen = new Set<string>();
+  const report = (label: string, key: string) => {
+    if (seen.has(key)) return;
+    seen.add(key);
+    missing.push(label);
+  };
+  const parsed = parseTemplate(tpl.template);
+  // Unreachable for a stored template, for the reason `renderTokens` gives, and degraded the same
+  // way: the whole text renders as one segment, markers left as the operator typed them.
+  const segments: TemplateSegment[] =
+    parsed.problem === null
+      ? parsed.segments
+      : [{ kind: "text", text: tpl.template }];
+  let text = "";
+  for (const seg of segments) {
+    if (seg.kind === "text") {
+      text += renderTokens(seg.text, body, null, report);
+      continue;
+    }
+    const node = resolveTemplatePath(body, seg.path);
+    // A standalone `{{/each}}` took its line ending with it, and every item puts one back because
+    // the body ends in one. A MARKER standing in for the items does not, so the text after the
+    // block would land on the marker's line (`(none)Done`, round 3 of review): the block owes that
+    // ending to whatever follows it, and an inline block (no ending in its body) owes nothing.
+    const eol = seg.body.endsWith("\r\n")
+      ? "\r\n"
+      : seg.body.endsWith("\n")
+        ? "\n"
+        : "";
+    // Same three-way rule as a scalar token: `null` is the API answering with nothing (right path,
+    // not reported); anything that is not a list is the template promising one the response does
+    // not carry (reported); and an empty list is an answer of its own.
+    if (node === null) {
+      text += ABSENT_MARKER + eol;
+      continue;
+    }
+    if (!Array.isArray(node)) {
+      report(seg.path, seg.path);
+      text += ABSENT_MARKER + eol;
+      continue;
+    }
+    if (node.length === 0) {
+      text += EMPTY_LIST_MARKER + eol;
+      continue;
+    }
+    // Item by item, each appended only if it fits under the budget WITH the count of what would
+    // follow it, so the count is never what the clip removes. A miss inside an item is reported
+    // only once the item is kept: naming a field absent from a row the model never saw sends the
+    // operator to fix a line that did not render.
+    let index = 0;
+    for (; index < node.length && index < MAX_EACH_ITEMS; index++) {
+      const pending: [string, string][] = [];
+      const piece = renderTokens(
+        seg.body,
+        node[index],
+        { path: seg.path, index },
+        (label, key) => {
+          pending.push([label, key]);
+        },
+      );
+      const after = node.length - index - 1;
+      // The count AND the line ending it carries, or a standalone block lands one character past
+      // the budget on exactly the row length that fills it (round 4 of review).
+      const reserve =
+        after > 0 ? moreItemsMarker(after).length + eol.length : 0;
+      if (text.length + piece.length + reserve > budget) break;
+      text += piece;
+      for (const [label, key] of pending) report(label, key);
+    }
+    if (index < node.length) text += moreItemsMarker(node.length - index) + eol;
+  }
   return { text, missing };
 }

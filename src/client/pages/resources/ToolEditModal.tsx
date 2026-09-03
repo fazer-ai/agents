@@ -31,6 +31,7 @@ import { sampleLeaves } from "@/modules/tool-definitions/appointment";
 import {
   isUsablePath,
   type SampleLeaf,
+  type SampleList,
 } from "@/modules/tool-definitions/json-path";
 import {
   CONTEXT_VAR_NAMES,
@@ -38,12 +39,16 @@ import {
 } from "@/modules/tool-definitions/normalize";
 import {
   clipToModelLimit,
+  enclosingBlock,
   MAX_TEMPLATE_CHARS,
   type ProjectedResponse,
   projectToolResponse,
   readResponseTemplateResult,
+  templateItemLeaves,
   templateLeaves,
-  templateTokens,
+  templateListAt,
+  templateLists,
+  templateNeedsBody,
   unmatchedTemplateDelimiter,
   unusableTemplateTokens,
 } from "@/modules/tool-definitions/response-template";
@@ -182,10 +187,11 @@ export function templatePreviewFor(args: {
   // body" would answer a question about a template that cannot be saved.
   const decl = readResponseTemplateResult({ mode: "template", template });
   if (!decl.declared || !decl.ok) return null;
-  // An empty sample is only "nothing to preview" for a template that has tokens: with none, the
-  // template IS the answer whatever came back, and the case that proves it is a tool answering 204
-  // with no body, where the runtime hands the model the operator's own text and this box was blank.
-  if (!sample.trim() && templateTokens(template).length > 0) return null;
+  // An empty sample is only "nothing to preview" for a template that reads the body: with neither
+  // a token nor a block, the template IS the answer whatever came back, and the case that proves it
+  // is a tool answering 204 with no body, where the runtime hands the model the operator's own text
+  // and this box was blank.
+  if (!sample.trim() && templateNeedsBody(template)) return null;
   // The runtime's decision, made by the runtime's own function. Everything this preview used to
   // decide for itself drifted from it within a round: the 2xx gate, the token-less render, the
   // clip. `status: null` is a hand-pasted sample and reads as 200 — nobody pastes an error body to
@@ -695,22 +701,47 @@ function appointmentForm(raw: unknown) {
 // Rendered as a sibling of its FormField, never inside it: FormField wraps its children in a
 // <label>, which forwards a click on the field title to the first focusable descendant, so a button
 // in there would fire when the operator clicked the title.
-function PathPicker({
+//
+// The template's picker also offers the LISTS in the sample (#459), each inserted as a block to
+// repeat over, and it is caret-aware: with the caret inside a block it offers the fields of that
+// list's items instead, relative, under a heading that says so. Both are the same `leaves` shape
+// to this component; what differs is what `onPick` inserts, and the caller decides that.
+//
+// The toggle is what lets the operator move the caret and ask again, so it must not disappear on an
+// offer that is empty for THIS caret: with `emptyLabel` set, an empty offer renders the toggle and
+// that line instead of nothing (round 3 of review: inside a block over an empty list the whole
+// control unmounted while open, and nothing could re-read the caret).
+export function PathPicker({
   leaves,
+  lists = [],
+  heading,
+  emptyLabel,
   open,
   onToggle,
   onPick,
+  onPickList,
   openLabel,
   closeLabel,
+  listsLabel,
+  listLength,
 }: {
   leaves: SampleLeaf[];
+  lists?: SampleList[];
+  // Shown above the offers when they are relative to something (the items of a block).
+  heading?: string | null;
+  // Shown instead of nothing when the offer is empty; without it an empty offer hides the control.
+  emptyLabel?: string;
   open: boolean;
   onToggle: () => void;
   onPick: (path: string) => void;
+  onPickList?: (path: string) => void;
   openLabel: string;
   closeLabel: string;
+  listsLabel?: string;
+  listLength?: (n: number) => string;
 }) {
-  if (leaves.length === 0) return null;
+  const empty = leaves.length === 0 && lists.length === 0;
+  if (empty && !emptyLabel) return null;
   return (
     <div className="-mt-2 flex flex-col gap-1">
       <button
@@ -722,6 +753,14 @@ function PathPicker({
       </button>
       {open && (
         <ul className="max-h-48 overflow-y-auto rounded-md border border-border">
+          {heading && (
+            <li className="px-2 py-1 text-text-secondary text-xs">{heading}</li>
+          )}
+          {empty && (
+            <li className="px-2 py-1 text-text-secondary text-xs">
+              {emptyLabel}
+            </li>
+          )}
           {leaves.map((leaf) => (
             <li key={leaf.path}>
               <button
@@ -732,6 +771,25 @@ function PathPicker({
                 <code className="shrink-0 text-text-primary">{leaf.path}</code>
                 <span className="truncate text-text-secondary">
                   {leaf.value}
+                </span>
+              </button>
+            </li>
+          ))}
+          {lists.length > 0 && listsLabel && (
+            <li className="border-border border-t px-2 py-1 text-text-secondary text-xs">
+              {listsLabel}
+            </li>
+          )}
+          {lists.map((list) => (
+            <li key={`each:${list.path}`}>
+              <button
+                type="button"
+                onClick={() => onPickList?.(list.path)}
+                className="flex w-full items-baseline gap-2 px-2 py-1 text-left text-xs hover:bg-bg-hover"
+              >
+                <code className="shrink-0 text-text-primary">{list.path}</code>
+                <span className="truncate text-text-secondary">
+                  {listLength ? listLength(list.length) : list.length}
                 </span>
               </button>
             </li>
@@ -890,10 +948,55 @@ function insertToken(
   }
   const start = el.selectionStart ?? current.length;
   const end = el.selectionEnd ?? current.length;
-  setValue(current.slice(0, start) + token + current.slice(end));
+  setValue(spliceSelection(current, start, end, () => token));
   requestAnimationFrame(() => {
     el.focus();
     const pos = start + token.length;
+    el.setSelectionRange(pos, pos);
+  });
+}
+
+// The one cut both inserts make: a selection is a boundary the browser chose, never the inside of
+// a surrogate pair, which is why `tests/lib/astral-cap-sweep.test.ts` lists this file under
+// "index". `insert` sees what is on either side, so an insert that wants a line of its own can
+// decide whether it needs a line break first.
+function spliceSelection(
+  current: string,
+  start: number,
+  end: number,
+  insert: (before: string, after: string) => string,
+): string {
+  const before = current.slice(0, start);
+  const after = current.slice(end);
+  return before + insert(before, after) + after;
+}
+
+// Inserts a `{{#each path}}` block at the caret, markers on lines of their own (so each takes its
+// line with it when rendered), and leaves the caret on the empty line BETWEEN them: reopening the
+// picker from there offers the items' fields. A caret mid-line gets a line break first, so the
+// opening marker lands standalone; the same for the text after it.
+export function insertEachBlock(
+  el: HTMLTextAreaElement | null,
+  current: string,
+  path: string,
+  setValue: (v: string) => void,
+): void {
+  const start = el?.selectionStart ?? current.length;
+  const end = el?.selectionEnd ?? current.length;
+  let openLength = 0;
+  setValue(
+    spliceSelection(current, start, end, (before, after) => {
+      const lead = before === "" || before.endsWith("\n") ? "" : "\n";
+      const tail = after === "" || after.startsWith("\n") ? "" : "\n";
+      const open = `${lead}{{#each ${path}}}\n`;
+      openLength = open.length;
+      return `${open}\n{{/each}}${tail}`;
+    }),
+  );
+  if (!el) return;
+  requestAnimationFrame(() => {
+    el.focus();
+    const pos = start + openLength;
     el.setSelectionRange(pos, pos);
   });
 }
@@ -1084,6 +1187,10 @@ export function ToolEditModal({
     "id" | "start" | "summary" | null
   >(null);
   const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
+  // Where the caret was when the picker was opened. Read THEN and not on every keystroke: the
+  // offer only has to be right for the click that follows it, and clicking the picker's button
+  // moves focus off the textarea without moving its selection.
+  const [templateCaret, setTemplateCaret] = useState(0);
   const templateRef = useRef<HTMLTextAreaElement>(null);
   const testModal = useModalController<ToolTestTarget>();
   const [saving, setSaving] = useState(false);
@@ -1262,6 +1369,7 @@ export function ToolEditModal({
     const none = {
       leaves: [] as SampleLeaf[],
       templates: [] as SampleLeaf[],
+      lists: [] as SampleList[],
       body: undefined as unknown,
     };
     if (raw === "") return { state: "empty" as const, ...none };
@@ -1270,17 +1378,39 @@ export function ToolEditModal({
       // TWO offers from one sample, because the two readers accept different things: an appointment
       // id may not be a boolean or the empty string, and a template that could not render
       // `"active": false` would show the model a blank where the API said no. Each picker offers
-      // exactly what its own reader takes.
+      // exactly what its own reader takes. The lists are the template's third offer: what a block
+      // may repeat over.
       return {
         state: "ok" as const,
         leaves: sampleLeaves(body),
         templates: templateLeaves(body),
+        lists: templateLists(body),
         body,
       };
     } catch {
       return { state: "invalid" as const, ...none };
     }
   }, [sample]);
+  // What the template picker offers for the caret it was opened at: outside every block, the
+  // absolute fields and the lists; inside one, the fields of that list's items, relative. The
+  // block is read leniently (`enclosingBlock`), because at the moment the operator most wants the
+  // item fields, just after typing or inserting `{{#each xs}}`, the block is not closed yet.
+  const templateOffer = useMemo(() => {
+    const block = enclosingBlock(form.outputTemplate, templateCaret);
+    if (block === null) {
+      return {
+        block: null,
+        leaves: sampleParse.templates,
+        lists: sampleParse.lists,
+      };
+    }
+    const items = templateListAt(sampleParse.body, block);
+    return {
+      block,
+      leaves: items === null ? [] : templateItemLeaves(items),
+      lists: [] as SampleList[],
+    };
+  }, [form.outputTemplate, templateCaret, sampleParse]);
   // What the model would be handed, rendered against the pasted sample. The point of the whole
   // section: a template is a promise about the model's input, and this is the only place the
   // operator can read that input before a customer does.
@@ -1829,11 +1959,11 @@ export function ToolEditModal({
                 label={t("tools.outputTemplate", "What the agent receives")}
                 help={t(
                   "tools.outputTemplateHelp",
-                  "By default the agent gets the whole response, cut off at 4000 characters — so a long answer loses its end, and an agent that cannot see a field tends to make one up.\n\nWrite the few lines you actually want instead. {{campo}} is replaced with that field from the response; a field the API does not return shows as (not returned) rather than a blank.\n\nLeave it empty to keep the whole response.",
+                  "By default the agent gets the whole response, cut off at 4000 characters — so a long answer loses its end, and an agent that cannot see a field tends to make one up.\n\nWrite the few lines you actually want instead. {{campo}} is replaced with that field from the response; a field the API does not return shows as (not returned) rather than a blank. Leave it empty to keep the whole response.\n\nFor a list of results, wrap one line in {{#each results}} … {{/each}}: it repeats per item, the fields inside are the item's own, and {{.}} is the item itself when the list holds plain values. At most 50 items are shown; the rest is counted.",
                 )}
                 description={t(
                   "tools.outputTemplateHint",
-                  "Markdown, with {{path.to.field}} for each value. Use a number for a list position: data.items.0.name",
+                  "Markdown, with {{path.to.field}} for each value and {{#each list}}…{{/each}} around what repeats per item. A number picks a list position: data.items.0.name",
                 )}
                 error={refusal.at("outputSchema", current.outputSchema)}
               >
@@ -1882,9 +2012,38 @@ export function ToolEditModal({
                 />
               </FormField>
               <PathPicker
-                leaves={sampleParse.templates}
+                leaves={templateOffer.leaves}
+                lists={templateOffer.lists}
+                heading={
+                  templateOffer.block === null
+                    ? null
+                    : t(
+                        "tools.outputTemplatePickInside",
+                        "Fields of each item in {{path}}",
+                        { path: templateOffer.block },
+                      )
+                }
+                emptyLabel={
+                  // Only while the sample offers SOMETHING: with no sample there is nothing to
+                  // move the caret towards, and the control stays hidden as before.
+                  sampleParse.templates.length + sampleParse.lists.length > 0
+                    ? t(
+                        "tools.outputTemplatePickNone",
+                        "Nothing to pick here: {{path}} is not a list in the sample, or its items have no fields. Move the cursor and open this again.",
+                        { path: templateOffer.block ?? "" },
+                      )
+                    : undefined
+                }
                 open={templatePickerOpen}
-                onToggle={() => setTemplatePickerOpen(!templatePickerOpen)}
+                onToggle={() => {
+                  if (!templatePickerOpen) {
+                    setTemplateCaret(
+                      templateRef.current?.selectionStart ??
+                        form.outputTemplate.length,
+                    );
+                  }
+                  setTemplatePickerOpen(!templatePickerOpen);
+                }}
                 onPick={(path) => {
                   // INSERTS at the cursor rather than replacing the field: this box holds a whole
                   // block of text, unlike the single-path fields below it.
@@ -1896,8 +2055,24 @@ export function ToolEditModal({
                   );
                   setTemplatePickerOpen(false);
                 }}
+                onPickList={(path) => {
+                  insertEachBlock(
+                    templateRef.current,
+                    form.outputTemplate,
+                    path,
+                    (v) => setForm((f) => ({ ...f, outputTemplate: v })),
+                  );
+                  setTemplatePickerOpen(false);
+                }}
                 openLabel={t("tools.outputTemplatePick", "Insert a field")}
                 closeLabel={t("tools.appointmentPickClose", "Close")}
+                listsLabel={t(
+                  "tools.outputTemplatePickLists",
+                  "Lists: insert a block that repeats per item",
+                )}
+                listLength={(n) =>
+                  t("tools.outputTemplateListLength", "{{n}} items", { n })
+                }
               />
               {templatePreview && (
                 <FormField

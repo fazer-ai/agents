@@ -1492,3 +1492,138 @@ describe("the clip notice says which fix applies", () => {
     expect(n?.detail).toMatchObject({ skipped: "not-json" });
   });
 });
+
+// #459. A search that returns N rows could not be projected at all (every token addresses one
+// value), so it kept the raw clip, and a 120-row response reads to the model as ~40 rows and an
+// end. The block renders one line per row and COUNTS the rest.
+describe("a list of unknown length renders through a block (#459)", () => {
+  const results = Array.from({ length: 120 }, (_, i) => ({
+    id: i + 1,
+    nome: `Produto ${i + 1}`,
+    preco: (i + 1) * 10,
+    descricao: "x".repeat(60),
+  }));
+  const body = JSON.stringify({ total: 120, resultados: results });
+  const TEMPLATE =
+    "{{total}} resultados:\n{{#each resultados}}\n- #{{id}} {{nome}} — R$ {{preco}}\n{{/each}}";
+
+  test("without a block the raw list is clipped and the model reads the cut as an end", async () => {
+    expect(body.length).toBeGreaterThan(4000);
+    const tool = buildHttpTool(def(), {
+      resolveCredential: async () => null,
+      fetchImpl: stubFetch({}, 200, body),
+    });
+    const text = String(await tool.invoke({}));
+    expect(text).toContain("…[truncated]");
+    expect(text).not.toContain("Produto 120");
+  });
+
+  test("with a block the model receives one line per row, the noise dropped, and the rest counted", async () => {
+    const notes: string[] = [];
+    const tool = buildHttpTool(
+      def({ outputSchema: { mode: "template", template: TEMPLATE } }),
+      {
+        resolveCredential: async () => null,
+        fetchImpl: stubFetch({}, 200, body),
+        onSideEffectError: (e) => notes.push(e.phase),
+      },
+    );
+    const text = String(await tool.invoke({}));
+    expect(
+      text.startsWith("HTTP 200\n120 resultados:\n- #1 Produto 1 — R$ 10\n"),
+    ).toBe(true);
+    expect(text).toContain(
+      "- #50 Produto 50 — R$ 500\n(and 70 more not shown)",
+    );
+    expect(text).not.toContain("#51 ");
+    expect(text).not.toContain("descricao");
+    expect(text).not.toContain("…[truncated]");
+    // Nothing to report: every path resolved, and the render fit under the clip.
+    expect(notes).toEqual([]);
+  });
+
+  test("rows too long for fifty still leave the model a count, not a cut", async () => {
+    // Round 1 of review: 100 rows of ~100 characters rendered forty and the clip took the count.
+    const long = Array.from({ length: 100 }, (_, i) => ({
+      id: i + 1,
+      descricao: "d".repeat(80),
+    }));
+    const notes: string[] = [];
+    const tool = buildHttpTool(
+      def({
+        outputSchema: {
+          mode: "template",
+          template: "{{#each itens}}- #{{id}} {{descricao}}\n{{/each}}",
+        },
+      }),
+      {
+        resolveCredential: async () => null,
+        fetchImpl: stubFetch({}, 200, JSON.stringify({ itens: long })),
+        onSideEffectError: (e) => notes.push(e.phase),
+      },
+    );
+    const text = String(await tool.invoke({}));
+    expect(text).not.toContain("…[truncated]");
+    expect(text).toMatch(/\(and \d+ more not shown\)\n$/);
+    expect(notes).toEqual([]);
+  });
+
+  test("text before the block that already fills the clip is the clip's case, and it says so on both sides", async () => {
+    // Two values at the per-value cap leave no room for the list or its count. Not the block's to
+    // fix (shrinking earlier values would be a second cap deciding what the template says): the
+    // model reads the cut where it happened, and the operator gets the note with the advice.
+    const notes: { phase: string; detail?: Record<string, unknown> }[] = [];
+    const tool = buildHttpTool(
+      def({
+        outputSchema: {
+          mode: "template",
+          template: "{{a}}{{b}}\n{{#each itens}}- {{.}}\n{{/each}}",
+        },
+      }),
+      {
+        resolveCredential: async () => null,
+        fetchImpl: stubFetch(
+          {},
+          200,
+          JSON.stringify({
+            a: "a".repeat(3000),
+            b: "b".repeat(3000),
+            itens: ["x", "y"],
+          }),
+        ),
+        onSideEffectError: (e) =>
+          notes.push({ phase: e.phase, detail: e.detail }),
+      },
+    );
+    const text = String(await tool.invoke({}));
+    expect(text.endsWith("…[truncated]")).toBe(true);
+    expect(notes.map((n) => n.phase)).toEqual(["response_clipped"]);
+    expect(notes[0]?.detail).toMatchObject({ templated: true });
+  });
+
+  test("a field a row lacks is named to the operator at the row that lacks it", async () => {
+    const notes: { phase: string; detail?: Record<string, unknown> }[] = [];
+    const tool = buildHttpTool(
+      def({
+        outputSchema: {
+          mode: "template",
+          template: "{{#each itens}}{{nome}}: {{preco}}\n{{/each}}",
+        },
+      }),
+      {
+        resolveCredential: async () => null,
+        fetchImpl: stubFetch(
+          {},
+          200,
+          '{"itens":[{"nome":"a","preco":1},{"nome":"b"},{"nome":"c"}]}',
+        ),
+        onSideEffectError: (e) =>
+          notes.push({ phase: e.phase, detail: e.detail }),
+      },
+    );
+    const text = String(await tool.invoke({}));
+    expect(text).toBe("HTTP 200\na: 1\nb: (not returned)\nc: (not returned)\n");
+    expect(notes.map((n) => n.phase)).toEqual(["response_template"]);
+    expect(notes[0]?.detail).toMatchObject({ missing: ["itens.1.preco"] });
+  });
+});

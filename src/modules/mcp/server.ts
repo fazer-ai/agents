@@ -1556,7 +1556,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
             .record(z.string(), z.unknown())
             .optional()
             .describe(
-              'How the response reaches the model: {"mode":"template","template":"**{{razao_social}}**\nStatus: {{situacao}}"}. A token is a dotted path into the response body, a number for a list position (data.items.0.name); one that does not resolve renders "(not returned)". Rendered BEFORE the 4000-char clip. Omitted, or any other shape: the raw body, clipped.',
+              'How the response reaches the model: {"mode":"template","template":"**{{razao_social}}**\nStatus: {{situacao}}"}. A token is a dotted path into the response body, a number for a list position (data.items.0.name); one that does not resolve renders "(not returned)". A list: {{#each items}}- {{name}}\n{{/each}} repeats per item, paths inside are relative to the item and {{.}} is the item; 50 items at most, the rest counted. Rendered BEFORE the 4000-char clip. Omitted, or any other shape: the raw body, clipped.',
             ),
           query: z.record(z.string(), z.unknown()).optional(),
           body: z.record(z.string(), z.unknown()).optional(),
@@ -1618,7 +1618,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
             .record(z.string(), z.unknown())
             .optional()
             .describe(
-              'How the response reaches the model: {"mode":"template","template":"**{{razao_social}}**\nStatus: {{situacao}}"}. A token is a dotted path into the response body, a number for a list position (data.items.0.name); one that does not resolve renders "(not returned)". Rendered BEFORE the 4000-char clip. Omitted, or any other shape: the raw body, clipped.',
+              'How the response reaches the model: {"mode":"template","template":"**{{razao_social}}**\nStatus: {{situacao}}"}. A token is a dotted path into the response body, a number for a list position (data.items.0.name); one that does not resolve renders "(not returned)". A list: {{#each items}}- {{name}}\n{{/each}} repeats per item, paths inside are relative to the item and {{.}} is the item; 50 items at most, the rest counted. Rendered BEFORE the 4000-char clip. Omitted, or any other shape: the raw body, clipped.',
             ),
           query: z.record(z.string(), z.unknown()).optional(),
           body: z.record(z.string(), z.unknown()).optional(),

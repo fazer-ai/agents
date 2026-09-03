@@ -62,6 +62,46 @@ export interface SampleLeaf {
   value: string;
 }
 
+export interface SampleList {
+  path: string;
+  length: number;
+}
+
+// Every LIST in a sample response, with how long it is, so the operator picks the one to repeat
+// over instead of typing its path (#459). Same walk, same key filter and same caps as
+// `collectLeaves`, for the same reason: what the picker offers has to be what the reader can
+// address. A response that IS a list is offered as `.`, the one path this module's grammar does
+// not spell, because only the template reader knows the scope by that name.
+export function collectLists(root: unknown, max = 50): SampleList[] {
+  const out: SampleList[] = [];
+  const walk = (node: unknown, path: string, depth: number): void => {
+    if (out.length >= max || depth > 10) return;
+    if (Array.isArray(node)) {
+      if (path === "" || isUsablePath(path)) {
+        out.push({ path: path === "" ? "." : path, length: node.length });
+      }
+      for (let i = 0; i < node.length; i++) {
+        if (out.length >= max) break;
+        walk(node[i], path === "" ? String(i) : `${path}.${i}`, depth + 1);
+      }
+      return;
+    }
+    if (node !== null && typeof node === "object") {
+      for (const k of Object.keys(node)) {
+        if (out.length >= max) break;
+        if (!PATH_SEGMENT.test(k)) continue;
+        walk(
+          (node as Record<string, unknown>)[k],
+          path === "" ? k : `${path}.${k}`,
+          depth + 1,
+        );
+      }
+    }
+  };
+  walk(root, "", 0);
+  return out;
+}
+
 // Every place in a sample response that a path could point AT, in document order, so the operator
 // picks a path instead of typing one. Typing is where the expensive mistake lives: the gates in the
 // form catch a MALFORMED path, and nothing catches a well-formed path aimed at the wrong key —

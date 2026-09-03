@@ -3,6 +3,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   formFromTool,
+  insertEachBlock,
   outputSchemaForm,
   parseExpectedStatuses,
   payloadOf,
@@ -608,4 +609,142 @@ test("the Test button carries the whole URL gate Save does", async () => {
   ]) {
     expect(disabled).toContain(cond);
   }
+});
+
+// #459. The preview promises "exactly what the agent would receive", and a block is the one
+// construct whose output depends on how MANY of something came back, so the control is the same
+// as for a scalar template: agreement with `buildHttpTool` on the same definition and body.
+describe("templatePreviewFor with a list block", () => {
+  const BODY = {
+    total: 2,
+    itens: [
+      { nome: "Cadeira", preco: 199.9 },
+      { nome: "Mesa", preco: 899 },
+    ],
+  };
+  const SAMPLE = JSON.stringify(BODY);
+  const TEMPLATE =
+    "{{total}} itens:\n{{#each itens}}\n- {{nome}}: R$ {{preco}}\n{{/each}}";
+
+  async function runtimeText(status: number, body = SAMPLE): Promise<string> {
+    const tool = buildHttpTool(
+      {
+        name: "t",
+        method: "GET",
+        urlTemplate: "https://8.8.8.8/v1/x",
+        allowedHosts: ["8.8.8.8"],
+        headers: {},
+        inputSchema: {},
+        expectedStatuses: [status],
+        credentialRef: null,
+        credentialKind: null,
+        credentialParamName: null,
+        credentialBaseUrl: null,
+        ackMessage: null,
+        outputSchema: { mode: "template", template: TEMPLATE },
+      },
+      {
+        resolveCredential: async () => null,
+        fetchImpl: (async () =>
+          new Response(body, {
+            status,
+            headers: { "content-type": "application/json" },
+          })) as unknown as typeof fetch,
+      },
+    );
+    return String(await tool.invoke({}))
+      .split("\n")
+      .slice(1)
+      .join("\n");
+  }
+
+  test("renders one line per item, exactly as the runtime does", async () => {
+    const preview = templatePreviewFor({
+      template: TEMPLATE,
+      sample: SAMPLE,
+      status: 200,
+    });
+    expect(preview?.text).toBe(
+      "2 itens:\n- Cadeira: R$ 199.9\n- Mesa: R$ 899\n",
+    );
+    expect(preview?.text).toBe(await runtimeText(200));
+    expect(preview?.missing).toEqual([]);
+  });
+
+  test("a field an item lacks is named in-grammar, at the item that lacks it", () => {
+    const preview = templatePreviewFor({
+      template: TEMPLATE,
+      sample: JSON.stringify({ total: 1, itens: [{ nome: "Cadeira" }] }),
+      status: 200,
+    });
+    expect(preview?.missing).toEqual(["itens.0.preco"]);
+  });
+
+  test("a block with no token inside still needs a sample, and a broken block previews nothing", () => {
+    // The block's output depends on how many items came back: without a body there is no answer.
+    expect(
+      templatePreviewFor({
+        template: "{{#each itens}}x{{/each}}",
+        sample: "",
+        status: 200,
+      }),
+    ).toBeNull();
+    // An unclosed block cannot be saved, and gets the reader's sentence under the box instead.
+    expect(
+      templatePreviewFor({
+        template: "{{#each itens}}x",
+        sample: SAMPLE,
+        status: 200,
+      }),
+    ).toBeNull();
+    expect(templateSaveProblem("{{#each itens}}x")).toContain("no {{/each}}");
+  });
+});
+
+describe("insertEachBlock", () => {
+  test("appends when there is no element, markers on lines of their own", () => {
+    let value = "";
+    insertEachBlock(null, "Total: {{total}}", "itens", (v) => {
+      value = v;
+    });
+    expect(value).toBe("Total: {{total}}\n{{#each itens}}\n\n{{/each}}");
+    // What it inserts is not yet saveable, and the gate says what to write: a block with nothing
+    // to repeat would render a full list as an empty body (review round 2).
+    expect(templateSaveProblem(value)).toContain("nothing to repeat");
+    expect(
+      templateSaveProblem(value.replace("\n\n", "\n- {{nome}}\n")),
+    ).toBeNull();
+  });
+
+  test("a caret mid-line gets a line break on both sides, and lands between the markers", async () => {
+    const el = document.createElement("textarea");
+    el.value = "Total: {{total}} fim";
+    document.body.appendChild(el);
+    const caret = "Total: {{total}}".length;
+    el.setSelectionRange(caret, caret);
+    let value = "";
+    insertEachBlock(el, el.value, "itens", (v) => {
+      value = v;
+      el.value = v;
+    });
+    expect(value).toBe("Total: {{total}}\n{{#each itens}}\n\n{{/each}}\n fim");
+    // The caret is moved on the next frame, onto the empty line inside the block: reopening the
+    // picker from there offers the items' fields.
+    await new Promise((r) => requestAnimationFrame(() => r(null)));
+    expect(el.selectionStart).toBe(
+      "Total: {{total}}\n{{#each itens}}\n".length,
+    );
+    el.remove();
+  });
+
+  test("a caret at a line start does not add a blank line before the block", () => {
+    const el = document.createElement("textarea");
+    el.value = "a\nb";
+    el.setSelectionRange(2, 2);
+    let value = "";
+    insertEachBlock(el, el.value, "xs", (v) => {
+      value = v;
+    });
+    expect(value).toBe("a\n{{#each xs}}\n\n{{/each}}\nb");
+  });
 });

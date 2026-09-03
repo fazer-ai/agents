@@ -1415,17 +1415,26 @@ async function createMissingBusinessHours(
   }
 }
 
-// The first `<base>_N` (N from 2) no tool of this tenant carries — the same rule the migration
-// `rename_http_tools_named_after_natives` applies to rows written before the name was native, so a
-// bundle and a row that collide the same way land on the same name.
-async function freeHttpToolName(db: ScopedDb, base: string): Promise<string> {
+// The first `<base>_N` (N from 2) that no stored tool of this tenant carries and that is not in
+// `taken` — the same rule the migration `rename_http_tools_named_after_natives` applies to rows
+// written before the name was native, so a bundle and a row that collide the same way land on the
+// same name. `taken` is what the bundle itself carries and what the import has already chosen:
+// a bundle holding `run_code` and `run_code_2` gave the first one `_2`, then "reused" the genuine
+// `_2` onto it, and two grants for one row broke the unique index and aborted the import
+// (round 16).
+async function freeHttpToolName(
+  db: ScopedDb,
+  base: string,
+  taken: ReadonlySet<string>,
+): Promise<string> {
   for (let n = 2; ; n++) {
     const candidate = `${base}_${n}`;
-    const taken = await db.toolDefinition.findFirst({
+    if (taken.has(candidate)) continue;
+    const stored = await db.toolDefinition.findFirst({
       where: { name: candidate },
       select: { id: true },
     });
-    if (!taken) return candidate;
+    if (!stored) return candidate;
   }
 }
 
@@ -1444,6 +1453,7 @@ async function createMissingComponents(
 ): Promise<{ renamedHttpTools: Map<string, string> }> {
   // Bundle name → stored name, for the HTTP tools this loop could not store under their own.
   const renamedHttpTools = new Map<string, string>();
+  const taken = new Set(components.httpTools.map((t) => t.name));
   for (const tdef of components.httpTools) {
     // A bundle authored before a native took the name (PR #485, round 15). The assembly reserves
     // every native name (#457), so a tool stored under one would exist in the console and never
@@ -1451,21 +1461,27 @@ async function createMissingComponents(
     // the service. The migration that renamed such rows in place used the first free `<name>_N`,
     // and this does the same, warned, so the operator learns the name a prompt may still use.
     const name = isNativeToolName(tdef.name)
-      ? await freeHttpToolName(db, tdef.name)
+      ? await freeHttpToolName(db, tdef.name, taken)
       : tdef.name;
-    if (name !== tdef.name) {
+    taken.add(name);
+    // Recorded once a row under the new name EXISTS — written below, or found by the pre-check
+    // or the race — and not before: a component the checks below skip was otherwise announced
+    // as imported under a name no row carries, next to the warning that it was not (round 16).
+    const landed = (): void => {
+      if (name === tdef.name) return;
       renamedHttpTools.set(tdef.name, name);
       warnings.push({
         code: "httpToolRenamed",
         params: { name: tdef.name, renamed: name },
         target: { kind: "tool", name },
       });
-    }
+    };
     const existing = await db.toolDefinition.findFirst({
       where: { name },
       select: { id: true },
     });
     if (existing) {
+      landed();
       warnings.push({
         code: "httpToolReused",
         params: { name },
@@ -1491,10 +1507,11 @@ async function createMissingComponents(
     // to GET would change what the tool does.
     const method = readHttpMethod(tdef.method);
     if (method === null) {
+      // The bundle's own name: no row was written, so there is no stored name to point at.
       warnings.push({
         code: "httpToolMethodUnsupported",
-        params: { name, method: String(tdef.method) },
-        target: { kind: "tool", name },
+        params: { name: tdef.name, method: String(tdef.method) },
+        target: { kind: "tool", name: tdef.name },
       });
       continue;
     }
@@ -1550,6 +1567,7 @@ async function createMissingComponents(
     });
     if (count === 0) {
       // Lost the race. The name is taken now, which is exactly the reuse the pre-check reports.
+      landed();
       warnings.push({
         code: "httpToolReused",
         params: { name },
@@ -1557,6 +1575,7 @@ async function createMissingComponents(
       });
       continue;
     }
+    landed();
     // Both warnings below describe the row that was just written, so they wait for the insert to
     // report one: the reuse path above says nothing about a body or a credential it did not store.
     if (badBody) {

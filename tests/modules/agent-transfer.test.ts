@@ -1769,6 +1769,103 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     });
     expect(grants.map((g) => g.toolDefinitionId)).toEqual([row?.id ?? null]);
   });
+
+  // Round 16: the free name was chosen against the rows already stored, and a bundle can carry the
+  // suffix itself — `calculator` and `calculator_2` side by side. The native one took `_2`, the
+  // genuine `_2` was then "reused" onto it, and two grants for one row broke the unique index and
+  // aborted the whole import. The bundle's own names are taken before any suffix is chosen.
+  test("a bundle carrying both a native name and its suffix keeps two rows and two grants", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const bundle = structuredClone(exp);
+    const tool = bundle.components?.httpTools.find(
+      (h) => h.name === "lookup_order",
+    );
+    if (!tool || !bundle.components)
+      throw new Error("bundle missing lookup_order");
+    tool.name = "calculator";
+    bundle.components.httpTools.push({
+      ...structuredClone(tool),
+      name: "calculator_2",
+      label: "Segunda",
+    });
+    const grant = bundle.agent.tools.find(
+      (g) => g?.source === "HTTP" && g.tool === "lookup_order",
+    );
+    if (grant?.source !== "HTTP")
+      throw new Error("bundle missing the HTTP grant");
+    grant.tool = "calculator";
+    bundle.agent.tools.push({ ...grant, tool: "calculator_2" });
+    const { agent, warnings } = await importAgent(dstCtx(), bundle, appDb);
+    const rows = await suDb.toolDefinition.findMany({
+      where: { tenantId: dstTenant, name: { startsWith: "calculator" } },
+      select: { id: true, name: true, label: true },
+      orderBy: { name: "asc" },
+    });
+    expect(rows.map((r) => [r.name, r.label])).toEqual([
+      ["calculator_2", "Segunda"],
+      ["calculator_3", "Buscar pedido"],
+    ]);
+    expect(
+      warnings.some(
+        (w) =>
+          w.code === "httpToolRenamed" && w.params?.renamed === "calculator_3",
+      ),
+    ).toBe(true);
+    expect(warnings.some((w) => w.code === "httpToolReused")).toBe(false);
+    const grants = await suDb.agentToolSelection.findMany({
+      where: { agentId: BigInt(agent.id), source: "HTTP" },
+      select: { toolDefinitionId: true },
+    });
+    expect(new Set(grants.map((g) => g.toolDefinitionId))).toEqual(
+      new Set(rows.map((r) => r.id)),
+    );
+  });
+
+  // Round 16: the rename was recorded and reported before the checks that can skip the component,
+  // so a native-named tool with a method this version does not send was announced as imported
+  // under a name no row carries, next to the warning that it was not imported.
+  test("a native-named tool skipped for its method is not reported as renamed", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const bundle = structuredClone(exp);
+    const tool = bundle.components?.httpTools.find(
+      (h) => h.name === "lookup_order",
+    );
+    if (!tool) throw new Error("bundle missing lookup_order");
+    tool.name = "get_current_time";
+    (tool as { method?: string }).method = "OPTIONS";
+    const grant = bundle.agent.tools.find(
+      (g) => g?.source === "HTTP" && g.tool === "lookup_order",
+    );
+    if (grant?.source === "HTTP") grant.tool = "get_current_time";
+    const { warnings } = await importAgent(dstCtx(), bundle, appDb);
+    expect(
+      warnings.some(
+        (w) =>
+          w.code === "httpToolMethodUnsupported" &&
+          w.params?.name === "get_current_time",
+      ),
+    ).toBe(true);
+    expect(warnings.some((w) => w.code === "httpToolRenamed")).toBe(false);
+    expect(
+      await suDb.toolDefinition.count({
+        where: {
+          tenantId: dstTenant,
+          name: { startsWith: "get_current_time" },
+        },
+      }),
+    ).toBe(0);
+    expect(
+      warnings.some(
+        (w) =>
+          w.code === "httpGrantNotFound" &&
+          w.params?.name === "get_current_time",
+      ),
+    ).toBe(true);
+  });
 });
 
 // Phase 5: ?documents=true bundles the KB documents' SOURCE TEXT; import recreates them as UNINDEXED

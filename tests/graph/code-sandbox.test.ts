@@ -96,6 +96,11 @@ describe("runSandboxedCode", () => {
       ["let seen = []; for (const i of [1, 2])\n{ x: seen.push(i) }", "2"],
       ["try { throw 1 } catch (e)\n{ caught: e }", "1"],
       ["const u = 'x'; { u }; // done", '{"u":"x"}'],
+      // Round 16: after the `)` of a control header a `/` starts a regex, not a division, so the
+      // brace inside it is not a source brace; after the `)` of a call or a group it is a division.
+      ['if (true) /{/.test("{"); { ok: true }', '{"ok":true}'],
+      ["let w = 0; while (w < 1) /{/.test('{') ? w++ : 0; { w }", '{"w":1}'],
+      ["const n = (4) / 2; { n }", '{"n":2}'],
       // Not an object: a real block, and braces that belong to a statement, run as written.
       ["{ let x = 1; x + 1 }", "2"],
       ["if (true) { 5 }", "5"],

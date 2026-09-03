@@ -651,7 +651,11 @@ function withTrailingObjectWrapped(code: string): string | undefined {
       c === "/" &&
       (prevChar === "" ||
         REGEX_AFTER_CHAR.test(prevChar) ||
-        REGEX_AFTER_WORD.has(prevWord))
+        REGEX_AFTER_WORD.has(prevWord) ||
+        // After the `)` of a control header a `/` starts a regex (`if (x) /{/.test(s)`), and after
+        // the `)` of a call or a group it divides; the header word was recorded when its
+        // parenthesis opened (round 16: the brace inside the regex counted as a source brace).
+        (prevChar === ")" && CONTROL_HEADERS.has(lastParenWord)))
     ) {
       i = skipRegex(code, i);
       end = i - 1;

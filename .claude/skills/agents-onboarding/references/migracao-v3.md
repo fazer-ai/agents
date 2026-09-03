@@ -283,7 +283,7 @@ Numa conversa que a V4 nunca atendeu, o primeiro turno recebe as mensagens de en
 
 Mande a primeira mensagem você mesmo, de um número que não é o de teste habitual. Depois fique olhando as primeiras conversas reais, uma a uma, na primeira hora.
 
-**Abra o agente no console e leia os alertas de configuração antes de dar a migração por validada.** Não espere que eles cheguem sozinhos: as tools de escrita devolvem o que mudaram e nada mais, o `agent_update` devolve o diff e o `inbox_bind` devolve a caixa. A saúde de configuração é montada na tela do editor, então ela só existe se alguém for olhar. Alerta ali é motivo de parar, não de seguir.
+**Leia a saúde de configuração que as próprias escritas devolvem, e não dê a migração por validada com alerta em pé.** `agent_create`, `agent_update`, `agent_clone`, `agent_import`, `agent_tools_set` e `agent_settings_set` devolvem `configHealth` na resposta da chamada que causou o problema, então o alerta chega em quem o causou, sem depender de alguém lembrar de olhar. Escrita que não é do agente não carrega o campo: o `inbox_bind` devolve a caixa e nada mais. Alerta ali é motivo de parar, não de seguir. O console continua entrando só para preencher segredo, que não tem caminho de API.
 
 ---
 

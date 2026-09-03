@@ -29,7 +29,7 @@
         "type": "http",
         "scheme": "bearer",
         "bearerFormat": "JWT",
-        "description": "Bearer token for the API / MCP transport: an MCP OAuth access token, or a per-tenant API key (`fazerai_…`) created at /api-keys."
+        "description": "Bearer token for the API / MCP transport: an MCP OAuth access token, or an API key (`fazerai_…`) created at /api-keys — per-tenant, or fleet-scoped (SUPER_ADMIN; selects a tenant per request with `X-Tenant-Id`)."
       }
     },
     "schemas": {}
@@ -1929,7 +1929,7 @@
           "Admin"
         ],
         "summary": "Delete user",
-        "description": "Permanently delete a user within the caller's tenant scope. Requires the acting admin's password; cannot delete yourself or the last admin.",
+        "description": "Permanently delete a user within the caller's tenant scope. Requires the acting admin's password for a session (a Bearer API key needs none); cannot delete yourself or the last admin.",
         "parameters": [
           {
             "name": "id",
@@ -1958,13 +1958,10 @@
             "application/json": {
               "schema": {
                 "type": "object",
-                "required": [
-                  "password"
-                ],
                 "properties": {
                   "password": {
                     "minLength": 1,
-                    "description": "The acting admin's password (step-up confirmation).",
+                    "description": "The acting user's password (step-up confirmation). Required for a session. A Bearer API key minted under this rule answers the step-up by itself and omits it; a key minted before the rule (no step-up on record) sends its creator's password, as it always did.",
                     "type": "string"
                   }
                 }
@@ -1973,13 +1970,10 @@
             "application/x-www-form-urlencoded": {
               "schema": {
                 "type": "object",
-                "required": [
-                  "password"
-                ],
                 "properties": {
                   "password": {
                     "minLength": 1,
-                    "description": "The acting admin's password (step-up confirmation).",
+                    "description": "The acting user's password (step-up confirmation). Required for a session. A Bearer API key minted under this rule answers the step-up by itself and omits it; a key minted before the rule (no step-up on record) sends its creator's password, as it always did.",
                     "type": "string"
                   }
                 }
@@ -1988,13 +1982,10 @@
             "multipart/form-data": {
               "schema": {
                 "type": "object",
-                "required": [
-                  "password"
-                ],
                 "properties": {
                   "password": {
                     "minLength": 1,
-                    "description": "The acting admin's password (step-up confirmation).",
+                    "description": "The acting user's password (step-up confirmation). Required for a session. A Bearer API key minted under this rule answers the step-up by itself and omits it; a key minted before the rule (no step-up on record) sends its creator's password, as it always did.",
                     "type": "string"
                   }
                 }
@@ -4038,7 +4029,7 @@
       },
       "delete": {
         "summary": "Delete tenant",
-        "description": "Permanently delete a tenant and all its data (cascade). SUPER_ADMIN only; requires re-typing the tenant name and the current password.",
+        "description": "Permanently delete a tenant and all its data (cascade). SUPER_ADMIN only; requires re-typing the tenant name and, for a session, the current password (a Bearer API key needs no password).",
         "tags": [
           "Tenants"
         ],
@@ -4071,8 +4062,7 @@
               "schema": {
                 "type": "object",
                 "required": [
-                  "confirmName",
-                  "password"
+                  "confirmName"
                 ],
                 "properties": {
                   "confirmName": {
@@ -4081,7 +4071,7 @@
                   },
                   "password": {
                     "minLength": 1,
-                    "description": "The acting user's password (step-up confirmation).",
+                    "description": "The acting user's password (step-up confirmation). Required for a session. A Bearer API key minted under this rule answers the step-up by itself and omits it; a key minted before the rule (no step-up on record) sends its creator's password, as it always did.",
                     "type": "string"
                   }
                 }
@@ -4091,8 +4081,7 @@
               "schema": {
                 "type": "object",
                 "required": [
-                  "confirmName",
-                  "password"
+                  "confirmName"
                 ],
                 "properties": {
                   "confirmName": {
@@ -4101,7 +4090,7 @@
                   },
                   "password": {
                     "minLength": 1,
-                    "description": "The acting user's password (step-up confirmation).",
+                    "description": "The acting user's password (step-up confirmation). Required for a session. A Bearer API key minted under this rule answers the step-up by itself and omits it; a key minted before the rule (no step-up on record) sends its creator's password, as it always did.",
                     "type": "string"
                   }
                 }
@@ -4111,8 +4100,7 @@
               "schema": {
                 "type": "object",
                 "required": [
-                  "confirmName",
-                  "password"
+                  "confirmName"
                 ],
                 "properties": {
                   "confirmName": {
@@ -4121,7 +4109,7 @@
                   },
                   "password": {
                     "minLength": 1,
-                    "description": "The acting user's password (step-up confirmation).",
+                    "description": "The acting user's password (step-up confirmation). Required for a session. A Bearer API key minted under this rule answers the step-up by itself and omits it; a key minted before the rule (no step-up on record) sends its creator's password, as it always did.",
                     "type": "string"
                   }
                 }
@@ -7060,8 +7048,7 @@
               "schema": {
                 "type": "object",
                 "required": [
-                  "confirmName",
-                  "password"
+                  "confirmName"
                 ],
                 "properties": {
                   "confirmName": {
@@ -7070,7 +7057,7 @@
                   },
                   "password": {
                     "minLength": 1,
-                    "description": "The acting user's password (step-up confirmation).",
+                    "description": "The acting user's password (step-up confirmation). Required for a session. A Bearer API key minted under this rule answers the step-up by itself and omits it; a key minted before the rule (no step-up on record) sends its creator's password, as it always did.",
                     "type": "string"
                   }
                 }
@@ -7080,8 +7067,7 @@
               "schema": {
                 "type": "object",
                 "required": [
-                  "confirmName",
-                  "password"
+                  "confirmName"
                 ],
                 "properties": {
                   "confirmName": {
@@ -7090,7 +7076,7 @@
                   },
                   "password": {
                     "minLength": 1,
-                    "description": "The acting user's password (step-up confirmation).",
+                    "description": "The acting user's password (step-up confirmation). Required for a session. A Bearer API key minted under this rule answers the step-up by itself and omits it; a key minted before the rule (no step-up on record) sends its creator's password, as it always did.",
                     "type": "string"
                   }
                 }
@@ -7100,8 +7086,7 @@
               "schema": {
                 "type": "object",
                 "required": [
-                  "confirmName",
-                  "password"
+                  "confirmName"
                 ],
                 "properties": {
                   "confirmName": {
@@ -7110,7 +7095,7 @@
                   },
                   "password": {
                     "minLength": 1,
-                    "description": "The acting user's password (step-up confirmation).",
+                    "description": "The acting user's password (step-up confirmation). Required for a session. A Bearer API key minted under this rule answers the step-up by itself and omits it; a key minted before the rule (no step-up on record) sends its creator's password, as it always did.",
                     "type": "string"
                   }
                 }
@@ -23662,7 +23647,7 @@
           "API keys"
         ],
         "summary": "Create API key",
-        "description": "Creates a per-tenant Bearer API key and returns the plaintext token ONCE (only its hash is stored). Use it as `Authorization: Bearer <token>` against the REST v1 API or the MCP transport.",
+        "description": "Creates a per-tenant Bearer API key and returns the plaintext token ONCE (only its hash is stored). Use it as `Authorization: Bearer <token>` against the REST v1 API or the MCP transport. Only a signed-in session may create one, confirmed with its current password (the key it mints answers every later step-up by itself); a Bearer key is refused.",
         "requestBody": {
           "required": true,
           "content": {
@@ -23670,13 +23655,19 @@
               "schema": {
                 "type": "object",
                 "required": [
-                  "displayName"
+                  "displayName",
+                  "password"
                 ],
                 "properties": {
                   "displayName": {
                     "minLength": 1,
                     "maxLength": 120,
                     "description": "Human-readable label for the key (1 to 120 characters).",
+                    "type": "string"
+                  },
+                  "password": {
+                    "minLength": 1,
+                    "description": "The acting user's password (step-up confirmation). Required for a session. A Bearer API key minted under this rule answers the step-up by itself and omits it; a key minted before the rule (no step-up on record) sends its creator's password, as it always did.",
                     "type": "string"
                   }
                 }
@@ -23686,13 +23677,19 @@
               "schema": {
                 "type": "object",
                 "required": [
-                  "displayName"
+                  "displayName",
+                  "password"
                 ],
                 "properties": {
                   "displayName": {
                     "minLength": 1,
                     "maxLength": 120,
                     "description": "Human-readable label for the key (1 to 120 characters).",
+                    "type": "string"
+                  },
+                  "password": {
+                    "minLength": 1,
+                    "description": "The acting user's password (step-up confirmation). Required for a session. A Bearer API key minted under this rule answers the step-up by itself and omits it; a key minted before the rule (no step-up on record) sends its creator's password, as it always did.",
                     "type": "string"
                   }
                 }
@@ -23702,13 +23699,19 @@
               "schema": {
                 "type": "object",
                 "required": [
-                  "displayName"
+                  "displayName",
+                  "password"
                 ],
                 "properties": {
                   "displayName": {
                     "minLength": 1,
                     "maxLength": 120,
                     "description": "Human-readable label for the key (1 to 120 characters).",
+                    "type": "string"
+                  },
+                  "password": {
+                    "minLength": 1,
+                    "description": "The acting user's password (step-up confirmation). Required for a session. A Bearer API key minted under this rule answers the step-up by itself and omits it; a key minted before the rule (no step-up on record) sends its creator's password, as it always did.",
                     "type": "string"
                   }
                 }
@@ -23964,6 +23967,379 @@
           }
         },
         "operationId": "deleteV1Api-keysById"
+      }
+    },
+    "/v1/api-keys/fleet": {
+      "get": {
+        "tags": [
+          "API keys"
+        ],
+        "summary": "List fleet API keys",
+        "description": "Returns the fleet-scoped API keys (SUPER_ADMIN authority, no tenant). Never listed under any tenant; the hash and plaintext token never cross this surface.",
+        "responses": {
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getV1Api-keysFleet",
+        "parameters": [
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "API keys"
+        ],
+        "summary": "Create fleet API key",
+        "description": "Creates a fleet-scoped Bearer API key — SUPER_ADMIN authority with no home tenant — and returns the plaintext token ONCE (only its hash is stored). Use it as `Authorization: Bearer <token>`; select a tenant per request with `X-Tenant-Id` (REST) or the `tenant` argument (MCP), exactly like a SUPER_ADMIN session. Only a signed-in SUPER_ADMIN session may create one, confirmed with the current password; a Bearer key is refused.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "displayName",
+                  "password"
+                ],
+                "properties": {
+                  "displayName": {
+                    "minLength": 1,
+                    "maxLength": 120,
+                    "description": "Human-readable label for the key (1 to 120 characters).",
+                    "type": "string"
+                  },
+                  "password": {
+                    "minLength": 1,
+                    "description": "The acting SUPER_ADMIN's password (step-up confirmation).",
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "displayName",
+                  "password"
+                ],
+                "properties": {
+                  "displayName": {
+                    "minLength": 1,
+                    "maxLength": 120,
+                    "description": "Human-readable label for the key (1 to 120 characters).",
+                    "type": "string"
+                  },
+                  "password": {
+                    "minLength": 1,
+                    "description": "The acting SUPER_ADMIN's password (step-up confirmation).",
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "displayName",
+                  "password"
+                ],
+                "properties": {
+                  "displayName": {
+                    "minLength": 1,
+                    "maxLength": 120,
+                    "description": "Human-readable label for the key (1 to 120 characters).",
+                    "type": "string"
+                  },
+                  "password": {
+                    "minLength": 1,
+                    "description": "The acting SUPER_ADMIN's password (step-up confirmation).",
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postV1Api-keysFleet",
+        "parameters": [
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ]
+      }
+    },
+    "/v1/api-keys/fleet/{id}": {
+      "delete": {
+        "tags": [
+          "API keys"
+        ],
+        "summary": "Revoke fleet API key",
+        "description": "Soft-revokes a fleet-scoped API key by id (sets revoked_at); the key 401s immediately on its next use. A tenant key is not reachable here (404): it is revoked under its tenant.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "description": "API key id (BigInt serialized as a string).",
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "operationId": "deleteV1Api-keysFleetById"
       }
     },
     "/v1/audit": {
@@ -33273,6 +33649,28 @@
               }
             }
           },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
           "404": {
             "description": "Not found.",
             "content": {
@@ -33430,6 +33828,28 @@
               "application/json": {
                 "schema": {
                   "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
                   "type": "object",
                   "required": [
                     "error"
@@ -35754,8 +36174,7 @@
               "schema": {
                 "type": "object",
                 "required": [
-                  "confirmDomain",
-                  "password"
+                  "confirmDomain"
                 ],
                 "properties": {
                   "confirmDomain": {
@@ -35764,7 +36183,7 @@
                   },
                   "password": {
                     "minLength": 1,
-                    "description": "The acting user's password (step-up confirmation).",
+                    "description": "The acting user's password (step-up confirmation). Required for a session. A Bearer API key minted under this rule answers the step-up by itself and omits it; a key minted before the rule (no step-up on record) sends its creator's password, as it always did.",
                     "type": "string"
                   }
                 }
@@ -35774,8 +36193,7 @@
               "schema": {
                 "type": "object",
                 "required": [
-                  "confirmDomain",
-                  "password"
+                  "confirmDomain"
                 ],
                 "properties": {
                   "confirmDomain": {
@@ -35784,7 +36202,7 @@
                   },
                   "password": {
                     "minLength": 1,
-                    "description": "The acting user's password (step-up confirmation).",
+                    "description": "The acting user's password (step-up confirmation). Required for a session. A Bearer API key minted under this rule answers the step-up by itself and omits it; a key minted before the rule (no step-up on record) sends its creator's password, as it always did.",
                     "type": "string"
                   }
                 }
@@ -35794,8 +36212,7 @@
               "schema": {
                 "type": "object",
                 "required": [
-                  "confirmDomain",
-                  "password"
+                  "confirmDomain"
                 ],
                 "properties": {
                   "confirmDomain": {
@@ -35804,7 +36221,7 @@
                   },
                   "password": {
                     "minLength": 1,
-                    "description": "The acting user's password (step-up confirmation).",
+                    "description": "The acting user's password (step-up confirmation). Required for a session. A Bearer API key minted under this rule answers the step-up by itself and omits it; a key minted before the rule (no step-up on record) sends its creator's password, as it always did.",
                     "type": "string"
                   }
                 }
@@ -36593,8 +37010,7 @@
               "schema": {
                 "type": "object",
                 "required": [
-                  "confirmName",
-                  "password"
+                  "confirmName"
                 ],
                 "properties": {
                   "confirmName": {
@@ -36603,7 +37019,7 @@
                   },
                   "password": {
                     "minLength": 1,
-                    "description": "The acting user's password (step-up confirmation).",
+                    "description": "The acting user's password (step-up confirmation). Required for a session. A Bearer API key minted under this rule answers the step-up by itself and omits it; a key minted before the rule (no step-up on record) sends its creator's password, as it always did.",
                     "type": "string"
                   }
                 }
@@ -36613,8 +37029,7 @@
               "schema": {
                 "type": "object",
                 "required": [
-                  "confirmName",
-                  "password"
+                  "confirmName"
                 ],
                 "properties": {
                   "confirmName": {
@@ -36623,7 +37038,7 @@
                   },
                   "password": {
                     "minLength": 1,
-                    "description": "The acting user's password (step-up confirmation).",
+                    "description": "The acting user's password (step-up confirmation). Required for a session. A Bearer API key minted under this rule answers the step-up by itself and omits it; a key minted before the rule (no step-up on record) sends its creator's password, as it always did.",
                     "type": "string"
                   }
                 }
@@ -36633,8 +37048,7 @@
               "schema": {
                 "type": "object",
                 "required": [
-                  "confirmName",
-                  "password"
+                  "confirmName"
                 ],
                 "properties": {
                   "confirmName": {
@@ -36643,7 +37057,7 @@
                   },
                   "password": {
                     "minLength": 1,
-                    "description": "The acting user's password (step-up confirmation).",
+                    "description": "The acting user's password (step-up confirmation). Required for a session. A Bearer API key minted under this rule answers the step-up by itself and omits it; a key minted before the rule (no step-up on record) sends its creator's password, as it always did.",
                     "type": "string"
                   }
                 }

@@ -1,20 +1,26 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
+import { ForbiddenError } from "@/lib/errors";
 import type { TenantContext } from "@/lib/tenancy";
 import {
   createApiKey,
+  createFleetApiKey,
   listApiKeys,
+  listFleetApiKeys,
   revokeApiKey,
+  revokeFleetApiKey,
 } from "@/modules/api-keys/service";
 import {
   API_KEY_PREFIX,
+  type ApiKeyPrincipal,
   generateApiKey,
   hasApiKeyPrefix,
   hashApiKey,
   LEGACY_API_KEY_PREFIX,
   verifyApiKey,
 } from "@/modules/api-keys/verify";
+import { mcpPrincipalFromApiKey } from "@/modules/mcp/oauth/tokens";
 
 describe("api key token generation", () => {
   test("generateApiKey is prefixed and its hash round-trips", () => {
@@ -131,9 +137,13 @@ describe.skipIf(!dbUp)("api key service + verify (RLS)", () => {
     });
     expect(row?.keyHash).toBe(hashApiKey(created.token));
     expect(row?.createdByUserId).toBe(USER_A);
+    // Minted under a step-up (the route asks the password before calling here): the row says so,
+    // and the DTO carries it so the console can tell a key that predates the rule apart.
+    expect(created.apiKey.stepUpAt).toBeInstanceOf(Date);
+    expect(row?.stepUpAt).toEqual(created.apiKey.stepUpAt);
   });
 
-  test("verify resolves the principal (tenant, role, creator)", async () => {
+  test("verify resolves the principal (tenant, role, creator, step-up on record)", async () => {
     const { token } = await createApiKey(
       ctxA(),
       { displayName: "verify me" },
@@ -144,6 +154,7 @@ describe.skipIf(!dbUp)("api key service + verify (RLS)", () => {
     expect(principal?.tenantId).toBe(tenantA);
     expect(principal?.role).toBe("TENANT_ADMIN");
     expect(principal?.userId).toBe(USER_A);
+    expect(principal?.stepUpAt).toBeInstanceOf(Date);
   });
 
   // The load-bearing half of the compatibility window: a key an operator is already using was
@@ -168,6 +179,10 @@ describe.skipIf(!dbUp)("api key service + verify (RLS)", () => {
     expect(principal?.tenantId).toBe(tenantA);
     expect(principal?.role).toBe("TENANT_ADMIN");
     expect(principal?.userId).toBe(USER_A);
+    // Written with no `stepUpAt`, the way every row that predates the password rule is: the
+    // principal says so, and the step-up asks that key the creator's password as it always did
+    // (review round 3 on #308).
+    expect(principal?.stepUpAt).toBeNull();
   });
 
   test("verify rejects a malformed or unknown key", async () => {
@@ -222,5 +237,222 @@ describe.skipIf(!dbUp)("api key service + verify (RLS)", () => {
     );
     await su.$executeRawUnsafe(`DELETE FROM tenants WHERE id = ${tmp.id}`);
     expect(await verifyApiKey(token, appDb)).toBeNull();
+  });
+});
+
+// ── fleet-scoped keys (issue #308) ──
+//
+// Every key used to be born TENANT_ADMIN and pinned to one tenant, so a fleet operation (create a
+// tenant, read the whole roster) could only be driven by a SUPER_ADMIN browser session: automation
+// logged in, kept cookies, and re-typed a person's password for step-up. A fleet key is the same
+// row with the shape `users` already gives a SUPER_ADMIN — no home tenant, SUPER_ADMIN authority —
+// and the CHECK constraint below is what keeps the two halves of that shape from drifting apart.
+const FLEET_USER = 4343n;
+const fleetCtx = (): TenantContext => ({
+  tenantId: null,
+  userId: FLEET_USER,
+  role: "SUPER_ADMIN",
+  actorType: "user",
+});
+// Its own tenant: the block above drops A and B in its afterAll before this one runs.
+let tenantF = 0n;
+const ctxF = (): TenantContext => ({
+  tenantId: tenantF,
+  userId: USER_A,
+  role: "TENANT_ADMIN",
+});
+
+describe.skipIf(!dbUp)("fleet-scoped api keys", () => {
+  beforeAll(async () => {
+    if (!su) return;
+    const f = await su.tenant.create({
+      data: { name: "AK-F", slug: `ak-f-${process.pid}` },
+    });
+    tenantF = f.id;
+  });
+
+  afterAll(async () => {
+    if (!su) return;
+    // USER_A too: the refusal case would leave a NULL-tenant row under it if the gate were ever
+    // removed, and a leftover from such a run must not fail the next one's count instead of its own.
+    await su.$executeRawUnsafe(
+      `DELETE FROM api_keys WHERE tenant_id IS NULL AND created_by_user_id IN (${FLEET_USER}, ${USER_A})`,
+    );
+    await su.$executeRawUnsafe(
+      `DELETE FROM audit_logs WHERE tenant_id IS NULL AND actor_id IN (${FLEET_USER}, ${USER_A})`,
+    );
+    if (tenantF) {
+      await su.$executeRawUnsafe(
+        `DELETE FROM api_keys WHERE tenant_id = ${tenantF}`,
+      );
+      await su.$executeRawUnsafe(
+        `DELETE FROM audit_logs WHERE tenant_id = ${tenantF}`,
+      );
+      await su.$executeRawUnsafe(`DELETE FROM tenants WHERE id = ${tenantF}`);
+    }
+  });
+
+  test("only a SUPER_ADMIN mints one, and a refusal writes nothing", async () => {
+    await expect(
+      createFleetApiKey(ctxF(), { displayName: "not yours" }, appDb),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+    expect(
+      await su?.apiKey.count({ where: { displayName: "not yours" } }),
+    ).toBe(0);
+  });
+
+  test("the row has no tenant and SUPER_ADMIN authority, whatever tenant the minter had selected", async () => {
+    // A SUPER_ADMIN in the console always has SOME tenant selected (X-Tenant-Id); the key is not
+    // that tenant's, so the selection must not leak into the row.
+    const created = await createFleetApiKey(
+      { ...fleetCtx(), tenantId: tenantF },
+      { displayName: "fleet one" },
+      appDb,
+    );
+    expect(created.token.startsWith(API_KEY_PREFIX)).toBe(true);
+    expect(created.apiKey.role).toBe("SUPER_ADMIN");
+    expect("keyHash" in created.apiKey).toBe(false);
+    expect(JSON.stringify(created.apiKey)).not.toContain(created.token);
+    const row = await su?.apiKey.findUnique({
+      where: { id: BigInt(created.apiKey.id) },
+    });
+    expect(row?.tenantId).toBeNull();
+    expect(row?.role).toBe("SUPER_ADMIN");
+    expect(row?.createdByUserId).toBe(FLEET_USER);
+    expect(row?.keyHash).toBe(hashApiKey(created.token));
+    expect(row?.stepUpAt).not.toBeNull();
+  });
+
+  test("verify resolves a fleet principal: no tenant, SUPER_ADMIN, and the MCP seam gives it the fleet scopes", async () => {
+    const { token } = await createFleetApiKey(
+      fleetCtx(),
+      { displayName: "fleet verify" },
+      appDb,
+    );
+    const principal = await verifyApiKey(token, appDb);
+    expect(principal).not.toBeNull();
+    expect(principal?.tenantId).toBeNull();
+    expect(principal?.role).toBe("SUPER_ADMIN");
+    expect(principal?.userId).toBe(FLEET_USER);
+    expect(principal?.stepUpAt).toBeInstanceOf(Date);
+    // The MCP transport already models a tenant-less SUPER_ADMIN token (the `tenant` selector per
+    // call); a fleet key rides that model unchanged.
+    const mcp = mcpPrincipalFromApiKey(principal as ApiKeyPrincipal);
+    expect(mcp.tenantId).toBeNull();
+    expect(mcp.role).toBe("SUPER_ADMIN");
+    expect(mcp.scopes).toContain("mcp:admin");
+  });
+
+  test("a tenant never lists a fleet key, and the fleet list never carries a tenant key", async () => {
+    await createFleetApiKey(fleetCtx(), { displayName: "fleet listed" }, appDb);
+    await createApiKey(ctxF(), { displayName: "tenant listed" }, appDb);
+    const tenantKeys = await listApiKeys(ctxF(), appDb);
+    expect(tenantKeys.some((k) => k.displayName === "fleet listed")).toBe(
+      false,
+    );
+    expect(tenantKeys.every((k) => k.role === "TENANT_ADMIN")).toBe(true);
+    const fleetKeys = await listFleetApiKeys(fleetCtx(), appDb);
+    expect(fleetKeys.some((k) => k.displayName === "fleet listed")).toBe(true);
+    expect(fleetKeys.some((k) => k.displayName === "tenant listed")).toBe(
+      false,
+    );
+    expect(fleetKeys.every((k) => k.role === "SUPER_ADMIN")).toBe(true);
+    // The fleet list is a fleet read: a tenant admin has no such list.
+    await expect(listFleetApiKeys(ctxF(), appDb)).rejects.toBeInstanceOf(
+      ForbiddenError,
+    );
+  });
+
+  test("revoke: the tenant path cannot reach a fleet key, the fleet path cannot reach a tenant key, and a revoked fleet key stops verifying", async () => {
+    const fleet = await createFleetApiKey(
+      fleetCtx(),
+      { displayName: "fleet revoke" },
+      appDb,
+    );
+    const tenant = await createApiKey(
+      ctxF(),
+      { displayName: "tenant revoke" },
+      appDb,
+    );
+    const fleetId = BigInt(fleet.apiKey.id);
+    const tenantId = BigInt(tenant.apiKey.id);
+    // A tenant admin (even the SUPER_ADMIN operating AS tenant A) cannot revoke a fleet key by the
+    // tenant path: the row is invisible under tenant scope.
+    await expect(revokeApiKey(ctxF(), fleetId, appDb)).rejects.toThrow();
+    await expect(
+      revokeApiKey({ ...fleetCtx(), tenantId: tenantF }, fleetId, appDb),
+    ).rejects.toThrow();
+    expect(await verifyApiKey(fleet.token, appDb)).not.toBeNull();
+    // The fleet path is for fleet keys only: a tenant key keeps its tenant's trail and its tenant's
+    // revoke.
+    await expect(
+      revokeFleetApiKey(fleetCtx(), tenantId, appDb),
+    ).rejects.toThrow();
+    expect(await verifyApiKey(tenant.token, appDb)).not.toBeNull();
+    await expect(revokeFleetApiKey(ctxF(), fleetId, appDb)).rejects.toThrow();
+    // The fleet revoke works once, and the key 401s (null) afterwards.
+    await revokeFleetApiKey(fleetCtx(), fleetId, appDb);
+    expect(await verifyApiKey(fleet.token, appDb)).toBeNull();
+    await expect(
+      revokeFleetApiKey(fleetCtx(), fleetId, appDb),
+    ).rejects.toThrow();
+  });
+
+  test("the trail is fleet-level: tenant NULL, actor and door from the context", async () => {
+    const created = await createFleetApiKey(
+      { ...fleetCtx(), actorType: "mcp" },
+      { displayName: "fleet audited" },
+      appDb,
+    );
+    const id = BigInt(created.apiKey.id);
+    await revokeFleetApiKey(fleetCtx(), id, appDb);
+    const rows =
+      (await su?.auditLog.findMany({
+        where: { target: id.toString(), action: { startsWith: "api_key." } },
+        orderBy: { id: "asc" },
+      })) ?? [];
+    expect(rows.map((r) => r.action)).toEqual([
+      "api_key.create",
+      "api_key.revoke",
+    ]);
+    for (const r of rows) {
+      expect(r.tenantId).toBeNull();
+      expect(r.actorId).toBe(FLEET_USER);
+      expect(
+        JSON.stringify({ before: r.before, after: r.after }),
+      ).not.toContain(created.token);
+    }
+    expect(rows[0]?.actorType).toBe("mcp");
+    expect(rows[1]?.actorType).toBe("user");
+    expect((rows[0]?.after as { role?: string })?.role).toBe("SUPER_ADMIN");
+  });
+
+  test("the database refuses the two shapes the service never writes", async () => {
+    if (!su) return;
+    const insert = async (role: string, tenant: string) =>
+      await su.$executeRawUnsafe(
+        `INSERT INTO api_keys (tenant_id, display_name, key_hash, key_prefix, role, created_by_user_id)
+         VALUES (${tenant}, 'bad shape', '${hashApiKey(`x-${role}-${tenant}-${process.pid}`)}', 'fazerai_bad', '${role}', ${FLEET_USER})`,
+      );
+    // SUPER_ADMIN authority pinned to a tenant, and tenant authority with no tenant: both are the
+    // same CHECK `users` carries, and both are refused at the row.
+    await expect(insert("SUPER_ADMIN", String(tenantF))).rejects.toThrow(
+      /api_keys_role_tenant_check/,
+    );
+    await expect(insert("TENANT_ADMIN", "NULL")).rejects.toThrow(
+      /api_keys_role_tenant_check/,
+    );
+  });
+
+  // A key that predates the password rule has no step-up on record, and the migration must leave
+  // it that way rather than invent one: the column admits NULL, and a row written without it (the
+  // shape every pre-rule row has) reads back as null.
+  test("a key that predates the rule keeps a NULL step-up", async () => {
+    if (!su) return;
+    const col = await su.$queryRawUnsafe<{ is_nullable: string }[]>(
+      `SELECT is_nullable FROM information_schema.columns
+       WHERE table_name = 'api_keys' AND column_name = 'step_up_at'`,
+    );
+    expect(col).toEqual([{ is_nullable: "YES" }]);
   });
 });

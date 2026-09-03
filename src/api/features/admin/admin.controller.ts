@@ -1,5 +1,4 @@
 import { Elysia, t } from "elysia";
-import { getUserById, verifyPassword } from "@/api/features/auth/auth.service";
 import {
   createInvite,
   InviteEmailInUseError,
@@ -11,6 +10,11 @@ import { type AuthUser, authPlugin } from "@/api/lib/auth";
 import { translate } from "@/api/lib/i18n";
 import { doc, errors } from "@/api/lib/openapi";
 import { parseQueryCount, parseQueryId } from "@/api/lib/query-filters";
+import {
+  confirmStepUp,
+  STEP_UP_PASSWORD_DESCRIPTION,
+  stepUpPrincipalOf,
+} from "@/api/lib/step-up";
 import config from "@/config";
 import { optionalDbId, requireDbId } from "@/lib/db-id";
 import { UnauthorizedError } from "@/lib/errors";
@@ -205,8 +209,9 @@ export const adminController = new Elysia({
       response: errors(400, 401, 403, 404, 422),
     },
   )
-  // Permanently delete a user (within the caller's tenant scope). Step-up: the acting admin re-enters
-  // their password. Refuses to delete yourself or the last admin of a scope.
+  // Permanently delete a user (within the caller's tenant scope). Step-up (`confirmStepUp`): the
+  // acting admin re-enters their password; a Bearer key answers by itself. Refuses to delete yourself
+  // or the last admin of a scope.
   .delete(
     "/users/:id",
     async ({ params, body, set, getAuthUser }) => {
@@ -215,16 +220,7 @@ export const adminController = new Elysia({
         set.status = 401;
         return { error: translate("errors.unauthorized", "Unauthorized") };
       }
-      const acting = await getUserById(user.id);
-      if (
-        !acting?.passwordHash ||
-        !(await verifyPassword(body.password, acting.passwordHash))
-      ) {
-        set.status = 403;
-        return {
-          error: translate("errors.invalidPassword", "Incorrect password"),
-        };
-      }
+      await confirmStepUp(stepUpPrincipalOf(user), body.password);
       try {
         await deleteUser(
           resolveScope(user, undefined),
@@ -263,14 +259,13 @@ export const adminController = new Elysia({
         id: t.String({ description: "Target user id (BigInt string)." }),
       }),
       body: t.Object({
-        password: t.String({
-          minLength: 1,
-          description: "The acting admin's password (step-up confirmation).",
-        }),
+        password: t.Optional(
+          t.String({ minLength: 1, description: STEP_UP_PASSWORD_DESCRIPTION }),
+        ),
       }),
       detail: doc(
         "Delete user",
-        "Permanently delete a user within the caller's tenant scope. Requires the acting admin's password; cannot delete yourself or the last admin.",
+        "Permanently delete a user within the caller's tenant scope. Requires the acting admin's password for a session (a Bearer API key needs none); cannot delete yourself or the last admin.",
       ),
       response: errors(400, 401, 403, 404, 409, 422),
     },

@@ -1,5 +1,6 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
+import type { AuditAction } from "@/lib/audit/actions";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { auditMutation } from "@/modules/audit/service";
 
@@ -35,7 +36,7 @@ export async function recordConversationAction(
   ctx: TenantContext,
   base: PrismaClient,
   conversationId: bigint,
-  entry: { action: string; before?: unknown; after?: unknown },
+  entry: { action: AuditAction; before?: unknown; after?: unknown },
 ): Promise<void> {
   const target = `conversation:${conversationId}`;
   try {

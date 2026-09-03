@@ -5,6 +5,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import config from "@/config";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { mockFindUnique, setupPrismaMock } from "@/tests/utils/prisma-mock";
+import { syntheticAction } from "../../utils/audit-action";
 
 // THE READ ENDPOINT (issue #401), driven through real requests.
 //
@@ -139,7 +140,7 @@ describe.skipIf(!dbUp)("the trail has a door the console can use", () => {
     ] as const) {
       await runScopedOn(app, ctx, (db) =>
         realAudit.recordAudit(db, tenantId, {
-          action,
+          action: syntheticAction(action),
           actorId: ADMIN_ID,
           actorType,
           after: { x: 1 },

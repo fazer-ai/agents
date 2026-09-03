@@ -1,5 +1,6 @@
 import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
+import type { AuditAction } from "@/lib/audit/actions";
 import { assertUsableCount } from "@/lib/query-param";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import type { ActorType } from "@/lib/tenancy/context";
@@ -11,7 +12,7 @@ export interface AuditEntry {
   // into a column nothing validates, so a typo here is a row attributed to a door that does not
   // exist and it is only readable, never reportable.
   actorType?: ActorType;
-  action: string;
+  action: AuditAction;
   target?: string | null;
   // NOTE: before/after MUST be allowlist-sanitized by the caller — never secrets/PII in
   // the clear (the row is readable by tenant admins and, for tenant_id NULL rows, by

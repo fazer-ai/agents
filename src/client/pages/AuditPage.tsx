@@ -2,22 +2,42 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
-  ChevronUp,
   ClipboardList,
+  Filter,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from "react";
 import { useTranslation } from "react-i18next";
 import { useSearchParams } from "react-router";
 import {
   Button,
   Card,
+  ComboBox,
   EmptyState,
+  HelpPopover,
   PageContainer,
   Skeleton,
+  Tooltip,
 } from "@/client/components";
 import { api } from "@/client/lib/api";
+import {
+  AUDIT_PERIOD_PRESETS,
+  type AuditPeriodPreset,
+  auditPresetRange,
+  isCommittableRange,
+  msUntilNextLocalMidnight,
+  selectedPreset,
+  todayKey,
+} from "@/client/lib/auditPeriod";
 import { cn, formatDateTime } from "@/client/lib/utils";
+import { AUDIT_ACTIONS, isFleetLevelAction } from "@/lib/audit/actions";
 import { AUDIT_MARKER_KEYS, carriesAuditMarker } from "@/lib/audit/markers";
 import { ACTOR_TYPES } from "@/lib/tenancy/actor";
 import { clipText } from "@/lib/text";
@@ -37,8 +57,6 @@ type AuditItem = NonNullable<AuditResponse>["entries"][number];
 
 const selectCls =
   "h-9 rounded-lg border border-border bg-bg-tertiary px-3 text-sm text-text-primary focus:border-border-focus focus:outline-none";
-// The same pause the Logs page's search box takes.
-const ACTION_DEBOUNCE_MS = 300;
 const ROW_SKELETON_KEYS = ["au-0", "au-1", "au-2", "au-3", "au-4"];
 
 // Long enough to read a name, an id or a short sentence whole; short enough that a system prompt
@@ -299,7 +317,13 @@ function FieldDiff({ diff }: { diff: ProjectionDiff }) {
   );
 }
 
-function AuditRowCard({ row }: { row: AuditItem }) {
+function AuditRowCard({
+  row,
+  onFilterAction,
+}: {
+  row: AuditItem;
+  onFilterAction: (action: string) => void;
+}) {
   const { t, i18n } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const diff = useMemo(
@@ -308,44 +332,69 @@ function AuditRowCard({ row }: { row: AuditItem }) {
   );
   return (
     <Card className="!p-0 overflow-hidden">
-      <button
-        type="button"
-        onClick={() => setExpanded((v) => !v)}
-        aria-expanded={expanded}
-        className="flex w-full min-w-0 select-none flex-wrap items-center gap-2 px-3 py-2.5 text-left"
-      >
-        {expanded ? (
-          <ChevronDown
-            className="h-4 w-4 shrink-0 text-text-muted"
-            aria-hidden="true"
-          />
-        ) : (
-          <ChevronRight
-            className="h-4 w-4 shrink-0 text-text-muted"
-            aria-hidden="true"
-          />
-        )}
-        <span className="font-medium font-mono text-sm text-text-primary">
-          {row.action}
-        </span>
-        <ActorPill kind={row.actorType} />
-        {row.actorId && (
-          <span className="text-text-muted text-xs">{`#${row.actorId}`}</span>
-        )}
-        {row.target && (
-          <span className="truncate font-mono text-text-secondary text-xs">
-            {row.target}
+      {/* The toggle and the filter shortcut are SIBLINGS rather than nested, because a button inside
+          a button is not markup a browser agrees about — the inner one's activation is swallowed in
+          some engines and doubled in others. The row header is the flex container; the toggle keeps
+          the whole width it had. */}
+      <div className="flex w-full min-w-0 items-center gap-1 pr-2">
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          aria-expanded={expanded}
+          className="flex min-w-0 flex-1 select-none flex-wrap items-center gap-2 px-3 py-2.5 text-left"
+        >
+          {expanded ? (
+            <ChevronDown
+              className="h-4 w-4 shrink-0 text-text-muted"
+              aria-hidden="true"
+            />
+          ) : (
+            <ChevronRight
+              className="h-4 w-4 shrink-0 text-text-muted"
+              aria-hidden="true"
+            />
+          )}
+          <span className="font-medium font-mono text-sm text-text-primary">
+            {row.action}
           </span>
-        )}
-        <span className="ml-auto whitespace-nowrap text-text-muted text-xs tabular-nums">
-          {formatDateTime(row.createdAt, i18n.language)}
-        </span>
-        <span className="text-text-muted text-xs">
-          {t("audit.fields", "{{count}} fields", {
-            count: diff.changes.length,
+          <ActorPill kind={row.actorType} />
+          {row.actorId && (
+            <span className="text-text-muted text-xs">{`#${row.actorId}`}</span>
+          )}
+          {row.target && (
+            <span className="truncate font-mono text-text-secondary text-xs">
+              {row.target}
+            </span>
+          )}
+          <span className="ml-auto whitespace-nowrap text-text-muted text-xs tabular-nums">
+            {formatDateTime(row.createdAt, i18n.language)}
+          </span>
+          <span className="text-text-muted text-xs">
+            {t("audit.fields", "{{count}} fields", {
+              count: diff.changes.length,
+            })}
+          </span>
+        </button>
+        {/* The shortcut that makes the action filter usable without knowing how an action is
+            spelled: the name is already on the row, so filtering to it should be a click on the row
+            rather than a transcription into a box. */}
+        <Tooltip
+          content={t("audit.filterByAction", "Show only {{action}}", {
+            action: row.action,
           })}
-        </span>
-      </button>
+        >
+          <button
+            type="button"
+            onClick={() => onFilterAction(row.action)}
+            aria-label={t("audit.filterByAction", "Show only {{action}}", {
+              action: row.action,
+            })}
+            className="shrink-0 rounded-lg p-1.5 text-text-muted hover:bg-bg-tertiary hover:text-text-primary"
+          >
+            <Filter className="h-3.5 w-3.5" aria-hidden="true" />
+          </button>
+        </Tooltip>
+      </div>
       {expanded && (
         <div className="border-border border-t">
           <div className="hidden gap-2 border-border border-b px-3 py-1.5 text-text-muted text-xs sm:grid sm:grid-cols-[10rem_1fr_1fr]">
@@ -371,12 +420,17 @@ function TrailFreshness({
   state: "loading" | "ready" | "unavailable";
 }) {
   const { t, i18n } = useTranslation();
-  const [open, setOpen] = useState(false);
   return (
     <Card className="flex flex-col gap-1">
       <div className="flex flex-wrap items-baseline gap-2">
+        {/* THE LABEL NAMES THE COVERAGE, not the datum, and that rewrite is the whole fix here. It
+            read "Newest entry in the trail", which is true and answers a question nobody asked: an
+            operator does not want to know which row is newest, they want to know HOW FAR the trail
+            reaches. Said that way the number needs no paragraph to be useful, and the paragraph —
+            what it is worth comparing against — moves into the `?` where a reader who wants it can
+            find it and everyone else is not paying for it. */}
         <span className="text-sm text-text-secondary">
-          {t("audit.latest", "Newest entry in the trail")}
+          {t("audit.coverage", "Trail recorded up to")}
         </span>
         {/* `null` means two different things and only one of them is a fact: "the trail is empty"
             and "we have not asked yet, or the ask failed". Rendering the sentence before a response
@@ -402,28 +456,15 @@ function TrailFreshness({
             <Skeleton className="h-4 w-40" />
           </span>
         )}
-        <button
-          type="button"
-          onClick={() => setOpen((v) => !v)}
-          aria-expanded={open}
-          className="ml-auto inline-flex items-center gap-1 text-text-muted text-xs hover:text-text-primary"
-        >
-          {t("audit.whatIsThis", "What is this for?")}
-          {open ? (
-            <ChevronUp className="h-3.5 w-3.5" aria-hidden="true" />
-          ) : (
-            <ChevronDown className="h-3.5 w-3.5" aria-hidden="true" />
-          )}
-        </button>
-      </div>
-      {open && (
-        <p className="text-text-secondary text-xs">
-          {t(
+        <HelpPopover
+          className="ml-auto"
+          label={t("audit.coverage", "Trail recorded up to")}
+          content={t(
             "audit.latestHelp",
             "It does not change when you filter the list. Compare it with the last-updated time of a record you know was changed: if the record is newer, that change is not on the trail.",
           )}
-        </p>
-      )}
+        />
+      </div>
     </Card>
   );
 }
@@ -439,18 +480,31 @@ export function AuditPage() {
   // job, not the caller's.
   const from = searchParams.get("from") ?? "";
   const to = searchParams.get("to") ?? "";
+  // WHICH PRESET IS SELECTED IS NOT DERIVABLE FROM THE DATES, and the first version of this control
+  // tried: picking "Custom" wrote a window, the next render read that window back as "Today", and
+  // the two date inputs never appeared. `custom` is a MODE — "I am choosing the bounds myself" — and
+  // every window it can hold is also some preset's window, so no pair of dates can distinguish it.
+  //
+  // It lives in the URL beside the bounds rather than in component state, so a link carries what the
+  // sender was looking at, which is what the rest of this page's filters already promise. A pasted
+  // link with only dates still resolves: `auditPresetOf` names the preset, or says custom.
+  const periodParam = searchParams.get("period") ?? "";
 
-  // The action box types into local state and lands in the URL on a pause. Without it every
-  // keystroke of an action name is a URL change, and every URL change opens another scoped
-  // transaction against a table that only grows — while the screen flips back to skeletons each
-  // time. The request counter below keeps the ANSWERS honest; it does not stop the work.
-  const [actionInput, setActionInput] = useState(action);
-  // The URL can change from outside this input: the sidebar link back to `/audit`, a deep link, the
-  // browser's own back button. Without this the box keeps the old text and the debounce below writes
-  // it straight back, so navigating cannot clear or change the action filter.
-  useEffect(() => {
-    setActionInput(action);
-  }, [action]);
+  // THE DEBOUNCE IS GONE WITH THE TEXT BOX. It existed because every keystroke of a typed action
+  // name was a URL change and therefore another scoped transaction against a table that only grows;
+  // a combo box commits once, when a value is chosen. Its free-text row commits once too — on
+  // confirm rather than per character.
+  // The empty row FIRST, because a single-value ComboBox has no clear affordance of its own — the
+  // chip's `X` belongs to the multi-select. Without it the only way to drop the action was the
+  // page-wide Clear, which also discards the actor and the period: a regression against the text box
+  // this replaced.
+  const actionItems = useMemo(
+    () => [
+      { id: "", label: t("audit.anyAction", "Any action") },
+      ...AUDIT_ACTIONS.map((id) => ({ id })),
+    ],
+    [t],
+  );
   const [entries, setEntries] = useState<AuditItem[]>([]);
   const [latestAt, setLatestAt] = useState<string | null>(null);
   const [freshness, setFreshness] = useState<
@@ -471,22 +525,6 @@ export function AuditPage() {
     setCursorStack([null]);
   }, [action, actorType, from, to]);
 
-  useEffect(() => {
-    const id = setTimeout(() => {
-      if (actionInput === action) return;
-      setSearchParams(
-        (prev) => {
-          const next = new URLSearchParams(prev);
-          if (actionInput) next.set("action", actionInput);
-          else next.delete("action");
-          return next;
-        },
-        { replace: true },
-      );
-    }, ACTION_DEBOUNCE_MS);
-    return () => clearTimeout(id);
-  }, [actionInput, action, setSearchParams]);
-
   const setFilter = (key: string, value: string) => {
     setSearchParams(
       (prev) => {
@@ -498,6 +536,110 @@ export function AuditPage() {
       { replace: true },
     );
   };
+
+  // The calendar day the presets resolve against, read ONCE and handed down. `auditPeriod` takes it
+  // as an argument for the same reason: a preset that reads its own clock cannot be tested at UTC,
+  // where every local day is a UTC day and the wrong answer passes.
+  // NOT MEMOISED: a value pinned on mount keeps calling yesterday's window "Today" for as long as
+  // the tab is open. Recomputing per render costs nothing and is right whenever the page is doing
+  // anything at all — but a render is not a clock, so the handlers below read `todayKey()` again
+  // rather than close over this one.
+  const today = todayKey();
+  const preset = selectedPreset(periodParam, from, to, today);
+
+  // The one thing that makes the day above move on a page nobody is touching. Re-arms because
+  // `today` changes when it fires; the correction itself is `selectedPreset`'s, which drops a named
+  // mode as soon as its arithmetic stops producing these bounds — so at midnight a trail filtered to
+  // "Today" relabels itself "Yesterday", which is what its unchanged bounds now mean.
+  const [, bumpDay] = useReducer((n: number) => n + 1, 0);
+  useEffect(() => {
+    const id = setTimeout(bumpDay, msUntilNextLocalMidnight(today));
+    return () => clearTimeout(id);
+  }, [today]);
+
+  const setRange = (
+    nextFrom: string,
+    nextTo: string,
+    mode: AuditPeriodPreset | "",
+  ) => {
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        // NOTE: BOTH BOUNDS IN ONE WRITE. Setting them one at a time publishes an intermediate URL whose
+        // pair is a window nobody asked for, and the page loads it.
+        if (nextFrom) next.set("from", nextFrom);
+        else next.delete("from");
+        if (nextTo) next.set("to", nextTo);
+        else next.delete("to");
+        // NOTE: THE MODE TRAVELS WITH THE BOUNDS, all of them and not just `custom`. Two presets can name
+        // the same window — `this-week` on a Monday is `today` — so a link carrying only dates loses
+        // which row was picked. Staleness is answered on the reading side instead: `selectedPreset`
+        // honours a named mode only while its arithmetic still yields these bounds, so `period=today`
+        // pasted tomorrow falls through and reads "Yesterday".
+        if (mode) next.set("period", mode);
+        else next.delete("period");
+        return next;
+      },
+      { replace: true },
+    );
+  };
+
+  const [draft, setDraft] = useState({ from, to });
+  // Resyncs from the URL and never from what we just asked it to be: writing the optimistic value
+  // here made the draft disagree with the params and the next render put the operator's own edit
+  // back. A real URL change is a preset click, a pasted link or the back button.
+  // THE MODE IS PART OF THE COMMITTED STATE, because a preset can leave the bounds untouched: clear
+  // one custom field and then pick a preset whose window is the one already applied, and only
+  // `period` moves. Watching bounds alone kept the half-empty draft alive, so returning to Custom
+  // showed a blank bound while the query was still filtering by the committed pair.
+  const committed = useRef({ from, to, mode: periodParam });
+  if (
+    committed.current.from !== from ||
+    committed.current.to !== to ||
+    committed.current.mode !== periodParam
+  ) {
+    committed.current = { from, to, mode: periodParam };
+    setDraft({ from, to });
+  }
+
+  // The preset labels, declared where `i18next-parser` reads them: the key is computed at the call
+  // site, so these lines are its only sight of it. They must be `//` comments in code — the parser
+  // does not read a magic comment written inside JSX braces, and the keys silently never appear.
+  // t('audit.period.today', 'Today')
+  // t('audit.period.yesterday', 'Yesterday')
+  // t('audit.period.this-week', 'This week')
+  // t('audit.period.last-week', 'Last week')
+  // t('audit.period.this-month', 'This month')
+  // t('audit.period.last-month', 'Last month')
+  // t('audit.period.30d', 'Last 30 days')
+  // t('audit.period.this-year', 'This year')
+  // t('audit.period.last-year', 'Last year')
+  // t('audit.period.custom', 'Custom')
+  function selectPreset(next: AuditPeriodPreset | "") {
+    if (!next) {
+      setRange("", "", "");
+      return;
+    }
+    if (next === "custom") {
+      // NOTE: OPENING THE ROW NARROWS NOTHING. It keeps whatever window is already applied and commits
+      // NOTHING when there is none: seeding today here filtered an unfiltered trail down to today
+      // as a side effect of showing two inputs, which is a query the operator never asked for.
+      setRange(from, to, "custom");
+      return;
+    }
+    const range = auditPresetRange(next, todayKey());
+    setRange(range.from, range.to, next);
+  }
+
+  function setBound(bound: "from" | "to", value: string) {
+    const candidate = { ...draft, [bound]: value };
+    setDraft(candidate);
+    // NOTE: WHAT MAY BE COMMITTED DEPENDS ON WHAT IS APPLIED, and the rule lives in `auditPeriod` where it
+    // is tested: a pair on screen commits only as a usable pair, but a one-sided window commits one
+    // bound, because there the pair rule refuses every edit for as long as the page is open.
+    if (!isCommittableRange(candidate, { from, to })) return;
+    setRange(candidate.from, candidate.to, "custom");
+  }
 
   const cursor = cursorStack[cursorStack.length - 1] ?? null;
 
@@ -514,7 +656,7 @@ export function AuditPage() {
       const until = to ? localDayBounds(to) : null;
       if (since) query.since = since.since;
       if (until) query.until = until.until;
-      // A date in the URL that is not a date is dropped from the URL too, not just from the query:
+      // NOTE: A date in the URL that is not a date is dropped from the URL too, not just from the query:
       // left there the page would say it is filtered by a day it is not filtering by.
       if ((from && !since) || (to && !until)) {
         setSearchParams(
@@ -545,7 +687,7 @@ export function AuditPage() {
         setFreshness("unavailable");
       }
     } finally {
-      // Only the newest load owns the spinner: an older one finishing later would clear it while the
+      // NOTE: Only the newest load owns the spinner: an older one finishing later would clear it while the
       // page it is not showing is still on its way.
       if (current()) setLoading(false);
     }
@@ -557,6 +699,10 @@ export function AuditPage() {
 
   const pageIdx = cursorStack.length - 1;
   const scoped = action || actorType || from || to;
+  // NOTE: An empty page has two very different reasons, and only one of them is "nothing happened".
+  // These actions write rows keyed to no tenant, which this read cannot reach at all, so answering
+  // the ordinary "no entries match" would be the page asserting something it did not check.
+  const fleetOnly = isFleetLevelAction(action);
 
   return (
     <PageContainer size="wide" className="space-y-6">
@@ -578,13 +724,16 @@ export function AuditPage() {
       <TrailFreshness latestAt={latestAt} state={freshness} />
 
       <div className="flex flex-wrap items-center gap-2">
-        <input
-          value={actionInput}
-          onChange={(e) => setActionInput(e.target.value)}
-          placeholder={t("audit.actionPlaceholder", "Action (exact)")}
-          aria-label={t("audit.filterAction", "Action")}
-          className={cn(selectCls, "min-w-48 flex-1")}
-        />
+        <div className="min-w-56 flex-1">
+          <ComboBox
+            value={action}
+            onChange={(next) => setFilter("action", next)}
+            items={actionItems}
+            placeholder={t("audit.actionPlaceholder", "Any action")}
+            searchPlaceholder={t("audit.actionSearch", "Search actions")}
+            aria-label={t("audit.filterAction", "Action")}
+          />
+        </div>
         <select
           className={selectCls}
           value={actorType}
@@ -598,28 +747,50 @@ export function AuditPage() {
             </option>
           ))}
         </select>
-        <input
-          type="date"
-          value={from}
-          onChange={(e) => setFilter("from", e.target.value)}
-          aria-label={t("audit.filterFrom", "From")}
+        <select
           className={selectCls}
-        />
-        <input
-          type="date"
-          value={to}
-          onChange={(e) => setFilter("to", e.target.value)}
-          aria-label={t("audit.filterTo", "To")}
-          className={selectCls}
-        />
+          value={preset}
+          onChange={(e) => selectPreset(e.target.value as AuditPeriodPreset)}
+          aria-label={t("audit.filterPeriod", "Period")}
+        >
+          <option value="">{t("audit.anyPeriod", "Any period")}</option>
+          {AUDIT_PERIOD_PRESETS.map((key) => (
+            <option key={key} value={key}>
+              {/* biome-ignore lint/plugin/no-dynamic-i18n-key: every key is listed below */}
+              {t(`audit.period.${key}`)}
+            </option>
+          ))}
+        </select>
+        {/* THE TWO INPUTS ONLY EXIST UNDER `custom`, and they hold a DRAFT that commits the PAIR.
+            Both halves were measured on the equivalent control in ~/dev/bi. A `<input type="date">`
+            reports "" while a date is being typed, so validating each keystroke against the
+            committed value snaps the input back and keyboard entry cannot progress. And a pair check
+            applied one field at a time makes some windows unreachable: to move a long window
+            forward, changing `from` first inverts the pair and changing `to` first does too, so both
+            edits are refused and the window cannot be reached at all. */}
+        {preset === "custom" && (
+          <>
+            <input
+              type="date"
+              value={draft.from}
+              onChange={(e) => setBound("from", e.target.value)}
+              aria-label={t("audit.filterFrom", "From")}
+              className={selectCls}
+            />
+            <input
+              type="date"
+              value={draft.to}
+              onChange={(e) => setBound("to", e.target.value)}
+              aria-label={t("audit.filterTo", "To")}
+              className={selectCls}
+            />
+          </>
+        )}
         {scoped && (
           <Button
             variant="secondary"
             size="sm"
-            onClick={() => {
-              setActionInput("");
-              setSearchParams({}, { replace: true });
-            }}
+            onClick={() => setSearchParams({}, { replace: true })}
           >
             <X className="h-4 w-4" aria-hidden="true" />
             {t("audit.clearFilters", "Clear")}
@@ -655,30 +826,45 @@ export function AuditPage() {
           <EmptyState
             icon={ClipboardList}
             title={
-              scoped
+              fleetOnly
                 ? t(
-                    "audit.emptyFilteredTitle",
-                    "No entries match these filters",
+                    "audit.emptyFleetTitle",
+                    "This action is not recorded on a tenant's trail",
                   )
-                : t("audit.emptyTitle", "No entries yet")
+                : scoped
+                  ? t(
+                      "audit.emptyFilteredTitle",
+                      "No entries match these filters",
+                    )
+                  : t("audit.emptyTitle", "No entries yet")
             }
             description={
-              scoped
+              fleetOnly
                 ? t(
-                    "audit.emptyFilteredDescription",
-                    "Widen the date range, or clear the filters to see the whole trail.",
+                    "audit.emptyFleetDescription",
+                    "{{action}} changes something the whole deployment shares, so its record belongs to no tenant. An empty list here does not mean it never happened.",
+                    { action },
                   )
-                : t(
-                    "audit.emptyDescription",
-                    "Changes to agents, channels, knowledge and settings are recorded here as they are made.",
-                  )
+                : scoped
+                  ? t(
+                      "audit.emptyFilteredDescription",
+                      "Widen the date range, or clear the filters to see the whole trail.",
+                    )
+                  : t(
+                      "audit.emptyDescription",
+                      "Changes to agents, channels, knowledge and settings are recorded here as they are made.",
+                    )
             }
           />
         </Card>
       ) : (
         <div className="flex flex-col gap-3">
           {entries.map((row) => (
-            <AuditRowCard key={row.id} row={row} />
+            <AuditRowCard
+              key={row.id}
+              row={row}
+              onFilterAction={(next) => setFilter("action", next)}
+            />
           ))}
         </div>
       )}

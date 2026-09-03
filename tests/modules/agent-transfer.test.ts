@@ -1877,6 +1877,62 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     }
   });
 
+  // Round 18: a bundle can carry the same native-named component twice (a hand-edited file). Each
+  // occurrence chose a new suffix and the last one overwrote the grant mapping, so one grant went
+  // to the last row and the two of them collided on the unique index and aborted the import. The
+  // name is chosen once per bundle name, and two grants on one row are one grant.
+  test("the same native-named tool twice in a bundle lands once, and its two grants collapse to one", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const bundle = structuredClone(exp);
+    const tool = bundle.components?.httpTools.find(
+      (h) => h.name === "lookup_order",
+    );
+    if (!tool || !bundle.components)
+      throw new Error("bundle missing lookup_order");
+    tool.name = "set_custom_attribute";
+    bundle.components.httpTools.push({
+      ...structuredClone(tool),
+      label: "Cópia",
+    });
+    const grant = bundle.agent.tools.find(
+      (g) => g?.source === "HTTP" && g.tool === "lookup_order",
+    );
+    if (grant?.source !== "HTTP")
+      throw new Error("bundle missing the HTTP grant");
+    grant.tool = "set_custom_attribute";
+    bundle.agent.tools.push({ ...grant });
+    const { agent, warnings } = await importAgent(dstCtx(), bundle, appDb);
+    const rows = await suDb.toolDefinition.findMany({
+      where: {
+        tenantId: dstTenant,
+        name: { startsWith: "set_custom_attribute" },
+      },
+      select: { id: true, name: true, label: true },
+    });
+    expect(rows.map((r) => [r.name, r.label])).toEqual([
+      ["set_custom_attribute_2", "Buscar pedido"],
+    ]);
+    expect(warnings.filter((w) => w.code === "httpToolRenamed")).toHaveLength(
+      1,
+    );
+    expect(
+      warnings.some(
+        (w) =>
+          w.code === "httpToolReused" &&
+          w.params?.name === "set_custom_attribute_2",
+      ),
+    ).toBe(true);
+    const grants = await suDb.agentToolSelection.findMany({
+      where: { agentId: BigInt(agent.id), source: "HTTP" },
+      select: { toolDefinitionId: true },
+    });
+    expect(grants.map((g) => g.toolDefinitionId)).toEqual([
+      rows[0]?.id ?? null,
+    ]);
+  });
+
   // Round 16: the rename was recorded and reported before the checks that can skip the component,
   // so a native-named tool with a method this version does not send was announced as imported
   // under a name no row carries, next to the warning that it was not imported.

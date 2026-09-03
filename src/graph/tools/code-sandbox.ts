@@ -71,8 +71,10 @@ export type SandboxOutcome =
       limit: "time" | "memory" | "stack" | "aborted";
       logs: string[];
     }
-  // The sandbox itself could not start: the thread died before it ever said it was ready. This is
-  // the one outcome that is ours and not the snippet's, and the tool reports it as a failure.
+  // The sandbox itself could not start — the thread died before it ever said it was ready — or
+  // the interpreter could not be set up for the request (a runtime, a context, a prelude failing
+  // before the snippet ran). This is the one outcome that is ours and not the snippet's, and the
+  // tool reports it as a failure.
   | { kind: "unavailable"; reason: string };
 
 export interface SandboxOptions {
@@ -209,6 +211,12 @@ function spawnAndRun(
       if (reply.kind === "ready") {
         ready = true;
         worker.postMessage(request);
+        return;
+      }
+      // The thread is up and the interpreter could not be set up for the request: ours, like a
+      // thread that never booted, and unlike a thread that died on the snippet.
+      if (reply.kind === "unavailable") {
+        finish(reply);
         return;
       }
       if (reply.kind === "value") {

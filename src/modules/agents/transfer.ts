@@ -1447,6 +1447,10 @@ async function createMissingComponents(
   // Bundle name → stored name, for the HTTP tools this loop could not store under their own.
   const renamedHttpTools = new Map<string, string>();
   const taken = new Set(components.httpTools.map((t) => t.name));
+  // One stored name per bundle name: a bundle carrying the same native-named component twice (a
+  // hand-edited file) chose a new suffix per occurrence and the last one overwrote the grant
+  // mapping (round 18); the second occurrence now finds the first one's row and is reused.
+  const chosen = new Map<string, string>();
   for (const tdef of components.httpTools) {
     // A bundle authored before a native took the name (PR #485, round 15). The assembly reserves
     // every native name (#457), so a tool stored under one would exist in the console and never
@@ -1454,8 +1458,9 @@ async function createMissingComponents(
     // the service. Stored under `<name>_N`, warned, so the operator learns the name a prompt may
     // still use; a row already under it is reused like any other same-name component.
     const name = isNativeToolName(tdef.name)
-      ? renamedHttpToolName(tdef.name, taken)
+      ? (chosen.get(tdef.name) ?? renamedHttpToolName(tdef.name, taken))
       : tdef.name;
+    chosen.set(tdef.name, name);
     taken.add(name);
     // Recorded once a row under the new name EXISTS — written below, or found by the pre-check
     // or the race — and not before: a component the checks below skip was otherwise announced
@@ -1970,6 +1975,13 @@ async function buildGrantRows(
             params: { name: g.tool },
             target: { kind: "tool", name: g.tool },
           });
+          break;
+        }
+        // Two grants on one row are one grant: a bundle that carries a native-named component
+        // twice grants it twice, and `ats_http_uq` would abort the whole import over the pair.
+        if (
+          rows.some((r) => r.source === "HTTP" && r.toolDefinitionId === td.id)
+        ) {
           break;
         }
         rows.push({

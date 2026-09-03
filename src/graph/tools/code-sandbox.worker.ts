@@ -39,6 +39,11 @@ export interface SandboxRequest {
 
 export type SandboxReply =
   | { kind: "ready" }
+  // The interpreter could not be set up for this request — the runtime, the context, the renderer
+  // or a prelude failed before the snippet ran. Ours, not the snippet's: the host reports it as
+  // the sandbox being unavailable, where an uncaught error here read as the snippet's abort and
+  // told the model to simplify and retry, every turn (round 18).
+  | { kind: "unavailable"; reason: string }
   | { kind: "value"; value: string; logs: string[]; ms: number }
   | {
       kind: "error";
@@ -957,8 +962,17 @@ function withSourceLine(
   };
 }
 
-function run(req: SandboxRequest): SandboxReply {
-  const started = performance.now();
+// Everything that stands before the snippet: the runtime and its limits, the context, the renderer,
+// the error reader, the four preludes. What fails here is the sandbox's own, never the snippet's.
+interface Session {
+  runtime: ReturnType<typeof QuickJS.newRuntime>;
+  vm: QuickJSContext;
+  renderer: ReturnType<typeof makeRenderer>;
+  errors: ReturnType<typeof makeErrorReader>;
+  logs: string[];
+}
+
+function open(req: SandboxRequest): Session {
   const logs: string[] = [];
   const runtime = QuickJS.newRuntime();
   runtime.setMemoryLimit(req.memoryBytes);
@@ -968,18 +982,35 @@ function run(req: SandboxRequest): SandboxReply {
   );
   const vm = runtime.newContext();
   const renderer = makeRenderer(vm);
-  const render = renderer.render;
   const errors = makeErrorReader(vm, req.maxChars);
+  installConsole(vm, renderer.handle, logs, req.maxChars);
+  installZone(vm, req.clock.timezone);
+  installPrelude(vm);
+  installClock(vm, req.clock);
+  return { runtime, vm, renderer, errors, logs };
+}
+
+function run(req: SandboxRequest): SandboxReply {
+  const started = performance.now();
+  let session: Session;
+  try {
+    session = open(req);
+  } catch (e) {
+    // The thread is discarded with the reply, so nothing half-built is freed here.
+    const reason = e instanceof Error ? e.message : String(e);
+    return {
+      kind: "unavailable",
+      reason: `the interpreter could not be set up: ${reason}`,
+    };
+  }
+  const { runtime, vm, renderer, errors, logs } = session;
+  const render = renderer.render;
   const renewDeadline = () =>
     runtime.setInterruptHandler(
       shouldInterruptAfterDeadline(Date.now() + RENDER_BUDGET_MS),
     );
   let unwound = false;
   try {
-    installConsole(vm, renderer.handle, logs, req.maxChars);
-    installZone(vm, req.clock.timezone);
-    installPrelude(vm);
-    installClock(vm, req.clock);
     const out = evaluate(vm, req.code, errors.read);
     const ms = Math.round(performance.now() - started);
     if (out.ok) {

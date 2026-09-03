@@ -927,6 +927,49 @@ describe("runSandboxedCode", () => {
     expect(performance.now() - started).toBeLessThan(3000);
   });
 
+  // Round 18: `ready` is posted when the module loads, and the runtime, the context, the renderer
+  // and the four preludes are set up on the request, before the snippet runs. A failure there was
+  // an uncaught error after `ready`, which the host reads as the snippet's abort — so an install or
+  // environment problem told the model to simplify and retry, every turn, instead of reaching the
+  // operator as the sandbox being unavailable. Asked of the thread directly, because the host
+  // resolves the zone before the request and an unknown one cannot reach the shim through it.
+  test("the interpreter failing to set up after the thread is ready is the sandbox's failure, not the snippet's", async () => {
+    const worker = new Worker(
+      new URL("../../src/graph/tools/code-sandbox.worker.ts", import.meta.url)
+        .href,
+    );
+    const reply = await new Promise<unknown>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("no reply")), 5000);
+      worker.onmessage = (ev: MessageEvent<{ kind: string }>) => {
+        if (ev.data.kind === "ready") {
+          worker.postMessage({
+            code: "1 + 1",
+            timeoutMs: 1000,
+            memoryBytes: 32 * 1024 * 1024,
+            stackBytes: 256 * 1024,
+            maxChars: 4000,
+            clock: {
+              timezone: "Not/AZone",
+              nowLocal: "2026-01-01T00:00:00.000+00:00",
+            },
+          });
+          return;
+        }
+        clearTimeout(timer);
+        resolve(ev.data);
+      };
+      worker.onerror = (e) => {
+        clearTimeout(timer);
+        resolve({ kind: "uncaught", message: String(e.message) });
+      };
+    });
+    worker.terminate();
+    expect(reply).toMatchObject({
+      kind: "unavailable",
+      reason: expect.stringMatching(/Not\/AZone|time zone/i),
+    });
+  });
+
   test("a thread that dies after booting is the snippet's abort, not a sandbox failure", async () => {
     const out = await runSandboxedCode(
       "1 + 1",

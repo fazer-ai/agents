@@ -18,6 +18,7 @@ import {
   shouldInterruptAfterDeadline,
 } from "quickjs-emscripten-core";
 import { clipText } from "@/lib/text";
+import { zoneFormatter, zoneOffsetMinutes } from "./zone-offset";
 
 declare var self: Worker;
 
@@ -29,8 +30,10 @@ export interface SandboxRequest {
   // Cap on the rendered result and on the captured console output, each. Applied HERE so the
   // message back to the host is bounded by construction, whatever the snippet built.
   maxChars: number;
-  // The agent's clock, exposed as `TIMEZONE` and `NOW_LOCAL`. The interpreter's own clock is UTC
-  // and it has no Intl, so without these "today" is tomorrow's date every evening in Brazil.
+  // The agent's clock: `timezone` is what `Date` runs in (see DATE_SHIM_SOURCE) and what `TIMEZONE`
+  // says, `nowLocal` is `NOW_LOCAL`. The interpreter's own clock is UTC and it has no Intl, so
+  // without these "today" is tomorrow's date every evening in Brazil. The zone arrives RESOLVED:
+  // the host already fell back to UTC for one Intl does not know.
   clock: { timezone: string; nowLocal: string };
 }
 
@@ -197,6 +200,152 @@ const PRELUDE_SOURCE = `(function () {
   };
 })()`;
 
+// `Date` in the agent's zone. The interpreter's own Date follows the HOST's zone (UTC in the
+// container), and a Bun worker cannot be given another one (measured: `process.env.TZ` assigned
+// inside the worker, or passed as its env, changes nothing) — nor should it, since the process zone
+// is shared by every turn in flight. So the zone is applied inside: one host function answers the
+// zone's offset at an instant (Intl lives on the host), and this prelude re-defines, on top of it,
+// everything in Date that is local — the getters and setters, the component constructor, parsing of
+// a date-time with no offset, and toString — while getTime, toISOString and the UTC methods stay the
+// engine's. The two wall times without a single answer follow the spec (and Bun, which is where the
+// tests' reference values come from): a time inside a spring gap keeps the offset from before it,
+// a time that happens twice in autumn is its first occurrence.
+const DATE_SHIM_SOURCE = `(function (offsetAt) {
+  var NativeDate = Date;
+  var proto = NativeDate.prototype;
+  var getTime = proto.getTime;
+  var setTime = proto.setTime;
+  var MINUTE = 60000;
+  function wall(t) { return t + offsetAt(t) * MINUTE; }
+  function instant(w) {
+    if (isNaN(w)) return NaN;
+    var o1 = offsetAt(w);
+    var t1 = w - o1 * MINUTE;
+    var o2 = offsetAt(t1);
+    if (o2 === o1) return t1;
+    var t2 = w - o2 * MINUTE;
+    return offsetAt(t2) === o2 ? t2 : t1;
+  }
+  function define(name, fn) {
+    Object.defineProperty(proto, name, { value: fn, writable: true, configurable: true });
+  }
+  var getters = {
+    getFullYear: "getUTCFullYear", getMonth: "getUTCMonth", getDate: "getUTCDate", getDay: "getUTCDay",
+    getHours: "getUTCHours", getMinutes: "getUTCMinutes", getSeconds: "getUTCSeconds", getMilliseconds: "getUTCMilliseconds",
+  };
+  Object.keys(getters).forEach(function (name) {
+    var utc = proto[getters[name]];
+    define(name, function () {
+      var t = getTime.call(this);
+      return isNaN(t) ? NaN : utc.call(new NativeDate(wall(t)));
+    });
+  });
+  define("getYear", function () { var y = this.getFullYear(); return isNaN(y) ? NaN : y - 1900; });
+  define("getTimezoneOffset", function () {
+    var t = getTime.call(this);
+    return isNaN(t) ? NaN : -offsetAt(t);
+  });
+  var setters = {
+    setFullYear: "setUTCFullYear", setMonth: "setUTCMonth", setDate: "setUTCDate", setHours: "setUTCHours",
+    setMinutes: "setUTCMinutes", setSeconds: "setUTCSeconds", setMilliseconds: "setUTCMilliseconds",
+  };
+  Object.keys(setters).forEach(function (name) {
+    var utc = proto[setters[name]];
+    define(name, function () {
+      var t = getTime.call(this);
+      if (isNaN(t) && name !== "setFullYear") return NaN;
+      var w = new NativeDate(isNaN(t) ? 0 : wall(t));
+      utc.apply(w, arguments);
+      return setTime.call(this, instant(getTime.call(w)));
+    });
+  });
+  var DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  var MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  function pad(n, width) {
+    var s = String(Math.abs(n));
+    while (s.length < width) s = "0" + s;
+    return (n < 0 ? "-" : "") + s;
+  }
+  function dateText(w) {
+    return DAYS[w.getUTCDay()] + " " + MONTHS[w.getUTCMonth()] + " " + pad(w.getUTCDate(), 2) + " " + pad(w.getUTCFullYear(), 4);
+  }
+  function timeText(w) {
+    return pad(w.getUTCHours(), 2) + ":" + pad(w.getUTCMinutes(), 2) + ":" + pad(w.getUTCSeconds(), 2);
+  }
+  function zoneText(t) {
+    var o = offsetAt(t);
+    var a = Math.abs(o);
+    return "GMT" + (o < 0 ? "-" : "+") + pad(Math.floor(a / 60), 2) + pad(a % 60, 2);
+  }
+  function isoDate(w) {
+    return pad(w.getUTCFullYear(), 4) + "-" + pad(w.getUTCMonth() + 1, 2) + "-" + pad(w.getUTCDate(), 2);
+  }
+  function local(self, render) {
+    var t = getTime.call(self);
+    return isNaN(t) ? "Invalid Date" : render(new NativeDate(wall(t)), t);
+  }
+  define("toDateString", function () { return local(this, dateText); });
+  define("toTimeString", function () { return local(this, function (w, t) { return timeText(w) + " " + zoneText(t); }); });
+  define("toString", function () { return local(this, function (w, t) { return dateText(w) + " " + timeText(w) + " " + zoneText(t); }); });
+  define("toLocaleDateString", function () { return local(this, isoDate); });
+  define("toLocaleTimeString", function () { return local(this, timeText); });
+  define("toLocaleString", function () { return local(this, function (w) { return isoDate(w) + " " + timeText(w); }); });
+  var LOCAL = /^\\s*(\\d{4})-(\\d{2})-(\\d{2})T(\\d{2}):(\\d{2})(?::(\\d{2})(?:\\.(\\d{1,3}))?)?\\s*$/;
+  function parse(text) {
+    var m = LOCAL.exec(String(text));
+    if (!m) return NativeDate.parse(text);
+    var ms = m[7] === undefined ? 0 : Number((m[7] + "00").slice(0, 3));
+    return instant(NativeDate.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], m[6] === undefined ? 0 : +m[6], ms));
+  }
+  function primitive(v) {
+    if (v instanceof NativeDate) return getTime.call(v);
+    if (v !== null && typeof v === "object") {
+      var p = v.valueOf();
+      return typeof p === "object" ? String(v) : p;
+    }
+    return v;
+  }
+  function ShimDate(a) {
+    if (!(this instanceof ShimDate)) return new ShimDate().toString();
+    var t;
+    if (arguments.length === 0) t = NativeDate.now();
+    else if (arguments.length === 1) {
+      var p = primitive(a);
+      t = typeof p === "string" ? parse(p) : Number(p);
+    } else t = instant(NativeDate.UTC.apply(null, arguments));
+    return new NativeDate(t);
+  }
+  ShimDate.prototype = proto;
+  define("constructor", ShimDate);
+  ShimDate.now = NativeDate.now;
+  ShimDate.UTC = NativeDate.UTC;
+  ShimDate.parse = parse;
+  Object.defineProperty(ShimDate, "name", { value: "Date" });
+  Object.defineProperty(ShimDate, "length", { value: 7 });
+  globalThis.Date = ShimDate;
+})(__tzOffset);
+delete globalThis.__tzOffset;`;
+
+// The host side of the shim: the zone's offset at an instant, memoised because a snippet that reads
+// the same date's fields one after another asks for the same instant each time.
+function installZone(vm: QuickJSContext, timezone: string): void {
+  const fmt = zoneFormatter(timezone);
+  const cache = new Map<number, number>();
+  const fn = vm.newFunction("__tzOffset", (handle: QuickJSHandle) => {
+    const t = vm.getNumber(handle);
+    let offset = cache.get(t);
+    if (offset === undefined) {
+      offset = zoneOffsetMinutes(fmt, t);
+      if (cache.size >= 4096) cache.clear();
+      cache.set(t, offset);
+    }
+    return vm.newNumber(offset);
+  });
+  vm.setProp(vm.global, "__tzOffset", fn);
+  fn.dispose();
+  vm.unwrapResult(vm.evalCode(DATE_SHIM_SOURCE, "date.js")).dispose();
+}
+
 function installPrelude(vm: QuickJSContext): void {
   vm.unwrapResult(vm.evalCode(PRELUDE_SOURCE, "prelude.js")).dispose();
 }
@@ -225,16 +374,92 @@ function installClock(
 // "return the verdict" writes exactly that, so the one specific SyntaxError that means "you wrote
 // a function body" gets the snippet re-run as one. Any other error is the snippet's own.
 const RETURN_AT_TOP_LEVEL = /return not in a function/;
+
+// A snippet that ends with an object literal in statement position — `…; { day, days }` — is a
+// BLOCK to the parser, so its value is the last expression in it (or a SyntaxError once a property
+// has a key), and a model that wanted the object back gets a number or a parse error. Measured live
+// (PR #485): 2 of 3 date answers went wrong this way, one of them through three SyntaxError round
+// trips before the model added parentheses. So a trailing `{…}` that sits at a statement boundary
+// (start of code, `;`, `}` or a line break — not after `)`, `=>`, `else`, `try`…) is tried first with
+// parentheses around it, and the original source is what runs if that does not parse.
+function withTrailingObjectWrapped(code: string): string | undefined {
+  const end = code.replace(/[\s;]+$/, "").length;
+  if (end === 0 || code[end - 1] !== "}") return undefined;
+  let depth = 0;
+  let start = -1;
+  for (let i = end - 1; i >= 0; i--) {
+    const c = code[i];
+    if (c === "}") depth++;
+    else if (c === "{" && --depth === 0) {
+      start = i;
+      break;
+    }
+  }
+  if (start < 0) return undefined;
+  const before = code.slice(0, start).replace(/\s+$/, "");
+  // NOTE: A closing brace is a boundary too — `if (…) { … } { day, days }` is the shape measured
+  // live, once the model guards the month roll-over with a block first.
+  const boundary =
+    before.length === 0 ||
+    /[;}\n]$/.test(code.slice(0, start).replace(/[ \t]+$/, ""));
+  if (!boundary) return undefined;
+  return `${code.slice(0, start)}(${code.slice(start, end)})${code.slice(end)}`;
+}
 const RENDER_BUDGET_MS = 200;
 const ERROR_NAME_MAX_CHARS = 100;
+
+// The engine's own limit is a QuickJS error; the HOST's is a RangeError thrown by JSC through the
+// WASM frames, when the interrupt handler (a JS callback, fired every 10k opcodes) is entered at a
+// depth the thread's native stack cannot take. Measured with the budget at 512 KiB: the native
+// limit came first (~2,400 frames on macOS), and only when an interrupt happened to fire deep, so
+// the recursion test passed by phase. The frames that throw unwinds never ran their epilogues (the
+// shadow stack pointer is wherever the deepest one left it), so after it NOTHING in the interpreter
+// is called again — no dump, no dispose; the thread is discarded with the reply. Left uncaught, the
+// RangeError was what killed the thread (`stack` came back as `aborted`). The budget is sized so
+// this is the exception (code-sandbox.ts), and this is what a thread with less room gets.
+const HOST_STACK_LIMIT = {
+  ok: false,
+  error: { name: "InternalError", message: "stack overflow" },
+  limit: "stack",
+  unwound: true,
+} as const;
+
+function evalOrUnwind(
+  vm: QuickJSContext,
+  source: string,
+): ReturnType<QuickJSContext["evalCode"]> | undefined {
+  try {
+    return vm.evalCode(source, "snippet.js");
+  } catch (e) {
+    if (e instanceof RangeError) return undefined;
+    throw e;
+  }
+}
 
 function evaluate(
   vm: QuickJSContext,
   code: string,
 ):
   | { ok: true; value: QuickJSHandle }
-  | { ok: false; error: unknown; limit?: SandboxLimit } {
-  const first = vm.evalCode(code, "snippet.js");
+  | { ok: false; error: unknown; limit?: SandboxLimit; unwound?: true } {
+  const wrapped = withTrailingObjectWrapped(code);
+  if (wrapped !== undefined) {
+    const asObject = evalOrUnwind(vm, wrapped);
+    if (asObject === undefined) return HOST_STACK_LIMIT;
+    if (!asObject.error) return { ok: true, value: asObject.value };
+    const err = dumpError(vm, asObject.error) as { name?: string } | null;
+    // NOTE: Only a parse failure sends the original source through; a snippet that threw at runtime
+    // with the parentheses on would throw the same without them, and would run twice.
+    if (err?.name !== "SyntaxError") {
+      return {
+        ok: false,
+        error: withSourceLine(err, code, 0),
+        limit: limitOf(err),
+      };
+    }
+  }
+  const first = evalOrUnwind(vm, code);
+  if (first === undefined) return HOST_STACK_LIMIT;
   if (!first.error) return { ok: true, value: first.value };
   const error = dumpError(vm, first.error) as {
     name?: string;
@@ -250,7 +475,8 @@ function evaluate(
       limit: limitOf(error),
     };
   }
-  const second = vm.evalCode(`(function () {\n${code}\n})()`, "snippet.js");
+  const second = evalOrUnwind(vm, `(function () {\n${code}\n})()`);
+  if (second === undefined) return HOST_STACK_LIMIT;
   if (second.error) {
     const err = dumpError(vm, second.error);
     return {
@@ -325,8 +551,10 @@ function run(req: SandboxRequest): SandboxReply {
     runtime.setInterruptHandler(
       shouldInterruptAfterDeadline(Date.now() + RENDER_BUDGET_MS),
     );
+  let unwound = false;
   try {
     installConsole(vm, render, logs, req.maxChars);
+    installZone(vm, req.clock.timezone);
     installPrelude(vm);
     installClock(vm, req.clock);
     const out = evaluate(vm, req.code);
@@ -353,6 +581,7 @@ function run(req: SandboxRequest): SandboxReply {
         : e === null || typeof e !== "object"
           ? String(e)
           : JSON.stringify(e);
+    unwound = out.unwound === true;
     return {
       kind: "error",
       name,
@@ -362,14 +591,18 @@ function run(req: SandboxRequest): SandboxReply {
       ...(out.limit ? { limit: out.limit } : {}),
     };
   } finally {
-    // NOTE: Best effort. A runtime the engine already gave up on (a native stack overflow that the
-    // WASM stack ceiling did not catch first) asserts inside dispose; the reply is already built,
-    // and the thread ends either way.
-    try {
-      renderer.dispose();
-      vm.dispose();
-      runtime.dispose();
-    } catch {}
+    // NOTE: A runtime the host unwound through (HOST_STACK_LIMIT) is NOT freed: its frames never
+    // ran their epilogues, and `JS_FreeRuntime` asserts on what they left — measured, an engine
+    // abort printed on every such call. The reply still posts (the abort is caught here), so the
+    // outcome cannot tell; the fence is the fixture that reads the thread's stderr. The thread is
+    // discarded with the reply either way. Freeing is best effort on the normal path too.
+    if (!unwound) {
+      try {
+        renderer.dispose();
+        vm.dispose();
+        runtime.dispose();
+      } catch {}
+    }
   }
 }
 

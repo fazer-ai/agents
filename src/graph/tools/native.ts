@@ -1382,7 +1382,7 @@ const RUN_CODE_DESCRIPTION = [
   "Write the code so that it produces the FINAL VERDICT itself (for example, end with an object like { valid: true }) and relay that result to the customer. Never redo the comparison or the arithmetic yourself after the tool answered.",
   "The value of the last expression is the result (REPL style); console.log output is returned with it. Plain JavaScript only: no network, no files, no imports, no async/await.",
   "Built-in helpers, to be used instead of writing the algorithm: validateCpf(text) and validateCnpj(text) return { valid: boolean } and ignore punctuation.",
-  "For dates, use the globals TIMEZONE (IANA zone) and NOW_LOCAL (the current instant as an ISO string with the agent's UTC offset, e.g. 2026-09-02T19:05:33-03:00): the sandbox clock itself is UTC and knows no timezone.",
+  "For dates, the sandbox runs on the agent's clock: the globals TIMEZONE (IANA zone) and NOW_LOCAL (the current instant as an ISO string with the agent's UTC offset, e.g. 2026-09-02T19:05:33-03:00), and Date's local methods (getDate, getHours, setDate, new Date(y, m, d), toString) follow TIMEZONE; getTime and toISOString are UTC as always. Months are 0-based (January = 0) and there is no Intl, so weekday and month names come from your own arrays.",
   `Limits: ${SANDBOX_TIMEOUT_MS} ms of CPU, ${Math.round(SANDBOX_MEMORY_BYTES / (1024 * 1024))} MB of memory.`,
 ].join(" ");
 

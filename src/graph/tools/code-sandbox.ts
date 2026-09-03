@@ -4,6 +4,12 @@ import {
   MODEL_RESPONSE_CHAR_LIMIT,
 } from "@/modules/tool-definitions/response-template";
 import type { SandboxReply, SandboxRequest } from "./code-sandbox.worker";
+import {
+  resolveTimezone,
+  wallClock,
+  zoneFormatter,
+  zoneOffsetMinutes,
+} from "./zone-offset";
 
 // Runs a model-authored JavaScript snippet where it can compute and decide, and cannot reach
 // anything else (issue #363). The tool exists because a verdict left to the model is periodically
@@ -24,13 +30,19 @@ import type { SandboxReply, SandboxRequest } from "./code-sandbox.worker";
 //     process it is a corrupted module shared by every later call.
 //   - `terminate()` is a hard stop that does not depend on the interrupt being polled.
 //
-// The limits below are the measured safe values: 512 KiB of interpreter stack is refused cleanly by
-// QuickJS (as "stack overflow") in a worker thread while still allowing ~2000 frames of plain
-// recursion; the CPU deadline is polled and lands within a few ms of the figure.
+// The limits below are the measured safe values. The stack budget is the one the ENGINE must reach
+// before the thread's native stack does: the interrupt handler is a JS callback fired from inside
+// the WASM frames every 10k opcodes, and JSC refuses to enter it past a depth (~2,400 interpreter
+// frames on macOS) by throwing a RangeError through those frames. At 512 KiB the engine's own limit
+// sat past that depth, and the runaway-recursion test only passed when no interrupt happened to
+// fire deep — fewer than ~1,200 opcodes before the recursion; with more, `aborted`. At 448 KiB the
+// engine came first; 256 KiB (~1,340 honest frames) leaves half the measured room, and the worker
+// still maps the host's RangeError to the stack limit for a thread with less. The CPU deadline is
+// polled and lands within a few ms of the figure.
 
 export const SANDBOX_TIMEOUT_MS = 1000;
 export const SANDBOX_MEMORY_BYTES = 32 * 1024 * 1024;
-export const SANDBOX_STACK_BYTES = 512 * 1024;
+export const SANDBOX_STACK_BYTES = 256 * 1024;
 // The snippet itself: a model does not write more than a few hundred lines in one call, and the
 // bound keeps a runaway generation from being handed to a thread as a megabyte of source.
 export const SANDBOX_CODE_MAX_CHARS = 20_000;
@@ -119,41 +131,14 @@ const defaultQueue = new SandboxQueue(SANDBOX_MAX_CONCURRENCY);
 // the same instant. Computed HERE because the interpreter has no Intl. An unknown zone falls back
 // to UTC rather than to nothing, so the snippet always has a clock.
 export function localIsoNow(timezone: string, now: Date = new Date()): string {
-  let parts: Intl.DateTimeFormatPart[];
-  try {
-    parts = new Intl.DateTimeFormat("en-US", {
-      timeZone: timezone,
-      hourCycle: "h23",
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    }).formatToParts(now);
-  } catch {
-    return localIsoNow("UTC", now);
-  }
-  const get = (type: Intl.DateTimeFormatPartTypes) =>
-    parts.find((p) => p.type === type)?.value ?? "00";
-  const wall = `${get("year")}-${get("month")}-${get("day")}T${get("hour")}:${get("minute")}:${get("second")}`;
-  const wallAsUtc = Date.UTC(
-    Number(get("year")),
-    Number(get("month")) - 1,
-    Number(get("day")),
-    Number(get("hour")),
-    Number(get("minute")),
-    Number(get("second")),
-  );
-  // NOTE: Whole seconds, because the wall clock above has no fraction to compare against.
-  const instantMs = now.getTime();
-  const wholeSecondMs = instantMs - (instantMs % 1000);
-  const offsetMinutes = Math.round((wallAsUtc - wholeSecondMs) / 60_000);
+  const fmt = zoneFormatter(resolveTimezone(timezone));
+  const w = wallClock(fmt, now.getTime());
+  const pad = (n: number, width = 2) => String(n).padStart(width, "0");
+  const wall = `${pad(w.year, 4)}-${pad(w.month)}-${pad(w.day)}T${pad(w.hour)}:${pad(w.minute)}:${pad(w.second)}`;
+  const offsetMinutes = zoneOffsetMinutes(fmt, now.getTime());
   const sign = offsetMinutes < 0 ? "-" : "+";
   const abs = Math.abs(offsetMinutes);
-  const hh = String(Math.floor(abs / 60)).padStart(2, "0");
-  const mm = String(abs % 60).padStart(2, "0");
-  return `${wall}${sign}${hh}:${mm}`;
+  return `${wall}${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`;
 }
 
 const WORKER_URL = new URL("./code-sandbox.worker.ts", import.meta.url).href;
@@ -178,7 +163,7 @@ function spawnAndRun(
   deps: SandboxDeps,
 ): Promise<SandboxOutcome> {
   const timeoutMs = opts.timeoutMs ?? SANDBOX_TIMEOUT_MS;
-  const timezone = opts.clock?.timezone ?? "UTC";
+  const timezone = resolveTimezone(opts.clock?.timezone ?? "UTC");
   const request: SandboxRequest = {
     code,
     timeoutMs,

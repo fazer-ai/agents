@@ -53,6 +53,40 @@ describe("runSandboxedCode", () => {
     });
   });
 
+  // Measured live (PR #485, round 4): `…; { day, days }` at the end is a block to the parser, and
+  // 2 of 3 date answers went wrong through it — one returned the last name's value and the model
+  // narrated a date that was never computed, the other cost three SyntaxError round trips.
+  test("an object literal at the end is the result, not a block", async () => {
+    const cases: Array<[string, string]> = [
+      ["const d = 8; { day: d, ok: true }", '{"day":8,"ok":true}'],
+      ["const a = 1, b = 2; { a, b }", '{"a":1,"b":2}'],
+      [
+        "const a = 1;\n{ a, nested: { b: [1, 2] } };",
+        '{"a":1,"nested":{"b":[1,2]}}',
+      ],
+      ["({ a: 1 })", '{"a":1}'],
+      // After a block: the shape measured live once the model guards a month roll-over first.
+      ["let y = 0; if (true) { y = 1 } { y, ok: true }", '{"y":1,"ok":true}'],
+      // Not an object: a real block, and braces that belong to a statement, run as written.
+      ["{ let x = 1; x + 1 }", "2"],
+      ["if (true) { 5 }", "5"],
+      ["function f() { return 3 }\nf()", "3"],
+      ["let n = 0; for (const i of [1, 2]) { n += i }", "3"],
+    ];
+    for (const [code, want] of cases) {
+      const out = await runSandboxedCode(code);
+      expect(out, code).toMatchObject({ kind: "value", value: want });
+    }
+    // A runtime error with the parentheses on is the snippet's error once, not twice.
+    const thrown = await runSandboxedCode(
+      "let calls = 0; function g() { calls++; throw new Error('boom ' + calls) }\n{ v: g() }",
+    );
+    expect(thrown).toMatchObject({
+      kind: "error",
+      message: expect.stringContaining("boom 1"),
+    });
+  });
+
   test("a top-level `return` is accepted as a function body", async () => {
     const out = await runSandboxedCode(
       `const v = 2 * 21;\nreturn { answer: v };`,
@@ -206,6 +240,88 @@ describe("runSandboxedCode", () => {
     expect(utc).toMatchObject({ kind: "value", value: '["UTC","string"]' });
   });
 
+  // Round 4 of PR #485: TIMEZONE and NOW_LOCAL are strings, and `Date` was the interpreter's, whose
+  // local methods follow the HOST's zone (UTC in the container), so `new Date(NOW_LOCAL).getDate()`
+  // was the UTC day — the exact date arithmetic the description advertises, wrong every evening.
+  // Measured before the design: `process.env.TZ` inside a Bun worker changes nothing (assigned, or
+  // passed as the worker's env), and the process zone is shared by every turn in flight anyway. So
+  // the zone is applied INSIDE the interpreter, through one host function that answers the zone's
+  // offset at an instant. Tokyo, so that a host in São Paulo (this machine) and one in UTC (CI)
+  // both disagree with every expected value; the reference values are Bun's own Date under TZ.
+  test("Date's local methods follow TIMEZONE, not the host's zone", async () => {
+    const now = new Date("2026-01-14T22:30:00Z"); // 07:30 on Thursday the 15th in Tokyo
+    const out = await runSandboxedCode(
+      `const d = new Date(NOW_LOCAL);
+       [d.getDate(), d.getHours(), d.getTimezoneOffset(), d.getDay(),
+        new Date(2026, 0, 15, 7, 30).toISOString(),
+        Date.parse("2026-01-15T07:30") === d.getTime(),
+        new Date("2026-01-15T07:30:00").getTime() === d.getTime(),
+        d.toString(), d.toDateString(), d.toTimeString(),
+        (() => { const e = new Date(d); e.setDate(e.getDate() + 1); return e.toISOString() })(),
+        (() => { const e = new Date(d); e.setHours(0, 0, 0, 0); return e.toISOString() })(),
+        new Date("2026-01-15").getTime() === Date.UTC(2026, 0, 15),
+        d.toISOString(), d instanceof Date, Object.prototype.toString.call(d),
+        new Date(26, 0, 1).getFullYear(), new Date(NaN).toString(), String(new Date(NaN).getDate()),
+        \`\${d}\` === d.toString(), JSON.stringify({ d })]`,
+      { clock: { timezone: "Asia/Tokyo", now } },
+    );
+    expect(out).toMatchObject({
+      kind: "value",
+      value: JSON.stringify([
+        15,
+        7,
+        -540,
+        4,
+        "2026-01-14T22:30:00.000Z",
+        true,
+        true,
+        "Thu Jan 15 2026 07:30:00 GMT+0900",
+        "Thu Jan 15 2026",
+        "07:30:00 GMT+0900",
+        "2026-01-15T22:30:00.000Z",
+        "2026-01-14T15:00:00.000Z",
+        true,
+        "2026-01-14T22:30:00.000Z",
+        true,
+        "[object Date]",
+        1926,
+        "Invalid Date",
+        "NaN",
+        true,
+        '{"d":"2026-01-14T22:30:00.000Z"}',
+      ]),
+    });
+  });
+
+  // A zone with transitions, across both of them. The two wall-clock times that have no single
+  // answer are pinned to what the spec (and Bun) say: a time inside the spring gap keeps the offset
+  // from before it, a time that happens twice in autumn is its first occurrence. The gap case is
+  // what a one-step conversion gets wrong by an hour.
+  test("a DST zone is honored across its transitions, gap and overlap included", async () => {
+    const out = await runSandboxedCode(
+      `[new Date("2026-01-10T12:00:00Z").getTimezoneOffset(),
+        new Date("2026-07-10T12:00:00Z").getTimezoneOffset(),
+        new Date(2026, 2, 8, 3, 30).toISOString(),
+        new Date(2026, 2, 8, 2, 30).toISOString(),
+        new Date(2026, 10, 1, 1, 30).toISOString(),
+        Date.parse("2026-03-08T02:30"),
+        (() => { const e = new Date("2026-03-07T12:00:00Z"); e.setDate(e.getDate() + 1); return [e.getHours(), e.toISOString()] })()]`,
+      { clock: { timezone: "America/New_York" } },
+    );
+    expect(out).toMatchObject({
+      kind: "value",
+      value: JSON.stringify([
+        300,
+        240,
+        "2026-03-08T07:30:00.000Z",
+        "2026-03-08T07:30:00.000Z",
+        "2026-11-01T05:30:00.000Z",
+        1772955000000,
+        [7, "2026-03-08T11:00:00.000Z"],
+      ]),
+    });
+  });
+
   test("a snippet that throws is ITS error, with the output it produced before", async () => {
     const out = await runSandboxedCode(`console.log("before"); null.x`);
     expect(out).toMatchObject({
@@ -259,16 +375,44 @@ describe("runSandboxedCode", () => {
   });
 
   test("runaway recursion is refused by the interpreter, and honest recursion is not", async () => {
+    // NOTE: The loop in front is the fence. The interrupt handler fires every 10k opcodes, and
+    // without work before the recursion the engine's limit tripped before the first one fired deep;
+    // with it, the handler is entered near full depth, which is where a budget past the thread's
+    // native room turned this reply into `aborted` (round 4 of PR #485: the first form of this test
+    // passed at 512 KiB by that phase alone).
+    const busy = "for (let i = 0; i < 12000; i++) {}\n";
     const runaway = await runSandboxedCode(
-      `function f(n) { return f(n + 1) }; f(0)`,
+      `${busy}function f(n) { return f(n + 1) }; f(0)`,
     );
     expect(runaway).toMatchObject({ kind: "limit", limit: "stack" });
-    // ~2000 frames fit under SANDBOX_STACK_BYTES; measured, and the constant's comment says so.
+    // ~1,340 frames fit under SANDBOX_STACK_BYTES; measured, and the constant's comment says so.
     const honest = await runSandboxedCode(
-      `function f(n) { return n === 0 ? 0 : 1 + f(n - 1) }; f(1500)`,
+      `${busy}function f(n) { return n === 0 ? 0 : 1 + f(n - 1) }; f(1000)`,
     );
-    expect(honest).toMatchObject({ kind: "value", value: "1500" });
-    expect(SANDBOX_STACK_BYTES).toBe(512 * 1024);
+    expect(honest).toMatchObject({ kind: "value", value: "1000" });
+    expect(SANDBOX_STACK_BYTES).toBe(256 * 1024);
+  });
+
+  // A thread with less native room than the budget assumes (another OS, another Bun) gets the same
+  // answer: the RangeError JSC throws through the WASM frames is the stack limit, and nothing in the
+  // interpreter is touched after it. 512 KiB is the budget measured to sit past this machine's
+  // native room (macOS; ~2,400 frames), so here this is the host path; on a thread with more room
+  // it is the engine's own refusal and this proves less. A budget past the WASM shadow stack is a
+  // different failure (a trap, `aborted`), so it cannot be forced from further up.
+  test("a stack budget the thread cannot honor is still reported as the stack limit", async () => {
+    const out = await runSandboxedCode(
+      `for (let i = 0; i < 12000; i++) {}\nfunction f(n) { return f(n + 1) }; f(0)`,
+      { stackBytes: 512 * 1024 },
+    );
+    expect(out).toMatchObject({ kind: "limit", limit: "stack" });
+    // The unwound runtime is not freed. Freeing it still answers `stack` (the abort is caught), so
+    // the outcome cannot tell; the engine's abort goes to the thread's stderr, read from outside.
+    const child = Bun.spawnSync(
+      ["bun", "tests/fixtures/code-sandbox/host-limit.ts"],
+      { cwd: process.cwd(), stdout: "pipe", stderr: "pipe" },
+    );
+    expect(child.stdout.toString()).toContain('"limit":"stack"');
+    expect(child.stderr.toString()).not.toContain("Aborted(");
   });
 
   // The fence: the whole point of an interpreter is what is NOT there. Each name is something a

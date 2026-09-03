@@ -396,6 +396,10 @@ const BARE_SLICES: Record<
   // The idempotency key's tail is a hex digest.
   "src/graph/tools/documents.ts": [1, "ascii"],
   "src/graph/tools/mcp.ts": [5, "ascii"],
+  // `withTrailingObjectWrapped`: the snippet split at the brace indexes its own scan found, to put
+  // parentheses around a trailing object literal. `{` and `}` are ASCII, so neither side of a cut
+  // can be half of a surrogate pair; nothing is dropped, the three pieces are joined back whole.
+  "src/graph/tools/code-sandbox.worker.ts": [3, "index"],
   "src/graph/tools/native.ts": [4, "array"],
   "src/graph/tools/toolName.ts": [1, "ascii"],
   "src/graph/trace.ts": [2, "array + index"],

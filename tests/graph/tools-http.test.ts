@@ -1568,6 +1568,39 @@ describe("a list of unknown length renders through a block (#459)", () => {
     expect(notes).toEqual([]);
   });
 
+  test("text before the block that already fills the clip is the clip's case, and it says so on both sides", async () => {
+    // Two values at the per-value cap leave no room for the list or its count. Not the block's to
+    // fix (shrinking earlier values would be a second cap deciding what the template says): the
+    // model reads the cut where it happened, and the operator gets the note with the advice.
+    const notes: { phase: string; detail?: Record<string, unknown> }[] = [];
+    const tool = buildHttpTool(
+      def({
+        outputSchema: {
+          mode: "template",
+          template: "{{a}}{{b}}\n{{#each itens}}- {{.}}\n{{/each}}",
+        },
+      }),
+      {
+        resolveCredential: async () => null,
+        fetchImpl: stubFetch(
+          {},
+          200,
+          JSON.stringify({
+            a: "a".repeat(3000),
+            b: "b".repeat(3000),
+            itens: ["x", "y"],
+          }),
+        ),
+        onSideEffectError: (e) =>
+          notes.push({ phase: e.phase, detail: e.detail }),
+      },
+    );
+    const text = String(await tool.invoke({}));
+    expect(text.endsWith("…[truncated]")).toBe(true);
+    expect(notes.map((n) => n.phase)).toEqual(["response_clipped"]);
+    expect(notes[0]?.detail).toMatchObject({ templated: true });
+  });
+
   test("a field a row lacks is named to the operator at the row that lacks it", async () => {
     const notes: { phase: string; detail?: Record<string, unknown> }[] = [];
     const tool = buildHttpTool(

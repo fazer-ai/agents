@@ -84,10 +84,17 @@ export const ITEM_SELF = ".";
 // things. This one bounds WORK: a list of one-character items would otherwise render thousands of
 // them under the text budget. The budget in `renderResponseTemplate` bounds TEXT: an item is only
 // appended while it fits under the model's clip with room left for the count of what follows, so
-// the count survives to the model instead of being the first thing the clip removes (round 1 of
-// review: 100 rows of ~100 characters rendered 40 and cut the marker off with them). The remainder
-// is never dropped silently either way: a model reading "and 120 more" knows to ask for a narrower
-// query, and one reading a list that simply ends does not.
+// the block's own items are never what pushes the count past the clip (round 1 of review: 100 rows
+// of ~100 characters rendered 40 and cut the marker off with them). The remainder is never dropped
+// silently either way: a model reading "and 120 more" knows to ask for a narrower query, and one
+// reading a list that simply ends does not.
+//
+// What the budget does NOT cover is text BEFORE the block: two values at MAX_VALUE_CHARS already
+// fill the clip, and then no list and no count fits after them. That is #456's per-value clip
+// doing what it always did to any field after them, not something a block makes worse, and the
+// clip's own backstop answers it on both sides: `…[truncated]` where the cut happened for the
+// model, and the `response_clipped` note with "shorten the template" for the operator. Shrinking
+// earlier values to make room would be a second cap deciding what the operator's template says.
 export const MAX_EACH_ITEMS = 50;
 
 // What the model sees where the list came back with nothing in it. Not the absent marker: the path
@@ -172,11 +179,18 @@ export function parseTemplate(template: string): ParsedTemplate {
           problem: `has a {{/each}} with no {{#each …}} before it`,
         };
       }
-      segments.push({
-        kind: "each",
-        path: open.path,
-        body: template.slice(open.bodyStart, start),
-      });
+      const body = template.slice(open.bodyStart, start);
+      // A block with nothing to repeat renders a non-empty list as NOTHING: the tool answered and
+      // the model reads an empty body. It is also exactly what the picker inserts (marker, empty
+      // line, marker), so it is the shape a tool gets saved in when the operator stops one step
+      // early; refused here, the Save gate says what to write instead of storing the silence.
+      if (body.trim() === "") {
+        return {
+          segments,
+          problem: `has ${open.marker} with nothing to repeat before {{/each}}; write the line for one item between the markers`,
+        };
+      }
+      segments.push({ kind: "each", path: open.path, body });
       open = null;
     } else {
       if (open !== null) {

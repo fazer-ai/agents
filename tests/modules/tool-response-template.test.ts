@@ -583,6 +583,14 @@ describe("parseTemplate refuses a broken structure, and the reader carries the r
       "{{#each a b}}x{{/each}}",
       "does not name a list",
     ],
+    // Round 2 of review, finding 2: exactly what the picker inserts, saved one step early, would
+    // render a non-empty list as an empty body.
+    ["an empty block", "{{#each a}}{{/each}}", "nothing to repeat"],
+    [
+      "a block with only the picker's empty line",
+      "{{#each a}}\n\n{{/each}}",
+      "nothing to repeat",
+    ],
   ])("%s", (_label, template, needle) => {
     expect(parseTemplate(template).problem).toContain(needle);
     const r = readResponseTemplateResult({ mode: "template", template });

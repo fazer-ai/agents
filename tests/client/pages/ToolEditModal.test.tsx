@@ -708,6 +708,12 @@ describe("insertEachBlock", () => {
       value = v;
     });
     expect(value).toBe("Total: {{total}}\n{{#each itens}}\n\n{{/each}}");
+    // What it inserts is not yet saveable, and the gate says what to write: a block with nothing
+    // to repeat would render a full list as an empty body (review round 2).
+    expect(templateSaveProblem(value)).toContain("nothing to repeat");
+    expect(
+      templateSaveProblem(value.replace("\n\n", "\n- {{nome}}\n")),
+    ).toBeNull();
   });
 
   test("a caret mid-line gets a line break on both sides, and lands between the markers", async () => {

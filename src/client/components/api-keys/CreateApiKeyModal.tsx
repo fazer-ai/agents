@@ -15,18 +15,16 @@ import { api } from "@/client/lib/api";
 export type ApiKeyScope = "tenant" | "fleet";
 
 // The names this modal sends, spelled the way the routes refuse them (`refused body.displayName`,
-// `refused body.password`). The password control is drawn for a fleet key only, so it is declared
-// under the same condition: a refusal about a control that is not on screen belongs in the banner.
-const API_KEY_FIELDS = ["displayName"] as const;
-const FLEET_KEY_FIELDS = ["displayName", "password"] as const;
+// `refused body.password`).
+const API_KEY_FIELDS = ["displayName", "password"] as const;
 
 // Modal to create an API key, in either scope. On success it reveals the plaintext token ONCE
 // (copy-to-clipboard + a "shown only once" warning); the token is never retrievable again — only its
 // hash is stored. `onCreated` refreshes the list.
 //
-// A FLEET key carries SUPER_ADMIN authority, so minting one is a person's act confirmed with their
-// password (the route refuses a Bearer key and a wrong password); the tenant modal asks for no
-// password because the key it mints has the authority the session already has over this tenant.
+// Both scopes ask for the operator's password: the key being minted answers every later step-up
+// by itself, so the step-up happens here, once, where a person is. A FLEET key additionally carries
+// SUPER_ADMIN authority, and its route refuses a Bearer key as the minter.
 export function CreateApiKeyModal({
   modal,
   onCreated,
@@ -44,9 +42,7 @@ export function CreateApiKeyModal({
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const refusal = useFieldRefusal(
-    modal.isOpen ? (fleet ? FLEET_KEY_FIELDS : API_KEY_FIELDS) : [],
-  );
+  const refusal = useFieldRefusal(modal.isOpen ? API_KEY_FIELDS : []);
   // The CURRENT value, readable from inside a request that started before it: the operator can type
   // while the create is out, and a refusal about a name they have already replaced belongs in the
   // banner rather than under a box that no longer holds it.
@@ -65,7 +61,7 @@ export function CreateApiKeyModal({
 
   // Once the token is revealed the work is saved → the form is no longer dirty.
   const isDirty = !token && (displayName.trim() !== "" || password !== "");
-  const canSubmit = displayName.trim() !== "" && (!fleet || password !== "");
+  const canSubmit = displayName.trim() !== "" && password !== "";
 
   const submit = async () => {
     setError("");
@@ -81,7 +77,7 @@ export function CreateApiKeyModal({
     try {
       const { data, error: apiError } = fleet
         ? await api.api.v1["api-keys"].fleet.post({ ...sent, password })
-        : await api.api.v1["api-keys"].post(sent);
+        : await api.api.v1["api-keys"].post({ ...sent, password });
       if (apiError || !data) {
         setError(held(apiError) ?? "");
         return;
@@ -180,25 +176,30 @@ export function CreateApiKeyModal({
               placeholder={t("apiKeys.namePlaceholder", "External integration")}
             />
           </FormField>
-          {fleet && (
-            <FormField
-              label={t("apiKeys.password", "Your password")}
-              required
-              description={t(
-                "apiKeys.fleetPasswordHint",
-                "This key will hold SUPER_ADMIN authority over every tenant. Confirm with your password.",
-              )}
-              error={refusal.at("password", password)}
-            >
-              <Input
-                type="password"
-                autoComplete="current-password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                disabled={loading}
-              />
-            </FormField>
-          )}
+          <FormField
+            label={t("apiKeys.password", "Your password")}
+            required
+            description={
+              fleet
+                ? t(
+                    "apiKeys.fleetPasswordHint",
+                    "This key will hold SUPER_ADMIN authority over every tenant. Confirm with your password.",
+                  )
+                : t(
+                    "apiKeys.passwordHint",
+                    "The key acts with your authority and is never asked for a password again. Confirm with yours.",
+                  )
+            }
+            error={refusal.at("password", password)}
+          >
+            <Input
+              type="password"
+              autoComplete="current-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              disabled={loading}
+            />
+          </FormField>
           <div className="flex justify-end gap-2">
             <Button
               type="button"

@@ -62,6 +62,10 @@ const realKeys = { ...keys };
 mock.module("@/modules/api-keys/service", () => ({
   ...realKeys,
   listApiKeys: (ctx: TenantContext) => realKeys.listApiKeys(ctx, app),
+  createApiKey: (
+    ctx: TenantContext,
+    input: Parameters<typeof keys.createApiKey>[1],
+  ) => realKeys.createApiKey(ctx, input, app),
   createFleetApiKey: (
     ctx: TenantContext,
     input: Parameters<typeof keys.createFleetApiKey>[1],
@@ -320,6 +324,36 @@ describe.skipIf(!dbUp)("a fleet-scoped API key at the request boundary", () => {
     );
     expect(revoked.status).toBe(200);
     expect(await realVerify.verifyApiKey(token, app)).toBeNull();
+  });
+
+  // Round 1 of the review: a key answers every later step-up by itself, so a stolen session must not
+  // be able to mint one without the password — or the key would carry the session past the rule.
+  // A key minting a key inherits the step-up its own minting answered.
+  test("a tenant key is minted by a session under step-up; a key mints one by itself", async () => {
+    const sessionHeaders = { cookie, "x-tenant-id": tenantA.toString() };
+    const noPw = await send("POST", "/api/v1/api-keys", sessionHeaders, {
+      displayName: "session no pw",
+    });
+    expect(noPw.status).toBe(400);
+    const wrongPw = await send("POST", "/api/v1/api-keys", sessionHeaders, {
+      displayName: "session wrong pw",
+      password: "nope",
+    });
+    expect(wrongPw.status).toBe(403);
+    const withPw = await send("POST", "/api/v1/api-keys", sessionHeaders, {
+      displayName: "session with pw",
+      password: PASSWORD,
+    });
+    expect(withPw.status).toBe(200);
+    const byKey = await send("POST", "/api/v1/api-keys", bearer(tenantToken), {
+      displayName: "minted by a key",
+    });
+    expect(byKey.status).toBe(200);
+    expect(
+      await su?.apiKey.count({
+        where: { tenantId: tenantA, displayName: { startsWith: "session " } },
+      }),
+    ).toBe(1);
   });
 
   test("the tenant key cannot reach the fleet routes", async () => {

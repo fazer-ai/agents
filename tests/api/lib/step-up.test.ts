@@ -9,7 +9,8 @@ import { countInSrc } from "@/tests/utils/source-text";
 
 // Step-up is a property of the SESSION, and a Bearer API key has none (issue #308).
 //
-// Five routes re-ask the acting user's password before an irreversible act. Each read that password
+// Six routes re-ask the acting user's password before an irreversible act (minting a key is one of
+// them, since the key answers every later step-up by itself). Each read that password
 // against the row `ctx.userId` names, which for an API-key principal is the key's CREATOR: a machine
 // holding the key could only pass by also holding a person's password, and that is the coupling the
 // issue reports as "fragile by nature" (the password rotates, the person leaves, the automation

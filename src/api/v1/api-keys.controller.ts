@@ -1,6 +1,6 @@
 import { Elysia, t } from "elysia";
 import { doc, errors } from "@/api/lib/openapi";
-import { confirmStepUp } from "@/api/lib/step-up";
+import { confirmStepUp, STEP_UP_PASSWORD_DESCRIPTION } from "@/api/lib/step-up";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
 import { requireDbId } from "@/lib/db-id";
 import {
@@ -69,10 +69,15 @@ export const apiKeysController = new Elysia({
   .post(
     "/",
     async ({ tenantContext, body }) => {
-      const created = await createApiKey(
-        ctxOrThrow(tenantContext),
-        body as ApiKeyCreate,
-      );
+      const ctx = ctxOrThrow(tenantContext);
+      // A key answers every later step-up by itself (`confirmStepUp`), so the step-up has to happen
+      // HERE, or a stolen seven-day session would mint a key and carry it past the password the
+      // destructive routes ask of the session. A key minting a key inherits that: it was itself
+      // minted under a step-up. Round 1 of the review on #308.
+      await confirmStepUp(ctx, body.password);
+      const created = await createApiKey(ctx, {
+        displayName: body.displayName,
+      } satisfies ApiKeyCreate);
       return {
         instance: instanceIdentity,
         apiKey: created.apiKey,
@@ -84,7 +89,7 @@ export const apiKeysController = new Elysia({
       requireRole: "TENANT_ADMIN",
       detail: doc(
         "Create API key",
-        "Creates a per-tenant Bearer API key and returns the plaintext token ONCE (only its hash is stored). Use it as `Authorization: Bearer <token>` against the REST v1 API or the MCP transport.",
+        "Creates a per-tenant Bearer API key and returns the plaintext token ONCE (only its hash is stored). Use it as `Authorization: Bearer <token>` against the REST v1 API or the MCP transport. A session confirms with its current password (the key it mints answers every later step-up by itself); a Bearer key needs none.",
       ),
       body: t.Object({
         displayName: t.String({
@@ -93,6 +98,9 @@ export const apiKeysController = new Elysia({
           description:
             "Human-readable label for the key (1 to 120 characters).",
         }),
+        password: t.Optional(
+          t.String({ minLength: 1, description: STEP_UP_PASSWORD_DESCRIPTION }),
+        ),
       }),
       response: errors(400, 401, 403, 404, 422),
     },

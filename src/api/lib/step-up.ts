@@ -7,8 +7,11 @@ import type { ActorType } from "@/lib/tenancy/context";
 // Step-up is a property of the SESSION. A cookie lives seven days in a browser somebody may have
 // walked away from, so before a tenant, an agent or a Chatwoot account is destroyed the person
 // behind it re-types their password. A Bearer API key has none of that: it is presented on every
-// request, it is held by a machine, and it was itself minted under a step-up. Each route used to
-// spell the check itself, against the row `ctx.userId` names — which for a key is the key's CREATOR,
+// request, it is held by a machine, and it was itself minted under a step-up — minting a key is one
+// of the routes below, so a session cannot reach a key without answering the password first, and a
+// key minting a key inherits the step-up its own minting answered (review round 1 on #308: without
+// that, a stolen session would mint a key and carry it past this rule). Each route used to spell
+// the check itself, against the row `ctx.userId` names — which for a key is the key's CREATOR,
 // so an automation could only pass by also holding a person's password. That coupling is the
 // fragility issue #308 reports (the password rotates, the person leaves, the run breaks), and it
 // proved nothing a key had not already proved. So the key answers by itself, and a password it
@@ -27,7 +30,7 @@ export interface StepUpPrincipal {
   actorType?: ActorType;
 }
 
-// The one spelling of the field on the wire, so the five routes cannot describe it five ways.
+// The one spelling of the field on the wire, so the six routes cannot describe it six ways.
 export const STEP_UP_PASSWORD_DESCRIPTION =
   "The acting user's password (step-up confirmation). Required for a session; a Bearer API key answers the step-up by itself and omits it.";
 

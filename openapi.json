@@ -23647,7 +23647,7 @@
           "API keys"
         ],
         "summary": "Create API key",
-        "description": "Creates a per-tenant Bearer API key and returns the plaintext token ONCE (only its hash is stored). Use it as `Authorization: Bearer <token>` against the REST v1 API or the MCP transport.",
+        "description": "Creates a per-tenant Bearer API key and returns the plaintext token ONCE (only its hash is stored). Use it as `Authorization: Bearer <token>` against the REST v1 API or the MCP transport. A session confirms with its current password (the key it mints answers every later step-up by itself); a Bearer key needs none.",
         "requestBody": {
           "required": true,
           "content": {
@@ -23662,6 +23662,11 @@
                     "minLength": 1,
                     "maxLength": 120,
                     "description": "Human-readable label for the key (1 to 120 characters).",
+                    "type": "string"
+                  },
+                  "password": {
+                    "minLength": 1,
+                    "description": "The acting user's password (step-up confirmation). Required for a session; a Bearer API key answers the step-up by itself and omits it.",
                     "type": "string"
                   }
                 }
@@ -23679,6 +23684,11 @@
                     "maxLength": 120,
                     "description": "Human-readable label for the key (1 to 120 characters).",
                     "type": "string"
+                  },
+                  "password": {
+                    "minLength": 1,
+                    "description": "The acting user's password (step-up confirmation). Required for a session; a Bearer API key answers the step-up by itself and omits it.",
+                    "type": "string"
                   }
                 }
               }
@@ -23694,6 +23704,11 @@
                     "minLength": 1,
                     "maxLength": 120,
                     "description": "Human-readable label for the key (1 to 120 characters).",
+                    "type": "string"
+                  },
+                  "password": {
+                    "minLength": 1,
+                    "description": "The acting user's password (step-up confirmation). Required for a session; a Bearer API key answers the step-up by itself and omits it.",
                     "type": "string"
                   }
                 }

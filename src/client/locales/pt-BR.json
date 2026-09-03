@@ -172,6 +172,7 @@
     "namePlaceholder": "Integração externa",
     "neverUsed": "Nunca usada",
     "password": "Sua senha",
+    "passwordHint": "A chave age com a sua autoridade e nunca mais pede senha. Confirme com a sua.",
     "revoke": "Revogar",
     "revokeAria": "Revogar chave de API",
     "revoked": "Chave de API revogada",

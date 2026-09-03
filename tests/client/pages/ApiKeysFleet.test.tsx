@@ -7,6 +7,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router";
@@ -72,6 +73,20 @@ function installFetchStub() {
             createdAt: "2026-09-01T00:00:00.000Z",
           },
         ],
+      });
+    }
+    if (method === "POST" && path === "/api/v1/api-keys") {
+      return json({
+        apiKey: {
+          id: "9",
+          displayName: body?.displayName,
+          keyPrefix: "fazerai_ten123",
+          role: "TENANT_ADMIN",
+          lastUsedAt: null,
+          revokedAt: null,
+          createdAt: "2026-09-01T00:00:00.000Z",
+        },
+        token: "fazerai_ten123-plaintext",
       });
     }
     if (method === "POST" && path === "/api/v1/api-keys/fleet") {
@@ -143,6 +158,44 @@ describe("the fleet keys section", () => {
     expect(requests.some((r) => r.path === "/api/v1/api-keys/fleet")).toBe(
       false,
     );
+  });
+
+  // Round 1 of the review: the tenant key answers every later step-up by itself, so the session
+  // that mints it answers the password here.
+  test("minting a tenant key sends the password too", async () => {
+    currentRole = "TENANT_ADMIN";
+    installFetchStub();
+    renderPage();
+    await waitFor(() => {
+      expect(
+        requests.some(
+          (r) => r.method === "GET" && r.path === "/api/v1/api-keys",
+        ),
+      ).toBe(true);
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create key" }));
+    const dialog = await screen.findByRole("dialog");
+    const inputs = dialog.querySelectorAll("input");
+    expect(inputs.length).toBe(2);
+    fireEvent.change(inputs[0] as HTMLInputElement, {
+      target: { value: "tenant bot" },
+    });
+    fireEvent.change(inputs[1] as HTMLInputElement, {
+      target: { value: "hunter2" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Create key" }));
+    await waitFor(() => {
+      expect(screen.queryByText("fazerai_ten123-plaintext") !== null).toBe(
+        true,
+      );
+    });
+    const posted = requests.find(
+      (r) => r.method === "POST" && r.path === "/api/v1/api-keys",
+    );
+    expect(posted?.body).toEqual({
+      displayName: "tenant bot",
+      password: "hunter2",
+    });
   });
 
   test("minting a fleet key sends the name and the password, and reveals the token once", async () => {

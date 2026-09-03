@@ -172,6 +172,7 @@
     "namePlaceholder": "External integration",
     "neverUsed": "Never used",
     "password": "Your password",
+    "passwordHint": "The key acts with your authority and is never asked for a password again. Confirm with yours.",
     "revoke": "Revoke",
     "revokeAria": "Revoke API key",
     "revoked": "API key revoked",

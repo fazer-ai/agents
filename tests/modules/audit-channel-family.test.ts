@@ -169,6 +169,41 @@ function afterSnapshot(
   return wrap(client);
 }
 
+// A client whose audit INSERT throws for ONE action, so the summary fails while the per-account
+// writes it summarises are already committed. Forwards to the REAL delegate of the transaction it is
+// handed, never to a client from out here: under RLS an out-of-scope statement matches zero rows and
+// the failure would look like a success.
+function auditFailingOn(client: PrismaClient, action: string): PrismaClient {
+  // biome-ignore lint/suspicious/noExplicitAny: proxying Prisma's client surface
+  const wrap = (target: any): any =>
+    new Proxy(target, {
+      get(t, prop, recv) {
+        if (prop === "$extends") {
+          return (...a: unknown[]) => wrap(t.$extends(...a));
+        }
+        if (prop === "$transaction") {
+          return (fn: (tx: unknown) => unknown, ...rest: unknown[]) =>
+            t.$transaction((tx: unknown) => fn(wrap(tx)), ...rest);
+        }
+        if (prop !== "auditLog") return Reflect.get(t, prop, recv);
+        const delegate = Reflect.get(t, prop, recv);
+        return new Proxy(delegate, {
+          get(d, k, r) {
+            const inner = Reflect.get(d, k, r);
+            if (k !== "create") return inner;
+            return async (args: { data?: { action?: string } }) => {
+              if (args?.data?.action === action) {
+                throw new Error(`audit write failed for ${action}`);
+              }
+              return (inner as (a: unknown) => Promise<unknown>).call(d, args);
+            };
+          },
+        });
+      },
+    });
+  return wrap(client);
+}
+
 async function rows(action?: string) {
   return (
     (await su?.auditLog.findMany({
@@ -404,6 +439,39 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
     await collect();
     // Back to the two accounts the rest of the file expects.
     await removeChatwootInstance(ctx(), inst.id, appDb);
+  });
+
+  // The one row in this family written outside the transaction of the write it records, because the
+  // writes it summarises are N transactions by design. By the time it runs the selection HAS been
+  // applied, so failing the request over the summary would report a change that happened as a
+  // failure, and the retry would be a no-op that never writes the row anyway.
+  test("a selection that was applied is not failed by the summary that could not be written", async () => {
+    await clearAudit();
+    const before = await suDb.chatwootInstance.count({
+      where: { tenantId, accountId: 3, disconnectedAt: null },
+    });
+    expect(before).toBe(0);
+    await setConnectedAccounts(
+      ctx(),
+      [1, 2, 3],
+      { fetchProfile, makeClient: stubClient().makeClient },
+      auditFailingOn(appDb, "deployment.set_accounts"),
+    );
+    // The effect landed, and so did the row for the account that moved. Only the choice is missing.
+    expect(
+      await suDb.chatwootInstance.count({
+        where: { tenantId, accountId: 3, disconnectedAt: null },
+      }),
+    ).toBe(1);
+    expect((await rows()).map((r) => r.action)).toEqual(["instance.connect"]);
+    await collect();
+    // Back to the two accounts the rest of the file expects.
+    const inst = await suDb.chatwootInstance.findFirstOrThrow({
+      where: { tenantId, accountId: 3 },
+      select: { id: true },
+    });
+    await removeChatwootInstance(ctx(), inst.id, appDb);
+    await clearAudit();
   });
 
   test("disconnecting an account records what it was", async () => {

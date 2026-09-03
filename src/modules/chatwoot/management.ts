@@ -690,16 +690,32 @@ export async function setConnectedAccounts(
   // both enter the loops with the same stale snapshot, and only the one whose conditional write
   // matched a row actually changed the fleet.
   if (moved) {
-    await runScopedOn(base, ctx, (db) =>
-      auditMutation(db, ctx, {
-        action: "deployment.set_accounts",
-        target: `chatwoot_deployment:${dep.id}`,
-        after: {
-          accountIds: wanted,
-          connected: instances.filter((a) => a.disconnectedAt === null).length,
-        },
-      }),
-    );
+    // NOTE: BEST-EFFORT, and the only row in this family that is. Every other row rides inside the
+    // transaction of the write it records, which is what #392 built the seam for; this one cannot,
+    // because the writes it summarises are N transactions by design (each account commits its own,
+    // so a crash between two leaves the accounts already handled with rows saying so). By the time
+    // this runs, the operator's selection HAS been applied — failing the request over the summary
+    // would report a change that happened as a failure, and the retry would be a no-op that never
+    // writes the row anyway. The per-account rows are the durable record; this is the choice on top
+    // of them, and its loss is logged rather than raised.
+    try {
+      await runScopedOn(base, ctx, (db) =>
+        auditMutation(db, ctx, {
+          action: "deployment.set_accounts",
+          target: `chatwoot_deployment:${dep.id}`,
+          after: {
+            accountIds: wanted,
+            connected: instances.filter((a) => a.disconnectedAt === null)
+              .length,
+          },
+        }),
+      );
+    } catch (err) {
+      logger.error(
+        { err, tenantId: String(ctx.tenantId), deploymentId: String(dep.id) },
+        "chatwoot: the account selection was applied and its audit row was not",
+      );
+    }
   }
   return instances;
 }

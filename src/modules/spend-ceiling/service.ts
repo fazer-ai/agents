@@ -1,15 +1,17 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
+import config from "@/config";
 import type { UsageSource } from "@/graph/usage";
 import { AppError, TenantTargetRequiredError } from "@/lib/errors";
-import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
+import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { claimContactAuthNotice } from "@/modules/contact-auth/state";
 import {
   emitFlowEvent,
   type FlowContext,
   type FlowEvent,
 } from "@/modules/flowlog/service";
+import { readLangfuseSettings } from "@/modules/tenant-settings/service";
 import {
   ceilingFor,
   decideSpend,
@@ -23,64 +25,100 @@ import {
   type SpendCeilingConfig,
 } from "./settings";
 
-// Reading the ledger, and asking ./decide.ts. Nothing here decides anything.
+// Reading the snapshot, and asking ./decide.ts. Nothing here decides anything.
 
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
 }
 
-// WHAT THE PROVIDER BILLED, which is prompt + completion. Cached reads are NOT added: they are a
-// discounted subset of `promptTokens` and adding them would count the same token twice, moving the
-// ceiling by however much the provider cache happened to serve. On the window measured in the issue
-// that was 43% of the prompt tokens, so the error would not have been small.
-//
-// Read on the index that already exists, `(tenant_id, created_at)`, which is why there is no counter
-// table here: a ceiling that needed a second source of truth would have to keep it correct, and the
-// ledger already is.
-//
-// Measured on PostgreSQL 17, 1M ledger rows over 200 tenants and 90 days: median 1.3ms, on
-// `llm_usage_tenant_id_created_at_idx` (bitmap index scan, 1111 rows). The SHAPE is what makes that
-// number mean anything — seeding the same million rows under a SINGLE tenant gives 40ms and a
-// parallel seq scan, because an index that selects the whole table is worth nothing to the planner.
-// That is a fixture, not a fleet, and it is the wrong bound to quote; it is recorded here so the
-// next person to measure does not think the index stopped working.
+// WHAT THE POLL LAST KNEW about one (tenant, source, month): the figure the gate decides on, and the
+// health the console and the alert line report beside it (issue #426). `costUsd` is what Langfuse
+// costed the month's generations at, monotonic inside the month; `polledAt` the last successful
+// poll; the `pollError` pair the last failure, which never overwrote the figure.
+export interface SpendSnapshot {
+  costUsd: number;
+  tracedCalls: number;
+  costedCalls: number;
+  unpricedModels: string[];
+  polledAt: Date | null;
+  pollError: string | null;
+  pollFailedAt: Date | null;
+}
+
 // THE MONTH IS THE ARGUMENT, not one edge of it. `at` is any instant inside the month being asked
-// about and BOTH bounds are derived here, which is the only reason no caller can build a half-open
-// window by accident. It used to take a `since` and no upper bound, and that was defensible while
-// the instant was always "now" — a month with no future has nothing above it to exclude. It stopped
-// being defensible when the verdict started carrying `evaluatedAt`: an instant captured at
-// 23:59:59.9 and a query that runs at 00:00:00.1 would count the NEW month's rows against the OLD
-// month's ceiling, and the tenant whose budget just reset would be refused on the strength of it.
-// Rare by the clock and certain over a fleet, since every tenant crosses this boundary every month.
-export async function sumUsageInMonth(
-  db: ScopedDb,
+// about and the key is derived here, which is the only reason no caller can name the wrong month by
+// accident: an instant captured at 23:59:59.9 and a read that runs at 00:00:00.1 would otherwise
+// answer the NEW month's row for the OLD month's verdict, and the tenant whose budget just reset
+// would be refused on the strength of it. Rare by the clock and certain over a fleet.
+export async function readSpendSnapshot(
   tenantId: bigint,
   source: UsageSource,
   at: Date,
-): Promise<number> {
-  const since = monthStart(at);
-  const until = monthEnd(at);
-  const rows = await db.$queryRaw<{ total: bigint | null }[]>`
-      SELECT SUM(prompt_tokens + completion_tokens)::bigint AS total
-        FROM llm_usage
-       WHERE tenant_id = ${tenantId}
-         AND source = ${source}
-         AND created_at >= ${since}
-         AND created_at < ${until}`;
-  const total = rows[0]?.total ?? null;
-  return total === null ? 0 : Number(total);
+  base: PrismaClient = basePrisma,
+): Promise<SpendSnapshot | null> {
+  const row = await runScopedOn(base, sysCtx(tenantId), (db) =>
+    db.spendCostSnapshot.findUnique({
+      where: {
+        tenantId_source_monthStart: {
+          tenantId,
+          source,
+          monthStart: monthStart(at),
+        },
+      },
+    }),
+  );
+  if (!row) return null;
+  return {
+    costUsd: Number(row.costUsd),
+    tracedCalls: row.tracedCalls,
+    costedCalls: row.costedCalls,
+    unpricedModels: Array.isArray(row.unpricedModels)
+      ? row.unpricedModels.filter((m): m is string => typeof m === "string")
+      : [],
+    polledAt: row.polledAt,
+    pollError: row.pollError,
+    pollFailedAt: row.pollFailedAt,
+  };
 }
 
-// The same read for a caller holding an id it took from a row (the webhook, the nudge, vision).
-export async function tokensUsedInMonth(
+// The figure alone, for a caller holding an id it took from a row. A month with no row is a month
+// nobody has polled: nothing is known, and nothing known is nothing spent.
+export async function spendUsedInMonth(
   tenantId: bigint,
   source: UsageSource,
   at: Date,
   base: PrismaClient = basePrisma,
 ): Promise<number> {
-  return runScopedOn(base, sysCtx(tenantId), (db) =>
-    sumUsageInMonth(db, tenantId, source, at),
-  );
+  return (await readSpendSnapshot(tenantId, source, at, base))?.costUsd ?? 0;
+}
+
+// WHEN A FIGURE STOPS BEING FRESH: three missed polls. Under that the gate keeps deciding on the
+// last good figure regardless — spend only grows inside a month, so it is a floor of the truth and
+// under-refuses by the lag, never the other way — but past it the console says so out loud and the
+// alert line has already fired. Derived from the cadence rather than fixed, so an operator who
+// polls every minute is told about a five-minute silence.
+export const SPEND_SNAPSHOT_STALE_AFTER_MS =
+  3 * config.spendCeiling.pollIntervalMs;
+
+export interface SpendSnapshotHealth {
+  polledAt: Date | null;
+  pollError: string | null;
+  pollFailedAt: Date | null;
+  stale: boolean;
+}
+
+export function snapshotHealth(
+  row: SpendSnapshot,
+  now: Date,
+): SpendSnapshotHealth {
+  return {
+    polledAt: row.polledAt,
+    pollError: row.pollError,
+    pollFailedAt: row.pollFailedAt,
+    stale:
+      row.polledAt === null ||
+      now.getTime() - row.polledAt.getTime() > SPEND_SNAPSHOT_STALE_AFTER_MS,
+  };
 }
 
 export interface SpendCeilingParams {
@@ -99,9 +137,13 @@ export interface SpendCeilingParams {
 // figures under the new month's warning key, and burn the new month's first window on a sentence
 // about the month that ended. Carried in the value rather than asked of every caller: five gates ask
 // this question, and a `now` each of them has to remember to pass on is the one the sixth forgets.
+//
+// It carries the snapshot's health too: null where no row was read (the block is off, this half has
+// no ceiling, or the month has not been polled yet), otherwise whether the figure is fresh.
 export type SpendCeilingResult = SpendVerdict & {
   cfg: SpendCeilingConfig;
   evaluatedAt: Date;
+  snapshot: SpendSnapshotHealth | null;
 };
 
 // THE ASK, and what an unreadable answer means.
@@ -110,8 +152,8 @@ export type SpendCeilingResult = SpendVerdict & {
 // turn claim (#203), and deliberately: there the false answer let a writer erase a customer's
 // message, here the false answer refuses to answer a customer who is waiting because our own
 // database hiccuped. Losing a turn to protect a budget the operator may not even have configured is
-// the worse of the two, and the ledger keeps recording either way, so the next message re-asks with
-// nothing lost but the tokens of one turn.
+// the worse of the two, and the poll keeps writing either way, so the next message re-asks with
+// nothing lost but the cost of one turn.
 export async function spendCeilingVerdict(
   params: SpendCeilingParams,
 ): Promise<SpendCeilingResult> {
@@ -123,42 +165,49 @@ export async function spendCeilingVerdict(
     if (!cfg.enabled) {
       return {
         state: "allowed",
-        usedTokens: 0,
-        ceilingTokens: null,
+        usedUsd: 0,
+        ceilingUsd: null,
         cfg,
         evaluatedAt,
+        snapshot: null,
       };
     }
     // NO CEILING ON THIS HALF ⇒ NO READ. `0` is the operator saying this source is unbounded, and
-    // the sum below could only ever be compared against a ceiling that is not there. Asked before
-    // the aggregate rather than after, because the common configuration is exactly this one: a
-    // tenant that bounds only its playground would otherwise pay the monthly aggregate on every
-    // customer message to learn a fact `cfg` already contains. `usedTokens` is 0 here and unread:
-    // `decideSpend` reports `allowed` for a null ceiling whatever the count, and the console's own
-    // numbers come from `spendCeilingUsage`, which always reads both halves.
+    // the row below could only ever be compared against a ceiling that is not there. Asked before
+    // the read rather than after, because the common configuration is exactly this one: a tenant
+    // that bounds only its playground would otherwise pay a read on every customer message to learn
+    // a fact `cfg` already contains. `usedUsd` is 0 here and unread: `decideSpend` reports
+    // `allowed` for a null ceiling whatever the figure, and the console's own numbers come from
+    // `spendCeilingUsage`, which always reads both halves.
     if (ceilingFor(cfg, params.source) === null) {
       return {
         state: "allowed",
-        usedTokens: 0,
-        ceilingTokens: null,
+        usedUsd: 0,
+        ceilingUsd: null,
         cfg,
         evaluatedAt,
+        snapshot: null,
       };
     }
-    const usedTokens = await tokensUsedInMonth(
+    const row = await readSpendSnapshot(
       params.tenantId,
       params.source,
       evaluatedAt,
       base,
     );
     return {
-      ...decideSpend({ cfg, source: params.source, usedTokens }),
+      ...decideSpend({
+        cfg,
+        source: params.source,
+        usedUsd: row?.costUsd ?? 0,
+      }),
       cfg,
       evaluatedAt,
+      snapshot: row ? snapshotHealth(row, evaluatedAt) : null,
     };
   } catch (err) {
     // The fail-open above, carried out. The catch wraps BOTH reads on purpose: the settings row and
-    // the ledger sum fail the same way (a pool with no free connection, a statement timeout) and a
+    // the snapshot fail the same way (a pool with no free connection, a statement timeout) and a
     // caller cannot be asked to tell them apart to know whether it may answer its customer.
     logger.warn(
       { err, tenantId: String(params.tenantId), source: params.source },
@@ -166,10 +215,11 @@ export async function spendCeilingVerdict(
     );
     return {
       state: "allowed",
-      usedTokens: 0,
-      ceilingTokens: null,
+      usedUsd: 0,
+      ceilingUsd: null,
       cfg,
       evaluatedAt,
+      snapshot: null,
     };
   }
 }
@@ -356,8 +406,8 @@ export function spendCeilingFlowEvent(
     status: result.state === "over" ? "skipped" : "ok",
     detail: {
       source,
-      usedTokens: result.usedTokens,
-      ceilingTokens: result.ceilingTokens ?? 0,
+      usedUsd: result.usedUsd,
+      ceilingUsd: result.ceilingUsd ?? 0,
       state: result.state,
     },
   };
@@ -384,7 +434,7 @@ export async function assertPlaygroundSpendCeiling(params: {
   announceSpendCeiling(params.flow, result, "playground", params.tenantId);
   if (result.state === "over") {
     throw new AppError(
-      "the playground token ceiling for this month has been reached",
+      "the playground spend ceiling for this month has been reached",
       429,
       "errors.spendCeilingReached",
     );
@@ -394,21 +444,43 @@ export async function assertPlaygroundSpendCeiling(params: {
 
 export interface SpendCeilingUsageEntry {
   source: UsageSource;
-  usedTokens: number;
+  usedUsd: number;
   // null = no ceiling applies to this half (the block is off, or the number is 0).
-  ceilingTokens: number | null;
+  ceilingUsd: number | null;
   state: SpendVerdict["state"];
+  // The snapshot's health, ISO instants: when the figure was last refreshed, and the last failure
+  // if the poll is failing now. `stale` past three missed polls (`SPEND_SNAPSHOT_STALE_AFTER_MS`).
+  polledAt: string | null;
+  pollError: string | null;
+  pollFailedAt: string | null;
+  stale: boolean;
+  // The reconciliation: generations Langfuse saw this month and how many of them carried a cost,
+  // the models it priced at zero, and the local ledger's own count of billed calls for the same
+  // window. A ceiling that undercounts has to say so on the screen that shows the bar.
+  tracedCalls: number;
+  costedCalls: number;
+  ledgerCalls: number;
+  unpricedModels: string[];
 }
 
 export interface SpendCeilingUsageDto {
-  // Start of the calendar month the counts cover, in UTC. Sent so the console can label the period
+  // Start of the calendar month the figures cover, in UTC. Sent so the console can label the period
   // instead of guessing it from the browser's own clock, which sits in another timezone often
   // enough that "this month" would silently mean a different window than the gate's.
   periodStart: string;
+  // Whether the tenant has Langfuse switched on with a credential: without it there is no price
+  // table to read and the ceiling cannot be enforced, which the console says instead of showing a
+  // bar that never moves.
+  langfuseConfigured: boolean;
+  // A ceiling this block was given in tokens before the unit changed, never enforced: see
+  // `SpendCeilingConfig.legacyTokens`.
+  legacyTokens: SpendCeilingConfig["legacyTokens"];
+  // The poll cadence, so the console can say how old a figure may be at most.
+  pollIntervalMs: number;
   entries: SpendCeilingUsageEntry[];
 }
 
-// WHAT THE CONSOLE SHOWS. Both halves, always, and with the counts present even when the block is
+// WHAT THE CONSOLE SHOWS. Both halves, always, and with the figures present even when the block is
 // off: an operator deciding what to set the ceiling to needs last month's shape more than anyone,
 // and a screen that shows nothing until a ceiling exists asks them to pick a number blind.
 // Takes the REQUEST's context, never an id lifted out of it. Every other reader here is an internal
@@ -432,20 +504,72 @@ export async function spendCeilingUsage(params: {
   // console prints above them can never name different months when the request straddles midnight.
   const at = params.now ?? new Date();
   const since = monthStart(at);
+  const until = monthEnd(at);
   const sources: UsageSource[] = ["inbox", "playground"];
-  const entries = await Promise.all(
-    sources.map(async (source): Promise<SpendCeilingUsageEntry> => {
-      const usedTokens = await runScopedOn(base, params.ctx, (db) =>
-        sumUsageInMonth(db, tenantId, source, at),
+  const { langfuse, entries } = await runScopedOn(
+    base,
+    params.ctx,
+    async (db) => {
+      const langfuse = await readLangfuseSettings(db, tenantId);
+      const entries = await Promise.all(
+        sources.map(async (source): Promise<SpendCeilingUsageEntry> => {
+          const row = await db.spendCostSnapshot.findUnique({
+            where: {
+              tenantId_source_monthStart: {
+                tenantId,
+                source,
+                monthStart: since,
+              },
+            },
+          });
+          const ledgerCalls = await db.llmUsage.count({
+            where: { tenantId, source, createdAt: { gte: since, lt: until } },
+          });
+          const snapshot: SpendSnapshot | null = row
+            ? {
+                costUsd: Number(row.costUsd),
+                tracedCalls: row.tracedCalls,
+                costedCalls: row.costedCalls,
+                unpricedModels: Array.isArray(row.unpricedModels)
+                  ? row.unpricedModels.filter(
+                      (m): m is string => typeof m === "string",
+                    )
+                  : [],
+                polledAt: row.polledAt,
+                pollError: row.pollError,
+                pollFailedAt: row.pollFailedAt,
+              }
+            : null;
+          const verdict = decideSpend({
+            cfg,
+            source,
+            usedUsd: snapshot?.costUsd ?? 0,
+          });
+          const health = snapshot ? snapshotHealth(snapshot, at) : null;
+          return {
+            source,
+            usedUsd: snapshot?.costUsd ?? 0,
+            ceilingUsd: verdict.ceilingUsd,
+            state: verdict.state,
+            polledAt: health?.polledAt?.toISOString() ?? null,
+            pollError: health?.pollError ?? null,
+            pollFailedAt: health?.pollFailedAt?.toISOString() ?? null,
+            stale: health?.stale ?? false,
+            tracedCalls: snapshot?.tracedCalls ?? 0,
+            costedCalls: snapshot?.costedCalls ?? 0,
+            ledgerCalls,
+            unpricedModels: snapshot?.unpricedModels ?? [],
+          };
+        }),
       );
-      const verdict = decideSpend({ cfg, source, usedTokens });
-      return {
-        source,
-        usedTokens,
-        ceilingTokens: verdict.ceilingTokens,
-        state: verdict.state,
-      };
-    }),
+      return { langfuse, entries };
+    },
   );
-  return { periodStart: since.toISOString(), entries };
+  return {
+    periodStart: since.toISOString(),
+    langfuseConfigured: langfuse.enabled && langfuse.credentialRef !== null,
+    legacyTokens: cfg.legacyTokens,
+    pollIntervalMs: config.spendCeiling.pollIntervalMs,
+    entries,
+  };
 }

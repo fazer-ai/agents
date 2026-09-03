@@ -685,8 +685,8 @@ export async function runAgentNudge(
     logger.info(
       "nudge: spend ceiling reached (conv=%s used=%s ceiling=%s) — nothing was sent",
       String(conversationId),
-      String(ceiling.usedTokens),
-      String(ceiling.ceilingTokens),
+      String(ceiling.usedUsd),
+      String(ceiling.ceilingUsd),
     );
     return "over-ceiling";
   }

@@ -1,31 +1,84 @@
-# Token ceiling (per-tenant spend gate)
+# Spend ceiling (per-tenant spend gate)
 
 Nothing in the system could refuse a model call because a tenant had already spent enough. `LlmUsage`
 is an accurate ledger, but it is written **after** each call and every reader of it is a projection:
 the first time an operator learned a month had gone wrong was the dashboard, or the provider's
-invoice. This feature is the gate that ledger was missing. Before a billed call, the runtime sums
-the calendar month's tokens for the tenant and refuses once the configured ceiling is reached.
+invoice. This feature is the gate that ledger was missing. Before a billed call, the runtime reads
+the calendar month's **cost in dollars** for the tenant and refuses once the configured ceiling is
+reached.
 
-## Why tokens and not money
+## Why money, and where it comes from
 
-Cost in this codebase comes from Langfuse (`src/modules/analytics/langfuse-costs.ts`). It is
-optional, asynchronous, and legitimately zero on an instance that never configured pricing, which is
-why the dashboard reads a zero-cost series as "ingestion lag or no pricing" rather than "spent
-nothing". A gate cannot be built on a number that is optional, lagging, and legitimately zero.
+The first version (#146) counted **tokens**, because tokens are written by our own callback and
+summable on an index that already exists. It was cheap and correct about the thing it counted, and
+the thing it counted was the wrong thing: a token count cannot bound a bill (#426). Output is billed
+several times higher than input on every provider; a cached read is a discounted subset of the
+prompt and was charged at full weight; and `LlmUsage.model` was on every row while the ceiling
+ignored it, so a token on a small model and a token on a frontier model, one to two orders of
+magnitude apart in price, moved the ceiling by the same amount. The number the operator typed did
+not track the invoice it exists to bound, and no arithmetic on their side could recover it.
 
-Tokens are written by our own callback (`src/graph/usage.ts`) on every model invocation and are
-summable on an index that already exists (`(tenant_id, created_at)`), which is why there is **no
-counter table**: a second source of truth would have to be kept correct, and the ledger already is.
+Cost in this codebase comes from **Langfuse** (`src/modules/analytics/langfuse-costs.ts`), which
+keeps the price table. The ceiling is therefore denominated in **USD as Langfuse costs the month's
+generations**, and the accepted trade is that it is enforceable only where Langfuse is configured
+for the tenant (`langfuse.enabled` plus a `langfuse` vault credential with valid keys, see
+`resolveLangfuseConfig`); an install without it keeps no ceiling, and the console says so. A
+maintained external price table is worth more than a local one we would have to keep correct
+against six providers, OpenRouter and an operator-supplied `openai-compatible` base URL.
 
-Measured on PostgreSQL 17 with 1M ledger rows spread over 200 tenants and 90 days, a month's sum for
-one tenant runs in **1.3ms median**, on `llm_usage_tenant_id_created_at_idx`. The spread matters more
-than the row count: the same million rows under a single tenant take 40ms and a parallel seq scan,
-because an index that selects the whole table is worth nothing to the planner. That is a fixture, not
-a fleet.
+**The gate never asks Langfuse.** That would put a scoped transaction, a vault decryption and an
+HTTP round trip with a ten-second timeout in front of every customer message, and the error branch
+has no good answer: failing open spends without limit, failing closed lets a third-party outage
+silence every agent of the tenant. Instead a periodic scheduler job, `SPEND_CEILING_POLL`
+(`src/modules/spend-ceiling/poll.ts`), reads the month's cost per source into a local row,
+`spend_cost_snapshots` (one per tenant, source and calendar month), and the gate reads the row. That
+moves the failure from **availability to staleness**, which is a failure the row can be honest about.
 
-The sum is `prompt_tokens + completion_tokens`. Cached reads are **not** added: a cached read is a
-discounted subset of the prompt tokens, so adding the column on top would count the same token
-twice, moving the ceiling by however much the provider cache happened to serve.
+- **One job per tenant, armed only while the ceiling is on** (`src/modules/spend-ceiling/arm.ts`):
+  on every save of the block, and once at boot for every tenant whose ceiling is on, so a row lost to
+  a reset is not a ceiling deciding on a figure frozen at its last poll. Self-re-arming like the
+  heartbeat; the handler never throws, so a Langfuse down for an hour never walks the scheduler's
+  ladder to `DEAD`. The cadence is `SPEND_CEILING_POLL_INTERVAL_MS` (default 5 min).
+- **The two sources are told apart by the trace's environment.** Every trace goes out under
+  `environmentForSource` (`<env>` for inbox, `<env>-playground` for the playground), which is a
+  filterable column of the Langfuse metrics API, so the poll runs one query per source: the
+  `observations` view, `sum(totalCost)` and `count` per `providedModelName`, generations only, from
+  `monthStart` to the instant of the poll.
+- **The figure is monotonic inside a month.** Langfuse ingests asynchronously and the lag correlates
+  with load, so during the burst the ceiling exists for a total can read *lower* than the last one.
+  A lower answer is never written over a higher one, and a poll that errors touches only the failure
+  pair (`pollError`, `pollFailedAt`); the last good figure and its `polledAt` stand.
+- **The overshoot bound is the poll period plus the ingestion lag, and the two add.** A tenant can
+  spend for up to that long past the number before the gate sees it. Lowering the period buys lead
+  time at one Langfuse query per tenant per period.
+- **A stale figure still decides.** Spend only grows inside a month, so the last good figure is a
+  floor of the truth: the gate keeps refusing on it (and keeps *allowing* on it, under-refusing by
+  exactly the lag), and past three missed polls (`SPEND_SNAPSHOT_STALE_AFTER_MS`) the console says so
+  beside the bar. The poll's failure is announced once per six hours on the `spend_ceiling` stage at
+  `warn`, so a channel widened to warnings hears about it. A ceiling that fails closed on staleness
+  was rejected for the same reason the direct call was: a third-party outage must not silence a
+  tenant.
+- **The reconciliation ships with it.** Langfuse prices a model it does not know at zero, silently, so
+  a tenant on OpenRouter or a self-hosted endpoint would get a ceiling that never trips, which is worse
+  than none because the screen says it is enforcing. The same query counts generations per model, so
+  a model with calls and no cost is named on the row (`unpricedModels`), and the console compares
+  what Langfuse costed (`costedCalls`) against what the local ledger recorded (`ledgerCalls`) on the
+  same screen that shows the bar.
+- **A month nobody has polled yet is nothing spent.** The first poll writes the row; until then the
+  ceiling cannot refuse on a figure it does not have, which is the same direction the
+  unreadable-ceiling rule takes.
+
+**A block written in tokens is no ceiling, and says so.** A `spendCeiling` block saved before this
+change carries `monthlyInboxTokens` / `monthlyPlaygroundTokens`, and there is no price to convert
+them with. The reader answers `0` on both dollar halves and sets `legacyTokens` with the numbers,
+the console shows them with a notice that nothing is enforced, and the first save in dollars retires
+them (the writer stores the schema's own shape, which does not carry the old keys). Deliberately not
+migrated: a ceiling nobody typed in the new unit is a ceiling that silences an agent on the strength
+of a guess.
+
+Money is compared in **cents** (`decideSpend`): `0.1 + 0.2` is not `0.3` to a double, and a ceiling
+of thirty cents met exactly by three dimes has to read as reached. The writer rounds a third decimal
+to the cent rather than refusing it; the reader drops it.
 
 ## Two ceilings, not one
 
@@ -40,27 +93,27 @@ every customer message to learn a fact the settings already carry.
 
 ## What the ceiling does not promise
 
-It is a gate, not a reservation. Each caller sums the month **as committed** and decides; the row
-for its own call is appended after the provider answers. So turns that start while usage sits just
-under the ceiling all read the same sum and all proceed, and the month can end above the number by
-whatever those in-flight turns spend. The overshoot is bounded by what is in flight at that instant,
-not by the traffic that follows: the first turn to commit past the line closes it for everyone after
-it.
+It is a gate, not a reservation. Each caller reads the month **as last polled** and decides; the
+cost of its own call reaches Langfuse after the provider answers and the snapshot on the next poll.
+So turns that start while the figure sits just under the ceiling all read the same figure and all
+proceed, and the month can end above the number by whatever is spent inside the poll period plus the
+ingestion lag (see above). The overshoot is bounded by that window, not by the traffic that follows:
+the first poll to land past the line closes it for everyone after it.
 
 The alternative is a reservation — a counter written before the call and reconciled after — and it
 is refused for the reason the ledger is the only source here. A reservation is a second number that
 has to stay correct across a crashed process, a provider timeout, and a call whose real cost is
 known only at the end; a ceiling built on it would fail in the direction where a tenant is refused
-because of tokens nobody ever spent. A turn is seconds and the window is a month, so the error this
+because of money nobody ever spent. A turn is seconds and the window is a month, so the error this
 design accepts is small, one-sided, and self-correcting; the error the other design accepts is not.
 
 **The warning has the same shape, and therefore the same bound.** It is evaluated by the gate, on the
-ledger as it stood before the turn, so what it promises is that the first verdict landing at or past
+snapshot as it stood before the turn, so what it promises is that the first verdict landing at or past
 `warnAtPercent` warns. It does not promise that the ceiling is never reached without a warning
 first: a single turn that spends more than the band between the fraction and the ceiling (20% of the
 ceiling at the default 80) takes a tenant from `allowed` straight to `over`, and the operator's first
 line about that month is the `over` one. That is the same read-then-act property as the overshoot
-above, and closing it would mean re-reading the ledger after every call rather than before every
+above, and closing it would mean re-reading the snapshot after every call rather than before every
 turn. The band is what buys the lead time, so an operator who wants more of it lowers the fraction;
 a tenant whose single turn can cross the whole band had no lead time to give.
 
@@ -72,11 +125,12 @@ and the number an operator compares this against. A rolling window measures cons
 honestly and never zeroes at once, which is the property that would have to be explained to whoever
 signs the invoice.
 
-Both ends are derived inside `sumUsageInMonth`, from a single instant naming the month, so no caller
-can build half a window. That instant is the verdict's own `evaluatedAt`, and the upper bound is
-what keeps it meaningful: a verdict captured at 23:59:59.9 whose query runs at 00:00:00.1 would
-otherwise count the new month's rows against the month it was asked about, and refuse a tenant whose
-budget had just reset.
+The snapshot is keyed by `monthStart`, derived inside `readSpendSnapshot` from a single instant
+naming the month, so no caller can name the wrong month. That instant is the verdict's own
+`evaluatedAt`: a verdict captured at 23:59:59.9 whose read runs at 00:00:00.1 would otherwise answer
+the new month's row for the month it was asked about, and refuse a tenant whose budget had just
+reset. The poll's own window is `[monthStart, now)`, and the console's ledger count is
+`[monthStart, monthEnd)`.
 
 ## What the customer and the operator get
 
@@ -391,7 +445,7 @@ The two directions are not a style choice.
 The opposite direction from the durable turn claim (`#203`), and deliberately. There the false
 answer let a writer erase a customer's message; here the false answer refuses to answer a customer
 who is waiting because our own database hiccuped. The ledger keeps recording either way, so the next
-message re-asks having lost nothing but the tokens of one turn.
+message re-asks having lost nothing but the cost of one turn.
 
 ## Configuration
 
@@ -402,8 +456,8 @@ can read). The reader never returns a block the writer would refuse, because `up
 merges the stored block with the operator's patch and validates the merge: a value past a maximum
 would otherwise 422 every save on the screen over a field nobody touched.
 
-A malformed count falls back to its **default**, and for the two token fields that default is `0`,
-which is no ceiling on that half. That is the same direction the unreadable-ledger rule above takes:
+A malformed figure falls back to its **default**, and for the two dollar fields that default is `0`,
+which is no ceiling on that half. That is the same direction the unreadable-ceiling rule above takes:
 a ceiling nobody typed is a ceiling that silences an agent for real customers on the strength of
 corrupted data. It is not silent either — the console renders exactly what the reader returns, so
 the ceiling screen shows the zero.
@@ -411,12 +465,15 @@ the ceiling screen shows the zero.
 | field | default | meaning |
 | --- | --- | --- |
 | `enabled` | `false` | whether the ceiling is enforced at all |
-| `monthlyInboxTokens` | `0` | ceiling for customer traffic; `0` = none |
-| `monthlyPlaygroundTokens` | `0` | ceiling for the playground; `0` = none |
+| `monthlyInboxUsd` | `0` | ceiling for customer traffic, USD to the cent; `0` = none |
+| `monthlyPlaygroundUsd` | `0` | ceiling for the playground; `0` = none |
 | `overCeilingMessage` | a pt-BR sentence | what the customer is told; `null` says nothing |
 | `handoffEnabled` | `true` | open a refused conversation for humans |
 | `noticeCooldownSeconds` | `300` | cooldown on the copy and the note, never on the verdict |
 | `warnAtPercent` | `80` | fraction of a ceiling that raises the warning; `0` = none |
+| `legacyTokens` | `null` | read-only: the token ceilings a pre-#426 block carried, never enforced; cleared by the first save |
+
+The poll's cadence is an environment setting, `SPEND_CEILING_POLL_INTERVAL_MS` (default `300000`).
 
 The route's own body schema carries every maximum the service enforces, `overCeilingMessage`
 included. They are two schemas over one shape, and where they disagreed the longer message passed the
@@ -425,6 +482,9 @@ rather than the documented 422.
 
 REST: `GET /v1/tenant-settings` returns the block, `PUT /v1/tenant-settings/spend-ceiling` writes it,
 and `GET /v1/tenant-settings/spend-ceiling/usage` returns what the month has cost per source against
-the ceiling. The console renders all of that on **Resources → Advanced**
+the ceiling, with the snapshot's health (`polledAt`, `pollError`, `pollFailedAt`, `stale`), the
+reconciliation (`tracedCalls`, `costedCalls`, `ledgerCalls`, `unpricedModels`), whether Langfuse is
+configured, and the legacy marker. The console renders all of that on **Resources → Advanced**
 (`src/client/pages/resources/SpendCeilingCard.tsx`): the two bars come first, because nobody can pick
-a monthly token budget without seeing what the month has already cost.
+a monthly budget without seeing what the month has already cost, and every way the figure can be
+wrong has a sentence beside the bar.

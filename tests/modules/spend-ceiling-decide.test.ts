@@ -15,7 +15,7 @@ import {
   readSpendCeilingConfig,
   SPEND_CEILING_DEFAULTS,
   SPEND_CEILING_NOTICE_COOLDOWN_MAX_SECONDS,
-  SPEND_CEILING_TOKENS_MAX,
+  SPEND_CEILING_USD_MAX,
   type SpendCeilingConfig,
   spendCeilingSettingsSchema,
 } from "@/modules/spend-ceiling/settings";
@@ -38,56 +38,56 @@ describe("the spend ceiling decision", () => {
   }> = [
     {
       name: "switched off, and far past a number that is set",
-      cfg: { enabled: false, monthlyInboxTokens: 100 },
+      cfg: { enabled: false, monthlyInboxUsd: 100 },
       source: "inbox",
       used: 1_000_000,
       expect: "allowed",
     },
     {
       name: "on, with no number on this half",
-      cfg: { enabled: true, monthlyInboxTokens: 0 },
+      cfg: { enabled: true, monthlyInboxUsd: 0 },
       source: "inbox",
       used: 1_000_000,
       expect: "allowed",
     },
     {
       name: "on, under both the ceiling and the warning",
-      cfg: { enabled: true, monthlyInboxTokens: 1000, warnAtPercent: 80 },
+      cfg: { enabled: true, monthlyInboxUsd: 1000, warnAtPercent: 80 },
       source: "inbox",
       used: 799,
       expect: "allowed",
     },
     {
       name: "exactly at the warning fraction",
-      cfg: { enabled: true, monthlyInboxTokens: 1000, warnAtPercent: 80 },
+      cfg: { enabled: true, monthlyInboxUsd: 1000, warnAtPercent: 80 },
       source: "inbox",
       used: 800,
       expect: "warning",
     },
     {
       name: "one token short of the ceiling",
-      cfg: { enabled: true, monthlyInboxTokens: 1000 },
+      cfg: { enabled: true, monthlyInboxUsd: 1000 },
       source: "inbox",
       used: 999,
       expect: "warning",
     },
     {
       name: "exactly at the ceiling",
-      cfg: { enabled: true, monthlyInboxTokens: 1000 },
+      cfg: { enabled: true, monthlyInboxUsd: 1000 },
       source: "inbox",
       used: 1000,
       expect: "over",
     },
     {
       name: "past the ceiling",
-      cfg: { enabled: true, monthlyInboxTokens: 1000 },
+      cfg: { enabled: true, monthlyInboxUsd: 1000 },
       source: "inbox",
       used: 4000,
       expect: "over",
     },
     {
       name: "warning switched off leaves the run allowed right up to the ceiling",
-      cfg: { enabled: true, monthlyInboxTokens: 1000, warnAtPercent: 0 },
+      cfg: { enabled: true, monthlyInboxUsd: 1000, warnAtPercent: 0 },
       source: "inbox",
       used: 999,
       expect: "allowed",
@@ -97,8 +97,8 @@ describe("the spend ceiling decision", () => {
       name: "the playground is over its own ceiling",
       cfg: {
         enabled: true,
-        monthlyInboxTokens: 1_000_000,
-        monthlyPlaygroundTokens: 100,
+        monthlyInboxUsd: 1_000_000,
+        monthlyPlaygroundUsd: 100,
       },
       source: "playground",
       used: 500,
@@ -108,8 +108,8 @@ describe("the spend ceiling decision", () => {
       name: "and the same usage leaves customer traffic answering",
       cfg: {
         enabled: true,
-        monthlyInboxTokens: 1_000_000,
-        monthlyPlaygroundTokens: 100,
+        monthlyInboxUsd: 1_000_000,
+        monthlyPlaygroundUsd: 100,
       },
       source: "inbox",
       used: 500,
@@ -119,8 +119,8 @@ describe("the spend ceiling decision", () => {
       name: "a playground ceiling alone does not bound the inbox",
       cfg: {
         enabled: true,
-        monthlyInboxTokens: 0,
-        monthlyPlaygroundTokens: 100,
+        monthlyInboxUsd: 0,
+        monthlyPlaygroundUsd: 100,
       },
       source: "inbox",
       used: 10_000_000,
@@ -132,7 +132,7 @@ describe("the spend ceiling decision", () => {
     const verdict = decideSpend({
       cfg: cfg(row.cfg),
       source: row.source,
-      usedTokens: row.used,
+      usedUsd: row.used,
     });
     expect(verdict.state).toBe(row.expect);
   });
@@ -141,17 +141,35 @@ describe("the spend ceiling decision", () => {
   // the operator note, and the alert that fires before the agent goes quiet.
   test("the verdict carries what was used and what the ceiling was", () => {
     const v = decideSpend({
-      cfg: cfg({ enabled: true, monthlyInboxTokens: 1000 }),
+      cfg: cfg({ enabled: true, monthlyInboxUsd: 1000 }),
       source: "inbox",
-      usedTokens: 1200,
+      usedUsd: 1200,
     });
-    expect(v).toEqual({ state: "over", usedTokens: 1200, ceilingTokens: 1000 });
+    expect(v).toEqual({ state: "over", usedUsd: 1200, ceilingUsd: 1000 });
   });
 
   test("zero is no ceiling, on either half", () => {
     const c = cfg({ enabled: true });
     expect(ceilingFor(c, "inbox")).toBeNull();
     expect(ceilingFor(c, "playground")).toBeNull();
+  });
+
+  // Money is compared in CENTS. `0.1 + 0.7` is `0.7999999999999999` to a double, and a ceiling of
+  // eighty cents met exactly has to read as reached, not as a hair under it. The pair is chosen so
+  // the double errs on the SIDE that would allow: `0.1 + 0.2` errs the other way and proves nothing.
+  test("at the ceiling is over it, even when the doubles disagree", () => {
+    const v = decideSpend({
+      cfg: cfg({ enabled: true, monthlyInboxUsd: 0.8 }),
+      source: "inbox",
+      usedUsd: 0.1 + 0.7,
+    });
+    expect(v.state).toBe("over");
+    const warn = decideSpend({
+      cfg: cfg({ enabled: true, monthlyInboxUsd: 1, warnAtPercent: 80 }),
+      source: "inbox",
+      usedUsd: 0.1 + 0.7,
+    });
+    expect(warn.state).toBe("warning");
   });
 });
 
@@ -170,18 +188,112 @@ describe("reading the ceiling out of the settings bag", () => {
     ["a ceiling that is infinite", Number.POSITIVE_INFINITY],
   ])("%s falls back to the default", (_name, value) => {
     const cfgRead = readSpendCeilingConfig({
-      spendCeiling: { enabled: true, monthlyInboxTokens: value },
+      spendCeiling: { enabled: true, monthlyInboxUsd: value },
     });
-    expect(cfgRead.monthlyInboxTokens).toBe(
-      SPEND_CEILING_DEFAULTS.monthlyInboxTokens,
+    expect(cfgRead.monthlyInboxUsd).toBe(
+      SPEND_CEILING_DEFAULTS.monthlyInboxUsd,
     );
   });
 
-  test("a fractional ceiling is floored, never rounded up", () => {
+  // A ceiling is money, so it is read to the cent, and the third decimal is dropped rather than
+  // rounded up: a ceiling that is LOWER is the safe side of its own field (issue #426).
+  test("a ceiling is read to the cent, and never rounded up", () => {
     expect(
-      readSpendCeilingConfig({ spendCeiling: { monthlyInboxTokens: 10.9 } })
-        .monthlyInboxTokens,
-    ).toBe(10);
+      readSpendCeilingConfig({ spendCeiling: { monthlyInboxUsd: 10.9 } })
+        .monthlyInboxUsd,
+    ).toBe(10.9);
+    expect(
+      readSpendCeilingConfig({ spendCeiling: { monthlyInboxUsd: 10.999 } })
+        .monthlyInboxUsd,
+    ).toBe(10.99);
+  });
+
+  // THE UNIT CHANGED UNDER A ROW THAT WAS ALREADY WRITTEN (issue #426). A block saved when the
+  // ceiling counted tokens carries `monthlyInboxTokens`, and there is no price to convert it with:
+  // the reader answers no ceiling (0) on both halves, and says WHY, so the console can tell the
+  // operator the number they typed is not the number being enforced. The first save in dollars
+  // clears it: the writer's schema does not carry the old keys, and a block that names the new unit
+  // is a block the operator has seen.
+  describe("a block written in tokens", () => {
+    test("is no ceiling, and says so", () => {
+      const read = readSpendCeilingConfig({
+        spendCeiling: {
+          enabled: true,
+          monthlyInboxTokens: 250_000,
+          monthlyPlaygroundTokens: 0,
+        },
+      });
+      expect(read.enabled).toBe(true);
+      expect(read.monthlyInboxUsd).toBe(0);
+      expect(read.monthlyPlaygroundUsd).toBe(0);
+      expect(read.legacyTokens).toEqual({ inbox: 250_000, playground: 0 });
+      expect(ceilingFor(read, "inbox")).toBeNull();
+    });
+
+    test("once a dollar figure is present, the token keys are history", () => {
+      const read = readSpendCeilingConfig({
+        spendCeiling: {
+          enabled: true,
+          monthlyInboxTokens: 250_000,
+          monthlyInboxUsd: 40,
+        },
+      });
+      expect(read.monthlyInboxUsd).toBe(40);
+      expect(read.legacyTokens).toBeNull();
+    });
+
+    test("token keys at zero are not a legacy ceiling", () => {
+      expect(
+        readSpendCeilingConfig({
+          spendCeiling: { monthlyInboxTokens: 0, monthlyPlaygroundTokens: 0 },
+        }).legacyTokens,
+      ).toBeNull();
+      expect(readSpendCeilingConfig({}).legacyTokens).toBeNull();
+    });
+
+    test("the writer never stores the token keys or the marker", () => {
+      const read = readSpendCeilingConfig({
+        spendCeiling: { enabled: true, monthlyInboxTokens: 250_000 },
+      });
+      const written = spendCeilingSettingsSchema.parse({
+        ...read,
+        monthlyInboxUsd: 40,
+      });
+      expect(written).not.toHaveProperty("legacyTokens");
+      expect(written).not.toHaveProperty("monthlyInboxTokens");
+      expect(written.monthlyInboxUsd).toBe(40);
+    });
+  });
+
+  // Money on the way IN: non-negative and bounded, refused otherwise so a typo comes back as a 422.
+  // The reader is lenient because a malformed bag must never break the webhook.
+  test.each([
+    ["a negative ceiling", -1],
+    ["past the maximum", SPEND_CEILING_USD_MAX + 1],
+    ["not a number", "40"],
+  ])("the writer refuses %s", (_name, value) => {
+    expect(() =>
+      spendCeilingSettingsSchema.parse({
+        ...SPEND_CEILING_DEFAULTS,
+        legacyTokens: undefined,
+        monthlyInboxUsd: value,
+      }),
+    ).toThrow();
+  });
+
+  // A third decimal is ROUNDED, not refused: the console's input cannot send one and the HTTP
+  // boundary has no float-safe way to refuse it, so a refusal here would surface as a 500. A cent
+  // is not a policy the operator did not mean, unlike the extra zero the maximum catches.
+  test("the writer keeps cents, and rounds anything finer to one", () => {
+    const write = (v: number) =>
+      spendCeilingSettingsSchema.parse({
+        ...SPEND_CEILING_DEFAULTS,
+        legacyTokens: undefined,
+        monthlyInboxUsd: v,
+      }).monthlyInboxUsd;
+    expect(write(12.34)).toBe(12.34);
+    expect(write(10.005)).toBe(10.01);
+    expect(write(10.004)).toBe(10);
   });
 
   test("the warning fraction cannot exceed a whole ceiling", () => {
@@ -212,8 +324,8 @@ describe("reading the ceiling out of the settings bag", () => {
     const absurd = {
       spendCeiling: {
         enabled: true,
-        monthlyInboxTokens: SPEND_CEILING_TOKENS_MAX * 10,
-        monthlyPlaygroundTokens: Number.MAX_SAFE_INTEGER,
+        monthlyInboxUsd: SPEND_CEILING_USD_MAX * 10,
+        monthlyPlaygroundUsd: Number.MAX_SAFE_INTEGER,
         overCeilingMessage: "x".repeat(10_000),
         handoffEnabled: true,
         noticeCooldownSeconds: 86_400,
@@ -224,8 +336,8 @@ describe("reading the ceiling out of the settings bag", () => {
     expect(() => spendCeilingSettingsSchema.parse(read)).not.toThrow();
     // ...and each clamp lands on the safe side of its own field: a ceiling that is lower, a notice
     // that speaks more often.
-    expect(read.monthlyInboxTokens).toBe(SPEND_CEILING_TOKENS_MAX);
-    expect(read.monthlyPlaygroundTokens).toBe(SPEND_CEILING_TOKENS_MAX);
+    expect(read.monthlyInboxUsd).toBe(SPEND_CEILING_USD_MAX);
+    expect(read.monthlyPlaygroundUsd).toBe(SPEND_CEILING_USD_MAX);
     expect(read.noticeCooldownSeconds).toBe(
       SPEND_CEILING_NOTICE_COOLDOWN_MAX_SECONDS,
     );
@@ -285,17 +397,17 @@ describe("the window", () => {
 describe("how often the ceiling announces itself", () => {
   beforeEach(() => clearContactAuthState());
 
-  const over = { state: "over" as const, usedTokens: 200, ceilingTokens: 100 };
+  const over = { state: "over" as const, usedUsd: 200, ceilingUsd: 100 };
   const warn = {
     state: "warning" as const,
-    usedTokens: 90,
-    ceilingTokens: 100,
+    usedUsd: 90,
+    ceilingUsd: 100,
   };
 
   test("an allowed verdict writes nothing", () => {
     expect(
       spendCeilingAnnouncement(
-        { state: "allowed", usedTokens: 5, ceilingTokens: 100 },
+        { state: "allowed", usedUsd: 5, ceilingUsd: 100 },
         "inbox",
         7n,
       ),
@@ -392,7 +504,7 @@ describe("two over-ceiling sequences on one conversation", () => {
   const ceilingCfg = {
     ...SPEND_CEILING_DEFAULTS,
     enabled: true,
-    monthlyInboxTokens: 100,
+    monthlyInboxUsd: 100,
     overCeilingMessage: "Orçamento do mês esgotado.",
   };
 
@@ -408,7 +520,7 @@ describe("two over-ceiling sequences on one conversation", () => {
         // ONE message, two deliveries: that is what Chatwoot's fan-out is.
         occasion: "message:500",
         cfg: ceilingCfg,
-        verdict: { usedTokens: 200, ceilingTokens: 100 },
+        verdict: { usedUsd: 200, ceilingUsd: 100 },
         postPublicMessage: async () => {
           order.push(`copy:${label}`);
           if (slowCopy) {
@@ -454,7 +566,7 @@ describe("two over-ceiling sequences on one conversation", () => {
         conversationRowId,
         occasion: "message:600",
         cfg: ceilingCfg,
-        verdict: { usedTokens: 200, ceilingTokens: 100 },
+        verdict: { usedUsd: 200, ceilingUsd: 100 },
         postPublicMessage: async () => {
           ran.push(`copy:${conversationRowId}`);
           if (park) {
@@ -491,7 +603,7 @@ describe("two over-ceiling sequences on one conversation", () => {
         conversationRowId: 97n,
         occasion,
         cfg: noCooldown,
-        verdict: { usedTokens: 200, ceilingTokens: 100 },
+        verdict: { usedUsd: 200, ceilingUsd: 100 },
         postPublicMessage: async () => {
           order.push(`copy:${occasion}`);
           if (park) {
@@ -537,7 +649,7 @@ describe("two over-ceiling sequences on one conversation", () => {
         conversationRowId: 98n,
         occasion: "message:700",
         cfg: ceilingCfg,
-        verdict: { usedTokens: 200, ceilingTokens: 100 },
+        verdict: { usedUsd: 200, ceilingUsd: 100 },
         postPublicMessage: async () => {
           order.push("copy");
           return true;

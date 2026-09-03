@@ -6,9 +6,11 @@ import { AppError } from "@/lib/errors";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { auditMutation } from "@/modules/audit/service";
 import { unprintableProblem } from "@/modules/documents/printable";
+import { syncTenantSpendPoll } from "@/modules/spend-ceiling/arm";
 import {
   readSpendCeilingConfig,
   type SpendCeilingConfig,
+  type SpendCeilingStored,
   spendCeilingSettingsSchema,
 } from "@/modules/spend-ceiling/settings";
 import {
@@ -221,7 +223,7 @@ async function patchBlock<
     | EmbeddingSettings
     | LangfuseSettings
     | CompanySettings
-    | SpendCeilingConfig,
+    | SpendCeilingStored,
 >(
   ctx: TenantContext,
   base: PrismaClient,
@@ -557,7 +559,7 @@ export async function updateSpendCeiling(
   patch: SpendCeilingUpdateInput,
   base: PrismaClient = basePrisma,
 ): Promise<SpendCeilingConfig> {
-  return patchBlock(
+  const next = await patchBlock(
     ctx,
     base,
     "spendCeiling",
@@ -579,8 +581,8 @@ export async function updateSpendCeiling(
         const b = readSpendCeilingConfig(raw);
         return {
           enabled: b.enabled,
-          monthlyInboxTokens: b.monthlyInboxTokens,
-          monthlyPlaygroundTokens: b.monthlyPlaygroundTokens,
+          monthlyInboxUsd: b.monthlyInboxUsd,
+          monthlyPlaygroundUsd: b.monthlyPlaygroundUsd,
           warnAtPercent: b.warnAtPercent,
           handoffEnabled: b.handoffEnabled,
           noticeCooldownSeconds: b.noticeCooldownSeconds,
@@ -596,8 +598,14 @@ export async function updateSpendCeiling(
     },
     (raw) => {
       const current = readSpendCeilingConfig(raw);
+      // What is stored is the schema's output: the dollar fields and not the token ones, which is
+      // how a save in dollars retires a block written in tokens (`legacyTokens`).
       // not-caller-input: the STORED block merged with the patch, so a failure here is not necessarily the caller's
       return spendCeilingSettingsSchema.parse({ ...current, ...patch });
     },
   );
+  // The poll that keeps the figure fresh follows the switch: armed while the ceiling is on, cancelled
+  // when it is off (issue #426). Best-effort inside, so it never fails the save.
+  await syncTenantSpendPoll(requireTenantId(ctx), base);
+  return readSpendCeilingConfig({ spendCeiling: next });
 }

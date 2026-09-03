@@ -30,6 +30,7 @@ const {
   ALERT_COALESCE_WINDOW_MS,
   FLOWLOG_RETENTION_DAYS,
   HEARTBEAT_INTERVAL_MS,
+  SPEND_CEILING_POLL_INTERVAL_MS,
   MCP_STDIO_ENABLED,
   ALLOW_SUPERUSER_RUNTIME,
   DOCUMENTS_STORAGE_DIR,
@@ -367,6 +368,20 @@ const config = {
       "HEARTBEAT_INTERVAL_MS",
       60_000,
       "It is the cadence of the heartbeat outbound webhook.",
+      MAX_DURATION_MS,
+    ),
+  },
+  // NOTE: Cadence of the per-tenant `SPEND_CEILING_POLL` scheduler job (issue #426): how often a
+  // tenant's month-to-date cost is read from Langfuse into the local snapshot the spend ceiling's
+  // gate reads. Armed only while the tenant's ceiling is on. The ceiling's effective lag is THIS plus
+  // Langfuse's own ingestion lag, and the two ADD, so it is the overshoot bound an operator accepts
+  // by leaving it. Default 5 min.
+  spendCeiling: {
+    pollIntervalMs: parseIntSetting(
+      SPEND_CEILING_POLL_INTERVAL_MS,
+      "SPEND_CEILING_POLL_INTERVAL_MS",
+      300_000,
+      "It is how often a tenant's month-to-date cost is read from Langfuse for the spend ceiling.",
       MAX_DURATION_MS,
     ),
   },

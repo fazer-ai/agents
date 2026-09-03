@@ -112,15 +112,22 @@ async function setCeiling(
   });
 }
 
-async function spend(source: string, prompt: number, completion = 0) {
-  await suDb.llmUsage.create({
-    data: {
+// The month's figure, as the poll would have written it (issue #426): the gate reads the snapshot,
+// never the ledger, so what a test seeds is the snapshot. The number is dollars.
+async function spend(source: string, usd: number) {
+  const monthStart = new Date(
+    Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1),
+  );
+  await suDb.spendCostSnapshot.upsert({
+    where: { tenantId_source_monthStart: { tenantId, source, monthStart } },
+    create: {
       tenantId,
-      model: "gpt-4o-mini",
       source,
-      promptTokens: prompt,
-      completionTokens: completion,
+      monthStart,
+      costUsd: usd,
+      polledAt: new Date(),
     },
+    update: { costUsd: usd, polledAt: new Date() },
   });
 }
 
@@ -325,12 +332,12 @@ describe.skipIf(!dbUp)("the spend ceiling (webhook e2e)", () => {
 
   beforeEach(async () => {
     clearContactAuthState();
-    await suDb.llmUsage.deleteMany({ where: { tenantId } });
+    await suDb.spendCostSnapshot.deleteMany({ where: { tenantId } });
   });
 
   afterAll(async () => {
     if (!dbUp || tenantId === 0n) return;
-    await suDb.llmUsage.deleteMany({ where: { tenantId } });
+    await suDb.spendCostSnapshot.deleteMany({ where: { tenantId } });
     await clearFlowLog(suDb, { tenantId });
     await suDb.tenant.deleteMany({ where: { id: tenantId } });
     await appDb.$disconnect();
@@ -342,7 +349,7 @@ describe.skipIf(!dbUp)("the spend ceiling (webhook e2e)", () => {
   test("over the ceiling the model is never invoked", async () => {
     await setCeiling({
       enabled: true,
-      monthlyInboxTokens: 1000,
+      monthlyInboxUsd: 1000,
       overCeilingMessage: OVER_COPY,
     });
     await spend("inbox", 1200);
@@ -367,7 +374,7 @@ describe.skipIf(!dbUp)("the spend ceiling (webhook e2e)", () => {
   // minutes for two hours (`nudge-retry.ts`): announcing per attempt paged the alert channels eight
   // times for one follow-up that could not go out, multiplied by every pending job the tenant had.
   test("a nudge refused by the ceiling is announced once, however often it is retried", async () => {
-    await setCeiling({ enabled: true, monthlyInboxTokens: 1000 });
+    await setCeiling({ enabled: true, monthlyInboxUsd: 1000 });
     await spend("inbox", 1200);
     await seedConversation(9410);
     await seedConversation(9411);
@@ -436,7 +443,7 @@ describe.skipIf(!dbUp)("the spend ceiling (webhook e2e)", () => {
   // question (there was work to do), no to the one after the verdict (the command landed in
   // between). Counting the asks is what makes this measure the SECOND one rather than the first.
   test("a nudge retired while the ceiling was being read announces nothing", async () => {
-    await setCeiling({ enabled: true, monthlyInboxTokens: 1000 });
+    await setCeiling({ enabled: true, monthlyInboxUsd: 1000 });
     await spend("inbox", 1200);
     await seedConversation(9415);
     const s = stubChatwoot();
@@ -477,7 +484,7 @@ describe.skipIf(!dbUp)("the spend ceiling (webhook e2e)", () => {
   test("an agent that cannot run is not silenced by the budget", async () => {
     await setCeiling({
       enabled: true,
-      monthlyInboxTokens: 100,
+      monthlyInboxUsd: 100,
       overCeilingMessage: OVER_COPY,
     });
     await spend("inbox", 500);
@@ -527,7 +534,7 @@ describe.skipIf(!dbUp)("the spend ceiling (webhook e2e)", () => {
   test("a message that renders to nothing is not refused", async () => {
     await setCeiling({
       enabled: true,
-      monthlyInboxTokens: 100,
+      monthlyInboxUsd: 100,
       overCeilingMessage: OVER_COPY,
     });
     await spend("inbox", 500);
@@ -556,7 +563,7 @@ describe.skipIf(!dbUp)("the spend ceiling (webhook e2e)", () => {
   test("a runnable probe that cannot be read leaves the refusal standing", async () => {
     await setCeiling({
       enabled: true,
-      monthlyInboxTokens: 100,
+      monthlyInboxUsd: 100,
       overCeilingMessage: OVER_COPY,
     });
     await spend("inbox", 500);
@@ -597,7 +604,7 @@ describe.skipIf(!dbUp)("the spend ceiling (webhook e2e)", () => {
   test("two accounts' messages that share a number are two refusals", async () => {
     await setCeiling({
       enabled: true,
-      monthlyInboxTokens: 100,
+      monthlyInboxUsd: 100,
       overCeilingMessage: OVER_COPY,
     });
     await spend("inbox", 500);
@@ -626,7 +633,7 @@ describe.skipIf(!dbUp)("the spend ceiling (webhook e2e)", () => {
   test("one message fanned out to two routes is refused once on the record", async () => {
     await setCeiling({
       enabled: true,
-      monthlyInboxTokens: 100,
+      monthlyInboxUsd: 100,
       overCeilingMessage: OVER_COPY,
     });
     await spend("inbox", 500);
@@ -674,7 +681,7 @@ describe.skipIf(!dbUp)("the spend ceiling (webhook e2e)", () => {
   test("a message the other route already answered is neither refused nor reported", async () => {
     await setCeiling({
       enabled: true,
-      monthlyInboxTokens: 100,
+      monthlyInboxUsd: 100,
       overCeilingMessage: OVER_COPY,
     });
     await spend("inbox", 500);
@@ -710,7 +717,7 @@ describe.skipIf(!dbUp)("the spend ceiling (webhook e2e)", () => {
   test("a message the other route has claimed but not yet marked handled is not refused", async () => {
     await setCeiling({
       enabled: true,
-      monthlyInboxTokens: 100,
+      monthlyInboxUsd: 100,
       overCeilingMessage: OVER_COPY,
     });
     await spend("inbox", 500);
@@ -741,7 +748,7 @@ describe.skipIf(!dbUp)("the spend ceiling (webhook e2e)", () => {
   test("the message after the watermark is still refused", async () => {
     await setCeiling({
       enabled: true,
-      monthlyInboxTokens: 100,
+      monthlyInboxUsd: 100,
       overCeilingMessage: OVER_COPY,
     });
     await spend("inbox", 500);
@@ -767,7 +774,7 @@ describe.skipIf(!dbUp)("the spend ceiling (webhook e2e)", () => {
   test("the refusal is on the record, at error level", async () => {
     await setCeiling({
       enabled: true,
-      monthlyInboxTokens: 100,
+      monthlyInboxUsd: 100,
       overCeilingMessage: OVER_COPY,
     });
     await spend("inbox", 500);
@@ -777,7 +784,7 @@ describe.skipIf(!dbUp)("the spend ceiling (webhook e2e)", () => {
     const rows = await ceilingRows(9402);
     expect(rows[0]?.level).toBe("error");
     expect(rows[0]?.status).toBe("skipped");
-    expect((rows[0]?.detail as { usedTokens?: number })?.usedTokens).toBe(500);
+    expect((rows[0]?.detail as { usedUsd?: number })?.usedUsd).toBe(500);
   });
 
   // The other side of the same gate: nothing changes for a tenant under its ceiling, and the turn
@@ -785,7 +792,7 @@ describe.skipIf(!dbUp)("the spend ceiling (webhook e2e)", () => {
   test("under the ceiling the turn runs as before", async () => {
     await setCeiling({
       enabled: true,
-      monthlyInboxTokens: 1_000_000,
+      monthlyInboxUsd: 1_000_000,
       overCeilingMessage: OVER_COPY,
     });
     await spend("inbox", 1200);
@@ -806,8 +813,8 @@ describe.skipIf(!dbUp)("the spend ceiling (webhook e2e)", () => {
   test("a playground overrun does not close the inbox", async () => {
     await setCeiling({
       enabled: true,
-      monthlyInboxTokens: 1_000_000,
-      monthlyPlaygroundTokens: 10,
+      monthlyInboxUsd: 1_000_000,
+      monthlyPlaygroundUsd: 10,
       overCeilingMessage: OVER_COPY,
     });
     await spend("playground", 5000);
@@ -826,7 +833,7 @@ describe.skipIf(!dbUp)("the spend ceiling (webhook e2e)", () => {
   test("a second message inside the window is refused without repeating the copy", async () => {
     await setCeiling({
       enabled: true,
-      monthlyInboxTokens: 100,
+      monthlyInboxUsd: 100,
       overCeilingMessage: OVER_COPY,
       noticeCooldownSeconds: 300,
     });
@@ -852,7 +859,7 @@ describe.skipIf(!dbUp)("the spend ceiling (webhook e2e)", () => {
   // A ceiling switched off is the state every existing install is in, and it must cost nothing and
   // change nothing.
   test("a tenant with the block switched off is untouched", async () => {
-    await setCeiling({ enabled: false, monthlyInboxTokens: 1 });
+    await setCeiling({ enabled: false, monthlyInboxUsd: 1 });
     await spend("inbox", 999_999);
     await seedConversation(9406);
     const s = stubChatwoot();

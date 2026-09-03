@@ -69,6 +69,7 @@ enum SchedulerJobKind {
   DELIVERY_SWEEP
   DELIVERY_RECOVERY
   TAKEOVER_RECOVERY
+  SPEND_CEILING_POLL
 }
 
 enum SchedulerJobStatus {
@@ -143,6 +144,7 @@ model Tenant {
   experiments                   Experiment[]
   promptVariantAssignments      PromptVariantAssignment[]
   llmUsages                     LlmUsage[]
+  spendCostSnapshots            SpendCostSnapshot[]
   executionLogs                 ExecutionLog[]
   alertChannels                 AlertChannel[]
   alertDeliveries               AlertDelivery[]
@@ -1582,6 +1584,35 @@ model PromptVariantAssignment {
 
 // NOTE: captured at the source (LangChain callback / model wrapper), not mirrored from
 // Langfuse. Substrate for the per-agent/per-conversation cost dashboard.
+// The month's cost per tenant and source, as the Langfuse poll last saw it (issue #426). The spend
+// ceiling's gate reads THIS row, never Langfuse: `polledAt` is the last successful poll, the
+// `pollError` pair the last failure, and a failure never overwrites the figure. `tracedCalls`,
+// `costedCalls` and `unpricedModels` reconcile the figure against the local ledger, because Langfuse
+// prices a model it does not know at zero and a ceiling that undercounts has to say so.
+model SpendCostSnapshot {
+  id             BigInt    @id @default(autoincrement())
+  tenantId       BigInt    @map("tenant_id")
+  // "inbox" | "playground": the same split `LlmUsage.source` carries, told apart on the Langfuse
+  // side by the trace's environment (`environmentForSource`).
+  source         String
+  // The calendar month, UTC, as `monthStart` derives it.
+  monthStart     DateTime  @map("month_start")
+  costUsd        Decimal   @default(0) @map("cost_usd") @db.Decimal(14, 6)
+  tracedCalls    Int       @default(0) @map("traced_calls")
+  costedCalls    Int       @default(0) @map("costed_calls")
+  unpricedModels Json      @default("[]") @map("unpriced_models")
+  polledAt       DateTime? @map("polled_at")
+  pollError      String?   @map("poll_error")
+  pollFailedAt   DateTime? @map("poll_failed_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, source, monthStart])
+  @@map("spend_cost_snapshots")
+}
+
 model LlmUsage {
   id                  BigInt   @id @default(autoincrement())
   tenantId            BigInt   @map("tenant_id")

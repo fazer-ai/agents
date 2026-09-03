@@ -94,6 +94,7 @@ const EXPECTED_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   // concurrency rather than a budget independent of the turns live customers are queueing for.
   DELIVERY_RECOVERY: "shared",
   TAKEOVER_RECOVERY: "shared",
+  SPEND_CEILING_POLL: "shared",
 };
 
 // Same discipline as EXPECTED_LANE, and for a sharper reason: the bound test below can only
@@ -123,6 +124,7 @@ const EXPECTED_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
   // takeover and never reaches a model. Flipped to `true` it would hold a permit in the semaphore a
   // customer's turn queues on, to make two HTTP calls.
   TAKEOVER_RECOVERY: false,
+  SPEND_CEILING_POLL: false,
 };
 
 // Same discipline again, and both of these maps were added by the change that introduced
@@ -151,6 +153,7 @@ const EXPECTED_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
   // Same pass, same deploy, same traffic: one row per delivery that was carrying a colleague's reply
   // when the process died.
   TAKEOVER_RECOVERY: true,
+  SPEND_CEILING_POLL: false,
 };
 
 const EXPECTED_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
@@ -172,6 +175,7 @@ const EXPECTED_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
   DELIVERY_RECOVERY: true,
   // Same key, same shape, same answer.
   TAKEOVER_RECOVERY: true,
+  SPEND_CEILING_POLL: false,
 };
 
 // Written out ON PURPOSE, like the tables above: derived, it would mirror whatever the source says.
@@ -196,6 +200,7 @@ const EXPECTED_DEATH_LEVEL: Record<
   // the DEAD ledger row is still the operator's worklist. What died is the automatic second attempt.
   DELIVERY_RECOVERY: "warn",
   TAKEOVER_RECOVERY: "warn",
+  SPEND_CEILING_POLL: "error",
 };
 
 const ALL_KINDS = Object.keys(EXPECTED_LANE) as SchedulerJobKind[];

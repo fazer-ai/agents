@@ -69,7 +69,8 @@ export type SchedulerJobKind =
   | "INGEST_MESSAGE"
   | "DELIVERY_SWEEP"
   | "DELIVERY_RECOVERY"
-  | "TAKEOVER_RECOVERY";
+  | "TAKEOVER_RECOVERY"
+  | "SPEND_CEILING_POLL";
 
 export interface ClaimedJob {
   id: bigint;

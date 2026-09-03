@@ -41,6 +41,10 @@ export type HttpToolMethod = (typeof HTTP_METHODS)[number];
 // cannot do.
 export const DEFAULT_HTTP_METHOD: HttpToolMethod = "POST";
 
+// The label's authoring limit, shared with the import's rename: a label it moves must still be
+// savable from the console, which validates against this.
+export const TOOL_LABEL_MAX = 200;
+
 // The method a caller sent, or null when it is not one of the five. Uppercases first, because the
 // runtime does (`def.method.toUpperCase()`) and a hand-written `get` is the same request.
 export function readHttpMethod(raw: unknown): HttpToolMethod | null {
@@ -243,7 +247,7 @@ const UNDISCLOSED = [
 export const toolDefinitionCreateSchema = z
   .object({
     name: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
-    label: z.string().min(1).max(200),
+    label: z.string().min(1).max(TOOL_LABEL_MAX),
     description: z.string().max(2000).nullish(),
     method: z.enum(HTTP_METHODS).optional(),
     urlTemplate: z.string().min(1).max(2000),

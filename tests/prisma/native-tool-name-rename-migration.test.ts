@@ -111,6 +111,13 @@ describe.skipIf(!dbUp)(
       // A label that reaches the reserved name only by shedding a diacritic (round 21): the console\'s
       // NFD step, which the file reproduces with a translate table generated from Unicode.
       ids.a_calc = await tool(a, "calculator", "Calculátor");
+      // A label at the authoring limit (200) that derives the name: the suffix would push it past the
+      // limit and lock the row out of the console the other way (round 22); it becomes the name itself.
+      ids.a_long = await tool(
+        a,
+        "get_current_time",
+        `get${" ".repeat(184)}current time`,
+      );
       ids.a_run_code_2 = await tool(a, "run_code_2");
       ids.a_handoff = await tool(a, "handoff_to_human");
       ids.a_lookup = await tool(a, "lookup_order");
@@ -169,6 +176,12 @@ describe.skipIf(!dbUp)(
       });
       expect(normalizeToolName(h.label)).toBe(h.name);
       const c = await rowOf(ids.a_calc as bigint);
+      const l = await rowOf(ids.a_long as bigint);
+      expect(l).toEqual({
+        name: "get_current_time_2",
+        label: "get_current_time_2",
+      });
+      expect(normalizeToolName(l.label)).toBe(l.name);
       expect(c).toEqual({ name: "calculator_2", label: "Calculátor 2" });
       expect(normalizeToolName(c.label)).toBe(c.name);
       // A label that never derived the name is the operator's own; it does not move.
@@ -192,12 +205,32 @@ describe.skipIf(!dbUp)(
 
       const named = [...(table[1] as string)];
 
-      expect(named.length).toBeGreaterThan(400);
+      expect(named.length).toBeGreaterThan(1500);
+
+      // And every code point of the first two planes on its own, so a symbol the table does not name
+
+      // (round 22: U+212B, which decomposes to A + ring) is asked too, whichever way it is written.
+
+      const everyCodePoint: string[] = [];
+
+      for (let cp = 0x01; cp <= 0x1ffff; cp++) {
+        if (cp >= 0xd800 && cp <= 0xdfff) continue;
+
+        everyCodePoint.push(String.fromCodePoint(cp));
+      }
 
       const corpus = [
         ...named,
 
         ...named.map((ch) => ch.normalize("NFD")),
+
+        ...everyCodePoint,
+
+        "CÅlculator",
+
+        "a^b",
+
+        "x`y´z",
 
         "Calculátor",
 
@@ -288,6 +321,16 @@ describe.skipIf(!dbUp)(
           {
             actor_type: "system",
             action: "tool.renamed_by_upgrade",
+            target: `tool:${ids.a_long}`,
+            before: {
+              name: "get_current_time",
+              label: `get${" ".repeat(184)}current time`,
+            },
+            after: { name: "get_current_time_2", label: "get_current_time_2" },
+          },
+          {
+            actor_type: "system",
+            action: "tool.renamed_by_upgrade",
             target: `tool:${ids.a_handoff}`,
             before: { name: "handoff_to_human", label: "handoff_to_human" },
             after: { name: "handoff_to_human_2", label: "handoff_to_human 2" },
@@ -305,7 +348,7 @@ describe.skipIf(!dbUp)(
           after: { tool: "run_code", renamed: "run_code_3" },
         },
       ]);
-      expect(inA).toHaveLength(4);
+      expect(inA).toHaveLength(5);
       expect((await auditOf(b)).map((r) => [r.action, r.target])).toEqual([
         ["tool.renamed_by_upgrade", `tool:${ids.b_run_code}`],
       ]);

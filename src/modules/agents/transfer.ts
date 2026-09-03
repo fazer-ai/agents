@@ -64,7 +64,10 @@ import {
 } from "@/modules/tool-definitions/body-shape";
 import { normalizeToolShapes } from "@/modules/tool-definitions/normalize";
 import { storableResponseTemplate } from "@/modules/tool-definitions/response-template";
-import { readHttpMethod } from "@/modules/tool-definitions/service";
+import {
+  readHttpMethod,
+  TOOL_LABEL_MAX,
+} from "@/modules/tool-definitions/service";
 import { credentialServes } from "@/modules/vault/secret-types";
 import {
   createPendingVaultEntry,
@@ -1467,11 +1470,16 @@ async function createMissingComponents(
     // submits `normalizeToolName(label)` as the name on every save, so a renamed row whose label
     // still derived the reserved name could not be saved again from there (round 20). A label
     // that never derived it is the operator's own. Same rule as the migration's.
+    // A label the suffix would push past the authoring limit becomes the name itself, which
+    // derives to itself (round 22).
     const bundledLabel = tdef.label ?? tdef.name;
+    const suffixed = `${bundledLabel} ${name.slice(tdef.name.length + 1)}`;
     const label =
-      name !== tdef.name && normalizeToolName(bundledLabel) === tdef.name
-        ? `${bundledLabel} ${name.slice(tdef.name.length + 1)}`
-        : bundledLabel;
+      name === tdef.name || normalizeToolName(bundledLabel) !== tdef.name
+        ? bundledLabel
+        : suffixed.length > TOOL_LABEL_MAX
+          ? name
+          : suffixed;
     // Recorded once a row under the new name EXISTS — written below, or found by the pre-check
     // or the race — and not before: a component the checks below skip was otherwise announced
     // as imported under a name no row carries, next to the warning that it was not (round 16).

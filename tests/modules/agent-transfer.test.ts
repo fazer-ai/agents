@@ -1957,6 +1957,28 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     expect(normalizeToolName(row?.label ?? "")).toBe("private_note_2");
   });
 
+  // Round 22: a label at the authoring limit (200) that derives the name cannot carry the suffix
+  // without passing the limit, which would lock the row out of the console the other way; it
+  // becomes the name itself, which derives to itself.
+  test("a renamed tool's label at the authoring limit becomes the name", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const bundle = structuredClone(exp);
+    const tool = bundle.components?.httpTools.find(
+      (h) => h.name === "lookup_order",
+    );
+    if (!tool) throw new Error("bundle missing lookup_order");
+    tool.name = "react_to_message";
+    tool.label = `react${" ".repeat(185)}to message`;
+    await importAgent(dstCtx(), bundle, appDb);
+    const row = await suDb.toolDefinition.findFirst({
+      where: { tenantId: dstTenant, name: "react_to_message_2" },
+      select: { label: true },
+    });
+    expect(row?.label).toBe("react_to_message_2");
+  });
+
   // Round 16: the rename was recorded and reported before the checks that can skip the component,
   // so a native-named tool with a method this version does not send was announced as imported
   // under a name no row carries, next to the warning that it was not imported.

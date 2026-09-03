@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
+import type { AuditAction } from "@/lib/audit/actions";
 import { AppError } from "@/lib/errors";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { auditMutation } from "@/modules/audit/service";
@@ -234,7 +235,7 @@ async function patchBlock<
   // MOVED without carrying what it holds. The company profile is the block that needs the
   // difference: see `sides` below for the shape the other three use.
   audit: {
-    action: string;
+    action: AuditAction;
     target: string;
     project: (
       before: Record<string, unknown>,

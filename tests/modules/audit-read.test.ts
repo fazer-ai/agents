@@ -3,6 +3,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { listAudit, recordAudit } from "@/modules/audit/service";
+import { syntheticAction } from "../utils/audit-action";
 
 // THE READ HALF (issue #401). The trail is append-only and the console page is the only door most
 // operators have to it, so what the read surface can ANSWER is what the trail is worth to them.
@@ -62,7 +63,7 @@ async function seed(
 ) {
   await runScopedOn(appDb, ctx(), (db) =>
     recordAudit(db, tenantId, {
-      action,
+      action: syntheticAction(action),
       target: over.target ?? `t:${action}`,
       actorId: over.actorId === undefined ? USER : over.actorId,
       actorType: (over.actorType ?? "user") as "user",

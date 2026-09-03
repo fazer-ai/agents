@@ -383,6 +383,10 @@ const BARE_SLICES: Record<
   "src/client/components/Modal.tsx": [1, "array"],
   "src/client/contexts/ThemeContext.tsx": [1, "index"],
   "src/client/lib/breadcrumbs.ts": [1, "array"],
+  // Four cuts into a DATE KEY: `YYYY-MM-DD` and the ten leading characters of an ISO instant. Every
+  // character on either side of every one of them is a digit or a hyphen, and `DATE_KEY_RE` refuses
+  // anything else before the value is used, so no cut here can land inside a surrogate pair.
+  "src/client/lib/auditPeriod.ts": [4, "ascii"],
   // The cursor stack's own pop (Previous), and the page's array of entries. The one cut that lands
   // in TEXT — the preview of a `before`/`after` value, which can be a system prompt — goes through
   // `clipText` like every other cap.

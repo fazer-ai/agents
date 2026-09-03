@@ -81,6 +81,16 @@ interface MonthCost {
   unpricedModels: string[];
 }
 
+function asStringList(v: unknown): string[] {
+  return Array.isArray(v)
+    ? v.filter((m): m is string => typeof m === "string")
+    : [];
+}
+
+function union(a: string[], b: string[]): string[] {
+  return [...new Set([...a, ...b])].sort();
+}
+
 function num(v: unknown): number {
   const n = typeof v === "string" ? Number(v) : typeof v === "number" ? v : 0;
   return Number.isFinite(n) ? n : 0;
@@ -144,6 +154,8 @@ async function fetchMonthCost(
     metrics: [
       { measure: "totalCost", aggregation: "sum" },
       { measure: "count", aggregation: "count" },
+      // `avg` skips NULL where `count` does not: see the loop below.
+      { measure: "totalCost", aggregation: "avg" },
     ],
     dimensions: [{ field: "providedModelName" }],
     filters: [
@@ -182,11 +194,19 @@ async function fetchMonthCost(
   for (const row of body.data as Record<string, unknown>[]) {
     const cost = num(row.sum_totalCost);
     const calls = Math.round(num(row.count_count ?? row.count));
+    // HOW MANY OF THE GROUP CARRIED A PRICE (review round 4). A group is priced per generation, not
+    // per model: a price added mid-month leaves the earlier calls at NULL (Langfuse does not
+    // re-price, measured on v3.225.7), and a call with no usage block is NULL under a priced
+    // model. The metrics API cannot filter on a measure, but `avg` skips NULL where `count` does
+    // not, so sum / avg is the number of generations that carried a cost. A group priced at zero
+    // has no avg to divide by and counts as unpriced, which is what a zero price means to a
+    // ceiling.
+    const avg = num(row.avg_totalCost);
+    const priced = avg > 0 ? Math.min(calls, Math.round(cost / avg)) : 0;
     out.costUsd += cost;
     out.tracedCalls += calls;
-    if (cost > 0) {
-      out.costedCalls += calls;
-    } else if (calls > 0) {
+    out.costedCalls += priced;
+    if (calls > priced) {
       const model =
         typeof row.providedModelName === "string" && row.providedModelName
           ? row.providedModelName
@@ -194,7 +214,7 @@ async function fetchMonthCost(
       out.unpricedModels.push(model);
     }
   }
-  out.unpricedModels.sort();
+  out.unpricedModels = union(out.unpricedModels, []);
   return out;
 }
 
@@ -227,11 +247,19 @@ async function writeSuccess(
         usd: Number(prev.costUsd),
         traced: prev.tracedCalls,
         costed: prev.costedCalls,
+        // The names travel with the figure (review round 4): the old project is never asked again,
+        // so a model it could not price would otherwise vanish from the screen while its calls
+        // stay in the carried counters.
+        unpriced: union(
+          asStringList(prev.carriedUnpricedModels),
+          asStringList(prev.unpricedModels),
+        ),
       }
     : {
         usd: Number(prev?.carriedUsd ?? 0),
         traced: prev?.carriedTracedCalls ?? 0,
         costed: prev?.carriedCostedCalls ?? 0,
+        unpriced: asStringList(prev?.carriedUnpricedModels),
       };
   const costUsd = Math.max(
     Number(prev?.costUsd ?? 0),
@@ -249,11 +277,12 @@ async function writeSuccess(
     costUsd,
     tracedCalls,
     costedCalls,
-    unpricedModels: seen.unpricedModels,
+    unpricedModels: union(carried.unpriced, seen.unpricedModels),
     projectKey,
     carriedUsd: carried.usd,
     carriedTracedCalls: carried.traced,
     carriedCostedCalls: carried.costed,
+    carriedUnpricedModels: carried.unpriced,
     polledAt: at,
     pollError: null,
     pollFailedAt: null,

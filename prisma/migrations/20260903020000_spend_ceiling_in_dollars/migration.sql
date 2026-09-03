@@ -23,6 +23,7 @@ CREATE TABLE "spend_cost_snapshots" (
     "carried_usd" DECIMAL(14,6) NOT NULL DEFAULT 0,
     "carried_traced_calls" INTEGER NOT NULL DEFAULT 0,
     "carried_costed_calls" INTEGER NOT NULL DEFAULT 0,
+    "carried_unpriced_models" JSONB NOT NULL DEFAULT '[]',
     "polled_at" TIMESTAMP(3),
     "poll_error" TEXT,
     "poll_failed_at" TIMESTAMP(3),

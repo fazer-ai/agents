@@ -186,10 +186,23 @@ export function SpendCeilingCard({
   const [usage, setUsage] = useState<Usage | null>(null);
   const [usageError, setUsageError] = useState(false);
   const [form, setForm] = useState<SpendCeiling>(value);
+  // THE DOLLAR FIELDS ARE EDITED AS TEXT (review round 4). A number parsed on every keystroke and
+  // written back as the field's value turns a cleared field into "0" before the next digit lands
+  // (so 5 typed over it reads "05") and hands a trailing point to the browser's own heuristic.
+  // The text is what the field shows; the number, parsed from it on every change, is what the
+  // save sends. Re-derived from the settings only when they change underneath.
+  const [usdText, setUsdText] = useState({
+    inbox: String(value.monthlyInboxUsd),
+    playground: String(value.monthlyPlaygroundUsd),
+  });
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     setForm(value);
+    setUsdText({
+      inbox: String(value.monthlyInboxUsd),
+      playground: String(value.monthlyPlaygroundUsd),
+    });
   }, [value]);
 
   const loadUsage = useCallback(async () => {
@@ -210,6 +223,14 @@ export function SpendCeilingCard({
 
   const set = <K extends keyof SpendCeiling>(k: K, v: SpendCeiling[K]) =>
     setForm((f) => ({ ...f, [k]: v }));
+  const setUsd = (k: "inbox" | "playground", text: string) => {
+    setUsdText((t) => ({ ...t, [k]: text }));
+    const n = Number(text);
+    set(
+      k === "inbox" ? "monthlyInboxUsd" : "monthlyPlaygroundUsd",
+      Number.isFinite(n) ? Math.max(0, n) : 0,
+    );
+  };
 
   async function save() {
     setSaving(true);
@@ -360,10 +381,8 @@ export function SpendCeilingCard({
             type="number"
             min={0}
             step={0.01}
-            value={String(form.monthlyInboxUsd)}
-            onChange={(e) =>
-              set("monthlyInboxUsd", Math.max(0, Number(e.target.value) || 0))
-            }
+            value={usdText.inbox}
+            onChange={(e) => setUsd("inbox", e.target.value)}
           />
         </FormField>
         <FormField
@@ -377,13 +396,8 @@ export function SpendCeilingCard({
             type="number"
             min={0}
             step={0.01}
-            value={String(form.monthlyPlaygroundUsd)}
-            onChange={(e) =>
-              set(
-                "monthlyPlaygroundUsd",
-                Math.max(0, Number(e.target.value) || 0),
-              )
-            }
+            value={usdText.playground}
+            onChange={(e) => setUsd("playground", e.target.value)}
           />
         </FormField>
       </div>

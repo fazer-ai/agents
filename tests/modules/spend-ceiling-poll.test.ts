@@ -140,7 +140,19 @@ function langfuseStub(
     if (typeof answer === "number") {
       return new Response("{}", { status: answer });
     }
-    return new Response(JSON.stringify({ data: answer ?? [] }), {
+    // A fixture that says nothing about `avg_totalCost` is a fully priced group (avg = sum / count),
+    // so the rows written before round 4 keep their meaning; a mixed group says its own avg.
+    const data = (answer ?? []).map((r) => {
+      const row = r as Record<string, unknown>;
+      if ("avg_totalCost" in row) return row;
+      const sum = Number(row.sum_totalCost ?? 0);
+      const count = Number(row.count_count ?? 0);
+      return {
+        ...row,
+        avg_totalCost: sum > 0 && count > 0 ? sum / count : null,
+      };
+    });
+    return new Response(JSON.stringify({ data }), {
       status: 200,
       headers: { "content-type": "application/json" },
     });
@@ -289,6 +301,7 @@ describe.skipIf(!dbUp)("the spend ceiling poll", () => {
       expect(s.query.metrics).toEqual([
         { measure: "totalCost", aggregation: "sum" },
         { measure: "count", aggregation: "count" },
+        { measure: "totalCost", aggregation: "avg" },
       ]);
       expect(s.query.dimensions).toEqual([{ field: "providedModelName" }]);
       expect(s.query.filters).toContainEqual({
@@ -499,6 +512,46 @@ describe.skipIf(!dbUp)("the spend ceiling poll", () => {
     expect(inbox?.pollError).toBe("langfuse-not-configured");
   });
 
+  // A GROUP IS PRICED PER GENERATION, NOT PER MODEL (review round 4). A price added mid-month leaves
+  // the earlier calls at NULL (Langfuse does not re-price, measured on v3.225.7), and a call with no
+  // usage block is NULL under a priced model, so a model group with a positive sum can still hold
+  // calls the ceiling never saw. The metrics API cannot filter on a measure, but `avg` skips NULL
+  // where `count` does not: sum / avg is the number of generations that carried a cost.
+  test("a model priced part of the month counts only the generations that carried a price", async () => {
+    const { fetchFn } = langfuseStub({
+      [INBOX_ENV]: [
+        // Two calls, one priced at $2: sum 2, avg 2 (the NULL is skipped), count 2.
+        {
+          providedModelName: "mixed",
+          sum_totalCost: 2,
+          count_count: 2,
+          avg_totalCost: 2,
+        },
+        // Three calls, all priced at $1.
+        {
+          providedModelName: "whole",
+          sum_totalCost: 3,
+          count_count: 3,
+          avg_totalCost: 1,
+        },
+        // A model priced at ZERO by the operator is unpriced to a ceiling: no avg to divide by.
+        {
+          providedModelName: "zeroed",
+          sum_totalCost: 0,
+          count_count: 4,
+          avg_totalCost: 0,
+        },
+      ],
+      [PLAY_ENV]: [],
+    });
+    await pollTenantSpend(tenantA, { base: appDb, fetchFn, now: NOW });
+    const row = await snapshot(tenantA, "inbox");
+    expect(Number(row?.costUsd)).toBe(5);
+    expect(row?.tracedCalls).toBe(9);
+    expect(row?.costedCalls).toBe(4);
+    expect(row?.unpricedModels).toEqual(["mixed", "zeroed"]);
+  });
+
   // THE FIGURE FOLLOWS THE MONTH, NOT THE PROJECT (review round 3). A tenant that points its
   // Langfuse at another project mid-month starts a new series there: the new project's total
   // begins near zero, and a monotonic floor taken over the old figure would sit at $40 while
@@ -557,6 +610,67 @@ describe.skipIf(!dbUp)("the spend ceiling poll", () => {
         now: at(3),
       });
       expect(Number((await snapshot(tenantA, "inbox"))?.costUsd)).toBe(65);
+    });
+
+    // The names travel with the figure (review round 4): the old project is never asked again, so a
+    // model it could not price would otherwise vanish from the screen while its calls stay in the
+    // carried counters. Carried names stay for the month; the current project's own list is still
+    // re-read on every poll, so a model priced there drops off as before.
+    test("a project switched mid-month keeps the models the first one could not price", async () => {
+      const first = langfuseStub(
+        {
+          [INBOX_ENV]: [
+            { providedModelName: "paid", sum_totalCost: 10, count_count: 10 },
+            { providedModelName: "free-a", sum_totalCost: 0, count_count: 5 },
+          ],
+          [PLAY_ENV]: [],
+        },
+        [],
+        { projectId: "proj-a" },
+      );
+      await pollTenantSpend(tenantA, {
+        base: appDb,
+        fetchFn: first.fetchFn,
+        now: NOW,
+      });
+      const second = langfuseStub(
+        {
+          [INBOX_ENV]: [
+            { providedModelName: "free-b", sum_totalCost: 0, count_count: 2 },
+          ],
+          [PLAY_ENV]: [],
+        },
+        [],
+        { projectId: "proj-b" },
+      );
+      await pollTenantSpend(tenantA, {
+        base: appDb,
+        fetchFn: second.fetchFn,
+        now: at(1),
+      });
+      const switched = await snapshot(tenantA, "inbox");
+      expect(switched?.unpricedModels).toEqual(["free-a", "free-b"]);
+      expect(switched?.tracedCalls).toBe(17);
+      expect(switched?.costedCalls).toBe(10);
+      // The new project prices its model: its name goes, the carried one stays.
+      const later = langfuseStub(
+        {
+          [INBOX_ENV]: [
+            { providedModelName: "free-b", sum_totalCost: 1, count_count: 3 },
+          ],
+          [PLAY_ENV]: [],
+        },
+        [],
+        { projectId: "proj-b" },
+      );
+      await pollTenantSpend(tenantA, {
+        base: appDb,
+        fetchFn: later.fetchFn,
+        now: at(2),
+      });
+      expect((await snapshot(tenantA, "inbox"))?.unpricedModels).toEqual([
+        "free-a",
+      ]);
     });
 
     test("a key rotated inside the same project carries nothing", async () => {

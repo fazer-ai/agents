@@ -239,4 +239,31 @@ describe("the spend ceiling card", () => {
     });
     expect(put?.body).not.toHaveProperty("monthlyInboxTokens");
   });
+
+  // THE DOLLAR FIELDS ARE EDITED AS TEXT (review round 4). A number parsed on every keystroke and
+  // written back as the field's value turns a cleared field into "0" before the next digit lands,
+  // so typing 5 over it reads "05", and hands a trailing point back to the browser's own heuristic.
+  // The text is what the field shows; the number is what the save sends.
+  test("a cleared dollar field stays cleared, and what was typed is what is sent", async () => {
+    installFetchStub(baseUsage());
+    renderCard();
+    await waitFor(() => {
+      expect(has("$22.50 of $20.00")).toBe(true);
+    });
+    const inputs = screen.getAllByRole("spinbutton") as HTMLInputElement[];
+    const inbox = inputs[0] as HTMLInputElement;
+    fireEvent.change(inbox, { target: { value: "" } });
+    expect(inbox.value).toBe("");
+    fireEvent.change(inbox, { target: { value: "5" } });
+    expect(inbox.value).toBe("5");
+    fireEvent.change(inbox, { target: { value: "5.25" } });
+    expect(inbox.value).toBe("5.25");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => {
+      expect(requests.some((r) => r.method === "PUT")).toBe(true);
+    });
+    expect(requests.find((r) => r.method === "PUT")?.body).toMatchObject({
+      monthlyInboxUsd: 5.25,
+    });
+  });
 });

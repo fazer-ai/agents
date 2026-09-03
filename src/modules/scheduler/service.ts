@@ -198,8 +198,18 @@ export async function upsertJobRow(
 //
 // Deliberately narrower than the single-row version, because a bulk arming is a bulk arming: every
 // row shares one `kind`, one `rearm` and one `runAt`, and carries its own dedupe key and payload.
-// Anything that does not fit that shape stays on `upsertJobRow`. It lives HERE, beside it, because
-// `tests/modules/scheduler-row-writers.test.ts` fences row creation to this module.
+// Anything that does not fit that shape stays on `upsertJobRow`.
+//
+// The payload is REQUIRED here, and that is the narrowing doing its job rather than an oversight.
+// `upsertJobRow` treats an omitted payload as "keep the one already stored", and that meaning cannot
+// survive the trip through an array: the rows travel as `text[]`, so an omission would have to be
+// spelled as a JSON value, and every spelling of it (`{}`, `null`) is also a payload a caller might
+// legitimately mean. Making it optional and coercing to `{}` is what the type USED to allow, and it
+// silently replaced the stored payload and cleared its secret half on a re-arm that never asked to.
+// Requiring it moves that from a runtime surprise to a compile error at the call site.
+//
+// It lives HERE, beside it, because `tests/modules/scheduler-row-writers.test.ts` fences row
+// creation to this module.
 export async function upsertJobRows(
   db: ScopedDb,
   params: {
@@ -207,7 +217,7 @@ export async function upsertJobRows(
     kind: SchedulerJobKind;
     rearm: Rearm;
     runAt: Date;
-    rows: { dedupeKey: string; payload?: Record<string, unknown> }[];
+    rows: { dedupeKey: string; payload: Record<string, unknown> }[];
   },
 ): Promise<number> {
   if (params.rows.length === 0) return 0;
@@ -219,7 +229,7 @@ export async function upsertJobRows(
   // catalogue rather than anything we choose. Unnesting keeps the count at one parameter per COLUMN,
   // whatever the row count, and the shared halves bind once each instead of once per row.
   const keys = params.rows.map((r) => r.dedupeKey);
-  const payloads = params.rows.map((r) => JSON.stringify(r.payload ?? {}));
+  const payloads = params.rows.map((r) => JSON.stringify(r.payload));
   return db.$executeRaw`
     INSERT INTO scheduler_jobs
       (tenant_id, kind, dedupe_key, run_at, payload, status, created_at, updated_at)

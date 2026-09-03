@@ -174,6 +174,24 @@ describe.skipIf(!dbUp)("scheduler", () => {
       role: "TENANT_ADMIN" as const,
     });
 
+    // The set-based sibling cannot express `upsertJobRow`'s "no payload means keep the stored one":
+    // the rows travel as a `text[]`, so an omission would have to be spelled as a JSON value and
+    // every spelling of it is also a payload somebody could mean. It used to be optional and
+    // coerced to `{}`, which REPLACED the stored payload and cleared its secret half on a re-arm
+    // that never asked to. `@ts-expect-error` is the assertion here, the same way it is in
+    // `delivery-sweep.test.ts`: making the field optional again removes the error and fails the
+    // typecheck on this line, which is the only thing that can catch a narrowing being widened back.
+    test("refuses at COMPILE time to arm a row with no payload", () => {
+      const shape = (rows: Parameters<typeof upsertJobRows>[1]["rows"]) =>
+        rows.length;
+      expect(
+        shape([
+          // @ts-expect-error: a bulk row carries its own payload; omitting it does not typecheck.
+          { dedupeKey: key(99) },
+        ]),
+      ).toBe(1);
+    });
+
     test("arms every row it is given, and nothing for an empty list", async () => {
       expect(
         await runScopedOn(appDb, sysCtx(), (db) =>

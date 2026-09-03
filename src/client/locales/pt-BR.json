@@ -2276,6 +2276,7 @@
     "outputTemplatePick": "Inserir um campo",
     "outputTemplatePickInside": "Campos de cada item de {{path}}",
     "outputTemplatePickLists": "Listas: inserir um bloco que se repete por item",
+    "outputTemplatePickNone": "Nada para escolher aqui: {{path}} não é uma lista no exemplo, ou os itens dela não têm campos. Mova o cursor e abra de novo.",
     "outputTemplatePreview": "Prévia",
     "outputTemplatePreviewHint": "Exatamente o que o agente receberia para o exemplo acima.",
     "outputTemplateStrayBrace": "Há uma chave sem par perto de \"{{stray}}\". Um campo leva duas chaves de cada lado, e uma chave solta chegaria ao agente como texto literal.",

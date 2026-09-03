@@ -384,6 +384,29 @@ describe("a list block (#459)", () => {
     ).toBe("Horários: 09:00; 10:30; fim");
   });
 
+  test("a standalone block that renders a marker keeps the text after it on its own line", () => {
+    // Round 3 of review: the closing marker took its line ending, every item put one back, and a
+    // marker standing in for the items did not, so `Done` landed on the marker's line.
+    const tpl = "Items:\n{{#each items}}\n- {{name}}\n{{/each}}\nDone";
+    expect(render(tpl, { items: [] }).text).toBe("Items:\n(none)\nDone");
+    expect(render(tpl, { items: null }).text).toBe(
+      `Items:\n${ABSENT_MARKER}\nDone`,
+    );
+    expect(render(tpl, {}).text).toBe(`Items:\n${ABSENT_MARKER}\nDone`);
+    const many = Array.from({ length: MAX_EACH_ITEMS + 2 }, (_, i) => ({
+      name: `n${i}`,
+    }));
+    expect(
+      render(tpl, { items: many }).text.endsWith(
+        `\n${moreItemsMarker(2)}\nDone`,
+      ),
+    ).toBe(true);
+    // An inline block owes nothing: it never took a line ending.
+    expect(
+      render("Items: {{#each items}}{{.}}, {{/each}}Done", { items: [] }).text,
+    ).toBe("Items: (none)Done");
+  });
+
   test("{{#each .}} walks a body that IS the list", () => {
     expect(render("{{#each .}}{{.}},{{/each}}", ["a", "b"]).text).toBe("a,b,");
     expect(
@@ -464,7 +487,7 @@ describe("a list block (#459)", () => {
     const shown = (got.text.match(/^- #/gm) ?? []).length;
     expect(shown).toBeGreaterThan(30);
     expect(shown).toBeLessThan(MAX_EACH_ITEMS);
-    expect(got.text.endsWith(moreItemsMarker(100 - shown))).toBe(true);
+    expect(got.text.endsWith(`${moreItemsMarker(100 - shown)}\n`)).toBe(true);
     // The runtime's own clip is what it renders under, so a smaller one shows fewer.
     const small = renderResponseTemplate(
       { template: "{{#each .}}- #{{id}} {{descricao}}\n{{/each}}" },

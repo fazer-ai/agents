@@ -2268,6 +2268,7 @@
     "outputTemplatePick": "Insert a field",
     "outputTemplatePickInside": "Fields of each item in {{path}}",
     "outputTemplatePickLists": "Lists: insert a block that repeats per item",
+    "outputTemplatePickNone": "Nothing to pick here: {{path}} is not a list in the sample, or its items have no fields. Move the cursor and open this again.",
     "outputTemplatePreview": "Preview",
     "outputTemplatePreviewHint": "Exactly what the agent would receive for the sample above.",
     "outputTemplateStrayBrace": "There is an unmatched brace near \"{{stray}}\". A field takes two braces on each side, and a stray one would reach the agent as literal text.",

@@ -1564,7 +1564,7 @@ describe("a list of unknown length renders through a block (#459)", () => {
     );
     const text = String(await tool.invoke({}));
     expect(text).not.toContain("…[truncated]");
-    expect(text).toMatch(/\(and \d+ more not shown\)$/);
+    expect(text).toMatch(/\(and \d+ more not shown\)\n$/);
     expect(notes).toEqual([]);
   });
 

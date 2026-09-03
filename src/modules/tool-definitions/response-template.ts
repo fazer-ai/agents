@@ -597,20 +597,29 @@ export function renderResponseTemplate(
       continue;
     }
     const node = resolveTemplatePath(body, seg.path);
+    // A standalone `{{/each}}` took its line ending with it, and every item puts one back because
+    // the body ends in one. A MARKER standing in for the items does not, so the text after the
+    // block would land on the marker's line (`(none)Done`, round 3 of review): the block owes that
+    // ending to whatever follows it, and an inline block (no ending in its body) owes nothing.
+    const eol = seg.body.endsWith("\r\n")
+      ? "\r\n"
+      : seg.body.endsWith("\n")
+        ? "\n"
+        : "";
     // Same three-way rule as a scalar token: `null` is the API answering with nothing (right path,
     // not reported); anything that is not a list is the template promising one the response does
     // not carry (reported); and an empty list is an answer of its own.
     if (node === null) {
-      text += ABSENT_MARKER;
+      text += ABSENT_MARKER + eol;
       continue;
     }
     if (!Array.isArray(node)) {
       report(seg.path, seg.path);
-      text += ABSENT_MARKER;
+      text += ABSENT_MARKER + eol;
       continue;
     }
     if (node.length === 0) {
-      text += EMPTY_LIST_MARKER;
+      text += EMPTY_LIST_MARKER + eol;
       continue;
     }
     // Item by item, each appended only if it fits under the budget WITH the count of what would
@@ -634,7 +643,7 @@ export function renderResponseTemplate(
       text += piece;
       for (const [label, key] of pending) report(label, key);
     }
-    if (index < node.length) text += moreItemsMarker(node.length - index);
+    if (index < node.length) text += moreItemsMarker(node.length - index) + eol;
   }
   return { text, missing };
 }

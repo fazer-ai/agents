@@ -706,10 +706,16 @@ function appointmentForm(raw: unknown) {
 // repeat over, and it is caret-aware: with the caret inside a block it offers the fields of that
 // list's items instead, relative, under a heading that says so. Both are the same `leaves` shape
 // to this component; what differs is what `onPick` inserts, and the caller decides that.
-function PathPicker({
+//
+// The toggle is what lets the operator move the caret and ask again, so it must not disappear on an
+// offer that is empty for THIS caret: with `emptyLabel` set, an empty offer renders the toggle and
+// that line instead of nothing (round 3 of review: inside a block over an empty list the whole
+// control unmounted while open, and nothing could re-read the caret).
+export function PathPicker({
   leaves,
   lists = [],
   heading,
+  emptyLabel,
   open,
   onToggle,
   onPick,
@@ -723,6 +729,8 @@ function PathPicker({
   lists?: SampleList[];
   // Shown above the offers when they are relative to something (the items of a block).
   heading?: string | null;
+  // Shown instead of nothing when the offer is empty; without it an empty offer hides the control.
+  emptyLabel?: string;
   open: boolean;
   onToggle: () => void;
   onPick: (path: string) => void;
@@ -732,7 +740,8 @@ function PathPicker({
   listsLabel?: string;
   listLength?: (n: number) => string;
 }) {
-  if (leaves.length === 0 && lists.length === 0) return null;
+  const empty = leaves.length === 0 && lists.length === 0;
+  if (empty && !emptyLabel) return null;
   return (
     <div className="-mt-2 flex flex-col gap-1">
       <button
@@ -746,6 +755,11 @@ function PathPicker({
         <ul className="max-h-48 overflow-y-auto rounded-md border border-border">
           {heading && (
             <li className="px-2 py-1 text-text-secondary text-xs">{heading}</li>
+          )}
+          {empty && (
+            <li className="px-2 py-1 text-text-secondary text-xs">
+              {emptyLabel}
+            </li>
           )}
           {leaves.map((leaf) => (
             <li key={leaf.path}>
@@ -2008,6 +2022,17 @@ export function ToolEditModal({
                         "Fields of each item in {{path}}",
                         { path: templateOffer.block },
                       )
+                }
+                emptyLabel={
+                  // Only while the sample offers SOMETHING: with no sample there is nothing to
+                  // move the caret towards, and the control stays hidden as before.
+                  sampleParse.templates.length + sampleParse.lists.length > 0
+                    ? t(
+                        "tools.outputTemplatePickNone",
+                        "Nothing to pick here: {{path}} is not a list in the sample, or its items have no fields. Move the cursor and open this again.",
+                        { path: templateOffer.block ?? "" },
+                      )
+                    : undefined
                 }
                 open={templatePickerOpen}
                 onToggle={() => {

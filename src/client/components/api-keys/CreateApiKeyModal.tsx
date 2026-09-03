@@ -12,21 +12,32 @@ import {
 import { useFieldRefusal } from "@/client/hooks/useFieldRefusal";
 import { api } from "@/client/lib/api";
 
-// The one name this modal sends, spelled the way the route refuses it (`refused body.displayName`).
-const API_KEY_FIELDS = ["displayName"] as const;
+export type ApiKeyScope = "tenant" | "fleet";
 
-// Modal to create a per-tenant API key. On success it reveals the plaintext token ONCE
+// The names this modal sends, spelled the way the routes refuse them (`refused body.displayName`,
+// `refused body.password`).
+const API_KEY_FIELDS = ["displayName", "password"] as const;
+
+// Modal to create an API key, in either scope. On success it reveals the plaintext token ONCE
 // (copy-to-clipboard + a "shown only once" warning); the token is never retrievable again — only its
 // hash is stored. `onCreated` refreshes the list.
+//
+// Both scopes ask for the operator's password: the key being minted answers every later step-up
+// by itself, so the step-up happens here, once, where a person is. A FLEET key additionally carries
+// SUPER_ADMIN authority, and its route refuses a Bearer key as the minter.
 export function CreateApiKeyModal({
   modal,
   onCreated,
+  scope = "tenant",
 }: {
   modal: ModalController;
   onCreated: () => void;
+  scope?: ApiKeyScope;
 }) {
   const { t } = useTranslation();
+  const fleet = scope === "fleet";
   const [displayName, setDisplayName] = useState("");
+  const [password, setPassword] = useState("");
   const [token, setToken] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState("");
@@ -42,13 +53,15 @@ export function CreateApiKeyModal({
     // The component outlives the dialog, so a mark from the last session is still held here.
     refusal.clear();
     setDisplayName("");
+    setPassword("");
     setToken(null);
     setCopied(false);
     setError("");
   });
 
   // Once the token is revealed the work is saved → the form is no longer dirty.
-  const isDirty = !token && displayName.trim() !== "";
+  const isDirty = !token && (displayName.trim() !== "" || password !== "");
+  const canSubmit = displayName.trim() !== "" && password !== "";
 
   const submit = async () => {
     setError("");
@@ -62,12 +75,15 @@ export function CreateApiKeyModal({
         { displayName: nameRef.current.trim() },
       );
     try {
-      const { data, error: apiError } = await api.api.v1["api-keys"].post(sent);
+      const { data, error: apiError } = fleet
+        ? await api.api.v1["api-keys"].fleet.post({ ...sent, password })
+        : await api.api.v1["api-keys"].post({ ...sent, password });
       if (apiError || !data) {
         setError(held(apiError) ?? "");
         return;
       }
       refusal.clear();
+      setPassword("");
       setToken(data.token);
       onCreated();
     } catch (e) {
@@ -90,7 +106,11 @@ export function CreateApiKeyModal({
   return (
     <Modal
       modal={modal}
-      title={t("apiKeys.createTitle", "New API key")}
+      title={
+        fleet
+          ? t("apiKeys.createFleetTitle", "New fleet API key")
+          : t("apiKeys.createTitle", "New API key")
+      }
       size="md"
       unsavedChanges={isDirty}
     >
@@ -115,6 +135,14 @@ export function CreateApiKeyModal({
               {copied ? t("common.copied", "Copied") : t("common.copy", "Copy")}
             </Button>
           </div>
+          {fleet && (
+            <p className="text-text-secondary text-xs">
+              {t(
+                "apiKeys.fleetTokenHint",
+                "This key has no home tenant: pick the tenant per request with the X-Tenant-Id header (REST) or the tenant argument (MCP), exactly like your own session.",
+              )}
+            </p>
+          )}
           <div className="flex justify-end">
             <Button onClick={modal.close}>{t("common.done", "Done")}</Button>
           </div>
@@ -124,7 +152,7 @@ export function CreateApiKeyModal({
           className="space-y-4"
           onSubmit={(e) => {
             e.preventDefault();
-            if (!loading && displayName.trim()) void submit();
+            if (!loading && canSubmit) void submit();
           }}
         >
           {error && (
@@ -148,6 +176,30 @@ export function CreateApiKeyModal({
               placeholder={t("apiKeys.namePlaceholder", "External integration")}
             />
           </FormField>
+          <FormField
+            label={t("apiKeys.password", "Your password")}
+            required
+            description={
+              fleet
+                ? t(
+                    "apiKeys.fleetPasswordHint",
+                    "This key will hold SUPER_ADMIN authority over every tenant. Confirm with your password.",
+                  )
+                : t(
+                    "apiKeys.passwordHint",
+                    "The key acts with your authority and is never asked for a password again. Confirm with yours.",
+                  )
+            }
+            error={refusal.at("password", password)}
+          >
+            <Input
+              type="password"
+              autoComplete="current-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              disabled={loading}
+            />
+          </FormField>
           <div className="flex justify-end gap-2">
             <Button
               type="button"
@@ -160,7 +212,7 @@ export function CreateApiKeyModal({
             <Button
               type="submit"
               loading={loading}
-              disabled={loading || !displayName.trim()}
+              disabled={loading || !canSubmit}
             >
               {t("apiKeys.create", "Create key")}
             </Button>

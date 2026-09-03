@@ -711,11 +711,20 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
       const since = parseQueryInstant(query.since, "since");
       const costs = await getLangfuseCosts(ctxOrThrow(tenantContext), {
         since,
+        source: query.source,
       });
       return { instance: instanceIdentity, costs };
     },
     {
       query: t.Object({
+        // Usage segment: "inbox" (real) | "playground". Omitted → both of our environments, and
+        // never the project's other traffic (issue #427).
+        source: t.Optional(
+          t.Union([t.Literal("inbox"), t.Literal("playground")], {
+            description:
+              "Usage segment to scope the cost: inbox (real traffic) or playground; omit for both.",
+          }),
+        ),
         since: t.Optional(
           t.String({
             description:
@@ -731,6 +740,6 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
         ),
         tags: ["Dashboard"],
       },
-      response: errors(400, 401, 404),
+      response: errors(400, 401, 404, 422),
     },
   );

@@ -59,6 +59,12 @@ export { SelectableCard } from "./SelectableCard";
 export { Sidebar } from "./Sidebar";
 export { Skeleton } from "./Skeleton";
 export {
+  SPEND_NOT_CONFIGURED,
+  SpendBar,
+  SpendHealthLines,
+  type SpendUsageEntry,
+} from "./SpendBar";
+export {
   StrongConfirmModal,
   type StrongConfirmPayload,
 } from "./StrongConfirmModal";

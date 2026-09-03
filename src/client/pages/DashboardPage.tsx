@@ -532,6 +532,7 @@ export function DashboardPage() {
       setCosts(
         costsRes.data ? costsRes.data.costs : { status: "error" as const },
       );
+      ceilingSeq.current += 1;
       setCeiling(ceilingRes.data ?? null);
     } catch {
       if (seq !== usageSeq.current) return;
@@ -545,19 +546,33 @@ export function DashboardPage() {
     void load(range);
   }, [load, range]);
 
-  // THE CEILING RE-READS WHILE THE PAGE STAYS OPEN (review round 1). The health beside each bar is
-  // the server's per read, and the poll writes a new figure every period, so a dashboard left on a
-  // wall screen would keep showing the first read's figure and its "refreshed" line for as long as
-  // it is up. The period is the poll's own, as the usage reports it, and a minute until a read has
-  // said one, which is also the retry for a first read that failed.
+  // THE CEILING RE-READS WHILE THE PAGE STAYS OPEN (review round 1), QUIETLY (review round 2). The
+  // health beside each bar is the server's per read and the poll writes a new figure every period,
+  // so a dashboard left on a wall screen would otherwise keep the first read's figure and its
+  // "refreshed" line for as long as it is up. It is its own read, not the segment loader's: driving
+  // the timer through `loadUsage` would put the whole usage section back into its skeleton every
+  // period, and hold it there for as long as a slow Langfuse cost request took. Its own sequence
+  // number too, so a slow refresh cannot land over the read a segment switch just made.
+  const ceilingSeq = useRef(0);
+  const loadCeiling = useCallback(async () => {
+    const seq = ++ceilingSeq.current;
+    try {
+      const res =
+        await api.api.v1["tenant-settings"]["spend-ceiling"].usage.get();
+      if (seq !== ceilingSeq.current) return;
+      setCeiling(res.data ?? null);
+    } catch {
+      if (seq !== ceilingSeq.current) return;
+      setCeiling(null);
+    }
+  }, []);
+  // The period is the poll's own, as the usage reports it, and a minute until a read has said one,
+  // which is also the retry for a first read that failed.
   const ceilingRefreshMs = ceiling?.pollIntervalMs ?? CEILING_RETRY_MS;
   useEffect(() => {
-    const timer = setInterval(
-      () => void loadUsage(range, source),
-      ceilingRefreshMs,
-    );
+    const timer = setInterval(() => void loadCeiling(), ceilingRefreshMs);
     return () => clearInterval(timer);
-  }, [loadUsage, range, source, ceilingRefreshMs]);
+  }, [loadCeiling, ceilingRefreshMs]);
 
   useEffect(() => {
     void loadUsage(range, source);
@@ -1124,15 +1139,22 @@ export function DashboardPage() {
                           "The ceiling could not be read.",
                         )}
                       </p>
-                    ) : !ceiling.langfuseConfigured ? (
-                      <p className="text-sm text-warning">
-                        {t(
-                          "dashboard.ceiling.unenforceable",
-                          "No Langfuse for this tenant, so the month's cost cannot be read and the ceiling cannot be enforced.",
-                        )}
-                      </p>
                     ) : (
                       <div className="flex flex-col gap-4">
+                        {/* TWO THINGS FROM TWO PLACES, as the Advanced card says them (review round
+                            2, and rounds 9-10 of #426): the flag above the bars is the credential's
+                            PRESENT, and each bar is its own row's last reading. A credential removed
+                            after a good poll leaves the gate still refusing on that figure until the
+                            next poll writes the sentinel, so hiding the bars here would claim the
+                            ceiling stopped applying while it had not. */}
+                        {!ceiling.langfuseConfigured && (
+                          <p className="text-sm text-warning">
+                            {t(
+                              "dashboard.ceiling.unenforceable",
+                              "No Langfuse for this tenant, so the month's cost cannot be read. Each half below says whether calls are still being refused on the last figure.",
+                            )}
+                          </p>
+                        )}
                         {ceilingSources.map((src) => (
                           <div key={src} className="flex flex-col gap-1">
                             <SpendBar

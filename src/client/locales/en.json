@@ -559,7 +559,7 @@
       "cta": "Set the ceiling",
       "period": "{{month}} · the calendar month, not the selected period",
       "title": "Spend ceiling",
-      "unenforceable": "No Langfuse for this tenant, so the month's cost cannot be read and the ceiling cannot be enforced.",
+      "unenforceable": "No Langfuse for this tenant, so the month's cost cannot be read. Each half below says whether calls are still being refused on the last figure.",
       "unread": "The ceiling could not be read."
     },
     "chart": {

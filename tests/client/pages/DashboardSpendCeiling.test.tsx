@@ -138,10 +138,15 @@ const has = (text: string | RegExp) =>
 // conversation, so dividing combined or playground-only cost by it draws a cost per conversation
 // those dollars never had.
 describe("the daily cost-per-conversation line", () => {
-  const points = [
-    { bucket: "2026-09-01", calls: 4, conversations: 2 },
-  ] as Parameters<typeof buildCostTrend>[0];
-  const costDays = [{ date: "2026-09-01", costUsd: 10 }];
+  // The day key is DERIVED, not written down: `buildCostTrend` builds its window from `Date.now()`,
+  // so a hard-coded date falls out of a 7-day window the moment the calendar passes it and the test
+  // starts failing on every run for a reason that has nothing to do with the code (review round 2).
+  const today = new Date();
+  const key = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+  const points = [{ bucket: key, calls: 4, conversations: 2 }] as Parameters<
+    typeof buildCostTrend
+  >[0];
+  const costDays = [{ date: key, costUsd: 10 }];
 
   test("is drawn in the real segment", () => {
     const out = buildCostTrend(points, costDays, "7d", "inbox");
@@ -320,6 +325,104 @@ describe("the spend ceiling on the dashboard", () => {
     });
   });
 
+  // AND IT REFRESHES QUIETLY (review round 2): the timer reads the ceiling alone, so the usage
+  // section is not put back into its skeleton every period, and does not sit blank for as long as a
+  // slow Langfuse cost request takes.
+  test("the periodic re-read does not reload the rest of the section", async () => {
+    const u = baseUsage();
+    u.pollIntervalMs = 40;
+    await renderDash(u);
+    await waitFor(() => {
+      expect(has("$22.50 of $30.00")).toBe(true);
+    });
+    const metricsBefore = asked.filter(
+      (x) => x.includes("/metrics") && !x.includes("/spend-ceiling"),
+    ).length;
+    const ceilingBefore = asked.filter((x) =>
+      x.includes("/spend-ceiling/usage"),
+    ).length;
+    await waitFor(() => {
+      expect(
+        asked.filter((x) => x.includes("/spend-ceiling/usage")).length,
+      ).toBeGreaterThan(ceilingBefore);
+    });
+    expect(
+      asked.filter(
+        (x) => x.includes("/metrics") && !x.includes("/spend-ceiling"),
+      ).length,
+    ).toBe(metricsBefore);
+    // And the figures stayed on screen: no skeleton took their place.
+    expect(has("$22.50 of $30.00")).toBe(true);
+  });
+
+  // AND THE QUIET REFRESH CANNOT LAND OVER A SEGMENT SWITCH (review round 2). The timer and the
+  // segment loader both write the ceiling, so a refresh that went out before the switch and answers
+  // after it would put the previous read back under the newly selected segment.
+  test("a refresh in flight when the segment changes is dropped", async () => {
+    let releaseRefresh: (() => void) | null = null;
+    let usageCalls = 0;
+    const held = (async (input: unknown) => {
+      const url = String(
+        typeof input === "string" ? input : ((input as Request).url ?? input),
+      );
+      asked.push(url);
+      if (url.includes("/spend-ceiling/usage")) {
+        usageCalls += 1;
+        if (usageCalls === 2) {
+          await new Promise<void>((r) => {
+            releaseRefresh = r;
+          });
+          const stale = baseUsage();
+          stale.entries = [
+            entry({ source: "inbox", usedUsd: 99, ceilingUsd: 100 }),
+            entry({ source: "playground", usedUsd: 99, ceilingUsd: 100 }),
+          ];
+          return json({ instance: {}, ...stale });
+        }
+        return json({ instance: {}, ...usage });
+      }
+      return stubFetch(input as RequestInfo);
+    }) as unknown as typeof globalThis.fetch;
+    globalThis.fetch = held;
+    try {
+      const u = baseUsage();
+      u.pollIntervalMs = 40;
+      usage = u;
+      asked.length = 0;
+      render(
+        withI18n(
+          <ThemeProvider>
+            <MemoryRouter>
+              <DashboardPage />
+            </MemoryRouter>
+          </ThemeProvider>,
+        ),
+      );
+      await waitFor(() => {
+        expect(releaseRefresh).not.toBeNull();
+      });
+      const segments = await screen.findByRole("group", {
+        name: "Usage segment",
+      });
+      fireEvent.click(
+        within(segments).getByRole("button", { name: "Playground" }),
+      );
+      await waitFor(() => {
+        expect(has("$4.25 of $5.00")).toBe(true);
+      });
+      await act(async () => {
+        (releaseRefresh as (() => void) | null)?.();
+        for (let i = 0; i < 5; i += 1) {
+          await new Promise((r) => setTimeout(r, 0));
+        }
+      });
+      expect(has("$99.00 of $100.00")).toBe(false);
+      expect(has("$4.25 of $5.00")).toBe(true);
+    } finally {
+      globalThis.fetch = stubFetch;
+    }
+  });
+
   // AND AN OLDER SEGMENT'S ANSWER NEVER LANDS OVER A NEWER ONE (review round 1). Switching segments
   // starts a second load while the first is still out; the older answer landing last would put the
   // inbox cost card beside the playground ceiling, one row showing two different questions.
@@ -399,15 +502,18 @@ describe("the spend ceiling on the dashboard", () => {
     }
   });
 
-  // A tenant with no Langfuse has no ceiling at all, and the dashboard says so where it would
-  // otherwise draw a bar that never moves.
-  test("without Langfuse the card says the ceiling is not enforced", async () => {
+  // THE FLAG AND THE ROWS ARE TWO THINGS (review round 2, and rounds 9-10 of #426). The flag is the
+  // credential's present; each row is its own last reading, and the gate acts on the row. A
+  // credential removed after a good poll leaves the gate refusing on that figure until the next
+  // poll writes the sentinel, so the notice appears ABOVE the bars and does not replace them.
+  test("without Langfuse the notice appears, and the bars still do", async () => {
     const u = baseUsage();
     u.langfuseConfigured = false;
     await renderDash(u);
     await waitFor(() => {
-      expect(has("cannot be enforced")).toBe(true);
+      expect(has("cost cannot be read")).toBe(true);
     });
+    expect(has("$22.50 of $30.00")).toBe(true);
   });
 
   // The usage read follows the same window the rest of the section does: it is asked once per

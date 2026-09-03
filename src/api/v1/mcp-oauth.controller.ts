@@ -431,7 +431,7 @@ export const mcpOAuthController = new Elysia({
         "Returns the details of a pending authorization (client, redirect destination, scopes, tenant, account) for the SPA consent screen, plus a one-time CSRF token. 404 if the request is unknown, expired, already consumed, or owned by a different user.",
       ),
       requireAuth: true,
-      response: errors(401, 404),
+      response: errors(401, 403, 404),
       params: t.Object({
         req: t.String({
           minLength: 1,
@@ -503,7 +503,7 @@ export const mcpOAuthController = new Elysia({
         "Approves or denies a pending authorization. Verifies the CSRF token and single-use-consumes the request; on approve, mints the authorization code from the stored record and remembers the approval (revocable). Returns { redirect } for the SPA to navigate to.",
       ),
       requireAuth: true,
-      response: errors(400, 401, 404, 422),
+      response: errors(400, 401, 403, 404, 422),
       params: t.Object({
         req: t.String({
           minLength: 1,

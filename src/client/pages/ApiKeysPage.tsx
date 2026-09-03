@@ -10,6 +10,7 @@ import {
   DataBoundary,
   EmptyState,
   PageContainer,
+  Tooltip,
   useModalController,
   useToast,
 } from "@/client/components";
@@ -214,19 +215,22 @@ function ApiKeySection({
                     </Badge>
                   )}
                   {!key.stepUpAt && !key.revokedAt && (
-                    <span
-                      title={t(
+                    <Tooltip
+                      content={t(
                         "apiKeys.legacyStepUpTitle",
                         "Minted before keys were confirmed with a password, so the destructive routes still ask for this key's creator's password. Create a new key and revoke this one to get a key that answers by itself.",
                       )}
                     >
-                      <Badge variant="warning">
-                        {t(
-                          "apiKeys.legacyStepUpBadge",
-                          "Asks the creator's password",
-                        )}
-                      </Badge>
-                    </span>
+                      {/* A button, so the keyboard reaches the guidance too; it does nothing else. */}
+                      <button type="button" className="inline-flex rounded">
+                        <Badge variant="warning">
+                          {t(
+                            "apiKeys.legacyStepUpBadge",
+                            "Asks the creator's password",
+                          )}
+                        </Badge>
+                      </button>
+                    </Tooltip>
                   )}
                 </div>
                 <code className="w-fit rounded bg-bg-tertiary px-1.5 py-0.5 font-mono text-text-secondary text-xs">

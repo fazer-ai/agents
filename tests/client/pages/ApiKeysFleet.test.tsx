@@ -1,6 +1,7 @@
 /// <reference lib="dom" />
 
 import { afterAll, afterEach, describe, expect, mock, test } from "bun:test";
+import * as TooltipPrimitive from "@radix-ui/react-tooltip";
 import {
   cleanup,
   fireEvent,
@@ -125,11 +126,13 @@ function installFetchStub() {
 function renderPage() {
   return render(
     <MemoryRouter initialEntries={["/api-keys"]}>
-      <ToastProvider>
-        <NavGuardProvider>
-          <ApiKeysPage />
-        </NavGuardProvider>
-      </ToastProvider>
+      <TooltipPrimitive.Provider>
+        <ToastProvider>
+          <NavGuardProvider>
+            <ApiKeysPage />
+          </NavGuardProvider>
+        </ToastProvider>
+      </TooltipPrimitive.Provider>
     </MemoryRouter>,
   );
 }
@@ -159,6 +162,11 @@ describe("the fleet keys section", () => {
     const fleet = screen.getByTestId("api-keys-fleet");
     expect(within(tenant).queryByText(mark) !== null).toBe(true);
     expect(within(fleet).queryByText(mark) === null).toBe(true);
+    // The rotation guidance rides the shared Tooltip on a focusable trigger, so the keyboard reaches
+    // it; never the native `title` attribute, which no keyboard or touch opens (review round 4).
+    const badge = within(tenant).getByText(mark);
+    expect(badge.closest("button") !== null).toBe(true);
+    expect(tenant.querySelector("[title]")).toBeNull();
   });
 
   test("a SUPER_ADMIN sees the fleet list, read from the fleet route", async () => {

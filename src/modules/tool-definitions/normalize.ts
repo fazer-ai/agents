@@ -230,6 +230,28 @@ export function normalizeToolShapes(
     }
   }
   if (patch.inputSchema !== undefined) {
+    // `__proto__` cannot be a parameter name, and the point of dropping it HERE is that it is
+    // dropped VISIBLY. A field under that name is stored and shown in the console like any other,
+    // and then disappears one layer down: `parseToolInputSchema` builds the zod shape by assigning
+    // into an object, so the name hits the prototype setter and the tool advertises no such
+    // parameter — and even a null-prototype shape would not save it, because zod's own result
+    // object drops the key on parse (measured, both). Silent for an HTTP tool since #457; a code
+    // tool would read `input.__proto__` and find the prototype.
+    // `Object.hasOwn`, not `in`: every plain object inherits `__proto__` from Object.prototype, and
+    // `in` would warn about a schema that never named it.
+    if (
+      isPlainObject(effectiveSchema) &&
+      Object.hasOwn(effectiveSchema, "__proto__")
+    ) {
+      const kept: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(effectiveSchema)) {
+        if (k !== "__proto__") kept[k] = v;
+      }
+      effectiveSchema = kept;
+      warnings.push(
+        "input_schema field `__proto__` was dropped: the name is reserved by JavaScript and cannot reach the model",
+      );
+    }
     shapes.inputSchema = effectiveSchema;
   }
 

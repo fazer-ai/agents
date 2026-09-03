@@ -1083,6 +1083,8 @@ export function ToolEditModal({
   const [selectedCredential, setSelectedCredential] =
     useState<VaultEntry | null>(null);
   const baselineRef = useRef<string | null>(null);
+  // Identity of the current opening (see the open handler).
+  const sessionRef = useRef<object | null>(null);
   // Targets for the variable picker (cursor insertion into the free-text template fields). Union type
   // because the highlighted field forwards its ref to either an <input> or a <textarea>.
   const urlRef = useRef<HTMLInputElement | HTMLTextAreaElement>(null);
@@ -1130,6 +1132,12 @@ export function ToolEditModal({
     setApptPicker(null);
     setTemplatePickerOpen(false);
     const payloadId = modal.payload?.id;
+    // This opening, told apart from the next one: the GET below outlives the dialog it was started
+    // for, so an answer that arrives after a close-and-reopen would fill the NEW session's form
+    // with the old tool and let Save patch the new id with it. Same guard in CodeToolEditModal.
+    const session = {};
+    sessionRef.current = session;
+    const mine = () => sessionRef.current === session;
     if (payloadId) {
       // Edit: fetch the full tool by id (the agent editor only carries the id). Baseline is captured
       // once the loaded tool populates the form, so isDirty stays false until the operator edits.
@@ -1140,6 +1148,7 @@ export function ToolEditModal({
           const { data, error } = await api.api.v1
             .tools({ id: payloadId })
             .get();
+          if (!mine()) return;
           if (error || !data) {
             setLoadError(true);
             return;
@@ -1148,12 +1157,16 @@ export function ToolEditModal({
           setForm(initial);
           baselineRef.current = JSON.stringify(initial);
         } catch {
-          setLoadError(true);
+          if (mine()) setLoadError(true);
         } finally {
-          setLoadingForm(false);
+          if (mine()) setLoadingForm(false);
         }
       })();
     } else {
+      // Reset here too: the session token now drops the previous opening's answer, and that answer
+      // is what used to clear this flag on its way out — leaving the create form skeletonized
+      // forever if it never arrived. Every state this handler sets belongs to THIS opening.
+      setLoadingForm(false);
       const initial = emptyForm();
       setForm(initial);
       baselineRef.current = JSON.stringify(initial);
@@ -1166,7 +1179,10 @@ export function ToolEditModal({
     // The test dialog belongs to the tool session that opened it, so closing the editor takes it
     // with it — otherwise it lingers describing a definition that is no longer on screen
     // (`docs/modals.md`, "parent close invalidates nested state").
-    return () => testModal.close();
+    return () => {
+      sessionRef.current = null;
+      testModal.close();
+    };
   });
 
   // NAMED rather than inline, and the reason is a fence: the toast scanner

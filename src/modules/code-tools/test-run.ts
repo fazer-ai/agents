@@ -12,6 +12,7 @@
 import { ToolInputParsingException } from "@langchain/core/tools";
 import type { CodeToolRun } from "@/graph/tools/code";
 import { runCodeToolDefinition } from "@/graph/tools/code";
+import { SANDBOX_CODE_MAX_CHARS } from "@/graph/tools/code-sandbox-limits";
 import { parseToolInputSchema } from "@/graph/tools/http";
 import { resolveTimezone } from "@/graph/tools/zone-offset";
 import {
@@ -46,6 +47,17 @@ export async function runCodeToolTest(
   const def = input.definition;
   if (typeof def?.code !== "string" || def.code.length === 0) {
     throw new AppError("code is required", 400);
+  }
+  // The same ceiling the row has (codeToolCreateSchema). This endpoint runs an UNSAVED body, so
+  // nothing else had asked the question yet, and a body past the limit would be copied into a
+  // worker and evaluated — host memory the sandbox's own 32 MB heap cap does not govern.
+  if (def.code.length > SANDBOX_CODE_MAX_CHARS) {
+    throw new AppError(
+      `code is longer than ${SANDBOX_CODE_MAX_CHARS} characters`,
+      422,
+      "errors.invalidRequestValue",
+      { field: "code" },
+    );
   }
   const schema = parseToolInputSchema(def.inputSchema ?? {});
   const parsed = schema.safeParse(input.args ?? {});

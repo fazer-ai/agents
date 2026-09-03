@@ -3,6 +3,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { AppError } from "@/lib/errors";
 import type { TenantContext } from "@/lib/tenancy";
+import { runScopedOn } from "@/lib/tenancy";
 import {
   codeToolReferences,
   createCodeTool,
@@ -11,6 +12,7 @@ import {
   listCodeTools,
   updateCodeTool,
 } from "@/modules/code-tools/service";
+import { lockToolName } from "@/modules/tool-definitions/name-lock";
 import { createToolDefinition } from "@/modules/tool-definitions/service";
 
 // The operator-authored code tool's service (issue #363): the row is the operator's, invalid code
@@ -202,6 +204,51 @@ describe.skipIf(!dbUp)("code tools service", () => {
     expect(rename?.translationKey).toBe("errors.codeToolNameTaken");
     await deleteCodeTool(ctx(), BigInt(tool.id), appDb);
     await suDb.toolDefinition.deleteMany({ where: { tenantId } });
+  });
+
+  test("the two name checks queue behind one lock, so a name cannot be claimed in both tables at once", async () => {
+    // The namespace spans two tables, so no unique index covers it: under READ COMMITTED both
+    // writes can read a free name and insert, and `dropDuplicateToolNames` then decides at assembly
+    // which tool the agent gets, with a flow-log line as the only trace. What makes that impossible
+    // is that both `assertNameFree`s take the same transaction lock first (name-lock.ts).
+    //
+    // Measured rather than raced: two concurrent creates usually serialize on the pool and would
+    // pass with no lock at all. Here the first transaction takes the lock for the SAME name and
+    // holds it while it sleeps; the second's create can only get past its check once the first
+    // commits, so its own duration is the proof. Without the lock it finishes immediately and this
+    // fails on the elapsed time.
+    const HELD_MS = 400;
+    const name = "corrida_de_nome";
+    let createMs = 0;
+    await Promise.all([
+      runScopedOn(suDb, ctx(), async (db) => {
+        await lockToolName(db, name);
+        await db.$executeRawUnsafe(`SELECT pg_sleep(${HELD_MS / 1000})`);
+      }),
+      (async () => {
+        // Started after the holder has the lock, so the wait measured is the lock's.
+        await new Promise((r) => setTimeout(r, 50));
+        const t0 = Date.now();
+        await createCodeTool(ctx(), { ...VALID, name }, appDb);
+        createMs = Date.now() - t0;
+      })(),
+    ]);
+    expect(createMs).toBeGreaterThan(HELD_MS - 100);
+    // ...and once it is the owner, the other table's write is refused on the name.
+    const taken = await refusal(
+      createToolDefinition(
+        ctx(),
+        {
+          name,
+          label: "Corrida",
+          urlTemplate: "https://example.com/x",
+          allowedHosts: ["example.com"],
+        } as never,
+        appDb,
+      ),
+    );
+    expect(taken?.translationKey).toBe("errors.toolNameTaken");
+    await suDb.codeToolDefinition.deleteMany({ where: { tenantId } });
   });
 
   test("a JSON-Schema-shaped input schema is stored as the compact map the runtime reads", async () => {

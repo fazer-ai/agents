@@ -137,6 +137,9 @@ export function CodeToolEditModal({
   // they cannot disagree; the warning is advisory and never disables Save.
   const [syntaxWarnings, setSyntaxWarnings] = useState<CodeSyntaxWarning[]>([]);
   const baselineRef = useRef<string | null>(null);
+  // Identity of the current opening, so an answer from the previous one can be recognized and
+  // dropped (see the open handler).
+  const sessionRef = useRef<object | null>(null);
   const testModal = useModalController<CodeToolTestTarget>();
 
   const editId = modal.payload?.id;
@@ -153,6 +156,13 @@ export function CodeToolEditModal({
     setLoadError(false);
     setSyntaxWarnings([]);
     const payloadId = modal.payload?.id;
+    // This opening, told apart from the next one. The GET below outlives the dialog it was started
+    // for: close it while the request is out, reopen on another tool (or on create), and the old
+    // answer would fill THIS form and clear its loading state — and Save would then patch the new
+    // id with the old tool's contents.
+    const session = {};
+    sessionRef.current = session;
+    const mine = () => sessionRef.current === session;
     if (payloadId) {
       baselineRef.current = null;
       setLoadingForm(true);
@@ -161,6 +171,7 @@ export function CodeToolEditModal({
           const { data, error } = await api.api.v1["code-tools"]({
             id: payloadId,
           }).get();
+          if (!mine()) return;
           if (error || !data) {
             setLoadError(true);
             return;
@@ -169,19 +180,27 @@ export function CodeToolEditModal({
           setForm(initial);
           baselineRef.current = JSON.stringify(initial);
         } catch {
-          setLoadError(true);
+          if (mine()) setLoadError(true);
         } finally {
-          setLoadingForm(false);
+          if (mine()) setLoadingForm(false);
         }
       })();
     } else {
+      // Reset here too: the session token now drops the previous opening's answer, and that answer
+      // is what used to clear this flag on its way out — leaving the create form skeletonized
+      // forever if it never arrived. Every state this handler sets belongs to THIS opening.
+      setLoadingForm(false);
       const initial = emptyForm();
       setForm(initial);
       baselineRef.current = JSON.stringify(initial);
     }
     // The test dialog belongs to the tool session that opened it, so closing the editor takes it with
-    // it (docs/modals.md, "parent close invalidates nested state").
-    return () => testModal.close();
+    // it (docs/modals.md, "parent close invalidates nested state"). Dropping the session token is
+    // the same rule for the load in flight: whatever it answers belongs to a dialog that is gone.
+    return () => {
+      sessionRef.current = null;
+      testModal.close();
+    };
   });
 
   // The static check on a debounce: the parse is cheap but re-running it on every keystroke of a

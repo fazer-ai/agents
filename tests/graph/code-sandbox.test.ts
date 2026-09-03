@@ -167,19 +167,45 @@ describe("runSandboxedCode", () => {
     });
   });
 
-  // The value path is the one that DOES get a fresh deadline: rendering runs interpreter code, and
-  // a snippet that spends its budget building a large value would otherwise have the render
-  // interrupted and come back as "[object Object]". Sized from a measurement: 60k objects build in
-  // ~20 ms and render in ~80 ms, so 250 ms of the 300 ms spent first leaves the render no room.
+  // The value path is the one that DOES get a fresh deadline: rendering runs interpreter code, and a
+  // value the body finished building with the deadline nearly spent would otherwise have its render
+  // interrupted and come back as "[object Object]".
+  //
+  // The budget is MEASURED here, not written down. The first version spent 250 ms of a fixed 300 ms
+  // and then built 60k objects, which is an assertion about how fast the machine is: it passed on a
+  // developer laptop and failed on every CI runner for four consecutive commits (#518). What the
+  // renewal is for does not depend on the machine — so the build is timed on THIS machine first,
+  // and the deadline is then set just past it. The body finishes with a sliver left, far less than
+  // its own render needs (rendering the array costs several times building it), so without the
+  // renewal the render is interrupted and with it the value comes back whole.
   test("a value built with the last of the budget is still rendered whole", async () => {
-    const out = await runSandboxedCode(
-      `const t = Date.now(); while (Date.now() - t < 250) {}\nArray.from({ length: 60000 }, (_, i) => ({ i }))`,
-      { timeoutMs: 300, maxChars: 2_000_000 },
-    );
+    const BUILD = "Array.from({ length: 20000 }, (_, i) => ({ i }))";
+    const t0 = performance.now();
+    const baseline = await runSandboxedCode(BUILD, {
+      timeoutMs: 30_000,
+      maxChars: 2_000_000,
+    });
+    const wall = performance.now() - t0;
+    expect(baseline.kind).toBe("value");
+    // `ms` is measured through the evaluation and BEFORE the render, so it is the span the deadline
+    // covers: opening the context, the prelude and the build. What is left of `wall` is the render
+    // (plus the reply hop), the part that runs on the renewed deadline.
+    const evalMs = (baseline as { ms: number }).ms;
+    const renderMs = wall - evalMs;
+    // Half the measured span again, so a second run slower than the baseline still FINISHES its
+    // build — the interruption this test is about is the render's, not the body's.
+    const slack = Math.ceil(evalMs * 0.5) + 5;
+    // The premise, asserted instead of assumed: rendering has to cost more than the slack, or this
+    // test would pass with the renewal gone and guard nothing. It held by ~3x when written.
+    expect(renderMs).toBeGreaterThan(slack);
+    const out = await runSandboxedCode(BUILD, {
+      timeoutMs: evalMs + slack,
+      maxChars: 2_000_000,
+    });
     expect(out.kind).toBe("value");
     const v = (out as { value: string }).value;
     expect(v.startsWith('[{"i":0},{"i":1}')).toBe(true);
-    expect(v.endsWith('{"i":59999}]')).toBe(true);
+    expect(v.endsWith('{"i":19999}]')).toBe(true);
   });
 
   test("the agent's clock is inside: TIMEZONE and NOW_LOCAL, not the interpreter's UTC", async () => {
@@ -998,11 +1024,21 @@ describe("SandboxQueue", () => {
     expect(queue.queued).toBe(0);
   });
 
+  // What the gate has to do with fifty callers is answer all fifty — none dropped, none refused for
+  // want of a slot. The DEFAULT deadline is not part of that question, and leaving it in made this
+  // an assertion about how fast fifty workers start on the machine at hand: green locally, red on
+  // every CI runner for four consecutive commits (#518). A deadline no honest machine can miss
+  // keeps the queue as the only thing measured.
   test("a burst of fifty cheap calls all come back as values under the default gate", async () => {
     const outs = await Promise.all(
-      Array.from({ length: 50 }, (_, i) => runSandboxedCode(`${i} * 2`)),
+      Array.from({ length: 50 }, (_, i) =>
+        runSandboxedCode(`${i} * 2`, { timeoutMs: 30_000 }),
+      ),
     );
     expect(outs.map((o) => o.kind)).toEqual(Array(50).fill("value"));
+    expect(outs.map((o) => (o as { value: string }).value)).toEqual(
+      Array.from({ length: 50 }, (_, i) => String(i * 2)),
+    );
     expect(SANDBOX_MAX_CONCURRENCY).toBe(8);
   });
 

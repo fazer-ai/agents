@@ -1,4 +1,5 @@
 import type { StructuredToolInterface } from "@langchain/core/tools";
+import logger from "@/api/lib/logger";
 import type { PreconditionState } from "@/modules/agents/tool-preconditions";
 import { DEFAULT_TIMEZONE } from "../time";
 import {
@@ -89,9 +90,15 @@ export async function runCodeToolDefinition(
       : { conversationAttributes: {}, contactAttributes: {} };
   } catch (e) {
     const reason = e instanceof Error ? e.message : String(e);
+    // The reason stays SERVER-side. Every other reason this function reports is one of ours (the
+    // body's own SyntaxError, a limit, the sandbox failing to start), but this one is the database
+    // driver's, and a driver message carries SQL, a host and sometimes a role — text that would
+    // otherwise be posted to the model provider and kept in the flow log. The operator reads it in
+    // the server log, where the rest of the driver's failures already are.
+    logger.warn({ err: e, tool: def.name }, "code tool context read failed");
     return {
       outcome: { kind: "unavailable", reason },
-      text: `${def.name} failed: the conversation context could not be read (${reason}). ${WITHOUT_IT}`,
+      text: `${def.name} failed: the conversation context could not be read. ${WITHOUT_IT}`,
       failed: true,
     };
   }

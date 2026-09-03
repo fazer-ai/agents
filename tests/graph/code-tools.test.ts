@@ -178,8 +178,24 @@ describe("a code tool", () => {
     );
     expect(unread.status).toBe("error");
     expect(String(unread.content)).toContain(
-      "conversation context could not be read (db down)",
+      "conversation context could not be read",
     );
+    // The driver's own words stay server-side: this text is posted to the model provider and kept
+    // in the flow log, and a Prisma failure carries SQL, a host and sometimes a role.
+    expect(String(unread.content)).not.toContain("db down");
+    // ...and the caller still gets the reason, which is what the server log records.
+    expect(
+      await runCodeToolDefinition(
+        VALIDAR_CPF,
+        { cpf: "1" },
+        {
+          run: ok.run,
+          loadState: async () => {
+            throw new Error("db down");
+          },
+        },
+      ),
+    ).toMatchObject({ outcome: { kind: "unavailable", reason: "db down" } });
     expect(ok.calls.length).toBe(0);
   });
 

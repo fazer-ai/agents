@@ -183,3 +183,78 @@ test("a body with no return warns without disabling Save", async () => {
   const save = screen.getByText("Save").closest("button");
   expect(save?.hasAttribute("disabled")).toBe(false);
 });
+
+// The other DOM rule: an answer belongs to the opening that asked for it. The GET outlives the
+// dialog, so closing while it is out and reopening on another tool would otherwise let the first
+// answer fill the second form — and Save would then patch the new id with the old tool's contents.
+// `fetch` is intercepted rather than the api module: `mock.module` is process-global and tears down
+// mocks other files installed (the note in document-starters-race.test.tsx).
+function TwoToolsHarness() {
+  const modal = useModalController<{ id?: string }>();
+  return (
+    <ToastProvider>
+      <button type="button" onClick={() => modal.open({ id: "1" })}>
+        open-1
+      </button>
+      <button type="button" onClick={() => modal.open({})}>
+        open-new
+      </button>
+      <button type="button" onClick={() => modal.close()}>
+        close-it
+      </button>
+      <CodeToolEditModal modal={modal} />
+    </ToastProvider>
+  );
+}
+
+test("an answer for the previous opening never fills the current form", async () => {
+  const realFetch = globalThis.fetch;
+  const gates: Record<string, () => void> = {};
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const href =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.href
+          : input.url;
+    const m = /\/code-tools\/(\d+)/.exec(href);
+    if (!m || (init?.method ?? "GET").toUpperCase() !== "GET") {
+      return realFetch(input as RequestInfo, init);
+    }
+    const id = m[1] as string;
+    await new Promise<void>((r) => {
+      gates[id] = r;
+    });
+    return new Response(
+      JSON.stringify({
+        tool: codeTool({ id, label: `Tool ${id}`, name: `tool_${id}` }),
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  }) as typeof fetch;
+  try {
+    render(<TwoToolsHarness />);
+    fireEvent.click(screen.getByText("open-1"));
+    await waitFor(() => expect(typeof gates["1"]).toBe("function"));
+    fireEvent.click(screen.getByText("close-it"));
+    // Reopened for CREATE, which is the reopening where the stale answer is visible: an edit shows
+    // its own skeleton until it loads, while this form is on screen and empty.
+    fireEvent.click(screen.getByText("open-new"));
+    await waitFor(() =>
+      expect(document.body.querySelectorAll("input").length > 0).toBe(true),
+    );
+    const label = () =>
+      ([...document.body.querySelectorAll("input")][0] as HTMLInputElement)
+        ?.value ?? "";
+    fireEvent.change(
+      [...document.body.querySelectorAll("input")][0] as HTMLInputElement,
+      { target: { value: "Novo" } },
+    );
+    // The first tool answers now, for a dialog that is gone.
+    gates["1"]?.();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(label()).toBe("Novo");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});

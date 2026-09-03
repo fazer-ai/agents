@@ -12,6 +12,7 @@ import { parseInput } from "@/lib/parse-input";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { markUndisclosed, undisclosedMoved } from "@/modules/audit/projection";
 import { auditMutation, projectionMoved } from "@/modules/audit/service";
+import { lockToolName } from "@/modules/tool-definitions/name-lock";
 import { normalizeToolShapes } from "@/modules/tool-definitions/normalize";
 import {
   type ResourceReferences,
@@ -161,6 +162,7 @@ async function assertNameFree(
   name: string,
   exceptId?: bigint,
 ): Promise<void> {
+  await lockToolName(db, name);
   if (isNativeToolName(name)) {
     throw new ConflictError(
       "tool name belongs to a built-in tool",

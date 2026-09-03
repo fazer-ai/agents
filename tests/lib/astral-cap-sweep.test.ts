@@ -449,9 +449,10 @@ const BARE_SLICES: Record<
   // a surrogate pair.
   "src/modules/tenant-settings/service.ts": [1, "ascii"],
   "src/modules/tool-definitions/body-shape.ts": [1, "array"],
-  // How many items a block renders (MAX_EACH_ITEMS) and how many the picker samples: entries,
-  // never characters. The per-value cut inside an item goes through clipText like every other.
-  "src/modules/tool-definitions/response-template.ts": [2, "array"],
+  // How many items the picker samples for a block's fields: entries, never characters. The block
+  // itself renders by index under a text budget, and the per-value cut inside an item goes
+  // through clipText like every other.
+  "src/modules/tool-definitions/response-template.ts": [1, "array"],
   "src/modules/updates/semver.ts": [1, "array"],
   // Read only to be substring-matched against the provider's auth-failure shapes, then dropped:
   // never stored, never shown, never sent anywhere.

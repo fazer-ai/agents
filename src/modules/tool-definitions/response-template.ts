@@ -638,7 +638,10 @@ export function renderResponseTemplate(
         },
       );
       const after = node.length - index - 1;
-      const reserve = after > 0 ? moreItemsMarker(after).length : 0;
+      // The count AND the line ending it carries, or a standalone block lands one character past
+      // the budget on exactly the row length that fills it (round 4 of review).
+      const reserve =
+        after > 0 ? moreItemsMarker(after).length + eol.length : 0;
       if (text.length + piece.length + reserve > budget) break;
       text += piece;
       for (const [label, key] of pending) report(label, key);

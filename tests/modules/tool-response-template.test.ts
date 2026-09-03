@@ -499,6 +499,23 @@ describe("a list block (#459)", () => {
     expect(small.text).toContain("more not shown)");
   });
 
+  test("a standalone block never lands past the budget, whatever the row length", () => {
+    // Round 4 of review: the reserve counted the marker and not the line ending after it, so the
+    // row length that filled the budget exactly overshot by one and the clip fired for nothing.
+    // A sweep, because the defect lives on one length in a hundred.
+    for (let len = 1; len <= 120; len++) {
+      const items = Array.from({ length: 40 }, () => "d".repeat(len));
+      for (const nl of ["\n", "\r\n"]) {
+        const got = renderResponseTemplate(
+          { template: `{{#each .}}${nl}- {{.}}${nl}{{/each}}` },
+          items,
+          { maxChars: 400 },
+        );
+        expect(got.text.length).toBeLessThanOrEqual(400);
+      }
+    }
+  });
+
   test("text before the block counts against the same budget", () => {
     const items = Array.from({ length: 20 }, (_, i) => ({ n: i }));
     const lead = "x".repeat(MODEL_RESPONSE_CHAR_LIMIT - 40);

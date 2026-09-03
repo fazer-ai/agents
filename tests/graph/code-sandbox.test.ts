@@ -74,6 +74,23 @@ describe("runSandboxedCode", () => {
         '{"valid":true}',
       ],
       ["const a = { b: 1 }\n{ a }", '{"a":{"b":1}}'],
+      // Round 7: what is not syntax must not move the cut — a comment after the object, a "}" in
+      // a string or a regex, a template with a hole — and a block keyword before it is a block.
+      [
+        'const valid = true; { valid, reason: "ok" } // verdict',
+        '{"valid":true,"reason":"ok"}',
+      ],
+      ['({ reason: "a } b" })', '{"reason":"a } b"}'],
+      ['const r = /}/; { ok: r.test("}") }', '{"ok":true}'],
+      ['const p = /{/; { ok: p.test("{") }', '{"ok":true}'],
+      ["const s = '{'; { s }", '{"s":"{"}'],
+      // Split so the lint does not read the snippet's template hole as this file's.
+      [`const t = \`}$${"{'}'}"}\`; { t }`, '{"t":"}}"}'],
+      ["/* c */ { a: 1 } /* d */", '{"a":1}'],
+      ["let z = 2; if (false) {} else { z = 3 }", "3"],
+      // A block after `else`, even across a line break, even when it would parse as an object.
+      ["let q = 0; if (false) {} else\n{ q: 1 }", "1"],
+      ["const u = 'x'; { u }; // done", '{"u":"x"}'],
       // Not an object: a real block, and braces that belong to a statement, run as written.
       ["{ let x = 1; x + 1 }", "2"],
       ["if (true) { 5 }", "5"],
@@ -362,6 +379,59 @@ describe("runSandboxedCode", () => {
         [7, "2026-03-08T11:00:00.000Z"],
       ]),
     });
+  });
+
+  // Round 7: every offset-less text the engine accepts beyond the ISO `T` form is read in the HOST's
+  // zone (measured: three hours apart between a UTC host and a São Paulo one). Tokyo as the agent,
+  // so that this machine (São Paulo) and CI (UTC) both disagree with the expected values; a date
+  // alone stays UTC and a designator stays the engine's, as the spec says.
+  test("an offset-less text in any format the engine accepts is read in TIMEZONE", async () => {
+    const out = await runSandboxedCode(
+      `[new Date("2026-09-05 12:00:00").toISOString(),
+        Date.parse("2026/09/05 12:00"), Date.parse("Sep 5, 2026 12:00"),
+        Date.parse("2026-09-05T12:00:00.1234"),
+        Date.parse("2026-09-05"), Date.parse("2026-09-05T12:00:00+02:00"),
+        Date.parse("Sat, 05 Sep 2026 12:00:00 GMT"), String(Date.parse("not a date"))]`,
+      { clock: { timezone: "Asia/Tokyo" } },
+    );
+    expect(out).toMatchObject({
+      kind: "value",
+      value: JSON.stringify([
+        "2026-09-05T03:00:00.000Z",
+        1788577200000,
+        1788577200000,
+        1788577200123,
+        1788566400000,
+        1788602400000,
+        1788609600000,
+        "NaN",
+      ]),
+    });
+  });
+
+  // Round 7: the renderer named `Date`, `JSON`, `Object`… as globals, resolved when it ran — after
+  // the snippet, whose own `const Date = 1` had shadowed them, so the verdict rendered as
+  // "[object Object]". The bindings are taken when the renderer is made, before any snippet.
+  test("a snippet that shadows a global by accident still gets its result rendered", async () => {
+    const cases: Array<[string, string]> = [
+      ["const Date = 1; ({ valid: true })", '{"valid":true}'],
+      ["const JSON = null; [1, { a: 2 }]", '[1,{"a":2}]'],
+      ["let Object = 0; ({ b: 3 })", '{"b":3}'],
+      ["const Array = []; ({ c: [1] })", '{"c":[1]}'],
+      ["const String = 0, isFinite = 0; [10n, 1 / 0]", '["10","Infinity"]'],
+      [
+        "var Map = 5, Set = 6, Error = 7; ({ d: new TypeError('kept') })",
+        '{"d":{"name":"TypeError","message":"kept"}}',
+      ],
+    ];
+    for (const [code, want] of cases) {
+      const out = await runSandboxedCode(code);
+      expect(out, code).toMatchObject({ kind: "value", value: want });
+    }
+    const logged = await runSandboxedCode(
+      "const Date = 1; console.log({ ok: true }); 1",
+    );
+    expect(logged).toMatchObject({ kind: "value", logs: ['{"ok":true}'] });
   });
 
   // A positive-offset zone (round 6): the wall clock as UTC is half a day AFTER the instant it

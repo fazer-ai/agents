@@ -71,25 +71,33 @@ const QuickJS = await newQuickJSWASMModuleFromVariant(variant);
 // with no replacer, so an object holding a BigInt comes out as "[object Object]", a nested NaN as
 // null, a Map as {}. Measured, each of them. The walk carries its ancestors so a cycle is named
 // rather than thrown, and stops at a depth no snippet result legitimately reaches.
-const RENDER_SOURCE = `(function (root) {
+const RENDER_SOURCE = `(function () {
+  // The bindings this walker names, taken now, before any snippet runs: a snippet that writes
+  // \`const Date = 1\` shadows the global for everything evaluated after it, this function included,
+  // and its verdict came back as "[object Object]" (PR #485, round 7). A prototype the snippet
+  // rewrites on purpose is its own result.
+  var NativeDate = Date, NativeMap = Map, NativeSet = Set, NativeError = Error;
+  var isArray = Array.isArray, arrayFrom = Array.from, objectKeys = Object.keys, objectCreate = Object.create;
+  var stringify = JSON.stringify, Str = String, finite = isFinite, nan = isNaN;
+  return function (root) {
   function conv(x, stack) {
     if (typeof x === "bigint") return x.toString();
-    if (typeof x === "number" && !isFinite(x)) return String(x);
+    if (typeof x === "number" && !finite(x)) return Str(x);
     if (typeof x === "function") return "[function]";
     if (typeof x === "symbol") return x.toString();
     if (x === null || typeof x !== "object") return x;
     if (stack.indexOf(x) !== -1) return "[circular]";
     if (stack.length >= 64) return "[nested too deep]";
-    if (x instanceof Date) return isNaN(x.getTime()) ? "Invalid Date" : x.toISOString();
-    if (x instanceof Error) return { name: x.name, message: x.message };
-    if (x instanceof Map || x instanceof Set) x = Array.from(x);
+    if (x instanceof NativeDate) return nan(x.getTime()) ? "Invalid Date" : x.toISOString();
+    if (x instanceof NativeError) return { name: x.name, message: x.message };
+    if (x instanceof NativeMap || x instanceof NativeSet) x = arrayFrom(x);
     var next = stack.concat([x]);
-    if (Array.isArray(x)) return x.map(function (e) { var v = conv(e, next); return v === undefined ? null : v; });
+    if (isArray(x)) return x.map(function (e) { var v = conv(e, next); return v === undefined ? null : v; });
     // No prototype: with one, assigning the key "__proto__" reaches the legacy setter instead of
     // the object, and a parsed document carrying that key (JSON.parse keeps it as a plain own key)
     // rendered without it (PR #485, round 3).
-    var out = Object.create(null);
-    var keys = Object.keys(x);
+    var out = objectCreate(null);
+    var keys = objectKeys(x);
     for (var i = 0; i < keys.length; i++) {
       var v = conv(x[keys[i]], next);
       if (v !== undefined) out[keys[i]] = v;
@@ -98,14 +106,15 @@ const RENDER_SOURCE = `(function (root) {
   }
   if (root === undefined) return "undefined";
   if (typeof root === "bigint") return root.toString();
-  if (typeof root === "number" && !isFinite(root)) return String(root);
+  if (typeof root === "number" && !finite(root)) return Str(root);
   try {
-    var s = JSON.stringify(conv(root, []));
-    return s === undefined ? String(root) : s;
+    var s = stringify(conv(root, []));
+    return s === undefined ? Str(root) : s;
   } catch (e) {
-    return String(root);
+    return Str(root);
   }
-})`;
+  };
+})()`;
 
 function makeRenderer(vm: QuickJSContext): {
   render: (value: QuickJSHandle) => string;
@@ -215,6 +224,7 @@ const DATE_SHIM_SOURCE = `(function (offsetAt) {
   var proto = NativeDate.prototype;
   var getTime = proto.getTime;
   var setTime = proto.setTime;
+  var hostOffset = proto.getTimezoneOffset;
   var MINUTE = 60000;
   function wall(t) { return t + offsetAt(t) * MINUTE; }
   // The wall time is not an instant, so the offset is not read AT it: read a day either side (the
@@ -311,10 +321,20 @@ const DATE_SHIM_SOURCE = `(function (offsetAt) {
   // exactly where the engine says so (month 13, minute 60) and normalises exactly where it does
   // (February 30, 24:00): the two spellings of one instant agree field for field.
   var LOCAL = /^\\s*(\\d{4})-(\\d{2})-(\\d{2})T(\\d{2}):(\\d{2})(?::(\\d{2})(?:\\.(\\d{1,3}))?)?\\s*$/;
+  // What carries its own zone, or is a date alone (UTC by the spec): the engine's answer is final.
+  var DESIGNATED = /(Z|[+-]\\d{2}:?\\d{2}|\\b(?:GMT|UTC)\\b)\\s*$/i;
+  var DATE_ONLY = /^\\s*[+-]?\\d{4,6}(?:-\\d{2}){0,2}\\s*$/;
   function parse(text) {
-    var m = LOCAL.exec(String(text));
-    if (!m) return NativeDate.parse(text);
-    return instant(NativeDate.parse(m[0].trim() + "Z"));
+    var s = String(text);
+    var m = LOCAL.exec(s);
+    if (m) return instant(NativeDate.parse(m[0].trim() + "Z"));
+    var t = NativeDate.parse(s);
+    if (isNaN(t) || DESIGNATED.test(s) || DATE_ONLY.test(s)) return t;
+    // Every other offset-less text the engine accepts ("2026/09/05 12:00", "Sep 5, 2026 12:00", a
+    // four-digit fraction) it read in the HOST's zone — measured: the value moved by three hours
+    // between a UTC host and a São Paulo one (PR #485, round 7). Recover the wall clock it saw
+    // through the host's own offset, and resolve that in the agent's zone.
+    return instant(t - hostOffset.call(new NativeDate(t)) * MINUTE);
   }
   function primitive(v) {
     if (v instanceof NativeDate) return getTime.call(v);
@@ -401,31 +421,178 @@ const RETURN_AT_TOP_LEVEL = /return not in a function/;
 // trips before the model added parentheses. So a trailing `{…}` that sits at a statement boundary
 // (start of code, `;`, `}` or a line break — not after `)`, `=>`, `else`, `try`…) is tried first with
 // parentheses around it, and the original source is what runs if that does not parse.
-function withTrailingObjectWrapped(code: string): string | undefined {
-  const end = code.replace(/[\s;]+$/, "").length;
-  if (end === 0 || code[end - 1] !== "}") return undefined;
-  let depth = 0;
-  let start = -1;
-  for (let i = end - 1; i >= 0; i--) {
+// Characters a `/` can follow and still open a regex literal rather than divide; plus the keywords
+// below, tracked as the previous word.
+const REGEX_AFTER_CHAR = /[(,=:[!&|?{};+\-*%<>~^]/;
+const REGEX_AFTER_WORD = new Set([
+  "return",
+  "typeof",
+  "case",
+  "in",
+  "of",
+  "delete",
+  "void",
+  "throw",
+  "new",
+  "instanceof",
+  "do",
+  "else",
+]);
+// A `{` right after one of these is a block, whatever the line break says.
+const BLOCK_AFTER_WORD = new Set(["else", "try", "finally", "do"]);
+
+function skipQuoted(code: string, at: number): number {
+  const quote = code[at];
+  let i = at + 1;
+  while (i < code.length) {
     const c = code[i];
-    if (c === "}") depth++;
-    else if (c === "{" && --depth === 0) {
-      start = i;
-      break;
-    }
+    if (c === "\\") i += 2;
+    else if (c === quote) return i + 1;
+    else if (quote === "`" && c === "$" && code[i + 1] === "{")
+      i = skipTemplateHole(code, i + 2);
+    else i++;
   }
-  if (start < 0) return undefined;
-  const before = code.slice(0, start).replace(/\s+$/, "");
-  // NOTE: A closing brace is a boundary too — `if (…) { … } { day, days }` is the shape measured
-  // live, once the model guards the month roll-over with a block first.
+  return code.length;
+}
+
+function skipTemplateHole(code: string, at: number): number {
+  let depth = 1;
+  let i = at;
+  while (i < code.length) {
+    const c = code[i];
+    if (c === "\\") i += 2;
+    else if (c === '"' || c === "'" || c === "`") i = skipQuoted(code, i);
+    else if (c === "{") {
+      depth++;
+      i++;
+    } else if (c === "}") {
+      depth--;
+      i++;
+      if (depth === 0) return i;
+    } else i++;
+  }
+  return code.length;
+}
+
+function skipRegex(code: string, at: number): number {
+  let i = at + 1;
+  let inClass = false;
+  while (i < code.length) {
+    const c = code[i];
+    if (c === "\\") i += 2;
+    else if (c === "\n") return i;
+    else if (c === "[") {
+      inClass = true;
+      i++;
+    } else if (c === "]") {
+      inClass = false;
+      i++;
+    } else if (c === "/" && !inClass) {
+      i++;
+      while (i < code.length && /[a-z]/i.test(code[i] as string)) i++;
+      return i;
+    } else i++;
+  }
+  return code.length;
+}
+
+// One pass over the source that skips what is not syntax — strings, template literals, regex
+// literals, comments — and keeps the top-level brace pairs, so a `}` inside a string or a comment
+// after the object cannot move the cut (PR #485, round 7: \`{ valid, reason: "ok" } // verdict\` was
+// not wrapped, and a reason holding "}" picked the wrong opening brace).
+function withTrailingObjectWrapped(code: string): string | undefined {
+  const opens: Array<{
+    at: number;
+    prevChar: string;
+    prevAt: number;
+    prevWord: string;
+  }> = [];
+  let last:
+    | {
+        at: number;
+        closeAt: number;
+        prevChar: string;
+        prevAt: number;
+        prevWord: string;
+      }
+    | undefined;
+  let end = -1;
+  let prevChar = "";
+  let prevAt = -1;
+  let word = "";
+  let prevWord = "";
+  let i = 0;
+  while (i < code.length) {
+    const c = code[i] as string;
+    const next = code[i + 1];
+    if (c === "/" && next === "/") {
+      const nl = code.indexOf("\n", i);
+      i = nl < 0 ? code.length : nl;
+      continue;
+    }
+    if (c === "/" && next === "*") {
+      const close = code.indexOf("*/", i + 2);
+      i = close < 0 ? code.length : close + 2;
+      continue;
+    }
+    if (/\s/.test(c)) {
+      if (word) {
+        prevWord = word;
+        word = "";
+      }
+      i++;
+      continue;
+    }
+    if (c === '"' || c === "'" || c === "`") {
+      i = skipQuoted(code, i);
+      end = i - 1;
+      prevChar = c;
+      prevAt = i - 1;
+      prevWord = word = "";
+      continue;
+    }
+    if (
+      c === "/" &&
+      (prevChar === "" ||
+        REGEX_AFTER_CHAR.test(prevChar) ||
+        REGEX_AFTER_WORD.has(prevWord))
+    ) {
+      i = skipRegex(code, i);
+      end = i - 1;
+      prevChar = "/";
+      prevAt = i - 1;
+      prevWord = word = "";
+      continue;
+    }
+    if (/[A-Za-z0-9_$]/.test(c)) word += c;
+    else {
+      if (word) {
+        prevWord = word;
+        word = "";
+      }
+      if (c === "{") opens.push({ at: i, prevChar, prevAt, prevWord });
+      else if (c === "}") {
+        const open = opens.pop();
+        last = open ? { ...open, closeAt: i } : undefined;
+      }
+    }
+    if (c !== ";") end = i;
+    prevChar = c;
+    prevAt = i;
+    i++;
+  }
+  if (!last || end !== last.closeAt || opens.length > 0) return undefined;
+  const nl = code.indexOf("\n", last.prevAt + 1);
   const boundary =
-    before.length === 0 ||
-    /[;}\n]$/.test(code.slice(0, start).replace(/[ \t]+$/, ""));
-  if (!boundary) return undefined;
+    last.prevChar === "" ||
+    last.prevChar === ";" ||
+    last.prevChar === "}" ||
+    (nl >= 0 && nl < last.at);
+  if (!boundary || BLOCK_AFTER_WORD.has(last.prevWord)) return undefined;
   // NOTE: A separator as well as the parenthesis. Without one, a snippet that leaves semicolons out
   // (`const r = compute()\n{ valid: r.valid }`) reads on as a call — `compute()({…})` — which
   // parses, and then fails at run time, past the fallback (PR #485, round 6).
-  return `${code.slice(0, start)};(${code.slice(start, end)})${code.slice(end)}`;
+  return `${code.slice(0, last.at)};(${code.slice(last.at, end + 1)})${code.slice(end + 1)}`;
 }
 const RENDER_BUDGET_MS = 200;
 const ERROR_NAME_MAX_CHARS = 100;

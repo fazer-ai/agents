@@ -18,6 +18,7 @@ import {
 import config from "@/config";
 import { optionalDbId, requireDbId } from "@/lib/db-id";
 import { UnauthorizedError } from "@/lib/errors";
+import type { TenantContext } from "@/lib/tenancy";
 import {
   CannotDeleteSelfError,
   deleteUser,
@@ -32,6 +33,23 @@ import {
 // One-time accept link (no mailer); the admin copies/sends it.
 function acceptUrl(token: string): string {
   return `${config.publicUrl.replace(/\/$/, "")}/accept-invite?token=${token}`;
+}
+
+// The principal these writes act as, built from the SESSION and never from the tenancy plugin.
+//
+// `tenantId` is the caller's HOME tenant, which for a SUPER_ADMIN is null (fleet-wide reach) — the
+// same scope `resolveScope(user, undefined)` already resolves for the reads. Mounting `tenancyPlugin`
+// here would hand these routes the `X-Tenant-Id` SELECTOR instead, and a fleet admin with a tenant
+// open in one tab would silently lose the ability to re-role anyone outside it. `actorType` is what
+// that plugin does supply elsewhere, so it is supplied here: without it a Bearer API key's writes
+// would all record as a cookie session.
+function actorOf(user: AuthUser): TenantContext {
+  return {
+    tenantId: user.tenantId,
+    userId: user.id,
+    role: user.role,
+    actorType: user.isApiKey ? "api_key" : "user",
+  };
 }
 
 // Resolves the tenant scope for a read/filter. A SUPER_ADMIN chooses explicitly via the
@@ -172,7 +190,7 @@ export const adminController = new Elysia({
         // A SUPER_ADMIN may re-role across tenants (own tenant is null → unscoped updateMany);
         // a TENANT_ADMIN is fenced to its own tenant.
         const updated = await updateUserRole(
-          user.tenantId,
+          actorOf(user),
           targetId,
           body.role,
         );
@@ -222,11 +240,7 @@ export const adminController = new Elysia({
       }
       await confirmStepUp(stepUpPrincipalOf(user), body.password);
       try {
-        await deleteUser(
-          resolveScope(user, undefined),
-          requireDbId(params.id),
-          user.id,
-        );
+        await deleteUser(actorOf(user), requireDbId(params.id));
         return { success: true };
       } catch (error) {
         if (error instanceof CannotDeleteSelfError) {
@@ -295,11 +309,10 @@ export const adminController = new Elysia({
         };
       }
       try {
-        const invite = await createInvite({
+        const invite = await createInvite(actorOf(user), {
           tenantId: targetTenantId,
           email: body.email,
           role: body.role,
-          invitedById: user.id,
         });
         return {
           invite: {
@@ -373,9 +386,10 @@ export const adminController = new Elysia({
     "/invitations/:id",
     async ({ params, set, getAuthUser }) => {
       const user = await getAuthUser();
+      if (!user) throw new UnauthorizedError();
       try {
         // SUPER_ADMIN may revoke any invite (own tenant null → unscoped); others are fenced.
-        await revokeInvite(user?.tenantId ?? null, requireDbId(params.id));
+        await revokeInvite(actorOf(user), requireDbId(params.id));
         return { success: true };
       } catch (error) {
         if (error instanceof InviteNotFoundError) {

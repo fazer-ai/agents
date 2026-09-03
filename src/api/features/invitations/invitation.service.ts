@@ -4,6 +4,8 @@ import type { ManageableRole } from "@/api/features/admin/admin.service";
 import { hashPassword } from "@/api/features/auth/auth.service";
 import type { AuthUser } from "@/api/lib/auth";
 import basePrisma from "@/api/lib/prisma";
+import { asPrincipalOn, type TenantContext } from "@/lib/tenancy";
+import { auditMutationOn } from "@/modules/audit/service";
 
 // User-invitation flow (adapted from the sibling app's single-tenant invite system to our
 // multi-tenant model). Security invariants:
@@ -62,7 +64,7 @@ export class InviteNotFoundError extends Error {
 }
 
 async function emailExistsInTenant(
-  base: PrismaClient,
+  base: Pick<PrismaClient, "user">,
   email: string,
   tenantId: bigint,
 ): Promise<boolean> {
@@ -77,8 +79,27 @@ export interface CreateInviteParams {
   tenantId: bigint;
   email: string;
   role: ManageableRole;
-  invitedById: bigint | null;
   ttlDays?: number;
+}
+
+// What an invitation's row carries. The EMAIL is the subject here and there is nothing else it could
+// be: an invitation names a person who has no account yet, so an id would name nothing. The
+// `tokenHash` never appears — it is the verifier for a live credential that grants membership of the
+// tenant, and a trail its own admins read is the last place it belongs.
+function inviteAuditProjection(row: {
+  id: bigint;
+  tenantId: bigint;
+  email: string;
+  role: string;
+  expiresAt: Date;
+}) {
+  return {
+    invitationId: row.id.toString(),
+    tenantId: row.tenantId.toString(),
+    email: row.email,
+    role: row.role,
+    expiresAt: row.expiresAt.toISOString(),
+  };
 }
 
 export interface CreatedInvite {
@@ -92,7 +113,12 @@ export interface CreatedInvite {
 // Mints (or rotates) an invite for (tenantId, email). The caller resolves tenantId + role per the
 // principal (a TENANT_ADMIN is forced to its own tenant; a SUPER_ADMIN targets any). Returns the
 // plaintext token ONCE.
+//
+// `invitedById` comes off the CONTEXT and is no longer an argument, for the same reason the audit
+// row's actor does: it is the one field saying who granted this membership, and a caller that could
+// pass its own would attribute an invitation to somebody who never issued it.
 export async function createInvite(
+  ctx: TenantContext,
   params: CreateInviteParams,
   base: PrismaClient = basePrisma,
 ): Promise<CreatedInvite> {
@@ -101,33 +127,54 @@ export async function createInvite(
     throw new InviteInvalidError();
   }
   const email = params.email.trim().toLowerCase();
-  if (await emailExistsInTenant(base, email, params.tenantId)) {
-    throw new InviteEmailInUseError();
-  }
   const token = randomBytes(32).toString("base64url");
   const tokenHash = hashToken(token);
   const expiresAt = new Date(
     Date.now() + (params.ttlDays ?? INVITE_TTL_DAYS) * DAY_MS,
   );
-  const row = await base.invitation.upsert({
-    where: { tenantId_email: { tenantId: params.tenantId, email } },
-    create: {
-      tenantId: params.tenantId,
-      email,
-      role: params.role,
-      tokenHash,
-      invitedById: params.invitedById,
-      expiresAt,
-    },
-    // Re-invite rotates the token/role/expiry and clears any prior consumption.
-    update: {
-      role: params.role,
-      tokenHash,
-      invitedById: params.invitedById,
-      expiresAt,
-      consumedAt: null,
-    },
-    select: { id: true, email: true, role: true },
+  const row = await asPrincipalOn(base, ctx, async (db) => {
+    // Moved INSIDE the transaction: it is a read that decides whether the write happens, and outside
+    // it decided against a snapshot the upsert could no longer be held to.
+    if (await emailExistsInTenant(db, email, params.tenantId)) {
+      throw new InviteEmailInUseError();
+    }
+    const created = await db.invitation.upsert({
+      where: { tenantId_email: { tenantId: params.tenantId, email } },
+      create: {
+        tenantId: params.tenantId,
+        email,
+        role: params.role,
+        tokenHash,
+        invitedById: ctx.userId,
+        expiresAt,
+      },
+      // Re-invite rotates the token/role/expiry and clears any prior consumption.
+      update: {
+        role: params.role,
+        tokenHash,
+        invitedById: ctx.userId,
+        expiresAt,
+        consumedAt: null,
+      },
+      select: {
+        id: true,
+        tenantId: true,
+        email: true,
+        role: true,
+        expiresAt: true,
+      },
+    });
+    // Filed under the INVITED tenant and not the caller's: a SUPER_ADMIN issuing the first
+    // TENANT_ADMIN invite of a brand-new tenant (`POST /v1/tenants` with `adminEmail`) has no tenant
+    // of their own, and that invitation is the new tenant's business. Unconditional, because every
+    // apply here mints a token: a re-invite ROTATES the previous one, so the act that looks like a
+    // no-op is the one that revoked a live credential.
+    await auditMutationOn(db, ctx, created.tenantId, {
+      action: "invitation.create",
+      target: `invitation:${created.id}`,
+      after: inviteAuditProjection(created),
+    });
+    return created;
   });
   return { id: row.id, email: row.email, role: row.role, token, expiresAt };
 }
@@ -171,15 +218,35 @@ export async function listInvites(
 }
 
 // Hard-delete, tenant-scoped (count 0 → out-of-scope/non-existent → NotFound, never cross-tenant).
+// The scope is the caller's HOME tenant off the context, null for a SUPER_ADMIN (fleet-wide).
 export async function revokeInvite(
-  tenantId: bigint | null,
+  ctx: TenantContext,
   id: bigint,
   base: PrismaClient = basePrisma,
 ): Promise<void> {
-  const res = await base.invitation.deleteMany({
-    where: { id, ...tenantScope(tenantId) },
+  await asPrincipalOn(base, ctx, async (db) => {
+    await db.$queryRaw`SELECT id FROM invitations WHERE id = ${id} FOR UPDATE`;
+    const before = await db.invitation.findFirst({
+      where: { id, ...tenantScope(ctx.tenantId) },
+      select: {
+        id: true,
+        tenantId: true,
+        email: true,
+        role: true,
+        expiresAt: true,
+      },
+    });
+    if (!before) throw new InviteNotFoundError();
+    const res = await db.invitation.deleteMany({
+      where: { id, ...tenantScope(ctx.tenantId) },
+    });
+    if (res.count === 0) throw new InviteNotFoundError();
+    await auditMutationOn(db, ctx, before.tenantId, {
+      action: "invitation.revoke",
+      target: `invitation:${id}`,
+      before: inviteAuditProjection(before),
+    });
   });
-  if (res.count === 0) throw new InviteNotFoundError();
 }
 
 export interface ValidatedInvite {

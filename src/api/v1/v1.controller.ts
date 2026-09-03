@@ -209,11 +209,10 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
         | { email: string; role: string; acceptUrl: string; expiresAt: Date }
         | undefined;
       if (body.adminEmail) {
-        const created = await createInvite({
+        const created = await createInvite(ctx, {
           tenantId: BigInt(tenant.id),
           email: body.adminEmail,
           role: "TENANT_ADMIN",
-          invitedById: ctx.userId,
         });
         invite = {
           email: created.email,

@@ -1,7 +1,12 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import prisma from "@/api/lib/prisma";
 import { badQueryParam } from "@/lib/query-param";
-import { asSuperAdminOn } from "@/lib/tenancy";
+import {
+  asPrincipalOn,
+  asSuperAdminOn,
+  type TenantContext,
+} from "@/lib/tenancy";
+import { auditMutationOn } from "@/modules/audit/service";
 
 // NOTE: roles a tenant admin may assign (never SUPER_ADMIN, which is fleet-level and
 // only minted via /setup or `bun set-admin`).
@@ -21,6 +26,31 @@ const USER_SELECT = {
 // explicitly. tenantId === null means a SUPER_ADMIN caller (fleet-wide visibility).
 function tenantScope(tenantId: bigint | null) {
   return tenantId === null ? {} : { tenantId };
+}
+
+// What a user's row carries when their membership changes.
+//
+// The email is IN it, and that is a decision rather than an oversight. The trail exists to answer
+// "who became an admin" and "whose account was deleted", and an id answers neither once the row it
+// pointed at is gone — which for a delete is the whole point. It is also not a disclosure: every
+// reader of a tenant's trail can already list that tenant's users with their emails. What stays out
+// is what authenticates rather than identifies (`passwordHash`, `googleId`) and what this family
+// never writes (`lastLoginAt`, stamped by the login path, which #400 leaves to the auth question it
+// belongs to).
+function userAuditProjection(row: {
+  id: bigint;
+  tenantId: bigint | null;
+  email: string;
+  name: string | null;
+  role: string;
+}) {
+  return {
+    userId: row.id.toString(),
+    tenantId: row.tenantId === null ? null : row.tenantId.toString(),
+    email: row.email,
+    name: row.name,
+    role: row.role,
+  };
 }
 
 export async function getUsers(
@@ -138,28 +168,50 @@ export class LastAdminError extends Error {
   }
 }
 
+// `ctx.tenantId` is the caller's HOME tenant and never a console selection: a SUPER_ADMIN has none
+// (null → unscoped, so they re-role across tenants), and everyone else is fenced to their own. The
+// controller builds it that way on purpose — handing this the tenancy plugin's selector would
+// silently fence a fleet admin to whatever tab they had open.
 export async function updateUserRole(
-  tenantId: bigint | null,
+  ctx: TenantContext,
   userId: bigint,
   role: ManageableRole,
+  base: PrismaClient = prisma,
 ) {
-  // NOTE: updateMany with the tenant guard so a tenant admin can only re-role users in
-  // their own tenant; count 0 means out-of-scope/non-existent (404, not a cross-tenant edit).
-  const result = await prisma.user.updateMany({
-    where: { id: userId, ...tenantScope(tenantId) },
-    data: { role },
+  return asPrincipalOn(base, ctx, async (db) => {
+    // The row is locked before it is read, and the read is what the recorded `before` comes from.
+    // Two admins re-roling the same person otherwise both read the same value and both record the
+    // same transition, so the trail shows one of the two changes twice and the other not at all —
+    // on the family where the recorded transition is the entire point.
+    await db.$queryRaw`SELECT id FROM users WHERE id = ${userId} FOR UPDATE`;
+    const before = await db.user.findFirst({
+      where: { id: userId, ...tenantScope(ctx.tenantId) },
+      select: USER_SELECT,
+    });
+    // NOTE: the scope guard is the READ, so an out-of-scope target is a 404 and never a cross-tenant
+    // edit — the same fence the `updateMany` this replaced carried in its `where`.
+    if (!before) {
+      throw new UserNotInScopeError();
+    }
+    const user = await db.user.update({
+      where: { id: userId },
+      data: { role },
+      select: USER_SELECT,
+    });
+    if (before.role !== user.role) {
+      // Filed under the TARGET's tenant, which is not the caller's: a SUPER_ADMIN re-roling somebody
+      // in tenant 7 is that tenant's business, and keyed on the actor the row would join a trail
+      // (or the fleet's) where the tenant it happened to can never read it. A SUPER_ADMIN target
+      // belongs to no tenant, and their row is fleet-level for the same reason.
+      await auditMutationOn(db, ctx, before.tenantId, {
+        action: "user.role_set",
+        target: `user:${userId}`,
+        before: userAuditProjection(before),
+        after: userAuditProjection(user),
+      });
+    }
+    return user;
   });
-  if (result.count === 0) {
-    throw new UserNotInScopeError();
-  }
-  const user = await prisma.user.findUnique({
-    where: { id: userId },
-    select: USER_SELECT,
-  });
-  if (!user) {
-    throw new UserNotInScopeError();
-  }
-  return user;
 }
 
 // Delete a user. Scoped exactly like updateUserRole (a TENANT_ADMIN is fenced to its own tenant; a
@@ -167,35 +219,57 @@ export async function updateUserRole(
 // delete the last admin of a scope (tenant TENANT_ADMIN, or fleet SUPER_ADMIN). Users have no
 // incoming FKs (invitedById/actorId are plain columns), so the row deletes cleanly.
 export async function deleteUser(
-  callerTenantId: bigint | null,
+  ctx: TenantContext,
   userId: bigint,
-  actingUserId: bigint,
   base: PrismaClient = prisma,
 ) {
-  if (userId === actingUserId) {
+  if (userId === ctx.userId) {
     throw new CannotDeleteSelfError();
   }
-  const target = await base.user.findFirst({
-    where: { id: userId, ...tenantScope(callerTenantId) },
-    select: { id: true, role: true, tenantId: true },
-  });
-  if (!target) {
-    throw new UserNotInScopeError();
-  }
-  if (target.role === "TENANT_ADMIN" || target.role === "SUPER_ADMIN") {
-    // For a tenant admin, "the scope" is the tenant; for a super-admin (tenantId null), the fleet.
-    const remaining = await base.user.count({
-      where: {
-        role: target.role,
-        id: { not: userId },
-        tenantId: target.tenantId === null ? null : target.tenantId,
-      },
+  const callerTenantId = ctx.tenantId;
+  await asPrincipalOn(base, ctx, async (db) => {
+    // Locked before it is read, which serialises two acts on the SAME user: without it both read the
+    // row, both record a `before` naming a live account, and the trail carries the deletion twice.
+    //
+    // NOTE: it does NOT close the last-admin race, and the guard below is still open under
+    // concurrency — two deletes aimed at DIFFERENT admins lock different rows, so nothing serialises
+    // them, each counts the other as remaining, and the scope ends with none. Closing it means
+    // locking the scope's whole admin set rather than the target, and the same invariant is broken
+    // more cheaply one function up (`updateUserRole` demotes the last admin with no guard at all),
+    // so it is one question about the invariant and not two about this transaction. Issue #496.
+    await db.$queryRaw`SELECT id FROM users WHERE id = ${userId} FOR UPDATE`;
+    const target = await db.user.findFirst({
+      where: { id: userId, ...tenantScope(callerTenantId) },
+      select: USER_SELECT,
     });
-    if (remaining === 0) {
-      throw new LastAdminError();
+    if (!target) {
+      throw new UserNotInScopeError();
     }
-  }
-  await base.user.deleteMany({
-    where: { id: userId, ...tenantScope(callerTenantId) },
+    if (target.role === "TENANT_ADMIN" || target.role === "SUPER_ADMIN") {
+      // For a tenant admin, "the scope" is the tenant; for a super-admin (tenantId null), the fleet.
+      const remaining = await db.user.count({
+        where: {
+          role: target.role,
+          id: { not: userId },
+          tenantId: target.tenantId === null ? null : target.tenantId,
+        },
+      });
+      if (remaining === 0) {
+        throw new LastAdminError();
+      }
+    }
+    const removed = await db.user.deleteMany({
+      where: { id: userId, ...tenantScope(callerTenantId) },
+    });
+    if (removed.count === 0) return;
+    // The row OUTLIVES the account, which is the only reason it can answer for it: `audit_logs` has
+    // no foreign key to `users` (the delete's own comment says why), so this is where a deleted
+    // person's identity survives. Filed under the tenant they belonged to, fleet-level for a
+    // SUPER_ADMIN, who belonged to none.
+    await auditMutationOn(db, ctx, target.tenantId, {
+      action: "user.delete",
+      target: `user:${userId}`,
+      before: userAuditProjection(target),
+    });
   });
 }

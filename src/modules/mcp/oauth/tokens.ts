@@ -143,9 +143,13 @@ export async function verifyAccessToken(
   };
 }
 
+// `Pick` rather than the whole client, so a TRANSACTION client is accepted: `revokeToken` revokes an
+// access token and the refresh tokens that could mint another one, and those two writes are one act
+// — split across two transactions, a failure between them leaves the access token dead and the
+// refresh alive, which is the client minting a fresh one on the spot.
 export async function revokeAccessToken(
   jti: string,
-  base: PrismaClient = basePrisma,
+  base: Pick<PrismaClient, "mcpOAuthAccessToken"> = basePrisma,
 ): Promise<void> {
   await base.mcpOAuthAccessToken.updateMany({
     where: { jti, revokedAt: null },

@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
+import type { TenantContext } from "@/lib/tenancy";
 import {
   disconnectClient,
   listMyConnections,
@@ -37,6 +38,13 @@ const appDb = app as PrismaClient;
 let tenantA = 0n;
 let userA = 0n;
 let userB = 0n;
+
+// The caller, as the principal the disconnect now records itself under (#400).
+const asUser = (userId: bigint): TenantContext & { userId: bigint } => ({
+  tenantId: tenantA,
+  userId,
+  role: "TENANT_ADMIN",
+});
 const clientId = `mc-${process.pid}`;
 
 describe.skipIf(!dbUp)("mcp self-service connections", () => {
@@ -149,7 +157,7 @@ describe.skipIf(!dbUp)("mcp self-service connections", () => {
     });
     expect(await verifyAccessToken(issued.token, appDb)).not.toBeNull();
 
-    const result = await disconnectClient(userA, clientId, appDb);
+    const result = await disconnectClient(asUser(userA), clientId, appDb);
     expect(result.removedApproval).toBe(true);
     expect(result.revokedAccessTokens).toBeGreaterThanOrEqual(1);
 
@@ -162,7 +170,7 @@ describe.skipIf(!dbUp)("mcp self-service connections", () => {
     expect(await verifyAccessToken(issued.token, appDb)).toBeNull();
 
     // Idempotent: a second disconnect is a no-op.
-    const again = await disconnectClient(userA, clientId, appDb);
+    const again = await disconnectClient(asUser(userA), clientId, appDb);
     expect(again.removedApproval).toBe(false);
   });
 
@@ -176,7 +184,7 @@ describe.skipIf(!dbUp)("mcp self-service connections", () => {
       base: appDb,
     });
     // A disconnects the same clientId again — must not affect B.
-    await disconnectClient(userA, clientId, appDb);
+    await disconnectClient(asUser(userA), clientId, appDb);
     expect(await verifyAccessToken(bIssued.token, appDb)).not.toBeNull();
     expect(
       (await listMyConnections(userB, appDb)).some(

@@ -1340,6 +1340,65 @@ export async function replaceVaultSecret(
   });
 }
 
+// The refresh path's write, with the seam around it and a gate the other secret writes do not have.
+//
+// A token refresh IS a write to `vault_entries.secret`, so `replaceVaultSecret` above would take it
+// unchanged, and that is exactly what must not happen: an access token expires hourly and is renewed
+// by USE, not by a decision, so routing it through there puts a row into an append-only table every
+// hour per connected credential, and the operator's own edits drown in machine bookkeeping. This
+// family already answered that question once in the other direction (#395: the Channels page
+// auto-syncs on load, so an unconditional `instance.sync_inboxes` recorded a row per account per
+// visit, and the fix was to record only what actually moved).
+//
+// What moved is the line. An access token is a DERIVED, short-lived artifact of the credential; the
+// refresh token and the granted scopes ARE the credential. A refresh token rotating replaces the
+// durable secret and revokes the old one, and scopes changing under a refresh means the grant itself
+// changed upstream — both are things an operator would want to find in the trail, and neither is
+// hourly. The access token moving on its own is not, and gets no row.
+//
+// `system` and a null actor, for the same reason /reset's rows are (#398): the refresh is triggered
+// by a clock and a use, and the principal whose request happened to notice the expiry did not rotate
+// anything. Left on `ctx` the row would name a person who did not act.
+export async function persistRefreshedOAuthSecret<
+  T extends { refreshToken?: string | null; scopes?: string[] | null },
+>(
+  ctx: TenantContext,
+  id: bigint,
+  before: T,
+  after: T,
+  base: PrismaClient = basePrisma,
+): Promise<void> {
+  const scopeKey = (v: string[] | null | undefined) =>
+    JSON.stringify([...(v ?? [])].sort());
+  const durableMoved =
+    (before.refreshToken ?? null) !== (after.refreshToken ?? null) ||
+    scopeKey(before.scopes) !== scopeKey(after.scopes);
+  await runScopedOn(base, ctx, async (db) => {
+    const row = durableMoved
+      ? await db.vaultEntry.findFirst({
+          where: { id },
+          select: VAULT_AUDIT_SELECT,
+        })
+      : null;
+    await db.vaultEntry.updateMany({
+      where: { id },
+      data: { secret: encryptJson(after) },
+    });
+    if (!row) return;
+    const proj = auditProjection(row);
+    await auditMutation(
+      db,
+      { ...ctx, userId: null, actorType: "system" },
+      {
+        action: "credential.update",
+        target: formatVaultRef(id),
+        before: markUndisclosed(proj),
+        after: markUndisclosed(proj),
+      },
+    );
+  });
+}
+
 export async function deleteVaultEntry(
   ctx: TenantContext,
   id: bigint,

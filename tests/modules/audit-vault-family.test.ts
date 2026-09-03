@@ -1,11 +1,13 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
+import { encryptJson } from "@/api/lib/crypto";
 import type { TenantContext } from "@/lib/tenancy";
 import {
   createPendingVaultEntry,
   createVaultEntry,
   deleteVaultEntry,
+  persistRefreshedOAuthSecret,
   updateVaultEntry,
 } from "@/modules/vault/service";
 
@@ -98,6 +100,96 @@ describe.skipIf(!dbUp)("the vault family records its own changes", () => {
     }
     await su?.$disconnect();
     await app?.$disconnect();
+  });
+
+  // THE REFRESH, which is a write to `secret` like any other and must not be recorded like any
+  // other. An access token expires hourly and is renewed by USE, not by a decision, so a row per
+  // refresh puts machine bookkeeping into an append-only table every hour per credential and drowns
+  // the operator's own edits. The line is what MOVED: the access token is a derived, short-lived
+  // artifact; the refresh token and the granted scopes are the credential itself.
+  // Seeded straight through the superuser client, like `vault/google-oauth.test.ts` does: a
+  // `google_oauth` entry declares only the client id and secret at creation, and the tokens are
+  // merged in by the OAuth callback afterwards, so `createVaultEntry` refuses a value carrying them.
+  async function oauthEntry(name: string, cred: Record<string, unknown>) {
+    const row = await suDb.vaultEntry.create({
+      data: { tenantId, name, kind: "google_oauth", secret: encryptJson(cred) },
+      select: { id: true },
+    });
+    await clearAudit();
+    return row.id;
+  }
+
+  const baseCred = {
+    clientId: "c",
+    clientSecret: "s",
+    accessToken: "at-1",
+    refreshToken: "rt-1",
+    scopes: ["a", "b"],
+    expiresAt: 1,
+  };
+
+  test("a refresh that only renewed the access token records nothing", async () => {
+    const id = await oauthEntry(`ref${uniq()}`, baseCred);
+    await persistRefreshedOAuthSecret(
+      ctx(),
+      id,
+      baseCred,
+      { ...baseCred, accessToken: "at-2", expiresAt: 2 },
+      appDb,
+    );
+    expect(await rows()).toEqual([]);
+    // Silent, but not a no-op: the new token IS stored, or the next call refreshes all over again.
+    const stored = await suDb.vaultEntry.findFirstOrThrow({
+      where: { id },
+      select: { secret: true },
+    });
+    expect(stored.secret).not.toBe("");
+  });
+
+  test("a rotated refresh token is a credential change, and is recorded as one", async () => {
+    const id = await oauthEntry(`rot${uniq()}`, baseCred);
+    await persistRefreshedOAuthSecret(
+      ctx(),
+      id,
+      baseCred,
+      { ...baseCred, accessToken: "at-2", refreshToken: "rt-2" },
+      appDb,
+    );
+    const [row] = await rows("credential.update");
+    expect(row?.target).toBe(`vault:${id}`);
+    // The clock rotated it, not the principal whose request happened to notice the expiry.
+    expect([row?.actorType, row?.actorId]).toEqual(["system", null]);
+    // And the value stays out, on both sides, exactly as the console's own edit does.
+    expect(
+      JSON.stringify(row, (_k, v) => (typeof v === "bigint" ? String(v) : v)),
+    ).not.toContain("rt-2");
+    expect((row?.before as Record<string, unknown>)?.undisclosedChanged).toBe(
+      true,
+    );
+  });
+
+  test("scopes the grant changed upstream are recorded too", async () => {
+    const id = await oauthEntry(`sco${uniq()}`, baseCred);
+    await persistRefreshedOAuthSecret(
+      ctx(),
+      id,
+      baseCred,
+      { ...baseCred, scopes: ["a", "b", "c"] },
+      appDb,
+    );
+    expect((await rows("credential.update")).length).toBe(1);
+  });
+
+  test("the same scopes in another order are not a change", async () => {
+    const id = await oauthEntry(`ord${uniq()}`, baseCred);
+    await persistRefreshedOAuthSecret(
+      ctx(),
+      id,
+      baseCred,
+      { ...baseCred, scopes: ["b", "a"] },
+      appDb,
+    );
+    expect(await rows()).toEqual([]);
   });
 
   test("creating a credential records its identity, never its value", async () => {

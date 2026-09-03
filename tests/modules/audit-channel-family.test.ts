@@ -926,6 +926,109 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
     expect(new Set(locks)).toEqual(new Set(["FOR NO KEY UPDATE"]));
   });
 
+  // The bot IS attached in Chatwoot by the time the binding is persisted, and this transaction can
+  // still fail. Rolled back, Chatwoot routes to a bot our row does not name, and the next message is
+  // handled by nobody. Not compensated (a detach on an error path is another call into somebody
+  // else's system, with its own failure) but reported and left retryable: the retry sees the local
+  // binding unchanged, calls Chatwoot again, and commits — the opposite of the disconnect, whose
+  // equivalent retry is a no-op, which is why the two order their remote call the other way round.
+  test("a bind that could not be recorded leaves a state a retry repairs", async () => {
+    const fx = await connectedFixture(4448, "Retentativa", { bound: false });
+    const stub = stubClient();
+    try {
+      await expect(
+        bindInbox(
+          ctx(),
+          fx.inboxId,
+          fx.agentId,
+          { makeClient: stub.makeClient },
+          auditFailingOn(appDb, "inbox.bind"),
+        ),
+      ).rejects.toThrow();
+      // Chatwoot HAS the bot: that is the state the log names, and the reason the row matters.
+      expect(stub.calls).toContain("setInboxAgentBot");
+      expect(
+        (
+          await suDb.inbox.findUniqueOrThrow({
+            where: { id: fx.inboxId },
+            select: { agentId: true },
+          })
+        ).agentId,
+      ).toBeNull();
+      expect(await rows()).toEqual([]);
+      // The retry is a real repair, which is what makes reporting the right answer: the local
+      // binding never moved, so step 2 calls Chatwoot again and step 3 commits.
+      await bindInbox(
+        ctx(),
+        fx.inboxId,
+        fx.agentId,
+        { makeClient: stubClient().makeClient },
+        appDb,
+      );
+      expect(
+        (
+          await suDb.inbox.findUniqueOrThrow({
+            where: { id: fx.inboxId },
+            select: { agentId: true },
+          })
+        ).agentId,
+      ).toBe(fx.agentId);
+      expect((await rows()).map((r) => r.action)).toEqual(["inbox.bind"]);
+    } finally {
+      await collect();
+      await fx.cleanup();
+    }
+  });
+
+  // A reconnect repairs the link for the agent it READ, and the Chatwoot calls in between are a
+  // window a bind fits into. Re-reading the binding afterwards would file the repair under whoever
+  // holds it now, so the row would name agent B while the bot that was attached is A's — and nothing
+  // else on the trail contradicts it.
+  test("a reconnect records the agent it repaired, not the one that replaced it", async () => {
+    const fxA = await connectedFixture(4449, "Reparado");
+    const other = await suDb.agent.create({
+      data: { tenantId, name: "Substituto", systemPrompt: "x" },
+      select: { id: true },
+    });
+    const stub: ReturnType<typeof stubClient> = stubClient({
+      setInboxAgentBot: async () => {
+        stub.calls.push("setInboxAgentBot");
+        if (stub.calls.filter((c) => c === "setInboxAgentBot").length === 1) {
+          await bindInbox(
+            ctx(),
+            fxA.inboxId,
+            other.id,
+            { makeClient: stubClient().makeClient },
+            appDb,
+          );
+        }
+        return {};
+      },
+    });
+    try {
+      await reconnectInbox(
+        ctx(),
+        fxA.inboxId,
+        { makeClient: stub.makeClient },
+        appDb,
+      );
+      const all = await rows();
+      const row = all.find((r) => r.action === "inbox.reconnect");
+      expect(row?.after).toEqual({
+        id: String(fxA.inboxId),
+        agentId: String(fxA.agentId),
+      });
+      // The bind that landed in the window is on the trail as itself, under the new agent.
+      expect(all.find((r) => r.action === "inbox.bind")?.after).toMatchObject({
+        agentId: String(other.id),
+      });
+    } finally {
+      await collect();
+      await fxA.cleanup();
+      await suDb.agent.delete({ where: { id: other.id } });
+    }
+  });
+
   test("disconnecting an account that is already disconnected records nothing", async () => {
     await clearAudit();
     const inst = await suDb.chatwootInstance.findFirstOrThrow({

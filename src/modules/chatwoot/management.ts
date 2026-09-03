@@ -1331,10 +1331,16 @@ export async function reconnectInbox(
     const dto = toInboxDto(row);
     // NOTE: The local binding did not move: this re-points CHATWOOT at the bot the inbox already names,
     // which is why the row has no `before`. What it records is that somebody repaired the link.
+    //
+    // The agent is the one this call ACTED ON, captured before the Chatwoot round trip, and not the
+    // one the row names now. A bind landing while those calls are in flight moves the binding, and
+    // re-reading it here would file the repair under agent B when the bot that was attached is A's:
+    // a row that names the wrong subject is worse than no row, because nothing else on the trail
+    // contradicts it.
     await auditMutation(db, ctx, {
       action: "inbox.reconnect",
       target: `inbox:${inboxId}`,
-      after: { id: dto.id, agentId: dto.agentId },
+      after: { id: dto.id, agentId: String(agentId) },
     });
     return dto;
   });
@@ -1687,62 +1693,88 @@ export async function bindInbox(
   }
 
   // 3. Persist the binding (scoped, no network).
-  return runScopedOn(base, ctx, async (db) => {
-    // NOTE: The ACCOUNT row first, and the same question the read at the top already asked, because
-    // that read predates the Chatwoot calls and a disconnect fits in the window. Without this lock
-    // nothing serialises the two: the disconnect stamps the account and unbinds every inbox that was
-    // bound AT THAT MOMENT, this one commits `agentId` just after, and the disconnect's own
-    // best-effort detach then pulls the bot this call had just attached. What is left is an inbox
-    // bound here, with no bot in Chatwoot, on an account that reconnects looking healthy — and
-    // binding the same agent again is a no-op, because the binding is already there. Taken in the
-    // module's one order (account, then inbox), so this cannot deadlock against `syncInboxes` or the
-    // disconnect itself.
-    const account = await db.$queryRaw<{ disconnected_at: Date | null }[]>`
+  //
+  // NOTE: Chatwoot is ALREADY attached by the time this runs, and this transaction can still fail —
+  // on the audit insert, or on the lock below. Rolled back, the bot is on the inbox upstream while
+  // our row still names the previous agent (or none), and the message that arrives next is handled
+  // by nobody. It is reported rather than compensated, for two reasons: a compensating detach is
+  // another call into somebody else's system on an error path, with its own failure; and a RETRY of
+  // this same request repairs it completely, because step 2 sees the local binding unchanged, calls
+  // Chatwoot again (idempotent) and commits. That is the opposite of the disconnect, where the
+  // equivalent retry is a no-op — which is why the two order their remote call differently.
+  try {
+    return await persistBinding();
+  } catch (err) {
+    logger.error(
+      {
+        err,
+        tenantId: String(tenantId),
+        inboxId: String(inboxId),
+        agentId: agentId === null ? null : String(agentId),
+      },
+      "chatwoot: the bot was attached in Chatwoot and the binding was not saved — retry the bind",
+    );
+    throw err;
+  }
+
+  function persistBinding(): Promise<InboxDto> {
+    return runScopedOn(base, ctx, async (db) => {
+      // NOTE: The ACCOUNT row first, and the same question the read at the top already asked, because
+      // that read predates the Chatwoot calls and a disconnect fits in the window. Without this lock
+      // nothing serialises the two: the disconnect stamps the account and unbinds every inbox that was
+      // bound AT THAT MOMENT, this one commits `agentId` just after, and the disconnect's own
+      // best-effort detach then pulls the bot this call had just attached. What is left is an inbox
+      // bound here, with no bot in Chatwoot, on an account that reconnects looking healthy — and
+      // binding the same agent again is a no-op, because the binding is already there. Taken in the
+      // module's one order (account, then inbox), so this cannot deadlock against `syncInboxes` or the
+      // disconnect itself.
+      const account = await db.$queryRaw<{ disconnected_at: Date | null }[]>`
       SELECT i.disconnected_at
         FROM chatwoot_instances i
        WHERE i.id = ${inbox.chatwootInstanceId}
          FOR NO KEY UPDATE`;
-    if (agentId !== null && account[0]?.disconnected_at != null) {
-      throw new AppError(
-        "this account is disconnected; reconnect it before assigning an agent",
-        409,
-        "errors.chatwootAccountDisconnected",
-      );
-    }
-    // NOTE: Read INSIDE the transaction and with the row LOCKED, because it is what the audit
-    // compares against. The reading taken at the top predates the Chatwoot calls, which are a window
-    // a concurrent bind fits into; and an unlocked read here is the same hole one level down, where
-    // two overlapping binds both see the old agent and the transition `null -> A -> B` reaches the
-    // trail as two rows that both claim to have started from null.
-    const locked = await db.$queryRaw<{ agent_id: bigint | null }[]>`
+      if (agentId !== null && account[0]?.disconnected_at != null) {
+        throw new AppError(
+          "this account is disconnected; reconnect it before assigning an agent",
+          409,
+          "errors.chatwootAccountDisconnected",
+        );
+      }
+      // NOTE: Read INSIDE the transaction and with the row LOCKED, because it is what the audit
+      // compares against. The reading taken at the top predates the Chatwoot calls, which are a window
+      // a concurrent bind fits into; and an unlocked read here is the same hole one level down, where
+      // two overlapping binds both see the old agent and the transition `null -> A -> B` reaches the
+      // trail as two rows that both claim to have started from null.
+      const locked = await db.$queryRaw<{ agent_id: bigint | null }[]>`
       SELECT agent_id
         FROM inboxes
        WHERE id = ${inboxId}
          FOR NO KEY UPDATE`;
-    const beforeWrite = locked[0] ?? null;
-    await db.inbox.update({ where: { id: inboxId }, data: { agentId } });
-    const row = await db.inbox.findUniqueOrThrow({
-      where: { id: inboxId },
-      select: INBOX_SELECT,
-    });
-    const dto = toInboxDto(row);
-    const wasBoundTo = beforeWrite?.agent_id ?? null;
-    // NOTE: BOTH SIDES, because an unbind is the same call with a null and it is the one that silences an
-    // inbox. The agent the inbox is losing is only knowable from the reading taken at the top.
-    //
-    // And only when the binding MOVED: re-submitting the editor with the same agent reaches the
-    // network branch, which deliberately does nothing, so a row would report a change that is not
-    // one. Compared against the reading that predates the write.
-    if (wasBoundTo !== agentId) {
-      await auditMutation(db, ctx, {
-        action: "inbox.bind",
-        target: `inbox:${inboxId}`,
-        before: { agentId: wasBoundTo === null ? null : String(wasBoundTo) },
-        after: { agentId: dto.agentId },
+      const beforeWrite = locked[0] ?? null;
+      await db.inbox.update({ where: { id: inboxId }, data: { agentId } });
+      const row = await db.inbox.findUniqueOrThrow({
+        where: { id: inboxId },
+        select: INBOX_SELECT,
       });
-    }
-    return dto;
-  });
+      const dto = toInboxDto(row);
+      const wasBoundTo = beforeWrite?.agent_id ?? null;
+      // NOTE: BOTH SIDES, because an unbind is the same call with a null and it is the one that silences an
+      // inbox. The agent the inbox is losing is only knowable from the reading taken at the top.
+      //
+      // And only when the binding MOVED: re-submitting the editor with the same agent reaches the
+      // network branch, which deliberately does nothing, so a row would report a change that is not
+      // one. Compared against the reading that predates the write.
+      if (wasBoundTo !== agentId) {
+        await auditMutation(db, ctx, {
+          action: "inbox.bind",
+          target: `inbox:${inboxId}`,
+          before: { agentId: wasBoundTo === null ? null : String(wasBoundTo) },
+          after: { agentId: dto.agentId },
+        });
+      }
+      return dto;
+    });
+  }
 }
 
 // Whether Chatwoot ANSWERED that this inbox does not exist. This is the single fact that authorizes

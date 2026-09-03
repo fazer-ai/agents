@@ -18,6 +18,7 @@ import {
 } from "@/client/components";
 import { api } from "@/client/lib/api";
 import { cn, formatDateTime } from "@/client/lib/utils";
+import { AUDIT_MARKER_KEYS, carriesAuditMarker } from "@/lib/audit/markers";
 import { ACTOR_TYPES } from "@/lib/tenancy/actor";
 import { clipText } from "@/lib/text";
 
@@ -153,12 +154,17 @@ export interface FieldChange {
   after: unknown;
 }
 
-// The key the write side puts on BOTH projections when a change moved a value the row does not show
-// — an encrypted secret, a header block. It is deliberately identical on the two sides (`markUndisclosed`
-// in `modules/audit/projection.ts`), which means a diff by equality erases it: the one row that says
-// "something you cannot see here changed" would render as "nothing was recorded", the exact opposite.
-// So it leaves the field list and comes back as its own answer.
-const UNDISCLOSED_KEY = "undisclosedChanged";
+// The keys the write side puts on a projection when a change moved a value the row does not show:
+// an encrypted secret, a header block, a settings key no canonical reader looks at. They are
+// deliberately identical on the two sides, which means a diff by equality erases them: the one row
+// that says "something you cannot see here changed" would render as "nothing was recorded", the
+// exact opposite. So they leave the field list and come back as their own answer.
+//
+// BOTH of them, from `lib/audit/markers`, and the second is why that list exists. #394's marker
+// (`unreadConfigChanged`) rides on the FIELD's projection rather than on the top level, so a
+// top-level check never sees it, and an edit that moved only unread configuration puts an equal
+// marker object on each side, which this diff then drops as unchanged: the card said "this action
+// recorded no field values" over a change the row was written precisely to report.
 
 export interface ProjectionDiff {
   changes: FieldChange[];
@@ -175,10 +181,11 @@ export function diffProjection(
 ): ProjectionDiff {
   const b = asRecord(before);
   const a = asRecord(after);
-  const undisclosed =
-    b?.[UNDISCLOSED_KEY] === true || a?.[UNDISCLOSED_KEY] === true;
+  const undisclosed = carriesAuditMarker(b) || carriesAuditMarker(a);
   const shown = (o: Record<string, unknown>) =>
-    Object.keys(o).filter((k) => k !== UNDISCLOSED_KEY);
+    Object.keys(o).filter(
+      (k) => !(AUDIT_MARKER_KEYS as readonly string[]).includes(k),
+    );
   if (!b || !a) {
     const only = a ?? b;
     if (!only) return { changes: [], undisclosed };

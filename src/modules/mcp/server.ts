@@ -1032,7 +1032,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "audit_list",
       {
         description:
-          "Read the tenant's audit log, newest first. before/after were sanitized at write time (never secrets). Keyset paginated via cursor; limit 100 (max 500). `latestAt` is the trail's newest row, past any filter.",
+          "Tenant audit log, newest first. before/after are sanitized at write time, never secrets. Keyset cursor; limit 100 (max 500). `latestAt` is the trail's newest row, past any filter.",
         inputSchema: {
           action: z.string().optional(),
           // NOTE: derived from the vocabulary and never hand-listed, for the reason `logs_query`

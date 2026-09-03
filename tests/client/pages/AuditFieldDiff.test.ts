@@ -99,6 +99,36 @@ describe("the field-level diff", () => {
     expect(d.changes).toEqual([]);
   });
 
+  // The OTHER marker, and the one the page did not know. #394 puts `unreadConfigChanged` on the
+  // FIELD's projection rather than at the top (`{ settings: { … } }`), so a top-level check finds
+  // nothing; and when the edit moved only unread configuration, both sides are the same marker
+  // object and the equality filter drops the field. The card then said "this action recorded no
+  // field values" about a row that exists precisely to report that something changed.
+  test("the agent family's marker is found where it actually rides", () => {
+    const d = diffProjection(
+      { id: "3", settings: { unreadConfigChanged: true } },
+      { id: "3", settings: { unreadConfigChanged: true } },
+    );
+    expect(d.undisclosed).toBe(true);
+    expect(d.changes).toEqual([]);
+  });
+
+  test("a nested marker alongside a visible change keeps both", () => {
+    const d = diffProjection(
+      { name: "antes", settings: { tts: "off", unreadConfigChanged: true } },
+      { name: "depois", settings: { tts: "on", unreadConfigChanged: true } },
+    );
+    expect(d.undisclosed).toBe(true);
+    expect(d.changes).toEqual([
+      { key: "name", before: "antes", after: "depois" },
+      {
+        key: "settings",
+        before: { tts: "off", unreadConfigChanged: true },
+        after: { tts: "on", unreadConfigChanged: true },
+      },
+    ]);
+  });
+
   test("a hidden change alongside a visible one keeps both", () => {
     const d = diffProjection(
       { name: "antes", undisclosedChanged: true },

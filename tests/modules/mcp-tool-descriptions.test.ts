@@ -405,7 +405,9 @@ describe("MCP tool descriptions", () => {
   // is prose to cut. The description went the other way — the filter list came OUT of it, because
   // the schema below already names every one of them, and what stayed is the four things a caller
   // cannot read off the schema: the ordering, the sanitisation guarantee, the limit cap, and what
-  // `latestAt` answers. The schema ceiling goes to 53,600.
+  // `latestAt` answers, and the four fit in 27 characters LESS than the sentence they replaced, so
+  // the description ceiling does not move at all: `audit_list` ends up smaller than it was. The
+  // schema ceiling goes to 53,600.
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;

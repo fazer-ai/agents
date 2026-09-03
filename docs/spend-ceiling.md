@@ -25,7 +25,7 @@ for the tenant (`langfuse.enabled` plus a `langfuse` vault credential with valid
 `resolveLangfuseConfig`); an install without it keeps no ceiling, and the console says so. "Configured"
 means the credential RESOLVES, asked the way the poll asks it: a reference to a deleted or malformed
 vault entry is what the poll writes on the row as `langfuse-not-configured`, and the console's flag
-agrees with the row rather than with the reference. The flag is the present and the row's sentinel is the last poll's finding: once the operator configures Langfuse the flag is true at once while the sentinel stays on the row until the next poll, so the card shows the flag and reads such a row as not read yet (review round 9). A
+agrees with the row rather than with the reference. The flag is the present and the row's sentinel is the last poll's finding: once the operator configures Langfuse the flag is true at once while the sentinel stays on the row until the next poll, so the card says two things from two places (review rounds 9 and 10): the flag, above the bars, says whether the cost can be read, and each bar says from its own row whether calls go through, because the gate reads the row and learns of a credential only at the next poll. A
 maintained external price table is worth more than a local one we would have to keep correct
 against six providers, OpenRouter and an operator-supplied `openai-compatible` base URL.
 
@@ -59,7 +59,7 @@ moves the failure from **availability to staleness**, which is a failure the row
   is the instant the current failure streak began, which is what the console's "failing since"
   means. Both writes run under the row's advisory lock: a save re-arms the job, which resets a
   claimed row to pending, so two polls of one tenant can overlap, and two read-then-writes that
-  each saw the previous figure would let the lower answer land last.
+  each saw the previous figure would let the lower answer land last. The poll also re-reads the tenant's credential under that same lock before writing, and drops its answer (`superseded`) when the credential is no longer the one it asked with: a poll asked under the old credential landing after the new project's would otherwise read that row as a switch and carry the combined figure on top of its own.
 - **The figure follows the month, not the project.** A tenant that points its Langfuse at another
   project mid-month starts a new series there, and the floor above would sit on the old project's
   last figure while the new one climbed from zero underneath it: $40 there plus $20 here would be a

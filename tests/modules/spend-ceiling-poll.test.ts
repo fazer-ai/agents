@@ -860,6 +860,80 @@ describe.skipIf(!dbUp)("the spend ceiling poll", () => {
       }
     });
 
+    // THE CHECK AND THE WRITE ARE ONE (review round 10). Poll A passes its credential check, then
+    // the credential changes and poll B, on the new project, writes before A does: A would read
+    // B's row as a switch and carry B's combined figure on top of its own. Under the month's lock B
+    // waits for A, and then carries A's figure once. A is held after its second vault read, which
+    // is the check inside the write.
+    test("a credential changed between a poll's check and its write cannot double the month", async () => {
+      await pollTenantSpend(tenantA, {
+        base: appDb,
+        fetchFn: langfuseStub(rows(40, 40), [], { projectId: "proj-a" })
+          .fetchFn,
+        now: NOW,
+      });
+      const entry = await suDb.vaultEntry.findFirstOrThrow({
+        where: { tenantId: tenantA, name: "lf-poll" },
+        select: { id: true, secret: true },
+      });
+      let release: () => void = () => {};
+      const held = new Promise<void>((r) => {
+        release = r;
+      });
+      let vaultReads = 0;
+      let paused = false;
+      const slow = appDb.$extends({
+        query: {
+          vaultEntry: {
+            async findFirst({ args, query }) {
+              const out = await query(args);
+              vaultReads += 1;
+              if (vaultReads === 2) {
+                paused = true;
+                await held;
+              }
+              return out;
+            },
+          },
+        },
+      }) as unknown as PrismaClient;
+      const a = pollTenantSpend(tenantA, {
+        base: slow,
+        fetchFn: langfuseStub(rows(41, 41), [], { projectId: "proj-a" })
+          .fetchFn,
+        now: at(1),
+      });
+      while (!paused) await Bun.sleep(5);
+      try {
+        await suDb.vaultEntry.update({
+          where: { id: entry.id },
+          data: {
+            secret: encryptJson({ publicKey: "pk-b", secretKey: "sk-b" }),
+          },
+        });
+        const b = pollTenantSpend(tenantA, {
+          base: appDb,
+          fetchFn: langfuseStub(rows(20, 10), [], { projectId: "proj-b" })
+            .fetchFn,
+          now: at(2),
+        });
+        // Long enough for B to reach the lock: with it B waits there, without it B writes.
+        await Bun.sleep(300);
+        release();
+        expect((await a).status).toBe("polled");
+        expect((await b).status).toBe("polled");
+        const row = await snapshot(tenantA, "inbox");
+        expect(Number(row?.costUsd)).toBe(61);
+        expect(Number(row?.carriedUsd)).toBe(41);
+        expect(row?.projectKey).toBe(`${BASE_URL}#proj-b`);
+      } finally {
+        await suDb.vaultEntry.update({
+          where: { id: entry.id },
+          data: { secret: entry.secret },
+        });
+      }
+    });
+
     test("a key rotated inside the same project carries nothing", async () => {
       const entry = await suDb.vaultEntry.findFirstOrThrow({
         where: { tenantId: tenantA, name: "lf-poll" },

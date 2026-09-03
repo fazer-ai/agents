@@ -241,15 +241,20 @@ describe("the spend ceiling card", () => {
     await waitFor(() => {
       expect(has("Langfuse is not configured")).toBe(true);
     });
+    // The credential's state above the bars, the gate's state on each bar (review round 10).
+    expect(
+      screen.queryAllByText("Not enforced on this half", { exact: false }),
+    ).toHaveLength(2);
+    expect(has("has not been read yet")).toBe(false);
     // The reason is said once, above the bars, not as a "failing since" line per bar.
     expect(has("failing since")).toBe(false);
   });
 
-  // THE FLAG IS THE PRESENT, THE SENTINEL IS THE LAST POLL (review round 9, reversing round 1's
-  // reading of this case). The flag resolves the credential on this request, the way the poll does,
-  // so once the operator configures Langfuse it is true at once, while the row keeps the sentinel
-  // until the next poll. Under a true flag the row reads as not read yet, and nothing says missing.
-  test("a row still carrying the sentinel under a true flag reads as not read yet", async () => {
+  // THE SENTINEL IS WHAT THE GATE ACTS ON (review round 10, refining round 9). The flag is the
+  // credential's present; the gate reads the row and learns of a credential only at the next
+  // poll. A sentinel row under a true flag is a half the gate lets through, and says so, while
+  // nothing says the credential is missing.
+  test("a row still carrying the sentinel under a true flag says the half is not enforced", async () => {
     const usage = baseUsage();
     usage.langfuseConfigured = true;
     usage.entries[0] = entry({
@@ -263,10 +268,25 @@ describe("the spend ceiling card", () => {
     installFetchStub(usage);
     renderCard();
     await waitFor(() => {
-      expect(has("has not been read yet")).toBe(true);
+      expect(has("Not enforced on this half")).toBe(true);
     });
     expect(has("Langfuse is not configured")).toBe(false);
+    expect(has("has not been read yet")).toBe(false);
     expect(has("failing since")).toBe(false);
+  });
+
+  // THE OTHER WINDOW: the credential removed, the row still carrying a figure. The gate keeps
+  // refusing on it until the next poll writes the sentinel, so the card must not say calls go
+  // through; it says the cost cannot be read, and the bar keeps its figure and its colour.
+  test("a figure on the row still decides after the credential is removed", async () => {
+    const usage = { ...baseUsage(), langfuseConfigured: false };
+    installFetchStub(usage);
+    renderCard();
+    await waitFor(() => {
+      expect(has("Langfuse is not configured")).toBe(true);
+    });
+    expect(has("$22.50 of $20.00")).toBe(true);
+    expect(has("go through")).toBe(false);
   });
 
   test("a block written in tokens says it is not enforced", async () => {

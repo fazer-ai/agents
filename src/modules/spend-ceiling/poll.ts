@@ -330,6 +330,10 @@ async function writeSuccess(
   );
 }
 
+function monthLockKey(tenantId: bigint, month: Date) {
+  return `spend-snapshot:${tenantId}:${month.toISOString()}`;
+}
+
 function snapshotLockKey(tenantId: bigint, source: UsageSource, month: Date) {
   return `spend-snapshot:${tenantId}:${source}:${month.toISOString()}`;
 }
@@ -462,16 +466,30 @@ export async function pollTenantSpend(
     // the same the other way. The lock serializes the writes; this is what refuses the obsolete
     // one. Asked inside the write's own transaction, so nothing can change between the check and
     // the row.
-    const written = await runScopedOn(base, ctx, async (db) => {
-      const current = await resolveLangfuseConfig(db, tenantId);
-      if (!current || !sameCredential(current, cfg)) return false;
-      for (const [i, source] of SOURCES.entries()) {
-        const cost = seen[i];
-        if (!cost) continue;
-        await writeSuccess(db, tenantId, source, month, cost, now, projectKey);
-      }
-      return true;
-    });
+    // The check and the writes hold ONE lock (review round 10): re-read outside it, a credential
+    // committed right after the read would let the new project's poll write first and this one
+    // land on top of it as a switch. Under the month's lock the two cannot interleave: whichever
+    // poll holds it reads the credential and writes, and the other reads what it committed.
+    const written = await runScopedOn(base, ctx, (db) =>
+      withEntityLock(db, monthLockKey(tenantId, month), async () => {
+        const current = await resolveLangfuseConfig(db, tenantId);
+        if (!current || !sameCredential(current, cfg)) return false;
+        for (const [i, source] of SOURCES.entries()) {
+          const cost = seen[i];
+          if (!cost) continue;
+          await writeSuccess(
+            db,
+            tenantId,
+            source,
+            month,
+            cost,
+            now,
+            projectKey,
+          );
+        }
+        return true;
+      }),
+    );
     if (!written) {
       logger.info(
         { tenantId: String(tenantId) },

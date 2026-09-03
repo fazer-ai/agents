@@ -540,6 +540,53 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
     await suDb.agent.delete({ where: { id: agent.id } });
   });
 
+  // The bots are detached in CHATWOOT, which no transaction of ours can roll back. Done before the
+  // local writes, an audit row that cannot be written takes the unbind and the stamp down with it
+  // and leaves the account connected and bound HERE while Chatwoot has already stopped delivering to
+  // it: live on the page, answering nothing, and an operator who was told the disconnect failed.
+  test("a disconnect that could not be recorded does not detach the bots in Chatwoot", async () => {
+    const inst = await suDb.chatwootInstance.findFirstOrThrow({
+      where: { tenantId, accountId: 2 },
+      select: { id: true },
+    });
+    const agent = await suDb.agent.create({
+      data: { tenantId, name: "Preservado", systemPrompt: "x" },
+      select: { id: true },
+    });
+    const bound = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: inst.id,
+        chatwootInboxId: 4343,
+        name: "Ainda ligada",
+        agentId: agent.id,
+      },
+      select: { id: true },
+    });
+    await clearAudit();
+    const stub = stubClient();
+    await expect(
+      softDisconnectChatwootInstance(
+        ctx(),
+        inst.id,
+        auditFailingOn(appDb, "instance.disconnect"),
+        { makeClient: stub.makeClient },
+      ),
+    ).rejects.toThrow();
+    expect(stub.calls).toEqual([]);
+    expect(
+      (
+        await suDb.inbox.findUniqueOrThrow({
+          where: { id: bound.id },
+          select: { agentId: true },
+        })
+      ).agentId,
+    ).toBe(agent.id);
+    expect(await rows()).toEqual([]);
+    await suDb.inbox.delete({ where: { id: bound.id } });
+    await suDb.agent.delete({ where: { id: agent.id } });
+  });
+
   test("disconnecting an account that is already disconnected records nothing", async () => {
     await clearAudit();
     const inst = await suDb.chatwootInstance.findFirstOrThrow({
@@ -858,9 +905,7 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
   // interleave, so a runtime test for it is a coin flip. `syncInboxes` takes the account row and
   // then the inboxes under it; `softDisconnectChatwootInstance` unbinds those inboxes and then
   // stamps the account, which is the same pair backwards, and both are ordinary operations (the
-  // page auto-syncs when it opens and a disconnect is one click). The abort is not symmetric
-  // either: the bots are detached in Chatwoot outside the transaction, so a rolled-back disconnect
-  // leaves the account active locally and answering nowhere.
+  // page auto-syncs when it opens and a disconnect is one click).
   test("every path that takes more than one of the three locks takes them outermost first", async () => {
     const src = await Bun.file(
       new URL("../../src/modules/chatwoot/management.ts", import.meta.url),
@@ -874,7 +919,7 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
       ],
       [
         "inbox",
-        /db\.inbox\.(update|updateMany|upsert|delete|deleteMany)|FROM inboxes/,
+        /db\.inbox\.(update|updateMany|upsert|delete|deleteMany)|(?:FROM|UPDATE) inboxes/,
       ],
     ];
     // Function bodies, split on the top-level declarations this file is written with.

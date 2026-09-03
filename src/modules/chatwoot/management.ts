@@ -749,56 +749,27 @@ export async function softDisconnectChatwootInstance(
       "errors.chatwootInstanceNotFound",
     );
   }
-  // Unbind agents from this instance's inboxes WHILE it is still active (detach the bots in Chatwoot).
-  const bound = await runScopedOn(base, ctx, (db) =>
-    db.inbox.findMany({
-      where: { chatwootInstanceId: id, agentId: { not: null } },
-      select: { chatwootInboxId: true },
-    }),
-  );
-  if (bound.length > 0) {
-    let client: ChatwootClient | null = null;
-    try {
-      client = await loadChatwootClient(tenantId, id, {
-        base,
-        makeClient: deps.makeClient,
-      });
-    } catch {
-      client = null; // Chatwoot unreachable / creds gone — still unbind locally + stamp disconnected.
-    }
-    if (client) {
-      for (const ib of bound) {
-        try {
-          await client.setInboxAgentBot(ib.chatwootInboxId, null);
-        } catch {
-          // best-effort: a per-inbox failure must not block disconnecting the rest
-        }
-      }
-    }
-  }
   // NOTE: ONE transaction for the three local writes: clearing the bindings, stamping the account as
   // disconnected, and the row that records it. Split, the unbind committed first and a failure on
   // either of the others left inboxes bound to nobody on an account still marked active, with
-  // customer messages routed to no agent and no row saying why. The Chatwoot calls above stay
-  // outside it, because no transaction of ours spans somebody else's system.
-  const stamped = await runScopedOn(base, ctx, async (db) => {
+  // customer messages routed to no agent and no row saying why.
+  const { stamped, detach } = await runScopedOn(base, ctx, async (db) => {
     // NOTE: The ACCOUNT row first, before any inbox of it. `syncInboxes` takes the same lock and
     // then upserts the inboxes; taking them in the other order here is an ABBA deadlock between two
-    // ordinary operations (the page auto-syncs on load, and a disconnect is a click away). The abort
-    // would not be symmetric either: the bots were already detached in Chatwoot, outside this
-    // transaction, so a rolled-back disconnect leaves the account active locally and answering
-    // nowhere.
+    // ordinary operations (the page auto-syncs on load, and a disconnect is a click away).
     await db.$queryRaw`SELECT id FROM chatwoot_instances WHERE id = ${id} FOR UPDATE`;
-    // NOTE: `agentId: { not: null }` so the count is the inboxes this call actually unbound, and not
-    // every inbox of the account. It is half of what decides the row below.
-    let unbound = 0;
-    if (bound.length > 0) {
-      const cleared = await db.inbox.updateMany({
-        where: { chatwootInstanceId: id, agentId: { not: null } },
-        data: { agentId: null },
-      });
-      unbound = cleared.count;
-    }
+    // NOTE: `RETURNING`, so the bindings this call actually removed are the SAME set the detach
+    // below walks, and the count is that set rather than every inbox of the account. Listed first
+    // and cleared after, the two drift apart under a bind that lands in between: an inbox unbound
+    // here whose bot is still attached in Chatwoot, delivering to a persona that no longer owns it.
+    // `agent_id IS NOT NULL` makes the write its own filter.
+    const unbound = await db.$queryRaw<{ chatwoot_inbox_id: number }[]>`
+      UPDATE inboxes
+         SET agent_id = NULL, updated_at = now()
+       WHERE tenant_id = ${tenantId}
+         AND chatwoot_instance_id = ${id}
+         AND agent_id IS NOT NULL
+      RETURNING chatwoot_inbox_id`;
     // NOTE: The stamp and the row only where the account was still ACTIVE, decided by the WRITE and
     // not by a reading before it. The endpoint is idempotent, so a retry changes nothing an operator
     // can see and re-stamping would move the moment it happened; and two overlapping requests both
@@ -814,20 +785,51 @@ export async function softDisconnectChatwootInstance(
     // stamp already there and would otherwise finish the disconnect with nothing on the trail.
     // `stamped: false` is what tells a reader that this call completed a disconnect rather than
     // starting one.
-    if (count > 0 || unbound > 0) {
+    if (count > 0 || unbound.length > 0) {
       await auditMutation(db, ctx, {
         action: "instance.disconnect",
         target: `chatwoot_instance:${id}`,
         before: {
           id: String(inst.id),
           accountId: inst.accountId,
-          unboundInboxes: unbound,
+          unboundInboxes: unbound.length,
           stamped: count > 0,
         },
       });
     }
-    return count > 0;
+    return {
+      stamped: count > 0,
+      detach: unbound.map((r) => r.chatwoot_inbox_id),
+    };
   });
+  // NOTE: Chatwoot AFTER our commit, because no transaction of ours spans somebody else's system and
+  // only one of the two orders survives a failure. Detaching first and then rolling back (an audit
+  // row that cannot be written is enough) leaves the account active and bound HERE while Chatwoot
+  // has already stopped delivering to it: an account that looks live, answers nothing, and whose
+  // operator was told the disconnect failed. This way a failed transaction changes nothing anywhere
+  // and the retry is a real retry, while a failed detach lands on the outcome this function already
+  // declares acceptable — the same one an unreachable deployment gives below, where the account is
+  // disconnected locally and the webhook ignores whatever still arrives.
+  if (detach.length > 0) {
+    let client: ChatwootClient | null = null;
+    try {
+      client = await loadChatwootClient(tenantId, id, {
+        base,
+        makeClient: deps.makeClient,
+      });
+    } catch {
+      client = null; // Chatwoot unreachable / creds gone — the local disconnect already stands.
+    }
+    if (client) {
+      for (const inboxId of detach) {
+        try {
+          await client.setInboxAgentBot(inboxId, null);
+        } catch {
+          // best-effort: a per-inbox failure must not block detaching the rest
+        }
+      }
+    }
+  }
   // The receiver caches "this route token resolves to a live bot" by hash. Without this, events for
   // an account just disconnected would keep being processed until the entry expires.
   invalidateRouteTokenCache();

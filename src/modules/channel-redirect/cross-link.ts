@@ -54,7 +54,7 @@ export interface LinkRedirectParams {
   tenantId: bigint;
   instanceId: bigint;
   agentId: bigint;
-  // The bound agent's mode ("test" | "production"); gates the test-mode propagation.
+  // The bound agent's mode ("test" | "production" | "monitoring"); gates the test-mode propagation.
   mode: string;
   cfg: ChannelRedirectConfig;
   widgetConv: {

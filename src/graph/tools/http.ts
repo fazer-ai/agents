@@ -92,8 +92,9 @@ export interface HttpToolDeps {
   timeoutMs?: number;
   maxResponseChars?: number;
   // Posts a "I'll look into that…" ack to the customer before a slow tool runs (best-effort). Wired
-  // only on a real conversation; absent in the playground (no client / no conversation).
-  emitAck?: (message: string) => Promise<void>;
+  // only on a real conversation; absent in the playground (no client / no conversation). An
+  // explicit `false` says the run was called off after the ack, and the tool does not run.
+  emitAck?: (message: string) => Promise<boolean | undefined>;
   // Conversation/contact context for {{placeholder}} interpolation in fixed fields, headers, the URL
   // and a raw body (e.g. {{conversation_id}}, {{contact_name}}). NEVER a secret.
   context?: Record<string, string>;
@@ -594,7 +595,9 @@ export function buildHttpTool(
         if (!msg) {
           return "Error: a wait message is required. Call this tool again with a short __wait_message to send to the user before it runs.";
         }
-        if (deps.emitAck) await deps.emitAck(msg);
+        if (deps.emitAck && (await deps.emitAck(msg)) === false) {
+          return "The run was called off after the acknowledgement; the tool did not run.";
+        }
       }
 
       // Resolve the credential up front. It flows ONLY via {{secret}} into the request the operator

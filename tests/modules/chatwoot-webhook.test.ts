@@ -327,6 +327,7 @@ describe("runEagerMedia (eager STT/vision idempotency contract)", () => {
       conversationId: 90n,
       agentId: 11n,
       inboxId: 7n,
+      chatwootInboxId: null,
     });
     expect(n.message?.transcribedText).toBe("olá mundo");
   });
@@ -345,6 +346,7 @@ describe("runEagerMedia (eager STT/vision idempotency contract)", () => {
       conversationId: 90n,
       agentId: 11n,
       inboxId: 7n,
+      chatwootInboxId: null,
     });
     expect(n.message?.transcribedText).toBe("já feito");
   });
@@ -360,6 +362,7 @@ describe("runEagerMedia (eager STT/vision idempotency contract)", () => {
       conversationId: 90n,
       agentId: 11n,
       inboxId: 7n,
+      chatwootInboxId: null,
     });
     expect(n.message?.transcribedText).toBeUndefined();
     expect(n.message?.imageDescription).toBeUndefined();

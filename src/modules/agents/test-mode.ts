@@ -3,7 +3,7 @@
 // source of truth for "is this conversation currently silenced", used by the webhook gate, the
 // follow-up handlers, and proactive nudges so NONE of them act on an unactivated test conversation.
 //
-// Pure: mode is Agent.mode ("test" | "production"), testActivatedAt is the conversation's activation
+// Pure: mode is Agent.mode ("test" | "production" | "monitoring"), testActivatedAt is the conversation's activation
 // timestamp (null = not activated). Production agents are never silenced.
 export function isTestSilenced(
   mode: string,

@@ -423,6 +423,13 @@ describe("MCP tool descriptions", () => {
   // 53,440, under the 53,500 both branches had picked; the two additions do not overlap, so the
   // rebase added them — and the next rebase, over the five audit-trail rounds that took the base to
   // 53,547, measured 53,940.)
+  //
+  // The `monitoring` mode (#209) takes the description total to 27,901, one character past the
+  // ceiling `agent_config_health` left: `agent_create` and `agent_update` name the third value in
+  // the sentence that already named the other two ("'monitoring' (reads, never answers)"), which is
+  // what a caller cannot learn by trying, because a mode it does not know is a refused write. No
+  // tool was added. The description ceiling goes to 28,000. The schema side grows by the third
+  // value of the two `mode` enums, to 53,966; the schema ceiling holds at 54,000.
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;
@@ -431,7 +438,7 @@ describe("MCP tool descriptions", () => {
       desc += t.description.length;
       schema += t.schema.length;
     }
-    expect(desc).toBeLessThanOrEqual(27_900);
+    expect(desc).toBeLessThanOrEqual(28_000);
     expect(schema).toBeLessThanOrEqual(54_000);
   });
 

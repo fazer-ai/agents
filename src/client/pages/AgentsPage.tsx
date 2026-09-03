@@ -27,6 +27,7 @@ import {
   useModalController,
   useToast,
 } from "@/client/components";
+import { MonitoringBadge } from "@/client/components/MonitoringBadge";
 import { useFieldRefusal } from "@/client/hooks/useFieldRefusal";
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
@@ -343,6 +344,7 @@ export function AgentsPage() {
                             : t("agents.off", "Disabled")}
                         </Badge>
                         {a.mode === "test" && <TestModeBadge state="agent" />}
+                        {a.mode === "monitoring" && <MonitoringBadge />}
                         {a.outOfHours && <OutOfHoursBadge />}
                       </div>
                       <p className="mt-0.5 truncate text-text-muted text-xs">

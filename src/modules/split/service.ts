@@ -256,6 +256,11 @@ export async function deliverReply(
       };
       try {
         for (const [i, chunk] of chunks.entries()) {
+          // Asked BEFORE the typing indicator as well as before the send (issue #209 review,
+          // round 9): the indicator is customer-facing too, and a run called off during the
+          // previous balloon's send would otherwise show it once more before standing down. The
+          // first balloon is covered by the caller's own ask, one statement before this loop.
+          if (i > 0 && (await calledOff())) break;
           await client
             .toggleTyping(conversationId, true)
             .catch(() => undefined);

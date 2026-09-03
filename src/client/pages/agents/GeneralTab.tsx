@@ -20,6 +20,7 @@ import { isValidHttpUrl } from "@/client/lib/validation";
 import { MODEL_PROVIDERS } from "@/graph/model-config";
 import { PROVIDER_DEFAULT_MODEL } from "@/graph/model-defaults";
 import { REASONING_EFFORTS } from "@/graph/openai-reasoning";
+import { AGENT_MODES, type AgentMode } from "@/modules/agents/mode";
 import type { Schedule } from "@/modules/business-hours/hours";
 import { CapabilityMap } from "./CapabilityMap";
 import { PromptPanel } from "./PromptPanel";
@@ -49,8 +50,8 @@ interface GeneralTabProps {
   setSystemPrompt: (v: string) => void;
   enabled: boolean;
   setEnabled: (v: boolean) => void;
-  mode: "test" | "production";
-  setMode: (v: "test" | "production") => void;
+  mode: AgentMode;
+  setMode: (v: AgentMode) => void;
   model: ModelState;
   setModel: React.Dispatch<React.SetStateAction<ModelState>>;
   modelCredBaseUrl: string | null;
@@ -143,12 +144,12 @@ export function GeneralTab({
           label={t("editor.mode", "Mode")}
           description={t(
             "editor.modeHint",
-            "A test agent stays silent in a conversation until the customer sends /teste; production answers normally.",
+            "A test agent stays silent in a conversation until the customer sends /teste; production answers normally; monitoring receives and remembers every message and never answers.",
           )}
           group
         >
           <div className="inline-flex self-start rounded-lg border border-border bg-bg-tertiary p-0.5">
-            {(["test", "production"] as const).map((m) => (
+            {AGENT_MODES.map((m) => (
               <button
                 key={m}
                 type="button"
@@ -163,7 +164,9 @@ export function GeneralTab({
               >
                 {m === "test"
                   ? t("editor.modeTest", "Test")
-                  : t("editor.modeProduction", "Production")}
+                  : m === "monitoring"
+                    ? t("editor.modeMonitoring", "Monitoring")
+                    : t("editor.modeProduction", "Production")}
               </button>
             ))}
           </div>

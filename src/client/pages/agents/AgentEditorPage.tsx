@@ -44,6 +44,7 @@ import {
   useToast,
 } from "@/client/components";
 import { BusinessHoursForm } from "@/client/components/BusinessHoursForm";
+import { MonitoringBadge } from "@/client/components/MonitoringBadge";
 import type { DiscoveredMcpTool } from "@/client/components/mcp/DiscoveredMcpTools";
 import { useBreadcrumbLabel } from "@/client/contexts/BreadcrumbContext";
 import { useNavGuard } from "@/client/contexts/NavGuardContext";
@@ -83,6 +84,7 @@ import {
   issueHasAction,
 } from "@/modules/agents/config-health";
 import { configIssueMessage } from "@/modules/agents/config-health-message";
+import { type AgentMode, normalizeAgentMode } from "@/modules/agents/mode";
 import { collectOversizedTextChanges } from "@/modules/agents/text-caps";
 import type { Schedule } from "@/modules/business-hours/hours";
 import {
@@ -665,9 +667,7 @@ function AgentEditor() {
   // or the "Save and export" that writes General from wherever they are — would place its mark on a
   // control nobody is rendering. Off that tab the sentence goes to the toast.
   const [enabled, setEnabled] = useState(true);
-  const [agentMode, setAgentMode] = useState<"test" | "production">(
-    "production",
-  );
+  const [agentMode, setAgentMode] = useState<AgentMode>("production");
   const [transferWithSummary, setTransferWithSummary] = useState(true);
   const [businessHoursId, setBusinessHoursId] = useState("");
   const [awayEnabled, setAwayEnabled] = useState(false);
@@ -1300,7 +1300,7 @@ function AgentEditor() {
     setName(a.name);
     setSystemPrompt(a.systemPrompt);
     setEnabled(a.enabled);
-    setAgentMode(a.mode === "test" ? "test" : "production");
+    setAgentMode(normalizeAgentMode(a.mode));
     setModel(readModelState(a));
     const b = readBehaviorState(a);
     setBusinessHoursId(b.businessHoursId);
@@ -1335,7 +1335,7 @@ function AgentEditor() {
     setName(a.name);
     setSystemPrompt(a.systemPrompt);
     setEnabled(a.enabled);
-    setAgentMode(a.mode === "test" ? "test" : "production");
+    setAgentMode(normalizeAgentMode(a.mode));
     setModel(readModelState(a));
   }, []);
 
@@ -2465,7 +2465,7 @@ function AgentEditor() {
     setName(a.name);
     setSystemPrompt(a.systemPrompt);
     setEnabled(a.enabled);
-    setAgentMode(a.mode === "test" ? "test" : "production");
+    setAgentMode(normalizeAgentMode(a.mode));
     setModel(readModelState(a));
   };
   const revertBehavior = () => {
@@ -3119,6 +3119,7 @@ function AgentEditor() {
                     : t("common.disabled", "Disabled")}
                 </Badge>
                 {agentMode === "test" && <TestModeBadge state="agent" />}
+                {agentMode === "monitoring" && <MonitoringBadge />}
                 {anyDirty && (
                   <Badge
                     variant="warning"

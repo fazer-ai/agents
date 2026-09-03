@@ -51,6 +51,10 @@ const CONV_ID = 9711;
 // a conversation and a row written by the wrong one cannot be mistaken for the right one.
 const TEST_INBOX_ID = 4412;
 const TEST_CONV_ID = 9712;
+// The sparse-payload fixture: a conversation on the production inbox whose late-media event names
+// no inbox at all, so the runtime — and the inbox the STT config resolves against — can only come
+// from the stored row (issue #209 review, round 4).
+const SPARSE_CONV_ID = 9713;
 const AGENT_BOT_ID = 77;
 
 let tenantId: bigint;
@@ -61,6 +65,7 @@ let conversationDbId: bigint;
 let testAgentId: bigint;
 let testInboxDbId: bigint;
 let testConversationDbId: bigint;
+let sparseConversationDbId: bigint;
 
 describe.skipIf(!dbUp)("the eager-media flow context", () => {
   beforeAll(async () => {
@@ -112,6 +117,19 @@ describe.skipIf(!dbUp)("the eager-media flow context", () => {
       select: { id: true },
     });
     conversationDbId = conv.id;
+    const sparse = await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        inboxId: inboxDbId,
+        chatwootConversationId: SPARSE_CONV_ID,
+        status: "pending",
+        threadId: `${tenantId}:${instanceId}:${SPARSE_CONV_ID}`,
+        lastEventAt: new Date(Date.now() - 60_000),
+      },
+      select: { id: true },
+    });
+    sparseConversationDbId = sparse.id;
 
     // `runEagerMedia` has a SECOND call site, on the answer path: a test-mode agent whose episode is
     // already activated passes the gate and only then gets its media analysed. It hands over the same
@@ -271,6 +289,92 @@ describe.skipIf(!dbUp)("the eager-media flow context", () => {
     }
     if (!row) throw new Error("no stt line was written");
     expect(row.conversationId).toBe(conversationDbId);
+    expect(row.agentId).toBe(agentId);
+    expect(row.inboxId).toBe(inboxDbId);
+  });
+
+  test("a late voice note whose payload names no inbox is still analysed, against the stored inbox", async () => {
+    const n = normalizeChatwootEvent({
+      event: "message_updated",
+      id: 5003,
+      content: "",
+      message_type: "incoming",
+      private: false,
+      attachments: [
+        {
+          id: 90,
+          file_type: "audio",
+          data_url: "https://chat.eager.example/audio/90.ogg",
+        },
+      ],
+      conversation: {
+        id: SPARSE_CONV_ID,
+        status: "pending",
+        contact_inbox: { id: 60_000 + SPARSE_CONV_ID },
+        meta: {
+          assignee_type: null,
+          assignee: null,
+          sender: { id: 23, name: "Cliente" },
+        },
+        channel: "Channel::Api",
+        last_activity_at: Math.floor(Date.now() / 1000),
+      },
+    });
+    if (!n) throw new Error("unreachable: the fixture is a valid event");
+    if (n.inboxId !== null) throw new Error("the fixture must name no inbox");
+    const delivery = await suDb.chatwootWebhookDelivery.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        deliveryId: `eager-media-sparse-${process.pid}`,
+        event: "message_updated",
+        status: "PENDING",
+      },
+      select: { id: true },
+    });
+
+    await processChatwootDelivery({
+      tenantId,
+      instanceId,
+      deliveryRowId: delivery.id,
+      agentBotId: AGENT_BOT_ID,
+      normalized: n,
+      base: appDb,
+      deps: {
+        makeClient: (async () =>
+          ({
+            downloadAttachment: async () => {
+              throw new Error(
+                "the audio must not be downloaded: no credential",
+              );
+            },
+            sendMessage: async () => ({}),
+            sendPrivateNote: async () => ({}),
+          }) as unknown as ChatwootClient) as never,
+        makeModel: () => {
+          throw new Error("a late-media update must not run a turn");
+        },
+      },
+    });
+
+    const threadId = `${tenantId}:${instanceId}:${SPARSE_CONV_ID}`;
+    let row:
+      | {
+          conversationId: bigint | null;
+          agentId: bigint | null;
+          inboxId: bigint | null;
+        }
+      | undefined;
+    for (let i = 0; i < 200 && !row; i++) {
+      row =
+        (await flowLogRow(suDb, {
+          where: { tenantId, threadId, stage: "stt" },
+          select: { conversationId: true, agentId: true, inboxId: true },
+        })) ?? undefined;
+      if (!row) await new Promise((r) => setTimeout(r, 20));
+    }
+    if (!row) throw new Error("no stt line was written for the sparse payload");
+    expect(row.conversationId).toBe(sparseConversationDbId);
     expect(row.agentId).toBe(agentId);
     expect(row.inboxId).toBe(inboxDbId);
   });

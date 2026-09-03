@@ -419,9 +419,10 @@ describe("MCP tool descriptions", () => {
   // not an MCP tool, so it publishes no description and no schema of its own here; what it costs is
   // its NAME, once per native-keyed settings map (`toolGuidance`, `toolPreconditions`) — 393
   // characters the tools/list of every session pays for a tool the session may never grant. The
-  // schema ceiling goes to 53,800. (First measured against the tree before #459's block: 53,047 to
+  // schema ceiling goes to 54,000. (First measured against the tree before #459's block: 53,047 to
   // 53,440, under the 53,500 both branches had picked; the two additions do not overlap, so the
-  // rebase added them.)
+  // rebase added them — and the next rebase, over the five audit-trail rounds that took the base to
+  // 53,547, measured 53,940.)
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;
@@ -431,7 +432,7 @@ describe("MCP tool descriptions", () => {
       schema += t.schema.length;
     }
     expect(desc).toBeLessThanOrEqual(27_900);
-    expect(schema).toBeLessThanOrEqual(53_800);
+    expect(schema).toBeLessThanOrEqual(54_000);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

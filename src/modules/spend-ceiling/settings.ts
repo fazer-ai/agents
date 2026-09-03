@@ -135,12 +135,29 @@ function readCount(v: unknown, fallback: number, max: number): number {
   return Math.min(Math.floor(v), max);
 }
 
+// Cents from dollars, with the float error a decimal amount picks up on the way in taken out:
+// `262144.04 * 100` is `26214403.999999996`, and a floor, or a fixed `1e-9` nudge, reads it as a
+// cent less (review round 17). An amount within the float's own precision of a whole number of
+// cents IS that number of cents, and one within it of a half cent IS the half, so `10.005` (which
+// the float holds as `1000.4999…`) still rounds up where rounding is the rule. Only a real third
+// decimal reaches the rule. The tolerance scales with the amount, because the error does.
+export function centsOf(usd: number, thirdDecimal: "drop" | "round"): number {
+  const raw = usd * 100;
+  const tolerance = Math.abs(raw) * Number.EPSILON * 4;
+  const nearest = Math.round(raw);
+  if (Math.abs(raw - nearest) <= tolerance) return nearest;
+  const below = Math.floor(raw);
+  if (thirdDecimal === "drop") return below;
+  if (Math.abs(raw - (below + 0.5)) <= tolerance) return below + 1;
+  return nearest;
+}
+
 // Money is read TO THE CENT, and the third decimal is dropped rather than rounded: a ceiling that is
 // lower is the safe side of its own field, the same direction every clamp here takes.
 function readUsd(v: unknown, fallback: number, max: number): number {
   if (typeof v !== "number" || !Number.isFinite(v)) return fallback;
   if (v < 0) return fallback;
-  return Math.min(Math.floor(v * 100 + 1e-9) / 100, max);
+  return Math.min(centsOf(v, "drop") / 100, max);
 }
 
 export function readSpendCeilingConfig(settings: unknown): SpendCeilingConfig {
@@ -207,7 +224,7 @@ const usd = z
   .number()
   .min(0)
   .max(SPEND_CEILING_USD_MAX)
-  .transform((v) => Math.round(v * 100 + 1e-9) / 100);
+  .transform((v) => centsOf(v, "round") / 100);
 
 // The write side, which REFUSES rather than clamps. The reader above is deliberately lenient (a
 // malformed bag must never break the webhook), and the two are not in tension: one answers "what is

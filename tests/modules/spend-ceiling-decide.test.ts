@@ -208,6 +208,24 @@ describe("reading the ceiling out of the settings bag", () => {
     ).toBe(10.99);
   });
 
+  // THE FLOAT'S OWN ERROR IS NOT A THIRD DECIMAL (review round 17). `262144.04 * 100` is
+  // `26214403.999999996`, so a floor, or a fixed nudge smaller than that error, read a legally saved
+  // amount as a cent less and made the gate refuse a cent early. A whole number of cents to within
+  // the float's precision is that number of cents, at any amount the ceiling allows.
+  test("a whole number of cents survives the float at any amount", () => {
+    const read = (v: number) =>
+      readSpendCeilingConfig({ spendCeiling: { monthlyInboxUsd: v } })
+        .monthlyInboxUsd;
+    expect(read(262144.04)).toBe(262144.04);
+    expect(read(999_999.99)).toBe(999_999.99);
+    expect(read(4.35)).toBe(4.35);
+    expect(read(262144.045)).toBe(262144.04);
+    for (let cents = 0; cents < 100_000_000; cents += 7919) {
+      const usd = cents / 100;
+      expect(read(usd)).toBe(usd);
+    }
+  });
+
   // THE UNIT CHANGED UNDER A ROW THAT WAS ALREADY WRITTEN (issue #426). A block saved when the
   // ceiling counted tokens carries `monthlyInboxTokens`, and there is no price to convert it with:
   // the reader answers no ceiling (0) on both halves, and says WHY, so the console can tell the
@@ -294,6 +312,11 @@ describe("reading the ceiling out of the settings bag", () => {
     expect(write(12.34)).toBe(12.34);
     expect(write(10.005)).toBe(10.01);
     expect(write(10.004)).toBe(10);
+    // The same at an amount where the float's error outgrows a fixed nudge (review round 17): the
+    // whole cent round-trips, and the half still rounds up.
+    expect(write(262144.04)).toBe(262144.04);
+    expect(write(262144.035)).toBe(262144.04);
+    expect(write(262144.034)).toBe(262144.03);
   });
 
   test("the warning fraction cannot exceed a whole ceiling", () => {

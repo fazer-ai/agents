@@ -134,7 +134,7 @@ nobody typed in the new unit is a ceiling that silences an agent on the strength
 
 Money is compared in **cents** (`decideSpend`): `0.1 + 0.2` is not `0.3` to a double, and a ceiling
 of thirty cents met exactly by three dimes has to read as reached. The writer rounds a third decimal
-to the cent rather than refusing it; the reader drops it.
+to the cent rather than refusing it; the reader drops it. Both convert through `centsOf`, which takes out the float error a decimal amount picks up on the way in before applying the rule: `262144.04 * 100` is `26214403.999999996`, and a fixed nudge of `1e-9` fell below that error past a few hundred thousand dollars, so a legally saved amount read back a cent lower and the gate refused a cent early (review round 17). An amount within the float's own precision of a whole number of cents, or of a half cent, is treated as exactly that, and the tolerance scales with the amount because the error does.
 
 ## Two ceilings, not one
 

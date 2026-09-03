@@ -112,7 +112,11 @@ moves the failure from **availability to staleness**, which is a failure the row
   both books: the ledger row, and a Langfuse generation (`recordDirectGeneration`) under the same
   trace identity as a turn (id = turnId, `userId` = slug, the source's environment) with usage keyed
   the way the handler keys it, so one model definition prices both paths and the poll's filters find
-  it. A tenant with no Langfuse keeps the row and skips the trace.
+  it. A tenant with no Langfuse keeps the row and skips the trace. **The guardrail's calls are the
+  same case from the other side** (review round 8): they go through LangChain, but the gate runs
+  outside the graph, so the turn's trace handler never saw them (measured: a screened turn reached
+  Langfuse with the agent's generation and not the guardrail's). `buildGuardrailGate` now takes the
+  tenant's Langfuse and traces each call as a secondary run under the turn's own trace.
 - **A month nobody has polled yet is nothing spent, and the console says so.** The first poll writes
   the row; until then the ceiling cannot refuse on a figure it does not have, which is the same
   direction the unreadable-ceiling rule takes, and the card says beside the bar that nothing has

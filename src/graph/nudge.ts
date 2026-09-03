@@ -1128,6 +1128,7 @@ export async function runAgentNudge(
       makeModel: params.deps?.makeModel,
       // Same sink as this turn's own callbacks (see the buildCallbacks call above).
       persistUsage: params.deps?.persistUsage,
+      langfuseCfg: cfg.langfuseCfg,
     })("output", text);
 
   // What the transfer promised the customer, delivered on the way OUT of the turn — whatever the way

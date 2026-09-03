@@ -980,6 +980,7 @@ describe("buildGuardrailGate", () => {
       throw new Error("should never be constructed");
     });
     const gate = buildGuardrailGate({
+      langfuseCfg: null,
       cfg: enabledCfg({
         input: {
           ...GUARDRAILS_DEFAULTS.input,
@@ -1016,6 +1017,7 @@ describe("buildGuardrailGate", () => {
       })),
     );
     const gate = buildGuardrailGate({
+      langfuseCfg: null,
       cfg: enabledCfg({
         customPolicy: "  never promise a delivery date  ",
         output: {
@@ -1045,6 +1047,7 @@ describe("buildGuardrailGate", () => {
         throw new Error("should never be constructed");
       });
       const gate = buildGuardrailGate({
+        langfuseCfg: null,
         cfg: c.cfg,
         apiKey: c.apiKey,
         announce: chatwootNoteSink(client, 1),
@@ -1068,6 +1071,7 @@ describe("buildGuardrailGate", () => {
     });
     const seen: GuardrailReport[] = [];
     const gate = buildGuardrailGate({
+      langfuseCfg: null,
       cfg: enabledCfg(),
       apiKey: "",
       announce: (r) => {
@@ -1093,6 +1097,7 @@ describe("buildGuardrailGate", () => {
       throw new Error("openai-compatible provider requires a base URL");
     });
     const gate = buildGuardrailGate({
+      langfuseCfg: null,
       cfg: enabledCfg(),
       apiKey: "k",
       announce: chatwootNoteSink(client, 1),
@@ -1152,6 +1157,7 @@ describe("buildGuardrailGate", () => {
       test(`${row.name} → ran=${row.ran}`, async () => {
         const f = countingFactory(row.impl);
         const gate = buildGuardrailGate({
+          langfuseCfg: null,
           cfg: enabledCfg(),
           apiKey: row.apiKey,
           announce: chatwootNoteSink(client, 1),
@@ -1180,6 +1186,7 @@ describe("buildGuardrailGate", () => {
         })),
       );
       const onGate = buildGuardrailGate({
+        langfuseCfg: null,
         cfg: enabledCfg(),
         apiKey: "k",
         announce: chatwootNoteSink(client, 1),
@@ -1189,6 +1196,7 @@ describe("buildGuardrailGate", () => {
       expect(guardrailRan(await onGate("output", "olá"))).toBe(true);
 
       const offGate = buildGuardrailGate({
+        langfuseCfg: null,
         cfg: { ...GUARDRAILS_DEFAULTS, enabled: false },
         apiKey: "k",
         announce: chatwootNoteSink(client, 1),
@@ -1208,6 +1216,7 @@ describe("buildGuardrailGate", () => {
   test("a 'generated' action with no composed reply reports itself as the template", async () => {
     const notes: string[] = [];
     const gate = buildGuardrailGate({
+      langfuseCfg: null,
       cfg: enabledCfg({
         output: {
           ...GUARDRAILS_DEFAULTS.output,
@@ -1282,6 +1291,7 @@ describe("buildGuardrailGate", () => {
       throw new Error("nope");
     });
     const gate = buildGuardrailGate({
+      langfuseCfg: null,
       cfg: enabledCfg(),
       apiKey: "k",
       announce: chatwootNoteSink(client, 1),
@@ -1308,6 +1318,7 @@ describe("buildGuardrailGate", () => {
       })),
     );
     const gate = buildGuardrailGate({
+      langfuseCfg: null,
       cfg: enabledCfg(),
       apiKey: "k",
       announce: chatwootNoteSink(client, 1),

@@ -686,6 +686,7 @@ export async function runPlaygroundTurn(
         systemPrompt: loaded.systemPrompt,
         customerMessage: text,
         makeModel: params.deps?.makeModel,
+        langfuseCfg: loaded.langfuseCfg,
       })
     : notScreened;
 
@@ -1201,6 +1202,7 @@ export async function runPlaygroundFollowup(
         flow,
         systemPrompt: loaded.systemPrompt,
         makeModel: params.deps?.makeModel,
+        langfuseCfg: loaded.langfuseCfg,
       })
     : notScreened;
   const outGuard = drafted

@@ -970,6 +970,7 @@ async function runTurnBody(
     // The same sink the turn's own callbacks use. A test that injects one and leaves guardrails on
     // would otherwise capture the agent's row and send the guardrail's to the real database.
     persistUsage: params.deps?.persistUsage,
+    langfuseCfg: loaded.langfuseCfg,
   });
 
   // One piece of customer-facing text, delivered the way this agent delivers text: as audio when the

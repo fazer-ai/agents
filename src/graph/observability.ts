@@ -273,7 +273,7 @@ export function buildLangfuseHandler(
     };
     const trace = client.trace({
       id: ctx.turnId,
-      sessionId: ctx.threadId,
+      sessionId: ctx.threadId || undefined,
       userId: ctx.userId,
       metadata,
     });

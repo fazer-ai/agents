@@ -300,6 +300,101 @@ describe.skipIf(!dbUp)("billed model calls reach the usage ledger", () => {
     expect(guard?.inboxId).toBe(inboxDbId);
   });
 
+  // THE GUARDRAIL'S CALL IN THE OTHER BOOK (review round 8). The gate hands its model `[usage()]`
+  // and nothing else, so the question is whether the turn's Langfuse handler still sees the call
+  // through LangChain's own config propagation, or whether the guardrail's spend is invisible to
+  // the dollar ceiling the way vision's was. Measured, not reasoned: the ingestion batch is read.
+  test("a screened turn reaches Langfuse with the guardrail's generation beside the agent's", async () => {
+    const tctx = { tenantId, userId: null, role: "TENANT_ADMIN" as const };
+    const lf = await suDb.vaultEntry.create({
+      data: {
+        tenantId,
+        name: "lf-guard",
+        kind: "langfuse",
+        secret: encryptJson({ publicKey: "pk-guard", secretKey: "sk-guard" }),
+        baseUrl: "https://langfuse.example.test",
+      },
+      select: { id: true },
+    });
+    await updateLangfuse(
+      tctx,
+      { enabled: true, credentialRef: formatVaultRef(lf.id) },
+      appDb,
+    );
+    const posted: Array<Record<string, unknown>> = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.endsWith("/api/public/ingestion")) {
+        const body = JSON.parse(String(init?.body ?? "{}")) as {
+          batch?: Array<Record<string, unknown>>;
+        };
+        posted.push(...(body.batch ?? []));
+        return new Response(JSON.stringify({ successes: [], errors: [] }), {
+          status: 207,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return realFetch(input, init);
+    }) as typeof fetch;
+    await seedConversation(9305);
+    const rec = { text: [] as string[] };
+    const agentModel = new UsageReportingModel(["Claro, posso agendar."]);
+    const guardModel = new UsageReportingModel([CLEAN_VERDICT], {
+      input: 31,
+      output: 5,
+    });
+    try {
+      const outcome = await runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: { ...textEvent(9305), conversationId: 9305 },
+        base: appDb,
+        deps: {
+          makeModel: ((args: { model: string }) =>
+            args.model === GUARDRAIL_MODEL
+              ? guardModel
+              : agentModel) as unknown as never,
+          makeClient: makeStub(rec),
+          checkpointer: new MemorySaver(),
+        },
+      });
+      expect(outcome).toBe("posted");
+      expect(guardModel.calls.length).toBeGreaterThan(0);
+      await shutdownLangfuseClients();
+    } finally {
+      globalThis.fetch = realFetch;
+      await updateLangfuse(
+        tctx,
+        { enabled: false, credentialRef: null },
+        appDb,
+      );
+      await suDb.vaultEntry.delete({ where: { id: lf.id } });
+    }
+    // The scripted model carries no model name, so the two generations are told apart by the usage
+    // each reported: the agent's own, and the guardrail's 31 / 5. Both under the turn's trace.
+    const updates = posted
+      .filter((e) => e.type === "generation-update")
+      .map(
+        (e) =>
+          e.body as {
+            traceId?: string;
+            usageDetails?: { input?: number; output?: number };
+          },
+      );
+    const guard = updates.find(
+      (u) => u.usageDetails?.input === 31 && u.usageDetails?.output === 5,
+    );
+    expect(guard).toBeDefined();
+    const agent = updates.find((u) => u.usageDetails?.input !== 31);
+    expect(agent).toBeDefined();
+    expect(guard?.traceId).toBe(agent?.traceId);
+  });
+
   test("an injected sink receives the guardrail row too, and the database receives neither", async () => {
     await seedConversation(9303);
     const threadId = `${tenantId}:${instanceId}:9303`;

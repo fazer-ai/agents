@@ -53,10 +53,13 @@ export function wallClock(
   };
 }
 
-// East-positive minutes: wall time = instant + offset. Compared on whole seconds, because the wall
-// clock has no fraction to compare against. An instant Intl cannot place (NaN, out of range) is
-// reported as UTC rather than thrown, since the caller is `Date` arithmetic that never throws.
-export function zoneOffsetMinutes(
+// East-positive SECONDS: wall time = instant + offset. Whole seconds, because the wall clock has no
+// fraction to compare against — and seconds rather than minutes, because a historical offset has
+// them (São Paulo's local mean time was −03:06:28, and a minute's rounding put the sandbox's clock
+// 28 s off Intl's for such an instant; PR #485, round 9). An instant Intl cannot place (NaN, out
+// of range) is reported as UTC rather than thrown, since the caller is `Date` arithmetic that
+// never throws.
+export function zoneOffsetSeconds(
   fmt: Intl.DateTimeFormat,
   instantMs: number,
 ): number {
@@ -75,6 +78,15 @@ export function zoneOffsetMinutes(
   wall.setUTCHours(w.hour, w.minute, w.second, 0);
   const wallAsUtc = wall.getTime();
   const wholeSecondMs = Math.floor(instantMs / 1000) * 1000;
-  const minutes = Math.round((wallAsUtc - wholeSecondMs) / 60_000);
-  return Number.isFinite(minutes) ? minutes : 0;
+  const seconds = Math.round((wallAsUtc - wholeSecondMs) / 1000);
+  return Number.isFinite(seconds) ? seconds : 0;
+}
+
+// The offset to the minute, for the `±hh:mm` of an ISO string: always exact for a current instant,
+// which is the only one `NOW_LOCAL` ever carries.
+export function zoneOffsetMinutes(
+  fmt: Intl.DateTimeFormat,
+  instantMs: number,
+): number {
+  return Math.round(zoneOffsetSeconds(fmt, instantMs) / 60);
 }

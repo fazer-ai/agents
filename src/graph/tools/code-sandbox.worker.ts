@@ -18,7 +18,7 @@ import {
   shouldInterruptAfterDeadline,
 } from "quickjs-emscripten-core";
 import { clipText } from "@/lib/text";
-import { zoneFormatter, zoneOffsetMinutes } from "./zone-offset";
+import { zoneFormatter, zoneOffsetSeconds } from "./zone-offset";
 
 declare var self: Worker;
 
@@ -265,7 +265,8 @@ const DATE_SHIM_SOURCE = `(function (offsetAt) {
   var setTime = proto.setTime;
   var hostOffset = proto.getTimezoneOffset;
   var MINUTE = 60000;
-  function wall(t) { return t + offsetAt(t) * MINUTE; }
+  var SECOND = 1000;
+  function wall(t) { return t + offsetAt(t) * SECOND; }
   // The wall time is not an instant, so the offset is not read AT it: read a day either side (the
   // true instant lies within 14 h of it, and no zone has two transitions in 48 h), and keep each
   // offset whose instant reads back as that offset. Two survive in an overlap, and the larger one
@@ -282,9 +283,9 @@ const DATE_SHIM_SOURCE = `(function (offsetAt) {
     for (var i = 0; i < candidates.length; i++) {
       var o = candidates[i];
       if (o < lowest) lowest = o;
-      if (offsetAt(w - o * MINUTE) === o && (best === undefined || o > best)) best = o;
+      if (offsetAt(w - o * SECOND) === o && (best === undefined || o > best)) best = o;
     }
-    return w - (best === undefined ? lowest : best) * MINUTE;
+    return w - (best === undefined ? lowest : best) * SECOND;
   }
   function define(name, fn) {
     Object.defineProperty(proto, name, { value: fn, writable: true, configurable: true });
@@ -307,9 +308,12 @@ const DATE_SHIM_SOURCE = `(function (offsetAt) {
     var whole = n < 0 ? Math.ceil(n) : Math.floor(n);
     return this.setFullYear(whole >= 0 && whole <= 99 ? 1900 + whole : n);
   });
+  // Whole minutes, cut toward zero like the engines do: −03:06:28 answers 186, +09:18:59 answers
+  // −558 (Bun's own values).
+  function minutesOf(seconds) { var m = seconds / 60; return m < 0 ? Math.ceil(m) : Math.floor(m); }
   define("getTimezoneOffset", function () {
     var t = getTime.call(this);
-    return isNaN(t) ? NaN : -offsetAt(t);
+    return isNaN(t) ? NaN : -minutesOf(offsetAt(t));
   });
   var setters = {
     setFullYear: "setUTCFullYear", setMonth: "setUTCMonth", setDate: "setUTCDate", setHours: "setUTCHours",
@@ -340,7 +344,7 @@ const DATE_SHIM_SOURCE = `(function (offsetAt) {
   }
   function zoneText(t) {
     var o = offsetAt(t);
-    var a = Math.abs(o);
+    var a = Math.abs(minutesOf(o));
     return "GMT" + (o < 0 ? "-" : "+") + pad(Math.floor(a / 60), 2) + pad(a % 60, 2);
   }
   function isoDate(w) {
@@ -404,7 +408,7 @@ const DATE_SHIM_SOURCE = `(function (offsetAt) {
 })(__tzOffset);
 delete globalThis.__tzOffset;`;
 
-// The host side of the shim: the zone's offset at an instant, memoised because a snippet that reads
+// The host side of the shim: the zone's offset at an instant, in seconds, memoised because a snippet that reads
 // the same date's fields one after another asks for the same instant each time.
 function installZone(vm: QuickJSContext, timezone: string): void {
   const fmt = zoneFormatter(timezone);
@@ -413,7 +417,7 @@ function installZone(vm: QuickJSContext, timezone: string): void {
     const t = vm.getNumber(handle);
     let offset = cache.get(t);
     if (offset === undefined) {
-      offset = zoneOffsetMinutes(fmt, t);
+      offset = zoneOffsetSeconds(fmt, t);
       if (cache.size >= 4096) cache.clear();
       cache.set(t, offset);
     }
@@ -479,6 +483,17 @@ const REGEX_AFTER_WORD = new Set([
 ]);
 // A `{` right after one of these is a block, whatever the line break says.
 const BLOCK_AFTER_WORD = new Set(["else", "try", "finally", "do"]);
+// A `{` after the `)` that closes one of these headers is a block too, on the next line as well
+// (Allman style; PR #485, round 9: `if (false)\n{ valid: true }` had become the object,
+// unconditionally). The `)` of a call — `compute()\n{ valid }` — is still a boundary.
+const CONTROL_HEADERS = new Set([
+  "if",
+  "for",
+  "while",
+  "switch",
+  "with",
+  "catch",
+]);
 
 function skipQuoted(code: string, at: number): number {
   const quote = code[at];
@@ -540,21 +555,17 @@ function skipRegex(code: string, at: number): number {
 // after the object cannot move the cut (PR #485, round 7: \`{ valid, reason: "ok" } // verdict\` was
 // not wrapped, and a reason holding "}" picked the wrong opening brace).
 function withTrailingObjectWrapped(code: string): string | undefined {
-  const opens: Array<{
+  type Open = {
     at: number;
     prevChar: string;
     prevAt: number;
     prevWord: string;
-  }> = [];
-  let last:
-    | {
-        at: number;
-        closeAt: number;
-        prevChar: string;
-        prevAt: number;
-        prevWord: string;
-      }
-    | undefined;
+    header: string;
+  };
+  const opens: Open[] = [];
+  const parens: string[] = [];
+  let lastParenWord = "";
+  let last: (Open & { closeAt: number }) | undefined;
   let end = -1;
   let prevChar = "";
   let prevAt = -1;
@@ -609,8 +620,17 @@ function withTrailingObjectWrapped(code: string): string | undefined {
         prevWord = word;
         word = "";
       }
-      if (c === "{") opens.push({ at: i, prevChar, prevAt, prevWord });
-      else if (c === "}") {
+      if (c === "(") parens.push(prevWord);
+      else if (c === ")") lastParenWord = parens.pop() ?? "";
+      if (c === "{") {
+        opens.push({
+          at: i,
+          prevChar,
+          prevAt,
+          prevWord,
+          header: prevChar === ")" ? lastParenWord : "",
+        });
+      } else if (c === "}") {
         const open = opens.pop();
         last = open ? { ...open, closeAt: i } : undefined;
       }
@@ -628,6 +648,7 @@ function withTrailingObjectWrapped(code: string): string | undefined {
     last.prevChar === "}" ||
     (nl >= 0 && nl < last.at);
   if (!boundary || BLOCK_AFTER_WORD.has(last.prevWord)) return undefined;
+  if (CONTROL_HEADERS.has(last.header)) return undefined;
   // NOTE: A separator as well as the parenthesis. Without one, a snippet that leaves semicolons out
   // (`const r = compute()\n{ valid: r.valid }`) reads on as a call — `compute()({…})` — which
   // parses, and then fails at run time, past the fallback (PR #485, round 6).

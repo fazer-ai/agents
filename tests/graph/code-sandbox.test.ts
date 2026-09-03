@@ -90,6 +90,11 @@ describe("runSandboxedCode", () => {
       ["let z = 2; if (false) {} else { z = 3 }", "3"],
       // A block after `else`, even across a line break, even when it would parse as an object.
       ["let q = 0; if (false) {} else\n{ q: 1 }", "1"],
+      // Allman style (round 9): the `)` of a control header is not a boundary across a line break
+      // either, while the `)` of a call still is (the semicolon-less case above).
+      ["if (false)\n{ valid: true }", "undefined"],
+      ["let seen = []; for (const i of [1, 2])\n{ x: seen.push(i) }", "2"],
+      ["try { throw 1 } catch (e)\n{ caught: e }", "1"],
       ["const u = 'x'; { u }; // done", '{"u":"x"}'],
       // Not an object: a real block, and braces that belong to a statement, run as written.
       ["{ let x = 1; x + 1 }", "2"],
@@ -411,15 +416,49 @@ describe("runSandboxedCode", () => {
 
   // Round 8, the same century bug seen from inside: year 99 rendered as 1999 with an offset of
   // minus a billion minutes. Reference values from Bun under TZ=America/Sao_Paulo (LMT, −03:06:28).
-  test("a date in the first century is in the zone too", async () => {
-    const out = await runSandboxedCode(
-      `const d = new Date(0); d.setUTCFullYear(99, 5, 15); d.setUTCHours(12, 0, 0, 0);
-       [d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getTimezoneOffset(), d.toISOString()]`,
-      { clock: { timezone: "America/Sao_Paulo" } },
-    );
-    expect(out).toMatchObject({
+  // Round 9 added the seconds: local mean time had them (São Paulo −03:06:28, Tokyo +09:18:59),
+  // and a minute's rounding put the clock 28 s off Intl's. `getTimezoneOffset` is whole minutes cut
+  // toward zero, as the engines do.
+  test("a date in the first century is in the zone too, to the second", async () => {
+    const probe = `const d = new Date(0); d.setUTCFullYear(99, 5, 15); d.setUTCHours(12, 0, 0, 0);
+      const e = new Date(d); e.setHours(8, 53, 32);
+      [d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds(),
+       d.getTimezoneOffset(), d.toTimeString(), d.toISOString(), e.toISOString()]`;
+    const sp = await runSandboxedCode(probe, {
+      clock: { timezone: "America/Sao_Paulo" },
+    });
+    expect(sp).toMatchObject({
       kind: "value",
-      value: JSON.stringify([99, 5, 15, 8, 186, "0099-06-15T12:00:00.000Z"]),
+      value: JSON.stringify([
+        99,
+        5,
+        15,
+        8,
+        53,
+        32,
+        186,
+        "08:53:32 GMT-0306",
+        "0099-06-15T12:00:00.000Z",
+        "0099-06-15T12:00:00.000Z",
+      ]),
+    });
+    const tokyo = await runSandboxedCode(probe, {
+      clock: { timezone: "Asia/Tokyo" },
+    });
+    expect(tokyo).toMatchObject({
+      kind: "value",
+      value: JSON.stringify([
+        99,
+        5,
+        15,
+        21,
+        18,
+        59,
+        -558,
+        "21:18:59 GMT+0918",
+        "0099-06-15T12:00:00.000Z",
+        "0099-06-14T23:34:33.000Z",
+      ]),
     });
   });
 

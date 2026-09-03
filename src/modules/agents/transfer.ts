@@ -1415,26 +1415,19 @@ async function createMissingBusinessHours(
   }
 }
 
-// The first `<base>_N` (N from 2) that no stored tool of this tenant carries and that is not in
-// `taken` — the same rule the migration `rename_http_tools_named_after_natives` applies to rows
-// written before the name was native, so a bundle and a row that collide the same way land on the
-// same name. `taken` is what the bundle itself carries and what the import has already chosen:
-// a bundle holding `run_code` and `run_code_2` gave the first one `_2`, then "reused" the genuine
-// `_2` onto it, and two grants for one row broke the unique index and aborted the import
-// (round 16).
-async function freeHttpToolName(
-  db: ScopedDb,
-  base: string,
-  taken: ReadonlySet<string>,
-): Promise<string> {
+// The name a bundled tool that carries a native's name is stored under: the first `<base>_N`
+// (N from 2) not in `taken`, which is what the bundle itself carries and what the import has
+// already chosen — a bundle holding `run_code` and `run_code_2` gave the first one `_2`, then
+// "reused" the genuine `_2` onto it, and two grants for one row broke the unique index and
+// aborted the import (round 16). Decided by the BUNDLE alone, never by what is stored: a row
+// already under that name is then reused, warned, the way every same-name component is, so the
+// same bundle imported twice binds both agents to one row instead of storing a copy per import
+// (round 17). The migration `rename_http_tools_named_after_natives` walks past stored rows
+// instead, because both of its rows are real and both must survive.
+function renamedHttpToolName(base: string, taken: ReadonlySet<string>): string {
   for (let n = 2; ; n++) {
     const candidate = `${base}_${n}`;
-    if (taken.has(candidate)) continue;
-    const stored = await db.toolDefinition.findFirst({
-      where: { name: candidate },
-      select: { id: true },
-    });
-    if (!stored) return candidate;
+    if (!taken.has(candidate)) return candidate;
   }
 }
 
@@ -1458,10 +1451,10 @@ async function createMissingComponents(
     // A bundle authored before a native took the name (PR #485, round 15). The assembly reserves
     // every native name (#457), so a tool stored under one would exist in the console and never
     // reach the model; the service refuses the name where it is typed, and this path writes past
-    // the service. The migration that renamed such rows in place used the first free `<name>_N`,
-    // and this does the same, warned, so the operator learns the name a prompt may still use.
+    // the service. Stored under `<name>_N`, warned, so the operator learns the name a prompt may
+    // still use; a row already under it is reused like any other same-name component.
     const name = isNativeToolName(tdef.name)
-      ? await freeHttpToolName(db, tdef.name, taken)
+      ? renamedHttpToolName(tdef.name, taken)
       : tdef.name;
     taken.add(name);
     // Recorded once a row under the new name EXISTS — written below, or found by the pre-check

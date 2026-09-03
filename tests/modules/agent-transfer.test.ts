@@ -1734,8 +1734,10 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
       (g) => g?.source === "HTTP" && g.tool === "lookup_order",
     );
     if (grant?.source === "HTTP") grant.tool = "run_code";
-    // `run_code_2` is taken on the destination, so the free name is the one after it.
-    await suDb.toolDefinition.create({
+    // `run_code_2` already exists on the destination: it is REUSED, warned, the way any same-name
+    // component is — a second import of the same bundle lands on the same row (round 17), and the
+    // bundle's tool is not stored under a third name.
+    const existing = await suDb.toolDefinition.create({
       data: {
         tenantId: dstTenant,
         name: "run_code_2",
@@ -1747,12 +1749,16 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     });
     const { agent, warnings } = await importAgent(dstCtx(), bundle, appDb);
     const row = await suDb.toolDefinition.findFirst({
-      where: { tenantId: dstTenant, name: "run_code_3" },
+      where: { tenantId: dstTenant, name: "run_code_2" },
     });
-    expect(row?.label).toBe("Buscar pedido");
+    expect(row?.id).toBe(existing.id);
+    expect(row?.label).toBe("Já existia");
     expect(
       await suDb.toolDefinition.count({
-        where: { tenantId: dstTenant, name: "run_code" },
+        where: {
+          tenantId: dstTenant,
+          name: { in: ["run_code", "run_code_3"] },
+        },
       }),
     ).toBe(0);
     expect(
@@ -1760,7 +1766,12 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
         (w) =>
           w.code === "httpToolRenamed" &&
           w.params?.name === "run_code" &&
-          w.params?.renamed === "run_code_3",
+          w.params?.renamed === "run_code_2",
+      ),
+    ).toBe(true);
+    expect(
+      warnings.some(
+        (w) => w.code === "httpToolReused" && w.params?.name === "run_code_2",
       ),
     ).toBe(true);
     const grants = await suDb.agentToolSelection.findMany({
@@ -1821,6 +1832,49 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     expect(new Set(grants.map((g) => g.toolDefinitionId))).toEqual(
       new Set(rows.map((r) => r.id)),
     );
+  });
+
+  // Round 17: the free name was chosen past the rows already stored, so importing the same bundle
+  // twice stored its native-named tool twice (`_2`, then `_3`), each agent bound to its own copy.
+  // The renamed name is decided by the bundle alone, and a row already under it is reused like
+  // every other same-name component.
+  test("importing the same bundle twice binds both agents to one renamed row", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const bundle = structuredClone(exp);
+    const tool = bundle.components?.httpTools.find(
+      (h) => h.name === "lookup_order",
+    );
+    if (!tool) throw new Error("bundle missing lookup_order");
+    tool.name = "handoff_to_human";
+    const grant = bundle.agent.tools.find(
+      (g) => g?.source === "HTTP" && g.tool === "lookup_order",
+    );
+    if (grant?.source === "HTTP") grant.tool = "handoff_to_human";
+    const first = await importAgent(dstCtx(), structuredClone(bundle), appDb);
+    const second = await importAgent(dstCtx(), structuredClone(bundle), appDb);
+    const rows = await suDb.toolDefinition.findMany({
+      where: { tenantId: dstTenant, name: { startsWith: "handoff_to_human" } },
+      select: { id: true, name: true },
+    });
+    expect(rows.map((r) => r.name)).toEqual(["handoff_to_human_2"]);
+    expect(
+      second.warnings.some(
+        (w) =>
+          w.code === "httpToolReused" &&
+          w.params?.name === "handoff_to_human_2",
+      ),
+    ).toBe(true);
+    for (const { agent } of [first, second]) {
+      const grants = await suDb.agentToolSelection.findMany({
+        where: { agentId: BigInt(agent.id), source: "HTTP" },
+        select: { toolDefinitionId: true },
+      });
+      expect(grants.map((g) => g.toolDefinitionId)).toEqual([
+        rows[0]?.id ?? null,
+      ]);
+    }
   });
 
   // Round 16: the rename was recorded and reported before the checks that can skip the component,

@@ -4,8 +4,9 @@ import { Client } from "pg";
 // Runs the ACTUAL migration file against the test database (a copy pasted here would drift, and
 // $executeRawUnsafe rejects multiple statements). What it pins: a row named after a native is moved
 // to the first free `<name>_N` in ITS tenant, the grant that references the row by id follows it
-// untouched, every other row is byte-identical, a re-run rewrites nothing, and FORCE ROW LEVEL
-// SECURITY is back on the table when the file ends.
+// untouched, every other row is byte-identical, the audit trail records the move and names the
+// agents whose prompt still uses the old name, a re-run rewrites nothing, and FORCE ROW LEVEL
+// SECURITY is back on both tables when the file ends.
 
 const suUrl = process.env.MIGRATION_DATABASE_URL;
 const MIGRATION =
@@ -40,12 +41,41 @@ async function tool(tenantId: bigint, name: string): Promise<bigint> {
   return BigInt(r.rows[0].id);
 }
 
+async function agent(
+  tenantId: bigint,
+  name: string,
+  prompt: string,
+): Promise<bigint> {
+  const r = await suDb.query(
+    `INSERT INTO "agents" (tenant_id, name, system_prompt, model_config, settings, created_at, updated_at)
+     VALUES ($1, $2, $3, '{}'::jsonb, '{}'::jsonb, NOW(), NOW()) RETURNING id`,
+    [String(tenantId), name, prompt],
+  );
+  return BigInt(r.rows[0].id);
+}
+
 async function nameOf(id: bigint): Promise<string> {
   const r = await suDb.query(
     'SELECT name FROM "tool_definitions" WHERE id = $1',
     [String(id)],
   );
   return r.rows[0]?.name;
+}
+
+type AuditRow = {
+  actor_type: string;
+  action: string;
+  target: string;
+  before: unknown;
+  after: unknown;
+};
+
+async function auditOf(tenantId: bigint): Promise<AuditRow[]> {
+  const r = await suDb.query(
+    'SELECT actor_type, action, target, "before", "after" FROM "audit_logs" WHERE tenant_id = $1 ORDER BY id',
+    [String(tenantId)],
+  );
+  return r.rows;
 }
 
 describe.skipIf(!dbUp)(
@@ -67,21 +97,26 @@ describe.skipIf(!dbUp)(
       ids.a_lookup = await tool(a, "lookup_order");
       // Tenant B: the same native name, and nothing in the way — uniqueness is per tenant.
       ids.b_run_code = await tool(b, "run_code");
-      const ag = await suDb.query(
-        `INSERT INTO "agents" (tenant_id, name, system_prompt, model_config, settings, created_at, updated_at)
-       VALUES ($1, 'ag', 'p', '{}'::jsonb, '{}'::jsonb, NOW(), NOW()) RETURNING id`,
-        [String(a)],
-      );
-      agentId = BigInt(ag.rows[0].id);
+      agentId = await agent(a, "granted", "p");
       await suDb.query(
         `INSERT INTO "agent_tool_selections" (tenant_id, agent_id, source, tool_definition_id, knowledge_base_ids, enabled_tools, created_at, updated_at)
        VALUES ($1, $2, 'HTTP', $3, '{}', '{}', NOW(), NOW())`,
         [String(a), String(agentId), String(ids.a_run_code)],
       );
+      // Two more agents: one whose prompt names the tool that moves, one whose prompt does not.
+      ids.agent_names_it = await agent(
+        a,
+        "names_it",
+        "Para validar o documento, chame run_code com o CPF.",
+      );
+      ids.agent_does_not = await agent(a, "does_not", "Responda com educação.");
     });
 
     afterAll(async () => {
       for (const t of tenants) {
+        await suDb.query('DELETE FROM "audit_logs" WHERE tenant_id = $1', [
+          String(t),
+        ]);
         await suDb.query('DELETE FROM "agents" WHERE tenant_id = $1', [
           String(t),
         ]);
@@ -116,7 +151,50 @@ describe.skipIf(!dbUp)(
       ]);
     });
 
-    test("a re-run rewrites no row at all", async () => {
+    // The durable record (round 17). A prompt that names the tool now reaches the native, or a name
+    // no tool answers to, and nothing in the console says why; the audit trail is where an upgrade's
+    // own change belongs, under the system actor, one line per moved row and one per agent whose
+    // prompt still names it — the operator's list of what to edit.
+    test("writes the audit trail: one line per moved row, one per agent whose prompt names it", async () => {
+      const [a, b] = tenants as [bigint, bigint];
+      const inA = await auditOf(a);
+      expect(inA.every((r) => r.actor_type === "system")).toBe(true);
+      expect(inA.filter((r) => r.action === "tool.renamed_by_upgrade")).toEqual(
+        [
+          {
+            actor_type: "system",
+            action: "tool.renamed_by_upgrade",
+            target: `tool:${ids.a_run_code}`,
+            before: { name: "run_code" },
+            after: { name: "run_code_3" },
+          },
+          {
+            actor_type: "system",
+            action: "tool.renamed_by_upgrade",
+            target: `tool:${ids.a_handoff}`,
+            before: { name: "handoff_to_human" },
+            after: { name: "handoff_to_human_2" },
+          },
+        ],
+      );
+      expect(
+        inA.filter((r) => r.action === "agent.prompt_names_renamed_tool"),
+      ).toEqual([
+        {
+          actor_type: "system",
+          action: "agent.prompt_names_renamed_tool",
+          target: `agent:${ids.agent_names_it}`,
+          before: null,
+          after: { tool: "run_code", renamed: "run_code_3" },
+        },
+      ]);
+      expect(inA).toHaveLength(3);
+      expect((await auditOf(b)).map((r) => [r.action, r.target])).toEqual([
+        ["tool.renamed_by_upgrade", `tool:${ids.b_run_code}`],
+      ]);
+    });
+
+    test("a re-run rewrites no row at all, and adds no audit line", async () => {
       const versions = () =>
         suDb
           .query(
@@ -124,16 +202,23 @@ describe.skipIf(!dbUp)(
             [tenants.map(String)],
           )
           .then((r) => r.rows);
+      const audits = async () =>
+        (await Promise.all(tenants.map(auditOf))).flat().length;
       const before = await versions();
+      const lines = await audits();
       await suDb.query(sql);
       expect(await versions()).toEqual(before);
+      expect(await audits()).toBe(lines);
     });
 
-    test("FORCE ROW LEVEL SECURITY is back on the table when the file ends", async () => {
+    test("FORCE ROW LEVEL SECURITY is back on both tables when the file ends", async () => {
       const r = await suDb.query(
-        "SELECT relforcerowsecurity AS f FROM pg_class WHERE relname = 'tool_definitions'",
+        "SELECT relname, relforcerowsecurity AS f FROM pg_class WHERE relname IN ('tool_definitions', 'audit_logs') ORDER BY relname",
       );
-      expect(r.rows[0]?.f).toBe(true);
+      expect(r.rows).toEqual([
+        { relname: "audit_logs", f: true },
+        { relname: "tool_definitions", f: true },
+      ]);
     });
   },
 );

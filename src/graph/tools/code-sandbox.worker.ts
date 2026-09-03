@@ -555,21 +555,59 @@ function skipQuoted(code: string, at: number): number {
   return code.length;
 }
 
+// A template hole is code, so what the outer pass skips is skipped here too — a string, a comment,
+// a regex — with the same reading of a slash: a regex where an operand is expected, a division
+// after one. Round 17: `${/{/.test("{")}` counted the brace inside the regex as a hole brace and
+// read the rest of the snippet as the template.
 function skipTemplateHole(code: string, at: number): number {
   let depth = 1;
   let i = at;
+  let prevChar = "";
+  let word = "";
+  let prevWord = "";
   while (i < code.length) {
-    const c = code[i];
+    const c = code[i] as string;
+    const next = code[i + 1];
     if (c === "\\") i += 2;
-    else if (c === '"' || c === "'" || c === "`") i = skipQuoted(code, i);
-    else if (c === "{") {
-      depth++;
+    else if (c === "/" && next === "/") {
+      const nl = code.indexOf("\n", i);
+      i = nl < 0 ? code.length : nl;
+    } else if (c === "/" && next === "*") {
+      const close = code.indexOf("*/", i + 2);
+      i = close < 0 ? code.length : close + 2;
+    } else if (/\s/.test(c)) {
+      if (word) {
+        prevWord = word;
+        word = "";
+      }
       i++;
-    } else if (c === "}") {
-      depth--;
+    } else if (c === '"' || c === "'" || c === "`") {
+      i = skipQuoted(code, i);
+      prevChar = c;
+      prevWord = word = "";
+    } else if (
+      c === "/" &&
+      (prevChar === "" ||
+        REGEX_AFTER_CHAR.test(prevChar) ||
+        REGEX_AFTER_WORD.has(prevWord))
+    ) {
+      i = skipRegex(code, i);
+      prevChar = "/";
+      prevWord = word = "";
+    } else {
+      if (/[A-Za-z0-9_$]/.test(c)) word += c;
+      else if (word) {
+        prevWord = word;
+        word = "";
+      }
+      if (c === "{") depth++;
+      else if (c === "}") {
+        depth--;
+        if (depth === 0) return i + 1;
+      }
+      prevChar = c;
       i++;
-      if (depth === 0) return i;
-    } else i++;
+    }
   }
   return code.length;
 }

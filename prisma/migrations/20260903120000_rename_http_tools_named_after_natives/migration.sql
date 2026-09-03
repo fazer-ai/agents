@@ -2,19 +2,29 @@
 -- native name, granted or not (src/graph/tools/unique-names.ts, #457), and drops the other claimant
 -- with a flow-log line as the only trace. The service now refuses such a name where it is typed and
 -- the import renames a bundled tool that carries one; this moves the rows written before either
--- check existed, to the first free `<name>_N` in their own tenant, the same rule the import applies.
--- The grant references the row by id and follows it. The label, which is what the console shows,
--- is untouched. The list is the catalog at the time of writing (src/graph/tools/catalog.ts); a
--- name added later ships with its own file of this name, which
+-- check existed, to the first free `<name>_N` in their own tenant. The grant references the row by
+-- id and follows it. The label, which is what the console shows, is untouched.
+--
+-- What the rename cannot follow is a PROMPT that names the tool: after this, "chame run_code" reaches
+-- the native, or a name no tool answers to. So the move is written to the audit trail under the
+-- system actor — one line per moved row, and one per agent of that tenant whose system prompt
+-- contains the old name — which is the operator's list of what to edit, and the only durable record
+-- of an upgrade's own change.
+--
+-- The list is the catalog at the time of writing (src/graph/tools/catalog.ts); a name added later
+-- ships with its own file of this name, which
 -- tests/prisma/native-tool-names-renamed-by-migration.test.ts asks for.
 --
--- FORCE ROW LEVEL SECURITY binds the table owner too, so the owner's UPDATE would reach zero rows
--- and report success; lifted for the file and put back (.claude/rules/prisma.md).
+-- FORCE ROW LEVEL SECURITY binds the table owner too, so the owner's UPDATE and INSERT would reach
+-- zero rows and report success; lifted on both tables for the file and put back
+-- (.claude/rules/prisma.md).
 ALTER TABLE "tool_definitions" NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE "audit_logs" NO FORCE ROW LEVEL SECURITY;
 
 DO $$
 DECLARE
   r RECORD;
+  ag RECORD;
   candidate TEXT;
   n INTEGER;
 BEGIN
@@ -37,7 +47,25 @@ BEGIN
       n := n + 1;
     END LOOP;
     UPDATE "tool_definitions" SET name = candidate, updated_at = NOW() WHERE id = r.id;
+    INSERT INTO "audit_logs" (tenant_id, actor_id, actor_type, action, target, "before", "after", created_at)
+    VALUES (
+      r.tenant_id, NULL, 'system', 'tool.renamed_by_upgrade', 'tool:' || r.id,
+      jsonb_build_object('name', r.name), jsonb_build_object('name', candidate), NOW()
+    );
+    -- strpos, not LIKE: the underscore in every one of these names is a LIKE wildcard.
+    FOR ag IN
+      SELECT id FROM "agents"
+      WHERE tenant_id = r.tenant_id AND strpos(system_prompt, r.name) > 0
+      ORDER BY id
+    LOOP
+      INSERT INTO "audit_logs" (tenant_id, actor_id, actor_type, action, target, "before", "after", created_at)
+      VALUES (
+        r.tenant_id, NULL, 'system', 'agent.prompt_names_renamed_tool', 'agent:' || ag.id,
+        NULL, jsonb_build_object('tool', r.name, 'renamed', candidate), NOW()
+      );
+    END LOOP;
   END LOOP;
 END $$;
 
+ALTER TABLE "audit_logs" FORCE ROW LEVEL SECURITY;
 ALTER TABLE "tool_definitions" FORCE ROW LEVEL SECURITY;

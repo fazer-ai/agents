@@ -332,6 +332,37 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
     await collect();
   });
 
+  // The same write reached through the other door. Re-submitting the connect form against the
+  // deployment already connected changes exactly one column, the admin token, which is what
+  // `rotateChatwootDeploymentToken` does — so it is the same action with the same projection.
+  // Recorded as `deployment.connect` it would make the NAME of a change depend on which screen the
+  // operator used, and hang a `reachableAccounts` count on a row where no account moved.
+  test("re-connecting with a different token is a rotation, whichever form was used", async () => {
+    await clearAudit();
+    const result = await connectChatwootDeployment(
+      ctx(),
+      { baseUrl: `${BASE_URL}/p${process.pid}`, adminToken: ADMIN_TOKEN },
+      { fetchProfile },
+      appDb,
+    );
+    const [row, ...rest] = await rows();
+    expect(rest).toEqual([]);
+    expect(row?.action).toBe("deployment.rotate_token");
+    expect(row?.after).toEqual({
+      id: result.deployment.id,
+      adminTokenRotated: true,
+    });
+    await collect();
+    // Put back, so the rest of the file keeps the token it expects to find stored.
+    await rotateChatwootDeploymentToken(
+      ctx(),
+      ROTATED_TOKEN,
+      { fetchProfile },
+      appDb,
+    );
+    await clearAudit();
+  });
+
   // `encryptJson` randomizes, so the stored blob differs on every write even for the same token. The
   // comparison has to be on the plaintext, or a retry of a request that timed out reports a rotation
   // that never happened.
@@ -840,6 +871,59 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
     } finally {
       await fx.cleanup();
     }
+  });
+
+  // FOR UPDATE and an FK INSERT do not coexist. A child row keyed to the account takes KEY SHARE on
+  // it, which FOR UPDATE conflicts with — and the webhook mirror holds an inbox and THEN inserts a
+  // conversation keyed to the account, so a lock of that strength here waits for the inbox while the
+  // mirror waits for the account, and Postgres aborts one of them. Nothing in that has anything to
+  // do with a key being changed. Driven through the real disconnect, with the child insert made from
+  // a second connection while its transaction is open: a five-second budget is enough because the
+  // wrong mode does not make this slow, it makes it wait for a commit that is waiting for it.
+  test("a child row keyed to the account can still be inserted while a lock is held", async () => {
+    const fx = await connectedFixture(4447, "FK", { bound: false });
+    let inserted = false;
+    const staged = afterStamp(appDb, async () => {
+      await suDb.chatwootAgentBot.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: fx.instanceId,
+          agentId: fx.agentId,
+          chatwootAgentBotId: 902,
+          accessToken: "x",
+          webhookSecret: "y",
+          webhookRouteTokenHash: `h-${process.pid}-4447`,
+          name: "FK",
+        },
+      });
+      inserted = true;
+    });
+    try {
+      await softDisconnectChatwootInstance(ctx(), fx.instanceId, staged, {
+        makeClient: stubClient().makeClient,
+      });
+      expect(inserted).toBe(true);
+    } finally {
+      await suDb.chatwootAgentBot.deleteMany({
+        where: { chatwootInstanceId: fx.instanceId },
+      });
+      await fx.cleanup();
+    }
+  });
+
+  // Every lock in the module, in one place, because the mode is a property of the MODULE and not of
+  // whichever path happened to need one first: a new `FOR UPDATE` added later deadlocks against the
+  // mirror exactly the same way, and a deadlock has no green test that can catch it.
+  test("no path in the module takes a lock strong enough to block a child insert", async () => {
+    const src = await Bun.file(
+      new URL("../../src/modules/chatwoot/management.ts", import.meta.url),
+    ).text();
+    // Comments stripped first: this very file's NOTEs discuss `FOR UPDATE` by name, and a fence that
+    // counts prose as code fails on its own explanation.
+    const code = src.replace(/^\s*\/\/.*$/gm, "");
+    const locks = code.match(/FOR (?:NO KEY )?UPDATE/g) ?? [];
+    expect(locks.length).toBeGreaterThanOrEqual(11);
+    expect(new Set(locks)).toEqual(new Set(["FOR NO KEY UPDATE"]));
   });
 
   test("disconnecting an account that is already disconnected records nothing", async () => {

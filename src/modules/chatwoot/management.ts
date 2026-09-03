@@ -191,8 +191,8 @@ export async function disconnectChatwootDeployment(
     // no account lock) can still land in the same instant and be counted low. The count is a
     // description of a destructive act, not a receipt, and closing that would put a lock on the
     // delivery path to make an audit number exact.
-    await db.$queryRaw`SELECT id FROM chatwoot_deployments WHERE id = ${dep.id} FOR UPDATE`;
-    await db.$queryRaw`SELECT id FROM chatwoot_instances WHERE deployment_id = ${dep.id} ORDER BY id FOR UPDATE`;
+    await db.$queryRaw`SELECT id FROM chatwoot_deployments WHERE id = ${dep.id} FOR NO KEY UPDATE`;
+    await db.$queryRaw`SELECT id FROM chatwoot_instances WHERE deployment_id = ${dep.id} ORDER BY id FOR NO KEY UPDATE`;
     // NOTE: WHAT WENT WITH IT, counted before the delete, because after it there is nothing left to count.
     // This is the widest destructive act the console offers: the cascade reaches every account,
     // inbox, agent bot and conversation of the tenant, and the contacts are deleted by hand first
@@ -289,7 +289,7 @@ export async function connectChatwootDeployment(
       );
     }
     if (existing) {
-      await db.$queryRaw`SELECT id FROM chatwoot_deployments WHERE id = ${existing.id} FOR UPDATE`;
+      await db.$queryRaw`SELECT id FROM chatwoot_deployments WHERE id = ${existing.id} FOR NO KEY UPDATE`;
     }
     const storedToken = existing
       ? readStoredToken(
@@ -323,8 +323,7 @@ export async function connectChatwootDeployment(
     // A re-connect with the SAME token is the idempotent case (the form re-submitted, a retry after
     // a timeout) and records nothing. Asked of the plaintext, because `encryptJson` randomizes and
     // the column always differs.
-    const changed = existing === null || storedToken !== data.adminToken;
-    if (changed) {
+    if (existing === null) {
       await auditMutation(db, ctx, {
         action: "deployment.connect",
         target: `chatwoot_deployment:${dto.id}`,
@@ -336,6 +335,19 @@ export async function connectChatwootDeployment(
           baseUrl: redactEndpoint(dto.baseUrl),
           reachableAccounts: accounts.length,
         },
+      });
+    } else if (storedToken !== data.adminToken) {
+      // NOTE: The action names the CHANGE, not the door it came through, which is the rule the whole
+      // trail is built on. Re-submitting this form against the deployment already connected changes
+      // exactly one column, the admin token, and `rotateChatwootDeploymentToken` records that same
+      // write as `deployment.rotate_token`; naming it `deployment.connect` here would make the
+      // action depend on which screen the operator happened to use, and put a `reachableAccounts`
+      // count on a row where nothing about the accounts moved. Same write, same name, same
+      // projection — including saying nothing about either end of the token.
+      await auditMutation(db, ctx, {
+        action: "deployment.rotate_token",
+        target: `chatwoot_deployment:${dto.id}`,
+        after: { id: dto.id, adminTokenRotated: true },
       });
     }
     return dto;
@@ -386,7 +398,7 @@ export async function rotateChatwootDeploymentToken(
   return runScopedOn(base, ctx, async (db) => {
     // NOTE: LOCKED before the token is read, or two identical rotations both read the old value and
     // both record a rotation only one of them performed.
-    await db.$queryRaw`SELECT id FROM chatwoot_deployments WHERE id = ${dep.id} FOR UPDATE`;
+    await db.$queryRaw`SELECT id FROM chatwoot_deployments WHERE id = ${dep.id} FOR NO KEY UPDATE`;
     const current = await db.chatwootDeployment.findUniqueOrThrow({
       where: { id: dep.id },
       select: { adminToken: true },
@@ -509,7 +521,7 @@ async function connectAccount(
     // inboxes) so the whole module takes them in one order. It is also what makes the disconnect's
     // count honest: locking the accounts it is about to destroy cannot block a brand-new one from
     // being INSERTED under it, and this is the lock that can.
-    await db.$queryRaw`SELECT id FROM chatwoot_deployments WHERE id = ${deploymentId} FOR UPDATE`;
+    await db.$queryRaw`SELECT id FROM chatwoot_deployments WHERE id = ${deploymentId} FOR NO KEY UPDATE`;
     const existing = await db.chatwootInstance.findFirst({
       where: { accountId },
       select: { id: true },
@@ -757,7 +769,15 @@ export async function softDisconnectChatwootInstance(
     // NOTE: The ACCOUNT row first, before any inbox of it. `syncInboxes` takes the same lock and
     // then upserts the inboxes; taking them in the other order here is an ABBA deadlock between two
     // ordinary operations (the page auto-syncs on load, and a disconnect is a click away).
-    await db.$queryRaw`SELECT id FROM chatwoot_instances WHERE id = ${id} FOR UPDATE`;
+    //
+    // And NO KEY UPDATE rather than FOR UPDATE, which is the mode this whole module uses and the
+    // reason is the same everywhere: an INSERT of a row whose foreign key points at this one takes
+    // KEY SHARE on it, and FOR UPDATE conflicts with that. The webhook mirror holds an inbox and
+    // then inserts a conversation keyed to this account, so a lock of that strength here waits for
+    // the inbox while the mirror waits for the account, and Postgres aborts one of them — with
+    // nothing about a key being changed anywhere in it. NO KEY UPDATE still excludes another of
+    // itself and any ordinary UPDATE, which is all the serialisation these paths ask for.
+    await db.$queryRaw`SELECT id FROM chatwoot_instances WHERE id = ${id} FOR NO KEY UPDATE`;
     // NOTE: `RETURNING`, so the bindings this call actually removed are the SAME set the detach
     // below walks, and the count is that set rather than every inbox of the account. Listed first
     // and cleared after, the two drift apart under a bind that lands in between: an inbox unbound
@@ -941,7 +961,7 @@ export async function removeChatwootInstance(
     // destroy. A sync holding this same lock is mirroring inboxes under the account right now; read
     // without it, the snapshot is taken before that transaction commits and the cascade then takes
     // rows the row never mentioned.
-    await db.$queryRaw`SELECT id FROM chatwoot_instances WHERE id = ${id} FOR UPDATE`;
+    await db.$queryRaw`SELECT id FROM chatwoot_instances WHERE id = ${id} FOR NO KEY UPDATE`;
     const inst = await db.chatwootInstance.findUnique({
       where: { id },
       select: { id: true, accountId: true, accountName: true },
@@ -1681,7 +1701,7 @@ export async function bindInbox(
       SELECT i.disconnected_at
         FROM chatwoot_instances i
        WHERE i.id = ${inbox.chatwootInstanceId}
-         FOR UPDATE`;
+         FOR NO KEY UPDATE`;
     if (agentId !== null && account[0]?.disconnected_at != null) {
       throw new AppError(
         "this account is disconnected; reconnect it before assigning an agent",
@@ -1698,7 +1718,7 @@ export async function bindInbox(
       SELECT agent_id
         FROM inboxes
        WHERE id = ${inboxId}
-         FOR UPDATE`;
+         FOR NO KEY UPDATE`;
     const beforeWrite = locked[0] ?? null;
     await db.inbox.update({ where: { id: inboxId }, data: { agentId } });
     const row = await db.inbox.findUniqueOrThrow({
@@ -1846,7 +1866,7 @@ export async function removeInbox(
     // the one a sync or a bind writes in: the row that gets deleted here can carry a name or an
     // agent the snapshot never saw, and the trail has to describe what was removed rather than what
     // was read.
-    await db.$queryRaw`SELECT id FROM inboxes WHERE id = ${inboxId} FOR UPDATE`;
+    await db.$queryRaw`SELECT id FROM inboxes WHERE id = ${inboxId} FOR NO KEY UPDATE`;
     const current = await db.inbox.findUnique({
       where: { id: inboxId },
       select: {
@@ -2119,11 +2139,11 @@ export async function syncInboxes(
   // Reconcile (scoped tx, no network).
   return runScopedOn(base, ctx, async (db) => {
     // NOTE: The whole reconcile serialises on the ACCOUNT row, which is the one lock that covers an
-    // inbox that does not exist yet: `FOR UPDATE` on an absent row locks nothing, so two first-time
+    // inbox that does not exist yet: a row lock on an absent row locks nothing, so two first-time
     // syncs of the same account would both read `existing` as null and both claim the creation. The
     // Channels page auto-syncs on load while the operator can press the button, so those two overlap
     // in ordinary use. Syncs of DIFFERENT accounts never contend.
-    await db.$queryRaw`SELECT id FROM chatwoot_instances WHERE id = ${instanceId} FOR UPDATE`;
+    await db.$queryRaw`SELECT id FROM chatwoot_instances WHERE id = ${instanceId} FOR NO KEY UPDATE`;
     // NOTE: The rename is its own conditional write, so a name Chatwoot did not change does not
     // count as one. The `null` arm is not decoration: `accountName <> 'x'` is NULL for a row whose
     // name is NULL, so a plain `not` would silently skip the very rows that most need the name.

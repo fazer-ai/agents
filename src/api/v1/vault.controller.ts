@@ -40,6 +40,7 @@ import {
 // translate('errors.vaultBaseUrlRequired', 'This credential type requires a base URL.')
 // translate('errors.vaultNameInUse', 'A secret with this name and type already exists')
 // translate('errors.vaultParamNameRequired', 'Param name is required for this credential type')
+// translate('errors.vaultParamNameNotApplicable', 'The "{{kind}}" credential type does not use a param name. The types that do are: {{kinds}}.')
 // translate('errors.vaultRefNotFound', 'That vault reference does not point to any credential: {{ref}}')
 // translate('errors.vaultFieldWhitespace', 'The "{{field}}" field must not begin or end with a space or line break. Remove it and save again.')
 // translate('errors.vaultSecretWhitespace', 'A vault secret must not begin or end with a space or line break. Remove it and save again.')

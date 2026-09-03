@@ -26,4 +26,17 @@ describe("secret-types client mirror", () => {
       expect(!!meta?.testable).toBe(!!type.test);
     }
   });
+
+  // `needsParamName` is the one meta field the two copies have to agree on for the SERVER's sake,
+  // and it became load-bearing with issue #488: the write now REFUSES a param name on a kind that
+  // declares none, and the form is what keeps the console from ever sending one (it submits
+  // `paramName: undefined` unless its own copy says the kind needs it). Drift in either direction
+  // is a save the operator cannot fix — the form does not render the input for a kind it thinks
+  // takes no name, so the refusal would name a field with nowhere to go.
+  test("client needsParamName matches the server catalog for every type", () => {
+    for (const type of SECRET_TYPES) {
+      const meta = SECRET_TYPE_META[type.id as keyof typeof SECRET_TYPE_META];
+      expect(!!meta?.needsParamName).toBe(!!type.needsParamName);
+    }
+  });
 });

@@ -34,6 +34,7 @@ describe("scopesForRole + mcpPrincipalFromApiKey", () => {
       userId: 3n,
       tenantId: 5n,
       role: "TENANT_ADMIN",
+      stepUpAt: new Date(),
     });
     expect(principal.tenantId).toBe(5n);
     expect(principal.userId).toBe(3n);

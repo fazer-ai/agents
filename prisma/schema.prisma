@@ -1733,17 +1733,23 @@ model AuditLog {
 // user leaves the key intact.
 model ApiKey {
   id              BigInt    @id @default(autoincrement())
-  tenantId        BigInt    @map("tenant_id")
+  // NULL only for a fleet-scoped key (role SUPER_ADMIN), the shape `users` gives a SUPER_ADMIN;
+  // `api_keys_role_tenant_check` (migration) keeps role and tenant from drifting apart.
+  tenantId        BigInt?   @map("tenant_id")
   displayName     String    @map("display_name")
   keyHash         String    @unique @map("key_hash")
   keyPrefix       String    @map("key_prefix")
   role            UserRole
   createdByUserId BigInt?   @map("created_by_user_id")
+  // When the person minting this key answered the password step-up (#308, review round 3). NULL for
+  // a key that predates the rule: it keeps answering the step-up with its creator's password, the
+  // way every key did before; only a key with a step-up on record answers by itself.
+  stepUpAt        DateTime? @map("step_up_at")
   lastUsedAt      DateTime? @map("last_used_at")
   revokedAt       DateTime? @map("revoked_at")
   createdAt       DateTime  @default(now()) @map("created_at")
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant Tenant? @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@index([tenantId])
   @@map("api_keys")

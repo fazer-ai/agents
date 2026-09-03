@@ -22,8 +22,12 @@ export const tenancyPlugin = new Elysia({ name: "tenancy" })
     if (malformedSelector !== undefined) {
       requireDbId(malformedSelector, "X-Tenant-Id");
     }
-    // Tag audit attribution when the principal came from a Bearer API key (vs the cookie session).
-    if (context && user?.isApiKey) context.actorType = "api_key";
+    // Tag audit attribution when the principal came from a Bearer API key (vs the cookie session),
+    // and carry the step-up the key was, or was not, minted under, for `confirmStepUp`.
+    if (context && user?.isApiKey) {
+      context.actorType = "api_key";
+      context.stepUpAt = user.stepUpAt ?? null;
+    }
     if (anomaly && user) {
       logger.warn(
         { userId: user.id.toString() },

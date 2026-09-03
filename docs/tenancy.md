@@ -90,7 +90,7 @@ by explicit `tenant_id` filtering + the `authorize()` gate (see
 
 ## Roles & first-run
 
-`UserRole` is `SUPER_ADMIN | TENANT_ADMIN | AGENT`. A CHECK constraint enforces "`SUPER_ADMIN` ⟺ `tenant_id IS NULL`". The first account is created via `/setup` as `SUPER_ADMIN` (tenant_id NULL) together with an initial `Tenant`, inside one `asSuperAdmin` transaction with an advisory lock + count re-check. `bun set-admin` promotes to `TENANT_ADMIN` of the first tenant (or `SUPER_ADMIN` when no tenant exists yet).
+`UserRole` is `SUPER_ADMIN | TENANT_ADMIN | AGENT`. A CHECK constraint enforces "`SUPER_ADMIN` ⟺ `tenant_id IS NULL`" — on `users`, and since #308 on `api_keys` too, so a fleet-scoped API key is the same shape as a SUPER_ADMIN user and resolves to the same kind of principal (no home tenant, `X-Tenant-Id` honoured per request; see [`api-and-fleet.md`](api-and-fleet.md) → API keys). The first account is created via `/setup` as `SUPER_ADMIN` (tenant_id NULL) together with an initial `Tenant`, inside one `asSuperAdmin` transaction with an advisory lock + count re-check. `bun set-admin` promotes to `TENANT_ADMIN` of the first tenant (or `SUPER_ADMIN` when no tenant exists yet).
 
 ### Role attributes are not inherited, and the boot guard asks the neighbouring question
 

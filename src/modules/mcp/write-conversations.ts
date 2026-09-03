@@ -1,6 +1,5 @@
 import basePrisma from "@/api/lib/prisma";
 import { AppError } from "@/lib/errors";
-import { truncForAudit } from "@/modules/audit/projection";
 import { reengageConversation } from "@/modules/conversations/reengage";
 import {
   getConversationDetail,
@@ -15,7 +14,6 @@ import {
   gate,
   ok,
   parseMcpId,
-  recordMcpAudit,
   type WriteDeps,
   type WriteResult,
 } from "./write";
@@ -24,6 +22,10 @@ import {
 // to / change the state of a live customer conversation in Chatwoot. dry-run by default previews the
 // action (conversation_reply shows the exact text that would be sent); applying is NOT reversible —
 // the trade-off is the MCP client's per-call approval plus an audit row on every apply.
+//
+// The row is no longer written HERE (#398). Each service records its own, so the same guard covers
+// the console and the REST API, which had none: this file only reads the conversation for the
+// dry-run preview and hands the apply down.
 
 function failOf(e: unknown): WriteResult {
   if (e instanceof AppError) return err(e.message);
@@ -63,14 +65,6 @@ export async function conversationReply(
       });
     }
     await replyToConversation(ctx, id, args.content, isPrivate, {}, base);
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "conversation.reply",
-      target,
-      before: null,
-      after: truncForAudit({ private: isPrivate, content: args.content }),
-    });
     return ok({ dryRun: false, applied: true, target, private: isPrivate });
   } catch (e) {
     return failOf(e);
@@ -107,17 +101,6 @@ export async function conversationHandoff(
       });
     }
     await handoffConversation(ctx, id, assigneeId, {}, base);
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "conversation.handoff",
-      target,
-      before: truncForAudit({
-        status: current.status,
-        assigneeId: current.assigneeId,
-      }),
-      after: truncForAudit({ status: "open", assigneeId }),
-    });
     return ok({ dryRun: false, applied: true, target });
   } catch (e) {
     return failOf(e);
@@ -147,14 +130,6 @@ export async function conversationReturn(
       });
     }
     const outcome = await returnConversationToAgent(ctx, id, {}, base);
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "conversation.return",
-      target,
-      before: truncForAudit({ status: current.status }),
-      after: truncForAudit({ status: "pending", outcome }),
-    });
     // Reported, not swallowed: a takeover during the call leaves the conversation with the human who
     // claimed it, and an `applied: true` alone would tell the caller the agent has it back.
     return ok({ dryRun: false, applied: true, target, outcome });
@@ -191,14 +166,6 @@ export async function conversationStatus(
       });
     }
     await setConversationStatus(ctx, id, args.status, {}, base);
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "conversation.status",
-      target,
-      before: truncForAudit({ status: current.status }),
-      after: truncForAudit({ status: args.status }),
-    });
     return ok({ dryRun: false, applied: true, target });
   } catch (e) {
     return failOf(e);
@@ -228,14 +195,6 @@ export async function conversationReengage(
       });
     }
     const result = await reengageConversation(ctx, id, {}, base);
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "conversation.reengage",
-      target,
-      before: null,
-      after: truncForAudit({ outcome: result.outcome }),
-    });
     return ok({
       dryRun: false,
       applied: true,

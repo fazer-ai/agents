@@ -16,6 +16,7 @@ import {
 import { parseDbId } from "@/lib/db-id";
 import type { ScopedDb, TenantContext } from "@/lib/tenancy";
 import { readLimitsConfig } from "@/modules/agents/limits";
+import { isMonitoring } from "@/modules/agents/mode";
 import { readToolGuidance } from "@/modules/agents/tool-guidance";
 import {
   readToolPreconditions,
@@ -332,6 +333,10 @@ export async function loadAgentConfig(
   args: LoadAgentArgs,
   opts: {
     ignoreDisabled?: boolean;
+    // The caller never speaks to the customer (memory compaction summarizes a closed attendance), so
+    // a monitoring agent's config may load for it. Distinct from `ignoreDisabled`: a switched-off
+    // agent is a deliberate operator state that the same callers keep honouring.
+    ignoreMode?: boolean;
     overrides?: AgentConfigOverrides;
     // Skips the A/B variant resolution. Resolving one is not a read: it INSERTS the thread's
     // assignment when there is none, and that row lands in the denominator of every result for the
@@ -349,6 +354,7 @@ export async function loadAgentConfig(
       systemPrompt: true,
       modelConfig: true,
       enabled: true,
+      mode: true,
       transferWithSummary: true,
       settings: true,
       businessHoursId: true,
@@ -357,6 +363,14 @@ export async function loadAgentConfig(
   if (!agent) return null;
   // The `enabled` toggle gates production auto-replies; the playground tests config regardless.
   if (!agent.enabled && !opts.ignoreDisabled) return null;
+  // A monitoring agent never answers, and this is the seam that guarantees it (issue #209): every
+  // caller that posts to the customer — the reactive turn, the guardrail's replacement, the nudges,
+  // the slow-tool ack — loads its config here first, so refusing here is refusing them all. The
+  // playground still loads it (`ignoreDisabled`, an operator talking to the agent in a fenced
+  // thread), and so does a caller that says it never speaks (`ignoreMode`).
+  if (isMonitoring(agent.mode) && !opts.ignoreDisabled && !opts.ignoreMode) {
+    return null;
+  }
   // Live override (playground): effective prompt/model/settings come from the draft when present;
   // everything else (grants, ids, tenant) stays as saved. The secret is still resolved from the
   // vault by credentialRef below — the draft never carries it.
@@ -819,6 +833,11 @@ export interface ToolsetCtx {
   client: ChatwootClient;
   conversationId: number;
   threadId: string;
+  // The caller's send fence, for the one customer-facing write a tool makes on its own: the
+  // slow-tool ack, whose send is a wait the graph's own ask at the tool boundary sits before
+  // (issue #209 review, round 10). Asked after that send, before the typing indicator and before
+  // the tool runs; absent, both proceed.
+  stillWanted?: () => Promise<boolean>;
   // The conversation's status as this turn observed it, before any close of ours. Feeds the
   // IMMEDIATE resolve_conversation path (nudge turns, which carry no turnState): a close that had
   // already happened when the turn started is not the agent's. See record-resolution.ts rule 2.
@@ -974,11 +993,23 @@ export async function buildToolset(
   // indicator) before the tool runs. Wired ONLY on a real conversation (conversationId > 0) — the
   // playground builds its toolset with conversationId 0 and a dummy client, so acks never fire
   // there. Best-effort: any failure is swallowed so it can never block the actual tool call.
+  //
+  // Answers whether the tool may still RUN. The ack's send is a wait of its own, after the graph's
+  // ask at the tool boundary, and a run called off inside it — the operator's flip to monitoring
+  // (issue #209 review, round 10) — must show no typing indicator and make no request after it.
+  // Only an explicit `false` stops the tool; a fence that could not answer is not a withdrawal.
   const emitAck =
     ctx.conversationId > 0
-      ? async (message: string) => {
+      ? async (message: string): Promise<boolean> => {
           try {
             await ctx.client.sendMessage(ctx.conversationId, message);
+            if (ctx.stillWanted && !(await ctx.stillWanted())) {
+              logger.info(
+                "tool ack: the run was called off after the acknowledgement (conv=%s); the tool will not run",
+                String(ctx.conversationId),
+              );
+              return false;
+            }
             await ctx.client.toggleTyping(ctx.conversationId, true);
           } catch (e) {
             logger.warn(
@@ -987,6 +1018,7 @@ export async function buildToolset(
               e instanceof Error ? e.message : String(e),
             );
           }
+          return true;
         }
       : undefined;
   const mcpTools = await loadMcpToolsForAgent(ctx.tenantId, cfg.mcpSelections, {

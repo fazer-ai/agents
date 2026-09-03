@@ -71,6 +71,10 @@ let inboxAId = 0n;
 let agentBId = 0n;
 let inboxBId = 0n;
 
+// O `id` de um ClaimedJob fabricado é QUEIMADO da sequência real, nunca escrito como literal — veja
+// `jobFor` para o que um literal custou.
+let phantomJobId = 0n;
+
 const INBOX_A = 71;
 const INBOX_B = 72;
 const HOUR = 3_600_000;
@@ -84,9 +88,21 @@ function threadOf(convId: number) {
   return `${tenantId}:${instanceId}:${convId}`;
 }
 
+// NOTE: `id` sai de `phantomJobId`, e o literal `1n` que estava aqui era uma armadilha de ordem.
+// Um ClaimedJob daqui é FIXTURE, não linha: o handler só o LÊ de volta (`jobRetired` procura a
+// lápide por id), então a fixture depende de que nenhuma linha tenha esse id. Só que `1` é um número
+// que `scheduler_jobs_id_seq` distribui de verdade — e distribui para ESTE arquivo, no primeiro
+// `schedulerJob.create` dele, sempre que ele for o primeiro do processo a inserir um job. Dois testes
+// abaixo aposentam essa linha (`retireJobsByDedupeKey` faz `claim_seq + 1`), e a partir daí todo
+// `jobFor()` lê uma lápide alheia: o handler recua sem postar, e o arquivo derruba a si mesmo.
+//
+// Medido: com `TRUNCATE scheduler_jobs RESTART IDENTITY`, o arquivo sozinho dava 5 falhas — as
+// mesmas cinco que a CI mostrou num shard e que nenhuma rodada local reproduzia, porque o banco de
+// desenvolvimento tem a sequência quente. Queimar um id da sequência torna a fixture inalcançável
+// por qualquer insert, em qualquer ordem.
 function jobFor(convId: number): ClaimedJob {
   return {
-    id: 1n,
+    id: phantomJobId,
     tenantId,
     kind: "FOLLOWUP",
     payload: { threadId: threadOf(convId) },
@@ -205,6 +221,11 @@ async function seedConversation(
 
 describe.skipIf(!dbUp)("follow-up em conversa resolvida — guardrails", () => {
   beforeAll(async () => {
+    const [burned] = await suDb.$queryRaw<{ nextval: bigint }[]>`
+      SELECT nextval('scheduler_jobs_id_seq')`;
+    if (!burned)
+      throw new Error("nextval('scheduler_jobs_id_seq') devolveu nada");
+    phantomJobId = BigInt(burned.nextval);
     const t = await suDb.tenant.create({
       data: { name: "FU-GUARD", slug: `fu-guard-${process.pid}` },
     });
@@ -769,12 +790,8 @@ describe.skipIf(!dbUp)("follow-up em conversa resolvida — guardrails", () => {
       throw new Error("chatwoot indisponível");
     });
     const job: ClaimedJob = {
-      id: 2n,
-      tenantId,
-      kind: "FOLLOWUP",
+      ...jobFor(CONV),
       payload: { threadId: threadOf(CONV), nudgeRetries: 7 },
-      attempts: 0,
-      claimSeq: 0,
     };
     const result = await followUpHandler(job, appDb, handlerDeps(s));
     expect(result).toEqual({ outcome: "done" });
@@ -833,7 +850,7 @@ describe.skipIf(!dbUp)("follow-up em conversa resolvida — guardrails", () => {
     if (!sweep) throw new Error("unreachable");
     await sweep(
       {
-        id: 99n,
+        id: phantomJobId,
         tenantId,
         kind: "FOLLOWUP_SWEEP",
         payload: {},

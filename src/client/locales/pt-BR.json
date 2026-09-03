@@ -212,6 +212,43 @@
     "targetBase": "Base de conhecimento: {{name}}",
     "untitled": "Sem título"
   },
+  "audit": {
+    "actionPlaceholder": "Ação (exata)",
+    "actor": {
+      "apiKey": "Chave de API",
+      "mcp": "Cliente MCP",
+      "system": "Sistema",
+      "user": "Usuário"
+    },
+    "after": "Depois",
+    "allActors": "Qualquer porta",
+    "before": "Antes",
+    "clearFilters": "Limpar",
+    "emptyDescription": "Mudanças em agentes, canais, conhecimento e configurações aparecem aqui conforme são feitas.",
+    "emptyFilteredDescription": "Amplie o período ou limpe os filtros para ver a trilha inteira.",
+    "emptyFilteredTitle": "Nenhum registro corresponde a estes filtros",
+    "emptyTitle": "Nenhum registro ainda",
+    "errorDesc": "Tente de novo em instantes.",
+    "errorTitle": "Não foi possível carregar a trilha",
+    "field": "Campo",
+    "fields": "{{n}} campos",
+    "filterAction": "Ação",
+    "filterActor": "Autenticado como",
+    "filterFrom": "De",
+    "filterTo": "Até",
+    "latest": "Registro mais recente da trilha",
+    "latestHelp": "Ele não muda quando você filtra a lista. Compare com a data de última alteração de um registro que você sabe que mudou: se o registro for mais novo, aquela mudança não está na trilha.",
+    "latestNone": "nenhum registro ainda",
+    "latestUnavailable": "não foi possível ler",
+    "noProjection": "Esta ação não registrou valores de campo.",
+    "page": "Página {{n}}",
+    "showAll": "Mostrar os {{n}} caracteres",
+    "showLess": "Mostrar menos",
+    "subtitle": "Cada mudança de configuração, quem fez e por qual porta se autenticou. Os valores são gravados no momento da mudança e nunca relidos do registro atual.",
+    "title": "Trilha de auditoria",
+    "undisclosed": "Um valor que este registro não mostra foi alterado, como um segredo ou um cabeçalho.",
+    "whatIsThis": "Para que serve?"
+  },
   "auth": {
     "confirmPassword": "Confirmar Senha",
     "createAccount": "Criar Conta",
@@ -1044,6 +1081,7 @@
       "httpToolBodyIgnored": "A ferramenta \"{{name}}\" tinha um corpo de requisição num formato que esta versão não aceita, então ele foi reduzido à parte que de fato estava sendo enviada. A requisição não mudou; abra em Corpo da requisição para conferir.",
       "httpToolCredNotFound": "A credencial \"{{credential}}\" da ferramenta \"{{tool}}\" não foi encontrada aqui, então ficou em branco.",
       "httpToolMethodUnsupported": "A ferramenta \"{{name}}\" pede o método HTTP {{method}}, que não é um dos que a plataforma envia, então ela não foi importada. O resto do agente foi.",
+      "httpToolRenamed": "A ferramenta \"{{name}}\" tem o nome de uma ferramenta nativa, então foi importada como \"{{renamed}}\"; um prompt que a cite pelo nome precisa acompanhar.",
       "httpToolReused": "A ferramenta \"{{name}}\" já existia e foi reaproveitada; confira se está certa.",
       "integrationGrantNotFound": "A integração \"{{name}}\" não foi encontrada, então a concessão foi ignorada.",
       "integrationReused": "A integração \"{{name}}\" já existia e foi reaproveitada; confira se está certa.",
@@ -1092,7 +1130,7 @@
     "memoryModelHelp": "Deixe no modelo do agente, a menos que você tenha comparado as alternativas.\n\nO resumo não é lido uma vez: ele vira o que o agente sabe daquele contato dali em diante e nunca é reescrito.\n\nEste é o lugar errado para cortar custos: no modelo mais barato de um fornecedor, o nome do cliente se perdeu em um atendimento a cada cinco.",
     "memorySameAsAgent": "Igual ao do agente",
     "mode": "Modo",
-    "modeHint": "Um agente em teste fica em silêncio na conversa até o cliente enviar /teste; em produção responde normalmente.",
+    "modeHint": "Um agente em teste fica em silêncio na conversa até o cliente enviar /teste; em produção responde normalmente; em monitoramento recebe e memoriza cada mensagem e nunca responde.",
     "model": "Modelo",
     "modelFallback": "Provedor reserva",
     "modelFallbackBaseURLHint": "Obrigatório para endpoints compatíveis com OpenAI, a não ser que a credencial já traga uma.",
@@ -1106,6 +1144,7 @@
     "modelRequired": "Escolha um modelo para este provedor antes de salvar.",
     "modelSection": "Modelo",
     "modelSectionHint": "Qual LLM alimenta este agente.",
+    "modeMonitoring": "Monitoramento",
     "modeProduction": "Produção",
     "modeTest": "Teste",
     "name": "Nome",
@@ -1797,6 +1836,11 @@
     },
     "url": "URL"
   },
+  "monitoring": {
+    "badge": {
+      "agent": "Monitoramento"
+    }
+  },
   "nativeTools": {
     "assign_label": {
       "desc": "Adiciona uma etiqueta à conversa, ao contato ou ao card do kanban para categorizá-los (vip, urgente, lead…).",
@@ -1830,6 +1874,10 @@
       "desc": "Marca a conversa como resolvida quando o pedido foi totalmente atendido.",
       "label": "Resolver"
     },
+    "run_code": {
+      "desc": "Executa um trecho de JavaScript num sandbox isolado para cálculo exato e vereditos (dígitos verificadores, datas, parsing).",
+      "label": "Executar código"
+    },
     "send_image": {
       "desc": "Entrega uma imagem ao cliente a partir da URL dela, restrita aos hosts que você liberar.",
       "label": "Enviar imagem"
@@ -1855,6 +1903,7 @@
     "admin": "Admin",
     "agents": "Agentes",
     "apiKeys": "Chaves de API",
+    "audit": "Auditoria",
     "breadcrumbs": "Navegação contextual",
     "channels": "Canais",
     "closeMenu": "Fechar menu",

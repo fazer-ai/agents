@@ -212,6 +212,43 @@
     "targetBase": "Knowledge base: {{name}}",
     "untitled": "Untitled"
   },
+  "audit": {
+    "actionPlaceholder": "Action (exact)",
+    "actor": {
+      "apiKey": "API key",
+      "mcp": "MCP client",
+      "system": "System",
+      "user": "User"
+    },
+    "after": "After",
+    "allActors": "Any door",
+    "before": "Before",
+    "clearFilters": "Clear",
+    "emptyDescription": "Changes to agents, channels, knowledge and settings are recorded here as they are made.",
+    "emptyFilteredDescription": "Widen the date range, or clear the filters to see the whole trail.",
+    "emptyFilteredTitle": "No entries match these filters",
+    "emptyTitle": "No entries yet",
+    "errorDesc": "Try again in a moment.",
+    "errorTitle": "Could not load the trail",
+    "field": "Field",
+    "fields": "{{n}} fields",
+    "filterAction": "Action",
+    "filterActor": "Authenticated as",
+    "filterFrom": "From",
+    "filterTo": "To",
+    "latest": "Newest entry in the trail",
+    "latestHelp": "It does not change when you filter the list. Compare it with the last-updated time of a record you know was changed: if the record is newer, that change is not on the trail.",
+    "latestNone": "no entries yet",
+    "latestUnavailable": "could not be read",
+    "noProjection": "This action recorded no field values.",
+    "page": "Page {{n}}",
+    "showAll": "Show all {{n}} characters",
+    "showLess": "Show less",
+    "subtitle": "Every configuration change, who made it and how they were authenticated. Values are recorded when the change happens and are never re-read from the live record.",
+    "title": "Audit trail",
+    "undisclosed": "A value this entry does not show was changed, such as a secret or a header.",
+    "whatIsThis": "What is this for?"
+  },
   "auth": {
     "confirmPassword": "Confirm Password",
     "createAccount": "Create Account",
@@ -1041,6 +1078,7 @@
       "httpToolBodyIgnored": "Tool \"{{name}}\" had a request body in a shape this version does not accept, so it was reduced to the part that was actually being sent. The request is unchanged; open it under Body to check it.",
       "httpToolCredNotFound": "Tool \"{{tool}}\" credential \"{{credential}}\" was not found here, so it was left unset.",
       "httpToolMethodUnsupported": "Tool \"{{name}}\" asks for the HTTP method {{method}}, which is not one this platform sends, so the tool was not imported. The rest of the agent was.",
+      "httpToolRenamed": "Tool \"{{name}}\" carries the name of a built-in tool, so it was imported as \"{{renamed}}\"; a prompt that names it must follow.",
       "httpToolReused": "Tool \"{{name}}\" already existed and was reused; check it is right.",
       "integrationGrantNotFound": "Integration \"{{name}}\" was not found, so its grant was skipped.",
       "integrationReused": "Integration \"{{name}}\" already existed and was reused; check it is right.",
@@ -1089,7 +1127,7 @@
     "memoryModelHelp": "Leave this on the agent's model unless you've compared alternatives.\n\nThe summary isn't read once: it becomes what the agent knows about that contact from then on, and is never rewritten.\n\nThis is the wrong place to cut costs: on one vendor's cheapest model, the customer's name was lost in one attendance in five.",
     "memorySameAsAgent": "Same as the agent",
     "mode": "Mode",
-    "modeHint": "A test agent stays silent in a conversation until the customer sends /teste; production answers normally.",
+    "modeHint": "A test agent stays silent in a conversation until the customer sends /teste; production answers normally; monitoring receives and remembers every message and never answers.",
     "model": "Model",
     "modelFallback": "Fallback provider",
     "modelFallbackBaseURLHint": "Required for OpenAI-compatible endpoints, unless the credential already carries one.",
@@ -1103,6 +1141,7 @@
     "modelRequired": "Pick a model for this provider before saving.",
     "modelSection": "Model",
     "modelSectionHint": "Which LLM powers this agent.",
+    "modeMonitoring": "Monitoring",
     "modeProduction": "Production",
     "modeTest": "Test",
     "name": "Name",
@@ -1791,6 +1830,11 @@
     },
     "url": "URL"
   },
+  "monitoring": {
+    "badge": {
+      "agent": "Monitoring"
+    }
+  },
   "nativeTools": {
     "assign_label": {
       "desc": "Add a label (tag) to the conversation, the contact, or the kanban card to categorize it (vip, urgent, lead…).",
@@ -1824,6 +1868,10 @@
       "desc": "Mark the conversation as resolved when the request is fully handled.",
       "label": "Resolve"
     },
+    "run_code": {
+      "desc": "Run a JavaScript snippet in an isolated sandbox for exact computation and verdicts (check digits, dates, parsing).",
+      "label": "Run code"
+    },
     "send_image": {
       "desc": "Deliver an image to the customer from its URL, limited to the hosts you allow.",
       "label": "Send image"
@@ -1849,6 +1897,7 @@
     "admin": "Admin",
     "agents": "Agents",
     "apiKeys": "API keys",
+    "audit": "Audit",
     "breadcrumbs": "Breadcrumbs",
     "channels": "Channels",
     "closeMenu": "Close menu",

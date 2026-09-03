@@ -10,6 +10,7 @@ import {
 } from "@/lib/errors";
 import { assertUsableCount, badQueryParam } from "@/lib/query-param";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { type AgentMode, normalizeAgentMode } from "@/modules/agents/mode";
 import { loadAppointmentContext } from "@/modules/appointments/context";
 import {
   exceptionInForceAt,
@@ -323,7 +324,7 @@ export interface ConversationDetail {
   agentId: string | null;
   agentName: string | null;
   // The bound persona's operating mode (item 1), so the console can flag a test agent. null = no agent.
-  agentMode: "test" | "production" | null;
+  agentMode: AgentMode | null;
   // The model the bound persona runs (e.g. "gpt-5.4-mini"), shown in the conversation header. null = no
   // agent or an unparseable model config.
   agentModel: string | null;
@@ -1344,7 +1345,7 @@ export async function getConversationDetail(
       : null,
     agentId: agentId != null ? String(agentId) : null,
     agentName: agent?.name ?? null,
-    agentMode: agent ? (agent.mode === "test" ? "test" : "production") : null,
+    agentMode: agent ? normalizeAgentMode(agent.mode) : null,
     agentModel: (() => {
       const parsed = modelConfigSchema.safeParse(agent?.modelConfig);
       return parsed.success ? parsed.data.model : null;

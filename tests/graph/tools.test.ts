@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { AIMessage, type ToolMessage } from "@langchain/core/messages";
 import type { StructuredToolInterface } from "@langchain/core/tools";
+import { ToolNode } from "@langchain/langgraph/prebuilt";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import {
   buildNativeTools,
@@ -979,4 +981,117 @@ describe("handoffAnsweredTheTurn", () => {
       expect(handoffAnsweredTheTurn(state)).toBe(expected);
     });
   }
+});
+
+// The tool issue #363 asked for: the VERDICT comes out of the sandbox, so there is nothing left for
+// the model to compare. The snippet is the reporter's case — `12351612850`, valid, second check
+// digit through the remainder-10 rule, typed without punctuation.
+const CPF_VERDICT = `
+const d = "12351612850".replace(/\\D/g, "");
+const dv = (n) => { let s = 0; for (let i = 0; i < n - 1; i++) s += Number(d[i]) * (n - i); return (s * 10) % 11 % 10; };
+({ valid: dv(10) === Number(d[9]) && dv(11) === Number(d[10]) })
+`;
+
+describe("run_code", () => {
+  const ctx = () => ({ client: recordingClient().client, conversationId: 1 });
+
+  test("hands the model the verdict the code produced", async () => {
+    const t = byName(buildNativeTools(ctx(), ["run_code"]), "run_code");
+    expect(String(await t.invoke({ code: CPF_VERDICT }))).toBe(
+      'Result: {"valid":true}',
+    );
+  });
+
+  test("the sandbox runs on the agent's clock, and on the default zone when none is set", async () => {
+    const seen: unknown[] = [];
+    const runCode = (async (code: string, opts?: unknown) => {
+      seen.push(opts);
+      return { kind: "value", value: code, logs: [], ms: 0 };
+    }) as unknown as NonNullable<
+      Parameters<typeof buildNativeTools>[0]["runCode"]
+    >;
+    await byName(
+      buildNativeTools({ ...ctx(), runCode, timezone: "Europe/Lisbon" }, [
+        "run_code",
+      ]),
+      "run_code",
+    ).invoke({ code: "1" });
+    await byName(
+      buildNativeTools({ ...ctx(), runCode }, ["run_code"]),
+      "run_code",
+    ).invoke({ code: "1" });
+    expect(seen).toEqual([
+      { clock: { timezone: "Europe/Lisbon" } },
+      { clock: { timezone: "America/Sao_Paulo" } },
+    ]);
+  });
+
+  test("its description asks for the verdict and forbids re-comparing, and carries operator guidance", () => {
+    const plain = byName(buildNativeTools(ctx(), ["run_code"]), "run_code");
+    expect(plain.description).toMatch(/FINAL VERDICT/);
+    expect(plain.description).toMatch(/Never redo the comparison/);
+    expect(plain.description).toMatch(
+      /validateCpf\(text\) and validateCnpj\(text\)/,
+    );
+    expect(plain.description).toMatch(/TIMEZONE .* NOW_LOCAL/);
+    expect(plain.description).not.toContain("Operator guidance");
+    const guided = byName(
+      buildNativeTools(
+        {
+          ...ctx(),
+          toolInstructions: { run_code: "Validate CPF with the mod-11 rule." },
+        },
+        ["run_code"],
+      ),
+      "run_code",
+    );
+    expect(guided.description).toContain(
+      "Operator guidance: Validate CPF with the mod-11 rule.",
+    );
+  });
+
+  test("a snippet that fails is a NORMAL result telling the model what to change", async () => {
+    const node = new ToolNode(buildNativeTools(ctx(), ["run_code"]));
+    const out = (await node.invoke({
+      messages: [
+        new AIMessage({
+          content: "",
+          tool_calls: [
+            { id: "c1", name: "run_code", args: { code: "null.x" } },
+          ],
+        }),
+      ],
+    })) as { messages: ToolMessage[] };
+    const answer = out.messages[0] as ToolMessage;
+    expect(answer.tool_call_id).toBe("c1");
+    expect(String(answer.content)).toMatch(/^Error: TypeError/);
+    expect(String(answer.content)).toContain("call run_code again");
+    // Not `error`: the model wrote the code, and marking it would page an alert channel for a
+    // typo (tools/failure.ts draws exactly this line).
+    expect(answer.status).not.toBe("error");
+  });
+
+  test("a sandbox that cannot start IS marked, so the flow log carries it to the operator", async () => {
+    const node = new ToolNode(
+      buildNativeTools(
+        {
+          ...ctx(),
+          runCode: async () => ({ kind: "unavailable", reason: "no wasm" }),
+        },
+        ["run_code"],
+      ),
+    );
+    const out = (await node.invoke({
+      messages: [
+        new AIMessage({
+          content: "",
+          tool_calls: [{ id: "c2", name: "run_code", args: { code: "1" } }],
+        }),
+      ],
+    })) as { messages: ToolMessage[] };
+    const answer = out.messages[0] as ToolMessage;
+    expect(answer.status).toBe("error");
+    expect(String(answer.content)).toContain("could not start (no wasm)");
+    expect(String(answer.content)).toContain("do not tell the customer");
+  });
 });

@@ -383,6 +383,10 @@ const BARE_SLICES: Record<
   "src/client/components/Modal.tsx": [1, "array"],
   "src/client/contexts/ThemeContext.tsx": [1, "index"],
   "src/client/lib/breadcrumbs.ts": [1, "array"],
+  // The cursor stack's own pop (Previous), and the page's array of entries. The one cut that lands
+  // in TEXT — the preview of a `before`/`after` value, which can be a system prompt — goes through
+  // `clipText` like every other cap.
+  "src/client/pages/AuditPage.tsx": [1, "array"],
   "src/client/pages/LogsPage.tsx": [1, "array"],
   "src/client/pages/agents/CapabilityMap.tsx": [1, "array"],
   "src/client/pages/agents/PlaygroundChat.tsx": [1, "array"],
@@ -392,6 +396,11 @@ const BARE_SLICES: Record<
   // The idempotency key's tail is a hex digest.
   "src/graph/tools/documents.ts": [1, "ascii"],
   "src/graph/tools/mcp.ts": [5, "ascii"],
+  // `withTrailingObjectWrapped`: the one line that splits the snippet at the brace indexes its own
+  // lexer found, to put parentheses around a trailing object literal. `{` and `}` are ASCII, so
+  // neither side of a cut can be half of a surrogate pair; nothing is dropped, the three pieces
+  // are joined back whole.
+  "src/graph/tools/code-sandbox.worker.ts": [1, "index"],
   "src/graph/tools/native.ts": [4, "array"],
   "src/graph/tools/toolName.ts": [1, "ascii"],
   "src/graph/trace.ts": [2, "array + index"],
@@ -406,6 +415,9 @@ const BARE_SLICES: Record<
   "src/modules/analytics/langfuse-costs.ts": [2, "fixed-format"],
   "src/modules/api-keys/verify.ts": [1, "ascii"],
   "src/modules/appointments/settings.ts": [1, "array"],
+  // The page's own overshoot row, dropped: the list takes `limit + 1` to learn whether a next page
+  // exists, and it cuts an array of rows, never a string.
+  "src/modules/audit/service.ts": [1, "array"],
   "src/modules/business-hours/announce.ts": [2, "fixed-format"],
   "src/modules/business-hours/hours.ts": [1, "fixed-format"],
   "src/modules/chatwoot/attributes.ts": [1, "array"],

@@ -61,7 +61,7 @@ export const mcpMeController = new Elysia({
     "/connections/:clientId",
     async ({ tenantContext, params }) => {
       const ctx = userOrThrow(tenantContext);
-      const result = await disconnectClient(ctx.userId, params.clientId);
+      const result = await disconnectClient(ctx, params.clientId);
       return { success: true, ...result };
     },
     {

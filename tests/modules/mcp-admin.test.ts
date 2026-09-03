@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
+import type { TenantContext } from "@/lib/tenancy";
 import { createApiKey } from "@/modules/api-keys/service";
 import { verifyApiKey } from "@/modules/api-keys/verify";
 import {
@@ -20,6 +21,15 @@ import {
   scopesForRole,
   verifyAccessToken,
 } from "@/modules/mcp/oauth/tokens";
+
+// The fleet principal these SUPER_ADMIN-only functions now take. It is what names the actor on the
+// row each of them appends (#400); the rows themselves are asserted in
+// `tests/modules/audit-actor-family.test.ts`.
+const su9400: TenantContext = {
+  tenantId: null,
+  userId: 9400n,
+  role: "SUPER_ADMIN",
+};
 
 describe("scopesForRole + mcpPrincipalFromApiKey", () => {
   test("an API-key (TENANT_ADMIN) gets mcp:read + mcp:write, never mcp:admin", () => {
@@ -136,11 +146,13 @@ describe.skipIf(!dbUp)("mcp admin service", () => {
   test("create validates redirect URIs and never leaks the secret hash", async () => {
     await expect(
       createClient(
+        su9400,
         { name: "bad", redirectUris: ["https://*.evil.com/cb"] },
         appDb,
       ),
     ).rejects.toThrow();
     const client = await createClient(
+      su9400,
       {
         name: "Claude",
         redirectUris: ["https://app.example.com/cb"],
@@ -160,10 +172,11 @@ describe.skipIf(!dbUp)("mcp admin service", () => {
 
   test("update rejects an unknown client; revoke a token closes the denylist loop", async () => {
     await expect(
-      updateClient("nonexistent-client", { name: "x" }, appDb),
+      updateClient(su9400, "nonexistent-client", { name: "x" }, appDb),
     ).rejects.toThrow();
 
     const client = await createClient(
+      su9400,
       { name: "Cursor", redirectUris: ["https://cursor.example.com/cb"] },
       appDb,
     );
@@ -184,7 +197,7 @@ describe.skipIf(!dbUp)("mcp admin service", () => {
     const bActive = await listActiveTokens({ tenantId: tenantB }, appDb);
     expect(bActive.some((tk) => tk.jti === issued.jti)).toBe(false);
     // Revoke → gone from the active list AND the JWT no longer verifies (denylist).
-    await revokeToken(issued.jti, appDb);
+    await revokeToken(su9400, issued.jti, appDb);
     active = await listActiveTokens({ tenantId: tenantA }, appDb);
     expect(active.some((tk) => tk.jti === issued.jti)).toBe(false);
     expect(await verifyAccessToken(issued.token, appDb)).toBeNull();
@@ -192,6 +205,7 @@ describe.skipIf(!dbUp)("mcp admin service", () => {
 
   test("deleting a client revokes its tokens and removes it", async () => {
     const client = await createClient(
+      su9400,
       { name: "ToDelete", redirectUris: ["https://d.example.com/cb"] },
       appDb,
     );
@@ -204,17 +218,20 @@ describe.skipIf(!dbUp)("mcp admin service", () => {
       scopes: ["mcp:read"],
       base: appDb,
     });
-    await deleteClient(client.clientId, appDb);
+    await deleteClient(su9400, client.clientId, appDb);
     expect(
       (await listClients(appDb)).some((c) => c.clientId === client.clientId),
     ).toBe(false);
     // The client's token was revoked in the cascade.
     expect(await verifyAccessToken(issued.token, appDb)).toBeNull();
-    await expect(deleteClient(client.clientId, appDb)).rejects.toThrow();
+    await expect(
+      deleteClient(su9400, client.clientId, appDb),
+    ).rejects.toThrow();
   });
 
   test("firstParty defaults false; can be set on create and toggled on update", async () => {
     const def = await createClient(
+      su9400,
       { name: "DefaultParty", redirectUris: ["https://dp.example.com/cb"] },
       appDb,
     );
@@ -222,6 +239,7 @@ describe.skipIf(!dbUp)("mcp admin service", () => {
     expect(def.firstParty).toBe(false);
 
     const fp = await createClient(
+      su9400,
       {
         name: "FirstParty",
         redirectUris: ["https://fp.example.com/cb"],
@@ -233,6 +251,7 @@ describe.skipIf(!dbUp)("mcp admin service", () => {
     expect(fp.firstParty).toBe(true);
 
     const toggled = await updateClient(
+      su9400,
       def.clientId,
       { firstParty: true },
       appDb,
@@ -242,6 +261,7 @@ describe.skipIf(!dbUp)("mcp admin service", () => {
 
   test("dynamicallyRegistered: false on admin-created clients, true is exposed in the DTO", async () => {
     const admin = await createClient(
+      su9400,
       { name: "AdminMade", redirectUris: ["https://am.example.com/cb"] },
       appDb,
     );
@@ -270,6 +290,7 @@ describe.skipIf(!dbUp)("mcp admin service", () => {
 
   test("approvals: an upsert is listed (enriched) and revoke removes it; unknown revoke throws", async () => {
     const client = await createClient(
+      su9400,
       { name: "ApprClient", redirectUris: ["https://ap.example.com/cb"] },
       appDb,
     );
@@ -290,12 +311,14 @@ describe.skipIf(!dbUp)("mcp admin service", () => {
     expect(found?.userEmail).toContain("ma-user-");
     expect(new Set(found?.scopes)).toEqual(new Set(["mcp:read", "mcp:write"]));
 
-    await deleteClientApproval(BigInt(found?.id as string), appDb);
+    await deleteClientApproval(su9400, BigInt(found?.id as string), appDb);
     expect(
       (await listClientApprovals(appDb)).some((a) => a.id === found?.id),
     ).toBe(false);
 
-    await expect(deleteClientApproval(999_999_999n, appDb)).rejects.toThrow();
+    await expect(
+      deleteClientApproval(su9400, 999_999_999n, appDb),
+    ).rejects.toThrow();
   });
 
   test("MCP-via-API-key seam: a verified API key maps to a read+write MCP principal", async () => {

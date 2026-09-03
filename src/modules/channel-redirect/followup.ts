@@ -5,6 +5,7 @@ import { type AgentNudge, parseThreadId, runAgentNudge } from "@/graph/nudge";
 import { isRepairableNudgeRefusal, nextNudgeRetry } from "@/graph/nudge-retry";
 import type { RuntimeDeps } from "@/graph/runtime";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
+import { isMonitoring } from "@/modules/agents/mode";
 import { isTestSilenced } from "@/modules/agents/test-mode";
 import { loadAgentBot, loadChatwootClient } from "@/modules/chatwoot/instance";
 import {
@@ -118,7 +119,13 @@ export interface RedirectFollowUpLiveness {
 // send FIXED text (the WhatsApp link re-send, the closing) without ever passing through
 // runAgentNudge, where the test-mode gate lives. So the ladder asks here, for EVERY stage.
 export function isRedirectFollowUpLive(s: RedirectFollowUpLiveness): boolean {
-  return s.agentEnabled && !isTestSilenced(s.agentMode, s.testActivatedAt);
+  // The ladder sends templates and closing messages without ever loading the agent's config, so the
+  // monitoring refusal `loadAgentConfig` makes for every other speaker has to be made here too.
+  return (
+    s.agentEnabled &&
+    !isMonitoring(s.agentMode) &&
+    !isTestSilenced(s.agentMode, s.testActivatedAt)
+  );
 }
 
 export type RedirectFollowUpStage = "chat" | "whatsapp" | "closing";
@@ -622,6 +629,10 @@ export async function redirectFollowUpHandler(
           : jobRetired(job, base, db))
       )
         return "retired" as const;
+      // A monitoring agent stands down at send time too (issue #209): the liveness read at claim
+      // time is minutes old by now, and an operator flipping the mode inside that window must not
+      // see one more template go out.
+      if (isMonitoring(a.mode)) return "stood-down" as const;
       if (a.mode !== "test") return "go" as const;
       // NOTE: The stamp lookup fails open ON ITS OWN: unknown liveness is live, and the answer that
       // matters more — retirement — is already decided above.

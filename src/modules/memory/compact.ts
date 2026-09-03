@@ -249,7 +249,9 @@ export async function runCompaction(
       // thread has none — an attendance a human handled, or one that predates the experiment — and
       // that phantom row sits in the denominator of every result, quietly lowering the rates. Using
       // the conversation's own thread id is not enough on its own: it only makes the row LOOK real.
-      { skipExperiment: true },
+      // A summary is not a reply: a monitoring agent's memory grows exactly like a production
+      // agent's (issue #209), so its closed attendances are compacted like theirs.
+      { skipExperiment: true, ignoreMode: true },
     );
     if (!cfg) return null;
     return {

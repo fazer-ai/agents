@@ -129,21 +129,71 @@ export interface AuditLogItem {
   createdAt: string;
 }
 
+export interface ListAuditOpts {
+  action?: string;
+  // How the actor authenticated. Its value is one word on every row until the write side of #306
+  // lands, which is exactly why it is worth filtering by afterwards: it is what separates a change
+  // made at the console from one made by a token.
+  actorType?: ActorType;
+  actorId?: bigint;
+  // Both bounds inclusive, matching the Logs page's own since/until.
+  since?: Date;
+  until?: Date;
+  limit?: number;
+  // Keyset: rows with id < cursor. On the ID and never on the time, because `created_at` here is
+  // written by the CLIENT and not by the database (measured: rows appended inside one transaction
+  // come back with stamps LATER than that transaction's own `now()`, and differing from each
+  // other). At millisecond resolution a tie between two rows of one burst is ordinary, and nothing
+  // makes the column agree with insertion order in the first place. So a time cursor over it can
+  // repeat one of a tied pair or skip it; the id is the only monotonic key this table has.
+  cursor?: bigint;
+}
+
+export interface AuditPage {
+  entries: AuditLogItem[];
+  // Pass back as `cursor` for the next (older) page; null when there are no more rows.
+  nextCursor: string | null;
+  // The newest row IN THE WHOLE TRAIL, past any filter, and null when the trail is empty.
+  //
+  // It is the one number that says something about what the trail does NOT hold: compared against a
+  // record's own updatedAt, it is how an operator learns that a change happened which nothing here
+  // can describe. Narrowed to the filter it would report the newest row the operator happens to be
+  // looking at, which answers a question nobody asked and reads like the answer to this one.
+  //
+  // The greatest TIMESTAMP, not the timestamp of the greatest id. The two disagree here: `createdAt`
+  // is written by the client (measured), so a row that committed later can carry an earlier stamp,
+  // and this number is compared against a record's own `updatedAt` — a comparison between times has
+  // to be answered by the largest time or it reports a covered record as newer than the trail.
+  latestAt: string | null;
+}
+
 // Reads the audit log for the active tenant (RLS-scoped: a TENANT_ADMIN sees only their tenant's
 // rows; fleet/global tenant_id NULL rows are visible only via the audited asSuperAdmin path, not
 // here). before/after were allowlist-sanitized at write time.
 export async function listAudit(
   ctx: TenantContext,
-  opts: { limit?: number; action?: string } = {},
+  opts: ListAuditOpts = {},
   base: PrismaClient = basePrisma,
-): Promise<AuditLogItem[]> {
+): Promise<AuditPage> {
   assertUsableCount(opts.limit, "limit");
   const take = Math.min(opts.limit ?? 100, 500);
-  const rows = await runScopedOn(base, ctx, (db) =>
-    db.auditLog.findMany({
-      where: opts.action ? { action: opts.action } : {},
+  const createdAt: Prisma.DateTimeFilter = {};
+  if (opts.since) createdAt.gte = opts.since;
+  if (opts.until) createdAt.lte = opts.until;
+  const where: Prisma.AuditLogWhereInput = {
+    ...(opts.action ? { action: opts.action } : {}),
+    ...(opts.actorType ? { actorType: opts.actorType } : {}),
+    ...(opts.actorId !== undefined ? { actorId: opts.actorId } : {}),
+    ...(opts.since || opts.until ? { createdAt } : {}),
+    ...(opts.cursor !== undefined ? { id: { lt: opts.cursor } } : {}),
+  };
+  const { rows, latest } = await runScopedOn(base, ctx, async (db) => ({
+    rows: await db.auditLog.findMany({
+      where,
       orderBy: { id: "desc" },
-      take,
+      // NOTE: One extra row is what tells the caller a next page exists, without a second count over
+      // a table that only grows.
+      take: take + 1,
       select: {
         id: true,
         tenantId: true,
@@ -156,16 +206,23 @@ export async function listAudit(
         createdAt: true,
       },
     }),
-  );
-  return rows.map((r) => ({
-    id: String(r.id),
-    tenantId: r.tenantId === null ? null : String(r.tenantId),
-    actorId: r.actorId === null ? null : String(r.actorId),
-    actorType: r.actorType,
-    action: r.action,
-    target: r.target,
-    before: r.before,
-    after: r.after,
-    createdAt: r.createdAt.toISOString(),
+    latest: await db.auditLog.aggregate({ _max: { createdAt: true } }),
   }));
+  const hasMore = rows.length > take;
+  const page = hasMore ? rows.slice(0, take) : rows;
+  return {
+    entries: page.map((r) => ({
+      id: String(r.id),
+      tenantId: r.tenantId === null ? null : String(r.tenantId),
+      actorId: r.actorId === null ? null : String(r.actorId),
+      actorType: r.actorType,
+      action: r.action,
+      target: r.target,
+      before: r.before,
+      after: r.after,
+      createdAt: r.createdAt.toISOString(),
+    })),
+    nextCursor: hasMore ? String(page[page.length - 1]?.id) : null,
+    latestAt: latest._max.createdAt?.toISOString() ?? null,
+  };
 }

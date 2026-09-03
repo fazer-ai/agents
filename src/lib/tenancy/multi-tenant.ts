@@ -222,3 +222,31 @@ export async function asSuperAdmin<T>(
 ): Promise<T> {
   return asSuperAdminOn(basePrisma, fn);
 }
+
+// The transaction a mutation on a GLOBAL table opens, at whatever reach the principal's role has.
+//
+// The tenant-scoped families never need this: their row carries a tenant, so the transaction follows
+// from what is being written. The identity tables (`users`, `invitations`, `mcp_oauth_*`) carry no
+// tenant of ours to follow — RLS is not on them and the scope is a hand-written `where` — so the
+// transaction can only follow from WHO is writing. A tenant admin gets the scoped one and can record
+// against their own tenant and no other; a SUPER_ADMIN reaches every tenant and the fleet, and
+// `asSuperAdmin` is the only mode that can write `tenant_id NULL` at all — which is what a row about
+// a SUPER_ADMIN user, who belongs to no tenant, has to be.
+//
+// It keys on the ROLE and never on the subject, which is what keeps it free of the shape that bit
+// this epic four times: choosing the mode from the target's tenant would mean reading that tenant
+// before the transaction that locks the row, and a concurrent write could move it in between. The
+// subject's tenant is read INSIDE, under the lock, and reaches `auditMutationOn` from there.
+//
+// NOTE: for a SUPER_ADMIN this sets no `app.tenant_id`, so a tenant-scoped model written in here
+// gets no auto-injected tenant_id — same as `asSuperAdminOn`, which this becomes. Fine for the
+// identity families (their tables are global and the audit row names its tenant explicitly), and the
+// reason this is not a general replacement for `runScopedOn`.
+export async function asPrincipalOn<T>(
+  base: TransactionCapable,
+  ctx: TenantContext,
+  fn: (db: ScopedDb) => Promise<T>,
+): Promise<T> {
+  if (ctx.role === "SUPER_ADMIN") return asSuperAdminOn(base, fn);
+  return runScopedOn(base, ctx, fn);
+}

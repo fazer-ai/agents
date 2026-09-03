@@ -7,6 +7,8 @@ import config from "@/config";
 import { AppError } from "@/lib/errors";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import type { TenantContext } from "@/lib/tenancy";
+import { ACTOR_TYPES } from "@/lib/tenancy/actor";
+import { AGENT_MODES, type AgentMode } from "@/modules/agents/mode";
 import {
   BEHAVIOR_PATCH_SHAPE,
   type BehaviorPatchArgs,
@@ -1031,14 +1033,32 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "audit_list",
       {
         description:
-          "Read the tenant's audit log (most recent first). before/after were allowlist-sanitized at write time (never secrets). Optionally filter by action; limit defaults to 100 (max 500).",
+          "Tenant audit log, newest first. before/after are sanitized at write time, never secrets. Keyset cursor; limit 100 (max 500). `latestAt` is the trail's newest row, past any filter.",
         inputSchema: {
           action: z.string().optional(),
+          // NOTE: derived from the vocabulary and never hand-listed, for the reason `logs_query`
+          // carries one line below: a copy drifts, and the server then refuses a value it had just
+          // advertised.
+          actor_type: z.enum(ACTOR_TYPES).optional(),
+          actor_id: z.string().optional(),
+          since: z.string().optional(),
+          until: z.string().optional(),
           limit: z.number().int().optional(),
+          cursor: z.string().optional(),
         },
       },
-      async (args: { action?: string; limit?: number }, eff) =>
-        writeContent(await auditList(eff, args)),
+      async (
+        args: {
+          action?: string;
+          actor_type?: string;
+          actor_id?: string;
+          since?: string;
+          until?: string;
+          limit?: number;
+          cursor?: string;
+        },
+        eff,
+      ) => writeContent(await auditList(eff, args)),
     );
 
     registerTenantTool(
@@ -1376,7 +1396,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           name: z.string(),
           system_prompt: z.string().optional(),
           enabled: z.boolean().optional(),
-          mode: z.enum(["test", "production"]).optional(),
+          mode: z.enum(AGENT_MODES).optional(),
           transfer_with_summary: z.boolean().optional(),
           model_config: z.record(z.string(), z.unknown()).optional(),
           business_hours_id: z.string().nullable().optional(),
@@ -1389,7 +1409,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           name: string;
           system_prompt?: string;
           enabled?: boolean;
-          mode?: "test" | "production";
+          mode?: AgentMode;
           transfer_with_summary?: boolean;
           model_config?: Record<string, unknown>;
           business_hours_id?: string | null;
@@ -1406,12 +1426,12 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "agent_update",
       {
         description:
-          "Update an agent's name/enabled/mode/transfer_with_summary/model_config/business_hours_id/follow_up_hours_id. mode is 'test' (silent until the customer sends /teste) or 'production' (answers normally). Previews a diff and applies NOTHING unless dry_run is false. (System prompt → prompt_set; behavior → agent_settings_set.) model_config credentialRef accepts a vault NAME.",
+          "Update an agent's name/enabled/mode/transfer_with_summary/model_config/business_hours_id/follow_up_hours_id. mode is 'test' (silent until /teste), 'production' (answers) or 'monitoring' (reads, never answers). Previews a diff and applies NOTHING unless dry_run is false. (System prompt → prompt_set; behavior → agent_settings_set.) model_config credentialRef accepts a vault NAME.",
         inputSchema: {
           agent_id: z.string(),
           name: z.string().optional(),
           enabled: z.boolean().optional(),
-          mode: z.enum(["test", "production"]).optional(),
+          mode: z.enum(AGENT_MODES).optional(),
           transfer_with_summary: z.boolean().optional(),
           model_config: z.record(z.string(), z.unknown()).optional(),
           business_hours_id: z.string().nullable().optional(),
@@ -1424,7 +1444,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           agent_id: string;
           name?: string;
           enabled?: boolean;
-          mode?: "test" | "production";
+          mode?: AgentMode;
           transfer_with_summary?: boolean;
           model_config?: Record<string, unknown>;
           business_hours_id?: string | null;

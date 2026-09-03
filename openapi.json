@@ -6189,7 +6189,8 @@
                     "type": "string",
                     "enum": [
                       "test",
-                      "production"
+                      "production",
+                      "monitoring"
                     ]
                   },
                   "transferWithSummary": {
@@ -6260,7 +6261,8 @@
                     "type": "string",
                     "enum": [
                       "test",
-                      "production"
+                      "production",
+                      "monitoring"
                     ]
                   },
                   "transferWithSummary": {
@@ -6331,7 +6333,8 @@
                     "type": "string",
                     "enum": [
                       "test",
-                      "production"
+                      "production",
+                      "monitoring"
                     ]
                   },
                   "transferWithSummary": {
@@ -6681,7 +6684,8 @@
                     "type": "string",
                     "enum": [
                       "test",
-                      "production"
+                      "production",
+                      "monitoring"
                     ]
                   },
                   "transferWithSummary": {
@@ -6753,7 +6757,8 @@
                     "type": "string",
                     "enum": [
                       "test",
-                      "production"
+                      "production",
+                      "monitoring"
                     ]
                   },
                   "transferWithSummary": {
@@ -6825,7 +6830,8 @@
                     "type": "string",
                     "enum": [
                       "test",
-                      "production"
+                      "production",
+                      "monitoring"
                     ]
                   },
                   "transferWithSummary": {
@@ -24276,7 +24282,7 @@
           "Audit"
         ],
         "summary": "List audit entries",
-        "description": "Lists tenant-scoped audit log entries.",
+        "description": "Lists tenant-scoped audit log entries with keyset pagination.",
         "parameters": [
           {
             "name": "limit",
@@ -24293,6 +24299,51 @@
             "required": false,
             "schema": {
               "description": "Filter by audit action name.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "actorType",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "How the actor authenticated: user | api_key | mcp | system.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "actorId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Filter by actor id (BigInt string).",
+              "type": "string"
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Lower bound on row time, as an ISO 8601 instant with an offset (2026-01-01T00:00:00Z). A date alone is rejected with 400.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Upper bound on row time, as an ISO 8601 instant with an offset (2026-01-01T00:00:00Z). A date alone is rejected with 400.",
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Keyset cursor (id of the last row from the previous page).",
               "type": "string"
             }
           },

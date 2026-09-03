@@ -7,6 +7,15 @@ import {
   LastAdminError,
   UserNotInScopeError,
 } from "@/api/features/admin/admin.service";
+import type { TenantContext } from "@/lib/tenancy";
+
+// The caller, as the principal the delete now records itself under (#400): its tenant is the scope
+// the target has to fall inside, and its user is the one the self-delete guard compares against.
+const actor = (tenantId: bigint, userId: bigint): TenantContext => ({
+  tenantId,
+  userId,
+  role: "TENANT_ADMIN",
+});
 
 // deleteUser takes an injectable `base` (the users table is global/RLS-exempt). We pass the app-role
 // client and seed/assert with the superuser one. Needs a real Postgres.
@@ -78,30 +87,30 @@ describe.skipIf(!dbUp)("deleteUser (guards)", () => {
 
   test("cannot delete yourself", async () => {
     await expect(
-      deleteUser(tenantId, admin1, admin1, appDb),
+      deleteUser(actor(tenantId, admin1), admin1, appDb),
     ).rejects.toBeInstanceOf(CannotDeleteSelfError);
   });
 
   test("out-of-scope target → not found", async () => {
     // agent1 is in `tenantId`, not in otherTenantId → fenced out.
     await expect(
-      deleteUser(otherTenantId, agent1, 999_999n, appDb),
+      deleteUser(actor(otherTenantId, 999_999n), agent1, appDb),
     ).rejects.toBeInstanceOf(UserNotInScopeError);
     expect(await suDb.user.count({ where: { id: agent1 } })).toBe(1);
   });
 
   test("deletes a regular user", async () => {
-    await deleteUser(tenantId, agent1, admin1, appDb);
+    await deleteUser(actor(tenantId, admin1), agent1, appDb);
     expect(await suDb.user.count({ where: { id: agent1 } })).toBe(0);
   });
 
   test("refuses to delete the LAST admin of a tenant", async () => {
     // Two admins (admin1, admin2). Deleting admin1 is fine — admin2 remains.
-    await deleteUser(tenantId, admin1, admin2, appDb);
+    await deleteUser(actor(tenantId, admin2), admin1, appDb);
     expect(await suDb.user.count({ where: { id: admin1 } })).toBe(0);
     // admin2 is now the last TENANT_ADMIN → blocked.
     await expect(
-      deleteUser(tenantId, admin2, 999_999n, appDb),
+      deleteUser(actor(tenantId, 999_999n), admin2, appDb),
     ).rejects.toBeInstanceOf(LastAdminError);
     expect(await suDb.user.count({ where: { id: admin2 } })).toBe(1);
   });

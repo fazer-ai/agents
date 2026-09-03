@@ -1,7 +1,9 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { Prisma, UserRole } from "@/../generated/prisma/client";
 
-export type ActorType = "user" | "api_key" | "mcp" | "system";
+export { ACTOR_TYPES, type ActorType } from "./actor";
+
+import type { ActorType } from "./actor";
 
 export interface TenantContext {
   // NOTE: null only for SUPER_ADMIN operating fleet-wide. A tenant-scoped op with a

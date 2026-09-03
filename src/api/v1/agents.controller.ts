@@ -452,10 +452,17 @@ export const agentsController = new Elysia({
           }),
         ),
         mode: t.Optional(
-          t.Union([t.Literal("test"), t.Literal("production")], {
-            description:
-              "Operating mode: 'test' stays silent in a conversation until the customer sends /teste; 'production' answers normally.",
-          }),
+          t.Union(
+            [
+              t.Literal("test"),
+              t.Literal("production"),
+              t.Literal("monitoring"),
+            ],
+            {
+              description:
+                "Operating mode: 'test' stays silent in a conversation until the customer sends /teste; 'production' answers normally; 'monitoring' receives and remembers every message and never answers.",
+            },
+          ),
         ),
         transferWithSummary: t.Optional(
           t.Boolean({
@@ -538,10 +545,17 @@ export const agentsController = new Elysia({
           }),
         ),
         mode: t.Optional(
-          t.Union([t.Literal("test"), t.Literal("production")], {
-            description:
-              "Operating mode: 'test' stays silent in a conversation until the customer sends /teste; 'production' answers normally.",
-          }),
+          t.Union(
+            [
+              t.Literal("test"),
+              t.Literal("production"),
+              t.Literal("monitoring"),
+            ],
+            {
+              description:
+                "Operating mode: 'test' stays silent in a conversation until the customer sends /teste; 'production' answers normally; 'monitoring' receives and remembers every message and never answers.",
+            },
+          ),
         ),
         transferWithSummary: t.Optional(
           t.Boolean({

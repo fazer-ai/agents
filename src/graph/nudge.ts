@@ -7,6 +7,7 @@ import { parseDbId } from "@/lib/db-id";
 import { withKeyedQueue } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
+import { agentStillSpeaks } from "@/modules/agents/speaks";
 import { isTestSilenced } from "@/modules/agents/test-mode";
 import { episodeTestActivatedAt } from "@/modules/channel-redirect/episode";
 import { readChannelRedirectConfig } from "@/modules/channel-redirect/service";
@@ -625,8 +626,36 @@ export async function runAgentNudge(
   // `strict` selects which question is being asked; see RunAgentTurnParams.stillWanted. Only the ask
   // inside the thread's critical section, before anything is written, wants an unreadable answer to
   // stop the run.
-  const stillWanted = async (strict = false): Promise<boolean> =>
-    params.stillWanted === undefined || (await params.stillWanted({ strict }));
+  //
+  // And the operator's own silences ride the same ask (issue #209 review, rounds 3 and 4): the
+  // config was loaded before the model call, and an agent switched off or flipped to monitoring
+  // inside it — or inside the ownership probe, the guardrail judge, the screening of the promised
+  // line — sends nothing: not the reply, not the template, not the line a transfer promised. In
+  // the wrapper rather than beside one send, so every ask below carries it. The mode read fails
+  // OPEN even on the strict ask: an unreadable row is not evidence of a withdrawal, and the strict
+  // question is about the episode, which `params.stillWanted` still answers strictly.
+  //
+  // WHICH silence, latched on the first refusal (round 8): a run retired by /reset ends the episode
+  // ("stale"), a run the operator silenced is REPAIRABLE — the reminder ladder retries
+  // "agent-unavailable" the way it does for an agent switched off before the nudge ran, and a
+  // flip to monitoring answers those retries at the config load. The episode is asked first, so a
+  // run that lost both answers "stale".
+  let silenced = false;
+  const stillWanted = async (strict = false): Promise<boolean> => {
+    if (
+      params.stillWanted !== undefined &&
+      !(await params.stillWanted({ strict }))
+    ) {
+      return false;
+    }
+    if (!(await agentStillSpeaks(tenantId, cfg.agentId, base))) {
+      silenced = true;
+      return false;
+    }
+    return true;
+  };
+  const standDown = (): "stale" | "agent-unavailable" =>
+    silenced ? "agent-unavailable" : "stale";
 
   // THE RULE for the asks below, because a check placed by intuition is a check the next branch is
   // born without: ONE ask per stretch of I/O that precedes a write, and never any I/O between an ask
@@ -656,7 +685,7 @@ export async function runAgentNudge(
   // than the money, though — an invoked graph writes the proactive turn into the conversation's
   // thread, so a retired job asked only at the send boundary would still leave memory of a message
   // nobody received.
-  if (!(await stillWanted())) return "stale";
+  if (!(await stillWanted())) return standDown();
 
   // THE TENANT'S OWN CEILING, asked here for the reason the line above states: before any model
   // spend. A proactive nudge has nobody waiting on the other end, so there is no copy and no handoff
@@ -672,7 +701,7 @@ export async function runAgentNudge(
   // line is `error` severity for `over`, so it pages the alert channels, and the announcement CLAIMS
   // the occasion window as it decides — a line written about a retired job would also swallow the
   // window the next attempt's real refusal needs. Nothing was refused, so nothing is reported.
-  if (!(await stillWanted())) return "stale";
+  if (!(await stillWanted())) return standDown();
   // ONE LINE PER OCCASION, not per attempt. A refused nudge is repairable, so the caller reschedules
   // it every fifteen minutes for two hours (`nudge-retry.ts`) — and the ceiling it walks into is one
   // unchanging fact, not eight refusals. Windowed to the ladder it has to outlast, and keyed by the
@@ -903,7 +932,7 @@ export async function runAgentNudge(
         canMessage: stillOurs === "ours",
         allowResolve: false,
       });
-      return applied === "stale" ? "stale" : "silent";
+      return applied === "stale" ? standDown() : "silent";
     }
     // Allowed, and the ownership probe above happened BEFORE a round-trip that may have taken ten
     // seconds. The same reason the refusal re-asks: a human who took the conversation during the
@@ -947,6 +976,8 @@ export async function runAgentNudge(
         client,
         conversationId,
         threadId: params.threadId,
+        // The slow-tool ack's own ask, after its send (issue #209 review, round 10).
+        stillWanted: () => stillWanted(),
         // NOTE: The live probe's answer where this path has one, the mirror's otherwise. resolve_conversation
         // runs immediately on a nudge turn (no turnState), so this is what tells its close apart from
         // one that had already happened — but only as a FALLBACK: this snapshot is taken before
@@ -973,10 +1004,10 @@ export async function runAgentNudge(
     // one, so a retirement landing while the model call is in flight left `assign_label` and
     // `set_custom_attribute` free to write to the conversation the operator just cleared.
     //
-    // Absent when the caller scheduled nothing, which is what the local helper's own default says:
-    // passing a fence that always answers yes would be a read per hop bought for nothing.
-    stillWanted:
-      params.stillWanted === undefined ? undefined : () => stillWanted(),
+    // Always present (issue #209 review, round 5): the local helper also reads the switch and the
+    // mode, which can change under a nudge nothing scheduled, so the ask is no longer one that
+    // always answers yes for such a caller.
+    stillWanted: () => stillWanted(),
     // Same warn line the reactive turn leaves: a proactive send that only worked on the second
     // attempt must not read like a clean one, and this path can page an alert channel.
     onModelRetry: ({ attempt, provider, model }) =>
@@ -1443,7 +1474,9 @@ export async function runAgentNudge(
       return decided;
     });
     // `stillWanted` said no inside the critical section: the run was retired while this got here.
-    if (claim === null) return "stale";
+    // The latched reason, not the literal (round 13): the strict ask inside the claim reads the
+    // switch and the mode too, and a reminder abandoned as "stale" is one the ladder never retries.
+    if (claim === null) return standDown();
     if (claim.closedConversationId !== null && contactInboxId !== null) {
       // Outside the critical section: this arms a job of its own and has no business inside the
       // ordering the queue exists to provide.
@@ -1464,7 +1497,7 @@ export async function runAgentNudge(
     // move and `armCompaction` — the last of which opens a transaction of its own, outside the lock.
     // The invoke persists the channel, which is the write /reset is clearing, so it gets its own.
     // Same placement `runLoadedTurn` uses, for the same reason.
-    if (!(await stillWanted())) return "stale";
+    if (!(await stillWanted())) return standDown();
 
     // 4. Invoke with the normalized event as a HUMAN turn. It must NOT be a SystemMessage: the agent
     // node already prepends the one-and-only system prompt, and a second system message in the thread
@@ -1657,12 +1690,12 @@ export async function runAgentNudge(
 
   // THE BOUNDARY'S REFUSAL IS NOT A SILENT TURN, and read from here the two are identical: both end
   // on an empty assistant message. Asked of the RESULT rather than of the fence, because the fence is
-  // the thing that can have changed its mind — `stillWanted` below reads `agent.enabled` live, so an
+  // the thing that can have changed its mind — `stillWanted` below reads the switch and the mode live, so an
   // operator who switched the agent off during the model call and back on by now answers yes, and
   // this turn would advance the ladder and leave its own refusal in shared history (issue #449,
   // review round 5). Before `drafted`, which is the first line that treats the empty turn as a
   // result.
-  if (turnWasCalledOff(result.messages)) return refuse("stale");
+  if (turnWasCalledOff(result.messages)) return refuse(standDown());
 
   // Silence via the explicit sentinel / narrated-emptiness guard (never post that), else strip any
   // stray sentinel occurrence from a real reply so it can't leak into the customer message.
@@ -1698,7 +1731,7 @@ export async function runAgentNudge(
   //
   // The later checks answer for later model calls — the guardrail judge's, and the screening inside
   // deliverPromisedLine — not for this one.
-  if (!(await stillWanted())) return refuse("stale");
+  if (!(await stillWanted())) return refuse(standDown());
 
   let canMessagePost: boolean;
   if (handedOff) {
@@ -1710,7 +1743,7 @@ export async function runAgentNudge(
     // check above this block answers for the model call, not for this round trip. Above the
     // `unavailable` return as well, so a retired run reports what it is rather than asking for a
     // retry it must not get.
-    if (!(await stillWanted())) return refuse("stale");
+    if (!(await stillWanted())) return refuse(standDown());
     // Fail closed: nothing has been posted yet, so a probe that could not run costs a retry and
     // nothing else.
     if (owned === "unavailable") return refuse("live-unavailable");
@@ -1741,7 +1774,7 @@ export async function runAgentNudge(
   // just cleared and re-armed the sequence the command ended — and the post-actions below would have
   // relabelled and resolved it on the way out. The transfer itself still stands: the tool ran inside
   // the graph and this fence was never able to reverse it.
-  if (promised === "stale") return refuse("stale");
+  if (promised === "stale") return refuse(standDown());
   if (promised) {
     if (promised !== "silent") markFollowUp(promised);
     await applyPostActions({ canMessage: canMessagePost });
@@ -1832,7 +1865,7 @@ export async function runAgentNudge(
     // ABOVE the suppression branch, for the reason the check outside this block sits above the silent
     // one: suppression posts no message but still fires the post-actions, so a check placed after it
     // guards only the sends and lets the judge's stretch of time reach the labels and the resolve.
-    if (!(await stillWanted())) return refuse("stale");
+    if (!(await stillWanted())) return refuse(standDown());
     if (screened === null) {
       await applyPostActions({ canMessage: canMessagePost });
       return "silent";

@@ -179,6 +179,7 @@
     "toolGrantToolNotInIntegration": "A ferramenta {{tool}} não está disponível na integração {{integration}}.",
     "toolGrantUnknownSource": "Origem de ferramenta desconhecida: {{source}}.",
     "toolGrantUnknownTool": "Ferramenta {{source}} desconhecida: {{tool}}.",
+    "toolNameReserved": "Esse nome é de uma ferramenta nativa; escolha outro.",
     "toolNameTaken": "Este nome de ferramenta já está em uso.",
     "unauthorized": "Não autorizado",
     "unknownDeliveryStatus": "Status de entrega desconhecido: {{status}}",

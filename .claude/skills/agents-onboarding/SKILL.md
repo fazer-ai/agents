@@ -45,7 +45,7 @@ Abra a referência da etapa **antes** de executá-la (carga sob demanda). O flux
 |---|-------|-----------|
 | 0 | Pré-requisitos, MCPs, acesso | [`references/00-prereqs-and-access.md`](references/00-prereqs-and-access.md) |
 | 1 | VPS + DNS (A-records `agents./chatwoot./langfuse.` + painel do tier) + SSH | [`references/01-vps-dns-ssh.md`](references/01-vps-dns-ssh.md) |
-| 1b | **Inventário brownfield**: sondar (read-only) e decidir por-serviço (reusar/instalar/sinalizar). **Detecta também a Secretária v3** e, achando, oferece a migração | [`references/01b-brownfield.md`](references/01b-brownfield.md) |
+| 1b | **Inventário brownfield**: sondar (read-only) e decidir por-serviço (reusar/instalar/sinalizar). **Detecta também a Secretária v3** e, achando, oferece a migração. **Havendo v3, a VPS está atendendo cliente**: antes do deploy, confira a folga de memória e faça o snapshot com prova de rollback | [`references/01b-brownfield.md`](references/01b-brownfield.md) + [`references/migracao-v3.md`](references/migracao-v3.md) seção 1b |
 | 1c | **Selecionar o tier** de deploy + fixar o **contrato** (o que o deploy entrega à espinha) | [`references/01c-pick-tier.md`](references/01c-pick-tier.md) |
 | 2 | **Tier A** · Coolify: reusar/instalar, API Access, **Instance Domain** (`coolify.<root>`) | [`references/02-coolify.md`](references/02-coolify.md) |
 | 3 | Deploy **Chatwoot** (Pro **ou** OSS pelo marcador; Pro: API do Coolify, login Harbor). **`chatwootSource: existing` PULA este passo** e usa o Chatwoot que já existe | [`references/03-chatwoot-pro.md`](references/03-chatwoot-pro.md) |

@@ -211,7 +211,11 @@ const SETTINGS_DESC_CEILING = 2_000;
 // BLOCK and not a field on an existing one, which is what makes it cost more than its own sentence —
 // the thirteen-times-published patterns above are per block. Re-measured on the tree that ships:
 // 22,567.
-const SETTINGS_SCHEMA_CEILING = 22_600;
+// A round after that, a fourteenth NATIVE tool (`run_code`, issue #363), which is the other axis a
+// native name is published on: `toolGuidance` and `toolPreconditions` carry one key per native, so
+// a native costs its name twice plus the precondition pattern — 393 characters, with no field of its
+// own anywhere in this schema. Re-measured on the tree that ships: 22,960.
+const SETTINGS_SCHEMA_CEILING = 23_000;
 
 describe("MCP tool descriptions", () => {
   test("agent_settings_set stays under its ceiling", async () => {
@@ -396,6 +400,36 @@ describe("MCP tool descriptions", () => {
   // publishing on every session). What stays is what a caller cannot get by trying: the spelling of
   // the block, that paths inside it are relative, that `{{.}}` is the item, and the 50-item cap,
   // which the runtime applies silently from the caller's side. The ceiling goes to 53,500.
+  // `audit_list` (#401) moves the SCHEMA number and barely touches the other: the console grew a
+  // page over this trail and the endpoint grew with it, from `action`+`limit` to a keyset cursor, a
+  // date range and the actor, and the MCP twin takes the same surface because they are one core.
+  // Five new optional fields, 47 characters past the ceiling the list block left, which is the floor
+  // for them: a field line costs about that much and one of the five is a four-value enum published
+  // from `ACTOR_TYPES` rather than hand-listed. Nothing there
+  // is prose to cut. The description went the other way — the filter list came OUT of it, because
+  // the schema below already names every one of them, and what stayed is the four things a caller
+  // cannot read off the schema: the ordering, the sanitisation guarantee, the limit cap, and what
+  // `latestAt` answers, and the four fit in 27 characters LESS than the sentence they replaced, so
+  // the description ceiling does not move at all: `audit_list` ends up smaller than it was. The
+  // schema ceiling goes to 53,600.
+  //
+  //
+  // `run_code` (#363) takes the schema total from 53,367 to 53,760, and every character of it is on
+  // `agent_settings_set` (measured per tool, base against fix: one line differs). A native tool is
+  // not an MCP tool, so it publishes no description and no schema of its own here; what it costs is
+  // its NAME, once per native-keyed settings map (`toolGuidance`, `toolPreconditions`) — 393
+  // characters the tools/list of every session pays for a tool the session may never grant. The
+  // schema ceiling goes to 54,000. (First measured against the tree before #459's block: 53,047 to
+  // 53,440, under the 53,500 both branches had picked; the two additions do not overlap, so the
+  // rebase added them — and the next rebase, over the five audit-trail rounds that took the base to
+  // 53,547, measured 53,940.)
+  //
+  // The `monitoring` mode (#209) takes the description total to 27,901, one character past the
+  // ceiling `agent_config_health` left: `agent_create` and `agent_update` name the third value in
+  // the sentence that already named the other two ("'monitoring' (reads, never answers)"), which is
+  // what a caller cannot learn by trying, because a mode it does not know is a refused write. No
+  // tool was added. The description ceiling goes to 28,000. The schema side grows by the third
+  // value of the two `mode` enums, to 53,966; the schema ceiling holds at 54,000.
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;
@@ -404,8 +438,8 @@ describe("MCP tool descriptions", () => {
       desc += t.description.length;
       schema += t.schema.length;
     }
-    expect(desc).toBeLessThanOrEqual(27_900);
-    expect(schema).toBeLessThanOrEqual(53_500);
+    expect(desc).toBeLessThanOrEqual(28_000);
+    expect(schema).toBeLessThanOrEqual(54_000);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

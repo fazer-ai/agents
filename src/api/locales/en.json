@@ -179,6 +179,7 @@
     "toolGrantToolNotInIntegration": "The tool {{tool}} is not available for the {{integration}} integration.",
     "toolGrantUnknownSource": "Unknown tool source: {{source}}.",
     "toolGrantUnknownTool": "Unknown {{source}} tool: {{tool}}.",
+    "toolNameReserved": "That name belongs to a built-in tool; choose another.",
     "toolNameTaken": "That tool name is already in use.",
     "unauthorized": "Unauthorized",
     "unknownDeliveryStatus": "Unknown delivery status: {{status}}",

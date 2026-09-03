@@ -46,12 +46,12 @@ function everyCappedPath(): string[] {
   return collectOversizedTextChanges(bag, undefined).map((o) => o.path);
 }
 
-// The thirteen native tools accept a note and the console draws three. The other ten can only have
+// The fourteen native tools accept a note and the console draws three. The other eleven can only have
 // been written through REST or MCP, so a refusal about one has nowhere to send anybody — and saying
 // "go to the Tools tab" about a control that is not there is worse than saying nothing.
 
 describe("editorTargetFor", () => {
-  test("every capped field either has a place in the editor or is one of the ten with no control", () => {
+  test("every capped field either has a place in the editor or is one of the eleven with no control", () => {
     // The sweep that would have caught this issue's own finding: `availability.awayMessage` and
     // `contactAuth.denyMessage` are capped, have a textarea on the Behavior tab, and were in neither
     // of the two maps that used to answer this. A warning about either told the operator the console
@@ -164,7 +164,7 @@ describe("hasNoConsoleControl", () => {
     // The claim has to be DERIVABLE, not inferred from this map having no entry. Reading it off an
     // absent target is what told the operator that `settings.modelFallback.model` and
     // `observability.fullDetailUntil` can only be changed through the API, about pickers that are on
-    // screen. `toolGuidance` is the one closed set: thirteen names in NATIVE_TOOL_NAMES, three drawn.
+    // screen. `toolGuidance` is the one closed set: fourteen names in NATIVE_TOOL_NAMES, three drawn.
     for (const f of UNDRAWN_TOOL_NOTES) {
       expect(hasNoConsoleControl(f), f).toBe(true);
       // Both wire spellings, since the credential producer prefixes and the text one does not.

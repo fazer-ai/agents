@@ -841,6 +841,50 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     expect(humanJob).toBeNull();
   });
 
+  // A MONITORING agent chases nobody, and the exclusion has to be in the sweep's own SQL and not
+  // only in the handler's predicate (issue #209): rows the handler would drop still fill the
+  // batch's LIMIT, and a busy monitoring agent could keep every eligible production follow-up out
+  // of it.
+  test("(o2) sweep enqueues nothing for a monitoring agent, whatever its conversations look like", async () => {
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: { mode: "monitoring" },
+    });
+    try {
+      await seedConversation(1022, {
+        assigneeType: "AgentBot",
+        lastInboundAt: new Date(Date.now() - 5 * 60_000),
+        lastFollowUpAt: null,
+      });
+      registerFollowUpHandlers();
+      const sweep = getJobHandler("FOLLOWUP_SWEEP");
+      await sweep?.(
+        {
+          id: 998n,
+          tenantId,
+          kind: "FOLLOWUP_SWEEP",
+          payload: {},
+          attempts: 0,
+          claimSeq: 0,
+        },
+        appDb,
+      );
+      const job = await suDb.schedulerJob.findFirst({
+        where: {
+          tenantId,
+          kind: "FOLLOWUP",
+          dedupeKey: `followup:${threadOf(1022)}`,
+        },
+      });
+      expect(job).toBeNull();
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { mode: "production" },
+      });
+    }
+  });
+
   // NOTE: The permissive sweep makes a conversation owned by a DIFFERENT Agent Bot reachable, so
   // the nudge's ownership gate must exclude it by id — our bot messages only its own conversations.
   test("(p) a conversation owned by a FOREIGN Agent Bot is never messaged; our own is", async () => {

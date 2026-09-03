@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
+import { isNativeToolName } from "@/graph/tools/catalog";
 import { normalizeExpectedStatuses } from "@/graph/tools/http-status";
 import { AppError, ConflictError, NotFoundError } from "@/lib/errors";
 import { parseInput } from "@/lib/parse-input";
@@ -39,6 +40,10 @@ export type HttpToolMethod = (typeof HTTP_METHODS)[number];
 // from one screen, which is exactly what an endpoint justified by "it does what saving does"
 // cannot do.
 export const DEFAULT_HTTP_METHOD: HttpToolMethod = "POST";
+
+// The label's authoring limit, shared with the import's rename: a label it moves must still be
+// savable from the console, which validates against this.
+export const TOOL_LABEL_MAX = 200;
 
 // The method a caller sent, or null when it is not one of the five. Uppercases first, because the
 // runtime does (`def.method.toUpperCase()`) and a hand-written `get` is the same request.
@@ -242,7 +247,7 @@ const UNDISCLOSED = [
 export const toolDefinitionCreateSchema = z
   .object({
     name: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
-    label: z.string().min(1).max(200),
+    label: z.string().min(1).max(TOOL_LABEL_MAX),
     description: z.string().max(2000).nullish(),
     method: z.enum(HTTP_METHODS).optional(),
     urlTemplate: z.string().min(1).max(2000),
@@ -336,6 +341,18 @@ async function assertNameFree(
   name: string,
   exceptId?: bigint,
 ): Promise<void> {
+  // A native's name is reserved at assembly (#457): a tool written under one would exist in the
+  // console, be granted, and never reach the model, with a flow-log line as the only trace. Refused
+  // where it is typed, the way a document slug is (documents/slug.ts). The import path does not
+  // come through here and renames instead (agents/transfer.ts), as the migration did for rows
+  // written before the name was native.
+  if (isNativeToolName(name)) {
+    throw new ConflictError(
+      "tool name belongs to a built-in tool",
+      "errors.toolNameReserved",
+      "name",
+    );
+  }
   const existing = await db.toolDefinition.findFirst({
     where: { name },
     select: { id: true },

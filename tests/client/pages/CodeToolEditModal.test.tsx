@@ -313,3 +313,103 @@ test("a save the server warned about says so in the toast, not only under the fi
     globalThis.fetch = realFetch;
   }
 });
+
+test("reopening a tool whose body does not parse warns again, without an edit", async () => {
+  // The opening clears the warnings, and reopening the same tool leaves the body identical — so an
+  // effect keyed only on the text does not rerun and a broken body looks clean until it is typed in.
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const href =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.href
+          : input.url;
+    if (/\/code-tools\/\d+/.test(href)) {
+      return new Response(
+        JSON.stringify({ tool: codeTool({ code: "return input.cpf." }) }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    return realFetch(input as RequestInfo, init);
+  }) as typeof fetch;
+  try {
+    render(<TwoToolsHarness />);
+    fireEvent.click(screen.getByText("open-1"));
+    await screen.findByText(/Line \d+, column \d+:/, {}, { timeout: 2000 });
+    fireEvent.click(screen.getByText("close-it"));
+    fireEvent.click(screen.getByText("open-1"));
+    await screen.findByText(/Line \d+, column \d+:/, {}, { timeout: 2000 });
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("a save that lands after the dialog was dismissed does not close the next one", async () => {
+  // Only Cancel is disabled while saving, so Esc/outside/X still dismiss: the continuation would
+  // otherwise close the dialog the operator had just reopened (docs/modals.md).
+  const realFetch = globalThis.fetch;
+  let release = () => {};
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const href =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.href
+          : input.url;
+    if (
+      href.includes("/code-tools") &&
+      (init?.method ?? "GET").toUpperCase() === "POST"
+    ) {
+      await new Promise<void>((r) => {
+        release = r;
+      });
+      return new Response(JSON.stringify({ tool: codeTool(), warnings: [] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    return realFetch(input as RequestInfo, init);
+  }) as typeof fetch;
+  try {
+    render(<TwoToolsHarness />);
+    fireEvent.click(screen.getByText("open-new"));
+    await waitFor(() =>
+      expect(document.body.querySelectorAll("input").length > 0).toBe(true),
+    );
+    const fill = () => {
+      const label = document.body.querySelector("input") as HTMLInputElement;
+      fireEvent.change(label, { target: { value: "Look up CPF" } });
+      const areas = [...document.body.querySelectorAll("textarea")];
+      fireEvent.change(
+        areas.find(
+          (ta) => !ta.className.includes("font-mono"),
+        ) as HTMLTextAreaElement,
+        { target: { value: "a description" } },
+      );
+      fireEvent.change(
+        areas.find((ta) =>
+          ta.className.includes("font-mono"),
+        ) as HTMLTextAreaElement,
+        { target: { value: "return 1" } },
+      );
+    };
+    fill();
+    fireEvent.click(screen.getByText("Save").closest("button") as HTMLElement);
+    await waitFor(() => expect(typeof release).toBe("function"));
+    // Dismissed while the save is out, then reopened for another new tool.
+    fireEvent.click(screen.getByText("close-it"));
+    fireEvent.click(screen.getByText("open-new"));
+    await waitFor(() =>
+      expect(document.body.querySelectorAll("input").length > 0).toBe(true),
+    );
+    fill();
+    release();
+    await new Promise((r) => setTimeout(r, 30));
+    // The second dialog is still on screen, with what the operator typed into it.
+    const label = document.body.querySelector("input") as HTMLInputElement;
+    expect(label?.value).toBe("Look up CPF");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});

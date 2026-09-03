@@ -420,7 +420,10 @@ export function ToolTestModal({
                 key={f.slot}
                 label={f.name}
                 description={f.hint}
-                group={picker}
+                // `picker` is one control; `canSendEmpty` puts a switch beside the input, and a
+                // FormField wrapping two focusable controls has to be a group or the click on its
+                // title reaches the first of them (CLAUDE.md, FormField `group`).
+                group={picker || canSendEmpty}
                 error={bad ? problemText(f.name, bad.problem) : undefined}
               >
                 {picker ? (

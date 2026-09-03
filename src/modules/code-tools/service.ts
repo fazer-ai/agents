@@ -215,8 +215,10 @@ export async function assertCodeToolNameAvailable(
   ctx: TenantContext,
   name: string,
   base: PrismaClient = basePrisma,
+  // The row being renamed, for an update: a tool keeping its own name is not colliding with itself.
+  exceptId?: bigint,
 ): Promise<void> {
-  await runScopedOn(base, ctx, (db) => assertNameFree(db, name));
+  await runScopedOn(base, ctx, (db) => assertNameFree(db, name, exceptId));
 }
 
 export async function createCodeTool(

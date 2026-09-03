@@ -302,6 +302,52 @@ describe.skipIf(!dbUp)("MCP code-tool tools (DB)", () => {
     expect(audits).toBe(1);
   });
 
+  test("a rename the apply would refuse is refused by the dry run too, and keeping your own name is not a collision", async () => {
+    // The one field of a patch whose verdict is not in the payload. Without the availability check
+    // the preview answered a confident diff for a write that always fails (#490).
+    const p = principal({ tenantId: tenantA });
+    const row = await suDb.codeToolDefinition.findFirstOrThrow({
+      where: { tenantId: tenantA, name: "validar_cpf" },
+    });
+    const onNative = await codeToolUpdate(
+      p,
+      { code_tool_id: String(row.id), name: "calculator" },
+      { base: appDb },
+    );
+    expect(onNative.ok).toBe(false);
+    const applyOnNative = await codeToolUpdate(
+      p,
+      { code_tool_id: String(row.id), name: "calculator", dry_run: false },
+      { base: appDb },
+    );
+    expect(applyOnNative.ok).toBe(false);
+
+    const other = await suDb.codeToolDefinition.create({
+      data: {
+        tenantId: tenantA,
+        name: "outra_ferramenta",
+        label: "Outra",
+        description: "d",
+        inputSchema: {},
+        code: "return 1",
+      },
+    });
+    const onTaken = await codeToolUpdate(
+      p,
+      { code_tool_id: String(row.id), name: "outra_ferramenta" },
+      { base: appDb },
+    );
+    expect(onTaken.ok).toBe(false);
+    // Its own name is not a collision with itself.
+    const onItself = await codeToolUpdate(
+      p,
+      { code_tool_id: String(row.id), name: row.name },
+      { base: appDb },
+    );
+    expect(onItself.ok).toBe(true);
+    await suDb.codeToolDefinition.delete({ where: { id: other.id } });
+  });
+
   test("code_tool_list omits the body; code_tool_get returns it; both are tenant-fenced", async () => {
     const list = await codeToolList(principal({ tenantId: tenantA }), {
       base: appDb,

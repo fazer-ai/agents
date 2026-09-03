@@ -204,6 +204,13 @@ export function CodeToolEditModal({
           const initial = formFromCodeTool(data.tool);
           setForm(initial);
           baselineRef.current = JSON.stringify(initial);
+          // Checked HERE and not only by the effect below: the effect is keyed on the body's text,
+          // and reopening the same tool installs the same text after this handler cleared the
+          // warnings — so it would not rerun, and a body that does not parse would look clean until
+          // the operator typed into it.
+          void checkCodeToolSyntax(initial.code).then((w) => {
+            if (mine()) setSyntaxWarnings(w);
+          });
         } catch {
           if (mine()) setLoadError(true);
         } finally {
@@ -251,6 +258,10 @@ export function CodeToolEditModal({
   }, [form.code]);
 
   async function save() {
+    // The opening this save belongs to. A slow save can still be dismissed (Esc, outside, X — only
+    // Cancel is disabled while saving), and the continuation below would then close the dialog the
+    // operator reopened and write this tool's state into it (docs/modals.md).
+    const session = sessionRef.current;
     setFormError(null);
     const payload = payloadOfCodeTool(form);
     setSaving(true);
@@ -262,7 +273,15 @@ export function CodeToolEditModal({
         ? await api.api.v1["code-tools"]({ id: editId }).patch(payload)
         : await api.api.v1["code-tools"].post(payload);
       if (err || !data) {
-        setFormError(held(err));
+        if (sessionRef.current === session) setFormError(held(err));
+        return;
+      }
+      // Dismissed and reopened while this was out: the row was written, and it is the CALLER's list
+      // that has to hear about it, not the dialog now on screen.
+      // Dismissed and reopened while this was out: the row was written, and it is the CALLER's list
+      // that has to hear about it, not the dialog now on screen.
+      if (sessionRef.current !== session) {
+        onSaved?.({ id: data.tool.id, name: data.tool.name }, !editId);
         return;
       }
       refusal.clear();

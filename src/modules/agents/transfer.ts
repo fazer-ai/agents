@@ -29,6 +29,7 @@ import {
   stdioCommandLauncher,
 } from "@/lib/mcp-launchers";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
+import { clipText } from "@/lib/text";
 import { auditSafe } from "@/modules/agents/audit-projection";
 import {
   type CredentialFieldTab,
@@ -1505,6 +1506,21 @@ function renamedToolName(base: string, taken: ReadonlySet<string>): string {
 // migration's. A label the suffix would push past the authoring limit becomes the name itself,
 // which derives to itself (round 22). Shared by the HTTP and the code loop: both kinds are
 // authored in the same console, under the same derivation.
+// The services bound what they store, and this path writes past them: a bundle carrying a longer
+// label or description would create a row the console and the REST update can no longer save, and
+// the operator would meet that only when they next edited the tool. Clipped rather than refused,
+// the trade this file makes for prose everywhere else.
+// `clipText`, never a bare slice: these bound TEXT an operator wrote, and a cut that lands between
+// the halves of an astral character leaves an orphan surrogate that Postgres refuses inside a jsonb
+// write and that renders as a replacement character everywhere it survives (src/lib/text.ts).
+const TOOL_DESCRIPTION_MAX = 2000;
+function clipLabel(label: string): string {
+  return clipText(label, TOOL_LABEL_MAX);
+}
+function clipDescription(text: string): string {
+  return clipText(text, TOOL_DESCRIPTION_MAX);
+}
+
 function renamedLabel(
   bundledName: string,
   storedName: string,
@@ -1530,12 +1546,17 @@ async function storedToolName(
   taken: Set<string>,
   heldByOtherKind: (name: string) => Promise<boolean>,
 ): Promise<string> {
-  let name = isNativeToolName(bundled)
-    ? renamedToolName(bundled, taken)
-    : bundled;
+  // The bundle's own spelling is not necessarily a name the model can be offered. A provider
+  // refuses the WHOLE function list over one that is empty, spaced or past 64 characters, so an
+  // agent granted such a tool answers nothing at all — and the bundle is a file, hand-editable and
+  // written by other versions, while this path writes past the service that would refuse it.
+  // Normalized to the identifier the console derives from a label, which is also what makes it
+  // reportable: a name that moves here moves through the same rename machinery as any other.
+  const base = normalizeToolName(bundled);
+  let name = isNativeToolName(base) ? renamedToolName(base, taken) : base;
   while (await heldByOtherKind(name)) {
     taken.add(name);
-    name = renamedToolName(bundled, taken);
+    name = renamedToolName(base, taken);
   }
   return name;
 }
@@ -1570,8 +1591,10 @@ async function createMissingComponents(
   // other: without the code names here, an HTTP tool renamed off a native could land on the
   // name a code tool of the SAME bundle carries, and the pair would then be one tool to the model.
   const taken = new Set([
-    ...components.httpTools.map((t) => t.name),
-    ...(components.codeTools ?? []).map((t) => t.name),
+    // Normalized, because that is what the loops will actually store (storedToolName): a bundle
+    // carrying "a b" and "a_b" claims one name twice, and the raw spellings would hide it.
+    ...components.httpTools.map((t) => normalizeToolName(t.name)),
+    ...(components.codeTools ?? []).map((t) => normalizeToolName(t.name)),
   ]);
   // One stored name per bundle name: a bundle carrying the same native-named component twice (a
   // hand-edited file) chose a new suffix per occurrence and the last one overwrote the grant
@@ -1598,7 +1621,9 @@ async function createMissingComponents(
       ));
     chosen.set(tdef.name, name);
     taken.add(name);
-    const label = renamedLabel(tdef.name, name, tdef.label ?? tdef.name);
+    const label = clipLabel(
+      renamedLabel(tdef.name, name, tdef.label ?? tdef.name),
+    );
     // Recorded once a row under the new name EXISTS — written below, or found by the pre-check
     // or the race — and not before: a component the checks below skip was otherwise announced
     // as imported under a name no row carries, next to the warning that it was not (round 16).
@@ -1670,7 +1695,9 @@ async function createMissingComponents(
           name,
           // label is required now; legacy exports without one fall back to the identifier.
           label,
-          description: tdef.description ?? null,
+          description: tdef.description
+            ? clipDescription(tdef.description)
+            : null,
           method,
           urlTemplate: (shapes.urlTemplate ?? tdef.urlTemplate) as string,
           allowedHosts: tdef.allowedHosts,
@@ -1747,7 +1774,9 @@ async function createMissingComponents(
       ));
     chosenCode.set(tdef.name, name);
     taken.add(name);
-    const label = renamedLabel(tdef.name, name, tdef.label ?? tdef.name);
+    const label = clipLabel(
+      renamedLabel(tdef.name, name, tdef.label ?? tdef.name),
+    );
     // Recorded once a row under the new name EXISTS, and not before, for the reason the HTTP
     // loop's `landed` gives.
     const landed = (): void => {
@@ -1787,7 +1816,9 @@ async function createMissingComponents(
           label,
           // The column is required and the model reads it to decide when to call; a bundle that
           // carries none gets the label, which is the next best statement of what the tool is.
-          description: tdef.description?.trim() ? tdef.description : label,
+          description: clipDescription(
+            tdef.description?.trim() ? tdef.description : label,
+          ),
           inputSchema: (shapes.inputSchema ?? {}) as Prisma.InputJsonValue,
           code: tdef.code,
           enabled: tdef.enabled ?? true,

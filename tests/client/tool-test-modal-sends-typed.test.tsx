@@ -357,6 +357,10 @@ test("and an optional field says so explicitly, because a blank box cannot", asy
     screen.getByRole("switch", { name: /Send it as empty in the request/ }),
   );
   expect(screen.getByPlaceholderText('goes in empty: ""')).toBeInTheDocument();
+  // Two focusable controls under one field title, so the field is a GROUP: without it the title is
+  // a <label>, and clicking it (or the space beside the boxes) forwards to the first descendant —
+  // here, the input, or worse the switch, silently flipping what goes on the wire (CLAUDE.md).
+  expect(screen.getByRole("group", { name: /tag/ }) !== null).toBe(true);
   fireEvent.click(screen.getByText("Send request"));
   await waitFor(() => expect(sent.body).toBeDefined());
   expect((sent.body as { args: unknown }).args).toEqual({ tag: "" });

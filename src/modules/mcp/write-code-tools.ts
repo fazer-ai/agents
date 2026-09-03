@@ -167,6 +167,13 @@ export async function codeToolUpdate(
       // a diff the apply would take (#490). It judges the INPUT, so its verdict cannot change in
       // the gap; the name's availability is asked by the apply, inside its transaction.
       assertCodeToolPatchValid(built.patch);
+      // A rename is the one field of a patch whose verdict is not in the payload: `updateCodeTool`
+      // asks whether the name is free, and a preview that skipped the question answered a confident
+      // diff for a write that always fails. ADVISORY, like the create's, and excluding this row so
+      // a tool keeping its own name is not refused for colliding with itself (#490).
+      if (built.patch.name !== undefined) {
+        await assertCodeToolNameAvailable(ctx, built.patch.name, base, id);
+      }
       // NOTE: checked only when the patch carries a body, which is when the apply checks it: a patch
       // that leaves the body alone reports `[]` from both, and the stored body's own warnings are
       // code_tool_get's to show.

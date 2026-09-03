@@ -2222,6 +2222,53 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     );
   });
 
+  // A bundle is a FILE: hand-edited, or written by a version whose rules differ. A name the model
+  // could never be offered (empty, spaced, past 64 characters) does not just store a bad row — the
+  // provider refuses the whole function list, so the agent granted it answers nothing at all. The
+  // import writes past the service that would refuse it, so it normalizes to the same identifier
+  // the console derives from a label, and says so as a rename. The label and the description are
+  // clipped to what the service stores, or the row could never be saved from the console again.
+  test("a bundled tool whose name no provider would accept is stored under a normalized one, warned, with its grant following", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const bundle = structuredClone(exp);
+    const code = bundle.components?.codeTools?.find(
+      (c) => c.name === "validar_cpf",
+    );
+    if (!code) throw new Error("bundle missing validar_cpf");
+    const grant = bundle.agent.tools.find(
+      (g) => g?.source === "CODE" && g.tool === "validar_cpf",
+    );
+    if (grant?.source !== "CODE") throw new Error("bundle missing the grant");
+    code.name = "Validar CPF do cliente!";
+    code.label = "L".repeat(400);
+    code.description = "D".repeat(5000);
+    grant.tool = code.name;
+    const { agent, warnings } = await importAgent(dstCtx(), bundle, appDb);
+    const row = await suDb.codeToolDefinition.findFirst({
+      where: { tenantId: dstTenant, name: "validar_cpf_do_cliente" },
+      select: { id: true, label: true, description: true },
+    });
+    expect(row?.label.length).toBe(200);
+    expect(row?.description.length).toBe(2000);
+    expect(warnings).toContainEqual({
+      code: "codeToolRenamed",
+      params: {
+        name: "Validar CPF do cliente!",
+        renamed: "validar_cpf_do_cliente",
+      },
+      target: { kind: "codeTool", name: "validar_cpf_do_cliente" },
+    });
+    const grants = await suDb.agentToolSelection.findMany({
+      where: { agentId: BigInt(agent.id), source: "CODE" },
+      select: { codeToolDefinitionId: true },
+    });
+    expect(grants.map((g) => g.codeToolDefinitionId)).toEqual([
+      row?.id ?? null,
+    ]);
+  });
+
   // The mirror of the cross-kind rule above. The HTTP service refuses a name a code tool holds
   // where it is typed (tool-definitions/service.ts asks the code table), and this path writes
   // past the service, so a bundled HTTP tool named like a code tool the destination stores would

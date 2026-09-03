@@ -2,6 +2,7 @@
 
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -197,6 +198,81 @@ describe("the spend ceiling card", () => {
     await waitFor(() => {
       expect(reads()).toBe(2);
     });
+  });
+
+  // AN OLDER READ LANDING AFTER A NEWER ONE IS DROPPED (review round 16). The mount-time read is
+  // still out when the Langfuse card saves and bumps `reloadKey`; the save's read answers first
+  // with the credential in place, and the mount-time answer, with no credential, lands last. The
+  // card keeps the newer answer.
+  test("an older usage read landing after a newer one is dropped", async () => {
+    const before = { ...baseUsage(), langfuseConfigured: false };
+    const after = baseUsage();
+    let releaseFirst: (() => void) | null = null;
+    let reads = 0;
+    requests.length = 0;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = new URL(String(input instanceof Request ? input.url : input));
+      if (!url.pathname.endsWith("/spend-ceiling/usage")) return json({}, 404);
+      reads += 1;
+      if (reads === 1) {
+        await new Promise<void>((resolve) => {
+          releaseFirst = resolve;
+        });
+        return json({ instance: {}, ...before });
+      }
+      return json({ instance: {}, ...after });
+    }) as typeof fetch;
+    const r = render(
+      <ToastProvider>
+        <SpendCeilingCard value={settings} onSaved={() => {}} reloadKey={0} />
+      </ToastProvider>,
+    );
+    await waitFor(() => {
+      expect(releaseFirst).not.toBeNull();
+    });
+    r.rerender(
+      <ToastProvider>
+        <SpendCeilingCard value={settings} onSaved={() => {}} reloadKey={1} />
+      </ToastProvider>,
+    );
+    await waitFor(() => {
+      expect(has("$22.50 of $20.00")).toBe(true);
+    });
+    expect(reads).toBe(2);
+    expect(has("Langfuse is not configured")).toBe(false);
+    // Let the older answer land, and settle every tick it needs to reach the state.
+    await act(async () => {
+      (releaseFirst as (() => void) | null)?.();
+      for (let i = 0; i < 5; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+    });
+    expect(has("Langfuse is not configured")).toBe(false);
+    expect(has("$22.50 of $20.00")).toBe(true);
+  });
+
+  // THE CARD RE-READS ON THE POLL'S OWN PERIOD WHILE IT STAYS OPEN (review round 16). The health
+  // beside the bar is the server's per read, so a card left mounted has to ask again, or it keeps
+  // saying "refreshed" from its first read across every missed poll.
+  test("a mounted card re-reads the usage every poll interval", async () => {
+    const usage = { ...baseUsage(), pollIntervalMs: 40 };
+    installFetchStub(usage);
+    renderCard();
+    await waitFor(() => {
+      expect(has("$22.50 of $20.00")).toBe(true);
+    });
+    expect(has("Not refreshed since")).toBe(false);
+    // The next read finds both rows gone stale, and both bars say so.
+    usage.entries = usage.entries.map((e) => ({ ...e, stale: true }));
+    await waitFor(() => {
+      expect(
+        screen.queryAllByText("Not refreshed since", { exact: false }),
+      ).toHaveLength(2);
+    });
+    const reads = requests.filter(
+      (q) => q.method === "GET" && q.path.endsWith("/usage"),
+    ).length;
+    expect(reads).toBeGreaterThanOrEqual(2);
   });
 
   // A NEGATIVE AMOUNT IS REFUSED, NOT ROUNDED TO ZERO (review round 6). Zero means no ceiling on

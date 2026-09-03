@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Button,
@@ -26,6 +26,10 @@ type Settings = NonNullable<
   Awaited<ReturnType<(typeof api.api.v1)["tenant-settings"]["get"]>>["data"]
 >;
 type SpendCeiling = Settings["spendCeiling"];
+
+// How often a card whose first read failed asks again, until a read has said how often the poll
+// runs (review round 16). Once the usage is in hand its own `pollIntervalMs` is the period.
+const USAGE_RETRY_MS = 60_000;
 
 // THE NUMBER THE OPERATOR CAME FOR, above the fields that set it. The ceiling is the one setting in
 // this panel whose value is meaningless without the measurement beside it: nobody can pick a
@@ -226,14 +230,22 @@ export function SpendCeilingCard({
     });
   }, [value]);
 
+  // A READ THAT SETTLES AFTER A NEWER ONE IS DROPPED (review round 16). The mount-time read and
+  // the one the Langfuse save asks for can be in flight together, and the older answer landing
+  // last would put the pre-save flag back over the one the save had just made true. Each read
+  // takes a number, and only the latest number's answer, or failure, reaches the state.
+  const readSeq = useRef(0);
   const loadUsage = useCallback(async () => {
-    setUsageError(false);
+    const seq = ++readSeq.current;
     try {
       const { data, error: err } =
         await api.api.v1["tenant-settings"]["spend-ceiling"].usage.get();
       if (err || !data) throw err ?? new Error("no data");
+      if (seq !== readSeq.current) return;
       setUsage(data);
+      setUsageError(false);
     } catch {
+      if (seq !== readSeq.current) return;
       setUsageError(true);
     }
   }, []);
@@ -242,6 +254,16 @@ export function SpendCeilingCard({
   useEffect(() => {
     void loadUsage();
   }, [loadUsage, reloadKey]);
+
+  // THE CARD RE-READS WHILE IT STAYS OPEN (review round 16). The health beside each bar (stale,
+  // failing since, the figure itself) is computed on the server per read, so a card left mounted
+  // across three missed polls would keep saying "refreshed" from its first read. The period is the
+  // poll's own, as the usage reports it, so the card learns of a reading about when there is one.
+  const refreshMs = usage?.pollIntervalMs ?? USAGE_RETRY_MS;
+  useEffect(() => {
+    const timer = setInterval(() => void loadUsage(), refreshMs);
+    return () => clearInterval(timer);
+  }, [loadUsage, refreshMs]);
 
   const set = <K extends keyof SpendCeiling>(k: K, v: SpendCeiling[K]) =>
     setForm((f) => ({ ...f, [k]: v }));

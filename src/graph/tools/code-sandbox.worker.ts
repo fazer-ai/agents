@@ -145,7 +145,10 @@ function installConsole(
       const line = args
         .map((a) => (vm.typeof(a) === "string" ? vm.getString(a) : render(a)))
         .join(" ");
-      total += line.length;
+      // NOTE: The separator counts, so a bare `console.log()` in a loop spends the budget too: with
+      // only `line.length` counted, a million empty calls built a million-entry array on this side
+      // of the memory ceiling (PR #485, round 2).
+      total += line.length + 1;
       logs.push(clip(line, maxChars));
     });
     vm.setProp(consoleObj, method, fn);
@@ -220,6 +223,7 @@ function installClock(
 // a function body" gets the snippet re-run as one. Any other error is the snippet's own.
 const RETURN_AT_TOP_LEVEL = /return not in a function/;
 const RENDER_BUDGET_MS = 200;
+const ERROR_NAME_MAX_CHARS = 100;
 
 function evaluate(
   vm: QuickJSContext,
@@ -334,7 +338,12 @@ function run(req: SandboxRequest): SandboxReply {
       return { kind: "value", value, logs, ms };
     }
     const e = out.error as { name?: unknown; message?: unknown } | null;
-    const name = typeof e?.name === "string" ? e.name : "Error";
+    // NOTE: The name is the snippet's too (`e.name = "x".repeat(1e6)` is one assignment), so it is
+    // bounded like the message; a real error name is an identifier.
+    const name = clip(
+      typeof e?.name === "string" ? e.name : "Error",
+      ERROR_NAME_MAX_CHARS,
+    );
     const message =
       typeof e?.message === "string"
         ? e.message

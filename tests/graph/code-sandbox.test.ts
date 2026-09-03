@@ -328,6 +328,41 @@ describe("runSandboxedCode", () => {
     expect(v.logs.join("").length).toBeLessThanOrEqual(600);
   });
 
+  // PR #485, round 2: two more values the snippet controls that reached the host unbounded. An
+  // empty `console.log()` spent nothing against the budget, so a loop of them built an array of a
+  // million entries on this side of the memory ceiling; and `e.name` is one assignment away from a
+  // megabyte, while only the message was clipped.
+  test("empty console calls and a huge error name are bounded like everything else", async () => {
+    const empties = await runSandboxedCode(
+      `for (let i = 0; i < 1000000; i++) console.log(); "done"`,
+      { maxChars: 500, timeoutMs: 3000 },
+    );
+    expect(empties.kind).toBe("value");
+    expect((empties as { logs: string[] }).logs.length).toBeLessThanOrEqual(
+      500,
+    );
+
+    const named = await runSandboxedCode(
+      `const e = new Error("m"); e.name = "x".repeat(100000); throw e`,
+    );
+    expect(named.kind).toBe("error");
+    const n = named as { name: string; message: string };
+    expect(n.name.length).toBeLessThanOrEqual(100 + "…[truncated]".length);
+    expect(n.message).toContain("m");
+    expect(
+      formatSandboxResult(
+        {
+          kind: "error",
+          name: "y".repeat(100000),
+          message: "m",
+          logs: [],
+          ms: 1,
+        },
+        { maxChars: 500 },
+      ).length,
+    ).toBeLessThan(400);
+  });
+
   test("a thread that cannot boot is the sandbox's failure, reported as such", async () => {
     const out = await runSandboxedCode(
       "1 + 1",

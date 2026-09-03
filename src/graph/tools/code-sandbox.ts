@@ -1,3 +1,4 @@
+import { clipText } from "@/lib/text";
 import {
   clipToModelLimit,
   MODEL_RESPONSE_CHAR_LIMIT,
@@ -144,9 +145,10 @@ export function localIsoNow(timezone: string, now: Date = new Date()): string {
     Number(get("minute")),
     Number(get("second")),
   );
-  const offsetMinutes = Math.round(
-    (wallAsUtc - Math.floor(now.getTime() / 1000) * 1000) / 60_000,
-  );
+  // NOTE: Whole seconds, because the wall clock above has no fraction to compare against.
+  const instantMs = now.getTime();
+  const wholeSecondMs = instantMs - (instantMs % 1000);
+  const offsetMinutes = Math.round((wallAsUtc - wholeSecondMs) / 60_000);
   const sign = offsetMinutes < 0 ? "-" : "+";
   const abs = Math.abs(offsetMinutes);
   const hh = String(Math.floor(abs / 60)).padStart(2, "0");
@@ -286,7 +288,7 @@ export function formatSandboxResult(
       tail = `Result: ${clipToModelLimit(out.value, maxChars).text}`;
       break;
     case "error":
-      tail = `Error: ${out.name}: ${clipToModelLimit(out.message, maxChars).text}\nThe code did not finish. Fix it and call run_code again.`;
+      tail = `Error: ${clipText(out.name, 100)}: ${clipToModelLimit(out.message, maxChars).text}\nThe code did not finish. Fix it and call run_code again.`;
       break;
     case "limit":
       switch (out.limit) {
@@ -311,10 +313,10 @@ export function formatSandboxResult(
   const frame = "Output:\n\n\n".length + OUTPUT_TRUNCATED.length;
   const budget = maxChars - tail.length - frame;
   if (budget < 40) return tail;
-  const shown = clipToModelLimit(joined, budget);
-  const body = shown.clipped
-    ? `${shown.text.slice(0, -"…[truncated]".length)}${OUTPUT_TRUNCATED}`
-    : shown.text;
+  const body =
+    joined.length <= budget
+      ? joined
+      : `${clipText(joined, budget)}${OUTPUT_TRUNCATED}`;
   return `Output:\n${body}\n\n${tail}`;
 }
 

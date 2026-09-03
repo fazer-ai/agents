@@ -2099,7 +2099,7 @@
     "usage": {
       "coverage": "O Langfuse precificou {{costed}} das {{ledger}} chamadas deste mês, então o valor subestima.",
       "error": "Não foi possível ler o consumo.",
-      "langfuseMissing": "O Langfuse não está configurado para este tenant, então o custo do mês não pode ser lido e o teto não pode ser aplicado. Configure-o no card do Langfuse.",
+      "langfuseMissing": "O Langfuse não está configurado para este tenant, então o custo do mês não pode ser lido e o teto não é aplicado: as chamadas passam até ele ser configurado. Configure-o no card do Langfuse.",
       "noCeiling": "{{used}} (sem teto)",
       "ofCeiling": "{{used}} de {{ceiling}}",
       "pollFailing": "A leitura do custo no Langfuse está falhando desde {{when}}: {{error}}",

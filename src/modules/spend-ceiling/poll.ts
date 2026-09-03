@@ -17,6 +17,7 @@ import type { ClaimedJob } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 import { monthStart } from "./decide";
 import {
+  LANGFUSE_NOT_CONFIGURED,
   readTenantSpendCeiling,
   SPEND_CEILING_WARN_COOLDOWN_MS,
 } from "./service";
@@ -36,8 +37,10 @@ import {
 // One query per source. The two sources are told apart on the Langfuse side by the trace's
 // ENVIRONMENT (`environmentForSource`: `<env>` for inbox, `<env>-playground` for the playground),
 // which is a filterable column of the metrics API and the same split the Langfuse UI's environment
-// selector makes. The window is the calendar month, closed at both ends, from `monthStart` to the
-// instant of the poll.
+// selector makes. Both queries are fenced to THE TENANT by the trace's `userId`, the tenant's slug:
+// the environment is deployment-wide, and a project two tenants share would otherwise be summed
+// into both months (review round 2). The window is the calendar month, closed at both ends, from
+// `monthStart` to the instant of the poll.
 //
 // THE FIGURE IS MONOTONIC INSIDE A MONTH. Langfuse ingests asynchronously and the lag correlates
 // with load, so during the burst the ceiling exists for a total can read LOWER than the last one: a
@@ -64,7 +67,6 @@ export type PollOutcome =
   | { status: "langfuse-not-configured" }
   | { status: "failed"; error: string };
 
-const NOT_CONFIGURED = "langfuse-not-configured";
 const SOURCES: UsageSource[] = ["inbox", "playground"];
 
 function sysCtx(tenantId: bigint): TenantContext {
@@ -83,10 +85,19 @@ function num(v: unknown): number {
   return Number.isFinite(n) ? n : 0;
 }
 
-// One metrics query: the month's generations of one environment, summed and counted per model.
-// v1 endpoint, because v2 is Langfuse-cloud-only (../analytics/langfuse-costs.ts measured the 404).
+// One metrics query: the month's generations of one environment AND one tenant, summed and counted
+// per model. v1 endpoint, because v2 is Langfuse-cloud-only (../analytics/langfuse-costs.ts
+// measured the 404).
+//
+// The tenant filter is the trace's `userId`, which every trace of ours carries as the tenant's slug
+// (review round 2). The environment is deployment-wide, not per tenant: two tenants may point at one
+// Langfuse project, and a project may carry another generator's traces in the same environment,
+// and either would be summed into this tenant's month and refuse its customers over someone
+// else's spend. Measured on the observations view: `userId` is a filterable column there, joined
+// from the trace.
 async function fetchMonthCost(
   cfg: LangfuseConfig,
+  tenantSlug: string,
   environment: string,
   from: Date,
   to: Date,
@@ -108,6 +119,7 @@ async function fetchMonthCost(
         type: "string",
       },
       { column: "type", operator: "=", value: "GENERATION", type: "string" },
+      { column: "userId", operator: "=", value: tenantSlug, type: "string" },
     ],
     fromTimestamp: from.toISOString(),
     toTimestamp: to.toISOString(),
@@ -269,16 +281,37 @@ export async function pollTenantSpend(
     if (!cfg) {
       await runScopedOn(base, ctx, async (db) => {
         for (const source of SOURCES) {
-          await writeFailure(db, tenantId, source, month, NOT_CONFIGURED, now);
+          await writeFailure(
+            db,
+            tenantId,
+            source,
+            month,
+            LANGFUSE_NOT_CONFIGURED,
+            now,
+          );
         }
       });
-      return { status: NOT_CONFIGURED };
+      return { status: LANGFUSE_NOT_CONFIGURED };
+    }
+    // No slug, no query: the project's total is not this tenant's, and a poll that cannot say whose
+    // the figure is records a failure rather than a number. Unreachable in practice (the slug is a
+    // NOT NULL column and the tenant's own row is readable here); the fence is for the day that
+    // changes.
+    if (!cfg.tenantSlug) {
+      throw new Error("the tenant has no slug to scope the Langfuse query by");
     }
     // Both sources are asked before either is written, so a failure on the second leaves neither
     // half-updated against the other's fresh figure.
     const seen = await Promise.all(
       SOURCES.map((source) =>
-        fetchMonthCost(cfg, environmentForSource(source), month, now, fetchFn),
+        fetchMonthCost(
+          cfg,
+          cfg.tenantSlug as string,
+          environmentForSource(source),
+          month,
+          now,
+          fetchFn,
+        ),
       ),
     );
     await runScopedOn(base, ctx, async (db) => {

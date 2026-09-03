@@ -2091,7 +2091,7 @@
     "usage": {
       "coverage": "Langfuse priced {{costed}} of the {{ledger}} calls this month, so the figure undercounts.",
       "error": "Could not read the usage.",
-      "langfuseMissing": "Langfuse is not configured for this tenant, so the month's cost cannot be read and the ceiling cannot be enforced. Configure it in the Langfuse card.",
+      "langfuseMissing": "Langfuse is not configured for this tenant, so the month's cost cannot be read and the ceiling is not enforced: calls go through until it is. Configure it in the Langfuse card.",
       "noCeiling": "{{used}} (no ceiling)",
       "ofCeiling": "{{used}} of {{ceiling}}",
       "pollFailing": "Reading the cost from Langfuse has been failing since {{when}}: {{error}}",

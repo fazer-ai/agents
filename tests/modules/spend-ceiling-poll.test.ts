@@ -277,6 +277,15 @@ describe.skipIf(!dbUp)("the spend ceiling poll", () => {
         value: "GENERATION",
         type: "string",
       });
+      // And fenced to THIS tenant (review round 2): the environment is deployment-wide, so a
+      // project shared by two tenants, or one carrying another generator in the same environment,
+      // would otherwise be summed into every tenant's month. The trace's `userId` is the slug.
+      expect(s.query.filters).toContainEqual({
+        column: "userId",
+        operator: "=",
+        value: `sp-a-${process.pid}`,
+        type: "string",
+      });
       expect(s.query.fromTimestamp).toBe(monthStart(NOW).toISOString());
       expect(s.query.toTimestamp).toBe(NOW.toISOString());
     }

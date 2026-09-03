@@ -296,3 +296,89 @@ export function buildLangfuseHandler(
     return null;
   }
 }
+
+export interface DirectGenerationContext {
+  tenantId: bigint;
+  turnId: string;
+  threadId?: string | null;
+  conversationId?: bigint | null;
+  agentId?: bigint | null;
+  source?: UsageSource;
+}
+
+export interface DirectGeneration {
+  // The ledger `node`, which is also the generation's name.
+  name: string;
+  model: string;
+  promptTokens: number;
+  completionTokens: number;
+  // Discounted SUBSETS of promptTokens, never additive (same contract as `TokenUsage`).
+  cachedReadTokens?: number;
+  cacheCreationTokens?: number;
+  at?: Date;
+}
+
+// A BILLED CALL NO CALLBACK SAW, written to Langfuse by hand (#426, review round 2). Vision reaches
+// its provider by raw fetch, so the handler above never observes it and Langfuse never prices it:
+// the ledger had the row (`recordDirectUsage`) and the dollar ceiling, which sums Langfuse's
+// generations, had nothing. Same trace identity as the handler (id = turnId, sessionId = threadId,
+// userId = tenant slug) and the same cached client, so the same environment: the poll's filters
+// find it exactly as they find a turn's generations, and a later turn under the same id merges
+// into the same trace. `usageDetails` carries the keys the LangChain handler writes (`input` net of
+// the cached subsets, the subsets under `input_cache_read` / `input_cache_creation`), so one model
+// definition prices both paths alike. Best-effort, like every trace here: never throws, and says
+// whether it queued anything so the caller can log the miss.
+export function recordDirectGeneration(
+  cfg: LangfuseConfig | null,
+  ctx: DirectGenerationContext,
+  gen: DirectGeneration,
+): boolean {
+  if (!cfg) return false;
+  try {
+    const client = getClient(
+      ctx.tenantId,
+      cfg,
+      environmentForSource(ctx.source),
+    );
+    const cachedRead = gen.cachedReadTokens ?? 0;
+    const cacheCreation = gen.cacheCreationTokens ?? 0;
+    const usageDetails: Record<string, number> = {
+      input: Math.max(0, gen.promptTokens - cachedRead - cacheCreation),
+      output: gen.completionTokens,
+      total: gen.promptTokens + gen.completionTokens,
+    };
+    if (cachedRead > 0) usageDetails.input_cache_read = cachedRead;
+    if (cacheCreation > 0) usageDetails.input_cache_creation = cacheCreation;
+    const at = gen.at ?? new Date();
+    const metadata = {
+      tenantId: String(ctx.tenantId),
+      conversationId:
+        ctx.conversationId != null ? String(ctx.conversationId) : undefined,
+      agentId: ctx.agentId != null ? String(ctx.agentId) : undefined,
+      turnId: ctx.turnId,
+      source: ctx.source,
+    };
+    client
+      .trace({
+        id: ctx.turnId,
+        sessionId: ctx.threadId ?? undefined,
+        userId: cfg.tenantSlug,
+        metadata,
+      })
+      .generation({
+        name: gen.name,
+        model: gen.model,
+        startTime: at,
+        endTime: at,
+        usageDetails,
+        metadata: { node: gen.name },
+      });
+    return true;
+  } catch (err) {
+    logger.warn(
+      { err, turnId: ctx.turnId, node: gen.name },
+      "langfuse direct generation failed",
+    );
+    return false;
+  }
+}

@@ -319,7 +319,7 @@ export function SpendCeilingCard({
               <p className="text-sm text-warning">
                 {t(
                   "spendCeiling.usage.langfuseMissing",
-                  "Langfuse is not configured for this tenant, so the month's cost cannot be read and the ceiling cannot be enforced. Configure it in the Langfuse card.",
+                  "Langfuse is not configured for this tenant, so the month's cost cannot be read and the ceiling is not enforced: calls go through until it is. Configure it in the Langfuse card.",
                 )}
               </p>
             )}

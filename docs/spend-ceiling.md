@@ -46,7 +46,12 @@ moves the failure from **availability to staleness**, which is a failure the row
   `environmentForSource` (`<env>` for inbox, `<env>-playground` for the playground), which is a
   filterable column of the Langfuse metrics API, so the poll runs one query per source: the
   `observations` view, `sum(totalCost)` and `count` per `providedModelName`, generations only, from
-  `monthStart` to the instant of the poll.
+  `monthStart` to the instant of the poll. **And by the trace's `userId`, the tenant's slug**: the
+  environment is deployment-wide, not per tenant, so a Langfuse project two tenants point at, or one
+  carrying another generator's traces in the same environment, would otherwise be summed into every
+  tenant's month and refuse one tenant's customers over another's spend. `userId` is a filterable
+  column of the observations view (joined from the trace, measured on v3), and every trace of ours
+  carries the slug. A tenant whose slug cannot be read is a failed poll, never the project's total.
 - **The figure is monotonic inside a month.** Langfuse ingests asynchronously and the lag correlates
   with load, so during the burst the ceiling exists for a total can read *lower* than the last one.
   A lower answer is never written over a higher one, and a poll that errors touches only the failure
@@ -61,12 +66,30 @@ moves the failure from **availability to staleness**, which is a failure the row
   `warn`, so a channel widened to warnings hears about it. A ceiling that fails closed on staleness
   was rejected for the same reason the direct call was: a third-party outage must not silence a
   tenant.
+- **A row the poll could not refresh for want of a Langfuse is no ceiling.** When the tenant's
+  Langfuse stops resolving (the block switched off, the credential deleted or malformed), the poll
+  keeps the last figure on the row and marks it `langfuse-not-configured`. The console says the
+  ceiling cannot be enforced, and the gate agrees with that sentence (`snapshotUnenforceable`): the
+  call goes through, with the frozen figure still reported beside the ceiling so a reader sees what
+  stopped being enforced. Otherwise a tenant that removed Langfuse at $50 of a $10 ceiling would be
+  refused for the rest of the month on a number nothing can refresh. This is the one failure that
+  opens the gate; every other failure is staleness, and stale decides. The gate learns of it at the
+  next poll, so the window between the credential going away and the gate opening is at most one
+  poll period.
 - **The reconciliation ships with it.** Langfuse prices a model it does not know at zero, silently, so
   a tenant on OpenRouter or a self-hosted endpoint would get a ceiling that never trips, which is worse
   than none because the screen says it is enforcing. The same query counts generations per model, so
   a model with calls and no cost is named on the row (`unpricedModels`), and the console compares
   what Langfuse costed (`costedCalls`) against what the local ledger recorded (`ledgerCalls`) on the
   same screen that shows the bar.
+- **A billed call no callback saw reaches Langfuse by hand.** Vision reaches its provider by raw
+  fetch, so the LangChain handler never observes it, and Langfuse only prices the generations it was
+  shown: the ledger had the row and the ceiling had nothing, which left an extraction-only playground
+  free to run under the ceiling indefinitely. `recordDirectUsage` (`src/graph/usage.ts`) now writes
+  both books: the ledger row, and a Langfuse generation (`recordDirectGeneration`) under the same
+  trace identity as a turn (id = turnId, `userId` = slug, the source's environment) with usage keyed
+  the way the handler keys it, so one model definition prices both paths and the poll's filters find
+  it. A tenant with no Langfuse keeps the row and skips the trace.
 - **A month nobody has polled yet is nothing spent.** The first poll writes the row; until then the
   ceiling cannot refuse on a figure it does not have, which is the same direction the
   unreadable-ceiling rule takes.

@@ -252,6 +252,82 @@ describe.skipIf(!dbUp)("the spend ceiling against the cost snapshot", () => {
       expect(v.snapshot).toBeNull();
     });
 
+    // A ROW THE POLL COULD NOT REFRESH FOR WANT OF A LANGFUSE IS NO FIGURE TO ENFORCE (review
+    // round 2). The poll keeps the last figure on the row and marks it `langfuse-not-configured`;
+    // the console says the ceiling cannot be enforced, and the gate has to agree with that
+    // sentence: a tenant that switched Langfuse off at $50 of a $10 ceiling would otherwise be
+    // refused for the rest of the month on a number nothing can refresh. Any OTHER failure keeps
+    // deciding on the floor, which is the staleness rule.
+    test("a row the poll marked not-configured lets the call through, whatever the figure", async () => {
+      const t = await suDb.tenant.create({
+        data: { name: "SC-NC", slug: `sc-nc-${process.pid}` },
+      });
+      const tctx: TenantContext = {
+        tenantId: t.id,
+        userId: null,
+        role: "TENANT_ADMIN",
+      };
+      try {
+        await seedSnapshot({
+          tenant: t.id,
+          source: "inbox",
+          month: "2026-08-01T00:00:00Z",
+          costUsd: 50,
+          pollError: "langfuse-not-configured",
+        });
+        const cfg = {
+          ...(await readTenantSpendCeiling(t.id, appDb)),
+          enabled: true,
+          monthlyInboxUsd: 10,
+        };
+        const v = await spendCeilingVerdict({
+          tenantId: t.id,
+          source: "inbox",
+          base: appDb,
+          now: AUG,
+          cfg,
+        });
+        expect(v.state).toBe("allowed");
+        // The figure is still said, so a reader can see WHAT stopped being enforced.
+        expect(v.usedUsd).toBe(50);
+        expect(v.ceilingUsd).toBe(10);
+        expect(v.snapshot?.pollError).toBe("langfuse-not-configured");
+        // The console shows the same verdict beside its own sentence.
+        const usage = await spendCeilingUsage({
+          ctx: tctx,
+          base: appDb,
+          now: AUG,
+          cfg,
+        });
+        expect(usage.entries.find((e) => e.source === "inbox")).toMatchObject({
+          usedUsd: 50,
+          ceilingUsd: 10,
+          state: "allowed",
+        });
+
+        // The contrast: the same figure under any other failure is a floor the gate refuses on.
+        await suDb.spendCostSnapshot.updateMany({
+          where: { tenantId: t.id },
+          data: { pollError: "Langfuse metrics API responded with 503" },
+        });
+        const failing = await spendCeilingVerdict({
+          tenantId: t.id,
+          source: "inbox",
+          base: appDb,
+          now: AUG,
+          cfg,
+        });
+        expect(failing.state).toBe("over");
+        expect(
+          (
+            await spendCeilingUsage({ ctx: tctx, base: appDb, now: AUG, cfg })
+          ).entries.find((e) => e.source === "inbox")?.state,
+        ).toBe("over");
+      } finally {
+        await suDb.tenant.delete({ where: { id: t.id } });
+      }
+    });
+
     // THE HALF WITH NO CEILING IS NOT READ. `0` is the operator saying this source is unbounded,
     // and the common configuration is exactly one bounded half. Counted at the seam rather than
     // timed, because a timing assertion would pass on a machine that is merely fast.

@@ -100,6 +100,24 @@ export async function spendUsedInMonth(
 export const SPEND_SNAPSHOT_STALE_AFTER_MS =
   3 * config.spendCeiling.pollIntervalMs;
 
+// WHAT THE POLL WRITES AS THE ERROR WHEN THE TENANT HAS NO USABLE LANGFUSE: the block is off, the
+// credential reference is dangling, or the keys do not parse. One string, shared with the poll that
+// writes it and the console that reads it, because three copies of a sentinel are three ways to
+// misspell it.
+export const LANGFUSE_NOT_CONFIGURED = "langfuse-not-configured";
+
+// A ROW THE POLL COULD NOT REFRESH FOR WANT OF A LANGFUSE IS NO FIGURE TO ENFORCE (review round 2).
+// The poll keeps the last figure on such a row (the console shows what stopped being enforced,
+// and the figure is still the month's floor if Langfuse comes back), but the gate must not decide
+// on it: the console says "cannot be enforced" the moment the credential is gone, and a tenant
+// that switched Langfuse off at $50 of a $10 ceiling would otherwise be refused for the rest of
+// the month on a number nothing can refresh. Every OTHER failure is staleness, and stale decides.
+export function snapshotUnenforceable(
+  row: { pollError: string | null } | null,
+): boolean {
+  return row?.pollError === LANGFUSE_NOT_CONFIGURED;
+}
+
 export interface SpendSnapshotHealth {
   polledAt: Date | null;
   pollError: string | null;
@@ -195,6 +213,17 @@ export async function spendCeilingVerdict(
       evaluatedAt,
       base,
     );
+    const snapshot = row ? snapshotHealth(row, evaluatedAt) : null;
+    if (row && snapshotUnenforceable(row)) {
+      return {
+        state: "allowed",
+        usedUsd: row.costUsd,
+        ceilingUsd: ceilingFor(cfg, params.source),
+        cfg,
+        evaluatedAt,
+        snapshot,
+      };
+    }
     return {
       ...decideSpend({
         cfg,
@@ -203,7 +232,7 @@ export async function spendCeilingVerdict(
       }),
       cfg,
       evaluatedAt,
-      snapshot: row ? snapshotHealth(row, evaluatedAt) : null,
+      snapshot,
     };
   } catch (err) {
     // The fail-open above, carried out. The catch wraps BOTH reads on purpose: the settings row and
@@ -552,7 +581,8 @@ export async function spendCeilingUsage(params: {
             source,
             usedUsd: snapshot?.costUsd ?? 0,
             ceilingUsd: verdict.ceilingUsd,
-            state: verdict.state,
+            // What the gate would answer, which is what the bar is for.
+            state: snapshotUnenforceable(snapshot) ? "allowed" : verdict.state,
             polledAt: health?.polledAt?.toISOString() ?? null,
             pollError: health?.pollError ?? null,
             pollFailedAt: health?.pollFailedAt?.toISOString() ?? null,

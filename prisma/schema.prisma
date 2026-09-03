@@ -1612,6 +1612,7 @@ model SpendCostSnapshot {
   polledAt              DateTime? @map("polled_at")
   pollError             String?   @map("poll_error")
   pollFailedAt          DateTime? @map("poll_failed_at")
+  pollLastFailedAt      DateTime? @map("poll_last_failed_at")
   createdAt             DateTime  @default(now()) @map("created_at")
   updatedAt             DateTime  @updatedAt @map("updated_at")
 

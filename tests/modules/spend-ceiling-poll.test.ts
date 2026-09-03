@@ -4,11 +4,13 @@ import {
   beforeEach,
   describe,
   expect,
+  spyOn,
   test,
 } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { type Prisma, PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import logger from "@/api/lib/logger";
 import config from "@/config";
 import type { TenantContext } from "@/lib/tenancy";
 import { clearContactAuthState } from "@/modules/contact-auth/state";
@@ -721,6 +723,91 @@ describe.skipIf(!dbUp)("the spend ceiling poll", () => {
     expect(cleared?.pollError).toBeNull();
     expect(cleared?.pollFailedAt).toBeNull();
     expect(cleared?.polledAt?.toISOString()).toBe(at(4).toISOString());
+  });
+
+  // ...MEASURED AGAINST THE LATEST FAILURE, NOT THE STREAK'S START (review round 18).
+  // `pollFailedAt` is where the streak began, so a streak begun before an overlapping success and
+  // still failing after it looked older than the success and was cleared by it. The row keeps the
+  // latest attempt's instant apart, and an older success, or an older failure, is measured
+  // against that.
+  test("an older success does not clear a streak that failed again after it", async () => {
+    const down = langfuseStub({ [INBOX_ENV]: 500, [PLAY_ENV]: 500 });
+    await pollTenantSpend(tenantA, {
+      base: appDb,
+      fetchFn: down.fetchFn,
+      now: at(1),
+    });
+    await pollTenantSpend(tenantA, {
+      base: appDb,
+      fetchFn: down.fetchFn,
+      now: at(3),
+    });
+    await pollTenantSpend(tenantA, {
+      base: appDb,
+      fetchFn: langfuseStub(rows(5, 5)).fetchFn,
+      now: at(2),
+    });
+    const row = await snapshot(tenantA, "inbox");
+    expect(Number(row?.costUsd)).toBe(5);
+    expect(row?.polledAt?.toISOString()).toBe(at(2).toISOString());
+    expect(row?.pollError).toContain("500");
+    expect(row?.pollFailedAt?.toISOString()).toBe(at(1).toISOString());
+    // An older failure is measured against the latest failure too, not against the streak's
+    // start: it does not put its error over the newer one's.
+    const other = langfuseStub({ [INBOX_ENV]: 502, [PLAY_ENV]: 502 });
+    expect(
+      (
+        await pollTenantSpend(tenantA, {
+          base: appDb,
+          fetchFn: other.fetchFn,
+          now: at(2),
+        })
+      ).status,
+    ).toBe("failed");
+    expect((await snapshot(tenantA, "inbox"))?.pollError).toContain("500");
+    // A success after the latest failure clears the streak.
+    await pollTenantSpend(tenantA, {
+      base: appDb,
+      fetchFn: langfuseStub(rows(6, 6)).fetchFn,
+      now: at(4),
+    });
+    const cleared = await snapshot(tenantA, "inbox");
+    expect(cleared?.pollError).toBeNull();
+    expect(cleared?.pollFailedAt).toBeNull();
+  });
+
+  // WHAT THE LOG GETS IS THE SANITIZED MESSAGE, NOT THE ERROR (review round 18): Bun's network
+  // errors carry the request URL in an enumerable `path`, userinfo and all, and pino's serializer
+  // copies every enumerable property, so a self-hosted base URL with a credential in it would land
+  // in the log. Measured: `{"code":"ConnectionRefused","path":"https://alice:s3cretpw@..."}`.
+  test("a network error's URL, credential and all, does not reach the log", async () => {
+    const warn = spyOn(logger, "warn");
+    try {
+      const refused = async () => {
+        const err = new TypeError(
+          "Unable to connect. Is the computer able to access the url?",
+        );
+        Object.assign(err, {
+          code: "ConnectionRefused",
+          path: "https://alice:s3cretpw@langfuse.internal/api/public/metrics",
+        });
+        throw err;
+      };
+      const out = await pollTenantSpend(tenantA, {
+        base: appDb,
+        fetchFn: refused as unknown as typeof fetch,
+        now: NOW,
+      });
+      expect(out.status).toBe("failed");
+      const logged = warn.mock.calls.map((c) => JSON.stringify(c)).join("\n");
+      expect(logged).toContain("the last figure stands");
+      expect(logged).not.toContain("s3cretpw");
+      expect((await snapshot(tenantA, "inbox"))?.pollError).not.toContain(
+        "s3cretpw",
+      );
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   // AND A DROPPED FAILURE IS NOT ANNOUNCED (review round 12): a warning for a window that has

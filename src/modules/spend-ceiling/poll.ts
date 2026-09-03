@@ -339,11 +339,17 @@ async function writeSuccess(
         carriedUnpricedModels: carried.unpriced,
         // The row's health never moves backwards (review round 12): an older poll succeeding
         // after a newer one failed keeps the newer failure and the later `polledAt`. Its figure
-        // still lands, as a floor, under the max above.
+        // still lands, as a floor, under the max above. "Newer" is measured against the LATEST
+        // failure, not the streak's start (review round 18): a streak begun before this poll and
+        // still failing after it is newer than this poll, though its "failing since" is older.
         polledAt: prev?.polledAt && prev.polledAt > at ? prev.polledAt : at,
-        ...(prev?.pollFailedAt && prev.pollFailedAt > at
-          ? { pollError: prev.pollError, pollFailedAt: prev.pollFailedAt }
-          : { pollError: null, pollFailedAt: null }),
+        ...(prev?.pollLastFailedAt && prev.pollLastFailedAt > at
+          ? {
+              pollError: prev.pollError,
+              pollFailedAt: prev.pollFailedAt,
+              pollLastFailedAt: prev.pollLastFailedAt,
+            }
+          : { pollError: null, pollFailedAt: null, pollLastFailedAt: null }),
       };
       await db.spendCostSnapshot.upsert({
         where: key,
@@ -367,8 +373,10 @@ function snapshotLockKey(tenantId: bigint, source: UsageSource, month: Date) {
 // `polledAt` stay, which is what lets the gate keep deciding on a floor and the console say both.
 // `pollFailedAt` is the instant the CURRENT streak began (review round 5): the console says
 // "failing since", so a failure on top of a failure keeps the first one's instant, and a success,
-// which clears the pair, is what lets the next failure start a new streak. Same lock as the
-// success write, for the same reason.
+// which clears the pair, is what lets the next failure start a new streak. `pollLastFailedAt` is
+// the latest attempt's instant, kept apart (review round 18) because it is what an older poll is
+// measured against: the streak's start is older than an overlapping success the streak outlived.
+// Same lock as the success write, for the same reason.
 async function writeFailure(
   db: ScopedDb,
   tenantId: bigint,
@@ -386,7 +394,7 @@ async function writeFailure(
     async () => {
       const prev = await db.spendCostSnapshot.findUnique({
         where: key,
-        select: { pollFailedAt: true, polledAt: true },
+        select: { pollFailedAt: true, pollLastFailedAt: true, polledAt: true },
       });
       // A failure older than the row's last success is not the row's present (review round 11):
       // two polls can overlap, and the older one finishing last would otherwise write its
@@ -398,7 +406,7 @@ async function writeFailure(
       // written, and the gate would refuse on a frozen figure with no Langfuse behind it.
       if (
         (prev?.polledAt && prev.polledAt > at) ||
-        (prev?.pollFailedAt && prev.pollFailedAt > at)
+        (prev?.pollLastFailedAt && prev.pollLastFailedAt > at)
       ) {
         return false;
       }
@@ -411,8 +419,9 @@ async function writeFailure(
           monthStart: month,
           pollError: error,
           pollFailedAt,
+          pollLastFailedAt: at,
         },
-        update: { pollError: error, pollFailedAt },
+        update: { pollError: error, pollFailedAt, pollLastFailedAt: at },
       });
       return true;
     },
@@ -586,8 +595,11 @@ export async function pollTenantSpend(
     // NUL or an unpaired surrogate in it is a string Postgres refuses, which would turn the one
     // write that records the failure into a failure of its own (review round 1).
     const error = sanitizeErrorMessage(err);
+    // The sanitized message and not the error itself (review round 18): Bun's network errors carry
+    // the request URL in an enumerable `path`, userinfo and all, and pino's serializer copies it,
+    // so a self-hosted base URL with a credential in it would land in the log.
     logger.warn(
-      { err, tenantId: String(tenantId) },
+      { error, tenantId: String(tenantId) },
       "spend ceiling poll failed; the last figure stands",
     );
     // Announced only when it was the row's present (review round 12): a failure older than the

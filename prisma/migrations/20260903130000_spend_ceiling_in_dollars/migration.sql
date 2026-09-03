@@ -27,6 +27,7 @@ CREATE TABLE "spend_cost_snapshots" (
     "polled_at" TIMESTAMP(3),
     "poll_error" TEXT,
     "poll_failed_at" TIMESTAMP(3),
+    "poll_last_failed_at" TIMESTAMP(3),
     "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updated_at" TIMESTAMP(3) NOT NULL,
 

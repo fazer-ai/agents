@@ -566,13 +566,21 @@
     "calls_one": "{{n}} requisição",
     "calls_many": "{{n}} requisições",
     "calls_other": "{{n}} requisições",
+    "ceiling": {
+      "cta": "Definir o teto",
+      "period": "{{month}} · o mês-calendário, não o período selecionado",
+      "title": "Teto de gasto",
+      "unenforceable": "Este tenant não tem Langfuse, então o custo do mês não pode ser lido. Cada metade abaixo diz se as chamadas ainda estão sendo recusadas pelo último valor.",
+      "unread": "Não foi possível ler o teto."
+    },
     "chart": {
       "ariaCalls": "Requisições de LLM e conversas por dia ao longo do tempo",
       "ariaCost": "Custo de LLM, conversas e custo por conversa por dia ao longo do tempo",
       "calls": "Requisições de LLM",
       "conversations": "Conversas",
       "cost": "Custo (USD)",
-      "costPerConversation": "Custo / conversa"
+      "costPerConversation": "Custo / conversa",
+      "label": "Métrica do gráfico"
     },
     "conversations": "Conversas",
     "costByModel": "Custo por modelo",
@@ -616,11 +624,13 @@
       "30d": "30d",
       "7d": "7d",
       "90d": "90d",
-      "all": "Tudo"
+      "all": "Tudo",
+      "label": "Período"
     },
     "source": {
       "all": "Todos",
       "inbox": "Real",
+      "label": "Segmento de uso",
       "playground": "Playground"
     },
     "subtitle": "Funil de automação, custo de LLM e volume de conversas.",
@@ -2191,6 +2201,7 @@
     },
     "title": "Teto de gasto",
     "usage": {
+      "carried": "Inclui {{carried}} gastos num projeto do Langfuse que este tenant não usa mais, trazidos na troca no meio do mês, então o valor fica acima do total do projeto atual.",
       "coverage": "O Langfuse precificou {{costed}} das {{ledger}} chamadas deste mês, então o valor subestima.",
       "error": "Não foi possível ler o consumo.",
       "langfuseMissing": "O Langfuse não está configurado para este tenant, então o custo do mês não pode ser lido. Configure-o no card do Langfuse.",

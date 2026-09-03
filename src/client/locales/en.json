@@ -555,13 +555,21 @@
     "attendance": "Team response",
     "calls_one": "{{n}} request",
     "calls_other": "{{n}} requests",
+    "ceiling": {
+      "cta": "Set the ceiling",
+      "period": "{{month}} · the calendar month, not the selected period",
+      "title": "Spend ceiling",
+      "unenforceable": "No Langfuse for this tenant, so the month's cost cannot be read. Each half below says whether calls are still being refused on the last figure.",
+      "unread": "The ceiling could not be read."
+    },
     "chart": {
       "ariaCalls": "Daily LLM requests and conversations over time",
       "ariaCost": "Daily LLM cost, conversations, and cost per conversation over time",
       "calls": "LLM requests",
       "conversations": "Conversations",
       "cost": "Cost (USD)",
-      "costPerConversation": "Cost / conversation"
+      "costPerConversation": "Cost / conversation",
+      "label": "Chart metric"
     },
     "conversations": "Conversations",
     "costByModel": "Cost by model",
@@ -603,11 +611,13 @@
       "30d": "30d",
       "7d": "7d",
       "90d": "90d",
-      "all": "All"
+      "all": "All",
+      "label": "Period"
     },
     "source": {
       "all": "All",
       "inbox": "Real",
+      "label": "Usage segment",
       "playground": "Playground"
     },
     "subtitle": "Automation funnel, LLM cost and conversation volume.",
@@ -2151,6 +2161,7 @@
     },
     "title": "Spend ceiling",
     "usage": {
+      "carried": "Includes {{carried}} spent in a Langfuse project this tenant no longer points at, carried over when it switched mid-month, so the figure is higher than the current project's own total.",
       "coverage": "Langfuse priced {{costed}} of the {{ledger}} calls this month, so the figure undercounts.",
       "error": "Could not read the usage.",
       "langfuseMissing": "Langfuse is not configured for this tenant, so the month's cost cannot be read. Configure it in the Langfuse card.",

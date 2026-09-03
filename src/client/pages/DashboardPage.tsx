@@ -17,6 +17,7 @@ import {
   Suspense,
   useCallback,
   useEffect,
+  useRef,
   useState,
 } from "react";
 import { useTranslation } from "react-i18next";
@@ -27,6 +28,8 @@ import {
   HelpPopover,
   PageContainer,
   Skeleton,
+  SpendBar,
+  SpendHealthLines,
 } from "@/client/components";
 import { api } from "@/client/lib/api";
 import { formatDuration } from "@/client/lib/duration";
@@ -50,6 +53,15 @@ type CostsData = Awaited<
   ReturnType<typeof api.api.v1.metrics.costs.get>
 >["data"];
 type Costs = NonNullable<CostsData>["costs"];
+type CeilingData = Awaited<
+  ReturnType<
+    (typeof api.api.v1)["tenant-settings"]["spend-ceiling"]["usage"]["get"]
+  >
+>["data"];
+type Ceiling = NonNullable<CeilingData>;
+
+// How often the page asks again for the ceiling when no read has yet said the poll's period.
+const CEILING_RETRY_MS = 60_000;
 
 type Range = "7d" | "30d" | "90d" | "all";
 const RANGE_DAYS: Record<Range, number | null> = {
@@ -162,11 +174,17 @@ function localDayKey(d: Date): string {
 // tomorrow-in-UTC. For "all" the span runs from the oldest data day to today. cost comes from Langfuse
 // (UTC day key, matched as a plain string — the documented day-boundary caveat); calls/conversations
 // come from our local-day timeseries; costPerConv = cost ÷ conversations (null when either is 0).
-function buildCostTrend(
+export function buildCostTrend(
   points: Point[],
   costDays: CostDay[],
   range: Range,
+  // THE SEGMENT, not a flag: the rule for when the ratio means anything belongs to this function
+  // rather than to whoever calls it (review round 1). The divisor is our own conversation count and
+  // a playground turn has no conversation, so dividing combined or playground-only cost by it
+  // prints a cost per conversation those dollars never had. Only the real segment can be divided.
+  source: Source,
 ): TrendPoint[] {
+  const withRatio = source === "inbox";
   const callsByDay = new Map(points.map((p) => [p.bucket, p.calls]));
   const convsByDay = new Map(points.map((p) => [p.bucket, p.conversations]));
   const costByDay = new Map(costDays.map((d) => [d.date, d.costUsd]));
@@ -195,7 +213,7 @@ function buildCostTrend(
     const conversations = convsByDay.get(key) ?? 0;
     const calls = callsByDay.get(key) ?? 0;
     const costPerConv =
-      cost > 0 && conversations > 0 ? cost / conversations : null;
+      withRatio && cost > 0 && conversations > 0 ? cost / conversations : null;
     out.push({
       key,
       labelMs: cur.getTime(),
@@ -224,7 +242,10 @@ function RangeToggle({
     { key: "all", label: t("dashboard.range.all", "All") },
   ];
   return (
-    <div className="inline-flex rounded-lg border border-border bg-bg-tertiary p-0.5">
+    <fieldset
+      className="inline-flex rounded-lg border border-border bg-bg-tertiary p-0.5"
+      aria-label={t("dashboard.range.label", "Period")}
+    >
       {ranges.map((r) => (
         <button
           key={r.key}
@@ -240,7 +261,7 @@ function RangeToggle({
           {r.label}
         </button>
       ))}
-    </div>
+    </fieldset>
   );
 }
 
@@ -261,7 +282,10 @@ function SourceToggle({
     { key: "all", label: t("dashboard.source.all", "All") },
   ];
   return (
-    <div className="inline-flex rounded-lg border border-border bg-bg-tertiary p-0.5">
+    <fieldset
+      className="inline-flex rounded-lg border border-border bg-bg-tertiary p-0.5"
+      aria-label={t("dashboard.source.label", "Usage segment")}
+    >
       {sources.map((s) => (
         <button
           key={s.key}
@@ -277,7 +301,7 @@ function SourceToggle({
           {s.label}
         </button>
       ))}
-    </div>
+    </fieldset>
   );
 }
 
@@ -414,6 +438,13 @@ export function DashboardPage() {
   const [kpis, setKpis] = useState<Kpis | null>(null);
   const [points, setPoints] = useState<Point[]>([]);
   const [costs, setCosts] = useState<Costs | null>(null);
+  // The cost's OWN pending state (review round 4). It settles outside the section's loading gate, so
+  // between the local figures arriving and Langfuse answering there is a window with no cost yet:
+  // rendering `costs === null` there tells a configured tenant to connect Langfuse, and keeping the
+  // previous value puts the inbox's cost beside the playground's metrics. The slot holds a skeleton
+  // instead, which is what the shape of that card is for.
+  const [costsLoading, setCostsLoading] = useState(true);
+  const [ceiling, setCeiling] = useState<Ceiling | null>(null);
   const [agentNames, setAgentNames] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
@@ -437,9 +468,8 @@ export function DashboardPage() {
     const since = sinceFor(r);
     const query = since ? { since } : {};
     try {
-      const [k, costsRes, agents] = await Promise.all([
+      const [k, agents] = await Promise.all([
         api.api.v1.metrics.kpis.get({ query }),
-        api.api.v1.metrics.costs.get({ query }).catch(() => ({ data: null })),
         api.api.v1.agents.get(),
       ]);
       if (k.error || !k.data) {
@@ -448,9 +478,6 @@ export function DashboardPage() {
         return;
       }
       setKpis(k.data.kpis);
-      setCosts(
-        costsRes.data ? costsRes.data.costs : { status: "error" as const },
-      );
       if (agents.data) {
         const map: Record<string, string> = {};
         for (const a of agents.data.agents) map[a.id] = a.name;
@@ -465,7 +492,13 @@ export function DashboardPage() {
 
   // Usage section (source-dependent): token figures + timeseries follow the selected segment. Keeps
   // the previous data while reloading so the section shows a skeleton, not a flash of stale values.
+  // A LOAD THAT SETTLES AFTER A NEWER ONE IS DROPPED (review round 1). Switching segments starts a
+  // second load while the first is still out, and the older answer landing last would put the inbox
+  // cost card beside the playground ceiling — one row showing two different questions. Each load
+  // takes a number, and only the latest number's answer, or failure, reaches the state.
+  const usageSeq = useRef(0);
   const loadUsage = useCallback(async (r: Range, src: Source) => {
+    const seq = ++usageSeq.current;
     setUsageLoading(true);
     setUsageError(false);
     setUsageErrorStatus(null);
@@ -477,11 +510,44 @@ export function DashboardPage() {
       ...(src === "all" ? {} : { source: src }),
       tz: OPERATOR_TZ,
     };
+    // The cost FOLLOWS THE SEGMENT (issue #427), which is what lets the ceiling's bar sit beside
+    // it: both are now the same query, fenced to this tenant and to the segment's Langfuse
+    // environment. The ceiling itself is read from our own snapshot, never from Langfuse, so the
+    // page carries no extra third-party call. Neither failing blanks the section: a ceiling that
+    // cannot be read is a card that says so, not an error page over the usage figures.
+    const costQuery = { ...query, ...(src === "all" ? {} : { source: src }) };
+    // THE COST DOES NOT GATE THE SECTION (review round 3). It is the only third-party call here and
+    // it waits up to ten seconds for a Langfuse that is slow or gone; sharing the gate meant the
+    // tokens, the timeseries and the ceiling — all already in hand, all ours — sat behind a
+    // skeleton for that whole timeout. It is best-effort with a card of its own for the failure,
+    // so it settles on its own and only the latest segment's answer is taken.
+    setCostsLoading(true);
+    void api.api.v1.metrics.costs
+      .get({ query: costQuery })
+      .then((res) => {
+        if (seq !== usageSeq.current) return;
+        setCosts(res.data ? res.data.costs : { status: "error" as const });
+        setCostsLoading(false);
+      })
+      .catch(() => {
+        if (seq !== usageSeq.current) return;
+        setCosts({ status: "error" as const });
+        setCostsLoading(false);
+      });
+    // The ceiling's own number is RESERVED HERE, when the request goes out, not taken when it
+    // commits (review round 3): its answer can be ready and still be waiting inside the `Promise.all`
+    // for a slower sibling, and a periodic refresh landing in that window would be overwritten by
+    // this older read, walking the figure backwards until the next refresh.
+    const cseq = ++ceilingSeq.current;
     try {
-      const [m, ts] = await Promise.all([
+      const [m, ts, ceilingRes] = await Promise.all([
         api.api.v1.metrics.get({ query: usageQuery }),
         api.api.v1.metrics.timeseries.get({ query: usageQuery }),
+        api.api.v1["tenant-settings"]["spend-ceiling"].usage
+          .get()
+          .catch(() => ({ data: null })),
       ]);
+      if (seq !== usageSeq.current) return;
       if (m.error || !m.data || ts.error || !ts.data) {
         setUsageError(true);
         setUsageErrorStatus(m.error?.status ?? ts.error?.status ?? null);
@@ -489,16 +555,46 @@ export function DashboardPage() {
       }
       setMetrics(m.data.metrics);
       setPoints(ts.data.points);
+      if (cseq === ceilingSeq.current) setCeiling(ceilingRes.data ?? null);
     } catch {
+      if (seq !== usageSeq.current) return;
       setUsageError(true);
     } finally {
-      setUsageLoading(false);
+      if (seq === usageSeq.current) setUsageLoading(false);
     }
   }, []);
 
   useEffect(() => {
     void load(range);
   }, [load, range]);
+
+  // THE CEILING RE-READS WHILE THE PAGE STAYS OPEN (review round 1), QUIETLY (review round 2). The
+  // health beside each bar is the server's per read and the poll writes a new figure every period,
+  // so a dashboard left on a wall screen would otherwise keep the first read's figure and its
+  // "refreshed" line for as long as it is up. It is its own read, not the segment loader's: driving
+  // the timer through `loadUsage` would put the whole usage section back into its skeleton every
+  // period, and hold it there for as long as a slow Langfuse cost request took. Its own sequence
+  // number too, so a slow refresh cannot land over the read a segment switch just made.
+  const ceilingSeq = useRef(0);
+  const loadCeiling = useCallback(async () => {
+    const seq = ++ceilingSeq.current;
+    try {
+      const res =
+        await api.api.v1["tenant-settings"]["spend-ceiling"].usage.get();
+      if (seq !== ceilingSeq.current) return;
+      setCeiling(res.data ?? null);
+    } catch {
+      if (seq !== ceilingSeq.current) return;
+      setCeiling(null);
+    }
+  }, []);
+  // The period is the poll's own, as the usage reports it, and a minute until a read has said one,
+  // which is also the retry for a first read that failed.
+  const ceilingRefreshMs = ceiling?.pollIntervalMs ?? CEILING_RETRY_MS;
+  useEffect(() => {
+    const timer = setInterval(() => void loadCeiling(), ceilingRefreshMs);
+    return () => clearInterval(timer);
+  }, [loadCeiling, ceilingRefreshMs]);
 
   useEffect(() => {
     void loadUsage(range, source);
@@ -516,12 +612,34 @@ export function DashboardPage() {
       maximumFractionDigits: 1,
     }).format(v);
 
-  // The funnel KPIs and Langfuse cost reflect REAL traffic only; surface cost UI just for the
-  // "Real" segment (cost next to playground/all tokens would be a mismatch).
+  // The funnel KPIs are REAL traffic only, so cost-per-conversation stays in that segment. The cost
+  // itself now follows the segment (issue #427) and is shown in all three: playground spend is real
+  // money and the ceiling refuses on it, so a screen that only priced the inbox hid the half an
+  // operator is most likely to have blown through while testing.
   const realView = source === "inbox";
   const costsOk = costs?.status === "ok";
-  const showCost = realView && costsOk;
-  const costsError = realView && costs?.status === "error";
+  const showCost = costsOk;
+  const costsError = costs?.status === "error";
+  // The month the ceiling covers, formatted in UTC: `periodStart` is that month's UTC midnight, and
+  // a browser west of UTC would otherwise print the month before it.
+  const ceilingMonth = ceiling
+    ? new Intl.DateTimeFormat(i18n.language, {
+        month: "long",
+        year: "numeric",
+        timeZone: "UTC",
+      }).format(new Date(ceiling.periodStart))
+    : null;
+  // Which halves of the ceiling this segment is asking about: one, or both under "All", because
+  // the ceiling is enforced per half and there is no combined number to show.
+  const ceilingSources: ("inbox" | "playground")[] =
+    source === "all" ? ["inbox", "playground"] : [source];
+  const ceilingEntry = (src: string) =>
+    ceiling?.entries.find((e) => e.source === src);
+  const ceilingWhen = (iso: string) =>
+    new Date(iso).toLocaleString(i18n.language, {
+      dateStyle: "short",
+      timeStyle: "short",
+    });
   // "Open in Langfuse" target: the tenant's project page when the project id could be resolved
   // (item 6), else the instance root as a fallback.
   const langfuseUrl =
@@ -551,13 +669,21 @@ export function DashboardPage() {
 
   // Merged daily series for the recharts trend (cost + conversations + cost/conversation). Genuinely
   // empty (no usage AND no cost) → the "no data" placeholder instead of an axes-only empty chart.
-  const chartData = buildCostTrend(points, costDays, range);
+  const chartData = buildCostTrend(points, costDays, range, source);
   const hasChartData = points.length > 0 || costDays.length > 0;
   // Cost per conversation across the whole window (item 7): the robust aggregate (total cost ÷ total
   // conversations), free of the per-day line's UTC/local day-boundary caveat. Only in the Real segment
   // with actual cost (never in playground/all, and not while cost is still $0 from ingestion lag).
+  // REAL SEGMENT ONLY, and the gate is not decoration: the divisor is `kpis.totalConversations`,
+  // which counts real traffic and is not re-read per segment, so dividing the playground's cost by
+  // it would print a cost-per-conversation for conversations that half never had (issue #427,
+  // caught the moment the cost stopped being real-only).
   const costPerConversation =
-    showCost && totalCostUsd > 0 && kpis && kpis.totalConversations > 0
+    realView &&
+    showCost &&
+    totalCostUsd > 0 &&
+    kpis &&
+    kpis.totalConversations > 0
       ? totalCostUsd / kpis.totalConversations
       : null;
 
@@ -598,7 +724,10 @@ export function DashboardPage() {
                 <h2 className="font-medium text-sm text-text-primary">
                   {t("dashboard.funnel", "Automation funnel")}
                 </h2>
-                <div className="inline-flex rounded-lg border border-border bg-bg-tertiary p-0.5">
+                <fieldset
+                  className="inline-flex rounded-lg border border-border bg-bg-tertiary p-0.5"
+                  aria-label={t("dashboard.funnel", "Automation funnel")}
+                >
                   <button
                     type="button"
                     onClick={() => setKpiMode("rate")}
@@ -623,7 +752,7 @@ export function DashboardPage() {
                   >
                     {t("dashboard.absolute", "#")}
                   </button>
-                </div>
+                </fieldset>
               </div>
 
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -804,7 +933,13 @@ export function DashboardPage() {
                           </a>
                         )}
                         {showCost && (
-                          <div className="inline-flex rounded-lg border border-border bg-bg-tertiary p-0.5">
+                          <fieldset
+                            className="inline-flex rounded-lg border border-border bg-bg-tertiary p-0.5"
+                            aria-label={t(
+                              "dashboard.chart.label",
+                              "Chart metric",
+                            )}
+                          >
                             <button
                               type="button"
                               onClick={() => setChartMetric("cost")}
@@ -829,7 +964,7 @@ export function DashboardPage() {
                             >
                               {t("dashboard.metric.calls", "Requests")}
                             </button>
-                          </div>
+                          </fieldset>
                         )}
                       </div>
                     </div>
@@ -856,77 +991,80 @@ export function DashboardPage() {
                     )}
                   </Card>
 
-                  {/* Cost + token summary. The cost slot is ALWAYS present in the Real segment (item 8):
-                      it shows the value with Langfuse, or a compact disabled/error state in the SAME
-                      slot — so switching tabs never inserts/removes a separate notice card below and the
-                      block height stays stable. Non-real segments drop the cost column (cost there would
-                      be a mismatch). */}
+                  {/* Cost + token summary. The cost slot is ALWAYS present (item 8): it shows the
+                      value with Langfuse, or a compact disabled/error state in the SAME slot — so
+                      switching tabs never inserts/removes a separate notice card below and the block
+                      height stays stable. It follows the segment now (issue #427), so the playground
+                      is priced too. */}
                   <div
                     className={cn(
                       "grid gap-4",
                       costPerConversation != null
                         ? "sm:grid-cols-2 lg:grid-cols-4"
-                        : realView
-                          ? "sm:grid-cols-3"
-                          : "sm:grid-cols-2",
+                        : "sm:grid-cols-3",
                     )}
                   >
-                    {realView &&
-                      (showCost ? (
-                        <KpiCard
-                          icon={Coins}
-                          label={t("dashboard.totalCost", "LLM cost")}
-                          primary={cf.format(totalCostUsd)}
-                          secondary={t("dashboard.calls", "{{n}} requests", {
-                            // BOTH, and the pair is the point: `count` picks the
-                            // plural form and only a NUMBER can do that, while
-                            // `n` carries the thousands-separated string the
-                            // reader actually sees. Passing the formatted value
-                            // as `count` makes i18next resolve the plural of a
-                            // string, which is always the `other` form.
-                            count: metrics.llm.calls,
-                            n: nf.format(metrics.llm.calls),
-                          })}
-                        />
-                      ) : (
-                        <Card className="flex flex-col gap-2">
-                          <div className="flex items-center gap-2 text-text-muted text-xs">
-                            <Coins className="h-4 w-4" aria-hidden="true" />
-                            {t("dashboard.totalCost", "LLM cost")}
-                          </div>
-                          {costsError ? (
-                            <p className="flex items-start gap-1.5 text-sm text-text-muted">
-                              <TriangleAlert
-                                className="mt-0.5 h-4 w-4 shrink-0"
-                                aria-hidden="true"
-                              />
+                    {costsLoading ? (
+                      <Card className="flex flex-col gap-2" aria-hidden="true">
+                        <Skeleton className="h-4 w-24" />
+                        <Skeleton className="h-8 w-28" />
+                        <Skeleton className="h-3 w-32" />
+                      </Card>
+                    ) : showCost ? (
+                      <KpiCard
+                        icon={Coins}
+                        label={t("dashboard.totalCost", "LLM cost")}
+                        primary={cf.format(totalCostUsd)}
+                        secondary={t("dashboard.calls", "{{n}} requests", {
+                          // BOTH, and the pair is the point: `count` picks the
+                          // plural form and only a NUMBER can do that, while
+                          // `n` carries the thousands-separated string the
+                          // reader actually sees. Passing the formatted value
+                          // as `count` makes i18next resolve the plural of a
+                          // string, which is always the `other` form.
+                          count: metrics.llm.calls,
+                          n: nf.format(metrics.llm.calls),
+                        })}
+                      />
+                    ) : (
+                      <Card className="flex flex-col gap-2">
+                        <div className="flex items-center gap-2 text-text-muted text-xs">
+                          <Coins className="h-4 w-4" aria-hidden="true" />
+                          {t("dashboard.totalCost", "LLM cost")}
+                        </div>
+                        {costsError ? (
+                          <p className="flex items-start gap-1.5 text-sm text-text-muted">
+                            <TriangleAlert
+                              className="mt-0.5 h-4 w-4 shrink-0"
+                              aria-hidden="true"
+                            />
+                            {t(
+                              "dashboard.costsError",
+                              "Could not fetch costs from Langfuse.",
+                            )}
+                          </p>
+                        ) : (
+                          <>
+                            <p className="text-sm text-text-muted">
                               {t(
-                                "dashboard.costsError",
-                                "Could not fetch costs from Langfuse.",
+                                "dashboard.costsDisabledDesc",
+                                "Connect Langfuse to track actual LLM spend from your real usage.",
                               )}
                             </p>
-                          ) : (
-                            <>
-                              <p className="text-sm text-text-muted">
-                                {t(
-                                  "dashboard.costsDisabledDesc",
-                                  "Connect Langfuse to track actual LLM spend from your real usage.",
-                                )}
-                              </p>
-                              <button
-                                type="button"
-                                onClick={() => navigate("/resources/advanced")}
-                                className="self-start text-accent text-xs hover:underline"
-                              >
-                                {t(
-                                  "dashboard.costsEnableCta",
-                                  "Enable cost tracking",
-                                )}
-                              </button>
-                            </>
-                          )}
-                        </Card>
-                      ))}
+                            <button
+                              type="button"
+                              onClick={() => navigate("/resources/advanced")}
+                              className="self-start text-accent text-xs hover:underline"
+                            >
+                              {t(
+                                "dashboard.costsEnableCta",
+                                "Enable cost tracking",
+                              )}
+                            </button>
+                          </>
+                        )}
+                      </Card>
+                    )}
                     {costPerConversation != null && (
                       <KpiCard
                         icon={Coins}
@@ -981,6 +1119,94 @@ export function DashboardPage() {
                         .join(" · ")}
                     />
                   </div>
+
+                  {/* THE CEILING, ON THE PAGE WHERE SPEND IS WATCHED (issue #427). The figures lived
+                      behind a settings tab, so the number an operator opens the console to see had
+                      nothing to be measured against. It gets a ROW OF ITS OWN rather than a cell in
+                      the grid above: a progress bar reads by length, and the caveats under it (a
+                      stale reading, a month Langfuse only priced half of, spend carried from a
+                      project the tenant left) are sentences, not figures. Under "All" both halves
+                      stack here, because the ceiling is enforced per half and there is no combined
+                      number to draw. The bar and its caveats are the same component the Advanced
+                      panel draws, and its colour is the gate's own verdict, so this page cannot say
+                      "fine" while the runtime is refusing. The period is the CALENDAR MONTH while
+                      the selector above says 7d/30d/90d/all, so the card names its own period
+                      instead of looking like a bar that ignores the page. */}
+                  <Card className="flex flex-col gap-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <h3 className="flex items-center gap-2 font-medium text-sm text-text-primary">
+                        <Gauge
+                          className="h-4 w-4 text-accent"
+                          aria-hidden="true"
+                        />
+                        {t("dashboard.ceiling.title", "Spend ceiling")}
+                      </h3>
+                      <div className="flex items-center gap-3">
+                        {ceilingMonth && (
+                          <span className="text-text-muted text-xs">
+                            {t(
+                              "dashboard.ceiling.period",
+                              "{{month}} · the calendar month, not the selected period",
+                              { month: ceilingMonth },
+                            )}
+                          </span>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => navigate("/resources/advanced")}
+                          className="text-accent text-xs hover:underline"
+                        >
+                          {t("dashboard.ceiling.cta", "Set the ceiling")}
+                        </button>
+                      </div>
+                    </div>
+                    {ceiling === null ? (
+                      <p className="text-sm text-text-muted">
+                        {t(
+                          "dashboard.ceiling.unread",
+                          "The ceiling could not be read.",
+                        )}
+                      </p>
+                    ) : (
+                      <div className="flex flex-col gap-4">
+                        {/* TWO THINGS FROM TWO PLACES, as the Advanced card says them (review round
+                            2, and rounds 9-10 of #426): the flag above the bars is the credential's
+                            PRESENT, and each bar is its own row's last reading. A credential removed
+                            after a good poll leaves the gate still refusing on that figure until the
+                            next poll writes the sentinel, so hiding the bars here would claim the
+                            ceiling stopped applying while it had not. */}
+                        {!ceiling.langfuseConfigured && (
+                          <p className="text-sm text-warning">
+                            {t(
+                              "dashboard.ceiling.unenforceable",
+                              "No Langfuse for this tenant, so the month's cost cannot be read. Each half below says whether calls are still being refused on the last figure.",
+                            )}
+                          </p>
+                        )}
+                        {ceilingSources.map((src) => (
+                          <div key={src} className="flex flex-col gap-1">
+                            <SpendBar
+                              label={
+                                src === "playground"
+                                  ? t(
+                                      "dashboard.source.playground",
+                                      "Playground",
+                                    )
+                                  : t("dashboard.source.inbox", "Real")
+                              }
+                              entry={ceilingEntry(src)}
+                              money={cf}
+                            />
+                            <SpendHealthLines
+                              entry={ceilingEntry(src)}
+                              when={ceilingWhen}
+                              money={cf}
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </Card>
 
                   {/* Usage by agent */}
                   <Card className="flex flex-col gap-3">

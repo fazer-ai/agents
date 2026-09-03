@@ -5843,6 +5843,18 @@
         ],
         "parameters": [
           {
+            "name": "source",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "inbox",
+                "playground"
+              ]
+            }
+          },
+          {
             "name": "since",
             "in": "query",
             "required": false,
@@ -5914,6 +5926,28 @@
               "application/json": {
                 "schema": {
                   "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
                   "type": "object",
                   "required": [
                     "error"

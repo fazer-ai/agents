@@ -12,3 +12,10 @@ export const SANDBOX_CODE_MAX_CHARS = 20_000;
 // and what crosses into the thread is bounded here so a runaway argument cannot become a
 // megabyte of `JSON.parse` on the operator's deadline.
 export const CODE_TOOL_INPUT_MAX_CHARS = 32_000;
+// The `context` object, as JSON text. The turn's variables are short, but the two attribute bags
+// are customer data (a Chatwoot JSONB column with no bound of ours), and eight of these can be in
+// flight at once. Past this the call FAILS instead of being truncated: a body that reads an
+// attribute would otherwise answer a confident verdict from a bag that was silently cut, and the
+// operator can see the failure and shrink the bag. Larger than the argument cap because it carries
+// two bags the operator did not write.
+export const CODE_TOOL_CONTEXT_MAX_CHARS = 64_000;

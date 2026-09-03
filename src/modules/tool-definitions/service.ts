@@ -20,7 +20,7 @@ import {
 } from "@/modules/tool-definitions/response-template";
 import { readableVaultRef, requireVaultRef } from "@/modules/vault/service";
 import { unsupportedBodyShape } from "./body-shape";
-import { lockToolName } from "./name-lock";
+import { lockToolNames } from "./name-lock";
 import { normalizeToolShapes } from "./normalize";
 
 // Custom HTTP tool definitions (per-tenant). A definition is the LLM-facing parameter schema +
@@ -342,7 +342,7 @@ async function assertNameFree(
   name: string,
   exceptId?: bigint,
 ): Promise<void> {
-  await lockToolName(db, name);
+  await lockToolNames(db);
   // A native's name is reserved at assembly (#457): a tool written under one would exist in the
   // console, be granted, and never reach the model, with a flow-log line as the only trace. Refused
   // where it is typed, the way a document slug is (documents/slug.ts). The import path does not

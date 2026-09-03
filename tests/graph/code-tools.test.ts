@@ -7,7 +7,10 @@ import {
   type CodeToolDeps,
   runCodeToolDefinition,
 } from "@/graph/tools/code";
-import { CODE_TOOL_INPUT_MAX_CHARS } from "@/graph/tools/code-sandbox";
+import {
+  CODE_TOOL_CONTEXT_MAX_CHARS,
+  CODE_TOOL_INPUT_MAX_CHARS,
+} from "@/graph/tools/code-sandbox";
 
 // The operator-authored kind (issue #363): the body is the operator's, the arguments are the
 // model's, and a failure of the body is an integration failure the operator hears about.
@@ -197,6 +200,31 @@ describe("a code tool", () => {
       ),
     ).toMatchObject({ outcome: { kind: "unavailable", reason: "db down" } });
     expect(ok.calls.length).toBe(0);
+  });
+
+  test("a context past its cap is a failure, not a truncation: the bags are the tenant's, not the model's", async () => {
+    const { run, calls } = fakeRun({
+      kind: "value",
+      value: "1",
+      logs: [],
+      ms: 1,
+    });
+    const answer = await callThroughNode(
+      buildCodeTool(VALIDAR_CPF, {
+        run,
+        loadState: async () => ({
+          conversationAttributes: {
+            historico: "x".repeat(CODE_TOOL_CONTEXT_MAX_CHARS),
+          },
+          contactAttributes: {},
+        }),
+      }),
+      { cpf: "1" },
+    );
+    // Marked, so the operator hears about it, and no thread was spawned to carry it.
+    expect(answer.status).toBe("error");
+    expect(String(answer.content)).toContain("attributes are too large");
+    expect(calls.length).toBe(0);
   });
 
   test("arguments past the input cap are the MODEL's doing: a normal result saying what to change", async () => {

@@ -3,6 +3,7 @@ import logger from "@/api/lib/logger";
 import type { PreconditionState } from "@/modules/agents/tool-preconditions";
 import { DEFAULT_TIMEZONE } from "../time";
 import {
+  CODE_TOOL_CONTEXT_MAX_CHARS,
   CODE_TOOL_INPUT_MAX_CHARS,
   formatSandboxResult,
   runSandboxedCode,
@@ -107,6 +108,21 @@ export async function runCodeToolDefinition(
     conversationAttributes: state.conversationAttributes,
     contactAttributes: state.contactAttributes,
   };
+  // Unlike the arguments above, nobody in this turn chose how big this is: the two bags are the
+  // tenant's own custom attributes, and eight calls can be crossing at once. So it is bounded
+  // before the thread is spawned, and it FAILS rather than being trimmed — a body that reads an
+  // attribute from a silently cut bag would answer a confident verdict about data it never saw.
+  const contextChars = JSON.stringify(context)?.length ?? 0;
+  if (contextChars > CODE_TOOL_CONTEXT_MAX_CHARS) {
+    return {
+      outcome: {
+        kind: "unavailable",
+        reason: `context is ${contextChars} characters of JSON (limit ${CODE_TOOL_CONTEXT_MAX_CHARS})`,
+      },
+      text: `${def.name} failed: the conversation's attributes are too large to pass to a code tool (${contextChars} characters of JSON; the limit is ${CODE_TOOL_CONTEXT_MAX_CHARS}). ${WITHOUT_IT}`,
+      failed: true,
+    };
+  }
   const run = deps.run ?? runSandboxedCode;
   const outcome = await run(def.code, {
     clock: { timezone: deps.timezone || DEFAULT_TIMEZONE },

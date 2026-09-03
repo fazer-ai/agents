@@ -383,6 +383,7 @@
     "noArguments": "Sem argumentos",
     "noReturnWarning": "O código nunca retorna um valor; o agente receberia undefined.",
     "saved": "Ferramenta de código salva.",
+    "savedWithWarning": "Ferramenta de código salva. {{warning}}",
     "saveError": "Não foi possível salvar.",
     "sharedNotice": "Esta é uma ferramenta de código compartilhada. Alterações afetam todos os agentes que a usam.",
     "syntaxWarning": "Linha {{line}}, coluna {{column}}: {{message}}",

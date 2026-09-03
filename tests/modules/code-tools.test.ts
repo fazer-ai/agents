@@ -12,7 +12,7 @@ import {
   listCodeTools,
   updateCodeTool,
 } from "@/modules/code-tools/service";
-import { lockToolName } from "@/modules/tool-definitions/name-lock";
+import { lockToolNames } from "@/modules/tool-definitions/name-lock";
 import { createToolDefinition } from "@/modules/tool-definitions/service";
 
 // The operator-authored code tool's service (issue #363): the row is the operator's, invalid code
@@ -206,7 +206,7 @@ describe.skipIf(!dbUp)("code tools service", () => {
     await suDb.toolDefinition.deleteMany({ where: { tenantId } });
   });
 
-  test("the two name checks queue behind one lock, so a name cannot be claimed in both tables at once", async () => {
+  test("every writer of a tool name queues behind one lock, the import included", async () => {
     // The namespace spans two tables, so no unique index covers it: under READ COMMITTED both
     // writes can read a free name and insert, and `dropDuplicateToolNames` then decides at assembly
     // which tool the agent gets, with a flow-log line as the only trace. What makes that impossible
@@ -222,7 +222,7 @@ describe.skipIf(!dbUp)("code tools service", () => {
     let createMs = 0;
     await Promise.all([
       runScopedOn(suDb, ctx(), async (db) => {
-        await lockToolName(db, name);
+        await lockToolNames(db);
         await db.$executeRawUnsafe(`SELECT pg_sleep(${HELD_MS / 1000})`);
       }),
       (async () => {
@@ -234,6 +234,10 @@ describe.skipIf(!dbUp)("code tools service", () => {
       })(),
     ]);
     expect(createMs).toBeGreaterThan(HELD_MS - 100);
+    // The import writes past both services, so it is asked the same question: it takes the lock
+    // before its own pre-check, and cannot be inside one while a create is.
+    const transferSrc = await Bun.file("src/modules/agents/transfer.ts").text();
+    expect(transferSrc).toContain("await lockToolNames(db);");
     // ...and once it is the owner, the other table's write is refused on the name.
     const taken = await refusal(
       createToolDefinition(

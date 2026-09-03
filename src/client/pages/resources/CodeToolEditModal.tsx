@@ -1,3 +1,4 @@
+import type { TFunction } from "i18next";
 import { AlertTriangle } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -110,6 +111,30 @@ const CODE_TOOL_FIELDS = [
   "inputSchema",
   "code",
 ] as const;
+
+// The one static warning the body produces, in words: a parse error with its line and column, or a
+// body that never returns. Read twice — under the code field while typing, and in the toast the
+// save answers with — and written once, because the two have to say the same thing.
+function warningTextOf(
+  warning: CodeSyntaxWarning | undefined,
+  t: TFunction,
+): string | null {
+  if (!warning) return null;
+  return warning.kind === "syntax"
+    ? t(
+        "codeTools.syntaxWarning",
+        "Line {{line}}, column {{column}}: {{message}}",
+        {
+          line: warning.line,
+          column: warning.column,
+          message: warning.message,
+        },
+      )
+    : t(
+        "codeTools.noReturnWarning",
+        "The code never returns a value; the agent would receive undefined.",
+      );
+}
 
 export function CodeToolEditModal({
   modal,
@@ -244,7 +269,21 @@ export function CodeToolEditModal({
       // The server's own warnings replace the client's — the same check, so this only makes the
       // agreement explicit.
       setSyntaxWarnings(data.warnings);
-      showToast(t("codeTools.saved", "Code tool saved."), "success");
+      // ...but the dialog closes on the next line and the next opening clears that state, so a
+      // warning the operator never saw (they saved before the 300 ms debounce drew it) would be
+      // lost behind a plain "saved". It is the one thing they need to know about this save: the
+      // body was stored as written and will fail when the agent calls it. So it goes in the toast.
+      const saveWarning = warningTextOf(data.warnings[0], t);
+      if (saveWarning) {
+        showToast(
+          t("codeTools.savedWithWarning", "Code tool saved. {{warning}}", {
+            warning: saveWarning,
+          }),
+          "warning",
+        );
+      } else {
+        showToast(t("codeTools.saved", "Code tool saved."), "success");
+      }
       modal.close();
       onSaved?.({ id: data.tool.id, name: data.tool.name }, !editId);
     } catch (e) {
@@ -286,23 +325,7 @@ export function CodeToolEditModal({
   // The one static warning the body produces, if any: a parse error with its line and column, or a
   // body that never returns. Rendered as a SIBLING under the code field, never inside its FormField,
   // whose description shares a slot with its error (docs/ui.md).
-  const warning = syntaxWarnings[0];
-  const warningText = !warning
-    ? null
-    : warning.kind === "syntax"
-      ? t(
-          "codeTools.syntaxWarning",
-          "Line {{line}}, column {{column}}: {{message}}",
-          {
-            line: warning.line,
-            column: warning.column,
-            message: warning.message,
-          },
-        )
-      : t(
-          "codeTools.noReturnWarning",
-          "The code never returns a value; the agent would receive undefined.",
-        );
+  const warningText = warningTextOf(syntaxWarnings[0], t);
 
   return (
     <>

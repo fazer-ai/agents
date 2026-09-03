@@ -258,3 +258,58 @@ test("an answer for the previous opening never fills the current form", async ()
     globalThis.fetch = realFetch;
   }
 });
+
+test("a save the server warned about says so in the toast, not only under the field", async () => {
+  // The dialog closes on save and the next opening clears the warning state, so an operator who
+  // saved before the 300 ms debounce drew anything would otherwise read a plain "saved" about a
+  // body that will fail when the agent calls it.
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const href =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.href
+          : input.url;
+    if (
+      href.includes("/code-tools") &&
+      (init?.method ?? "GET").toUpperCase() === "POST"
+    ) {
+      return new Response(
+        JSON.stringify({
+          tool: codeTool(),
+          warnings: [
+            { kind: "syntax", line: 1, column: 17, message: "expecting name" },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    return realFetch(input as RequestInfo, init);
+  }) as typeof fetch;
+  try {
+    render(<Harness />);
+    fireEvent.click(screen.getByText("open"));
+    const label = document.body.querySelector("input") as HTMLInputElement;
+    fireEvent.change(label, { target: { value: "Look up CPF" } });
+    const textareas = [...document.body.querySelectorAll("textarea")];
+    const description = textareas.find(
+      (ta) => !ta.className.includes("font-mono"),
+    ) as HTMLTextAreaElement;
+    const code = textareas.find((ta) =>
+      ta.className.includes("font-mono"),
+    ) as HTMLTextAreaElement;
+    fireEvent.change(description, { target: { value: "a description" } });
+    // Saved immediately, before the debounced check has drawn anything.
+    fireEvent.change(code, { target: { value: "return input.cpf." } });
+    fireEvent.click(screen.getByText("Save").closest("button") as HTMLElement);
+    await waitFor(() =>
+      expect(
+        screen.queryAllByText(/Line 1, column 17/).length > 0 &&
+          screen.queryAllByText(/saved/i).length > 0,
+      ).toBe(true),
+    );
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});

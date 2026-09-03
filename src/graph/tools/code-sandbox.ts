@@ -47,6 +47,7 @@ import {
 // polled and lands within a few ms of the figure.
 
 export {
+  CODE_TOOL_CONTEXT_MAX_CHARS,
   CODE_TOOL_INPUT_MAX_CHARS,
   SANDBOX_CODE_MAX_CHARS,
   SANDBOX_MEMORY_BYTES,

@@ -12,7 +12,11 @@ import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { firstUnstorableField } from "@/lib/text";
 import { auditMutation, projectionMoved } from "@/modules/audit/service";
 import { emitDeadLetter } from "@/modules/flowlog/dead-letter";
-import { cancelPendingJob, enqueueJob } from "@/modules/scheduler/service";
+import {
+  cancelPendingJob,
+  enqueueJob,
+  upsertJobRow,
+} from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 import { readEmbeddingSettings } from "@/modules/tenant-settings/service";
 import { resolveVaultEntryState } from "@/modules/vault/service";
@@ -194,7 +198,7 @@ type DocAuditRow = {
   fileName: string | null;
   mimeType: string | null;
   status: string;
-  content: string;
+  chars: number;
 };
 
 function docAuditProjection(r: DocAuditRow) {
@@ -206,20 +210,58 @@ function docAuditProjection(r: DocAuditRow) {
     fileName: r.fileName,
     mimeType: r.mimeType,
     status: r.status,
-    chars: r.content.length,
+    chars: r.chars,
   };
 }
 
-const DOC_AUDIT_SELECT = {
-  id: true,
-  knowledgeBaseId: true,
-  title: true,
-  sourceType: true,
-  fileName: true,
-  mimeType: true,
-  status: true,
-  content: true,
-} as const;
+// The row a projection is built from, with the row LOCKED and the body left in the database.
+//
+// `length(content)` rather than the column: an uploaded document holds up to 2,000,000 characters,
+// and pulling that across the wire to count it would put multi-megabyte transfers and allocations
+// inside a transaction that has five seconds to finish — for a number Postgres already knows.
+// `compareText` is the same idea applied to the edit's own question: the caller has to send the new
+// text anyway, so the comparison happens where the old text already is and what comes back is a
+// boolean instead of the previous body.
+async function readDocForAudit(
+  db: ScopedDb,
+  id: bigint,
+  compareText: string | null,
+): Promise<{ row: DocAuditRow; textMoved: boolean } | null> {
+  const rows = await db.$queryRaw<
+    {
+      id: bigint;
+      knowledge_base_id: bigint;
+      title: string;
+      source_type: string;
+      file_name: string | null;
+      mime_type: string | null;
+      status: string;
+      chars: number;
+      text_moved: boolean;
+    }[]
+  >`
+    SELECT id, knowledge_base_id, title, source_type, file_name, mime_type, status,
+           length(content) AS chars,
+           (${compareText}::text IS NOT NULL AND content IS DISTINCT FROM ${compareText}::text) AS text_moved
+      FROM knowledge_documents
+     WHERE id = ${id}
+       FOR UPDATE`;
+  const r = rows[0];
+  if (!r) return null;
+  return {
+    row: {
+      id: r.id,
+      knowledgeBaseId: r.knowledge_base_id,
+      title: r.title,
+      sourceType: r.source_type,
+      fileName: r.file_name,
+      mimeType: r.mime_type,
+      status: r.status,
+      chars: Number(r.chars),
+    },
+    textMoved: r.text_moved,
+  };
+}
 
 // The whole write is held to what the columns can store, before anything is read or enqueued. It is
 // not a hypothetical shape: `extractText` decodes an uploaded .txt with `TextDecoder("utf-8")`, so a
@@ -262,13 +304,16 @@ export async function createDocument(
         content: params.text,
         status: "PENDING",
       },
-      select: DOC_AUDIT_SELECT,
+      select: { id: true, status: true },
     });
-    await auditMutation(db, ctx, {
-      action: "knowledge_document.create",
-      target: `knowledge_document:${created.id}`,
-      after: docAuditProjection(created),
-    });
+    const audited = await readDocForAudit(db, created.id, null);
+    if (audited) {
+      await auditMutation(db, ctx, {
+        action: "knowledge_document.create",
+        target: `knowledge_document:${created.id}`,
+        after: docAuditProjection(audited.row),
+      });
+    }
     return created;
   });
 
@@ -377,18 +422,14 @@ export async function deleteDocument(
   await runScopedOn(base, ctx, async (db) => {
     // NOTE: Read with the row LOCKED before the delete, so the row describes the document actually
     // removed rather than a version an edit replaced in between.
-    await db.$queryRaw`SELECT id FROM knowledge_documents WHERE id = ${id} FOR UPDATE`;
-    const existing = await db.knowledgeDocument.findUnique({
-      where: { id },
-      select: DOC_AUDIT_SELECT,
-    });
+    const existing = await readDocForAudit(db, id, null);
     const res = await db.knowledgeDocument.deleteMany({ where: { id } });
     if (res.count === 0) throw new NotFoundError("document not found");
     if (existing) {
       await auditMutation(db, ctx, {
         action: "knowledge_document.delete",
         target: `knowledge_document:${id}`,
-        before: docAuditProjection(existing),
+        before: docAuditProjection(existing.row),
       });
     }
   });
@@ -421,15 +462,17 @@ export async function updateDocument(
 
   const { doc, reingest } = await runScopedOn(base, ctx, async (db) => {
     // NOTE: LOCKED, because this reading is both the reingest decision and the row's `before`, and
-    // two overlapping edits would otherwise each compare against a text the other one replaced.
-    await db.$queryRaw`SELECT id FROM knowledge_documents WHERE id = ${id} FOR UPDATE`;
-    const existing = await db.knowledgeDocument.findUnique({
-      where: { id },
-      select: DOC_AUDIT_SELECT,
-    });
+    // two overlapping edits would otherwise each compare against a text the other one replaced. The
+    // comparison happens in the DATABASE, where the old text already is: what comes back is whether
+    // it moved, not the previous body.
+    const existing = await readDocForAudit(
+      db,
+      id,
+      hasText ? (params.text as string) : null,
+    );
     if (!existing) throw new NotFoundError("document not found");
-    const reingest = hasText && params.text !== existing.content;
-    const updated = await db.knowledgeDocument.update({
+    const reingest = existing.textMoved;
+    await db.knowledgeDocument.update({
       where: { id },
       data: {
         ...(hasTitle ? { title: params.title } : {}),
@@ -437,9 +480,12 @@ export async function updateDocument(
           ? { content: params.text, status: "PENDING", error: null }
           : {}),
       },
-      select: DOC_AUDIT_SELECT,
+      select: { id: true },
     });
-    const beforeProj = docAuditProjection(existing);
+    const after = await readDocForAudit(db, id, null);
+    if (!after) throw new NotFoundError("document not found");
+    const updated = after.row;
+    const beforeProj = docAuditProjection(existing.row);
     const afterProj = docAuditProjection(updated);
     // NOTE: The action this issue invents: `PATCH /v1/knowledge/documents/:id` has no MCP twin, so
     // an edit to a document reached the trail through nothing at all. Recorded only when it moved,
@@ -633,11 +679,6 @@ export async function reindexKnowledgeBase(
     // of them: it must neither record a queue it did not fill NOR re-arm the jobs below, which is
     // why the ids come back from the UPDATE itself rather than from the snapshot.
     //
-    // TODO: The jobs are enqueued AFTER this transaction commits (the pattern every write in this
-    // module follows, because `enqueueJob` takes a client and not a tx). A failure partway through
-    // that loop leaves documents PENDING with no job, and the row here already says they were
-    // queued. The row is true about the transition it names; the queue is what the next reindex
-    // repairs.
     const moved = await db.$queryRaw<{ id: bigint }[]>`
       UPDATE knowledge_documents
          SET status = 'PENDING', error = NULL, updated_at = now()
@@ -645,6 +686,24 @@ export async function reindexKnowledgeBase(
          AND knowledge_base_id = ${knowledgeBaseId}
          AND status IN (${Prisma.join(statuses.map((v) => Prisma.sql`${v}`))})
       RETURNING id`;
+    // NOTE: The jobs IN THE SAME TRANSACTION as the transition they answer for. Enqueuing after the
+    // commit is what the single-document paths do, and in a loop of N it is the shape that leaves
+    // documents sitting in PENDING with no job: they are no longer UNINDEXED, so the next bulk
+    // reindex does not select them either, and only a per-document retry gets them back. Committing
+    // the status, the jobs and the row together makes the count in that row true by construction.
+    for (const d of moved) {
+      await upsertJobRow(db, {
+        tenantId,
+        kind: "RAG_INGEST",
+        dedupeKey: `doc:${d.id}`,
+        runAt: new Date(),
+        // NOTE: Same as the single-document retry, in bulk: an operator asked for the whole base to
+        // be indexed again, and a document that failed on a previous embedding provider is exactly
+        // the one this is for.
+        rearm: "new-work",
+        payload: { documentId: String(d.id) },
+      });
+    }
     if (moved.length > 0) {
       await auditMutation(db, ctx, {
         action: "knowledge.reindex",
@@ -665,18 +724,6 @@ export async function reindexKnowledgeBase(
   if (opts.dryRun) return { queued: outcome.docs.length };
 
   for (const d of outcome.docs) {
-    await enqueueJob({
-      tenantId,
-      kind: "RAG_INGEST",
-      dedupeKey: `doc:${d.id}`,
-      runAt: new Date(),
-      // NOTE: Same as the single-document retry, in bulk: an operator asked for the whole base to
-      // be indexed again, and a document that failed on a previous embedding provider is exactly
-      // the one this is for.
-      rearm: "new-work",
-      payload: { documentId: String(d.id) },
-      base,
-    });
     broadcastDocumentEvent(tenantId, {
       knowledgeBaseId: String(knowledgeBaseId),
       documentId: String(d.id),

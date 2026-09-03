@@ -297,6 +297,22 @@ describe.skipIf(!dbUp)("the knowledge family records its own changes", () => {
     await collect();
   });
 
+  // The count comes from the DATABASE, not from the string in hand, and an astral character is what
+  // separates the two: Postgres counts it as one character and `String.length` as two. The reason it
+  // is asked of the column is size — an uploaded document holds up to 2,000,000 characters, and
+  // reading the body across the wire to count it would put that transfer inside a transaction with
+  // five seconds to finish.
+  test("a document's size is counted where the document is", async () => {
+    await clearAudit();
+    const withEmoji = `${BODY} 🎉`;
+    const doc = await makeDoc(withEmoji);
+    const [row] = await rows();
+    expect(row?.after).toMatchObject({ chars: [...withEmoji].length });
+    expect(withEmoji.length).not.toBe([...withEmoji].length);
+    await collect();
+    await deleteDocument(ctx(), doc.id, appDb);
+  });
+
   // The action with no name on any transport before this issue.
   test("editing a document records that the text moved, by its length", async () => {
     const doc = await makeDoc();
@@ -369,6 +385,9 @@ describe.skipIf(!dbUp)("the knowledge family records its own changes", () => {
       data: { status: "UNINDEXED" },
     });
     await clearAudit();
+    await suDb.schedulerJob.deleteMany({
+      where: { tenantId, kind: "RAG_INGEST" },
+    });
     const res = await reindexKnowledgeBase(ctx(), kbId, appDb);
     expect(res.queued).toBe(2);
     const [row, ...rest] = await rows();
@@ -376,6 +395,18 @@ describe.skipIf(!dbUp)("the knowledge family records its own changes", () => {
     expect(row?.action).toBe("knowledge.reindex");
     expect(row?.target).toBe(`knowledge_base:${kbId}`);
     expect(row?.after).toEqual({ queued: 2, includeFailed: false });
+    // The jobs, committed with the transition and with the row that counts them. Enqueuing after
+    // the commit is what leaves documents in PENDING with no job: they are no longer UNINDEXED, so
+    // the next bulk re-index does not select them either.
+    expect(
+      await suDb.schedulerJob.count({
+        where: {
+          tenantId,
+          kind: "RAG_INGEST",
+          dedupeKey: { in: [`doc:${a.id}`, `doc:${b.id}`] },
+        },
+      }),
+    ).toBe(2);
     await collect();
   });
 
@@ -387,6 +418,9 @@ describe.skipIf(!dbUp)("the knowledge family records its own changes", () => {
       data: { status: "UNINDEXED" },
     });
     await clearAudit();
+    await suDb.schedulerJob.deleteMany({
+      where: { tenantId, kind: "RAG_INGEST" },
+    });
     // Another operator presses re-index first and moves both documents.
     const res = await reindexKnowledgeBase(
       ctx(),
@@ -403,6 +437,15 @@ describe.skipIf(!dbUp)("the knowledge family records its own changes", () => {
     // re-queued documents this request never touched.
     expect(res.queued).toBe(0);
     expect(await rows()).toEqual([]);
+    expect(
+      await suDb.schedulerJob.count({
+        where: {
+          tenantId,
+          kind: "RAG_INGEST",
+          dedupeKey: { in: [`doc:${a.id}`, `doc:${b.id}`] },
+        },
+      }),
+    ).toBe(0);
   });
 
   // A preview is a read: it counts what WOULD be queued and touches nothing.

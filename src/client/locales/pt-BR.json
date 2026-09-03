@@ -1130,7 +1130,7 @@
     "memoryModelHelp": "Deixe no modelo do agente, a menos que você tenha comparado as alternativas.\n\nO resumo não é lido uma vez: ele vira o que o agente sabe daquele contato dali em diante e nunca é reescrito.\n\nEste é o lugar errado para cortar custos: no modelo mais barato de um fornecedor, o nome do cliente se perdeu em um atendimento a cada cinco.",
     "memorySameAsAgent": "Igual ao do agente",
     "mode": "Modo",
-    "modeHint": "Um agente em teste fica em silêncio na conversa até o cliente enviar /teste; em produção responde normalmente.",
+    "modeHint": "Um agente em teste fica em silêncio na conversa até o cliente enviar /teste; em produção responde normalmente; em monitoramento recebe e memoriza cada mensagem e nunca responde.",
     "model": "Modelo",
     "modelFallback": "Provedor reserva",
     "modelFallbackBaseURLHint": "Obrigatório para endpoints compatíveis com OpenAI, a não ser que a credencial já traga uma.",
@@ -1144,6 +1144,7 @@
     "modelRequired": "Escolha um modelo para este provedor antes de salvar.",
     "modelSection": "Modelo",
     "modelSectionHint": "Qual LLM alimenta este agente.",
+    "modeMonitoring": "Monitoramento",
     "modeProduction": "Produção",
     "modeTest": "Teste",
     "name": "Nome",
@@ -1834,6 +1835,11 @@
       "streamableHttp": "Streamable HTTP"
     },
     "url": "URL"
+  },
+  "monitoring": {
+    "badge": {
+      "agent": "Monitoramento"
+    }
   },
   "nativeTools": {
     "assign_label": {

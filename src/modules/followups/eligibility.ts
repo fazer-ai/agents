@@ -1,3 +1,4 @@
+import { isMonitoring } from "@/modules/agents/mode";
 import { isTestSilenced } from "@/modules/agents/test-mode";
 import { shouldBotHandle } from "@/modules/chatwoot/normalize";
 
@@ -33,7 +34,9 @@ export interface FollowUpLiveness {
   // This conversation's inbox is the entry or widget side of a channelRedirect, which owns
   // re-engagement itself; the generic follow-up stays out of it.
   managedByRedirect: boolean;
-  // Agent.mode + Conversation.testActivatedAt: a test agent is silent until /teste.
+  // Agent.mode + Conversation.testActivatedAt: a test agent is silent until /teste, and a
+  // monitoring agent never speaks (issue #209) — an explicit arm, because nothing else here excludes
+  // a third mode: a monitoring agent with follow-up switched on would otherwise chase the customer.
   agentMode: string;
   testActivatedAt: Date | null;
   // The bot only follows up while it still owns the conversation (pending, no human assignee).
@@ -64,6 +67,7 @@ export function isFollowUpLive(s: FollowUpLiveness): boolean {
     s.agentEnabled &&
     s.followUpEnabled &&
     !s.managedByRedirect &&
+    !isMonitoring(s.agentMode) &&
     !isTestSilenced(s.agentMode, s.testActivatedAt) &&
     s.mirrorHolder !== "not-ours" &&
     shouldBotHandle({ status: s.status, assigneeType: s.assigneeType })

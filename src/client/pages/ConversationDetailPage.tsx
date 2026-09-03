@@ -51,6 +51,7 @@ import {
   Tooltip,
   useToast,
 } from "@/client/components";
+import { MonitoringBadge } from "@/client/components/MonitoringBadge";
 import { useTenantEvents } from "@/client/hooks/useTenantEvents";
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
@@ -1602,6 +1603,7 @@ export function ConversationDetailPage() {
                       state={conv.testActivatedAt ? "active" : "waiting"}
                     />
                   )}
+                  {conv.agentMode === "monitoring" && <MonitoringBadge />}
                   {conv.outOfHours && <OutOfHoursBadge />}
                 </div>
                 <p className="mt-0.5 flex items-center gap-1.5 text-sm text-text-muted">

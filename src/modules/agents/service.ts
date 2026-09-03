@@ -45,15 +45,16 @@ import {
   getToolpackToolViews,
 } from "@/modules/integrations/toolpacks";
 import { requireVaultRefFor } from "@/modules/vault/service";
+import { AGENT_MODES, type AgentMode, normalizeAgentMode } from "./mode";
 
 // Agent configuration CRUD — the config the whole system orbits (the same core the UI config
 // screen and the MCP `prompt_get/set` tools project over). All reads/writes are tenant-scoped;
 // updates touch only an explicit allowlist of fields (never tenantId/id).
 
 // Agent operating mode (item 1): a "test" agent stays silent in a conversation until /teste; a
-// "production" agent answers normally. New agents are created in "test".
-export const AGENT_MODES = ["test", "production"] as const;
-export type AgentMode = (typeof AGENT_MODES)[number];
+// "production" agent answers normally; a "monitoring" agent never answers (./mode.ts). New agents
+// are created in "test".
+export { AGENT_MODES, type AgentMode } from "./mode";
 
 export interface AgentDto {
   id: string;
@@ -110,7 +111,7 @@ export function toDto(a: {
       a.followUpHoursId === null ? null : String(a.followUpHoursId),
     transferWithSummary: a.transferWithSummary,
     enabled: a.enabled,
-    mode: a.mode === "test" ? "test" : "production",
+    mode: normalizeAgentMode(a.mode),
     settings: (a.settings ?? {}) as Record<string, unknown>,
     createdAt: a.createdAt,
     updatedAt: a.updatedAt,

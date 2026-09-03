@@ -2191,6 +2191,19 @@ describe("isRedirectFollowUpLive", () => {
     ).toBe(false);
   });
 
+  test("a monitoring agent never climbs the ladder, activated or not", () => {
+    expect(isRedirectFollowUpLive({ ...live, agentMode: "monitoring" })).toBe(
+      false,
+    );
+    expect(
+      isRedirectFollowUpLive({
+        ...live,
+        agentMode: "monitoring",
+        testActivatedAt: new Date("2026-01-01"),
+      }),
+    ).toBe(false);
+  });
+
   test("a test agent is silent until the widget conversation gets a /teste", () => {
     expect(isRedirectFollowUpLive({ ...live, agentMode: "test" })).toBe(false);
     expect(

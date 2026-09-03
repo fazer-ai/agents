@@ -7,6 +7,7 @@ import basePrisma from "@/api/lib/prisma";
 import { mayCloseConversation, postedOutcomeFor } from "@/graph/close-intent";
 import { withKeyedQueue } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { agentStillSpeaks } from "@/modules/agents/speaks";
 import { overlayMediaAnnotations } from "@/modules/chatwoot/annotations";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { describeClosedGate } from "@/modules/chatwoot/gate-close";
@@ -131,11 +132,18 @@ export type RunAgentTurnOutcome =
   // reports it (issue #318). Its sibling below is the binding that EXISTS and cannot answer.
   | "no-agent"
   // Bound, and the config would not load: the agent is switched off (the common one, and deliberate)
-  // or its row is gone. Same silence, different repair, and deliberately not the same word.
+  // or its row is gone. Same silence, different repair, and deliberately not the same word. ALSO the
+  // turn that loaded and then stood down because the operator switched the agent off or flipped it
+  // to monitoring while it ran (`agentStillSpeaks` at the send fence, issue #209 review). Not
+  // "stale" on purpose: that word's bookkeeping is /reset's — the burst is left unmarked for a
+  // thread the command cleared — while this one asks the caller to read the agent again and, for
+  // an observer, to fold the burst into memory and mark it handled.
   | "agent-unavailable"
   | "empty"
   | "taken-over"
-  // The run was CALLED OFF while it worked — today only by /reset retiring the job that queued it.
+  // The run was CALLED OFF while it worked — by /reset retiring the job that queued it, or by the
+  // operator switching the agent off or flipping it to monitoring (`agentStillSpeaks`, read at every
+  // send fence).
   // Distinct from "superseded" on purpose: both leave the watermark where it is, but superseded says
   // "a newer message will re-answer this burst" and this one says "the burst was withdrawn along
   // with the thread". Reading one bit for both questions is how a caller ends up re-arming work the
@@ -656,9 +664,38 @@ async function runTurnBody(
   // the output guardrail, the supersede re-fetch, the speech normalizer, the synthesis call.
   // Adjacency is not something a call site can be trusted to keep — it has to be where the question
   // is asked.
-  const writeCalledOff = async (): Promise<boolean> =>
-    params.stillWanted !== null &&
-    !(await params.stillWanted({ strict: false }));
+  //
+  // THE OPERATOR'S OWN SILENCES ride the same ask (issue #209 review, rounds 3 and 4). The config
+  // this turn loaded is a model call old by the first send and several waits old by the last — the
+  // input guardrail's template, the slow-tool ack, the output guardrail, the speech normalizer, the
+  // synthesis, the typing pause before each balloon — and an agent switched off or flipped to
+  // monitoring inside any of them must not see one more message go out. Asked in ONE place rather
+  // than as a check beside the model call, for the reason the paragraph above gives: a check placed
+  // at one send is a check the next send is born without. Never on the playground, which does not
+  // come through here — its reply is to an operator.
+  //
+  // WHICH silence, for the caller's bookkeeping (round 6). Both answers stop the run before it
+  // writes, and the callers do different things with the burst afterwards: one withdrawn by /reset
+  // leaves it unmarked for the thread the command cleared, one the operator silenced is read again
+  // by the caller — an observer's burst is folded into memory and marked handled. Latched on the
+  // first refusal, because every ask after it repeats the question; the episode is asked first, so
+  // a run that lost both answers "stale".
+  let silenced = false;
+  const writeCalledOff = async (): Promise<boolean> => {
+    if (
+      params.stillWanted !== null &&
+      !(await params.stillWanted({ strict: false }))
+    ) {
+      return true;
+    }
+    if (!(await agentStillSpeaks(tenantId, loaded.agentId, base))) {
+      silenced = true;
+      return true;
+    }
+    return false;
+  };
+  const standDown = (): "stale" | "agent-unavailable" =>
+    silenced ? "agent-unavailable" : "stale";
 
   // WHO OWNS IT ACCORDING TO THE MIRROR, RIGHT NOW (issue #457, review round 7). The receiver's gate
   // proved bot ownership before this turn was queued, and the note is written much later — after the
@@ -772,10 +809,12 @@ async function runTurnBody(
   // alternative is posting into a conversation the customer just reset. It is also not new: the
   // output-guardrail path has returned "stale" past this same claim since the ask after that model
   // call was added.
-  const postBlocked = async (): Promise<"stale" | "superseded" | null> => {
-    if (await writeCalledOff()) return "stale";
+  const postBlocked = async (): Promise<
+    "stale" | "agent-unavailable" | "superseded" | null
+  > => {
+    if (await writeCalledOff()) return standDown();
     if (params.shouldPost && !(await params.shouldPost())) return "superseded";
-    if (await writeCalledOff()) return "stale";
+    if (await writeCalledOff()) return standDown();
     return null;
   };
 
@@ -791,6 +830,14 @@ async function runTurnBody(
     customerMessage: null as string | null,
     completed: false,
   };
+  // The SAME reading every send makes, handed down whole (issue #209 review, round 5). A fence
+  // derived from `params.stillWanted` alone let a tool call run — the label write, and the slow-tool
+  // ack that posts to the customer — for an agent flipped to monitoring inside the model call, while
+  // the reply after it was refused. Always present now, where it used to be absent for a turn
+  // nothing could retire: the switch and the mode can change under any turn.
+  const stillWantedFence = async (): Promise<boolean> =>
+    !(await writeCalledOff());
+
   const tools = await buildToolset(
     loaded,
     {
@@ -800,6 +847,9 @@ async function runTurnBody(
       client,
       conversationId,
       threadId,
+      // And into the toolset, for the slow-tool ack (round 10): its send is a wait after the
+      // graph's ask at the tool boundary.
+      stillWanted: stillWantedFence,
       messageId: params.messageId,
       imageDeps: params.deps?.imageDeps,
       documentsStorageDir: params.deps?.documentsStorageDir,
@@ -808,12 +858,6 @@ async function runTurnBody(
     },
     { buildNativeTools, mcp: params.deps?.mcp, flow },
   );
-
-  // Bound once so the closure below carries the fence itself rather than `params`, which TypeScript
-  // cannot narrow across a callback.
-  const fence = params.stillWanted;
-  const stillWantedFence =
-    fence === null ? undefined : () => fence({ strict: false });
 
   // Build model + graph + cost/trace callbacks.
   const graph = await buildModelAndGraph(loaded, tools, {
@@ -1492,7 +1536,7 @@ async function runTurnBody(
     // costs a model call, and its silent branch returns "blocked" — a word that says the burst was
     // consumed, so the watermark advances. A run the command called off during that call would be
     // the one path that reports a retired burst as handled.
-    if (await writeCalledOff()) return "stale";
+    if (await writeCalledOff()) return standDown();
     if (guardrailTripped(inGuard)) {
       const inReply = screenedText(inGuard, text);
       if (inReply !== null) {
@@ -1645,7 +1689,7 @@ async function runTurnBody(
     // handled watermark over a customer message nothing answered and skips the rollback (issue #449,
     // review round 5). Before `drafted`, which is the first line that treats the empty turn as a
     // result.
-    if (turnWasCalledOff(result.messages)) return refuse("stale");
+    if (turnWasCalledOff(result.messages)) return refuse(standDown());
 
     // The follow-up's silence token is not vocabulary of this path, but it IS in this thread: the
     // memory is keyed per contact-inbox, so every silent follow-up leaves an assistant turn whose
@@ -1802,7 +1846,7 @@ async function runTurnBody(
     const outGuard = screened ? await runGuardrail("output", screened) : null;
     // Same wait, same reason: `postBlocked` answered before this model call, and the suppressed
     // branch below returns "blocked" without passing any later ask.
-    if (await writeCalledOff()) return refuse("stale");
+    if (await writeCalledOff()) return refuse(standDown());
     if (outGuard && guardrailTripped(outGuard)) {
       turnState.pendingAttachments.length = 0;
       const replacement = screenedText(outGuard, screened);
@@ -1820,7 +1864,7 @@ async function runTurnBody(
     // reported "empty" would leave a stale turn error on a conversation that was just answered.
     if (!reply) {
       // Nothing has left this turn yet on this branch, so the whole thing stands down.
-      if (await writeCalledOff()) return refuse("stale");
+      if (await writeCalledOff()) return refuse(standDown());
       const queued = turnState.pendingAttachments.length;
       const {
         sent,
@@ -1843,7 +1887,7 @@ async function runTurnBody(
       // customer, and "stale" would leave the watermark where it is — handing the same burst to the
       // next flush, which would send that attachment again. What was delivered decides the word, the
       // same rule the reply below follows.
-      if (attachmentsCalledOff && !sent) return refuse("stale");
+      if (attachmentsCalledOff && !sent) return refuse(standDown());
       // NOTE: The attachments WERE the turn and none of them reached the customer. That is a failed
       // turn, not a silent one: returning "empty" here would let the deferred resolve close a
       // conversation nobody answered, and the callers only record a turn error (private note,
@@ -1907,7 +1951,7 @@ async function runTurnBody(
 
     // The image lands before the text that talks about it, and before the TTS branch: an audio
     // reply must not swallow the attachment.
-    if (await writeCalledOff()) return refuse("stale");
+    if (await writeCalledOff()) return refuse(standDown());
     const attachments = await deliverPendingAttachments(
       client,
       conversationId,
@@ -1922,7 +1966,7 @@ async function runTurnBody(
     // returning "stale" from there would replay a burst whose attachment the customer has. The turn
     // reports what it delivered and stops here.
     if (attachments.calledOff)
-      return attachments.sent ? "posted" : refuse("stale");
+      return attachments.sent ? "posted" : refuse(standDown());
 
     const delivered = await deliverText(reply, recheck.voiceReply);
     // Another turn holds the claim on this burst. Nothing left here — the ask sits one statement
@@ -1962,7 +2006,7 @@ async function runTurnBody(
     // command landing in the text send leaves a customer holding part of the answer. "stale" would
     // hand the burst back to the next flush, which sends that attachment again.
     if (delivered === "stale" || delivered.delivered === 0) {
-      if (!attachments.sent) return refuse("stale");
+      if (!attachments.sent) return refuse(standDown());
       // The attachment IS the answer the customer got, and this is the third shape of a partial
       // delivery rather than a fourth kind of success: a text send that failed outright leaves them
       // holding the file and none of the words, which is exactly what the badge exists to say.

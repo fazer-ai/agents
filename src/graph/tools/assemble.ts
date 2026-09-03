@@ -428,7 +428,8 @@ export interface HttpToolBuildDeps {
   allowHttp?: boolean;
   // Posts a per-tool "I'll look into that…" ack to the customer before a slow tool runs. Wired only
   // on a real conversation (the playground/nudge build omits it) — see prepare.ts buildToolset.
-  emitAck?: (message: string) => Promise<void>;
+  // An explicit `false` says the run was called off after the ack, and the tool does not run.
+  emitAck?: (message: string) => Promise<boolean | undefined>;
   // Conversation/contact context for {{placeholder}} interpolation in fixed fields, headers, URL and
   // the raw body (e.g. {{conversation_id}}, {{contact_name}}). Never a secret.
   context?: Record<string, string>;

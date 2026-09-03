@@ -360,6 +360,30 @@ describe("buildHttpTool slow-tool ack (item 4)", () => {
     expect(order).toEqual(["ack:Só um momento!", "fetch"]);
   });
 
+  test("an ack that reports the run called off stops the tool before any request", async () => {
+    // The ack's send is a wait after the graph's own ask at the tool boundary; a run called off
+    // inside it (the operator's flip to monitoring, issue #209 review round 10) makes no request.
+    const order: string[] = [];
+    const fetchImpl = (async () => {
+      order.push("fetch");
+      return new Response('{"ok":true}', {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+    const tool = buildHttpTool(def({ ackMessage: "Já verifico pra você…" }), {
+      resolveCredential: async () => null,
+      fetchImpl,
+      emitAck: async (m) => {
+        order.push(`ack:${m}`);
+        return false;
+      },
+    });
+    const out = await tool.invoke({ __wait_message: "Só um momento!" });
+    expect(order).toEqual(["ack:Só um momento!"]);
+    expect(String(out)).toContain("called off");
+  });
+
   test("__wait_message is required (non-empty) in the schema when ackMessage is set", () => {
     const tool = buildHttpTool(def({ ackMessage: "One sec…" }), {
       resolveCredential: async () => null,

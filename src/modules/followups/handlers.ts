@@ -156,6 +156,10 @@ async function sweepHandler(
         AND c.assignee_type IS DISTINCT FROM 'User'
         AND c.inbox_id IS NOT NULL
         AND a.enabled = true
+        -- The same arms isFollowUpLive has (followups/eligibility.ts): a monitoring agent chases
+        -- nobody, and excluding it HERE is what keeps its silent conversations from filling the
+        -- batch the handler would only drop — LIMIT below is over eligible rows or it is nothing.
+        AND a.mode <> 'monitoring'
         AND (a.mode <> 'test' OR c.test_activated_at IS NOT NULL)
         AND c.last_event_at < ${cutoff}
         AND c.last_inbound_at IS NOT NULL

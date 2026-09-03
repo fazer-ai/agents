@@ -47,6 +47,10 @@ import type { LoadChatwootClientDeps } from "@/modules/chatwoot/instance";
 import { readDebugModes } from "@/modules/flowlog/debug-mode";
 import { getTenantSettings } from "@/modules/tenant-settings/service";
 import {
+  PARAM_NAME_KIND_IDS,
+  secretTypeRefusesParamName,
+} from "@/modules/vault/secret-types";
+import {
   createPendingVaultEntry,
   isVaultIdRef,
   resolveVaultRefByName,
@@ -303,6 +307,24 @@ export async function credentialCreate(
     baseUrl: args.base_url ?? null,
     paramName: args.param_name ?? null,
   };
+
+  // NOTE: BEFORE the dry-run branch, because the preview returns without touching the core and a
+  // rule the core learns after that shortcut is a rule the preview promises away. `param_name` is
+  // read only for the kinds that declare `needsParamName`, so on any other kind it is a field the
+  // runtime discards, and `createPendingVaultEntry` now refuses it (issue #488) — previewing it
+  // clean would promise a write that apply rejects. Same question in two shapes: the transport
+  // answers with a `WriteResult`, the core with an `AppError`, and the catalog predicate in the
+  // middle is what keeps them from drifting.
+  //
+  // NOTE: this covers THIS rule only. The preview still returns ok for five other inputs the apply
+  // refuses (a kind the catalog does not know, a managed-blob kind, a missing required base URL, a
+  // missing required param name, and a name the write rejects) — measured, all six diverging, and
+  // filed separately rather than widened into here.
+  if (args.param_name?.trim() && secretTypeRefusesParamName(kind)) {
+    return err(
+      `the "${kind}" credential type does not use a param name. The types that do are: ${PARAM_NAME_KIND_IDS.join(", ")}.`,
+    );
+  }
 
   // dry-run is the default: create ONLY when dry_run is explicitly false.
   if (args.dry_run !== false) {

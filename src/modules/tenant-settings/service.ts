@@ -10,6 +10,7 @@ import { syncTenantSpendPoll } from "@/modules/spend-ceiling/arm";
 import {
   readSpendCeilingConfig,
   type SpendCeilingConfig,
+  type SpendCeilingLegacyStored,
   type SpendCeilingStored,
   spendCeilingSettingsSchema,
 } from "@/modules/spend-ceiling/settings";
@@ -223,7 +224,8 @@ async function patchBlock<
     | EmbeddingSettings
     | LangfuseSettings
     | CompanySettings
-    | SpendCeilingStored,
+    | SpendCeilingStored
+    | SpendCeilingLegacyStored,
 >(
   ctx: TenantContext,
   base: PrismaClient,
@@ -596,12 +598,33 @@ export async function updateSpendCeiling(
         };
       }),
     },
-    (raw) => {
+    (raw): SpendCeilingStored | SpendCeilingLegacyStored => {
       const current = readSpendCeilingConfig(raw);
       // What is stored is the schema's output: the dollar fields and not the token ones, which is
       // how a save in dollars retires a block written in tokens (`legacyTokens`).
       // not-caller-input: the STORED block merged with the patch, so a failure here is not necessarily the caller's
-      return spendCeilingSettingsSchema.parse({ ...current, ...patch });
+      const stored = spendCeilingSettingsSchema.parse({ ...current, ...patch });
+      // ...unless the patch names no dollar field and the block is still in tokens: the console saves
+      // the whole block, but the API takes partial patches, and an operator changing only the
+      // customer's sentence has not seen the new unit. Merging against the synthesized zeroes would
+      // store a dollar block and drop the one warning that the old ceiling is no longer enforced
+      // (review round 1). The token keys stay until a patch names a dollar figure.
+      const touchesUsd =
+        patch.monthlyInboxUsd !== undefined ||
+        patch.monthlyPlaygroundUsd !== undefined;
+      if (current.legacyTokens && !touchesUsd) {
+        const {
+          monthlyInboxUsd: _inbox,
+          monthlyPlaygroundUsd: _playground,
+          ...rest
+        } = stored;
+        return {
+          ...rest,
+          monthlyInboxTokens: current.legacyTokens.inbox,
+          monthlyPlaygroundTokens: current.legacyTokens.playground,
+        };
+      }
+      return stored;
     },
   );
   // The poll that keeps the figure fresh follows the switch: armed while the ceiling is on, cancelled

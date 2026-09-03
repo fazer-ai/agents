@@ -9,6 +9,7 @@ import {
   resolveLangfuseConfig,
 } from "@/graph/observability";
 import type { UsageSource } from "@/graph/usage";
+import { sanitizeErrorMessage } from "@/lib/redact";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { claimContactAuthNotice } from "@/modules/contact-auth/state";
 import { emitFlowEvent } from "@/modules/flowlog/service";
@@ -289,7 +290,10 @@ export async function pollTenantSpend(
     });
     return { status: "polled" };
   } catch (err) {
-    const error = err instanceof Error ? err.message : String(err);
+    // What Langfuse answered is not ours to store as it came: a parse error quotes the body, and a
+    // NUL or an unpaired surrogate in it is a string Postgres refuses, which would turn the one
+    // write that records the failure into a failure of its own (review round 1).
+    const error = sanitizeErrorMessage(err);
     logger.warn(
       { err, tenantId: String(tenantId) },
       "spend ceiling poll failed; the last figure stands",

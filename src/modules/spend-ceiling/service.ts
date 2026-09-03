@@ -2,6 +2,7 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
+import { resolveLangfuseConfig } from "@/graph/observability";
 import type { UsageSource } from "@/graph/usage";
 import { AppError, TenantTargetRequiredError } from "@/lib/errors";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
@@ -11,7 +12,6 @@ import {
   type FlowContext,
   type FlowEvent,
 } from "@/modules/flowlog/service";
-import { readLangfuseSettings } from "@/modules/tenant-settings/service";
 import {
   ceilingFor,
   decideSpend,
@@ -468,9 +468,11 @@ export interface SpendCeilingUsageDto {
   // instead of guessing it from the browser's own clock, which sits in another timezone often
   // enough that "this month" would silently mean a different window than the gate's.
   periodStart: string;
-  // Whether the tenant has Langfuse switched on with a credential: without it there is no price
-  // table to read and the ceiling cannot be enforced, which the console says instead of showing a
-  // bar that never moves.
+  // Whether the tenant's Langfuse credential RESOLVES (switched on, the vault entry exists, the keys
+  // parse), asked the way the poll asks it: without that there is no price table to read and the
+  // ceiling cannot be enforced, which the console says instead of showing a bar that never moves.
+  // A reference alone is not enough (review round 1): a deleted or malformed entry is exactly what
+  // the poll reports as `langfuse-not-configured`, and the flag has to agree with the row.
   langfuseConfigured: boolean;
   // A ceiling this block was given in tokens before the unit changed, never enforced: see
   // `SpendCeilingConfig.legacyTokens`.
@@ -510,7 +512,7 @@ export async function spendCeilingUsage(params: {
     base,
     params.ctx,
     async (db) => {
-      const langfuse = await readLangfuseSettings(db, tenantId);
+      const langfuse = await resolveLangfuseConfig(db, tenantId);
       const entries = await Promise.all(
         sources.map(async (source): Promise<SpendCeilingUsageEntry> => {
           const row = await db.spendCostSnapshot.findUnique({
@@ -567,7 +569,7 @@ export async function spendCeilingUsage(params: {
   );
   return {
     periodStart: since.toISOString(),
-    langfuseConfigured: langfuse.enabled && langfuse.credentialRef !== null,
+    langfuseConfigured: langfuse !== null,
     legacyTokens: cfg.legacyTokens,
     pollIntervalMs: config.spendCeiling.pollIntervalMs,
     entries,

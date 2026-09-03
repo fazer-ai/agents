@@ -22,7 +22,10 @@ Cost in this codebase comes from **Langfuse** (`src/modules/analytics/langfuse-c
 keeps the price table. The ceiling is therefore denominated in **USD as Langfuse costs the month's
 generations**, and the accepted trade is that it is enforceable only where Langfuse is configured
 for the tenant (`langfuse.enabled` plus a `langfuse` vault credential with valid keys, see
-`resolveLangfuseConfig`); an install without it keeps no ceiling, and the console says so. A
+`resolveLangfuseConfig`); an install without it keeps no ceiling, and the console says so. "Configured"
+means the credential RESOLVES, asked the way the poll asks it: a reference to a deleted or malformed
+vault entry is what the poll writes on the row as `langfuse-not-configured`, and the console's flag
+agrees with the row rather than with the reference. A
 maintained external price table is worth more than a local one we would have to keep correct
 against six providers, OpenRouter and an operator-supplied `openai-compatible` base URL.
 
@@ -71,10 +74,12 @@ moves the failure from **availability to staleness**, which is a failure the row
 **A block written in tokens is no ceiling, and says so.** A `spendCeiling` block saved before this
 change carries `monthlyInboxTokens` / `monthlyPlaygroundTokens`, and there is no price to convert
 them with. The reader answers `0` on both dollar halves and sets `legacyTokens` with the numbers,
-the console shows them with a notice that nothing is enforced, and the first save in dollars retires
-them (the writer stores the schema's own shape, which does not carry the old keys). Deliberately not
-migrated: a ceiling nobody typed in the new unit is a ceiling that silences an agent on the strength
-of a guess.
+the console shows them with a notice that nothing is enforced, and the first save that **names a
+dollar field** retires them (the writer then stores the schema's own shape, which does not carry the
+old keys). A patch that names none, such as the API changing only the customer's sentence, keeps the
+block in tokens: the operator has not seen the new unit, and merging against synthesized zeroes would
+drop the one warning that the old ceiling is no longer enforced. Deliberately not migrated: a ceiling
+nobody typed in the new unit is a ceiling that silences an agent on the strength of a guess.
 
 Money is compared in **cents** (`decideSpend`): `0.1 + 0.2` is not `0.3` to a double, and a ceiling
 of thirty cents met exactly by three dimes has to read as reached. The writer rounds a third decimal

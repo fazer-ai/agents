@@ -367,6 +367,27 @@ describe.skipIf(!dbUp)("the spend ceiling poll", () => {
     expect(healed?.polledAt?.toISOString()).toBe(after.toISOString());
   });
 
+  // What Langfuse answers is not ours to store as it came (review round 1): a parse error quotes the
+  // body, and a body with a NUL or an unpaired surrogate is a string Postgres refuses, so the one
+  // write that records the failure would itself fail and the row would show a poll that never ran.
+  test("an error text the database would refuse is stored sanitized", async () => {
+    const { fetchFn } = langfuseStub({
+      [INBOX_ENV]: new Error("body was \u0000nul\ud800tail"),
+      [PLAY_ENV]: [],
+    });
+    const out = await pollTenantSpend(tenantA, {
+      base: appDb,
+      fetchFn,
+      now: NOW,
+    });
+    expect(out.status).toBe("failed");
+    const inbox = await snapshot(tenantA, "inbox");
+    expect(inbox?.pollError).toBeTruthy();
+    expect(inbox?.pollError).not.toContain("\u0000");
+    expect(inbox?.pollError).toContain("nul");
+    expect(inbox?.pollFailedAt?.toISOString()).toBe(NOW.toISOString());
+  });
+
   // Ingestion lag makes a total DROP: the month's cost is what Langfuse has finished ingesting, and
   // a burst that has not landed yet reads as money never spent. The figure is monotonic inside a
   // month, so a lower answer is not written over a higher one, and the counts follow the same rule.

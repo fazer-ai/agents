@@ -1,6 +1,14 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
+import { encryptJson } from "@/api/lib/crypto";
 import type { TenantContext } from "@/lib/tenancy";
 import {
   readSpendSnapshot,
@@ -10,6 +18,11 @@ import {
   spendCeilingVerdict,
   spendUsedInMonth,
 } from "@/modules/spend-ceiling/service";
+import {
+  updateLangfuse,
+  updateSpendCeiling,
+} from "@/modules/tenant-settings/service";
+import { formatVaultRef } from "@/modules/vault/service";
 
 // What the gate READS (issue #426): the month's cost as the Langfuse poll last wrote it, one row per
 // (tenant, source, month), never Langfuse itself. The rule is proved without a database in
@@ -490,6 +503,69 @@ describe.skipIf(!dbUp)("the spend ceiling against the cost snapshot", () => {
       });
     });
 
+    // "CONFIGURED" MEANS THE POLL CAN USE IT (review round 1). A block that is switched on with a
+    // credential reference whose vault entry is gone, or holds no usable keys, is what the poll
+    // reports as `langfuse-not-configured`; the console must not call the same tenant configured on
+    // the strength of the reference alone, or the screen shows $0 with no sentence saying why.
+    test("langfuse is configured only when its credential resolves", async () => {
+      const usable = await suDb.vaultEntry.create({
+        data: {
+          tenantId,
+          name: "lf-usable",
+          kind: "langfuse",
+          secret: encryptJson({ publicKey: "pk", secretKey: "sk" }),
+          baseUrl: "https://langfuse.example.test",
+        },
+        select: { id: true },
+      });
+      const broken = await suDb.vaultEntry.create({
+        data: {
+          tenantId,
+          name: "lf-broken",
+          kind: "langfuse",
+          secret: encryptJson({ token: "not-a-key-pair" }),
+        },
+        select: { id: true },
+      });
+      try {
+        await updateLangfuse(
+          ctx(),
+          { enabled: true, credentialRef: formatVaultRef(usable.id) },
+          appDb,
+        );
+        expect(
+          (await spendCeilingUsage({ ctx: ctx(), base: appDb, now: AUG }))
+            .langfuseConfigured,
+        ).toBe(true);
+        await updateLangfuse(
+          ctx(),
+          { enabled: true, credentialRef: formatVaultRef(broken.id) },
+          appDb,
+        );
+        expect(
+          (await spendCeilingUsage({ ctx: ctx(), base: appDb, now: AUG }))
+            .langfuseConfigured,
+        ).toBe(false);
+        await updateLangfuse(
+          ctx(),
+          { enabled: true, credentialRef: formatVaultRef(usable.id) },
+          appDb,
+        );
+        await suDb.vaultEntry.delete({ where: { id: usable.id } });
+        expect(
+          (await spendCeilingUsage({ ctx: ctx(), base: appDb, now: AUG }))
+            .langfuseConfigured,
+        ).toBe(false);
+      } finally {
+        await suDb.vaultEntry.deleteMany({ where: { tenantId } });
+        await updateLangfuse(
+          ctx(),
+          { enabled: false, credentialRef: null },
+          appDb,
+        );
+      }
+    });
+
     test("a block written in tokens is reported as such", async () => {
       const usage = await spendCeilingUsage({
         ctx: ctx(),
@@ -502,6 +578,70 @@ describe.skipIf(!dbUp)("the spend ceiling against the cost snapshot", () => {
         },
       });
       expect(usage.legacyTokens).toEqual({ inbox: 250_000, playground: 0 });
+    });
+  });
+
+  // A PATCH THAT NAMES NO DOLLAR FIGURE LEAVES A TOKEN BLOCK IN TOKENS (review round 1). The console
+  // saves the whole block on every change, but the API takes partial patches, and an operator who
+  // only changes the customer's sentence has not seen the new unit: merging that against the
+  // synthesized zeroes would store a dollar block and drop the one warning that the old ceiling is
+  // no longer enforced. The first patch that names a dollar field is what retires the token keys.
+  describe("saving over a block written in tokens", () => {
+    const stored = async () =>
+      (
+        (
+          await suDb.tenant.findUniqueOrThrow({
+            where: { id: tenantId },
+            select: { settings: true },
+          })
+        ).settings as { spendCeiling?: Record<string, unknown> }
+      ).spendCeiling;
+
+    beforeEach(async () => {
+      const t = await suDb.tenant.findUniqueOrThrow({
+        where: { id: tenantId },
+        select: { settings: true },
+      });
+      await suDb.tenant.update({
+        where: { id: tenantId },
+        data: {
+          settings: {
+            ...(t.settings as object),
+            spendCeiling: {
+              enabled: true,
+              monthlyInboxTokens: 250_000,
+              monthlyPlaygroundTokens: 0,
+            },
+          },
+        },
+      });
+    });
+
+    test("a patch with no dollar field keeps the token keys and the marker", async () => {
+      const next = await updateSpendCeiling(
+        ctx(),
+        { overCeilingMessage: "Volto amanhã." },
+        appDb,
+      );
+      expect(next.legacyTokens).toEqual({ inbox: 250_000, playground: 0 });
+      expect(next.overCeilingMessage).toBe("Volto amanhã.");
+      const raw = await stored();
+      expect(raw?.monthlyInboxTokens).toBe(250_000);
+      expect(raw).not.toHaveProperty("monthlyInboxUsd");
+      expect(raw).not.toHaveProperty("legacyTokens");
+    });
+
+    test("a patch that names a dollar field retires them", async () => {
+      const next = await updateSpendCeiling(
+        ctx(),
+        { monthlyInboxUsd: 40 },
+        appDb,
+      );
+      expect(next.legacyTokens).toBeNull();
+      expect(next.monthlyInboxUsd).toBe(40);
+      const raw = await stored();
+      expect(raw).not.toHaveProperty("monthlyInboxTokens");
+      expect(raw?.monthlyPlaygroundUsd).toBe(0);
     });
   });
 });

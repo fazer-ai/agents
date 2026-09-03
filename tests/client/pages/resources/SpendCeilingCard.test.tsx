@@ -189,6 +189,23 @@ describe("the spend ceiling card", () => {
     expect(has("failing since")).toBe(false);
   });
 
+  // The two reads can disagree for a poll: the flag is computed on the request, the sentinel was
+  // written by the last poll. Either one is enough to say the ceiling cannot be enforced.
+  test("a row carrying the not-configured sentinel says so even when the flag disagrees", async () => {
+    const usage = baseUsage();
+    usage.entries = usage.entries.map((e) => ({
+      ...e,
+      pollError: "langfuse-not-configured",
+      pollFailedAt: "2026-08-15T12:00:00.000Z",
+    }));
+    installFetchStub(usage);
+    renderCard();
+    await waitFor(() => {
+      expect(has("Langfuse is not configured")).toBe(true);
+    });
+    expect(has("failing since")).toBe(false);
+  });
+
   test("a block written in tokens says it is not enforced", async () => {
     installFetchStub(baseUsage());
     renderCard({

@@ -254,6 +254,12 @@ export function SpendCeilingCard({
     usage?.entries.find((e) => e.source === source);
   // The marker rides both reads; the settings prop is what the page holds after a save, so it wins.
   const legacy = value.legacyTokens ?? usage?.legacyTokens ?? null;
+  // Two reads can say "no Langfuse": the flag is computed on this request, the sentinel on a row was
+  // written by the last poll. Either is enough, and the sentence is said once, above the bars.
+  const langfuseMissing =
+    usage !== null &&
+    (!usage.langfuseConfigured ||
+      usage.entries.some((e) => e.pollError === NOT_CONFIGURED));
 
   return (
     <Card className="flex flex-col gap-4">
@@ -309,7 +315,7 @@ export function SpendCeilingCard({
           </div>
         ) : (
           <>
-            {!usage.langfuseConfigured && (
+            {langfuseMissing && (
               <p className="text-sm text-warning">
                 {t(
                   "spendCeiling.usage.langfuseMissing",

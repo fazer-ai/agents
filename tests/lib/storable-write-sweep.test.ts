@@ -388,6 +388,8 @@ const GUARD_CALLS: Record<string, number> = {
   "src/modules/flowlog/service.ts": 2,
   "src/modules/rag/documents.ts": 1,
   "src/modules/scheduler/service.ts": 2,
+  // The Langfuse error text, before it reaches `poll_error` (issue #426, review round 1).
+  "src/modules/spend-ceiling/poll.ts": 1,
   "src/modules/webhooks/outbound/worker.ts": 1,
 };
 

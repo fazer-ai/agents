@@ -233,3 +233,12 @@ export const spendCeilingSettingsSchema = z.object({
 
 // What a save STORES: the schema's output, which is the config without the derived marker.
 export type SpendCeilingStored = z.infer<typeof spendCeilingSettingsSchema>;
+
+// The shape a block written in tokens KEEPS when a patch names no dollar field: the schema's output
+// minus the dollar fields, plus the token keys the operator has not yet replaced. Stored by
+// `updateSpendCeiling` only in that case; read back through `readSpendCeilingConfig`, which turns
+// the token keys into `legacyTokens`.
+export type SpendCeilingLegacyStored = Omit<
+  SpendCeilingStored,
+  "monthlyInboxUsd" | "monthlyPlaygroundUsd"
+> & { monthlyInboxTokens: number; monthlyPlaygroundTokens: number };

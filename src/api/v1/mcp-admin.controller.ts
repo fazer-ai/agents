@@ -4,7 +4,9 @@ import { parseQueryId } from "@/api/lib/query-filters";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
 import config from "@/config";
 import { requireDbId } from "@/lib/db-id";
+import { ForbiddenError } from "@/lib/errors";
 import { instanceIdentity } from "@/lib/instance";
+import type { TenantContext } from "@/lib/tenancy";
 import {
   type CreateClientInput,
   createClient,
@@ -18,6 +20,15 @@ import {
   updateClient,
 } from "@/modules/mcp/oauth/admin";
 import { MCP_SCOPES } from "@/modules/mcp/oauth/tokens";
+
+// The principal, with its tenant selector left ALONE. Every sibling controller's `ctxOrThrow` also
+// refuses a null `tenantId`, and here that would be backwards: these tables are the deployment's,
+// the rows they record are fleet-level, and a SUPER_ADMIN with nothing selected is the ordinary way
+// to reach this surface.
+function principalOrThrow(ctx: TenantContext | null): TenantContext {
+  if (!ctx) throw new ForbiddenError();
+  return ctx;
+}
 
 // Admin surface for OUR MCP server (third transport): manage OAuth clients, see and
 // revoke active tokens, and read the connection info. SUPER_ADMIN-only (the mcp_oauth_* tables are
@@ -69,9 +80,12 @@ export const mcpAdminController = new Elysia({
   )
   .post(
     "/clients",
-    async ({ body }) => ({
+    async ({ tenantContext, body }) => ({
       instance: instanceIdentity,
-      client: await createClient(body as CreateClientInput),
+      client: await createClient(
+        principalOrThrow(tenantContext),
+        body as CreateClientInput,
+      ),
     }),
     {
       requireRole: "SUPER_ADMIN",
@@ -108,9 +122,13 @@ export const mcpAdminController = new Elysia({
   )
   .patch(
     "/clients/:clientId",
-    async ({ params, body }) => ({
+    async ({ tenantContext, params, body }) => ({
       instance: instanceIdentity,
-      client: await updateClient(params.clientId, body as UpdateClientInput),
+      client: await updateClient(
+        principalOrThrow(tenantContext),
+        params.clientId,
+        body as UpdateClientInput,
+      ),
     }),
     {
       requireRole: "SUPER_ADMIN",
@@ -132,8 +150,8 @@ export const mcpAdminController = new Elysia({
   )
   .delete(
     "/clients/:clientId",
-    async ({ params }) => {
-      await deleteClient(params.clientId);
+    async ({ tenantContext, params }) => {
+      await deleteClient(principalOrThrow(tenantContext), params.clientId);
       return { instance: instanceIdentity, success: true };
     },
     {
@@ -175,8 +193,8 @@ export const mcpAdminController = new Elysia({
   )
   .delete(
     "/tokens/:jti",
-    async ({ params }) => {
-      await revokeToken(params.jti);
+    async ({ tenantContext, params }) => {
+      await revokeToken(principalOrThrow(tenantContext), params.jti);
       return { instance: instanceIdentity, success: true };
     },
     {
@@ -208,8 +226,11 @@ export const mcpAdminController = new Elysia({
   )
   .delete(
     "/approvals/:id",
-    async ({ params }) => {
-      await deleteClientApproval(requireDbId(params.id));
+    async ({ tenantContext, params }) => {
+      await deleteClientApproval(
+        principalOrThrow(tenantContext),
+        requireDbId(params.id),
+      );
       return { instance: instanceIdentity, success: true };
     },
     {

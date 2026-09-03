@@ -1,5 +1,7 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
+import { asPrincipalOn, type TenantContext } from "@/lib/tenancy";
+import { auditMutationOn } from "@/modules/audit/service";
 
 // Self-service view of a user's OWN MCP connections (the apps they approved via OAuth) and the
 // ability to disconnect them. The mcp_oauth_* tables are GLOBAL (no RLS), so every query runs on the
@@ -85,25 +87,54 @@ export interface DisconnectResult {
 // die now, not only future consent). Idempotent and strictly userId-scoped — calling it for a client
 // another user connected has no effect on that user.
 export async function disconnectClient(
-  userId: bigint,
+  ctx: TenantContext & { userId: bigint },
   clientId: string,
   base: PrismaClient = basePrisma,
 ): Promise<DisconnectResult> {
-  const now = new Date();
-  const [approval, access, refresh] = await base.$transaction([
-    base.mcpOAuthClientApproval.deleteMany({ where: { userId, clientId } }),
-    base.mcpOAuthAccessToken.updateMany({
+  const userId = ctx.userId;
+  return asPrincipalOn(base, ctx, async (db) => {
+    const now = new Date();
+    const approval = await db.mcpOAuthClientApproval.deleteMany({
+      where: { userId, clientId },
+    });
+    const access = await db.mcpOAuthAccessToken.updateMany({
       where: { userId, clientId, revokedAt: null },
       data: { revokedAt: now },
-    }),
-    base.mcpOAuthRefreshToken.updateMany({
+    });
+    const refresh = await db.mcpOAuthRefreshToken.updateMany({
       where: { userId, clientId, revokedAt: null },
       data: { revokedAt: now },
-    }),
-  ]);
-  return {
-    removedApproval: approval.count > 0,
-    revokedAccessTokens: access.count,
-    revokedRefreshTokens: refresh.count,
-  };
+    });
+    // Recorded only when something actually went. The route is idempotent and the console offers it
+    // on a connection the user may already have dropped elsewhere, so an unconditional row would
+    // append one every time somebody clicks twice — the same answer #395 reached for the reconcile
+    // that runs on every page load.
+    if (approval.count > 0 || access.count > 0 || refresh.count > 0) {
+      // The trail this joins is the ACTOR's own tenant, and `ctx.tenantId` is not that for the one
+      // principal who has none: a SUPER_ADMIN carries whichever tenant the console had selected, so
+      // keyed on it, a fleet admin disconnecting their own app would be filed under a tenant that
+      // had nothing to do with it. `mcp_oauth_client_approvals` carries no tenant of its own to
+      // follow, so the actor is the only thing that answers for which trail this belongs to.
+      await auditMutationOn(
+        db,
+        ctx,
+        ctx.role === "SUPER_ADMIN" ? null : ctx.tenantId,
+        {
+          action: "mcp_client.disconnect",
+          target: `client:${clientId}`,
+          after: {
+            clientId,
+            removedApproval: approval.count > 0,
+            revokedAccessTokens: access.count,
+            revokedRefreshTokens: refresh.count,
+          },
+        },
+      );
+    }
+    return {
+      removedApproval: approval.count > 0,
+      revokedAccessTokens: access.count,
+      revokedRefreshTokens: refresh.count,
+    };
+  });
 }

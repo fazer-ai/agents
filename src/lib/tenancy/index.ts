@@ -16,6 +16,7 @@ export {
   runWithTenantContext,
 } from "./context";
 export {
+  asPrincipalOn,
   asSuperAdmin,
   asSuperAdminOn,
   runScoped,

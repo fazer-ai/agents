@@ -17,6 +17,7 @@ import {
   Suspense,
   useCallback,
   useEffect,
+  useRef,
   useState,
 } from "react";
 import { useTranslation } from "react-i18next";
@@ -58,6 +59,9 @@ type CeilingData = Awaited<
   >
 >["data"];
 type Ceiling = NonNullable<CeilingData>;
+
+// How often the page asks again for the ceiling when no read has yet said the poll's period.
+const CEILING_RETRY_MS = 60_000;
 
 type Range = "7d" | "30d" | "90d" | "all";
 const RANGE_DAYS: Record<Range, number | null> = {
@@ -170,11 +174,17 @@ function localDayKey(d: Date): string {
 // tomorrow-in-UTC. For "all" the span runs from the oldest data day to today. cost comes from Langfuse
 // (UTC day key, matched as a plain string — the documented day-boundary caveat); calls/conversations
 // come from our local-day timeseries; costPerConv = cost ÷ conversations (null when either is 0).
-function buildCostTrend(
+export function buildCostTrend(
   points: Point[],
   costDays: CostDay[],
   range: Range,
+  // THE SEGMENT, not a flag: the rule for when the ratio means anything belongs to this function
+  // rather than to whoever calls it (review round 1). The divisor is our own conversation count and
+  // a playground turn has no conversation, so dividing combined or playground-only cost by it
+  // prints a cost per conversation those dollars never had. Only the real segment can be divided.
+  source: Source,
 ): TrendPoint[] {
+  const withRatio = source === "inbox";
   const callsByDay = new Map(points.map((p) => [p.bucket, p.calls]));
   const convsByDay = new Map(points.map((p) => [p.bucket, p.conversations]));
   const costByDay = new Map(costDays.map((d) => [d.date, d.costUsd]));
@@ -203,7 +213,7 @@ function buildCostTrend(
     const conversations = convsByDay.get(key) ?? 0;
     const calls = callsByDay.get(key) ?? 0;
     const costPerConv =
-      cost > 0 && conversations > 0 ? cost / conversations : null;
+      withRatio && cost > 0 && conversations > 0 ? cost / conversations : null;
     out.push({
       key,
       labelMs: cur.getTime(),
@@ -476,7 +486,13 @@ export function DashboardPage() {
 
   // Usage section (source-dependent): token figures + timeseries follow the selected segment. Keeps
   // the previous data while reloading so the section shows a skeleton, not a flash of stale values.
+  // A LOAD THAT SETTLES AFTER A NEWER ONE IS DROPPED (review round 1). Switching segments starts a
+  // second load while the first is still out, and the older answer landing last would put the inbox
+  // cost card beside the playground ceiling — one row showing two different questions. Each load
+  // takes a number, and only the latest number's answer, or failure, reaches the state.
+  const usageSeq = useRef(0);
   const loadUsage = useCallback(async (r: Range, src: Source) => {
+    const seq = ++usageSeq.current;
     setUsageLoading(true);
     setUsageError(false);
     setUsageErrorStatus(null);
@@ -505,6 +521,7 @@ export function DashboardPage() {
           .get()
           .catch(() => ({ data: null })),
       ]);
+      if (seq !== usageSeq.current) return;
       if (m.error || !m.data || ts.error || !ts.data) {
         setUsageError(true);
         setUsageErrorStatus(m.error?.status ?? ts.error?.status ?? null);
@@ -517,15 +534,30 @@ export function DashboardPage() {
       );
       setCeiling(ceilingRes.data ?? null);
     } catch {
+      if (seq !== usageSeq.current) return;
       setUsageError(true);
     } finally {
-      setUsageLoading(false);
+      if (seq === usageSeq.current) setUsageLoading(false);
     }
   }, []);
 
   useEffect(() => {
     void load(range);
   }, [load, range]);
+
+  // THE CEILING RE-READS WHILE THE PAGE STAYS OPEN (review round 1). The health beside each bar is
+  // the server's per read, and the poll writes a new figure every period, so a dashboard left on a
+  // wall screen would keep showing the first read's figure and its "refreshed" line for as long as
+  // it is up. The period is the poll's own, as the usage reports it, and a minute until a read has
+  // said one, which is also the retry for a first read that failed.
+  const ceilingRefreshMs = ceiling?.pollIntervalMs ?? CEILING_RETRY_MS;
+  useEffect(() => {
+    const timer = setInterval(
+      () => void loadUsage(range, source),
+      ceilingRefreshMs,
+    );
+    return () => clearInterval(timer);
+  }, [loadUsage, range, source, ceilingRefreshMs]);
 
   useEffect(() => {
     void loadUsage(range, source);
@@ -600,7 +632,7 @@ export function DashboardPage() {
 
   // Merged daily series for the recharts trend (cost + conversations + cost/conversation). Genuinely
   // empty (no usage AND no cost) → the "no data" placeholder instead of an axes-only empty chart.
-  const chartData = buildCostTrend(points, costDays, range);
+  const chartData = buildCostTrend(points, costDays, range, source);
   const hasChartData = points.length > 0 || costDays.length > 0;
   // Cost per conversation across the whole window (item 7): the robust aggregate (total cost ÷ total
   // conversations), free of the per-day line's UTC/local day-boundary caveat. Only in the Real segment

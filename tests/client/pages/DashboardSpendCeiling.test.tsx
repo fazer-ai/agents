@@ -7,6 +7,7 @@ import {
   test,
 } from "bun:test";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -16,7 +17,7 @@ import {
 } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { ThemeProvider } from "@/client/contexts/ThemeContext";
-import { DashboardPage } from "@/client/pages/DashboardPage";
+import { buildCostTrend, DashboardPage } from "@/client/pages/DashboardPage";
 import { withI18n } from "@/tests/utils/i18n";
 
 // THE CEILING ON THE PAGE WHERE SPEND IS WATCHED (issue #427). The figures existed behind a
@@ -131,6 +132,31 @@ async function renderDash(u: Record<string, unknown> = baseUsage()) {
 
 const has = (text: string | RegExp) =>
   screen.queryAllByText(text, { exact: false }).length > 0;
+
+// THE CHART'S RATIO IS REAL-ONLY TOO (review round 1). The aggregate card was gated and the daily
+// line was not: its divisor is our own conversation count, and a playground turn has no
+// conversation, so dividing combined or playground-only cost by it draws a cost per conversation
+// those dollars never had.
+describe("the daily cost-per-conversation line", () => {
+  const points = [
+    { bucket: "2026-09-01", calls: 4, conversations: 2 },
+  ] as Parameters<typeof buildCostTrend>[0];
+  const costDays = [{ date: "2026-09-01", costUsd: 10 }];
+
+  test("is drawn in the real segment", () => {
+    const out = buildCostTrend(points, costDays, "7d", "inbox");
+    expect(out.some((d) => d.costPerConv === 5)).toBe(true);
+  });
+
+  test("is absent outside it, where the divisor is not the same traffic", () => {
+    for (const source of ["playground", "all"] as const) {
+      const out = buildCostTrend(points, costDays, "7d", source);
+      expect(out.every((d) => d.costPerConv === null)).toBe(true);
+      // The cost itself still travels: only the ratio is withheld.
+      expect(out.some((d) => d.cost === 10)).toBe(true);
+    }
+  });
+});
 
 describe("the spend ceiling on the dashboard", () => {
   beforeAll(() => {
@@ -274,6 +300,103 @@ describe("the spend ceiling on the dashboard", () => {
     });
     expect(has("$5.01")).toBe(true);
     expect(has("no longer points at")).toBe(true);
+  });
+
+  // THE PAGE ASKS AGAIN WHILE IT STAYS OPEN (review round 1). The poll writes a new figure every
+  // period and the health beside the bar is computed per read, so a dashboard left on a wall screen
+  // would keep showing the first read's figure and its "refreshed" line for as long as it is up.
+  test("a dashboard left open re-reads the ceiling on the poll's period", async () => {
+    const u = baseUsage();
+    u.pollIntervalMs = 40;
+    await renderDash(u);
+    await waitFor(() => {
+      expect(has("$22.50 of $30.00")).toBe(true);
+    });
+    const reads = () =>
+      asked.filter((x) => x.includes("/spend-ceiling/usage")).length;
+    const first = reads();
+    await waitFor(() => {
+      expect(reads()).toBeGreaterThan(first);
+    });
+  });
+
+  // AND AN OLDER SEGMENT'S ANSWER NEVER LANDS OVER A NEWER ONE (review round 1). Switching segments
+  // starts a second load while the first is still out; the older answer landing last would put the
+  // inbox cost card beside the playground ceiling, one row showing two different questions.
+  test("an older segment's load does not land over the newer one", async () => {
+    let releaseFirst: (() => void) | null = null;
+    let costCalls = 0;
+    const slowInbox = (async (input: unknown) => {
+      const url = String(
+        typeof input === "string" ? input : ((input as Request).url ?? input),
+      );
+      asked.push(url);
+      if (url.includes("/metrics/costs")) {
+        costCalls += 1;
+        if (costCalls === 1) {
+          await new Promise<void>((r) => {
+            releaseFirst = r;
+          });
+          return json({
+            costs: {
+              status: "ok",
+              totalCostUsd: 111,
+              days: [],
+              byModel: [],
+              baseUrl: "https://lf.example",
+            },
+          });
+        }
+        return json({
+          costs: {
+            status: "ok",
+            totalCostUsd: 22,
+            days: [],
+            byModel: [],
+            baseUrl: "https://lf.example",
+          },
+        });
+      }
+      return stubFetch(input as RequestInfo);
+    }) as unknown as typeof globalThis.fetch;
+    globalThis.fetch = slowInbox;
+    try {
+      usage = baseUsage();
+      asked.length = 0;
+      render(
+        withI18n(
+          <ThemeProvider>
+            <MemoryRouter>
+              <DashboardPage />
+            </MemoryRouter>
+          </ThemeProvider>,
+        ),
+      );
+      await waitFor(() => {
+        expect(releaseFirst).not.toBeNull();
+      });
+      const segments = await screen.findByRole("group", {
+        name: "Usage segment",
+      });
+      fireEvent.click(
+        within(segments).getByRole("button", { name: "Playground" }),
+      );
+      await waitFor(() => {
+        expect(has("$22.00")).toBe(true);
+      });
+      await act(async () => {
+        (releaseFirst as (() => void) | null)?.();
+        for (let i = 0; i < 5; i += 1) {
+          await new Promise((r) => setTimeout(r, 0));
+        }
+      });
+      // The inbox answer arrived last and was dropped: the playground's figures still stand.
+      expect(has("$111.00")).toBe(false);
+      expect(has("$22.00")).toBe(true);
+      expect(has("$4.25 of $5.00")).toBe(true);
+    } finally {
+      globalThis.fetch = stubFetch;
+    }
   });
 
   // A tenant with no Langfuse has no ceiling at all, and the dashboard says so where it would

@@ -106,6 +106,32 @@ Com isso vem o que constrói a ferramenta nova (método, URL, nomes e de onde ca
 
 ---
 
+## 1b. Antes do deploy: folga na máquina e caminho de volta
+
+A VPS de uma v3 não chega vazia nem parada: ela está atendendo cliente agora. Instalar ao lado disso é uma classe de risco que o cutover não cobre, e as duas proteções desta seção são o que separa "a migração deu errado" de "a operação caiu".
+
+**Primeiro, leia a folga que a sondagem já mediu.** A etapa 1b imprime `mem`, `disk` e `cpu`, e a matriz de decisão dela não consome esses números, porque classifica serviço por presença e saúde. Consuma aqui, porque é neste caso que eles decidem. Medido em repouso, numa VPS rodando a pilha inteira:
+
+| O que a jornada acrescenta | Memória em repouso |
+| --- | --- |
+| fazer.ai agents + Postgres com pgvector | ~310 MiB |
+| Langfuse completo (web, worker, ClickHouse, MinIO, Postgres, Redis) | ~5,0 GiB |
+| do qual só o ClickHouse | ~3,4 GiB |
+
+Na mesma máquina, para comparar: Chatwoot com Sidekiq e Baileys ~1,3 GiB, o n8n da v3 com os task-runners ~680 MiB, e o Coolify ~480 MiB. A caixa inteira de uma v3 repousou em ~2,5 GiB, e a jornada quer somar mais de 5.
+
+**A conclusão prática é que quem decide se a máquina aguenta é o Langfuse, não o agents.** O agents cabe onde a v3 já roda; o Langfuse pesa dezesseis vezes mais que ele, quase tudo ClickHouse. Antes da etapa 5, compare a folga com esses números e diga o resultado ao usuário: não havendo folga, a saída é aumentar a VPS antes de instalar, e essa decisão é dele. O que não pode acontecer é descobrir isso com o ClickHouse subindo numa máquina que está no meio de um atendimento.
+
+**Segundo, o rollback do cutover não protege a instalação.** A seção 8 devolve o atendimento em segundos porque a v3 continua de pé, e ela não tem nada a dizer sobre um deploy que encheu o disco, derrubou o proxy ou deixou a máquina sem memória. São camadas diferentes, e a instalação precisa da dela. Antes de encostar na etapa 2:
+
+1. **Snapshot da VPS**, pelo painel do provedor. É a única coisa que devolve a máquina inteira, e é barata perto do que protege.
+2. **Backup do banco do Chatwoot**, que é o serviço reaproveitado e onde mora a conversa do cliente.
+3. **Percorra o caminho de volta uma vez, com o usuário olhando.** Prometer rollback e provar rollback não são a mesma coisa, e a hora de descobrir a diferença não é depois.
+
+Vale aqui a regra da seção 9: backup que ninguém leu não é backup. Confira o que você guardou antes de seguir para a etapa 2.
+
+---
+
 ## 2. Converter o prompt
 
 A parte que parece cópia e não é. **Seis armadilhas, todas já vistas em migração real:**

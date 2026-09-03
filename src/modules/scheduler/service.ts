@@ -211,21 +211,27 @@ export async function upsertJobRows(
   },
 ): Promise<number> {
   if (params.rows.length === 0) return 0;
-  const values = params.rows.map(
-    (r) => Prisma.sql`(
-      ${params.tenantId},
-      ${params.kind}::"SchedulerJobKind",
-      ${r.dedupeKey},
-      ${params.runAt},
-      ${JSON.stringify(r.payload ?? {})}::jsonb,
-      'PENDING'::"SchedulerJobStatus",
-      now(),
-      now())`,
-  );
+  // NOTE: The rows travel as TWO ARRAYS and not as N tuples, because a tuple list carries one bind
+  // parameter per column per row and Postgres refuses a statement with more than 65535 of them: at
+  // five per row this breaks at 13108 documents, and nothing upstream caps how many a base may hold
+  // (an import creates them in bulk). The whole reindex would fail on the statement that arms it,
+  // rolling back a transition the operator asked for, and the size that trips it is a customer's
+  // catalogue rather than anything we choose. Unnesting keeps the count at one parameter per COLUMN,
+  // whatever the row count, and the shared halves bind once each instead of once per row.
+  const keys = params.rows.map((r) => r.dedupeKey);
+  const payloads = params.rows.map((r) => JSON.stringify(r.payload ?? {}));
   return db.$executeRaw`
     INSERT INTO scheduler_jobs
       (tenant_id, kind, dedupe_key, run_at, payload, status, created_at, updated_at)
-    VALUES ${Prisma.join(values)}
+    SELECT ${params.tenantId}::bigint,
+           ${params.kind}::"SchedulerJobKind",
+           t.dedupe_key,
+           ${params.runAt}::timestamptz,
+           t.payload::jsonb,
+           'PENDING'::"SchedulerJobStatus",
+           now(),
+           now()
+      FROM unnest(${keys}::text[], ${payloads}::text[]) AS t(dedupe_key, payload)
     ON CONFLICT (tenant_id, kind, dedupe_key) DO UPDATE
        SET run_at = EXCLUDED.run_at,
            status = 'PENDING'::"SchedulerJobStatus",

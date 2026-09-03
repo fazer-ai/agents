@@ -266,6 +266,41 @@ describe.skipIf(!dbUp)("scheduler", () => {
       expect(same.payload).toEqual({ documentId: "1b" });
       expect(fresh.payload).toEqual({ documentId: "2b" });
     });
+
+    // The ceiling is Postgres's, not ours: a statement takes at most 65535 bind parameters, so a
+    // tuple list at five per row dies at 13108 documents. Nothing upstream caps a knowledge base at
+    // any number, and an import fills one in bulk, so the size that trips it is the customer's
+    // catalogue. 14000 is over the line by enough that a tuple list cannot pass it.
+    test("arms more rows in one statement than a tuple list could carry parameters for", async () => {
+      const many = Array.from({ length: 14000 }, (_, i) => ({
+        dedupeKey: `bulk-wide-${process.pid}-${i}`,
+        payload: { documentId: String(i) },
+      }));
+      const written = await runScopedOn(appDb, sysCtx(), (db) =>
+        upsertJobRows(db, {
+          tenantId,
+          kind: "RAG_INGEST",
+          rearm: "new-work",
+          runAt: past(),
+          rows: many,
+        }),
+      );
+      expect(written).toBe(14000);
+      expect(
+        await suDb.schedulerJob.count({
+          where: {
+            tenantId,
+            dedupeKey: { startsWith: `bulk-wide-${process.pid}-` },
+          },
+        }),
+      ).toBe(14000);
+      await suDb.schedulerJob.deleteMany({
+        where: {
+          tenantId,
+          dedupeKey: { startsWith: `bulk-wide-${process.pid}-` },
+        },
+      });
+    });
   });
 
   test("the shared lane claims neither debounce nor compaction jobs", async () => {

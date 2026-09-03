@@ -31,6 +31,19 @@ export function parseQueryInstant(
   return d;
 }
 
+// A CLOSED vocabulary, refused exactly like a malformed id. Of the three lenient answers this module
+// exists to refuse, dropping an unrecognised value here is the widest: the caller named one door and
+// gets every row the tenant has, which reads as "and nothing else happened".
+export function parseQueryEnum<T extends string>(
+  s: string | undefined,
+  param: string,
+  allowed: readonly T[],
+): T | undefined {
+  if (s === undefined) return undefined;
+  if (!(allowed as readonly string[]).includes(s)) badQueryParam(param);
+  return s as T;
+}
+
 // `parseDbId`, never `BigInt(s)`: BigInt is arbitrary precision, so an id past 2^63-1 parses here
 // and is refused by POSTGRES when the query binds it — a 500 for a value that is plainly malformed.
 export function parseQueryId(

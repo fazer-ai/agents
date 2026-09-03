@@ -396,6 +396,16 @@ describe("MCP tool descriptions", () => {
   // publishing on every session). What stays is what a caller cannot get by trying: the spelling of
   // the block, that paths inside it are relative, that `{{.}}` is the item, and the 50-item cap,
   // which the runtime applies silently from the caller's side. The ceiling goes to 53,500.
+  // `audit_list` (#401) moves the SCHEMA number and barely touches the other: the console grew a
+  // page over this trail and the endpoint grew with it, from `action`+`limit` to a keyset cursor, a
+  // date range and the actor, and the MCP twin takes the same surface because they are one core.
+  // Five new optional fields, 47 characters past the ceiling the list block left, which is the floor
+  // for them: a field line costs about that much and one of the five is a four-value enum published
+  // from `ACTOR_TYPES` rather than hand-listed. Nothing there
+  // is prose to cut. The description went the other way — the filter list came OUT of it, because
+  // the schema below already names every one of them, and what stayed is the four things a caller
+  // cannot read off the schema: the ordering, the sanitisation guarantee, the limit cap, and what
+  // `latestAt` answers. The schema ceiling goes to 53,600.
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;
@@ -405,7 +415,7 @@ describe("MCP tool descriptions", () => {
       schema += t.schema.length;
     }
     expect(desc).toBeLessThanOrEqual(27_900);
-    expect(schema).toBeLessThanOrEqual(53_500);
+    expect(schema).toBeLessThanOrEqual(53_600);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

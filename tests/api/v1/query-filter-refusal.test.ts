@@ -28,7 +28,12 @@ const record =
   (key: string) =>
   (...args: unknown[]) => {
     seen[key] = args[1];
-    return Promise.resolve({ items: [], nextCursor: null, entries: [] });
+    return Promise.resolve({
+      items: [],
+      nextCursor: null,
+      entries: [],
+      latestAt: null,
+    });
   };
 
 // SPIES ON THE MODULE OBJECTS, NOT REGISTRY REWRITES. Four rewrites used to sit here, each undone
@@ -54,7 +59,7 @@ const listExecutionLogs = spyOn(
 
 const auditService = await import("@/modules/audit/service");
 const listAudit = spyOn(auditService, "listAudit").mockImplementation(
-  (async () => []) as unknown as typeof auditService.listAudit,
+  record("audit") as unknown as typeof auditService.listAudit,
 );
 
 const conversationsService = await import("@/modules/conversations/service");
@@ -128,6 +133,16 @@ const REFUSED: Array<[path: string, param: string]> = [
   ["/v1/logs/export?source=all&since=yesterday", "since"],
   ["/v1/logs/export?source=all&maxRows=abc", "maxRows"],
   ["/v1/audit?limit=abc", "limit"],
+  // #401 widened this endpoint from `limit`+`action` to a keyset cursor, a date range and the
+  // actor. Every new leg is the same question, and an actorType silently dropped is the worst of
+  // them: the answer would be the whole trail, which on that page reads as "nothing else happened".
+  ["/v1/audit?cursor=abc", "cursor"],
+  ["/v1/audit?cursor=9223372036854775808", "cursor"],
+  ["/v1/audit?actorId=abc", "actorId"],
+  ["/v1/audit?actorType=robot", "actorType"],
+  ["/v1/audit?since=yesterday", "since"],
+  ["/v1/audit?since=2026-01-01", "since"],
+  ["/v1/audit?until=garbage", "until"],
   ["/v1/conversations?limit=abc", "limit"],
   ["/v1/conversations?limit=3.5", "limit"],
   ["/v1/conversations/1/messages?before=abc", "before"],

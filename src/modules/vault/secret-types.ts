@@ -236,6 +236,30 @@ export function secretTypeNeedsParamName(
   return !!getSecretType(id)?.needsParamName;
 }
 
+// The kinds that read `paramName`, in catalog order. Both halves of the applicability rule are
+// derived from the same declaration, so a kind added to `SECRET_TYPES` lands on whichever side its
+// own entry puts it, and the refusal below can NAME the alternatives instead of only saying no.
+export const PARAM_NAME_KIND_IDS: string[] = SECRET_TYPES.filter(
+  (s) => s.needsParamName,
+).map((s) => s.id);
+
+// Whether a non-empty `paramName` on this kind must be REFUSED at the write boundary. Not the
+// negation of `secretTypeNeedsParamName`, and the difference is the whole reason this is a function:
+// that one answers false for a kind the catalog does not know, and refusing those would strand every
+// row an older build wrote with a kind this one has since dropped — the same carve-out
+// `secretTypeFits` makes, for the same reason.
+//
+// The field is only ever read through `resolveSecretInjection`, which takes the name from a
+// `needsParamName` entry and from nowhere else. Storing it on any other kind is storing something
+// the runtime discards: the write answered 200, the console read the name back, and the outbound
+// request carried no credential at all (issue #488).
+export function secretTypeRefusesParamName(
+  id: string | null | undefined,
+): boolean {
+  const type = getSecretType(id);
+  return type != null && !type.needsParamName;
+}
+
 export function secretTypeRequiresBaseUrl(
   id: string | null | undefined,
 ): boolean {

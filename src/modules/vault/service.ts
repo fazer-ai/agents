@@ -16,10 +16,12 @@ import {
   getSecretTypeFields,
   isManagedOAuthKind,
   isSecretTypeId,
+  PARAM_NAME_KIND_IDS,
   readsPlainKey,
   secretTypeFits,
   secretTypeIsManagedBlob,
   secretTypeNeedsParamName,
+  secretTypeRefusesParamName,
   secretTypeRequiresBaseUrl,
   secretValueFitsKind,
 } from "./secret-types";
@@ -619,6 +621,16 @@ function validateBaseUrl(raw: string): string {
   }
 }
 
+// The catalog declares WHICH kinds read a param name (`needsParamName`), and until issue #488 this
+// only enforced half of that: required where declared, and accepted-then-ignored everywhere else.
+// The field is read in exactly one place (`resolveSecretInjection`, off a `needsParamName` entry),
+// so a name stored on any other kind is a name nothing will ever send — the operator configures an
+// `Authorization` header, the write answers 200, the console reads it back, and the request goes
+// out with no credential on it. Refusing is the only half that reaches them: whoever gets this
+// picked the kind, and the fix is to pick one that injects (that is what the sentence names).
+//
+// Empty stays empty: "" has always meant "no param name", and refusing it would break a client that
+// sends the field unconditionally.
 function validateParamName(raw: string, kind: string): string {
   const trimmed = raw.trim();
   if (secretTypeNeedsParamName(kind) && !trimmed) {
@@ -626,6 +638,16 @@ function validateParamName(raw: string, kind: string): string {
       "paramName is required for this credential type",
       400,
       "errors.vaultParamNameRequired",
+    );
+  }
+  if (trimmed && secretTypeRefusesParamName(kind)) {
+    const kinds = PARAM_NAME_KIND_IDS.join(", ");
+    throw new AppError(
+      `the "${kind}" credential type does not use a param name. The types that do are: ${kinds}.`,
+      400,
+      "errors.vaultParamNameNotApplicable",
+      { kind, kinds },
+      "paramName",
     );
   }
   if (trimmed && !PARAM_NAME_RE.test(trimmed)) {

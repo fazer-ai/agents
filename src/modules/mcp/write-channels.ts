@@ -1,6 +1,5 @@
 import basePrisma from "@/api/lib/prisma";
 import { AppError } from "@/lib/errors";
-import { truncForAudit } from "@/modules/audit/projection";
 import {
   bindInbox,
   connectChatwootDeployment,
@@ -24,7 +23,6 @@ import {
   gate,
   ok,
   parseMcpId,
-  recordMcpAudit,
   type WriteDeps,
   type WriteResult,
 } from "./write";
@@ -79,18 +77,6 @@ export async function deploymentConnect(
       {},
       base,
     );
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "deployment.connect",
-      target: `chatwoot_deployment:${result.deployment.id}`,
-      before: null,
-      after: truncForAudit({
-        id: result.deployment.id,
-        baseUrl: result.deployment.baseUrl,
-        reachableAccounts: result.accounts.length,
-      }),
-    });
     return ok({ dryRun: false, applied: true, ...result });
   } catch (e) {
     return failOf(e);
@@ -124,14 +110,6 @@ export async function deploymentRotateToken(
       {},
       base,
     );
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "deployment.rotate_token",
-      target: `chatwoot_deployment:${updated.id}`,
-      before: null,
-      after: truncForAudit({ id: updated.id, adminTokenRotated: true }),
-    });
     return ok({ dryRun: false, applied: true, deployment: updated });
   } catch (e) {
     return failOf(e);
@@ -182,17 +160,6 @@ export async function deploymentSetAccounts(
       {},
       base,
     );
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "deployment.set_accounts",
-      target,
-      before: null,
-      after: truncForAudit({
-        accountIds: args.account_ids,
-        connected: accounts.filter((a) => a.disconnectedAt === null).length,
-      }),
-    });
     return ok({ dryRun: false, applied: true, accounts });
   } catch (e) {
     return failOf(e);
@@ -224,14 +191,6 @@ export async function instanceDisconnect(
       });
     }
     await softDisconnectChatwootInstance(ctx, id, base);
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "instance.disconnect",
-      target,
-      before: truncForAudit(beforeProj),
-      after: null,
-    });
     return ok({ dryRun: false, applied: true, target });
   } catch (e) {
     return failOf(e);
@@ -282,14 +241,6 @@ export async function instanceSyncInboxes(
       });
     }
     const result = await syncInboxes(ctx, id, {}, base);
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "instance.sync_inboxes",
-      target,
-      before: null,
-      after: truncForAudit(result),
-    });
     return ok({ dryRun: false, applied: true, target, result });
   } catch (e) {
     return failOf(e);
@@ -330,14 +281,6 @@ export async function inboxBind(
       });
     }
     const updated = await bindInbox(ctx, inboxId, agentId, {}, base);
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "inbox.bind",
-      target,
-      before: truncForAudit({ agentId: current.agentId }),
-      after: truncForAudit({ agentId: updated.agentId }),
-    });
     return ok({ dryRun: false, applied: true, target, inbox: updated });
   } catch (e) {
     return failOf(e);
@@ -380,14 +323,6 @@ export async function inboxRemove(
       });
     }
     await removeInbox(ctx, inboxId, cw, base);
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "inbox.remove",
-      target,
-      before: truncForAudit(beforeProj),
-      after: null,
-    });
     return ok({ dryRun: false, applied: true, target });
   } catch (e) {
     return failOf(e);
@@ -415,14 +350,6 @@ export async function inboxReconnect(
   }
   try {
     const updated = await reconnectInbox(ctx, inboxId, {}, base);
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "inbox.reconnect",
-      target,
-      before: null,
-      after: truncForAudit({ id: updated.id, agentId: updated.agentId }),
-    });
     return ok({ dryRun: false, applied: true, target, inbox: updated });
   } catch (e) {
     return failOf(e);
@@ -443,19 +370,11 @@ export async function inboxReconcile(
       dryRun: true,
       action: "reconcile",
       target,
-      note: "Checks every bound inbox's bot against Chatwoot and re-provisions missing ones (calls Chatwoot).",
+      note: "Reads every bound inbox's bot status from Chatwoot (calls Chatwoot). Changes nothing: repairing one is inbox_reconnect.",
     });
   }
   try {
     const status = await reconcileInboxBots(ctx, {}, base);
-    await recordMcpAudit(ctx, base, {
-      actorId: principal.userId,
-      actorType: "mcp",
-      action: "inbox.reconcile",
-      target,
-      before: null,
-      after: truncForAudit(status),
-    });
     return ok({ dryRun: false, applied: true, target, status });
   } catch (e) {
     return failOf(e);

@@ -82,7 +82,10 @@ const RENDER_SOURCE = `(function (root) {
     if (x instanceof Map || x instanceof Set) x = Array.from(x);
     var next = stack.concat([x]);
     if (Array.isArray(x)) return x.map(function (e) { var v = conv(e, next); return v === undefined ? null : v; });
-    var out = {};
+    // No prototype: with one, assigning the key "__proto__" reaches the legacy setter instead of
+    // the object, and a parsed document carrying that key (JSON.parse keeps it as a plain own key)
+    // rendered without it (PR #485, round 3).
+    var out = Object.create(null);
     var keys = Object.keys(x);
     for (var i = 0; i < keys.length; i++) {
       var v = conv(x[keys[i]], next);

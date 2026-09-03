@@ -78,11 +78,25 @@ describe("runSandboxedCode", () => {
         '{"k":1,"self":"[circular]"}',
       ],
       ["new TypeError('kept')", '{"name":"TypeError","message":"kept"}'],
+      // NOTE: A parsed document can carry `__proto__` as an own key, and an assignment by that name
+      // reaches the legacy setter instead of the object, so the key vanished from the rendering
+      // (PR #485, round 3). The nested form is the one that dropped a whole subtree.
+      [
+        `JSON.parse('{"__proto__":{"c":1},"a":1}')`,
+        '{"__proto__":{"c":1},"a":1}',
+      ],
     ];
     for (const [code, want] of cases) {
       const out = await runSandboxedCode(code);
       expect(out, code).toMatchObject({ kind: "value", value: want });
     }
+    const logged = await runSandboxedCode(
+      `console.log(JSON.parse('{"__proto__":"x"}')); 1`,
+    );
+    expect(logged).toMatchObject({
+      kind: "value",
+      logs: ['{"__proto__":"x"}'],
+    });
   });
 
   // The two helpers, against published vectors: the issue's CPF, the classic numeric CNPJ, and the

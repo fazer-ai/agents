@@ -5,6 +5,7 @@ import {
   Calculator,
   CheckCircle2,
   Clock,
+  Code2,
   Image as ImageIcon,
   LayoutGrid,
   type LucideIcon,
@@ -34,6 +35,7 @@ export const NATIVE_TOOL_ICONS: Record<string, LucideIcon> = {
   skip_reply: BellOff,
   calculator: Calculator,
   get_current_time: Clock,
+  run_code: Code2,
 };
 
 export interface NativeToolMeta {
@@ -161,6 +163,15 @@ export function nativeToolMeta(name: string, t: TFunction): NativeToolMeta {
         description: t(
           "nativeTools.get_current_time.desc",
           "Get the current date and time in the agent's timezone.",
+        ),
+      };
+    case "run_code":
+      return {
+        icon,
+        label: t("nativeTools.run_code.label", "Run code"),
+        description: t(
+          "nativeTools.run_code.desc",
+          "Run a JavaScript snippet in an isolated sandbox for exact computation and verdicts (check digits, dates, parsing).",
         ),
       };
     default:

@@ -641,7 +641,7 @@ function AgentEditor() {
   //
   // `section` is the form whose write produced it, so a later success elsewhere cannot take it down.
   // `named` is the value the server refused, when it named one, so the banner can say WHY it offers
-  // no way to it: `toolGuidance` takes a note for all thirteen native tools and the console draws
+  // no way to it: `toolGuidance` takes a note for all fourteen native tools and the console draws
   // three, and the server's sentence names the field without knowing that.
   //
   // Written by every `capture` and read only while the holder has a sentence, so neither can go stale

@@ -1861,6 +1861,10 @@
       "desc": "Mark the conversation as resolved when the request is fully handled.",
       "label": "Resolve"
     },
+    "run_code": {
+      "desc": "Run a JavaScript snippet in an isolated sandbox for exact computation and verdicts (check digits, dates, parsing).",
+      "label": "Run code"
+    },
     "send_image": {
       "desc": "Deliver an image to the customer from its URL, limited to the hosts you allow.",
       "label": "Send image"

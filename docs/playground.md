@@ -7,7 +7,7 @@ Chat with a configured agent straight from the console — no Chatwoot, no webho
 `runPlaygroundTurn({ tenantId, agentId, message, threadId?, deps })`:
 
 - Loads the agent config with `loadAgentConfig(..., { ignoreDisabled: true })` — the `enabled` toggle only gates production auto-replies, so the playground tests config regardless. Dummy `instanceId=0n`/`conversationId=0` → no mirror row → empty contact/prompt vars.
-- Builds the toolset with only the **utility** native tools (`utilityNativeAllow` — calculator, get_current_time), excluding the native **conversation** tools (handoff/resolve/…) since there is no conversation to act on, while keeping knowledge, HTTP, MCP and integration tools live. A dummy client satisfies the type and is never called.
+- Builds the toolset with only the **utility** native tools (`utilityNativeAllow` — calculator, get_current_time, run_code), excluding the native **conversation** tools (handoff/resolve/…) since there is no conversation to act on, while keeping knowledge, HTTP, MCP and integration tools live. A dummy client satisfies the type and is never called.
 - Screens the message and the reply through the agent's guardrails (below), then invokes the graph on a **fenced** playground thread and returns `{ reply, threadId, trace, sources }`.
 
 ### Multimodal capability gating (STT / vision / TTS)

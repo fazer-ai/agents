@@ -1867,6 +1867,10 @@
       "desc": "Marca a conversa como resolvida quando o pedido foi totalmente atendido.",
       "label": "Resolver"
     },
+    "run_code": {
+      "desc": "Executa um trecho de JavaScript num sandbox isolado para cálculo exato e vereditos (dígitos verificadores, datas, parsing).",
+      "label": "Executar código"
+    },
     "send_image": {
       "desc": "Entrega uma imagem ao cliente a partir da URL dela, restrita aos hosts que você liberar.",
       "label": "Enviar imagem"

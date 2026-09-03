@@ -157,3 +157,20 @@ describe("applyToolMocks (P4)", () => {
     expect(called).toBe(0);
   });
 });
+
+// `run_code` is a utility tool: it runs for REAL in the playground, like calculator and the clock,
+// because it touches nothing outside its own thread. A simulated "[simulated]" line here would make
+// the playground show a verdict the production agent never computes.
+describe("run_code in the playground", () => {
+  test("runs for real, and is not simulated", async () => {
+    const tools = buildSimulatedNativeTools(
+      { client: explodingClient, conversationId: 0 },
+      ["run_code", "handoff_to_human"],
+    );
+    const run = tools.find((t) => t.name === "run_code");
+    const handoff = tools.find((t) => t.name === "handoff_to_human");
+    expect(String(await run?.invoke({ code: "6 * 7" }))).toBe("Result: 42");
+    // Positive control: the sibling conversation tool IS simulated by the same builder.
+    expect(String(await handoff?.invoke({}))).toContain("[simulated]");
+  });
+});

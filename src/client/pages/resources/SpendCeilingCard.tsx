@@ -397,9 +397,9 @@ export function SpendCeilingCard({
         label={t("spendCeiling.enabled", "Enforce the ceiling")}
       />
 
-      <div className="grid gap-3 sm:grid-cols-2">
+      <div className="grid gap-3 sm:grid-cols-3">
         <FormField
-          label={t("spendCeiling.inboxUsd", "Monthly ceiling: customers")}
+          label={t("spendCeiling.inboxUsd", "Monthly ceiling: customers (USD)")}
           description={t(
             "spendCeiling.usdHint",
             "US dollars per calendar month, as Langfuse costs the calls. 0 means no ceiling on this half.",
@@ -415,7 +415,10 @@ export function SpendCeilingCard({
           />
         </FormField>
         <FormField
-          label={t("spendCeiling.playgroundUsd", "Monthly ceiling: playground")}
+          label={t(
+            "spendCeiling.playgroundUsd",
+            "Monthly ceiling: playground (USD)",
+          )}
           description={t(
             "spendCeiling.usdHint",
             "US dollars per calendar month, as Langfuse costs the calls. 0 means no ceiling on this half.",
@@ -430,28 +433,27 @@ export function SpendCeilingCard({
             onChange={(e) => setUsd("playground", e.target.value)}
           />
         </FormField>
+        <FormField
+          label={t("spendCeiling.warnAt", "Warn at (%)")}
+          description={t(
+            "spendCeiling.warnAtHint",
+            "Percentage of a ceiling that triggers a warning on your alert channels, so you hear about it before the agent goes quiet. 0 disables the warning.",
+          )}
+        >
+          <Input
+            type="number"
+            min={0}
+            max={100}
+            value={String(form.warnAtPercent)}
+            onChange={(e) =>
+              set(
+                "warnAtPercent",
+                Math.min(100, Math.max(0, Number(e.target.value) || 0)),
+              )
+            }
+          />
+        </FormField>
       </div>
-
-      <FormField
-        label={t("spendCeiling.warnAt", "Warn at")}
-        description={t(
-          "spendCeiling.warnAtHint",
-          "Percentage of a ceiling that triggers a warning on your alert channels, so you hear about it before the agent goes quiet. 0 disables the warning.",
-        )}
-      >
-        <Input
-          type="number"
-          min={0}
-          max={100}
-          value={String(form.warnAtPercent)}
-          onChange={(e) =>
-            set(
-              "warnAtPercent",
-              Math.min(100, Math.max(0, Number(e.target.value) || 0)),
-            )
-          }
-        />
-      </FormField>
 
       <FormField
         label={t("spendCeiling.message", "Message to the customer")}

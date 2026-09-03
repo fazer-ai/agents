@@ -2076,11 +2076,11 @@
     "desc": "Stop spending once a calendar month reaches a dollar budget, as Langfuse costs the month's calls. Customer traffic and the playground are counted apart, so testing can never silence the agent for customers.",
     "enabled": "Enforce the ceiling",
     "handoff": "Hand refused conversations to a human",
-    "inboxUsd": "Monthly ceiling: customers",
+    "inboxUsd": "Monthly ceiling: customers (USD)",
     "legacy": "This ceiling was set in tokens ({{inbox}} for customers, {{playground}} for the playground) before the unit changed to dollars, and tokens do not convert. It is not enforced until you set it in dollars below.",
     "message": "Message to the customer",
     "messageHint": "Sent once per conversation while the ceiling is reached. Leave it empty to say nothing.",
-    "playgroundUsd": "Monthly ceiling: playground",
+    "playgroundUsd": "Monthly ceiling: playground (USD)",
     "saved": "Spend ceiling saved.",
     "saveError": "Could not save the spend ceiling.",
     "source": {
@@ -2103,7 +2103,7 @@
     },
     "usdHint": "US dollars per calendar month, as Langfuse costs the calls. 0 means no ceiling on this half.",
     "usdInvalid": "Enter zero or a positive amount in dollars.",
-    "warnAt": "Warn at",
+    "warnAt": "Warn at (%)",
     "warnAtHint": "Percentage of a ceiling that triggers a warning on your alert channels, so you hear about it before the agent goes quiet. 0 disables the warning."
   },
   "strongConfirm": {

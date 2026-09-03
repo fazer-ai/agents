@@ -2084,11 +2084,11 @@
     "desc": "Para de gastar quando o mês corrente atinge um orçamento em dólares, como o Langfuse precifica as chamadas do mês. As conversas com clientes e o playground são contados separadamente, então testar nunca silencia o agente para os clientes.",
     "enabled": "Aplicar o teto",
     "handoff": "Passar as conversas recusadas para um humano",
-    "inboxUsd": "Teto mensal: clientes",
+    "inboxUsd": "Teto mensal: clientes (USD)",
     "legacy": "Este teto foi definido em tokens ({{inbox}} para clientes, {{playground}} para o playground) antes de a unidade mudar para dólares, e tokens não convertem. Ele não é aplicado até você defini-lo em dólares abaixo.",
     "message": "Mensagem para o cliente",
     "messageHint": "Enviada uma vez por conversa enquanto o teto estiver atingido. Deixe em branco para não dizer nada.",
-    "playgroundUsd": "Teto mensal: playground",
+    "playgroundUsd": "Teto mensal: playground (USD)",
     "saved": "Teto de gasto salvo.",
     "saveError": "Não foi possível salvar o teto de gasto.",
     "source": {
@@ -2111,7 +2111,7 @@
     },
     "usdHint": "Dólares (USD) por mês corrente, como o Langfuse precifica as chamadas. 0 significa sem teto nesta metade.",
     "usdInvalid": "Informe zero ou um valor positivo em dólares.",
-    "warnAt": "Avisar em",
+    "warnAt": "Avisar em (%)",
     "warnAtHint": "Percentual de um teto que dispara um aviso nos seus canais de alerta, para você saber antes de o agente ficar em silêncio. 0 desliga o aviso."
   },
   "strongConfirm": {

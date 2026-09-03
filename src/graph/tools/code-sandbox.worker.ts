@@ -422,7 +422,7 @@ const DATE_SHIM_SOURCE = `(function (offsetAt) {
     return v;
   }
   function ShimDate(a) {
-    if (!(this instanceof ShimDate)) return new ShimDate().toStr();
+    if (!(this instanceof ShimDate)) return new ShimDate().toString();
     var t;
     if (arguments.length === 0) t = NativeDate.now();
     else if (arguments.length === 1) {
@@ -707,6 +707,21 @@ const HOST_STACK_LIMIT = {
   unwound: true,
 } as const;
 
+// Whether a source parses, without running any of it.
+function compiles(vm: QuickJSContext, source: string): boolean {
+  try {
+    const r = vm.evalCode(source, "snippet.js", { compileOnly: true });
+    if (r.error) {
+      r.error.dispose();
+      return false;
+    }
+    r.value.dispose();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function evalOrUnwind(
   vm: QuickJSContext,
   source: string,
@@ -726,21 +741,21 @@ function evaluate(
 ):
   | { ok: true; value: QuickJSHandle }
   | { ok: false; error: ThrownValue; limit?: SandboxLimit; unwound?: true } {
+  // NOTE: The wrapped form is COMPILED first, without running, and only a form that compiles runs;
+  // otherwise the original source runs, once. Falling back on a SyntaxError from the run itself
+  // (`JSON.parse("{bad")` throws one) re-ran the original on top of the first run's bindings and
+  // answered "redeclaration of data" with the console output doubled (PR #485, round 12).
   const wrapped = withTrailingObjectWrapped(code);
-  if (wrapped !== undefined) {
+  if (wrapped !== undefined && compiles(vm, wrapped)) {
     const asObject = evalOrUnwind(vm, wrapped);
     if (asObject === undefined) return HOST_STACK_LIMIT;
     if (!asObject.error) return { ok: true, value: asObject.value };
     const err = readError(asObject.error);
-    // NOTE: Only a parse failure sends the original source through; a snippet that threw at runtime
-    // with the parentheses on would throw the same without them, and would run twice.
-    if (err.name !== "SyntaxError") {
-      return {
-        ok: false,
-        error: withSourceLine(err, code, 0),
-        limit: limitOf(err),
-      };
-    }
+    return {
+      ok: false,
+      error: withSourceLine(err, code, 0),
+      limit: limitOf(err),
+    };
   }
   const first = evalOrUnwind(vm, code);
   if (first === undefined) return HOST_STACK_LIMIT;

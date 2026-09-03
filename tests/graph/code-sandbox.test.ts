@@ -106,6 +106,20 @@ describe("runSandboxedCode", () => {
       const out = await runSandboxedCode(code);
       expect(out, code).toMatchObject({ kind: "value", value: want });
     }
+    // Round 12: a SyntaxError thrown by the RUN (JSON.parse) is not a parse failure. The wrapped
+    // form is compiled first and only a form that compiles runs, so nothing runs twice: no
+    // "redeclaration", no doubled console line.
+    const runtimeSyntax = await runSandboxedCode(
+      'console.log("once"); const data = JSON.parse("{bad"); { valid: true, data }',
+    );
+    expect(runtimeSyntax).toMatchObject({
+      kind: "error",
+      name: "SyntaxError",
+      logs: ["once"],
+    });
+    expect((runtimeSyntax as { message: string }).message).not.toContain(
+      "redeclaration",
+    );
     // A runtime error with the parentheses on is the snippet's error once, not twice.
     const thrown = await runSandboxedCode(
       "let calls = 0; function g() { calls++; throw new Error('boom ' + calls) }\n{ v: g() }",
@@ -439,7 +453,8 @@ describe("runSandboxedCode", () => {
       `const String = 0, Number = 0, Math = 0, isNaN = 0, Object = 0;
        [validateCpf("123.516.128-50").valid, validateCnpj("12.ABC.345/01DE-35").valid,
         new Date(2026, 0, 15, 7, 30).toISOString(), new Date("2026-01-15T07:30").getDate(),
-        new Date(NOW_LOCAL).getHours(), new Date(NOW_LOCAL).toString()]`,
+        new Date(NOW_LOCAL).getHours(), new Date(NOW_LOCAL).toString(),
+        typeof Date(), Date() === new Date().toString()]`,
       {
         clock: {
           timezone: "Asia/Tokyo",
@@ -456,6 +471,9 @@ describe("runSandboxedCode", () => {
         15,
         7,
         "Thu Jan 15 2026 07:30:00 GMT+0900",
+        // Round 12: `Date()` without `new` is the current local date as a string.
+        "string",
+        true,
       ]),
     });
   });

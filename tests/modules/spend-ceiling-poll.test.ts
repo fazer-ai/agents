@@ -28,6 +28,7 @@ import {
 import { monthStart } from "@/modules/spend-ceiling/decide";
 import {
   pollTenantSpend,
+  projectKeyOf,
   spendPollHandler,
 } from "@/modules/spend-ceiling/poll";
 import {
@@ -795,7 +796,7 @@ describe.skipIf(!dbUp)("the spend ceiling poll", () => {
       });
       const before = await snapshot(tenantA, "inbox");
       expect(Number(before?.costUsd)).toBe(40);
-      expect(before?.projectKey).toBe(`${BASE_URL}#proj-a`);
+      expect(before?.projectKey).toBe(projectKeyOf(BASE_URL, "proj-a"));
       expect(Number(before?.carriedUsd)).toBe(0);
 
       const second = langfuseStub(rows(20, 10), [], { projectId: "proj-b" });
@@ -808,7 +809,7 @@ describe.skipIf(!dbUp)("the spend ceiling poll", () => {
       expect(Number(switched?.costUsd)).toBe(60);
       expect(switched?.tracedCalls).toBe(50);
       expect(switched?.costedCalls).toBe(50);
-      expect(switched?.projectKey).toBe(`${BASE_URL}#proj-b`);
+      expect(switched?.projectKey).toBe(projectKeyOf(BASE_URL, "proj-b"));
       expect(Number(switched?.carriedUsd)).toBe(40);
       expect(switched?.carriedTracedCalls).toBe(40);
       // And the switch is said once (review round 13): the old credential is gone with it, so
@@ -823,7 +824,15 @@ describe.skipIf(!dbUp)("the spend ceiling poll", () => {
           (r) => (r.detail as { subject?: string })?.subject === "project",
         );
       };
-      expect(await said()).toHaveLength(1);
+      const lines = await said();
+      expect(lines).toHaveLength(1);
+      // The origin alone reaches the log (review round 14): a base URL can carry userinfo or a
+      // secret path, and nothing on this line would redact it.
+      expect(lines[0]?.detail).toEqual({
+        subject: "project",
+        projectOrigin: new URL(BASE_URL).origin,
+      });
+      expect(switched?.projectKey).not.toContain(BASE_URL);
 
       // The carry is taken ONCE, at the switch: the new project's next answer adds to it.
       const later = langfuseStub(rows(25, 12), [], { projectId: "proj-b" });
@@ -958,7 +967,7 @@ describe.skipIf(!dbUp)("the spend ceiling poll", () => {
         expect((await a).status).toBe("superseded");
         const row = await snapshot(tenantA, "inbox");
         expect(Number(row?.costUsd)).toBe(20);
-        expect(row?.projectKey).toBe(`${BASE_URL}#proj-b`);
+        expect(row?.projectKey).toBe(projectKeyOf(BASE_URL, "proj-b"));
         expect(Number(row?.carriedUsd)).toBe(0);
       } finally {
         await suDb.vaultEntry.update({
@@ -1033,12 +1042,67 @@ describe.skipIf(!dbUp)("the spend ceiling poll", () => {
         const row = await snapshot(tenantA, "inbox");
         expect(Number(row?.costUsd)).toBe(61);
         expect(Number(row?.carriedUsd)).toBe(41);
-        expect(row?.projectKey).toBe(`${BASE_URL}#proj-b`);
+        expect(row?.projectKey).toBe(projectKeyOf(BASE_URL, "proj-b"));
       } finally {
         await suDb.vaultEntry.update({
           where: { id: entry.id },
           data: { secret: entry.secret },
         });
+      }
+    });
+
+    // AN OLDER FAILURE DOES NOT REPLACE A NEWER SENTINEL (review round 14). Poll A resolves its
+    // credential and is held in its fetch; the operator switches Langfuse off and poll B writes
+    // the sentinel; A is let go with an error, and must not write it over the sentinel, or the
+    // gate would refuse on a frozen figure with no Langfuse behind it.
+    test("an older failure does not replace a newer not-configured sentinel", async () => {
+      await pollTenantSpend(tenantA, {
+        base: appDb,
+        fetchFn: langfuseStub(rows(40, 40), [], { projectId: "proj-a" })
+          .fetchFn,
+        now: NOW,
+      });
+      let release: () => void = () => {};
+      const held = new Promise<void>((r) => {
+        release = r;
+      });
+      let paused = false;
+      const down = langfuseStub({ [INBOX_ENV]: 500, [PLAY_ENV]: 500 });
+      const slowFetch = (async (
+        input: RequestInfo | URL,
+        init?: RequestInit,
+      ) => {
+        if (!paused) {
+          paused = true;
+          await held;
+        }
+        return down.fetchFn(input, init);
+      }) as typeof fetch;
+      const a = pollTenantSpend(tenantA, {
+        base: appDb,
+        fetchFn: slowFetch,
+        now: at(1),
+      });
+      while (!paused) await Bun.sleep(5);
+      try {
+        await updateLangfuse(ctxOf(tenantA), { enabled: false }, appDb);
+        expect(
+          (
+            await pollTenantSpend(tenantA, {
+              base: appDb,
+              fetchFn: down.fetchFn,
+              now: at(2),
+            })
+          ).status,
+        ).toBe("langfuse-not-configured");
+        release();
+        expect((await a).status).toBe("failed");
+        const row = await snapshot(tenantA, "inbox");
+        expect(row?.pollError).toBe("langfuse-not-configured");
+        expect(row?.pollFailedAt?.toISOString()).toBe(at(2).toISOString());
+        expect(Number(row?.costUsd)).toBe(40);
+      } finally {
+        await updateLangfuse(ctxOf(tenantA), { enabled: true }, appDb);
       }
     });
 

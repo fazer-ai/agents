@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
@@ -108,6 +108,26 @@ function sameCredential(a: LangfuseConfig, b: LangfuseConfig): boolean {
   );
 }
 
+// THE IDENTITY IS OPAQUE (review round 14). A self-hosted base URL may carry userinfo or a
+// secret-bearing path (the vault accepts them, and the audit redacts them), and the key lands on
+// every row and, at a switch, in the announcement's detail, where nothing would redact it. So the
+// key is a hash of the instance and the project id, the same input giving the same key; what is
+// shown is the origin alone.
+export function projectKeyOf(apiBase: string, id: string): string {
+  return createHash("sha256")
+    .update(`${apiBase}#${id}`)
+    .digest("hex")
+    .slice(0, 32);
+}
+
+function originOf(apiBase: string): string {
+  try {
+    return new URL(apiBase).origin;
+  } catch {
+    return "unknown";
+  }
+}
+
 function apiBaseOf(cfg: LangfuseConfig): string {
   return cfg.baseUrl ?? "https://cloud.langfuse.com";
 }
@@ -140,7 +160,7 @@ async function fetchProjectKey(
   if (typeof id !== "string" || id === "") {
     throw new Error("Langfuse projects response names no project");
   }
-  return `${apiBase}#${id}`;
+  return projectKeyOf(apiBase, id);
 }
 
 // One metrics query: the month's generations of one environment AND one tenant, summed and counted
@@ -372,7 +392,16 @@ async function writeFailure(
       // two polls can overlap, and the older one finishing last would otherwise write its
       // failure, or its not-configured sentinel, over a figure the newer one had just refreshed,
       // and the gate would open on it until the next period. `at` is the instant the poll began.
-      if (prev?.polledAt && prev.polledAt > at) return false;
+      // ...and a failure older than the newest failure is not its present either (review round
+      // 14): a slow poll that resolved its credential before the operator removed it would
+      // otherwise write its own error over the not-configured sentinel a newer poll had just
+      // written, and the gate would refuse on a frozen figure with no Langfuse behind it.
+      if (
+        (prev?.polledAt && prev.polledAt > at) ||
+        (prev?.pollFailedAt && prev.pollFailedAt > at)
+      ) {
+        return false;
+      }
       const pollFailedAt = prev?.pollFailedAt ?? at;
       await db.spendCostSnapshot.upsert({
         where: key,
@@ -425,7 +454,7 @@ function announcePollFailure(
 // after a quiet period, so the line goes to the channels once per switch.
 function announceProjectSwitch(
   tenantId: bigint,
-  projectKey: string,
+  apiBase: string,
   base: PrismaClient,
 ): void {
   emitFlowEvent(
@@ -434,7 +463,7 @@ function announceProjectSwitch(
       stage: "spend_ceiling",
       level: "warn",
       status: "ok",
-      detail: { subject: "project", projectKey },
+      detail: { subject: "project", projectOrigin: originOf(apiBase) },
       errorMessage:
         "spend ceiling: the Langfuse project changed mid-month; what the old project stood at is carried, and spend that reached it after its last reading is not counted",
     },
@@ -533,7 +562,9 @@ export async function pollTenantSpend(
       );
       return { status: "superseded" };
     }
-    if (written.switched) announceProjectSwitch(tenantId, projectKey, base);
+    if (written.switched) {
+      announceProjectSwitch(tenantId, apiBaseOf(cfg), base);
+    }
     return { status: "polled" };
   } catch (err) {
     // What Langfuse answered is not ours to store as it came: a parse error quotes the body, and a

@@ -1096,11 +1096,116 @@ describe.skipIf(!dbUp)("the spend ceiling poll", () => {
           ).status,
         ).toBe("langfuse-not-configured");
         release();
-        expect((await a).status).toBe("failed");
+        // A's credential is gone by the time it writes, so its failure is the sentinel (round
+        // 15), and it is older than B's, so it writes nothing (round 14).
+        expect((await a).status).toBe("langfuse-not-configured");
         const row = await snapshot(tenantA, "inbox");
         expect(row?.pollError).toBe("langfuse-not-configured");
         expect(row?.pollFailedAt?.toISOString()).toBe(at(2).toISOString());
         expect(Number(row?.costUsd)).toBe(40);
+      } finally {
+        await updateLangfuse(ctxOf(tenantA), { enabled: true }, appDb);
+      }
+    });
+
+    // THE SENTINEL IS RECHECKED TOO (review round 15). A poll that found no credential is held
+    // before its write; the operator configures Langfuse meanwhile; the poll must write no
+    // sentinel over it, or the gate would stay open until the next period.
+    test("a poll that found no credential writes no sentinel over a credential added meanwhile", async () => {
+      const entry = await suDb.vaultEntry.create({
+        data: {
+          tenantId: tenantB,
+          name: "lf-late",
+          kind: "langfuse",
+          secret: encryptJson({ publicKey: "pk-late", secretKey: "sk-late" }),
+          baseUrl: BASE_URL,
+        },
+        select: { id: true },
+      });
+      let release: () => void = () => {};
+      const held = new Promise<void>((r) => {
+        release = r;
+      });
+      let reads = 0;
+      let paused = false;
+      const slow = appDb.$extends({
+        query: {
+          tenant: {
+            async findUnique({ args, query }) {
+              const out = await query(args);
+              reads += 1;
+              if (reads === 1) {
+                paused = true;
+                await held;
+              }
+              return out;
+            },
+          },
+        },
+      }) as unknown as PrismaClient;
+      const a = pollTenantSpend(tenantB, {
+        base: slow,
+        fetchFn: langfuseStub({}).fetchFn,
+        now: NOW,
+      });
+      while (!paused) await Bun.sleep(5);
+      try {
+        await updateLangfuse(
+          ctxOf(tenantB),
+          { enabled: true, credentialRef: formatVaultRef(entry.id) },
+          appDb,
+        );
+        release();
+        expect((await a).status).toBe("superseded");
+        expect(await snapshot(tenantB, "inbox")).toBeNull();
+      } finally {
+        await updateLangfuse(
+          ctxOf(tenantB),
+          { enabled: false, credentialRef: null },
+          appDb,
+        );
+        await suDb.vaultEntry.delete({ where: { id: entry.id } });
+      }
+    });
+
+    // AND A FAILURE UNDER A CREDENTIAL THAT WENT AWAY SAYS SO (review round 15): the present is
+    // not-configured, and that is what the row gets, unannounced as a failure.
+    test("a failing poll whose credential went away meanwhile writes the sentinel, not its error", async () => {
+      let release: () => void = () => {};
+      const held = new Promise<void>((r) => {
+        release = r;
+      });
+      let paused = false;
+      const down = langfuseStub({ [INBOX_ENV]: 500, [PLAY_ENV]: 500 });
+      const slowFetch = (async (
+        input: RequestInfo | URL,
+        init?: RequestInit,
+      ) => {
+        if (!paused) {
+          paused = true;
+          await held;
+        }
+        return down.fetchFn(input, init);
+      }) as typeof fetch;
+      const a = pollTenantSpend(tenantA, {
+        base: appDb,
+        fetchFn: slowFetch,
+        now: NOW,
+      });
+      while (!paused) await Bun.sleep(5);
+      try {
+        await updateLangfuse(ctxOf(tenantA), { enabled: false }, appDb);
+        release();
+        expect((await a).status).toBe("langfuse-not-configured");
+        expect((await snapshot(tenantA, "inbox"))?.pollError).toBe(
+          "langfuse-not-configured",
+        );
+        expect(
+          // flowlog-scope: tenant-wide (the file clears each tenant's rows before every case)
+          await flowLogRows(suDb, {
+            where: { tenantId: tenantA, stage: "spend_ceiling" },
+          }),
+        ).toHaveLength(0);
       } finally {
         await updateLangfuse(ctxOf(tenantA), { enabled: true }, appDb);
       }
@@ -1288,6 +1393,22 @@ describe.skipIf(!dbUp)("the spend ceiling poll", () => {
     // a truncate) is not a ceiling that silently stops being enforced against a figure frozen at
     // the last poll. A tenant with no Langfuse is armed too: its poll writes the reason on the row,
     // which is what the console shows, and the day Langfuse is configured the loop is already there.
+    // A Langfuse save re-arms the poll (review round 15): a credential added or removed is what
+    // the poll exists to learn, and the next period was too late.
+    test("saving the Langfuse block re-arms the poll while the ceiling is on", async () => {
+      expect(await pending(tenantA)).toHaveLength(0);
+      await updateLangfuse(ctxOf(tenantA), { sendContent: true }, appDb);
+      try {
+        expect(await pending(tenantA)).toHaveLength(1);
+        // And not for a tenant whose ceiling is off.
+        await updateLangfuse(ctxOf(tenantC), { sendContent: true }, appDb);
+        expect(await pending(tenantC)).toHaveLength(0);
+      } finally {
+        await updateLangfuse(ctxOf(tenantA), { sendContent: false }, appDb);
+        await updateLangfuse(ctxOf(tenantC), { sendContent: false }, appDb);
+      }
+    });
+
     test("boot arms every tenant with the ceiling on, and no other", async () => {
       await ensureAllSpendPolls(appDb);
       expect(await pending(tenantA)).toHaveLength(1);

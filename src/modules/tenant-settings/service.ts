@@ -384,7 +384,7 @@ export async function updateLangfuse(
     }
   }
 
-  return patchBlock(
+  const next = await patchBlock(
     ctx,
     base,
     "langfuse",
@@ -419,6 +419,10 @@ export async function updateLangfuse(
       });
     },
   );
+  // A Langfuse save changes what the spend ceiling's poll would find (#426, review round 15): a
+  // credential added or removed is learned now, not at the next period.
+  await syncTenantSpendPoll(requireTenantId(ctx), base);
+  return next;
 }
 
 export type CompanyUpdateInput = Partial<

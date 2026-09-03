@@ -481,40 +481,55 @@ export async function pollTenantSpend(
   const now = deps.now ?? new Date();
   const month = monthStart(now);
   const ctx = sysCtx(tenantId);
+  // Held outside the try so the failure path can ask whether the credential it failed under is
+  // still the tenant's (review round 15). `undefined` means the poll never got to resolve one.
+  let cfg: LangfuseConfig | null | undefined;
   try {
-    const cfg = await runScopedOn(base, ctx, (db) =>
+    cfg = await runScopedOn(base, ctx, (db) =>
       resolveLangfuseConfig(db, tenantId),
     );
     if (!cfg) {
-      await runScopedOn(base, ctx, async (db) => {
-        for (const source of SOURCES) {
-          await writeFailure(
-            db,
-            tenantId,
-            source,
-            month,
-            LANGFUSE_NOT_CONFIGURED,
-            now,
-          );
-        }
-      });
-      return { status: LANGFUSE_NOT_CONFIGURED };
+      // Rechecked under the month's lock (review round 15): a credential added while this poll was
+      // out would otherwise get the sentinel written over it, and the gate would stay open until
+      // the next period. A Langfuse save re-arms the poll, so the next period is now.
+      const wrote = await runScopedOn(base, ctx, (db) =>
+        withEntityLock(db, monthLockKey(tenantId, month), async () => {
+          if ((await resolveLangfuseConfig(db, tenantId)) !== null)
+            return false;
+          for (const source of SOURCES) {
+            await writeFailure(
+              db,
+              tenantId,
+              source,
+              month,
+              LANGFUSE_NOT_CONFIGURED,
+              now,
+            );
+          }
+          return true;
+        }),
+      );
+      return wrote
+        ? { status: LANGFUSE_NOT_CONFIGURED }
+        : { status: "superseded" };
     }
+    // Narrowed once for the closures below, which TypeScript would not narrow through.
+    const resolved: LangfuseConfig = cfg;
     // No slug, no query: the project's total is not this tenant's, and a poll that cannot say whose
     // the figure is records a failure rather than a number. Unreachable in practice (the slug is a
     // NOT NULL column and the tenant's own row is readable here); the fence is for the day that
     // changes.
-    if (!cfg.tenantSlug) {
+    if (!resolved.tenantSlug) {
       throw new Error("the tenant has no slug to scope the Langfuse query by");
     }
-    const projectKey = await fetchProjectKey(cfg, fetchFn);
+    const projectKey = await fetchProjectKey(resolved, fetchFn);
     // Both sources are asked before either is written, so a failure on the second leaves neither
     // half-updated against the other's fresh figure.
     const seen = await Promise.all(
       SOURCES.map((source) =>
         fetchMonthCost(
-          cfg,
-          cfg.tenantSlug as string,
+          resolved,
+          resolved.tenantSlug as string,
           environmentForSource(source),
           month,
           now,
@@ -536,7 +551,7 @@ export async function pollTenantSpend(
     const written = await runScopedOn(base, ctx, (db) =>
       withEntityLock(db, monthLockKey(tenantId, month), async () => {
         const current = await resolveLangfuseConfig(db, tenantId);
-        if (!current || !sameCredential(current, cfg)) return null;
+        if (!current || !sameCredential(current, resolved)) return null;
         let switched = false;
         for (const [i, source] of SOURCES.entries()) {
           const cost = seen[i];
@@ -563,7 +578,7 @@ export async function pollTenantSpend(
       return { status: "superseded" };
     }
     if (written.switched) {
-      announceProjectSwitch(tenantId, apiBaseOf(cfg), base);
+      announceProjectSwitch(tenantId, apiBaseOf(resolved), base);
     }
     return { status: "polled" };
   } catch (err) {
@@ -579,17 +594,53 @@ export async function pollTenantSpend(
     // row's last success is dropped above, and a warning for it would page the channels about a
     // window that has already recovered, and spend the six hours the next real one needs. A write
     // that itself fails is unknown, and unknown is announced.
+    // And what the failure SAYS depends on the credential now (review round 15), asked under the
+    // month's lock like every other write: gone meanwhile, the present is not-configured and that
+    // is what the row gets; rotated meanwhile, the answer belonged to a credential that no longer
+    // exists and is dropped; the same, the failure stands. A poll that never resolved a credential
+    // has nothing to compare against and records the failure as it is.
+    const asked = cfg;
+    let outcome: "failed" | "superseded" | typeof LANGFUSE_NOT_CONFIGURED =
+      "failed";
     let current = true;
     try {
-      current = await runScopedOn(base, ctx, async (db) => {
-        let applied = false;
-        for (const source of SOURCES) {
-          if (await writeFailure(db, tenantId, source, month, error, now)) {
-            applied = true;
+      current = await runScopedOn(base, ctx, (db) =>
+        withEntityLock(db, monthLockKey(tenantId, month), async () => {
+          const present =
+            asked === undefined
+              ? undefined
+              : await resolveLangfuseConfig(db, tenantId);
+          if (present === null) {
+            outcome = LANGFUSE_NOT_CONFIGURED;
+            for (const source of SOURCES) {
+              await writeFailure(
+                db,
+                tenantId,
+                source,
+                month,
+                LANGFUSE_NOT_CONFIGURED,
+                now,
+              );
+            }
+            return false;
           }
-        }
-        return applied;
-      });
+          if (
+            present !== undefined &&
+            asked &&
+            !sameCredential(present, asked)
+          ) {
+            outcome = "superseded";
+            return false;
+          }
+          let applied = false;
+          for (const source of SOURCES) {
+            if (await writeFailure(db, tenantId, source, month, error, now)) {
+              applied = true;
+            }
+          }
+          return applied;
+        }),
+      );
     } catch (writeErr) {
       logger.warn(
         { err: writeErr, tenantId: String(tenantId) },
@@ -597,7 +648,8 @@ export async function pollTenantSpend(
       );
     }
     if (current) announcePollFailure(tenantId, error, base);
-    return { status: "failed", error };
+    if (outcome === "failed") return { status: "failed", error };
+    return { status: outcome };
   }
 }
 

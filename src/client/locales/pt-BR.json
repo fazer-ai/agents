@@ -470,7 +470,7 @@
       "gateClosed": "Um humano está cuidando desta conversa. Devolva para a IA primeiro.",
       "noReply": "A IA não gerou resposta.",
       "notAuthorized": "O endpoint de autorização não liberou este contato, então a IA não respondeu.",
-      "overCeiling": "O teto de tokens deste mês foi atingido, então a IA não respondeu. Aumente o limite nas Configurações ou aguarde o próximo mês.",
+      "overCeiling": "O teto de gasto deste mês foi atingido, então a IA não respondeu. Aumente o limite nas Configurações ou aguarde o próximo mês.",
       "posted": "A IA respondeu.",
       "postedPartial": "A IA respondeu, mas parte da resposta não chegou ao cliente."
     },

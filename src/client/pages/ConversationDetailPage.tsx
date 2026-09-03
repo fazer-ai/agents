@@ -1530,7 +1530,7 @@ export function ConversationDetailPage() {
         showToast(
           t(
             "conversation.reengage.overCeiling",
-            "This month's token ceiling has been reached, so the AI did not reply. Raise it in Settings or wait for the next month.",
+            "This month's spend ceiling has been reached, so the AI did not reply. Raise it in Settings or wait for the next month.",
           ),
           "warning",
         );

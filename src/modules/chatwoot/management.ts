@@ -181,6 +181,18 @@ export async function disconnectChatwootDeployment(
         "errors.chatwootDeploymentNotFound",
       );
     }
+    // NOTE: The deployment and then every account under it, in that order, BEFORE the counts. This
+    // is the outermost of the three levels the module locks, and the reason it is taken here is the
+    // count: a sync or a connect committing between the reading and the delete gives the cascade
+    // rows the row never mentioned. Holding the deployment stops a new account from appearing;
+    // holding the accounts stops their inboxes from moving.
+    //
+    // TODO: An inbox mirrored by INBOUND TRAFFIC (`upsertInbox`, which answers a webhook and takes
+    // no account lock) can still land in the same instant and be counted low. The count is a
+    // description of a destructive act, not a receipt, and closing that would put a lock on the
+    // delivery path to make an audit number exact.
+    await db.$queryRaw`SELECT id FROM chatwoot_deployments WHERE id = ${dep.id} FOR UPDATE`;
+    await db.$queryRaw`SELECT id FROM chatwoot_instances WHERE deployment_id = ${dep.id} ORDER BY id FOR UPDATE`;
     // NOTE: WHAT WENT WITH IT, counted before the delete, because after it there is nothing left to count.
     // This is the widest destructive act the console offers: the cascade reaches every account,
     // inbox, agent bot and conversation of the tenant, and the contacts are deleted by hand first
@@ -493,6 +505,11 @@ async function connectAccount(
     accountId,
   );
   const result = await runScopedOn(base, ctx, async (db) => {
+    // NOTE: The DEPLOYMENT row first, outermost of the three (deployment, then account, then its
+    // inboxes) so the whole module takes them in one order. It is also what makes the disconnect's
+    // count honest: locking the accounts it is about to destroy cannot block a brand-new one from
+    // being INSERTED under it, and this is the lock that can.
+    await db.$queryRaw`SELECT id FROM chatwoot_deployments WHERE id = ${deploymentId} FOR UPDATE`;
     const existing = await db.chatwootInstance.findFirst({
       where: { accountId },
       select: { id: true },
@@ -872,6 +889,11 @@ export async function removeChatwootInstance(
 ): Promise<void> {
   if (ctx.tenantId === null) throw new AppError("tenant required", 400);
   await runScopedOn(base, ctx, async (db) => {
+    // NOTE: LOCKED before the count, because the count is about what the delete below is going to
+    // destroy. A sync holding this same lock is mirroring inboxes under the account right now; read
+    // without it, the snapshot is taken before that transaction commits and the cascade then takes
+    // rows the row never mentioned.
+    await db.$queryRaw`SELECT id FROM chatwoot_instances WHERE id = ${id} FOR UPDATE`;
     const inst = await db.chatwootInstance.findUnique({
       where: { id },
       select: { id: true, accountId: true, accountName: true },

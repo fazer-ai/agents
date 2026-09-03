@@ -793,27 +793,43 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
   // page auto-syncs when it opens and a disconnect is one click). The abort is not symmetric
   // either: the bots are detached in Chatwoot outside the transaction, so a rolled-back disconnect
   // leaves the account active locally and answering nowhere.
-  test("every path that takes both locks takes the account row first", async () => {
+  test("every path that takes more than one of the three locks takes them outermost first", async () => {
     const src = await Bun.file(
       new URL("../../src/modules/chatwoot/management.ts", import.meta.url),
     ).text();
+    // Deployment, then the accounts under it, then their inboxes. One order for the whole module.
+    const LEVELS: [string, RegExp][] = [
+      ["deployment", /FROM chatwoot_deployments/],
+      [
+        "account",
+        /FROM chatwoot_instances|db\.chatwootInstance\.(create|update|updateMany|delete|deleteMany)/,
+      ],
+      [
+        "inbox",
+        /db\.inbox\.(update|updateMany|upsert|delete|deleteMany)|FROM inboxes/,
+      ],
+    ];
     // Function bodies, split on the top-level declarations this file is written with.
     const parts = src.split(/\n(?=(?:export )?async function )/);
     let checked = 0;
     for (const body of parts) {
-      const account = body.indexOf("FROM chatwoot_instances");
-      if (account === -1) continue;
-      const inbox = body.search(
-        /db\.inbox\.(update|updateMany|upsert|delete|deleteMany)|FROM inboxes/,
-      );
-      if (inbox === -1) continue;
-      checked++;
       const name = body.match(/async function (\w+)/)?.[1] ?? "?";
-      expect([name, account < inbox]).toEqual([name, true]);
+      const at = LEVELS.map(([, re]) => body.search(re)).map((i) =>
+        i === -1 ? Number.POSITIVE_INFINITY : i,
+      );
+      // Only the levels this function actually takes, in level order: a path that never touches the
+      // deployment is not out of order for starting at the account.
+      const present = at.filter((i) => Number.isFinite(i));
+      if (present.length < 2) continue;
+      checked++;
+      const ordered = present.every(
+        (v, i) => i === 0 || (present[i - 1] as number) < v,
+      );
+      expect([name, ordered]).toEqual([name, true]);
     }
     // The fence is worthless if it matched nothing, which is how a refactor that renames the lock
     // turns it green forever.
-    expect(checked).toBeGreaterThanOrEqual(2);
+    expect(checked).toBeGreaterThanOrEqual(3);
   });
 
   // The fence, over every row the file wrote. `docs/mcp.md` names the deployment admin token as one

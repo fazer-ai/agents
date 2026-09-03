@@ -67,6 +67,13 @@ describe("runSandboxedCode", () => {
       ["({ a: 1 })", '{"a":1}'],
       // After a block: the shape measured live once the model guards a month roll-over first.
       ["let y = 0; if (true) { y = 1 } { y, ok: true }", '{"y":1,"ok":true}'],
+      // No semicolons at all (round 6): with only the parenthesis added, the object read on as a
+      // call of the previous line — `compute()({…})` — and failed at run time, past the fallback.
+      [
+        "function compute() { return { valid: true } }\nconst result = compute()\n{ valid: result.valid }",
+        '{"valid":true}',
+      ],
+      ["const a = { b: 1 }\n{ a }", '{"a":{"b":1}}'],
       // Not an object: a real block, and braces that belong to a statement, run as written.
       ["{ let x = 1; x + 1 }", "2"],
       ["if (true) { 5 }", "5"],
@@ -353,6 +360,35 @@ describe("runSandboxedCode", () => {
         "2026-11-01T05:30:00.000Z",
         1772955000000,
         [7, "2026-03-08T11:00:00.000Z"],
+      ]),
+    });
+  });
+
+  // A positive-offset zone (round 6): the wall clock as UTC is half a day AFTER the instant it
+  // names, so reading the offset at it took the far side of every transition. Auckland's spring gap
+  // (02:00 → 03:00 on 2025-09-28) and autumn overlap (03:00 → 02:00 on 2025-04-06), through the
+  // constructor, parsing and a setter; reference values from Bun under TZ=Pacific/Auckland.
+  test("a positive-offset DST zone resolves its gap and overlap the same way", async () => {
+    const out = await runSandboxedCode(
+      `[new Date(2025, 8, 28, 2, 30).toISOString(),
+        new Date(2025, 8, 28, 3, 30).toISOString(),
+        new Date(2025, 3, 6, 2, 30).toISOString(),
+        Date.parse("2025-04-06T02:30"),
+        (() => { const d = new Date("2025-09-27T12:00:00Z"); d.setHours(2, 30); return d.toISOString() })(),
+        new Date("2025-09-28T02:30:00Z").getTimezoneOffset(),
+        new Date("2025-04-06T02:30:00Z").getTimezoneOffset()]`,
+      { clock: { timezone: "Pacific/Auckland" } },
+    );
+    expect(out).toMatchObject({
+      kind: "value",
+      value: JSON.stringify([
+        "2025-09-27T14:30:00.000Z",
+        "2025-09-27T14:30:00.000Z",
+        "2025-04-05T13:30:00.000Z",
+        1743859800000,
+        "2025-09-27T14:30:00.000Z",
+        -780,
+        -720,
       ]),
     });
   });

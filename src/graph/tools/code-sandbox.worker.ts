@@ -217,14 +217,25 @@ const DATE_SHIM_SOURCE = `(function (offsetAt) {
   var setTime = proto.setTime;
   var MINUTE = 60000;
   function wall(t) { return t + offsetAt(t) * MINUTE; }
+  // The wall time is not an instant, so the offset is not read AT it: read a day either side (the
+  // true instant lies within 14 h of it, and no zone has two transitions in 48 h), and keep each
+  // offset whose instant reads back as that offset. Two survive in an overlap, and the larger one
+  // is the earlier instant, the spec's first occurrence; none survives in a gap, and the smaller is
+  // the offset from before it, the spec's answer. Reading at the wall time itself (PR #485, round
+  // 6) was right for a negative offset and a day late for a positive one: Auckland's 02:30 on the
+  // gap morning came back as 01:30 standard time instead of 03:30 daylight time.
+  var DAY = 86400000;
   function instant(w) {
     if (isNaN(w)) return NaN;
-    var o1 = offsetAt(w);
-    var t1 = w - o1 * MINUTE;
-    var o2 = offsetAt(t1);
-    if (o2 === o1) return t1;
-    var t2 = w - o2 * MINUTE;
-    return offsetAt(t2) === o2 ? t2 : t1;
+    var candidates = [offsetAt(w - DAY), offsetAt(w + DAY)];
+    var best;
+    var lowest = candidates[0];
+    for (var i = 0; i < candidates.length; i++) {
+      var o = candidates[i];
+      if (o < lowest) lowest = o;
+      if (offsetAt(w - o * MINUTE) === o && (best === undefined || o > best)) best = o;
+    }
+    return w - (best === undefined ? lowest : best) * MINUTE;
   }
   function define(name, fn) {
     Object.defineProperty(proto, name, { value: fn, writable: true, configurable: true });
@@ -411,7 +422,10 @@ function withTrailingObjectWrapped(code: string): string | undefined {
     before.length === 0 ||
     /[;}\n]$/.test(code.slice(0, start).replace(/[ \t]+$/, ""));
   if (!boundary) return undefined;
-  return `${code.slice(0, start)}(${code.slice(start, end)})${code.slice(end)}`;
+  // NOTE: A separator as well as the parenthesis. Without one, a snippet that leaves semicolons out
+  // (`const r = compute()\n{ valid: r.valid }`) reads on as a call — `compute()({…})` — which
+  // parses, and then fails at run time, past the fallback (PR #485, round 6).
+  return `${code.slice(0, start)};(${code.slice(start, end)})${code.slice(end)}`;
 }
 const RENDER_BUDGET_MS = 200;
 const ERROR_NAME_MAX_CHARS = 100;

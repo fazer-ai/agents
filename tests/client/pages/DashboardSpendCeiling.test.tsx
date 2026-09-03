@@ -423,6 +423,164 @@ describe("the spend ceiling on the dashboard", () => {
     }
   });
 
+  // A SLOW COST DOES NOT HOLD THE SECTION BEHIND A SKELETON (review round 3). The cost is the only
+  // third-party call on the page and it waits up to ten seconds for a Langfuse that is gone; the
+  // tokens, the timeseries and the ceiling are all ours and already in hand.
+  test("the figures render while the cost request is still out", async () => {
+    let releaseCost: (() => void) | null = null;
+    const slowCost = (async (input: unknown) => {
+      const url = String(
+        typeof input === "string" ? input : ((input as Request).url ?? input),
+      );
+      asked.push(url);
+      if (url.includes("/metrics/costs")) {
+        await new Promise<void>((r) => {
+          releaseCost = r;
+        });
+        return json({ costs: { status: "error" } });
+      }
+      return stubFetch(input as RequestInfo);
+    }) as unknown as typeof globalThis.fetch;
+    globalThis.fetch = slowCost;
+    try {
+      usage = baseUsage();
+      asked.length = 0;
+      render(
+        withI18n(
+          <ThemeProvider>
+            <MemoryRouter>
+              <DashboardPage />
+            </MemoryRouter>
+          </ThemeProvider>,
+        ),
+      );
+      // The ceiling and the token figures are on screen with the cost still in flight.
+      await waitFor(() => {
+        expect(has("$22.50 of $30.00")).toBe(true);
+      });
+      expect(releaseCost).not.toBeNull();
+      await act(async () => {
+        (releaseCost as (() => void) | null)?.();
+        for (let i = 0; i < 5; i += 1) {
+          await new Promise((r) => setTimeout(r, 0));
+        }
+      });
+    } finally {
+      globalThis.fetch = stubFetch;
+    }
+  });
+
+  // AND THE SEGMENT'S CEILING TAKES ITS NUMBER WHEN IT ASKS, NOT WHEN IT COMMITS (review round 3).
+  // Its answer can be ready and still be waiting inside the `Promise.all` for a slower sibling, and
+  // a refresh landing in that window would otherwise be overwritten by the older read, walking the
+  // figure backwards until the next refresh.
+  test("a periodic refresh landing mid-load is not overwritten by it", async () => {
+    let releaseTimeseries: (() => void) | null = null;
+    let holdNext = false;
+    let holdFrom = 0;
+    let usageReads = 0;
+    const stale = baseUsage();
+    stale.entries = [
+      entry({
+        source: "inbox",
+        usedUsd: 22.5,
+        ceilingUsd: 30,
+        state: "warning",
+      }),
+      entry({
+        source: "playground",
+        usedUsd: 4.25,
+        ceilingUsd: 5,
+        state: "over",
+      }),
+    ];
+    const fresh = baseUsage();
+    // BOTH halves differ, because after the switch only the playground's bar is drawn: a fixture
+    // that differed on the inbox alone would assert on a bar that is not on screen.
+    fresh.entries = [
+      entry({
+        source: "inbox",
+        usedUsd: 27.5,
+        ceilingUsd: 30,
+        state: "warning",
+      }),
+      entry({
+        source: "playground",
+        usedUsd: 4.9,
+        ceilingUsd: 5,
+        state: "warning",
+      }),
+    ];
+    stale.pollIntervalMs = 40;
+    fresh.pollIntervalMs = 40;
+    const held = (async (input: unknown) => {
+      const url = String(
+        typeof input === "string" ? input : ((input as Request).url ?? input),
+      );
+      asked.push(url);
+      if (url.includes("/spend-ceiling/usage")) {
+        usageReads += 1;
+        // While the switch is held, ITS OWN read (the first one) answers stale and every refresh
+        // after it answers fresh: that is the ordering the fix has to survive.
+        const isSwitchRead = holdNext && usageReads === holdFrom;
+        return json({ instance: {}, ...(isSwitchRead ? stale : fresh) });
+      }
+      if (url.includes("/metrics/timeseries") && holdNext) {
+        await new Promise<void>((r) => {
+          releaseTimeseries = r;
+        });
+        return json({ points: [] });
+      }
+      return stubFetch(input as RequestInfo);
+    }) as unknown as typeof globalThis.fetch;
+    globalThis.fetch = held;
+    try {
+      usage = stale;
+      asked.length = 0;
+      render(
+        withI18n(
+          <ThemeProvider>
+            <MemoryRouter>
+              <DashboardPage />
+            </MemoryRouter>
+          </ThemeProvider>,
+        ),
+      );
+      // First load settles, so the page now knows the 40 ms period and the timer is armed.
+      await waitFor(() => {
+        expect(has("$27.50 of $30.00")).toBe(true);
+      });
+      // The switch's load holds its timeseries, so its (stale) ceiling answer waits inside the
+      // Promise.all while the timer keeps committing the fresher figure.
+      holdNext = true;
+      holdFrom = usageReads + 1;
+      const segments = await screen.findByRole("group", {
+        name: "Usage segment",
+      });
+      fireEvent.click(
+        within(segments).getByRole("button", { name: "Playground" }),
+      );
+      await waitFor(() => {
+        expect(releaseTimeseries).not.toBeNull();
+      });
+      const readsAtHold = usageReads;
+      await waitFor(() => {
+        expect(usageReads).toBeGreaterThan(readsAtHold);
+      });
+      await act(async () => {
+        (releaseTimeseries as (() => void) | null)?.();
+        for (let i = 0; i < 5; i += 1) {
+          await new Promise((r) => setTimeout(r, 0));
+        }
+      });
+      // The refresh's figure stands; the load's older answer was dropped.
+      expect(has("$4.90 of $5.00")).toBe(true);
+      expect(has("$4.25 of $5.00")).toBe(false);
+    } finally {
+      globalThis.fetch = stubFetch;
+    }
+  });
+
   // AND AN OLDER SEGMENT'S ANSWER NEVER LANDS OVER A NEWER ONE (review round 1). Switching segments
   // starts a second load while the first is still out; the older answer landing last would put the
   // inbox cost card beside the playground ceiling, one row showing two different questions.

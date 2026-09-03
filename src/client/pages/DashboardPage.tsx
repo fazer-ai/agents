@@ -510,13 +510,30 @@ export function DashboardPage() {
     // page carries no extra third-party call. Neither failing blanks the section: a ceiling that
     // cannot be read is a card that says so, not an error page over the usage figures.
     const costQuery = { ...query, ...(src === "all" ? {} : { source: src }) };
+    // THE COST DOES NOT GATE THE SECTION (review round 3). It is the only third-party call here and
+    // it waits up to ten seconds for a Langfuse that is slow or gone; sharing the gate meant the
+    // tokens, the timeseries and the ceiling — all already in hand, all ours — sat behind a
+    // skeleton for that whole timeout. It is best-effort with a card of its own for the failure,
+    // so it settles on its own and only the latest segment's answer is taken.
+    void api.api.v1.metrics.costs
+      .get({ query: costQuery })
+      .then((res) => {
+        if (seq !== usageSeq.current) return;
+        setCosts(res.data ? res.data.costs : { status: "error" as const });
+      })
+      .catch(() => {
+        if (seq !== usageSeq.current) return;
+        setCosts({ status: "error" as const });
+      });
+    // The ceiling's own number is RESERVED HERE, when the request goes out, not taken when it
+    // commits (review round 3): its answer can be ready and still be waiting inside the `Promise.all`
+    // for a slower sibling, and a periodic refresh landing in that window would be overwritten by
+    // this older read, walking the figure backwards until the next refresh.
+    const cseq = ++ceilingSeq.current;
     try {
-      const [m, ts, costsRes, ceilingRes] = await Promise.all([
+      const [m, ts, ceilingRes] = await Promise.all([
         api.api.v1.metrics.get({ query: usageQuery }),
         api.api.v1.metrics.timeseries.get({ query: usageQuery }),
-        api.api.v1.metrics.costs
-          .get({ query: costQuery })
-          .catch(() => ({ data: null })),
         api.api.v1["tenant-settings"]["spend-ceiling"].usage
           .get()
           .catch(() => ({ data: null })),
@@ -529,11 +546,7 @@ export function DashboardPage() {
       }
       setMetrics(m.data.metrics);
       setPoints(ts.data.points);
-      setCosts(
-        costsRes.data ? costsRes.data.costs : { status: "error" as const },
-      );
-      ceilingSeq.current += 1;
-      setCeiling(ceilingRes.data ?? null);
+      if (cseq === ceilingSeq.current) setCeiling(ceilingRes.data ?? null);
     } catch {
       if (seq !== usageSeq.current) return;
       setUsageError(true);

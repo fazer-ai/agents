@@ -19,7 +19,7 @@ import { countInSrc } from "@/tests/utils/source-text";
 // routes stop spelling the check themselves.
 
 setupPrismaMock();
-const { confirmStepUp } = await import("@/api/lib/step-up");
+const { confirmStepUp, requireSession } = await import("@/api/lib/step-up");
 
 const HASH = await Bun.password.hash("s3cret");
 const session = (
@@ -91,6 +91,35 @@ describe("confirmStepUp", () => {
   test("an absent actorType is a session", async () => {
     const err = await confirmStepUp({ userId: 1n }, undefined).catch((e) => e);
     expect((err as AppError).translationKey).toBe("errors.passwordRequired");
+  });
+});
+
+// A key never mints a credential that outlives it (review round 2): the routes that mint one refuse
+// a key outright, in either spelling the two boundaries use for "this is a key".
+describe("requireSession", () => {
+  test("a session passes, in both shapes", () => {
+    expect(() => requireSession({})).not.toThrow();
+    expect(() => requireSession({ actorType: "user" })).not.toThrow();
+    expect(() => requireSession({ isApiKey: false })).not.toThrow();
+    expect(() => requireSession({ actorType: "mcp" })).not.toThrow();
+  });
+
+  test("a key is refused, in both shapes, with the sentence the console can show", () => {
+    for (const key of [{ actorType: "api_key" as const }, { isApiKey: true }]) {
+      const err = (() => {
+        try {
+          requireSession(key);
+          return null;
+        } catch (e) {
+          return e;
+        }
+      })();
+      expect(err).toBeInstanceOf(AppError);
+      expect((err as AppError).statusCode).toBe(403);
+      expect((err as AppError).translationKey).toBe(
+        "errors.apiKeyRequiresSession",
+      );
+    }
   });
 });
 

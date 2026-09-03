@@ -286,6 +286,9 @@ describe.skipIf(!dbUp)("a fleet-scoped API key at the request boundary", () => {
       { displayName: "minted by a key", password: "anything" },
     );
     expect(byKey.status).toBe(403);
+    expect(((await byKey.json()) as { error: string }).error).toBe(
+      "This is done from a signed-in session, not with an API key",
+    );
     const wrongPw = await send(
       "POST",
       "/api/v1/api-keys/fleet",
@@ -326,15 +329,19 @@ describe.skipIf(!dbUp)("a fleet-scoped API key at the request boundary", () => {
     expect(await realVerify.verifyApiKey(token, app)).toBeNull();
   });
 
-  // Round 1 of the review: a key answers every later step-up by itself, so a stolen session must not
-  // be able to mint one without the password — or the key would carry the session past the rule.
-  // A key minting a key inherits the step-up its own minting answered.
-  test("a tenant key is minted by a session under step-up; a key mints one by itself", async () => {
+  // Rounds 1 and 2 of the review. A key answers every later step-up by itself, so a stolen session
+  // must not be able to mint one without the password — or the key would carry the session past
+  // the rule. And a key never mints a credential at all: a tenant key minted by a fleet key under
+  // X-Tenant-Id, or by another tenant key, would keep working after the minter is revoked.
+  test("a tenant key is minted by a session under step-up, and by no key", async () => {
     const sessionHeaders = { cookie, "x-tenant-id": tenantA.toString() };
+    // The field is REQUIRED on the two minting routes (no principal may omit it, since a key is
+    // refused), so an omitted password is the schema's 422 naming the field, not the helper's 400.
     const noPw = await send("POST", "/api/v1/api-keys", sessionHeaders, {
       displayName: "session no pw",
     });
-    expect(noPw.status).toBe(400);
+    expect(noPw.status).toBe(422);
+    expect(((await noPw.json()) as { field?: string }).field).toBe("password");
     const wrongPw = await send("POST", "/api/v1/api-keys", sessionHeaders, {
       displayName: "session wrong pw",
       password: "nope",
@@ -345,15 +352,59 @@ describe.skipIf(!dbUp)("a fleet-scoped API key at the request boundary", () => {
       password: PASSWORD,
     });
     expect(withPw.status).toBe(200);
-    const byKey = await send("POST", "/api/v1/api-keys", bearer(tenantToken), {
-      displayName: "minted by a key",
-    });
-    expect(byKey.status).toBe(200);
+    const byTenantKey = await send(
+      "POST",
+      "/api/v1/api-keys",
+      bearer(tenantToken),
+      { displayName: "minted by a tenant key", password: "anything" },
+    );
+    expect(byTenantKey.status).toBe(403);
+    const byFleetKey = await send(
+      "POST",
+      "/api/v1/api-keys",
+      { ...bearer(fleetToken), "x-tenant-id": tenantA.toString() },
+      { displayName: "minted by a fleet key", password: "anything" },
+    );
+    expect(byFleetKey.status).toBe(403);
+    expect(((await byFleetKey.json()) as { error: string }).error).toBe(
+      "This is done from a signed-in session, not with an API key",
+    );
+    expect(
+      await su?.apiKey.count({
+        where: { tenantId: tenantA, displayName: { startsWith: "minted by" } },
+      }),
+    ).toBe(0);
     expect(
       await su?.apiKey.count({
         where: { tenantId: tenantA, displayName: { startsWith: "session " } },
       }),
     ).toBe(1);
+  });
+
+  // The other credential a key could mint: an MCP grant. `/authorize` treats any authenticated
+  // principal as the app session, and a first-party client skips consent, so a Bearer would get a
+  // code — and a grant that outlives the key. The refusal sits before the client lookup, so no
+  // client has to exist for the probe to reach it, and a key cannot probe client ids either.
+  test("a key cannot drive the OAuth authorize or consent routes", async () => {
+    const authorize = await send(
+      "GET",
+      "/api/v1/mcp/oauth/authorize?client_id=x&redirect_uri=https%3A%2F%2Fx%2Fcb&response_type=code&code_challenge=abc&code_challenge_method=S256",
+      bearer(fleetToken),
+    );
+    expect(authorize.status).toBe(403);
+    const consent = await send(
+      "GET",
+      "/api/v1/mcp/oauth/consent/some-req",
+      bearer(tenantToken),
+    );
+    expect(consent.status).toBe(403);
+    const decide = await send(
+      "POST",
+      "/api/v1/mcp/oauth/consent/some-req",
+      bearer(tenantToken),
+      { decision: "approve", csrfToken: "x" },
+    );
+    expect(decide.status).toBe(403);
   });
 
   test("the tenant key cannot reach the fleet routes", async () => {

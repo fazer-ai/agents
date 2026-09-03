@@ -23647,7 +23647,7 @@
           "API keys"
         ],
         "summary": "Create API key",
-        "description": "Creates a per-tenant Bearer API key and returns the plaintext token ONCE (only its hash is stored). Use it as `Authorization: Bearer <token>` against the REST v1 API or the MCP transport. A session confirms with its current password (the key it mints answers every later step-up by itself); a Bearer key needs none.",
+        "description": "Creates a per-tenant Bearer API key and returns the plaintext token ONCE (only its hash is stored). Use it as `Authorization: Bearer <token>` against the REST v1 API or the MCP transport. Only a signed-in session may create one, confirmed with its current password (the key it mints answers every later step-up by itself); a Bearer key is refused.",
         "requestBody": {
           "required": true,
           "content": {
@@ -23655,7 +23655,8 @@
               "schema": {
                 "type": "object",
                 "required": [
-                  "displayName"
+                  "displayName",
+                  "password"
                 ],
                 "properties": {
                   "displayName": {
@@ -23676,7 +23677,8 @@
               "schema": {
                 "type": "object",
                 "required": [
-                  "displayName"
+                  "displayName",
+                  "password"
                 ],
                 "properties": {
                   "displayName": {
@@ -23697,7 +23699,8 @@
               "schema": {
                 "type": "object",
                 "required": [
-                  "displayName"
+                  "displayName",
+                  "password"
                 ],
                 "properties": {
                   "displayName": {

@@ -4,6 +4,7 @@ import type { UserRole } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import { doc, errors, OAuthErrorResponse } from "@/api/lib/openapi";
 import basePrisma from "@/api/lib/prisma";
+import { requireSession } from "@/api/lib/step-up";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
 import config from "@/config";
 import { NotFoundError, UnauthorizedError } from "@/lib/errors";
@@ -232,6 +233,9 @@ export const mcpOAuthController = new Elysia({
           },
         });
       }
+      // A Bearer API key is an authenticated principal here too, and would mint a code (a first-party
+      // client skips consent) whose grant outlives the key. Review round 2 on #308.
+      requireSession(ctx);
 
       const client = await basePrisma.mcpOAuthClient.findUnique({
         where: { clientId: query.client_id },
@@ -377,6 +381,9 @@ export const mcpOAuthController = new Elysia({
       // requireAuth already gated; this is defensive (and narrows the type).
       const user = await getAuthUser();
       if (!user) throw new UnauthorizedError();
+      // The pending record is bound to a user id, and a key carries its creator's: without this a
+      // key could read, and below approve, a consent the person parked from their browser.
+      requireSession(user);
       const pending = await getPendingAuthorization(params.req, user.id);
       if (!pending) throw new NotFoundError();
       const csrfToken = await issueConsentCsrf(params.req, user.id);
@@ -441,6 +448,7 @@ export const mcpOAuthController = new Elysia({
     async ({ getAuthUser, params, body }) => {
       const user = await getAuthUser();
       if (!user) throw new UnauthorizedError();
+      requireSession(user);
       const pending = await consumePendingAuthorization(
         params.req,
         user.id,

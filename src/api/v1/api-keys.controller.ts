@@ -1,13 +1,13 @@
 import { Elysia, t } from "elysia";
 import { doc, errors } from "@/api/lib/openapi";
-import { confirmStepUp, STEP_UP_PASSWORD_DESCRIPTION } from "@/api/lib/step-up";
+import {
+  confirmStepUp,
+  requireSession,
+  STEP_UP_PASSWORD_DESCRIPTION,
+} from "@/api/lib/step-up";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
 import { requireDbId } from "@/lib/db-id";
-import {
-  AppError,
-  ForbiddenError,
-  TenantTargetRequiredError,
-} from "@/lib/errors";
+import { ForbiddenError, TenantTargetRequiredError } from "@/lib/errors";
 import { instanceIdentity } from "@/lib/instance";
 import type { TenantContext } from "@/lib/tenancy";
 import {
@@ -30,7 +30,6 @@ import {
 // NOTE: the service throws this AppError translationKey; declared here (under src/api/**) so the API
 // i18n extractor keeps it — its input glob does not reach src/modules.
 // translate('errors.apiKeyNotFound', 'API key not found')
-// translate('errors.fleetApiKeyRequiresSession', 'A fleet key is created from a signed-in session, not from another key')
 
 function ctxOrThrow(ctx: TenantContext | null): TenantContext {
   if (!ctx) throw new ForbiddenError();
@@ -70,10 +69,11 @@ export const apiKeysController = new Elysia({
     "/",
     async ({ tenantContext, body }) => {
       const ctx = ctxOrThrow(tenantContext);
-      // A key answers every later step-up by itself (`confirmStepUp`), so the step-up has to happen
-      // HERE, or a stolen seven-day session would mint a key and carry it past the password the
-      // destructive routes ask of the session. A key minting a key inherits that: it was itself
-      // minted under a step-up. Round 1 of the review on #308.
+      // A credential is minted by a person: a key is refused (it would outlive the key that minted
+      // it), and the session answers its password here, because the key it mints answers every
+      // later step-up by itself — a stolen seven-day session must not be able to carry a key past
+      // the password the destructive routes ask of it. Rounds 1 and 2 of the review on #308.
+      requireSession(ctx);
       await confirmStepUp(ctx, body.password);
       const created = await createApiKey(ctx, {
         displayName: body.displayName,
@@ -89,7 +89,7 @@ export const apiKeysController = new Elysia({
       requireRole: "TENANT_ADMIN",
       detail: doc(
         "Create API key",
-        "Creates a per-tenant Bearer API key and returns the plaintext token ONCE (only its hash is stored). Use it as `Authorization: Bearer <token>` against the REST v1 API or the MCP transport. A session confirms with its current password (the key it mints answers every later step-up by itself); a Bearer key needs none.",
+        "Creates a per-tenant Bearer API key and returns the plaintext token ONCE (only its hash is stored). Use it as `Authorization: Bearer <token>` against the REST v1 API or the MCP transport. Only a signed-in session may create one, confirmed with its current password (the key it mints answers every later step-up by itself); a Bearer key is refused.",
       ),
       body: t.Object({
         displayName: t.String({
@@ -98,9 +98,10 @@ export const apiKeysController = new Elysia({
           description:
             "Human-readable label for the key (1 to 120 characters).",
         }),
-        password: t.Optional(
-          t.String({ minLength: 1, description: STEP_UP_PASSWORD_DESCRIPTION }),
-        ),
+        password: t.String({
+          minLength: 1,
+          description: STEP_UP_PASSWORD_DESCRIPTION,
+        }),
       }),
       response: errors(400, 401, 403, 404, 422),
     },
@@ -145,16 +146,9 @@ export const apiKeysController = new Elysia({
     "/fleet",
     async ({ tenantContext, body }) => {
       const ctx = fleetCtxOrThrow(tenantContext);
-      // Minting SUPER_ADMIN authority is a person's act, twice over: a key cannot mint a key (a
-      // leaked key would otherwise outlive its own revocation), and the person confirms with their
-      // password. `confirmStepUp` alone would let a key through, so the door is closed first.
-      if (ctx.actorType === "api_key") {
-        throw new AppError(
-          "a fleet key is minted from a session",
-          403,
-          "errors.fleetApiKeyRequiresSession",
-        );
-      }
+      // A person's act, twice over: a key is refused (`requireSession`), and the person confirms
+      // with their password.
+      requireSession(ctx);
       await confirmStepUp(ctx, body.password);
       const created = await createFleetApiKey(ctx, {
         displayName: body.displayName,

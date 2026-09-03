@@ -1006,23 +1006,26 @@ describe.skipIf(!dbUp)("reengage", () => {
         data: {
           settings: {
             ...(before.settings as object),
-            spendCeiling: { enabled: true, monthlyInboxTokens: 1000 },
+            spendCeiling: { enabled: true, monthlyInboxUsd: 1000 },
           },
         },
       });
-      await suDb.llmUsage.create({
+      // The month's figure as the poll would have written it: over the ceiling below (#426).
+      await suDb.spendCostSnapshot.create({
         data: {
           tenantId,
-          model: "gpt-4o-mini",
           source: "inbox",
-          promptTokens: 1200,
-          completionTokens: 0,
+          monthStart: new Date(
+            Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1),
+          ),
+          costUsd: 1200,
+          polledAt: new Date(),
         },
       });
     });
 
     afterAll(async () => {
-      await suDb.llmUsage.deleteMany({ where: { tenantId } });
+      await suDb.spendCostSnapshot.deleteMany({ where: { tenantId } });
       await suDb.tenant.update({
         where: { id: tenantId },
         data: { settings: previousTenantSettings as object },
@@ -1141,7 +1144,7 @@ describe.skipIf(!dbUp)("reengage", () => {
         data: {
           settings: {
             ...(previousTenantSettings as object),
-            spendCeiling: { enabled: true, monthlyInboxTokens: 1_000_000 },
+            spendCeiling: { enabled: true, monthlyInboxUsd: 1_000_000 },
           },
         },
       });

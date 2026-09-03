@@ -40,6 +40,7 @@ const TENANT_SCOPED_MODELS = new Set<string>([
   "WebhookSubscription",
   "OutboundWebhookDelivery",
   "SchedulerJob",
+  "SpendCostSnapshot",
   "DocumentTemplate",
   "IssuedDocument",
   "Experiment",

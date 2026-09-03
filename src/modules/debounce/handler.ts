@@ -1340,8 +1340,8 @@ export async function flushDebounceJob(
     logger.info(
       "debounce flush: spend ceiling reached (conv=%s used=%s ceiling=%s), dropping the burst",
       String(conversationId),
-      String(flushCeiling.usedTokens),
-      String(flushCeiling.ceilingTokens),
+      String(flushCeiling.usedUsd),
+      String(flushCeiling.ceilingUsd),
     );
     // The PERSONA's token, not an empty one. `sendMessage`, `sendPrivateNote` and `toggleStatus` are
     // all bot-token endpoints (docs/chatwoot.md), and a client built without it never reaches

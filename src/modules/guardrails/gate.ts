@@ -2,6 +2,10 @@ import type { BaseChatModel } from "@langchain/core/language_models/chat_models"
 import { verdictAskMode } from "@/graph/model-config";
 import { createChatModel } from "@/graph/models";
 import {
+  buildLangfuseHandler,
+  type LangfuseConfig,
+} from "@/graph/observability";
+import {
   UsageCapture,
   type UsagePersist,
   usageAttribution,
@@ -133,6 +137,12 @@ export interface GuardrailGateParams {
   makeModel?: typeof createChatModel;
   // Overrides the ledger sink. Tests inject; production takes the default, which writes the row.
   persistUsage?: UsagePersist;
+  // The tenant's Langfuse, for the OTHER book (#426, review round 8). The gate runs outside the
+  // graph, so the turn's own trace handler never sees its calls: the ledger had the row and the
+  // dollar ceiling, which sums Langfuse's generations, had nothing (measured: a screened turn
+  // reached Langfuse with the agent's generation and not the guardrail's). Required rather than
+  // optional so the next call site cannot forget it; null when the tenant has none.
+  langfuseCfg: LangfuseConfig | null;
 }
 
 export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
@@ -148,6 +158,23 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
       node: "guardrail",
       persist: p.persistUsage,
     });
+  // The same trace as the turn (id = turnId), as a secondary run under it: `updateRoot: false`
+  // keeps the guardrail's own input and verdict from becoming the trace's headline.
+  const trace = () =>
+    buildLangfuseHandler(p.langfuseCfg, {
+      tenantId: p.flow.tenantId,
+      threadId: p.flow.threadId ?? "",
+      conversationId: p.flow.conversationId,
+      agentId: p.flow.agentId,
+      userId: p.langfuseCfg?.tenantSlug,
+      turnId: p.flow.turnId,
+      source: p.flow.source,
+      updateRoot: false,
+    });
+  const callbacks = () => {
+    const t = trace();
+    return t ? [usage(), t] : [usage()];
+  };
   // Built on FIRST CALL, not here, and never twice: a gate is constructed for every turn and every
   // follow-up, while a direction that is switched off never reaches the model. `createChatModel`
   // throws synchronously on a configuration it cannot satisfy (an `openai-compatible` provider with
@@ -254,7 +281,7 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
       // OpenAI itself and whatever an operator points `openai-compatible` at (issue #131). Reaching
       // it through the gate is what puts the proactive path on the same footing as the reactive one.
       verdictAskMode(gr.provider),
-      [usage()],
+      callbacks(),
     );
     // A guardrail that could not run reads exactly like one that ran and approved, so without this
     // line an expired credential is silent moderation for as long as nobody notices. The turn is

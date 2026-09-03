@@ -3,10 +3,16 @@ import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import {
+  environmentForSource,
+  shutdownLangfuseClients,
+} from "@/graph/observability";
 import { runAgentTurn } from "@/graph/runtime";
 import { NON_AGENT_TURN_NODES, USAGE_NODE_IS_AGENT_TURN } from "@/graph/usage";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
+import { updateLangfuse } from "@/modules/tenant-settings/service";
+import { formatVaultRef } from "@/modules/vault/service";
 import { getVisionProvider } from "@/modules/vision/providers";
 import { extractInboundFile } from "@/modules/vision/service";
 import { readVisionConfig } from "@/modules/vision/settings";
@@ -294,6 +300,101 @@ describe.skipIf(!dbUp)("billed model calls reach the usage ledger", () => {
     expect(guard?.inboxId).toBe(inboxDbId);
   });
 
+  // THE GUARDRAIL'S CALL IN THE OTHER BOOK (review round 8). The gate hands its model `[usage()]`
+  // and nothing else, so the question is whether the turn's Langfuse handler still sees the call
+  // through LangChain's own config propagation, or whether the guardrail's spend is invisible to
+  // the dollar ceiling the way vision's was. Measured, not reasoned: the ingestion batch is read.
+  test("a screened turn reaches Langfuse with the guardrail's generation beside the agent's", async () => {
+    const tctx = { tenantId, userId: null, role: "TENANT_ADMIN" as const };
+    const lf = await suDb.vaultEntry.create({
+      data: {
+        tenantId,
+        name: "lf-guard",
+        kind: "langfuse",
+        secret: encryptJson({ publicKey: "pk-guard", secretKey: "sk-guard" }),
+        baseUrl: "https://langfuse.example.test",
+      },
+      select: { id: true },
+    });
+    await updateLangfuse(
+      tctx,
+      { enabled: true, credentialRef: formatVaultRef(lf.id) },
+      appDb,
+    );
+    const posted: Array<Record<string, unknown>> = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.endsWith("/api/public/ingestion")) {
+        const body = JSON.parse(String(init?.body ?? "{}")) as {
+          batch?: Array<Record<string, unknown>>;
+        };
+        posted.push(...(body.batch ?? []));
+        return new Response(JSON.stringify({ successes: [], errors: [] }), {
+          status: 207,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return realFetch(input, init);
+    }) as typeof fetch;
+    await seedConversation(9305);
+    const rec = { text: [] as string[] };
+    const agentModel = new UsageReportingModel(["Claro, posso agendar."]);
+    const guardModel = new UsageReportingModel([CLEAN_VERDICT], {
+      input: 31,
+      output: 5,
+    });
+    try {
+      const outcome = await runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: { ...textEvent(9305), conversationId: 9305 },
+        base: appDb,
+        deps: {
+          makeModel: ((args: { model: string }) =>
+            args.model === GUARDRAIL_MODEL
+              ? guardModel
+              : agentModel) as unknown as never,
+          makeClient: makeStub(rec),
+          checkpointer: new MemorySaver(),
+        },
+      });
+      expect(outcome).toBe("posted");
+      expect(guardModel.calls.length).toBeGreaterThan(0);
+      await shutdownLangfuseClients();
+    } finally {
+      globalThis.fetch = realFetch;
+      await updateLangfuse(
+        tctx,
+        { enabled: false, credentialRef: null },
+        appDb,
+      );
+      await suDb.vaultEntry.delete({ where: { id: lf.id } });
+    }
+    // The scripted model carries no model name, so the two generations are told apart by the usage
+    // each reported: the agent's own, and the guardrail's 31 / 5. Both under the turn's trace.
+    const updates = posted
+      .filter((e) => e.type === "generation-update")
+      .map(
+        (e) =>
+          e.body as {
+            traceId?: string;
+            usageDetails?: { input?: number; output?: number };
+          },
+      );
+    const guard = updates.find(
+      (u) => u.usageDetails?.input === 31 && u.usageDetails?.output === 5,
+    );
+    expect(guard).toBeDefined();
+    const agent = updates.find((u) => u.usageDetails?.input !== 31);
+    expect(agent).toBeDefined();
+    expect(guard?.traceId).toBe(agent?.traceId);
+  });
+
   test("an injected sink receives the guardrail row too, and the database receives neither", async () => {
     await seedConversation(9303);
     const threadId = `${tenantId}:${instanceId}:9303`;
@@ -389,6 +490,141 @@ describe.skipIf(!dbUp)("billed model calls reach the usage ledger", () => {
     expect(usage[0]?.cachedReadTokens).toBe(512);
     expect(usage[0]?.conversationId).toBe(convDbId);
     expect(usage[0]?.agentId).toBe(agentId);
+  });
+
+  // THE SECOND BOOK (review round 2 of #426). The row above is the ledger; the dollar ceiling reads
+  // Langfuse, which prices what its own generations carry, and a call made by raw fetch is a call
+  // no LangChain callback ever showed it. Without this every vision call stayed outside the month's
+  // cost, and an extraction-only playground could run under the ceiling indefinitely. The
+  // generation has to be one the poll's own filters find: the tenant's slug as `userId`, the
+  // source's environment, and the usage keyed the way the LangChain handler keys it, so one model
+  // definition prices both paths.
+  test("an extracted image reaches Langfuse as a generation the poll can cost", async () => {
+    const tctx = { tenantId, userId: null, role: "TENANT_ADMIN" as const };
+    const entry = await suDb.vaultEntry.create({
+      data: {
+        tenantId,
+        name: "lf-vision",
+        kind: "langfuse",
+        secret: encryptJson({ publicKey: "pk-vision", secretKey: "sk-vision" }),
+        baseUrl: "https://langfuse.example.test",
+      },
+      select: { id: true },
+    });
+    await updateLangfuse(
+      tctx,
+      { enabled: true, credentialRef: formatVaultRef(entry.id) },
+      appDb,
+    );
+    const slug = (
+      await suDb.tenant.findUniqueOrThrow({
+        where: { id: tenantId },
+        select: { slug: true },
+      })
+    ).slug;
+    // The SDK posts through `globalThis.fetch`; the provider is reached through `fetchImpl`, so the
+    // two never meet here.
+    const posted: Array<{
+      url: string;
+      batch: Array<Record<string, unknown>>;
+    }> = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      const url = String(input instanceof Request ? input.url : input);
+      const body = JSON.parse(String(init?.body ?? "{}")) as {
+        batch?: Array<Record<string, unknown>>;
+      };
+      posted.push({ url, batch: body.batch ?? [] });
+      return new Response(JSON.stringify({ successes: [], errors: [] }), {
+        status: 207,
+        headers: { "content-type": "application/json" },
+      });
+    }) as typeof fetch;
+    const visionFetch = (async () =>
+      new Response(
+        JSON.stringify({
+          choices: [{ message: { content: "um contrato" } }],
+          usage: {
+            prompt_tokens: 813,
+            completion_tokens: 24,
+            prompt_tokens_details: { cached_tokens: 512 },
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      )) as unknown as typeof fetch;
+    const convDbId = await seedConversation(9304);
+    const threadId = `${tenantId}:${instanceId}:9304`;
+    const turnId = crypto.randomUUID();
+    try {
+      const agentRow = await suDb.agent.findUniqueOrThrow({
+        where: { id: agentId },
+        select: { settings: true },
+      });
+      const cfg = readVisionConfig(agentRow.settings);
+      const out = await extractInboundFile({
+        tenantId,
+        instanceId,
+        conversationId: 9304,
+        messageId: 1,
+        attachmentId: 6,
+        dataUrl: "https://x/contrato.png",
+        cfg: cfg as NonNullable<typeof cfg>,
+        base: appDb,
+        deps: { makeClient: makeStub({ text: [] }), fetchImpl: visionFetch },
+        flow: {
+          tenantId,
+          turnId,
+          source: "inbox",
+          conversationId: convDbId,
+          agentId,
+          inboxId: inboxDbId,
+          threadId,
+          base: appDb,
+        },
+      });
+      expect(out?.text).toBe("um contrato");
+      // The SDK delivers on a background timer; settle it so the batch is ours to read.
+      await shutdownLangfuseClients();
+    } finally {
+      globalThis.fetch = realFetch;
+      await updateLangfuse(
+        tctx,
+        { enabled: false, credentialRef: null },
+        appDb,
+      );
+      await suDb.vaultEntry.delete({ where: { id: entry.id } });
+    }
+    expect(posted.length).toBeGreaterThan(0);
+    for (const p of posted) {
+      expect(p.url.startsWith("https://langfuse.example.test/")).toBe(true);
+    }
+    const events = posted.flatMap((p) => p.batch);
+    expect(events.find((e) => e.type === "trace-create")?.body).toMatchObject({
+      id: turnId,
+      sessionId: threadId,
+      userId: slug,
+      environment: environmentForSource("inbox"),
+    });
+    expect(
+      events.find((e) => e.type === "generation-create")?.body,
+    ).toMatchObject({
+      traceId: turnId,
+      name: "vision",
+      model: VISION_MODEL,
+      environment: environmentForSource("inbox"),
+      // `input` net of the cached subset, the subset under the handler's own key.
+      usageDetails: {
+        input: 301,
+        output: 24,
+        total: 837,
+        input_cache_read: 512,
+      },
+    });
+    // The ledger row was written too: both books, one call.
+    expect((await usageRows(threadId)).map((u) => u.node)).toEqual(["vision"]);
   });
 });
 

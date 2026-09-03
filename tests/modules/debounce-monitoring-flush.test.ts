@@ -8,6 +8,7 @@ import { followUpDedupeKey } from "@/modules/channel-redirect/followup";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { flushDebounceJob } from "@/modules/debounce/handler";
 import { debounceDedupeKey } from "@/modules/debounce/service";
+import { monthStart } from "@/modules/spend-ceiling/decide";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // A DEBOUNCE job armed for a PRODUCTION agent, flushed after the operator flipped the agent to
@@ -422,19 +423,21 @@ describe.skipIf(!dbUp)(
             ...((before.settings as object) ?? {}),
             spendCeiling: {
               enabled: true,
-              monthlyInboxTokens: 1000,
+              monthlyInboxUsd: 10,
               overCeilingMessage: "Orçamento do mês esgotado.",
             },
           },
         },
       });
-      await suDb.llmUsage.create({
+      // The month's cost as the poll would have left it (#426): the gate reads the snapshot, not
+      // the ledger.
+      await suDb.spendCostSnapshot.create({
         data: {
           tenantId,
-          model: "gpt-4o-mini",
           source: "inbox",
-          promptTokens: 1200,
-          completionTokens: 0,
+          monthStart: monthStart(new Date()),
+          costUsd: 12,
+          polledAt: new Date(),
         },
       });
       const job = await claimedJob(CONV_CEILING, 7);
@@ -468,7 +471,7 @@ describe.skipIf(!dbUp)(
         expect(ingestedIds(keys, 94_130)).toEqual([7]);
         expect(await watermarkOf(CONV_CEILING)).toBe(7);
       } finally {
-        await suDb.llmUsage.deleteMany({ where: { tenantId } });
+        await suDb.spendCostSnapshot.deleteMany({ where: { tenantId } });
         await suDb.tenant.update({
           where: { id: tenantId },
           data: { settings: (before.settings as object) ?? {} },
@@ -1514,19 +1517,21 @@ describe.skipIf(!dbUp)(
             ...((before.settings as object) ?? {}),
             spendCeiling: {
               enabled: true,
-              monthlyInboxTokens: 1000,
+              monthlyInboxUsd: 10,
               overCeilingMessage: "Orçamento do mês esgotado.",
             },
           },
         },
       });
-      await suDb.llmUsage.create({
+      // The month's cost as the poll would have left it (#426): the gate reads the snapshot, not
+      // the ledger.
+      await suDb.spendCostSnapshot.create({
         data: {
           tenantId,
-          model: "gpt-4o-mini",
           source: "inbox",
-          promptTokens: 1200,
-          completionTokens: 0,
+          monthStart: monthStart(new Date()),
+          costUsd: 12,
+          polledAt: new Date(),
         },
       });
       const job = await claimedJob(CONV_CEILING_CLIENT, 8);
@@ -1564,7 +1569,7 @@ describe.skipIf(!dbUp)(
         expect(ingestedIds(keys, 94_320)).toEqual([8]);
         expect(await watermarkOf(CONV_CEILING_CLIENT)).toBe(8);
       } finally {
-        await suDb.llmUsage.deleteMany({ where: { tenantId } });
+        await suDb.spendCostSnapshot.deleteMany({ where: { tenantId } });
         await suDb.tenant.update({
           where: { id: tenantId },
           data: { settings: (before.settings as object) ?? {} },

@@ -76,15 +76,22 @@ async function setCeiling(
   });
 }
 
-async function spend(source: string, prompt: number) {
-  await suDb.llmUsage.create({
-    data: {
+// The month's figure, as the poll would have written it (issue #426): the gate reads the snapshot,
+// never the ledger, so what a test seeds is the snapshot. The number is dollars.
+async function spend(source: string, usd: number) {
+  const monthStart = new Date(
+    Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1),
+  );
+  await suDb.spendCostSnapshot.upsert({
+    where: { tenantId_source_monthStart: { tenantId, source, monthStart } },
+    create: {
       tenantId,
-      model: "gpt-4o-mini",
       source,
-      promptTokens: prompt,
-      completionTokens: 0,
+      monthStart,
+      costUsd: usd,
+      polledAt: new Date(),
     },
+    update: { costUsd: usd, polledAt: new Date() },
   });
 }
 
@@ -180,7 +187,7 @@ describe.skipIf(!dbUp)("the spend ceiling on the playground and vision", () => {
   });
 
   beforeEach(async () => {
-    await suDb.llmUsage.deleteMany({ where: { tenantId } });
+    await suDb.spendCostSnapshot.deleteMany({ where: { tenantId } });
     // The warning's window is in-process and per (tenant, source, month), so a test that ran before
     // this one could otherwise hold it and turn a missing line into a passing assertion.
     clearContactAuthState();
@@ -188,7 +195,7 @@ describe.skipIf(!dbUp)("the spend ceiling on the playground and vision", () => {
 
   afterAll(async () => {
     if (!dbUp || tenantId === 0n) return;
-    await suDb.llmUsage.deleteMany({ where: { tenantId } });
+    await suDb.spendCostSnapshot.deleteMany({ where: { tenantId } });
     await clearFlowLog(suDb, { tenantId });
     await suDb.tenant.deleteMany({ where: { id: tenantId } });
     await appDb.$disconnect();
@@ -196,7 +203,7 @@ describe.skipIf(!dbUp)("the spend ceiling on the playground and vision", () => {
   });
 
   test("a playground turn over its ceiling never reaches the model", async () => {
-    await setCeiling({ enabled: true, monthlyPlaygroundTokens: 1000 });
+    await setCeiling({ enabled: true, monthlyPlaygroundUsd: 1000 });
     await spend("playground", 1200);
     // The KEY is the assertion, not the class: `runPlaygroundTurn` throws AppError for half a dozen
     // reasons (no agent, no credential, a model that will not build), so a test that only checked
@@ -218,7 +225,7 @@ describe.skipIf(!dbUp)("the spend ceiling on the playground and vision", () => {
   // to spare answers 404, so a 429 here reports a refusal that did not happen and points the
   // operator at their budget over a selector that was simply wrong.
   test("a playground turn on a missing agent is not found, not refused", async () => {
-    await setCeiling({ enabled: true, monthlyPlaygroundTokens: 1000 });
+    await setCeiling({ enabled: true, monthlyPlaygroundUsd: 1000 });
     await spend("playground", 1200);
     expect(
       await refusal(() =>
@@ -247,7 +254,7 @@ describe.skipIf(!dbUp)("the spend ceiling on the playground and vision", () => {
   });
 
   test("a simulated follow-up over the ceiling never reaches the model", async () => {
-    await setCeiling({ enabled: true, monthlyPlaygroundTokens: 1000 });
+    await setCeiling({ enabled: true, monthlyPlaygroundUsd: 1000 });
     await spend("playground", 1200);
     expect(
       await refusal(() =>
@@ -267,8 +274,8 @@ describe.skipIf(!dbUp)("the spend ceiling on the playground and vision", () => {
   test("a blown INBOX ceiling does not close the playground", async () => {
     await setCeiling({
       enabled: true,
-      monthlyInboxTokens: 100,
-      monthlyPlaygroundTokens: 1_000_000,
+      monthlyInboxUsd: 100,
+      monthlyPlaygroundUsd: 1_000_000,
     });
     await spend("inbox", 999_999);
     const res = await runPlaygroundTurn({
@@ -290,8 +297,8 @@ describe.skipIf(!dbUp)("the spend ceiling on the playground and vision", () => {
   test("a blown PLAYGROUND ceiling does not close the inbox", async () => {
     await setCeiling({
       enabled: true,
-      monthlyInboxTokens: 1_000_000,
-      monthlyPlaygroundTokens: 100,
+      monthlyInboxUsd: 1_000_000,
+      monthlyPlaygroundUsd: 100,
     });
     await spend("playground", 999_999);
     const { spendCeilingVerdict } = await import(
@@ -308,7 +315,7 @@ describe.skipIf(!dbUp)("the spend ceiling on the playground and vision", () => {
   // Vision asks BEFORE IT SPENDS, which is what this proves: the provider seam throws, so an
   // extraction that got as far as the billed call fails the test.
   test("vision over the ceiling never calls the provider", async () => {
-    await setCeiling({ enabled: true, monthlyInboxTokens: 1000 });
+    await setCeiling({ enabled: true, monthlyInboxUsd: 1000 });
     await spend("inbox", 1200);
     const s = visionStub();
     const result = await extractInboundFile({
@@ -341,7 +348,7 @@ describe.skipIf(!dbUp)("the spend ceiling on the playground and vision", () => {
   // type — answering `spend_ceiling` in a spent one names a cause that was not operative, and sends
   // the operator to look at their budget over a file that was never readable.
   test("an unsupported attachment over the ceiling is skipped as unsupported, not as spend", async () => {
-    await setCeiling({ enabled: true, monthlyInboxTokens: 1000 });
+    await setCeiling({ enabled: true, monthlyInboxUsd: 1000 });
     await spend("inbox", 1200);
     const turnId = `vision-unsupported-${process.pid}`;
     const s = visionStub("application/zip");
@@ -385,7 +392,7 @@ describe.skipIf(!dbUp)("the spend ceiling on the playground and vision", () => {
   // one that only appears at the end of the month. The support question is settled first, and only
   // then the money.
   test("an unsupported file over the ceiling is unsupported, not refused", async () => {
-    await setCeiling({ enabled: true, monthlyPlaygroundTokens: 1000 });
+    await setCeiling({ enabled: true, monthlyPlaygroundUsd: 1000 });
     await spend("playground", 1200);
     const res = await extractPlaygroundFile({
       ctx,
@@ -424,7 +431,7 @@ describe.skipIf(!dbUp)("the spend ceiling on the playground and vision", () => {
   // with `spend_ceiling` as the reason, which is the stage the reader filters by when the question
   // is why an attachment was never read.
   test("vision refused by the ceiling writes its own line and not the gate's", async () => {
-    await setCeiling({ enabled: true, monthlyInboxTokens: 1000 });
+    await setCeiling({ enabled: true, monthlyInboxUsd: 1000 });
     await spend("inbox", 1200);
     const turnId = `vision-ceiling-${process.pid}`;
     const s = visionStub();
@@ -473,7 +480,7 @@ describe.skipIf(!dbUp)("the spend ceiling on the playground and vision", () => {
   test("vision past the warning fraction writes the warn line the gate never gets to", async () => {
     await setCeiling({
       enabled: true,
-      monthlyInboxTokens: 1000,
+      monthlyInboxUsd: 1000,
       warnAtPercent: 80,
     });
     await spend("inbox", 900);
@@ -521,7 +528,7 @@ describe.skipIf(!dbUp)("the spend ceiling on the playground and vision", () => {
   // green with the gate refusing everything. The billed call is the thing the ceiling stands in
   // front of, so that is what a tenant under its ceiling has to get to.
   test("vision under the ceiling is not stopped by the gate", async () => {
-    await setCeiling({ enabled: true, monthlyInboxTokens: 1_000_000 });
+    await setCeiling({ enabled: true, monthlyInboxUsd: 1_000_000 });
     await spend("inbox", 10);
     const s = visionStub();
     expect(

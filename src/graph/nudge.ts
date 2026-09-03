@@ -714,8 +714,8 @@ export async function runAgentNudge(
     logger.info(
       "nudge: spend ceiling reached (conv=%s used=%s ceiling=%s) — nothing was sent",
       String(conversationId),
-      String(ceiling.usedTokens),
-      String(ceiling.ceilingTokens),
+      String(ceiling.usedUsd),
+      String(ceiling.ceilingUsd),
     );
     return "over-ceiling";
   }
@@ -1159,6 +1159,7 @@ export async function runAgentNudge(
       makeModel: params.deps?.makeModel,
       // Same sink as this turn's own callbacks (see the buildCallbacks call above).
       persistUsage: params.deps?.persistUsage,
+      langfuseCfg: cfg.langfuseCfg,
     })("output", text);
 
   // What the transfer promised the customer, delivered on the way OUT of the turn — whatever the way

@@ -57,6 +57,10 @@ export const JOB_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   // per tenant — the arming it may do costs nothing, and the flush that follows is a DEBOUNCE job
   // that gets claimed on its own lane with its own budget.
   DELIVERY_SWEEP: "shared",
+  // Shared, and neither reason applies: one HTTP round trip to Langfuse per tenant per period, at
+  // a cadence of minutes by design (issue #426). The ceiling's gate reads the row it writes, so a
+  // late poll costs staleness, which the row reports, and never a customer's turn.
+  SPEND_CEILING_POLL: "shared",
   // Shared, and neither reason applies. Cadence: the message it answers has been unanswered for at
   // least the sweep's staleness window, so a wait of one shared tick is not what the customer feels.
   // Budget: it does spend the model, but the cap that needs is the shared lane's own provider
@@ -106,6 +110,8 @@ export const JOB_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
   // true, and that is exactly why answering is not done here (issue #295): the sweep arms a
   // DELIVERY_RECOVERY per row it declares lost, and that kind carries the spend.
   DELIVERY_SWEEP: false,
+  // It asks Langfuse, not a model provider: no tokens, no embeddings.
+  SPEND_CEILING_POLL: false,
   // It runs the delivery path, which runs a real agent turn: a model call, and whatever tools the
   // turn decides to use. The whole reason it is a kind of its own rather than work the sweep does
   // inline.
@@ -148,6 +154,7 @@ export const JOB_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
   MEMORY_COMPACT: false,
   INGEST_MESSAGE: true,
   DELIVERY_SWEEP: false,
+  SPEND_CEILING_POLL: false,
   // Same reason as INGEST_MESSAGE, and the same shape: the key names ONE ledger row — it has to, or
   // a second stranded delivery would overwrite the first — so nothing ever reuses the row and the
   // count is bounded by how many deliveries have ever been stranded. What the record of the work is
@@ -188,6 +195,9 @@ export const JOB_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
   INGEST_MESSAGE: true,
   // One row per tenant, re-armed forever. Bounded by the install's tenant count, not by traffic.
   DELIVERY_SWEEP: false,
+  // One row per tenant with the ceiling on, re-armed forever. Bounded by the install's tenant
+  // count, not by traffic.
+  SPEND_CEILING_POLL: false,
   // One row per DELIVERY the sweep declared lost, and a single sweep pass can declare a whole batch
   // of them at once — the deploy that stranded them stranded every delivery that was in flight. They
   // are armed for `now`, so they are also the oldest rows, which is the exact shape that fills every
@@ -269,6 +279,10 @@ export const JOB_DEATH_LEVEL: Record<SchedulerJobKind, FlowLevel> = {
   // Self-rescheduling: its death is stranded deliveries going unreported from then on, which is the
   // silence #282 had just finished closing.
   DELIVERY_SWEEP: "error",
+  // Self-rescheduling, and the handler never throws (a failing Langfuse is written on the row),
+  // so a death here is the loop itself gone: the ceiling keeps deciding on a figure frozen at the
+  // last poll, under-refusing by everything spent since, and nothing on the console moves.
+  SPEND_CEILING_POLL: "error",
   // The one `warn` here, and it is the rule above applied rather than an exception to it: the
   // operator has their own way back to this work, twice over. The sweep already announced this exact
   // delivery at `error` when it declared the row DEAD, and the row is still in the

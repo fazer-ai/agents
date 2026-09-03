@@ -6,9 +6,12 @@ import { AppError } from "@/lib/errors";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { auditMutation } from "@/modules/audit/service";
 import { unprintableProblem } from "@/modules/documents/printable";
+import { syncTenantSpendPoll } from "@/modules/spend-ceiling/arm";
 import {
   readSpendCeilingConfig,
   type SpendCeilingConfig,
+  type SpendCeilingLegacyStored,
+  type SpendCeilingStored,
   spendCeilingSettingsSchema,
 } from "@/modules/spend-ceiling/settings";
 import {
@@ -221,7 +224,8 @@ async function patchBlock<
     | EmbeddingSettings
     | LangfuseSettings
     | CompanySettings
-    | SpendCeilingConfig,
+    | SpendCeilingStored
+    | SpendCeilingLegacyStored,
 >(
   ctx: TenantContext,
   base: PrismaClient,
@@ -380,7 +384,7 @@ export async function updateLangfuse(
     }
   }
 
-  return patchBlock(
+  const next = await patchBlock(
     ctx,
     base,
     "langfuse",
@@ -415,6 +419,10 @@ export async function updateLangfuse(
       });
     },
   );
+  // A Langfuse save changes what the spend ceiling's poll would find (#426, review round 15): a
+  // credential added or removed is learned now, not at the next period.
+  await syncTenantSpendPoll(requireTenantId(ctx), base);
+  return next;
 }
 
 export type CompanyUpdateInput = Partial<
@@ -557,7 +565,7 @@ export async function updateSpendCeiling(
   patch: SpendCeilingUpdateInput,
   base: PrismaClient = basePrisma,
 ): Promise<SpendCeilingConfig> {
-  return patchBlock(
+  const next = await patchBlock(
     ctx,
     base,
     "spendCeiling",
@@ -579,8 +587,8 @@ export async function updateSpendCeiling(
         const b = readSpendCeilingConfig(raw);
         return {
           enabled: b.enabled,
-          monthlyInboxTokens: b.monthlyInboxTokens,
-          monthlyPlaygroundTokens: b.monthlyPlaygroundTokens,
+          monthlyInboxUsd: b.monthlyInboxUsd,
+          monthlyPlaygroundUsd: b.monthlyPlaygroundUsd,
           warnAtPercent: b.warnAtPercent,
           handoffEnabled: b.handoffEnabled,
           noticeCooldownSeconds: b.noticeCooldownSeconds,
@@ -594,10 +602,37 @@ export async function updateSpendCeiling(
         };
       }),
     },
-    (raw) => {
+    (raw): SpendCeilingStored | SpendCeilingLegacyStored => {
       const current = readSpendCeilingConfig(raw);
+      // What is stored is the schema's output: the dollar fields and not the token ones, which is
+      // how a save in dollars retires a block written in tokens (`legacyTokens`).
       // not-caller-input: the STORED block merged with the patch, so a failure here is not necessarily the caller's
-      return spendCeilingSettingsSchema.parse({ ...current, ...patch });
+      const stored = spendCeilingSettingsSchema.parse({ ...current, ...patch });
+      // ...unless the patch names no dollar field and the block is still in tokens: the console saves
+      // the whole block, but the API takes partial patches, and an operator changing only the
+      // customer's sentence has not seen the new unit. Merging against the synthesized zeroes would
+      // store a dollar block and drop the one warning that the old ceiling is no longer enforced
+      // (review round 1). The token keys stay until a patch names a dollar figure.
+      const touchesUsd =
+        patch.monthlyInboxUsd !== undefined ||
+        patch.monthlyPlaygroundUsd !== undefined;
+      if (current.legacyTokens && !touchesUsd) {
+        const {
+          monthlyInboxUsd: _inbox,
+          monthlyPlaygroundUsd: _playground,
+          ...rest
+        } = stored;
+        return {
+          ...rest,
+          monthlyInboxTokens: current.legacyTokens.inbox,
+          monthlyPlaygroundTokens: current.legacyTokens.playground,
+        };
+      }
+      return stored;
     },
   );
+  // The poll that keeps the figure fresh follows the switch: armed while the ceiling is on, cancelled
+  // when it is off (issue #426). Best-effort inside, so it never fails the save.
+  await syncTenantSpendPoll(requireTenantId(ctx), base);
+  return readSpendCeilingConfig({ spendCeiling: next });
 }

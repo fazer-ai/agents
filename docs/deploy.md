@@ -80,7 +80,7 @@ See `.env.example` for the full list. Deploy-critical:
 - `LANGGRAPH_DATABASE_URL` — checkpointer pool; use the runtime (non-superuser) role, **not** the migration URL (a superuser checkpointer pool would ignore any future RLS on `langgraph`).
 - `JWT_SECRET`, `ENCRYPTION_KEY` — strong unique secrets. Rotating `ENCRYPTION_KEY` invalidates all encrypted-at-rest data (vault, Chatwoot tokens).
 - `PUBLIC_URL`, `CORS_ORIGIN`, `PORT`.
-- Langfuse is **per-tenant** (a `langfuse` vault entry), never a global env var. To self-host the Langfuse instance itself (optional companion service), use [`deploy/langfuse/`](../deploy/langfuse/): it bundles the **MinIO blob storage that v3 ingestion requires** — the upstream one-click omits it, so reads (and the credential "test") pass while every ingest 500s and traces silently vanish. Coolify (magic vars) + Portainer/generic flavors and a verify-ingestion recipe are in its README.
+- Langfuse is **per-tenant** (a `langfuse` vault entry), never a global env var. To self-host the Langfuse instance itself (optional companion service), use [`.claude/skills/agents-onboarding/templates/langfuse/`](../.claude/skills/agents-onboarding/templates/langfuse/): it bundles the **MinIO blob storage that v3 ingestion requires** — the upstream one-click omits it, so reads (and the credential "test") pass while every ingest 500s and traces silently vanish. Coolify (magic vars) + Portainer/generic flavors and a verify-ingestion recipe are in its README.
 
 ## Platforms
 

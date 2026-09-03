@@ -21,7 +21,7 @@ import {
 import { spendCeilingUsage } from "@/modules/spend-ceiling/service";
 import {
   SPEND_CEILING_NOTICE_COOLDOWN_MAX_SECONDS,
-  SPEND_CEILING_TOKENS_MAX,
+  SPEND_CEILING_USD_MAX,
 } from "@/modules/spend-ceiling/settings";
 import {
   getTenantSettings,
@@ -182,8 +182,8 @@ export const tenantSettingsController = new Elysia({
     {
       requireRole: "TENANT_ADMIN",
       detail: doc(
-        "Get token-ceiling usage",
-        "Tokens spent this calendar month per traffic source, against the configured ceiling. Returned for both sources whether or not a ceiling is set, so the number is available to whoever has to pick one.",
+        "Get spend-ceiling usage",
+        "Dollars spent this calendar month per traffic source (as Langfuse last costed them), against the configured ceiling, with the snapshot's health (when it was last refreshed, whether the poll is failing) and the reconciliation against the local ledger (calls Langfuse priced at zero). Returned for both sources whether or not a ceiling is set, so the number is available to whoever has to pick one.",
       ),
       response: errors(401, 403, 404),
     },
@@ -201,20 +201,20 @@ export const tenantSettingsController = new Elysia({
       requireRole: "TENANT_ADMIN",
       body: t.Object({
         enabled: t.Optional(
-          t.Boolean({ description: "Whether the token ceiling is enforced." }),
+          t.Boolean({ description: "Whether the spend ceiling is enforced." }),
         ),
-        monthlyInboxTokens: t.Optional(
-          t.Integer({
+        monthlyInboxUsd: t.Optional(
+          t.Number({
             minimum: 0,
-            maximum: SPEND_CEILING_TOKENS_MAX,
+            maximum: SPEND_CEILING_USD_MAX,
             description:
-              "Tokens (prompt + completion) allowed per calendar month for customer traffic. 0 = no ceiling on this half.",
+              "Dollars (USD, as Langfuse costs the month's calls) allowed per calendar month for customer traffic, rounded to the cent. 0 = no ceiling on this half.",
           }),
         ),
-        monthlyPlaygroundTokens: t.Optional(
-          t.Integer({
+        monthlyPlaygroundUsd: t.Optional(
+          t.Number({
             minimum: 0,
-            maximum: SPEND_CEILING_TOKENS_MAX,
+            maximum: SPEND_CEILING_USD_MAX,
             description:
               "The same, for playground traffic. Kept apart so testing cannot silence the agent for customers.",
           }),
@@ -250,7 +250,7 @@ export const tenantSettingsController = new Elysia({
       }),
       detail: doc(
         "Update token-ceiling settings",
-        "Updates the tenant's monthly token ceiling.",
+        "Updates the tenant's monthly spend ceiling.",
       ),
       response: errors(400, 401, 403, 404, 422),
     },

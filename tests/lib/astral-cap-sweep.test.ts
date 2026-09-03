@@ -396,6 +396,8 @@ const BARE_SLICES: Record<
   // The idempotency key's tail is a hex digest.
   "src/graph/tools/documents.ts": [1, "ascii"],
   "src/graph/tools/mcp.ts": [5, "ascii"],
+  // The spend ceiling's project key is the head of a hex digest (#426).
+  "src/modules/spend-ceiling/poll.ts": [1, "ascii"],
   // `withTrailingObjectWrapped`: the one line that splits the snippet at the brace indexes its own
   // lexer found, to put parentheses around a trailing object literal. `{` and `}` are ASCII, so
   // neither side of a cut can be half of a surrogate pair; nothing is dropped, the three pieces

@@ -4089,25 +4089,28 @@ describe.skipIf(!dbUp)("debounce", () => {
             ...(before.settings as object),
             spendCeiling: {
               enabled: true,
-              monthlyInboxTokens: 1000,
+              monthlyInboxUsd: 1000,
               overCeilingMessage: CEILING_COPY,
             },
           },
         },
       });
-      await suDb.llmUsage.create({
+      // The month's figure as the poll would have written it: over the ceiling below (#426).
+      await suDb.spendCostSnapshot.create({
         data: {
           tenantId,
-          model: "gpt-4o-mini",
           source: "inbox",
-          promptTokens: 1200,
-          completionTokens: 0,
+          monthStart: new Date(
+            Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1),
+          ),
+          costUsd: 1200,
+          polledAt: new Date(),
         },
       });
     });
 
     afterAll(async () => {
-      await suDb.llmUsage.deleteMany({ where: { tenantId } });
+      await suDb.spendCostSnapshot.deleteMany({ where: { tenantId } });
       await suDb.tenant.update({
         where: { id: tenantId },
         data: { settings: previousTenantSettings as object },
@@ -4153,7 +4156,7 @@ describe.skipIf(!dbUp)("debounce", () => {
       // digits go through `toLocaleString`, and pinning them here would pin the runner's ICU too.
       expect(notes.length).toBe(1);
       expect(notes[0]?.[0]).toBe(910);
-      expect(notes[0]?.[1]).toContain("limite de tokens do mês foi atingido");
+      expect(notes[0]?.[1]).toContain("limite de gasto do mês foi atingido");
       expect(notes[0]?.[1]).toContain("aberta para atendimento humano");
       // The ORDER, which is load-bearing in both directions: the copy leaves before the open,
       // because after it the conversation is no longer the bot's and the fence would rightly
@@ -4170,30 +4173,29 @@ describe.skipIf(!dbUp)("debounce", () => {
     // bot's attribution and puts the conversation back in the routing queue, so applying it to a
     // conversation an agent just took pulls it out of their hands.
     //
-    // The window is opened where it really is — inside the ledger read — by an extended client that
-    // flips the assignee the first time the ceiling's own query runs. That is the same seam the
+    // The window is opened where it really is — inside the snapshot read — by an extended client
+    // that flips the assignee the first time the ceiling's own query runs. That is the same seam the
     // fail-open test uses, and it is the only one that reproduces the ordering without a sleep.
     test("a human who claims the conversation during the read keeps it", async () => {
       await seedConversation(912);
       let flipped = 0;
       const raced = appDb.$extends({
         query: {
-          async $allOperations({ operation, args, query }) {
-            if (operation === "$queryRaw" && flipped === 0) {
-              const sql = ((args as { strings?: string[] }).strings ?? []).join(
-                " ",
-              );
-              if (sql.includes("FROM llm_usage")) {
-                flipped += 1;
-                await suDb.conversation.updateMany({
-                  where: {
-                    tenantId,
-                    chatwootInstanceId: instanceId,
-                    chatwootConversationId: 912,
-                  },
-                  data: { assigneeType: "User", assigneeId: 4242 },
-                });
-              }
+          async $allOperations({ model, operation, args, query }) {
+            if (
+              model === "SpendCostSnapshot" &&
+              operation === "findUnique" &&
+              flipped === 0
+            ) {
+              flipped += 1;
+              await suDb.conversation.updateMany({
+                where: {
+                  tenantId,
+                  chatwootInstanceId: instanceId,
+                  chatwootConversationId: 912,
+                },
+                data: { assigneeType: "User", assigneeId: 4242 },
+              });
             }
             return query(args);
           },
@@ -4233,7 +4235,7 @@ describe.skipIf(!dbUp)("debounce", () => {
       // exactly where the reason for the silence still needs saying. It reports NO handoff, because
       // none happened.
       expect(notes.length).toBe(1);
-      expect(notes[0]?.[1]).toContain("limite de tokens do mês foi atingido");
+      expect(notes[0]?.[1]).toContain("limite de gasto do mês foi atingido");
       expect(notes[0]?.[1]).not.toContain("aberta para atendimento humano");
       // ...and the burst still counts as handled, exactly as it does when the gate was already
       // closed on the way in: the ceiling decided about the TENANT, and that holds either way.
@@ -4487,7 +4489,7 @@ describe.skipIf(!dbUp)("debounce", () => {
             ...(previousTenantSettings as object),
             spendCeiling: {
               enabled: true,
-              monthlyInboxTokens: 1000,
+              monthlyInboxUsd: 1000,
               overCeilingMessage: CEILING_COPY,
               handoffEnabled: false,
             },

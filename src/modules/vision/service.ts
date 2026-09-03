@@ -339,8 +339,8 @@ export async function extractInboundFile(
     logger.info(
       "vision: spend ceiling reached (tenant=%s used=%s ceiling=%s) — the attachment was not read",
       String(params.tenantId),
-      String(ceiling.usedTokens),
-      String(ceiling.ceilingTokens),
+      String(ceiling.usedUsd),
+      String(ceiling.ceilingUsd),
     );
     return skip("spend_ceiling");
   }

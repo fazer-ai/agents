@@ -15,18 +15,22 @@ import type { SpendCeilingConfig } from "./settings";
 // Operator-facing note for a conversation the spend ceiling silenced (pt-BR, the same register as
 // the contact-auth and out-of-hours notices). The numbers are the point: an operator who reads only
 // this note has to be able to tell "the month's budget ran out" from "the agent broke", and the two
-// look identical from inside a Chatwoot conversation. The figure is tokens, which is what the
+// look identical from inside a Chatwoot conversation. The figure is dollars, which is what the
 // ceiling is denominated in and what the console shows, so the note and the screen never disagree.
 export function spendCeilingNoteText(
-  verdict: { usedTokens: number; ceilingTokens: number | null },
+  verdict: { usedUsd: number; ceilingUsd: number | null },
   handedOff: boolean,
 ): string {
   const handoffLine = handedOff
     ? " A conversa foi aberta para atendimento humano."
     : "";
-  const used = verdict.usedTokens.toLocaleString("pt-BR");
-  const ceiling = (verdict.ceilingTokens ?? 0).toLocaleString("pt-BR");
-  return `O agente não respondeu: o limite de tokens do mês foi atingido (${used} de ${ceiling}). O limite fica em Configurações e é reiniciado no primeiro dia do mês.${handoffLine}`;
+  const usd = new Intl.NumberFormat("pt-BR", {
+    style: "currency",
+    currency: "USD",
+  });
+  const used = usd.format(verdict.usedUsd);
+  const ceiling = usd.format(verdict.ceilingUsd ?? 0);
+  return `O agente não respondeu: o limite de gasto do mês foi atingido (${used} de ${ceiling}). O limite fica em Configurações e é reiniciado no primeiro dia do mês.${handoffLine}`;
 }
 
 export interface SpendCeilingAnnounceParams {
@@ -36,7 +40,7 @@ export interface SpendCeilingAnnounceParams {
   // just spoke and a flush that fires two seconds later are one notice about one conversation.
   conversationRowId: bigint;
   cfg: SpendCeilingConfig;
-  verdict: { usedTokens: number; ceilingTokens: number | null };
+  verdict: { usedUsd: number; ceilingUsd: number | null };
   // WHICH REFUSAL this is, so two deliveries of one message coalesce and two messages do not. The
   // Chatwoot message id where there is one; the burst's last id for a debounce flush, which is the
   // same thing one level up (the burst is what was refused, and its last id names it).

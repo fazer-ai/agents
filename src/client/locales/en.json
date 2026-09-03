@@ -472,7 +472,7 @@
       "gateClosed": "A human owns this conversation; return it to the AI first.",
       "noReply": "The AI produced no reply.",
       "notAuthorized": "The authorization endpoint did not clear this contact, so the AI did not reply.",
-      "overCeiling": "This month's token ceiling has been reached, so the AI did not reply. Raise it in Settings or wait for the next month.",
+      "overCeiling": "This month's spend ceiling has been reached, so the AI did not reply. Raise it in Settings or wait for the next month.",
       "posted": "The AI replied.",
       "postedPartial": "The AI replied, but part of the answer did not reach the customer."
     },
@@ -2135,28 +2135,38 @@
   "spendCeiling": {
     "cooldown": "Notice cooldown (seconds)",
     "cooldownHint": "How long before the same conversation is told again. The ceiling itself is checked on every message regardless.",
-    "desc": "Stop spending once a calendar month reaches a token budget. Customer traffic and the playground are counted apart, so testing can never silence the agent for customers.",
+    "desc": "Stop spending once a calendar month reaches a dollar budget, as Langfuse costs the month's calls. Customer traffic and the playground are counted apart, so testing can never silence the agent for customers.",
     "enabled": "Enforce the ceiling",
     "handoff": "Hand refused conversations to a human",
-    "inboxTokens": "Monthly ceiling: customers",
+    "inboxUsd": "Monthly ceiling: customers (USD)",
+    "legacy": "This ceiling was set in tokens ({{inbox}} for customers, {{playground}} for the playground) before the unit changed to dollars, and tokens do not convert. It is not enforced until you set it in dollars below.",
     "message": "Message to the customer",
     "messageHint": "Sent once per conversation while the ceiling is reached. Leave it empty to say nothing.",
-    "playgroundTokens": "Monthly ceiling: playground",
-    "saved": "Token ceiling saved.",
-    "saveError": "Could not save the token ceiling.",
+    "playgroundUsd": "Monthly ceiling: playground (USD)",
+    "saved": "Spend ceiling saved.",
+    "saveError": "Could not save the spend ceiling.",
     "source": {
       "inbox": "Customer conversations",
       "playground": "Playground (your own tests)"
     },
-    "title": "Token ceiling",
-    "tokensHint": "Tokens (prompt + completion) per calendar month. 0 means no ceiling on this half.",
+    "title": "Spend ceiling",
     "usage": {
+      "coverage": "Langfuse priced {{costed}} of the {{ledger}} calls this month, so the figure undercounts.",
       "error": "Could not read the usage.",
-      "noCeiling": "{{used}} tokens (no ceiling)",
-      "ofCeiling": "{{used}} of {{ceiling}} tokens",
-      "title": "Spent this month"
+      "langfuseMissing": "Langfuse is not configured for this tenant, so the month's cost cannot be read. Configure it in the Langfuse card.",
+      "noCeiling": "{{used}} (no ceiling)",
+      "ofCeiling": "{{used}} of {{ceiling}}",
+      "pollFailing": "Reading the cost from Langfuse has been failing since {{when}}: {{error}}",
+      "stale": "Not refreshed since {{when}}. The last figure stands, and it can only undercount.",
+      "title": "Spent this month",
+      "unenforced": "Not enforced on this half: the last reading found no Langfuse, so calls go through until it is configured and read again.",
+      "unpolled": "The month's cost has not been read yet: calls go through until the first reading lands.",
+      "unpriced": "No price in Langfuse for: {{models}}",
+      "updated": "Refreshed {{when}}"
     },
-    "warnAt": "Warn at",
+    "usdHint": "US dollars per calendar month, as Langfuse costs the calls. 0 means no ceiling on this half.",
+    "usdInvalid": "Enter zero or a positive amount in dollars.",
+    "warnAt": "Warn at (%)",
     "warnAtHint": "Percentage of a ceiling that triggers a warning on your alert channels, so you hear about it before the agent goes quiet. 0 disables the warning."
   },
   "strongConfirm": {

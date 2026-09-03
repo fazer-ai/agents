@@ -153,7 +153,7 @@ describe.skipIf(!dbUp)("the tenant family records from its services", () => {
       ctx(),
       {
         enabled: true,
-        monthlyInboxTokens: 250_000,
+        monthlyInboxUsd: 250,
         overCeilingMessage:
           "Voltamos amanhã, e alguém da equipe continua por aqui.",
       },
@@ -165,11 +165,11 @@ describe.skipIf(!dbUp)("the tenant family records from its services", () => {
     ]);
     expect(all[0]?.before).toMatchObject({
       enabled: false,
-      monthlyInboxTokens: 0,
+      monthlyInboxUsd: 0,
     });
     expect(all[0]?.after).toMatchObject({
       enabled: true,
-      monthlyInboxTokens: 250_000,
+      monthlyInboxUsd: 250,
     });
     // The sentence itself is not in the row, on either side.
     expect(projectionText(all)).not.toContain("Voltamos amanhã");

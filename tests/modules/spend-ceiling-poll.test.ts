@@ -685,6 +685,65 @@ describe.skipIf(!dbUp)("the spend ceiling poll", () => {
     ).toBe(at(3).toISOString());
   });
 
+  // THE ROW'S HEALTH NEVER MOVES BACKWARDS (review round 12, the mirror of round 11). An older
+  // poll succeeding after a newer one failed keeps the newer failure and the later `polledAt`;
+  // its figure still lands as a floor. A success that began after the failure clears it.
+  test("an older success does not move the row's health backwards", async () => {
+    const down = langfuseStub({ [INBOX_ENV]: 500, [PLAY_ENV]: 500 });
+    await pollTenantSpend(tenantA, {
+      base: appDb,
+      fetchFn: langfuseStub(rows(3, 3)).fetchFn,
+      now: at(2),
+    });
+    await pollTenantSpend(tenantA, {
+      base: appDb,
+      fetchFn: down.fetchFn,
+      now: at(3),
+    });
+    // The older success: its figure lands as a floor, its instant and its clean pair do not.
+    await pollTenantSpend(tenantA, {
+      base: appDb,
+      fetchFn: langfuseStub(rows(5, 5)).fetchFn,
+      now: at(1),
+    });
+    const row = await snapshot(tenantA, "inbox");
+    expect(Number(row?.costUsd)).toBe(5);
+    expect(row?.polledAt?.toISOString()).toBe(at(2).toISOString());
+    expect(row?.pollError).toContain("500");
+    expect(row?.pollFailedAt?.toISOString()).toBe(at(3).toISOString());
+    await pollTenantSpend(tenantA, {
+      base: appDb,
+      fetchFn: langfuseStub(rows(6, 6)).fetchFn,
+      now: at(4),
+    });
+    const cleared = await snapshot(tenantA, "inbox");
+    expect(cleared?.pollError).toBeNull();
+    expect(cleared?.pollFailedAt).toBeNull();
+    expect(cleared?.polledAt?.toISOString()).toBe(at(4).toISOString());
+  });
+
+  // AND A DROPPED FAILURE IS NOT ANNOUNCED (review round 12): a warning for a window that has
+  // already recovered would page the channels and spend the six hours the next real one needs.
+  test("a failure dropped as older than the row's last success is not announced", async () => {
+    await pollTenantSpend(tenantA, {
+      base: appDb,
+      fetchFn: langfuseStub(rows(3, 3)).fetchFn,
+      now: at(2),
+    });
+    const down = langfuseStub({ [INBOX_ENV]: 500, [PLAY_ENV]: 500 });
+    await pollTenantSpend(tenantA, {
+      base: appDb,
+      fetchFn: down.fetchFn,
+      now: at(1),
+    });
+    expect(
+      // flowlog-scope: tenant-wide (the file clears each tenant's rows before every case)
+      await flowLogRows(suDb, {
+        where: { tenantId: tenantA, stage: "spend_ceiling" },
+      }),
+    ).toHaveLength(0);
+  });
+
   // THE INSTANT A FAILURE STREAK BEGAN (review round 5). The console says "failing since", so the
   // row has to keep the first failure of the streak, not the latest attempt; a success clears it,
   // and the next failure starts a new one.

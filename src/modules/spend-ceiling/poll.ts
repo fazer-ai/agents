@@ -317,9 +317,13 @@ async function writeSuccess(
         carriedTracedCalls: carried.traced,
         carriedCostedCalls: carried.costed,
         carriedUnpricedModels: carried.unpriced,
-        polledAt: at,
-        pollError: null,
-        pollFailedAt: null,
+        // The row's health never moves backwards (review round 12): an older poll succeeding
+        // after a newer one failed keeps the newer failure and the later `polledAt`. Its figure
+        // still lands, as a floor, under the max above.
+        polledAt: prev?.polledAt && prev.polledAt > at ? prev.polledAt : at,
+        ...(prev?.pollFailedAt && prev.pollFailedAt > at
+          ? { pollError: prev.pollError, pollFailedAt: prev.pollFailedAt }
+          : { pollError: null, pollFailedAt: null }),
       };
       await db.spendCostSnapshot.upsert({
         where: key,
@@ -351,11 +355,11 @@ async function writeFailure(
   month: Date,
   error: string,
   at: Date,
-): Promise<void> {
+): Promise<boolean> {
   const key = {
     tenantId_source_monthStart: { tenantId, source, monthStart: month },
   };
-  await withEntityLock(
+  return withEntityLock(
     db,
     snapshotLockKey(tenantId, source, month),
     async () => {
@@ -367,7 +371,7 @@ async function writeFailure(
       // two polls can overlap, and the older one finishing last would otherwise write its
       // failure, or its not-configured sentinel, over a figure the newer one had just refreshed,
       // and the gate would open on it until the next period. `at` is the instant the poll began.
-      if (prev?.polledAt && prev.polledAt > at) return;
+      if (prev?.polledAt && prev.polledAt > at) return false;
       const pollFailedAt = prev?.pollFailedAt ?? at;
       await db.spendCostSnapshot.upsert({
         where: key,
@@ -380,6 +384,7 @@ async function writeFailure(
         },
         update: { pollError: error, pollFailedAt },
       });
+      return true;
     },
   );
 }
@@ -512,11 +517,20 @@ export async function pollTenantSpend(
       { err, tenantId: String(tenantId) },
       "spend ceiling poll failed; the last figure stands",
     );
+    // Announced only when it was the row's present (review round 12): a failure older than the
+    // row's last success is dropped above, and a warning for it would page the channels about a
+    // window that has already recovered, and spend the six hours the next real one needs. A write
+    // that itself fails is unknown, and unknown is announced.
+    let current = true;
     try {
-      await runScopedOn(base, ctx, async (db) => {
+      current = await runScopedOn(base, ctx, async (db) => {
+        let applied = false;
         for (const source of SOURCES) {
-          await writeFailure(db, tenantId, source, month, error, now);
+          if (await writeFailure(db, tenantId, source, month, error, now)) {
+            applied = true;
+          }
         }
+        return applied;
       });
     } catch (writeErr) {
       logger.warn(
@@ -524,7 +538,7 @@ export async function pollTenantSpend(
         "spend ceiling poll: the failure itself could not be recorded",
       );
     }
-    announcePollFailure(tenantId, error, base);
+    if (current) announcePollFailure(tenantId, error, base);
     return { status: "failed", error };
   }
 }

@@ -162,6 +162,35 @@ export function isBlockedIp(ip: string): boolean {
   return true; // not an IP literal → fail-closed
 }
 
+// The resolver codes that mean "this name does not exist", as opposed to "ask again later".
+//
+// Under the runtime this app actually runs on, the answer is: there is no such distinction to make.
+// Measured under Bun — a nonexistent name, a name with no A record, and a 300-character label all
+// arrive as `code: "ENOTFOUND", errno: 4`, and `errno` is that constant for every one of them. So
+// the error carries nothing to classify on, and this predicate is always true there.
+//
+// Node collapses less: reading its `DNSException`, exactly two libuv errnos are renamed
+// (`if (code === UV_EAI_NODATA || code === UV_EAI_NONAME) code = 'ENOTFOUND'`), everything else
+// keeps its own name, and `EAI_SYSTEM` becomes the underlying errno — descriptor exhaustion is
+// `EMFILE`. But the app does not run on Node, so that is a property of the fallback, not of
+// production.
+//
+// The predicate stays a GATE rather than being collapsed into "any failure refuses", and it is not
+// dead code: the resolver is injectable, and a runtime that does distinguish gets round 2's
+// behaviour immediately — a transient failure propagating instead of telling the caller its URL is
+// wrong. On Bun it is simply always true, and the refusal below is what a fail-closed SSRF guard
+// owes anyway: a lookup we could not complete is a destination we could not verify.
+//
+// A 400 rather than a 500 for that, deliberately, and it is the coherence argument this whole PR is
+// about: the empty-result branch two lines down already answers 400 for the same fact. Answering it
+// 400 through one branch and 500 through the other, for the same URL, is the split being closed.
+const PERMANENT_DNS_FAILURES = new Set(["ENOTFOUND"]);
+
+export function isNameNotFound(e: unknown): boolean {
+  const code = (e as { code?: unknown } | null)?.code;
+  return typeof code === "string" && PERMANENT_DNS_FAILURES.has(code);
+}
+
 export interface SafeUrlOptions {
   // NOTE: default https-only. Dev/self-hosted integrations may opt into http.
   allowHttp?: boolean;
@@ -171,6 +200,10 @@ export interface SafeUrlOptions {
   // SSRF_ALLOW_PRIVATE_TARGETS=true is set explicitly). Protocol and URL-parseability checks
   // always run regardless — file:, ftp:, etc. are never allowed.
   allowPrivate?: boolean;
+  // NOTE: the resolver, injectable. Same seam as `deps.assertSafe` elsewhere in the tree, and it
+  // exists for one thing the real resolver cannot be made to do on demand: fail TRANSIENTLY. Which
+  // failures become a 400 and which propagate is a decision with no other way to exercise it.
+  lookup?: typeof lookup;
 }
 
 export async function assertSafeOutboundUrl(
@@ -201,7 +234,28 @@ export async function assertSafeOutboundUrl(
     return url;
   }
 
-  const addresses = await lookup(host, { all: true });
+  // NOTE: a lookup that comes back with a PERMANENT not-found is the same answer as an empty
+  // result — the host does not exist — and has to leave here as the same 400, or the caller gets a
+  // 500 for a URL the operator simply typed wrong. Surfaced when the MCP previews started asking
+  // this ahead of the write (#490); the apply had the hole already, it was just harder to reach.
+  //
+  // Everything else propagates untouched, and the difference is not cosmetic: `EAI_AGAIN` and a
+  // timeout mean the RESOLVER failed, not that the name is bad, and answering 400 there tells the
+  // caller its input is wrong and not to retry — for a hostname that may be perfectly valid.
+  let addresses: { address: string }[];
+  try {
+    addresses = await (opts.lookup ?? lookup)(host, { all: true });
+  } catch (e) {
+    // NOTE: the code goes in the sentence. Under Bun it is `ENOTFOUND` for everything, so the
+    // message is the only place an operator debugging a resolver outage can see that the lookup
+    // threw rather than came back empty.
+    if (isNameNotFound(e)) {
+      throw new SsrfError(
+        `${host} did not resolve (${(e as { code?: string }).code})`,
+      );
+    }
+    throw e;
+  }
   if (addresses.length === 0) throw new SsrfError(`${host} did not resolve`);
   for (const { address } of addresses) {
     if (isBlockedIp(address)) {

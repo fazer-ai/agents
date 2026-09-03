@@ -251,6 +251,57 @@ export type ChatwootDeploymentConnectInput = z.infer<
   typeof chatwootDeploymentConnectSchema
 >;
 
+// What `connectChatwootDeployment` decides about its INPUT, before any database: the schema, the
+// normalized base URL it would store, and whether that URL may be reached at all. Split out so the
+// MCP preview can ask the same question the apply asks (#490).
+//
+// NOTE: the SSRF verdict is IN here, DNS included, and the writer below no longer repeats it. It is
+// a verdict about the argument — `http://127.0.0.1:9/` fails on the protocol, `https://localhost` on
+// where the name points — and leaving either half out let the preview approve a URL the apply then
+// answered "Blocked outbound URL" for. It costs nothing on an apply, because the preview branch is
+// the only caller that reaches this ahead of the write. The credential probe stays below: that one
+// is a call, and it is why a preview cannot promise the connection will succeed.
+// One tenant, one Chatwoot server: a connect that names a DIFFERENT base URL than the one already
+// stored is refused, and disconnecting is the only way to switch. Both the write and the preview
+// compare through here, so the two cannot end up disagreeing about what counts as "different" —
+// the comparison is against the NORMALIZED input, which is also what gets stored.
+function assertNotADifferentDeployment(
+  existing: { baseUrl: string } | null,
+  wantedBaseUrl: string,
+): void {
+  if (existing && existing.baseUrl !== wantedBaseUrl) {
+    throw new ConflictError(
+      "this tenant is already connected to a different Chatwoot deployment; disconnect it first to switch servers",
+      "errors.chatwootDifferentDeployment",
+    );
+  }
+}
+
+// The database half of `connectChatwootDeployment`'s verdict. ADVISORY, like the uniqueness checks:
+// it reads outside the write's transaction, so a tenant with nothing connected here can have a
+// deployment by the time the apply lands. What it buys is the refusal that actually happens — an
+// operator pointing at a second server — arriving before the preview promises a connection, and
+// before the apply spends a round trip validating credentials against a server it will not accept.
+export async function assertDeploymentNotSwitching(
+  ctx: TenantContext,
+  baseUrl: string,
+  base: PrismaClient = basePrisma,
+): Promise<void> {
+  const existing = await runScopedOn(base, ctx, (db) =>
+    db.chatwootDeployment.findFirst({ select: { baseUrl: true } }),
+  );
+  assertNotADifferentDeployment(existing, baseUrl);
+}
+
+export async function assertDeploymentConnectable(
+  input: ChatwootDeploymentConnectInput,
+) {
+  const data = parseInput(chatwootDeploymentConnectSchema, input);
+  data.baseUrl = normalizeChatwootBaseUrl(data.baseUrl);
+  await assertSafeOutboundUrl(data.baseUrl); // DNS lookup OUTSIDE the tx
+  return data;
+}
+
 // Connect (or re-point the token of) the tenant's Chatwoot deployment from a base URL + admin token,
 // entered ONCE. Validates the pair by probing /profile (which also yields the reachable accounts) so a
 // bad URL/token never persists. If a deployment already exists: same baseUrl ⇒ rotate the token
@@ -268,9 +319,14 @@ export async function connectChatwootDeployment(
 }> {
   if (ctx.tenantId === null) throw new AppError("tenant required", 400);
   const tenantId = ctx.tenantId;
-  const data = parseInput(chatwootDeploymentConnectSchema, input);
-  data.baseUrl = normalizeChatwootBaseUrl(data.baseUrl);
-  await assertSafeOutboundUrl(data.baseUrl); // DNS lookup OUTSIDE the tx
+  const data = await assertDeploymentConnectable(input);
+  // NOTE: BEFORE the credential round trip, not after. The transaction below asks this again and
+  // remains the authority; this early copy exists because the answer is already knowable from our
+  // own database, and reaching the network first means sending the operator's admin token to a
+  // server we are about to reject anyway. It also keeps the two halves agreeing on WHICH refusal
+  // the caller gets: the preview answers "different deployment" with no network at all, and an
+  // apply that validated credentials first would answer "bad credentials" for the same call (#490).
+  await assertDeploymentNotSwitching(ctx, data.baseUrl, base);
   // Validate the credentials (and discover accounts) before persisting anything.
   const accounts = await listChatwootAccounts(
     { baseUrl: data.baseUrl, token: data.adminToken },
@@ -282,12 +338,7 @@ export async function connectChatwootDeployment(
     const existing = await db.chatwootDeployment.findFirst({
       select: { id: true, baseUrl: true },
     });
-    if (existing && existing.baseUrl !== data.baseUrl) {
-      throw new ConflictError(
-        "this tenant is already connected to a different Chatwoot deployment; disconnect it first to switch servers",
-        "errors.chatwootDifferentDeployment",
-      );
-    }
+    assertNotADifferentDeployment(existing, data.baseUrl);
     if (existing) {
       await db.$queryRaw`SELECT id FROM chatwoot_deployments WHERE id = ${existing.id} FOR NO KEY UPDATE`;
     }
@@ -510,12 +561,9 @@ async function connectAccount(
   // A Chatwoot account belongs to ONE tenant fleet-wide. RLS hides another tenant's claim from the
   // scoped tx below, so pre-check cross-tenant (superuser read) for a friendly error; the unique
   // index on (serverKey, accountId) is the hard race-safe backstop on create.
-  await assertAccountNotTakenByAnotherTenant(
-    base,
-    tenantId,
-    serverKey,
+  await assertAccountsNotTakenByAnotherTenant(base, tenantId, serverKey, [
     accountId,
-  );
+  ]);
   const result = await runScopedOn(base, ctx, async (db) => {
     // NOTE: The DEPLOYMENT row first, outermost of the three (deployment, then account, then its
     // inboxes) so the whole module takes them in one order. It is also what makes the disconnect's
@@ -622,19 +670,86 @@ function accountTakenError(): ConflictError {
 // Cross-tenant guard (superuser read bypasses RLS): rejects claiming a (serverKey, accountId) that a
 // DIFFERENT tenant already owns. The same tenant reconnecting its own account is excluded by the
 // tenantId filter, so reactivation of a soft-disconnected own-account is unaffected.
-async function assertAccountNotTakenByAnotherTenant(
+//
+// It takes the WHOLE set rather than asking once per account: one `asSuperAdminOn` per element
+// would be a privileged transaction per element, over an array the published
+// `deployment_set_accounts` schema does not cap, and the preview would pay it before the apply paid
+// it again.
+//
+// It also does not put the whole set in ONE `IN`, for the same reason read the other way. Each id is
+// a bind parameter and Postgres takes at most 32767 of them, so a single query is fine until it is
+// not: measured, 32760 ids answer in 56ms and 32770 raise "The query parameter limit supported by
+// your database is exceeded" — a CRASH, not a refusal, for input the published schema accepts, on
+// the preview as much as on the apply. Chunking makes the query count grow with the input instead
+// of the query WIDTH, which is the axis with a hard ceiling. A realistic call is one chunk.
+const CLAIM_CHECK_CHUNK = 1000;
+
+async function assertAccountsNotTakenByAnotherTenant(
   base: PrismaClient,
   tenantId: bigint,
   serverKey: string,
-  accountId: number,
+  accountIds: number[],
 ): Promise<void> {
-  const taken = await asSuperAdminOn(base, (db) =>
-    db.chatwootInstance.findFirst({
-      where: { serverKey, accountId, tenantId: { not: tenantId } },
-      select: { id: true },
-    }),
-  );
+  if (accountIds.length === 0) return;
+  // NOTE: the chunks share ONE transaction. Chunking to dodge the parameter ceiling would otherwise
+  // hand back the per-element privileged transaction this function was written to remove, just
+  // divided by a thousand.
+  const taken = await asSuperAdminOn(base, async (db) => {
+    for (let i = 0; i < accountIds.length; i += CLAIM_CHECK_CHUNK) {
+      const hit = await db.chatwootInstance.findFirst({
+        where: {
+          serverKey,
+          accountId: { in: accountIds.slice(i, i + CLAIM_CHECK_CHUNK) },
+          tenantId: { not: tenantId },
+        },
+        select: { id: true },
+      });
+      if (hit) return hit;
+    }
+    return null;
+  });
   if (taken) throw accountTakenError();
+}
+
+// What `setConnectedAccounts` decides before it writes or calls anything: the tenant HAS a
+// deployment, and every account it was handed is claimable — not already owned by another tenant,
+// fleet-wide. Split out so the MCP preview can ask the same question the apply asks (#490).
+//
+// NOTE: both halves are here on purpose. An earlier version answered only the first, and the fence
+// stayed green because its row for this tool passes no deployment at all — while a preview handed
+// an account another tenant owns still said "will connect" and the apply answered "already
+// connected to another tenant". A preflight that covers part of its core's judgement reads exactly
+// like one that covers all of it.
+export async function assertAccountsClaimable(
+  ctx: TenantContext,
+  accountIds: number[],
+  base: PrismaClient = basePrisma,
+): Promise<{ id: bigint; baseUrl: string }> {
+  const dep = await assertDeploymentConnected(ctx, base);
+  const tenantId = ctx.tenantId;
+  if (tenantId === null) throw new AppError("tenant required", 400);
+  const serverKey = normalizeChatwootBaseUrl(dep.baseUrl);
+  await assertAccountsNotTakenByAnotherTenant(base, tenantId, serverKey, [
+    ...new Set(accountIds),
+  ]);
+  return dep;
+}
+
+// The tenant's connected deployment, or the refusal every account operation owes its caller.
+export async function assertDeploymentConnected(
+  ctx: TenantContext,
+  base: PrismaClient = basePrisma,
+): Promise<{ id: bigint; baseUrl: string }> {
+  const dep = await runScopedOn(base, ctx, (db) =>
+    db.chatwootDeployment.findFirst({ select: { id: true, baseUrl: true } }),
+  );
+  if (!dep) {
+    throw new NotFoundError(
+      "no chatwoot deployment connected",
+      "errors.chatwootDeploymentNotFound",
+    );
+  }
+  return dep;
 }
 
 // Apply the operator's account selection as a diff against the currently-connected accounts:
@@ -650,15 +765,7 @@ export async function setConnectedAccounts(
 ): Promise<ChatwootInstanceDto[]> {
   if (ctx.tenantId === null) throw new AppError("tenant required", 400);
   const wanted = [...new Set(accountIds)];
-  const dep = await runScopedOn(base, ctx, (db) =>
-    db.chatwootDeployment.findFirst({ select: { id: true, baseUrl: true } }),
-  );
-  if (!dep) {
-    throw new NotFoundError(
-      "no chatwoot deployment connected",
-      "errors.chatwootDeploymentNotFound",
-    );
-  }
+  const dep = await assertAccountsClaimable(ctx, wanted, base);
   const serverKey = normalizeChatwootBaseUrl(dep.baseUrl);
   // Names for the wanted accounts (best-effort; falls back to null → the #id badge still identifies).
   let nameById = new Map<number, string>();
@@ -1265,6 +1372,45 @@ export async function reconcileInboxBots(
   return result;
 }
 
+// Everything `reconnectInbox` decides before it calls Chatwoot: the inbox exists, it is bound, and
+// the agent it names is still there. Split out so the MCP preview can ask the same question the
+// apply asks (#490) without performing the reconnection.
+export async function assertInboxReconnectable(
+  ctx: TenantContext,
+  inboxId: bigint,
+  base: PrismaClient = basePrisma,
+) {
+  return runScopedOn(base, ctx, async (db) => {
+    const row = await db.inbox.findUnique({
+      where: { id: inboxId },
+      select: {
+        id: true,
+        chatwootInstanceId: true,
+        chatwootInboxId: true,
+        agentId: true,
+      },
+    });
+    if (!row) {
+      throw new NotFoundError("inbox not found", "errors.inboxNotFound");
+    }
+    if (row.agentId === null) {
+      throw new AppError(
+        "inbox has no agent to reconnect",
+        409,
+        "errors.inboxNotBound",
+      );
+    }
+    const agent = await db.agent.findUnique({
+      where: { id: row.agentId },
+      select: { name: true },
+    });
+    if (!agent) {
+      throw new NotFoundError("agent not found", "errors.agentNotFound");
+    }
+    return { inbox: row, agentId: row.agentId, agentName: agent.name };
+  });
+}
+
 // Re-provision + reconnect the persona bot for an inbox — the "Reconnect" action when the bot was
 // deleted out-of-band on Chatwoot. Bypasses bindInbox's same-agent no-op; ensureAgentBot self-heals
 // (detects the missing bot and re-provisions). Network failure → uniform 502.
@@ -1276,38 +1422,10 @@ export async function reconnectInbox(
 ): Promise<InboxDto> {
   if (ctx.tenantId === null) throw new AppError("tenant required", 400);
   const tenantId = ctx.tenantId;
-  const { inbox, agentId, agentName } = await runScopedOn(
-    base,
+  const { inbox, agentId, agentName } = await assertInboxReconnectable(
     ctx,
-    async (db) => {
-      const row = await db.inbox.findUnique({
-        where: { id: inboxId },
-        select: {
-          id: true,
-          chatwootInstanceId: true,
-          chatwootInboxId: true,
-          agentId: true,
-        },
-      });
-      if (!row) {
-        throw new NotFoundError("inbox not found", "errors.inboxNotFound");
-      }
-      if (row.agentId === null) {
-        throw new AppError(
-          "inbox has no agent to reconnect",
-          409,
-          "errors.inboxNotBound",
-        );
-      }
-      const agent = await db.agent.findUnique({
-        where: { id: row.agentId },
-        select: { name: true },
-      });
-      if (!agent) {
-        throw new NotFoundError("agent not found", "errors.agentNotFound");
-      }
-      return { inbox: row, agentId: row.agentId, agentName: agent.name };
-    },
+    inboxId,
+    base,
   );
   try {
     const client = await loadChatwootClient(

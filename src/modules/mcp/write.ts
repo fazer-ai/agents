@@ -7,12 +7,13 @@ import {
 import {
   ALLOWED_ASSET_TYPES,
   ASSET_MAX_BYTES,
+  assertBrandingColorsUpdatable,
   type ColorUpdate,
   getGlobalBranding,
 } from "@/api/features/branding/branding.service";
 import basePrisma from "@/api/lib/prisma";
 import { updateTenant } from "@/api/v1/tenants.admin.service";
-import { getTenant } from "@/api/v1/tenants.service";
+import { assertTenantUpdatable, getTenant } from "@/api/v1/tenants.service";
 import { parseDbId } from "@/lib/db-id";
 import { AppError } from "@/lib/errors";
 import {
@@ -47,10 +48,8 @@ import type { LoadChatwootClientDeps } from "@/modules/chatwoot/instance";
 import { readDebugModes } from "@/modules/flowlog/debug-mode";
 import { getTenantSettings } from "@/modules/tenant-settings/service";
 import {
-  PARAM_NAME_KIND_IDS,
-  secretTypeRefusesParamName,
-} from "@/modules/vault/secret-types";
-import {
+  assertPendingVaultEntryCreatable,
+  assertVaultNameAvailable,
   createPendingVaultEntry,
   isVaultIdRef,
   resolveVaultRefByName,
@@ -308,26 +307,31 @@ export async function credentialCreate(
     paramName: args.param_name ?? null,
   };
 
-  // NOTE: BEFORE the dry-run branch, because the preview returns without touching the core and a
-  // rule the core learns after that shortcut is a rule the preview promises away. `param_name` is
-  // read only for the kinds that declare `needsParamName`, so on any other kind it is a field the
-  // runtime discards, and `createPendingVaultEntry` now refuses it (issue #488) — previewing it
-  // clean would promise a write that apply rejects. Same question in two shapes: the transport
-  // answers with a `WriteResult`, the core with an `AppError`, and the catalog predicate in the
-  // middle is what keeps them from drifting.
-  //
-  // NOTE: this covers THIS rule only. The preview still returns ok for five other inputs the apply
-  // refuses (a kind the catalog does not know, a managed-blob kind, a missing required base URL, a
-  // missing required param name, and a name the write rejects) — measured, all six diverging, and
-  // filed separately rather than widened into here.
-  if (args.param_name?.trim() && secretTypeRefusesParamName(kind)) {
-    return err(
-      `the "${kind}" credential type does not use a param name. The types that do are: ${PARAM_NAME_KIND_IDS.join(", ")}.`,
-    );
-  }
-
   // dry-run is the default: create ONLY when dry_run is explicitly false.
   if (args.dry_run !== false) {
+    // NOTE: everything `createPendingVaultEntry` decides about its input — the name, the kind
+    // against the catalog, the connect-flow kinds that cannot be created pending, a required base
+    // URL, and the param name the kind has no use for (#488) — asked here before the preview
+    // answers. The apply below reaches the core, which asks it again; the pure function in the
+    // middle is what keeps the transport's `WriteResult` and the domain's `AppError` from drifting
+    // into two different verdicts (#490).
+    try {
+      const { name, kind } = assertPendingVaultEntryCreatable({
+        name: args.name,
+        kind: args.kind ?? null,
+        baseUrl: args.base_url ?? null,
+        paramName: args.param_name ?? null,
+      });
+      // ADVISORY, and the only preflight here that is. See `assertVaultNameAvailable`: it reads
+      // outside the write's transaction, so it answers the collision the operator already made,
+      // not a reservation. It takes the pair the line above NORMALIZED, since that is what the
+      // uniqueness is on.
+      await assertVaultNameAvailable(ctx, name, kind, base);
+    } catch (e) {
+      if (e instanceof AppError) return err(e.message);
+      if (e instanceof ZodError) return err(zodIssuesMessage(e));
+      throw e;
+    }
     return ok({ dryRun: true, target: "vault:new", preview });
   }
 
@@ -742,6 +746,11 @@ export async function tenantUpdate(
     const target = `tenant:${tenantId}`;
 
     if (args.dry_run !== false) {
+      // NOTE: the core's own question, asked before the preview answers it. It sits INSIDE the
+      // branch rather than above it because the apply reaches the core, which asks it again —
+      // and several of these read a row or resolve DNS, so above the branch is a second lookup
+      // that can even disagree with the first (#490).
+      assertTenantUpdatable(patch);
       const previewAfter = {
         name: patch.name ?? current.name,
       };
@@ -815,7 +824,7 @@ export async function brandingSet(
   }
 
   try {
-    const before = await getGlobalBranding();
+    const before = await getGlobalBranding(base);
     const beforeProj = {
       brandName: before.brandName,
       colorMode: before.colorMode,
@@ -830,7 +839,11 @@ export async function brandingSet(
 
     // dry-run is the default: apply ONLY when dry_run is explicitly false.
     if (args.dry_run !== false) {
-      // Preview reflects the requested patch (sanitization is applied on apply).
+      // NOTE: the core's own question, asked before the preview answers it. It sits INSIDE the
+      // branch rather than above it because the apply reaches the core, which asks it again —
+      // and several of these read a row or resolve DNS, so above the branch is a second lookup
+      // that can even disagree with the first (#490).
+      assertBrandingColorsUpdatable(update);
       const previewAfter = {
         brandName:
           update.brandName === undefined

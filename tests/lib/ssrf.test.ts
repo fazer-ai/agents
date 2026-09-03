@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { assertSafeOutboundUrl, isBlockedIp, isBlockedIpv6 } from "@/lib/ssrf";
+import { AppError } from "@/lib/errors";
+import {
+  assertSafeOutboundUrl,
+  isBlockedIp,
+  isBlockedIpv6,
+  isNameNotFound,
+} from "@/lib/ssrf";
 
 describe("isBlockedIp", () => {
   test("blocks private / loopback / link-local / CGNAT / metadata IPv4", () => {
@@ -123,5 +129,81 @@ describe("assertSafeOutboundUrl — allowPrivate escape", () => {
     await expect(
       assertSafeOutboundUrl("file:///etc/passwd", { allowPrivate: true }),
     ).rejects.toThrow(/protocol/);
+  });
+});
+
+describe("isNameNotFound", () => {
+  // A permanent not-found is a statement about the INPUT and becomes a 400; a resolver that failed
+  // is a statement about the infrastructure and has to stay a 500, or the caller is told its
+  // perfectly valid hostname is wrong and not to retry.
+  test("only permanent resolver codes count", () => {
+    expect(
+      isNameNotFound(Object.assign(new Error("x"), { code: "ENOTFOUND" })),
+    ).toBe(true);
+    // `EMFILE` and `ENOMEM` are the ones worth naming: getaddrinfo can fail for a purely LOCAL
+    // reason (descriptor exhaustion), and the question is whether that failure gets reported as
+    // "your hostname does not exist". It cannot — libuv translates `EAI_SYSTEM` to the underlying
+    // errno, so the code that arrives is `EMFILE`, and only a real not-found is `ENOTFOUND`.
+    for (const code of [
+      "EAI_AGAIN",
+      "ETIMEDOUT",
+      "ENOMEM",
+      "EMFILE",
+      "ECONNREFUSED",
+      // The getaddrinfo spellings `dns.lookup` never emits: it renames both to `ENOTFOUND`.
+      // Listing them as not-found would be dead code claiming a platform difference that the
+      // runtime's own `DNSException` rules out.
+      "EAI_NONAME",
+      "EAI_NODATA",
+    ]) {
+      expect(isNameNotFound(Object.assign(new Error("x"), { code }))).toBe(
+        false,
+      );
+    }
+  });
+
+  test("a value with no code is not a not-found", () => {
+    expect(isNameNotFound(new Error("boom"))).toBe(false);
+    expect(isNameNotFound(null)).toBe(false);
+    expect(isNameNotFound(undefined)).toBe(false);
+    expect(isNameNotFound({ code: 404 })).toBe(false);
+  });
+});
+
+describe("assertSafeOutboundUrl — how a resolver failure is classified", () => {
+  const failing = (code: string) => () =>
+    Promise.reject(Object.assign(new Error(`getaddrinfo ${code}`), { code }));
+
+  test("a permanent not-found is the caller's 400", async () => {
+    const err = await assertSafeOutboundUrl("https://whatever.example/x", {
+      lookup: failing("ENOTFOUND") as never,
+    }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(AppError);
+    expect((err as AppError).statusCode).toBe(400);
+  });
+
+  test("a transient failure is NOT the caller's fault and propagates", async () => {
+    // The distinction the 400 would erase: `EAI_AGAIN` means the resolver failed, not that the
+    // hostname is bad, and a 400 tells the caller its input is wrong and not to retry.
+    //
+    // It exercises the SEAM, not production. Measured under Bun, every lookup failure arrives as
+    // `code: "ENOTFOUND", errno: 4` — a nonexistent name, a name with no A record and a
+    // 300-character label are indistinguishable — so no real resolver reaches this branch today.
+    // What it pins is that the gate is a gate: a runtime that does distinguish gets this behaviour
+    // without another change here, and a future edit that collapses the classification into "any
+    // failure is a 400" turns this red.
+    const err = await assertSafeOutboundUrl("https://whatever.example/x", {
+      lookup: failing("EAI_AGAIN") as never,
+    }).catch((e: unknown) => e);
+    expect(err).not.toBeInstanceOf(AppError);
+    expect((err as { code?: string }).code).toBe("EAI_AGAIN");
+  });
+
+  test("an empty result is still a 400", async () => {
+    const err = await assertSafeOutboundUrl("https://whatever.example/x", {
+      lookup: (() => Promise.resolve([])) as never,
+    }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(AppError);
+    expect((err as AppError).message).toContain("did not resolve");
   });
 });

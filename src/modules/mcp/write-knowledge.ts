@@ -234,6 +234,11 @@ export async function knowledgeDocumentCreate(
   if (bad) return bad;
   try {
     if (args.dry_run !== false) {
+      // NOTE: the core's own question, asked before the preview answers it. It sits INSIDE the
+      // branch rather than above it because the apply reaches the core, which asks it again —
+      // and several of these read a row or resolve DNS, so above the branch is a second lookup
+      // that can even disagree with the first (#490).
+      await getKnowledgeBase({ ctx, id: kbId, base });
       return ok({
         dryRun: true,
         action: "create",

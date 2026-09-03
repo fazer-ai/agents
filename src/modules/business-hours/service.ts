@@ -210,6 +210,17 @@ export async function readSchedule(
   return row ? parseSchedule(row) : null;
 }
 
+// Everything `createBusinessHours` decides about its INPUT — the schema, the timezone, the windows
+// and the exceptions — before any database is involved. Split out so the MCP preview can ask the
+// same question the apply asks (#490).
+export function assertBusinessHoursCreatable(input: BusinessHoursCreate) {
+  const data = parseInput(businessHoursCreateSchema, input);
+  if (data.timezone) assertValidTimezone(data.timezone);
+  if (data.windows) assertValidWindows(data.windows);
+  if (data.exceptions) assertValidExceptions(data.exceptions);
+  return data;
+}
+
 export async function createBusinessHours(
   ctx: TenantContext,
   input: BusinessHoursCreate,
@@ -217,10 +228,7 @@ export async function createBusinessHours(
 ): Promise<BusinessHoursDto> {
   if (ctx.tenantId === null) throw new AppError("tenant required", 400);
   const tenantId = ctx.tenantId;
-  const data = parseInput(businessHoursCreateSchema, input);
-  if (data.timezone) assertValidTimezone(data.timezone);
-  if (data.windows) assertValidWindows(data.windows);
-  if (data.exceptions) assertValidExceptions(data.exceptions);
+  const data = assertBusinessHoursCreatable(input);
   return runScopedOn(base, ctx, async (db) => {
     const row = await db.businessHours.create({
       data: {

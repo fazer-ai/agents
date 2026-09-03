@@ -21,6 +21,8 @@ import {
 } from "@/modules/webhooks/outbound/deliveries";
 import { isOutboundEvent } from "@/modules/webhooks/outbound/events";
 import {
+  assertWebhookSubscriptionCreatable,
+  assertWebhookSubscriptionUpdatable,
   createWebhookSubscription,
   deleteWebhookSubscription,
   listWebhookSubscriptions,
@@ -80,6 +82,16 @@ export async function webhookCreate(
   }
   try {
     if (args.dry_run !== false) {
+      // NOTE: the core's own question, asked before the preview answers it. It sits INSIDE the
+      // branch rather than above it because the apply reaches the core, which asks it again —
+      // and several of these read a row or resolve DNS, so above the branch is a second lookup
+      // that can even disagree with the first (#490).
+      await assertWebhookSubscriptionCreatable({
+        url: args.url,
+        events: args.events,
+        secretRef,
+        enabled: args.enabled,
+      });
       return ok({
         dryRun: true,
         action: "create",
@@ -166,6 +178,11 @@ export async function webhookUpdate(
       afterProj[k] = patch[k];
     }
     if (args.dry_run !== false) {
+      // NOTE: the core's own question, asked before the preview answers it. It sits INSIDE the
+      // branch rather than above it because the apply reaches the core, which asks it again —
+      // and several of these read a row or resolve DNS, so above the branch is a second lookup
+      // that can even disagree with the first (#490).
+      await assertWebhookSubscriptionUpdatable(patch);
       return ok({
         dryRun: true,
         target,

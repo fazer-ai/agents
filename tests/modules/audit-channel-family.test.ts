@@ -252,7 +252,7 @@ function afterAccountLookup(
               const res = await (
                 inner as (a: unknown) => Promise<unknown>
               ).call(d, args);
-              // Only the lookup that DECIDES the connect. `assertAccountNotTakenByAnotherTenant`
+              // Only the lookup that DECIDES the connect. `assertAccountsNotTakenByAnotherTenant`
               // runs first and also asks by `accountId`, from OUTSIDE the transaction: firing there
               // deletes the row before the decision is even reached, the create path runs on its
               // own, and the test passes with the fix removed. The two are told apart by the

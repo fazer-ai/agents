@@ -119,7 +119,10 @@ function assertKnownEvents(events: string[]): OutboundEvent[] {
 }
 
 // allowHttp follows the SSRF guard default (https-only). A blocked URL surfaces as a 400 SsrfError.
-async function assertUrlSafe(url: string): Promise<void> {
+// Exported because the MCP preview has to reach the same verdict the write does: it answers without
+// calling either writer below, so a URL only vetted in here is a URL the preview promises away
+// (#490).
+export async function assertUrlSafe(url: string): Promise<void> {
   await assertSafeOutboundUrl(url);
 }
 
@@ -146,6 +149,22 @@ export type WebhookSubscriptionCreate = z.infer<
   typeof webhookSubscriptionCreateSchema
 >;
 
+// EVERYTHING `createWebhookSubscription` decides about its input: the schema (a url at most 2048
+// characters, at least one event), the events against the catalog, and where the url points. Split
+// out so the MCP preview can ask the same question the apply asks (#490).
+//
+// It replaces a preview that asked only `assertUrlSafe`, which is the failure mode this whole PR
+// is about one level down: a preflight that covers part of its core's judgement reads exactly like
+// one that covers all of it. `events: []` with a safe url previewed ok and applied refused.
+export async function assertWebhookSubscriptionCreatable(
+  input: WebhookSubscriptionCreate,
+): Promise<{ parsed: WebhookSubscriptionCreate; events: string[] }> {
+  const parsed = parseInput(webhookSubscriptionCreateSchema, input);
+  const events = assertKnownEvents(parsed.events);
+  await assertUrlSafe(parsed.url);
+  return { parsed, events };
+}
+
 export async function createWebhookSubscription(
   ctx: TenantContext,
   input: WebhookSubscriptionCreate,
@@ -153,9 +172,7 @@ export async function createWebhookSubscription(
 ): Promise<WebhookSubscriptionDto> {
   if (ctx.tenantId === null) throw new AppError("tenant required", 400);
   const tenantId = ctx.tenantId;
-  const parsed = parseInput(webhookSubscriptionCreateSchema, input);
-  const events = assertKnownEvents(parsed.events);
-  await assertUrlSafe(parsed.url);
+  const { parsed, events } = await assertWebhookSubscriptionCreatable(input);
   const row = await runScopedOn(base, ctx, async (db) => {
     const secretRef = parsed.secretRef
       ? await requireVaultRef(db, parsed.secretRef, "secretRef")
@@ -195,20 +212,32 @@ export type WebhookSubscriptionUpdate = z.infer<
   typeof webhookSubscriptionUpdateSchema
 >;
 
+// The update's half of the same split. `events` is optional here but still `.min(1)` when present,
+// so an explicit empty array is a refusal the preview owed its caller.
+export async function assertWebhookSubscriptionUpdatable(
+  patch: WebhookSubscriptionUpdate,
+): Promise<{ parsed: WebhookSubscriptionUpdate; events?: string[] }> {
+  const parsed = parseInput(webhookSubscriptionUpdateSchema, patch);
+  if (parsed.url !== undefined) await assertUrlSafe(parsed.url);
+  return {
+    parsed,
+    events:
+      parsed.events !== undefined
+        ? assertKnownEvents(parsed.events)
+        : undefined,
+  };
+}
+
 export async function updateWebhookSubscription(
   ctx: TenantContext,
   id: bigint,
   patch: WebhookSubscriptionUpdate,
   base: PrismaClient = basePrisma,
 ): Promise<WebhookSubscriptionDto> {
-  const parsed = parseInput(webhookSubscriptionUpdateSchema, patch);
+  const { parsed, events } = await assertWebhookSubscriptionUpdatable(patch);
   const data: Record<string, unknown> = {};
-  if (parsed.url !== undefined) {
-    await assertUrlSafe(parsed.url);
-    data.url = parsed.url;
-  }
-  if (parsed.events !== undefined)
-    data.events = assertKnownEvents(parsed.events);
+  if (parsed.url !== undefined) data.url = parsed.url;
+  if (events !== undefined) data.events = events;
   // secretRef: undefined = leave; null = clear; string = set.
   if (parsed.secretRef !== undefined) data.secretRef = parsed.secretRef;
   if (parsed.enabled !== undefined) data.enabled = parsed.enabled;

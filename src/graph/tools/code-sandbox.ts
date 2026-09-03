@@ -126,7 +126,7 @@ export class SandboxQueue {
 
 const defaultQueue = new SandboxQueue(SANDBOX_MAX_CONCURRENCY);
 
-// The current instant written in `timezone` with its UTC offset, e.g. `2026-09-02T19:05:33-03:00`:
+// The current instant written in `timezone` with its UTC offset, e.g. `2026-09-02T19:05:33.412-03:00`:
 // a string whose first ten characters are the local date and which `new Date()` parses back to
 // the same instant. Computed HERE because the interpreter has no Intl. An unknown zone falls back
 // to UTC rather than to nothing, so the snippet always has a clock.
@@ -134,7 +134,10 @@ export function localIsoNow(timezone: string, now: Date = new Date()): string {
   const fmt = zoneFormatter(resolveTimezone(timezone));
   const w = wallClock(fmt, now.getTime());
   const pad = (n: number, width = 2) => String(n).padStart(width, "0");
-  const wall = `${pad(w.year, 4)}-${pad(w.month)}-${pad(w.day)}T${pad(w.hour)}:${pad(w.minute)}:${pad(w.second)}`;
+  // NOTE: With the milliseconds: without them, `new Date(NOW_LOCAL)` was up to 999 ms before the
+  // instant it was written from, and the description promises the instant (PR #485, round 11).
+  const ms = now.getTime() - Math.floor(now.getTime() / 1000) * 1000;
+  const wall = `${pad(w.year, 4)}-${pad(w.month)}-${pad(w.day)}T${pad(w.hour)}:${pad(w.minute)}:${pad(w.second)}.${pad(ms, 3)}`;
   const offsetMinutes = zoneOffsetMinutes(fmt, now.getTime());
   const sign = offsetMinutes < 0 ? "-" : "+";
   const abs = Math.abs(offsetMinutes);

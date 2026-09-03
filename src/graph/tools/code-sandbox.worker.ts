@@ -242,6 +242,9 @@ function installConsole(
 // code minus 48, the two check digits stay numeric), verified against the published example
 // `12.ABC.345/01DE-35`.
 const PRELUDE_SOURCE = `(function () {
+  // Taken now, before any snippet: a top-level const named String would otherwise reach these
+  // closures and break the advertised helpers (PR #485, round 11).
+  var Str = String, Num = Number;
   function checkDigit(chars, weights) {
     var sum = 0;
     for (var i = 0; i < weights.length; i++) sum += (chars.charCodeAt(i) - 48) * weights[i];
@@ -249,21 +252,21 @@ const PRELUDE_SOURCE = `(function () {
     return r < 2 ? 0 : 11 - r;
   }
   globalThis.validateCpf = function (input) {
-    var d = String(input == null ? "" : input).replace(/\\D/g, "");
+    var d = Str(input == null ? "" : input).replace(/\\D/g, "");
     if (d.length !== 11 || /^(\\d)\\1{10}$/.test(d)) return { valid: false };
     return {
       valid:
-        checkDigit(d, [10, 9, 8, 7, 6, 5, 4, 3, 2]) === Number(d[9]) &&
-        checkDigit(d, [11, 10, 9, 8, 7, 6, 5, 4, 3, 2]) === Number(d[10]),
+        checkDigit(d, [10, 9, 8, 7, 6, 5, 4, 3, 2]) === Num(d[9]) &&
+        checkDigit(d, [11, 10, 9, 8, 7, 6, 5, 4, 3, 2]) === Num(d[10]),
     };
   };
   globalThis.validateCnpj = function (input) {
-    var s = String(input == null ? "" : input).toUpperCase().replace(/[^A-Z0-9]/g, "");
+    var s = Str(input == null ? "" : input).toUpperCase().replace(/[^A-Z0-9]/g, "");
     if (!/^[A-Z0-9]{12}[0-9]{2}$/.test(s) || /^(.)\\1{13}$/.test(s)) return { valid: false };
     return {
       valid:
-        checkDigit(s, [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]) === Number(s[12]) &&
-        checkDigit(s, [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]) === Number(s[13]),
+        checkDigit(s, [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]) === Num(s[12]) &&
+        checkDigit(s, [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]) === Num(s[13]),
     };
   };
 })()`;
@@ -280,6 +283,11 @@ const PRELUDE_SOURCE = `(function () {
 // a time that happens twice in autumn is its first occurrence.
 const DATE_SHIM_SOURCE = `(function (offsetAt) {
   var NativeDate = Date;
+  // Taken now, before any snippet, like the renderer's: a top-level const named isNaN reached
+  // every method below and new Date().getDate() threw (PR #485, round 11).
+  var Str = String, Num = Number, nan = isNaN;
+  var abs = Math.abs, floor = Math.floor, ceil = Math.ceil;
+  var defineProperty = Object.defineProperty, objectKeys = Object.keys;
   var proto = NativeDate.prototype;
   var getTime = proto.getTime;
   var setTime = proto.setTime;
@@ -296,7 +304,7 @@ const DATE_SHIM_SOURCE = `(function (offsetAt) {
   // gap morning came back as 01:30 standard time instead of 03:30 daylight time.
   var DAY = 86400000;
   function instant(w) {
-    if (isNaN(w)) return NaN;
+    if (nan(w)) return NaN;
     var candidates = [offsetAt(w - DAY), offsetAt(w + DAY)];
     var best;
     var lowest = candidates[0];
@@ -308,43 +316,43 @@ const DATE_SHIM_SOURCE = `(function (offsetAt) {
     return w - (best === undefined ? lowest : best) * SECOND;
   }
   function define(name, fn) {
-    Object.defineProperty(proto, name, { value: fn, writable: true, configurable: true });
+    defineProperty(proto, name, { value: fn, writable: true, configurable: true });
   }
   var getters = {
     getFullYear: "getUTCFullYear", getMonth: "getUTCMonth", getDate: "getUTCDate", getDay: "getUTCDay",
     getHours: "getUTCHours", getMinutes: "getUTCMinutes", getSeconds: "getUTCSeconds", getMilliseconds: "getUTCMilliseconds",
   };
-  Object.keys(getters).forEach(function (name) {
+  objectKeys(getters).forEach(function (name) {
     var utc = proto[getters[name]];
     define(name, function () {
       var t = getTime.call(this);
-      return isNaN(t) ? NaN : utc.call(new NativeDate(wall(t)));
+      return nan(t) ? NaN : utc.call(new NativeDate(wall(t)));
     });
   });
-  define("getYear", function () { var y = this.getFullYear(); return isNaN(y) ? NaN : y - 1900; });
+  define("getYear", function () { var y = this.getFullYear(); return nan(y) ? NaN : y - 1900; });
   define("setYear", function (y) {
-    var n = Number(y);
-    if (isNaN(n)) return setTime.call(this, NaN);
-    var whole = n < 0 ? Math.ceil(n) : Math.floor(n);
+    var n = Num(y);
+    if (nan(n)) return setTime.call(this, NaN);
+    var whole = n < 0 ? ceil(n) : floor(n);
     return this.setFullYear(whole >= 0 && whole <= 99 ? 1900 + whole : n);
   });
   // Whole minutes, cut toward zero like the engines do: −03:06:28 answers 186, +09:18:59 answers
   // −558 (Bun's own values).
-  function minutesOf(seconds) { var m = seconds / 60; return m < 0 ? Math.ceil(m) : Math.floor(m); }
+  function minutesOf(seconds) { var m = seconds / 60; return m < 0 ? ceil(m) : floor(m); }
   define("getTimezoneOffset", function () {
     var t = getTime.call(this);
-    return isNaN(t) ? NaN : -minutesOf(offsetAt(t));
+    return nan(t) ? NaN : -minutesOf(offsetAt(t));
   });
   var setters = {
     setFullYear: "setUTCFullYear", setMonth: "setUTCMonth", setDate: "setUTCDate", setHours: "setUTCHours",
     setMinutes: "setUTCMinutes", setSeconds: "setUTCSeconds", setMilliseconds: "setUTCMilliseconds",
   };
-  Object.keys(setters).forEach(function (name) {
+  objectKeys(setters).forEach(function (name) {
     var utc = proto[setters[name]];
     define(name, function () {
       var t = getTime.call(this);
-      if (isNaN(t) && name !== "setFullYear") return NaN;
-      var w = new NativeDate(isNaN(t) ? 0 : wall(t));
+      if (nan(t) && name !== "setFullYear") return NaN;
+      var w = new NativeDate(nan(t) ? 0 : wall(t));
       utc.apply(w, arguments);
       return setTime.call(this, instant(getTime.call(w)));
     });
@@ -352,7 +360,7 @@ const DATE_SHIM_SOURCE = `(function (offsetAt) {
   var DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
   var MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   function pad(n, width) {
-    var s = String(Math.abs(n));
+    var s = Str(abs(n));
     while (s.length < width) s = "0" + s;
     return (n < 0 ? "-" : "") + s;
   }
@@ -364,15 +372,15 @@ const DATE_SHIM_SOURCE = `(function (offsetAt) {
   }
   function zoneText(t) {
     var o = offsetAt(t);
-    var a = Math.abs(minutesOf(o));
-    return "GMT" + (o < 0 ? "-" : "+") + pad(Math.floor(a / 60), 2) + pad(a % 60, 2);
+    var a = abs(minutesOf(o));
+    return "GMT" + (o < 0 ? "-" : "+") + pad(floor(a / 60), 2) + pad(a % 60, 2);
   }
   function isoDate(w) {
     return pad(w.getUTCFullYear(), 4) + "-" + pad(w.getUTCMonth() + 1, 2) + "-" + pad(w.getUTCDate(), 2);
   }
   function local(self, render) {
     var t = getTime.call(self);
-    return isNaN(t) ? "Invalid Date" : render(new NativeDate(wall(t)), t);
+    return nan(t) ? "Invalid Date" : render(new NativeDate(wall(t)), t);
   }
   define("toDateString", function () { return local(this, dateText); });
   define("toTimeString", function () { return local(this, function (w, t) { return timeText(w) + " " + zoneText(t); }); });
@@ -394,11 +402,11 @@ const DATE_SHIM_SOURCE = `(function (offsetAt) {
   var DESIGNATED = /(?:(?<![A-Za-z])Z|(?<![A-Za-z])(?:UTC?|GMT)(?:[+-]\\d{1,2}(?::?\\d{2})?)?|[+-]\\d{1,2}(?::?\\d{2})?|(?<![A-Za-z])(?:[ECMP][SD]T|CES?T))\\s*(?:\\([^)]*\\))?\\s*$/i;
   var DATE_ONLY = /^\\s*[+-]?\\d{4,6}(?:-\\d{2}){0,2}\\s*$/;
   function parse(text) {
-    var s = String(text);
+    var s = Str(text);
     var m = LOCAL.exec(s);
     if (m) return instant(NativeDate.parse(m[0].trim() + "Z"));
     var t = NativeDate.parse(s);
-    if (isNaN(t) || DESIGNATED.test(s) || DATE_ONLY.test(s)) return t;
+    if (nan(t) || DESIGNATED.test(s) || DATE_ONLY.test(s)) return t;
     // Every other offset-less text the engine accepts ("2026/09/05 12:00", "Sep 5, 2026 12:00", a
     // four-digit fraction) it read in the HOST's zone — measured: the value moved by three hours
     // between a UTC host and a São Paulo one (PR #485, round 7). Recover the wall clock it saw
@@ -409,17 +417,17 @@ const DATE_SHIM_SOURCE = `(function (offsetAt) {
     if (v instanceof NativeDate) return getTime.call(v);
     if (v !== null && typeof v === "object") {
       var p = v.valueOf();
-      return typeof p === "object" ? String(v) : p;
+      return typeof p === "object" ? Str(v) : p;
     }
     return v;
   }
   function ShimDate(a) {
-    if (!(this instanceof ShimDate)) return new ShimDate().toString();
+    if (!(this instanceof ShimDate)) return new ShimDate().toStr();
     var t;
     if (arguments.length === 0) t = NativeDate.now();
     else if (arguments.length === 1) {
       var p = primitive(a);
-      t = typeof p === "string" ? parse(p) : Number(p);
+      t = typeof p === "string" ? parse(p) : Num(p);
     } else t = instant(NativeDate.UTC.apply(null, arguments));
     return new NativeDate(t);
   }
@@ -428,8 +436,8 @@ const DATE_SHIM_SOURCE = `(function (offsetAt) {
   ShimDate.now = NativeDate.now;
   ShimDate.UTC = NativeDate.UTC;
   ShimDate.parse = parse;
-  Object.defineProperty(ShimDate, "name", { value: "Date" });
-  Object.defineProperty(ShimDate, "length", { value: 7 });
+  defineProperty(ShimDate, "name", { value: "Date" });
+  defineProperty(ShimDate, "length", { value: 7 });
   globalThis.Date = ShimDate;
 })(__tzOffset);
 delete globalThis.__tzOffset;`;

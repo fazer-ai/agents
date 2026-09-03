@@ -260,7 +260,7 @@ describe("runSandboxedCode", () => {
       kind: "value",
       value: JSON.stringify([
         "America/Sao_Paulo",
-        "2026-01-14T22:30:00-03:00",
+        "2026-01-14T22:30:00.000-03:00",
         "2026-01-15T01:30:00.000Z",
         "2026-01-14",
       ]),
@@ -395,7 +395,7 @@ describe("runSandboxedCode", () => {
       `[new Date("2026-09-05 12:00:00").toISOString(),
         Date.parse("2026/09/05 12:00"), Date.parse("Sep 5, 2026 12:00"),
         Date.parse("2026-09-05T12:00:00.1234"),
-        Date.parse("2026-09-05"), Date.parse("2026-09-05T12:00:00+02:00"),
+        Date.parse("2026-09-05"), Date.parse("2026-09-05T12:00:00.000+02:00"),
         Date.parse("Sat, 05 Sep 2026 12:00:00 GMT"), String(Date.parse("not a date")),
         // Round 10: the engine's own zone table, absolute in any host — and a parenthesis alone is not a zone.
         Date.parse("Sep 5, 2026 12:00 EST"), Date.parse("Sep 5, 2026 12:00 UT"),
@@ -427,6 +427,35 @@ describe("runSandboxedCode", () => {
         1788602400000,
         1788602400000,
         "NaN",
+      ]),
+    });
+  });
+
+  // Round 11: the helpers and the Date shim resolved `String`, `Number`, `Math`, `isNaN`, `Object`
+  // when called — after the snippet, whose own top-level `const` had shadowed them. Bound when
+  // each prelude is installed, like the renderer's and the error reader's.
+  test("a snippet that shadows a global still gets the helpers and the zone", async () => {
+    const out = await runSandboxedCode(
+      `const String = 0, Number = 0, Math = 0, isNaN = 0, Object = 0;
+       [validateCpf("123.516.128-50").valid, validateCnpj("12.ABC.345/01DE-35").valid,
+        new Date(2026, 0, 15, 7, 30).toISOString(), new Date("2026-01-15T07:30").getDate(),
+        new Date(NOW_LOCAL).getHours(), new Date(NOW_LOCAL).toString()]`,
+      {
+        clock: {
+          timezone: "Asia/Tokyo",
+          now: new Date("2026-01-14T22:30:00Z"),
+        },
+      },
+    );
+    expect(out).toMatchObject({
+      kind: "value",
+      value: JSON.stringify([
+        true,
+        true,
+        "2026-01-14T22:30:00.000Z",
+        15,
+        7,
+        "Thu Jan 15 2026 07:30:00 GMT+0900",
       ]),
     });
   });
@@ -832,19 +861,19 @@ describe("localIsoNow", () => {
     y99.setUTCFullYear(99, 5, 15);
     y99.setUTCHours(12, 0, 0, 0);
     expect(localIsoNow("America/Sao_Paulo", y99)).toBe(
-      "0099-06-15T08:53:32-03:06",
+      "0099-06-15T08:53:32.000-03:06",
     );
-    expect(localIsoNow("UTC", y99)).toBe("0099-06-15T12:00:00+00:00");
+    expect(localIsoNow("UTC", y99)).toBe("0099-06-15T12:00:00.000+00:00");
   });
 
   const at = new Date("2026-01-15T01:30:00Z");
   const rows: Array<[string, string]> = [
-    ["America/Sao_Paulo", "2026-01-14T22:30:00-03:00"],
-    ["UTC", "2026-01-15T01:30:00+00:00"],
-    ["Asia/Kolkata", "2026-01-15T07:00:00+05:30"],
-    ["Pacific/Kiritimati", "2026-01-15T15:30:00+14:00"],
+    ["America/Sao_Paulo", "2026-01-14T22:30:00.000-03:00"],
+    ["UTC", "2026-01-15T01:30:00.000+00:00"],
+    ["Asia/Kolkata", "2026-01-15T07:00:00.000+05:30"],
+    ["Pacific/Kiritimati", "2026-01-15T15:30:00.000+14:00"],
     // A zone Intl does not know falls back to UTC rather than to nothing.
-    ["Mars/Olympus", "2026-01-15T01:30:00+00:00"],
+    ["Mars/Olympus", "2026-01-15T01:30:00.000+00:00"],
   ];
   for (const [tz, want] of rows) {
     test(tz, () => expect(localIsoNow(tz, at)).toBe(want));
@@ -853,6 +882,14 @@ describe("localIsoNow", () => {
     for (const [tz] of rows) {
       expect(new Date(localIsoNow(tz, at)).getTime()).toBe(at.getTime());
     }
+    // Round 11: with the milliseconds, or the round trip lands up to 999 ms early.
+    const withMs = new Date("2026-09-02T22:05:33.412Z");
+    expect(localIsoNow("America/Sao_Paulo", withMs)).toBe(
+      "2026-09-02T19:05:33.412-03:00",
+    );
+    expect(new Date(localIsoNow("Asia/Tokyo", withMs)).getTime()).toBe(
+      withMs.getTime(),
+    );
   });
 });
 

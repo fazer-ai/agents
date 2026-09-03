@@ -151,9 +151,9 @@ export function AgentsPage() {
         data.warnings.length
           ? t(
               "agents.importedWithWarnings",
-              "Imported with {{n}} warning(s).",
+              "Imported with {{count}} warnings.",
               {
-                n: data.warnings.length,
+                count: data.warnings.length,
               },
             )
           : t("agents.imported", "Agent imported (disabled)."),

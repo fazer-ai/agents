@@ -246,8 +246,8 @@ function Value({
         >
           {open
             ? t("audit.showLess", "Show less")
-            : t("audit.showAll", "Show all {{n}} characters", {
-                n: text.length,
+            : t("audit.showAll", "Show all {{count}} characters", {
+                count: text.length,
               })}
         </button>
       )}
@@ -341,7 +341,9 @@ function AuditRowCard({ row }: { row: AuditItem }) {
           {formatDateTime(row.createdAt, i18n.language)}
         </span>
         <span className="text-text-muted text-xs">
-          {t("audit.fields", "{{n}} fields", { n: diff.changes.length })}
+          {t("audit.fields", "{{count}} fields", {
+            count: diff.changes.length,
+          })}
         </span>
       </button>
       {expanded && (

@@ -98,14 +98,16 @@ export function LogsExportModal({
         showToast(
           t(
             "logs.exportTruncated",
-            "Exported the newest {{n}} entries (more matched the filters).",
-            { n: data.count },
+            "Exported the newest {{count}} entries (more matched the filters).",
+            { count: data.count },
           ),
           "warning",
         );
       } else {
         showToast(
-          t("logs.exportDone", "Exported {{n}} entries.", { n: data.count }),
+          t("logs.exportDone", "Exported {{count}} entries.", {
+            count: data.count,
+          }),
           "success",
         );
       }

@@ -1006,15 +1006,19 @@ export function ToolGrantsEditor({
                               : t("editor.tools.mcpCollapseList", "Hide tools")}
                           </span>
                           <span className="text-text-muted text-xs">
-                            {t("editor.tools.mcpSelected", "{{n}} selected", {
-                              n: grant.enabledTools?.length ?? 0,
-                            })}
+                            {t(
+                              "editor.tools.mcpSelected",
+                              "{{count}} selected",
+                              {
+                                count: grant.enabledTools?.length ?? 0,
+                              },
+                            )}
                           </span>
                         </button>
                       ) : (
                         <span className="text-text-muted text-xs">
-                          {t("editor.tools.mcpSelected", "{{n}} selected", {
-                            n: grant.enabledTools?.length ?? 0,
+                          {t("editor.tools.mcpSelected", "{{count}} selected", {
+                            count: grant.enabledTools?.length ?? 0,
                           })}
                         </span>
                       )}
@@ -1174,8 +1178,8 @@ export function ToolGrantsEditor({
                             )}
                       </span>
                       <span className="text-text-muted text-xs">
-                        {t("editor.tools.mcpSelected", "{{n}} selected", {
-                          n: grant.enabledTools?.length ?? 0,
+                        {t("editor.tools.mcpSelected", "{{count}} selected", {
+                          count: grant.enabledTools?.length ?? 0,
                         })}
                       </span>
                     </button>

@@ -422,7 +422,9 @@ export function CapabilityMap({
             {t("editor.capabilities.title", "Capability map")}
           </span>
           <span className="text-text-muted text-xs">
-            {t("editor.capabilities.count", "{{n}} tools", { n: total })}
+            {t("editor.capabilities.count", "{{count}} tools", {
+              count: total,
+            })}
           </span>
         </button>
         {total > 0 && (

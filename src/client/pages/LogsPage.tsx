@@ -258,7 +258,7 @@ function TurnGroupCard({
             {groupTitleText(logGroupTitle(group), t)}
           </span>
           <span className="text-text-muted text-xs">
-            {t("logs.steps", "{{n}} steps", { n: group.rows.length })}
+            {t("logs.steps", "{{count}} steps", { count: group.rows.length })}
           </span>
           <span className="ml-auto whitespace-nowrap text-text-muted text-xs tabular-nums">
             {formatDateTime(group.newestAt, i18n.language)}

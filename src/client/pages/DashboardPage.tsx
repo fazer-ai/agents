@@ -878,6 +878,13 @@ export function DashboardPage() {
                           label={t("dashboard.totalCost", "LLM cost")}
                           primary={cf.format(totalCostUsd)}
                           secondary={t("dashboard.calls", "{{n}} requests", {
+                            // BOTH, and the pair is the point: `count` picks the
+                            // plural form and only a NUMBER can do that, while
+                            // `n` carries the thousands-separated string the
+                            // reader actually sees. Passing the formatted value
+                            // as `count` makes i18next resolve the plural of a
+                            // string, which is always the `other` form.
+                            count: metrics.llm.calls,
                             n: nf.format(metrics.llm.calls),
                           })}
                         />
@@ -932,7 +939,10 @@ export function DashboardPage() {
                         secondary={t(
                           "dashboard.costPerConversationHint",
                           "across {{n}} conversations",
-                          { n: nf.format(kpis.totalConversations) },
+                          {
+                            count: kpis.totalConversations,
+                            n: nf.format(kpis.totalConversations),
+                          },
                         )}
                       />
                     )}

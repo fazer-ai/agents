@@ -2071,7 +2071,9 @@ export function ToolEditModal({
                   "Lists: insert a block that repeats per item",
                 )}
                 listLength={(n) =>
-                  t("tools.outputTemplateListLength", "{{n}} items", { n })
+                  t("tools.outputTemplateListLength", "{{count}} items", {
+                    count: n,
+                  })
                 }
               />
               {templatePreview && (

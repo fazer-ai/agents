@@ -116,6 +116,10 @@ const CLIENT_IDENTICAL_BY_DESIGN: readonly string[] = [
   "integrations.catalog.GOOGLE_DRIVE.label",
   "mcp.admin.clientNamePlaceholder",
   "nav.github",
+  // "item" is the same word in both languages, so the SINGULAR of this counter coincides while its
+  // plural ("items" / "itens") does not. The pair is the evidence: a waiver over the whole key would
+  // hide a real gap in the form that actually differs.
+  "tools.outputTemplateListLength_one",
   "nav.website",
   "vault.googleOAuth.scopeCalendar",
   "vault.googleOAuth.scopeContacts",
@@ -1094,7 +1098,11 @@ describe("both languages answer, and answer differently", () => {
     expectWaiverLedger(
       "CLIENT_IDENTICAL_BY_DESIGN",
       CLIENT_IDENTICAL_BY_DESIGN,
-      hasProOnlyKeys ? 102 : 100,
+      // 102 -> 103, and the entry that bought it is `tools.outputTemplateListLength_one`: pluralizing
+      // that counter (issue #509) created a SINGULAR form whose two languages coincide, because
+      // "item" is the same word in both. Its plural does not coincide, which is why the waiver names
+      // the form rather than the key.
+      hasProOnlyKeys ? 103 : 101,
     );
     // NOT per edition any more, and that is the point: the list is empty in every tree, so the two
     // editions can no longer differ on it. The one entry that used to make them differ was waived

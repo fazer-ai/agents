@@ -681,8 +681,8 @@ export function useKnowledgeManager(opts: {
     const queued = results.size - failed;
     if (failed === 0) {
       showToast(
-        t("knowledge.batchQueued", "{{n}} document(s) queued.", {
-          n: queued,
+        t("knowledge.batchQueued", "{{count}} documents queued.", {
+          count: queued,
         }),
         "success",
       );
@@ -981,8 +981,10 @@ export function useKnowledgeManager(opts: {
     if (doc.status === "READY") {
       return (
         <span className="rounded-full bg-success/10 px-2 py-0.5 text-success text-xs">
-          {t("knowledge.docStatus.READY", "{{n}} chunks", {
-            n: doc.chunkCount,
+          {t("knowledge.docStatus.READY", "{{count}} chunks", {
+            // `?? 0` because the column is nullable and i18next resolves the plural from a NUMBER:
+            // a null lands in the `other` form for every value, which is the bug this key just left.
+            count: doc.chunkCount ?? 0,
           })}
         </span>
       );
@@ -1525,6 +1527,7 @@ export function useKnowledgeManager(opts: {
                           {d.contentChars != null && (
                             <span className="text-text-muted text-xs">
                               {t("knowledge.charCount", "{{n}} characters", {
+                                count: Number(d.contentChars),
                                 n: new Intl.NumberFormat(i18n.language).format(
                                   Number(d.contentChars),
                                 ),
@@ -1622,6 +1625,7 @@ export function useKnowledgeManager(opts: {
             {docPreview != null && (
               <p className="mb-2 text-text-muted text-xs">
                 {t("knowledge.charCount", "{{n}} characters", {
+                  count: docPreview.length,
                   n: new Intl.NumberFormat(i18n.language).format(
                     docPreview.length,
                   ),

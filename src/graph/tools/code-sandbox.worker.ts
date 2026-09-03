@@ -241,6 +241,12 @@ const DATE_SHIM_SOURCE = `(function (offsetAt) {
     });
   });
   define("getYear", function () { var y = this.getFullYear(); return isNaN(y) ? NaN : y - 1900; });
+  define("setYear", function (y) {
+    var n = Number(y);
+    if (isNaN(n)) return setTime.call(this, NaN);
+    var whole = n < 0 ? Math.ceil(n) : Math.floor(n);
+    return this.setFullYear(whole >= 0 && whole <= 99 ? 1900 + whole : n);
+  });
   define("getTimezoneOffset", function () {
     var t = getTime.call(this);
     return isNaN(t) ? NaN : -offsetAt(t);
@@ -290,12 +296,14 @@ const DATE_SHIM_SOURCE = `(function (offsetAt) {
   define("toLocaleDateString", function () { return local(this, isoDate); });
   define("toLocaleTimeString", function () { return local(this, timeText); });
   define("toLocaleString", function () { return local(this, function (w) { return isoDate(w) + " " + timeText(w); }); });
+  // The wall clock is what the engine makes of the same text as UTC, so a field out of range is NaN
+  // exactly where the engine says so (month 13, minute 60) and normalises exactly where it does
+  // (February 30, 24:00): the two spellings of one instant agree field for field.
   var LOCAL = /^\\s*(\\d{4})-(\\d{2})-(\\d{2})T(\\d{2}):(\\d{2})(?::(\\d{2})(?:\\.(\\d{1,3}))?)?\\s*$/;
   function parse(text) {
     var m = LOCAL.exec(String(text));
     if (!m) return NativeDate.parse(text);
-    var ms = m[7] === undefined ? 0 : Number((m[7] + "00").slice(0, 3));
-    return instant(NativeDate.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], m[6] === undefined ? 0 : +m[6], ms));
+    return instant(NativeDate.parse(m[0].trim() + "Z"));
   }
   function primitive(v) {
     if (v instanceof NativeDate) return getTime.call(v);

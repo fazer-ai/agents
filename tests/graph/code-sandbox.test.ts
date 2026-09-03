@@ -297,6 +297,41 @@ describe("runSandboxedCode", () => {
   // answer are pinned to what the spec (and Bun) say: a time inside the spring gap keeps the offset
   // from before it, a time that happens twice in autumn is its first occurrence. The gap case is
   // what a one-step conversion gets wrong by an hour.
+  // Round 5 of PR #485: an offset-less string with a field out of range (`2026-13-01T00:00`, a
+  // minute of 60) went through `Date.UTC`, which normalises, where the engine's own parser answers
+  // NaN — a malformed customer date silently became another date. The wall clock is now what the
+  // engine makes of the same text as UTC, so the two spellings agree field for field: measured in
+  // QuickJS and in Bun alike, month 13 / minute 60 / second 60 / month 0 / day 0 are NaN, February
+  // 30 and 24:00 normalise. `setYear` (Annex B) was also outside the shim; the engine happened to
+  // route it through `setFullYear`, and it is defined on its own now so that nothing rests on that.
+  test("a malformed local date is NaN like the engine's own, and setYear is local too", async () => {
+    const out = await runSandboxedCode(
+      `[String(Date.parse("2026-13-01T00:00")), String(new Date("2026-01-01T00:60").getTime()),
+        String(Date.parse("2026-01-01T23:59:60")), String(Date.parse("2026-00-10T00:00")),
+        Date.parse("2026-02-30T00:00") - Date.parse("2026-02-30T00:00Z"),
+        Date.parse("2026-01-01T24:00") === Date.parse("2026-01-02T00:00"),
+        (() => { const d = new Date(2006, 2, 20, 12, 0); d.setYear(2007); return [d.getHours(), d.toISOString()] })(),
+        (() => { const d = new Date(2006, 2, 20, 12, 0); d.setYear(99); return d.getFullYear() })(),
+        (() => { const d = new Date(NaN); return String(d.setYear(2007)) })()]`,
+      { clock: { timezone: "America/New_York" } },
+    );
+    expect(out).toMatchObject({
+      kind: "value",
+      value: JSON.stringify([
+        "NaN",
+        "NaN",
+        "NaN",
+        "NaN",
+        300 * 60_000,
+        true,
+        [12, "2007-03-20T16:00:00.000Z"],
+        1999,
+        // The spec's +0 rule: a year set on an invalid date is January 1st of that year, local.
+        "1167627600000",
+      ]),
+    });
+  });
+
   test("a DST zone is honored across its transitions, gap and overlap included", async () => {
     const out = await runSandboxedCode(
       `[new Date("2026-01-10T12:00:00Z").getTimezoneOffset(),

@@ -16,10 +16,12 @@
 -- tests/prisma/native-tool-names-renamed-by-migration.test.ts asks for.
 --
 -- FORCE ROW LEVEL SECURITY binds the table owner too, so the owner's UPDATE and INSERT would reach
--- zero rows and report success; lifted on both tables for the file and put back
--- (.claude/rules/prisma.md).
+-- zero rows and report success — and so would the SELECT over "agents" that decides which audit
+-- lines to write (round 19: the rename landed, the lines did not). Lifted on the three tables for
+-- the file and put back (.claude/rules/prisma.md).
 ALTER TABLE "tool_definitions" NO FORCE ROW LEVEL SECURITY;
 ALTER TABLE "audit_logs" NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE "agents" NO FORCE ROW LEVEL SECURITY;
 
 DO $$
 DECLARE
@@ -67,5 +69,6 @@ BEGIN
   END LOOP;
 END $$;
 
+ALTER TABLE "agents" FORCE ROW LEVEL SECURITY;
 ALTER TABLE "audit_logs" FORCE ROW LEVEL SECURITY;
 ALTER TABLE "tool_definitions" FORCE ROW LEVEL SECURITY;

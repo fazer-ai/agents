@@ -6,7 +6,7 @@ import { Client } from "pg";
 // to the first free `<name>_N` in ITS tenant, the grant that references the row by id follows it
 // untouched, every other row is byte-identical, the audit trail records the move and names the
 // agents whose prompt still uses the old name, a re-run rewrites nothing, and FORCE ROW LEVEL
-// SECURITY is back on both tables when the file ends.
+// SECURITY is back on the three tables it touches — the one it reads included — when the file ends.
 
 const suUrl = process.env.MIGRATION_DATABASE_URL;
 const MIGRATION =
@@ -211,11 +211,12 @@ describe.skipIf(!dbUp)(
       expect(await audits()).toBe(lines);
     });
 
-    test("FORCE ROW LEVEL SECURITY is back on both tables when the file ends", async () => {
+    test("FORCE ROW LEVEL SECURITY is back on the three tables when the file ends", async () => {
       const r = await suDb.query(
-        "SELECT relname, relforcerowsecurity AS f FROM pg_class WHERE relname IN ('tool_definitions', 'audit_logs') ORDER BY relname",
+        "SELECT relname, relforcerowsecurity AS f FROM pg_class WHERE relname IN ('agents', 'audit_logs', 'tool_definitions') ORDER BY relname",
       );
       expect(r.rows).toEqual([
+        { relname: "agents", f: true },
         { relname: "audit_logs", f: true },
         { relname: "tool_definitions", f: true },
       ]);

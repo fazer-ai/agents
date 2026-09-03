@@ -802,6 +802,11 @@ export async function softDisconnectChatwootInstance(
       detach: unbound.map((r) => r.chatwoot_inbox_id),
     };
   });
+  // The receiver caches "this route token resolves to a live bot" by hash. Invalidated the moment the
+  // disconnect is DURABLE and before any network work: the detach below is best-effort and can take
+  // as long as an unreachable Chatwoot takes to time out, and every warm entry keeps authenticating
+  // and queueing webhooks for an account that is already disconnected for that whole span.
+  invalidateRouteTokenCache();
   // NOTE: Chatwoot AFTER our commit, because no transaction of ours spans somebody else's system and
   // only one of the two orders survives a failure. Detaching first and then rolling back (an audit
   // row that cannot be written is enough) leaves the account active and bound HERE while Chatwoot
@@ -830,9 +835,6 @@ export async function softDisconnectChatwootInstance(
       }
     }
   }
-  // The receiver caches "this route token resolves to a live bot" by hash. Without this, events for
-  // an account just disconnected would keep being processed until the entry expires.
-  invalidateRouteTokenCache();
   return stamped;
 }
 
@@ -1638,6 +1640,27 @@ export async function bindInbox(
 
   // 3. Persist the binding (scoped, no network).
   return runScopedOn(base, ctx, async (db) => {
+    // NOTE: The ACCOUNT row first, and the same question the read at the top already asked, because
+    // that read predates the Chatwoot calls and a disconnect fits in the window. Without this lock
+    // nothing serialises the two: the disconnect stamps the account and unbinds every inbox that was
+    // bound AT THAT MOMENT, this one commits `agentId` just after, and the disconnect's own
+    // best-effort detach then pulls the bot this call had just attached. What is left is an inbox
+    // bound here, with no bot in Chatwoot, on an account that reconnects looking healthy — and
+    // binding the same agent again is a no-op, because the binding is already there. Taken in the
+    // module's one order (account, then inbox), so this cannot deadlock against `syncInboxes` or the
+    // disconnect itself.
+    const account = await db.$queryRaw<{ disconnected_at: Date | null }[]>`
+      SELECT i.disconnected_at
+        FROM chatwoot_instances i
+       WHERE i.id = ${inbox.chatwootInstanceId}
+         FOR UPDATE`;
+    if (agentId !== null && account[0]?.disconnected_at != null) {
+      throw new AppError(
+        "this account is disconnected; reconnect it before assigning an agent",
+        409,
+        "errors.chatwootAccountDisconnected",
+      );
+    }
     // NOTE: Read INSIDE the transaction and with the row LOCKED, because it is what the audit
     // compares against. The reading taken at the top predates the Chatwoot calls, which are a window
     // a concurrent bind fits into; and an unlocked read here is the same hole one level down, where

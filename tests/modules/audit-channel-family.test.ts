@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
+import { AppError } from "@/lib/errors";
 import type { TenantContext } from "@/lib/tenancy";
 import {
   ChatwootApiError,
@@ -10,6 +11,7 @@ import {
   bindInbox,
   connectChatwootDeployment,
   disconnectChatwootDeployment,
+  normalizeChatwootBaseUrl,
   reconcileInboxBots,
   reconnectChatwootInstance,
   reconnectInbox,
@@ -20,6 +22,7 @@ import {
   softDisconnectChatwootInstance,
   syncInboxes,
 } from "@/modules/chatwoot/management";
+import { routeTokenCacheGeneration } from "@/modules/chatwoot/route-token-cache";
 
 // THE CHANNEL-MANAGEMENT FAMILY (issue #395), whose trail was written by the MCP transport and by
 // nothing else. The Channels page speaks `chatwoot-admin.controller.ts`, eleven mutating routes, none
@@ -157,6 +160,53 @@ function afterSnapshot(
                 inner as (a: unknown) => Promise<unknown>
               ).call(d, args);
               if (!fired && args?.select?.disconnectedAt === true) {
+                fired = true;
+                await hook();
+              }
+              return res;
+            };
+          },
+        });
+      },
+    });
+  return wrap(client);
+}
+
+// A hook that fires INSIDE the disconnect's transaction, right after it stamps the account: the
+// account row is locked, the inboxes are already unbound, and nothing is committed yet. That is the
+// exact window a concurrent bind lives in, and firing here is what makes the interleaving staged
+// rather than raced. AWAITED, so the caller can hold this transaction open until the concurrent work
+// has reached the point being tested — a hook that only kicks something off gives the two chains
+// back to the scheduler and tests whichever order the machine happened to produce. Forwards to the
+// REAL delegate of the transaction it is handed, never to a client from out here: under RLS an
+// out-of-scope statement matches zero rows and the failure would look like a success.
+function afterStamp(
+  client: PrismaClient,
+  hook: () => Promise<void>,
+): PrismaClient {
+  let fired = false;
+  // biome-ignore lint/suspicious/noExplicitAny: proxying Prisma's client surface
+  const wrap = (target: any): any =>
+    new Proxy(target, {
+      get(t, prop, recv) {
+        if (prop === "$extends") {
+          return (...a: unknown[]) => wrap(t.$extends(...a));
+        }
+        if (prop === "$transaction") {
+          return (fn: (tx: unknown) => unknown, ...rest: unknown[]) =>
+            t.$transaction((tx: unknown) => fn(wrap(tx)), ...rest);
+        }
+        if (prop !== "chatwootInstance") return Reflect.get(t, prop, recv);
+        const delegate = Reflect.get(t, prop, recv);
+        return new Proxy(delegate, {
+          get(d, k, r) {
+            const inner = Reflect.get(d, k, r);
+            if (k !== "updateMany") return inner;
+            return async (args: unknown) => {
+              const res = await (
+                inner as (a: unknown) => Promise<unknown>
+              ).call(d, args);
+              if (!fired) {
                 fired = true;
                 await hook();
               }
@@ -585,6 +635,154 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
     expect(await rows()).toEqual([]);
     await suDb.inbox.delete({ where: { id: bound.id } });
     await suDb.agent.delete({ where: { id: agent.id } });
+  });
+
+  // A CONNECTED account of its own, with one inbox and one agent, so the two tests below do not
+  // depend on which state the sequence above left the shared accounts in. `bound` decides whether
+  // the inbox starts attached to the agent (the disconnect has something to detach) or free (a bind
+  // is what would attach it).
+  async function connectedFixture(
+    accountId: number,
+    label: string,
+    opts: { bound?: boolean } = {},
+  ) {
+    const dep = await suDb.chatwootDeployment.findFirstOrThrow({
+      where: { tenantId },
+      select: { id: true, baseUrl: true },
+    });
+    const agent = await suDb.agent.create({
+      data: { tenantId, name: `Ag ${label}`, systemPrompt: "x" },
+      select: { id: true },
+    });
+    const inst = await suDb.chatwootInstance.create({
+      data: {
+        tenantId,
+        deploymentId: dep.id,
+        accountId,
+        serverKey: normalizeChatwootBaseUrl(dep.baseUrl),
+        accountName: label,
+      },
+      select: { id: true },
+    });
+    const inbox = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: inst.id,
+        chatwootInboxId: accountId,
+        name: label,
+        agentId: opts.bound === false ? null : agent.id,
+      },
+      select: { id: true },
+    });
+    await clearAudit();
+    return {
+      instanceId: inst.id,
+      inboxId: inbox.id,
+      agentId: agent.id,
+      cleanup: async () => {
+        await collect();
+        await suDb.inbox.deleteMany({ where: { chatwootInstanceId: inst.id } });
+        await suDb.chatwootInstance.delete({ where: { id: inst.id } });
+        await suDb.agent.delete({ where: { id: agent.id } });
+      },
+    };
+  }
+
+  // The positive cache says "this route token resolves to a live bot", and it is what authenticates
+  // an incoming webhook. The detach after the commit is best-effort and can take as long as an
+  // unreachable Chatwoot takes to time out; every warm entry keeps admitting traffic for an already
+  // disconnected account for that whole span. So the cache goes the moment the disconnect is
+  // durable, which is before the first network call and not after the last.
+  test("the route-token cache is dropped before the detach waits on Chatwoot", async () => {
+    const fx = await connectedFixture(4444, "Cache");
+    let generationAtNetwork = -1;
+    const before = routeTokenCacheGeneration();
+    const stub: ReturnType<typeof stubClient> = stubClient({
+      setInboxAgentBot: async () => {
+        generationAtNetwork = routeTokenCacheGeneration();
+        stub.calls.push("setInboxAgentBot");
+        return {};
+      },
+    });
+    try {
+      await softDisconnectChatwootInstance(ctx(), fx.instanceId, appDb, {
+        makeClient: stub.makeClient,
+      });
+      expect(stub.calls).toEqual(["setInboxAgentBot"]);
+      expect(generationAtNetwork).toBeGreaterThan(before);
+    } finally {
+      // Always, because this fixture adds an account the deployment-wide tests below COUNT: a
+      // failure here would otherwise be reported twice, once truly and once as a wrong total.
+      await fx.cleanup();
+    }
+  });
+
+  // A bind reads "the account is active", talks to Chatwoot, and only then persists — so a disconnect
+  // fits entirely inside its window. Without the account lock on the persist, the disconnect unbinds
+  // every inbox bound AT THAT MOMENT (not this one, which is still null), commits, and its own
+  // best-effort detach then pulls the bot this bind had just attached. What survives is an inbox
+  // bound here with no bot in Chatwoot, on an account that reconnects looking healthy, and binding
+  // the same agent again is a no-op because the binding is already there.
+  test("a bind that lands while the disconnect commits is refused, not persisted", async () => {
+    const fx = await connectedFixture(4445, "Corrida", { bound: false });
+    // The bind is released exactly as far as its FIRST Chatwoot call: by then it has passed its own
+    // active check against an account this transaction has stamped and not committed, which is the
+    // window under test, and it has not yet inserted the bot row. Not one step further, because that
+    // insert carries a foreign key to the account and an FK insert takes a KEY SHARE lock on the
+    // parent — it would block on the FOR UPDATE this very transaction is holding, while this
+    // transaction waits for it. Staged this way the test does not depend on which of the two chains
+    // the scheduler resumes first.
+    let asked: () => void = () => {};
+    const reachedChatwoot = new Promise<void>((res) => {
+      asked = res;
+    });
+    const binding = stubClient({
+      createAgentBot: async () => {
+        asked();
+        return { id: 901, access_token: "bot-token", secret: "bot-secret" };
+      },
+    });
+    let bind: Promise<unknown> = Promise.resolve(null);
+    const staged = afterStamp(appDb, async () => {
+      bind = bindInbox(
+        ctx(),
+        fx.inboxId,
+        fx.agentId,
+        { makeClient: binding.makeClient },
+        appDb,
+      ).then(
+        () => "bound",
+        (e) => e,
+      );
+      await reachedChatwoot;
+    });
+    try {
+      await softDisconnectChatwootInstance(ctx(), fx.instanceId, staged, {
+        makeClient: stubClient().makeClient,
+      });
+      const outcome = await bind;
+      // The binding is what the account is judged by, so the assertion that matters is the column: a
+      // bind that persisted here leaves an inbox pointing at an agent whose bot the disconnect has
+      // already pulled, and re-binding the same agent later is a no-op that fixes nothing.
+      expect(
+        (
+          await suDb.inbox.findUniqueOrThrow({
+            where: { id: fx.inboxId },
+            select: { agentId: true },
+          })
+        ).agentId,
+      ).toBeNull();
+      expect(outcome).toBeInstanceOf(AppError);
+      expect((outcome as AppError).statusCode).toBe(409);
+      expect((outcome as AppError).translationKey).toBe(
+        "errors.chatwootAccountDisconnected",
+      );
+    } finally {
+      // Awaited before the cleanup either way: the bind is still holding a connection and would
+      // otherwise write onto rows this is about to delete.
+      await bind;
+      await fx.cleanup();
+    }
   });
 
   test("disconnecting an account that is already disconnected records nothing", async () => {

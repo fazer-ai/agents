@@ -2,12 +2,22 @@ import { describe, expect, test } from "bun:test";
 import { buildToolPatch } from "@/modules/mcp/write-agents";
 import {
   ABSENT_MARKER,
+  EMPTY_LIST_MARKER,
+  enclosingBlock,
+  MAX_EACH_ITEMS,
   MAX_TEMPLATE_CHARS,
+  moreItemsMarker,
+  parseTemplate,
+  projectToolResponse,
   readResponseTemplate,
   readResponseTemplateResult,
   renderResponseTemplate,
   storableResponseTemplate,
+  templateItemLeaves,
   templateLeaves,
+  templateListAt,
+  templateLists,
+  templateNeedsBody,
   templateTokens,
   unmatchedTemplateDelimiter,
   unusableTemplateTokens,
@@ -331,5 +341,285 @@ describe("the MCP dry run previews what the apply would store", () => {
       .outputSchema;
     // Not "looks canonical": the very value the write path would store.
     expect(previewed).toEqual(storableResponseTemplate(output_schema));
+  });
+});
+
+// #459. One token addresses one value, so a response that is a list of unknown length (a product
+// search, a slot lookup, an order history) could not be projected at all and kept the raw clip,
+// with the invention risk #456 measured. A block repeats its content per item.
+describe("a list block (#459)", () => {
+  const render = (template: string, body: unknown) =>
+    renderResponseTemplate({ template }, body);
+
+  const BODY = {
+    total: 3,
+    resultados: [
+      { nome: "Cadeira", preco: 199.9, tags: ["madeira", "oferta"] },
+      { nome: "Mesa", preco: 899, tags: [] },
+      { nome: "Luminária", preco: 120, desconto: 10 },
+    ],
+    horarios: ["09:00", "10:30"],
+    vazio: [],
+    nulo: null,
+    objeto: { a: 1 },
+  };
+
+  test("repeats its content once per item, with paths relative to the item", () => {
+    // The markers sit alone on their lines and take the lines with them: one line per item comes
+    // out as one line per item, not with a blank between every two.
+    expect(
+      render(
+        "Total: {{total}}\n{{#each resultados}}\n- {{nome}} — R$ {{preco}}\n{{/each}}\nFim",
+        BODY,
+      ).text,
+    ).toBe(
+      "Total: 3\n- Cadeira — R$ 199.9\n- Mesa — R$ 899\n- Luminária — R$ 120\nFim",
+    );
+  });
+
+  test("{{.}} is the item of a list of scalars, and an inline block keeps its line", () => {
+    expect(
+      render("Horários: {{#each horarios}}{{.}}; {{/each}}fim", BODY).text,
+    ).toBe("Horários: 09:00; 10:30; fim");
+  });
+
+  test("{{#each .}} walks a body that IS the list", () => {
+    expect(render("{{#each .}}{{.}},{{/each}}", ["a", "b"]).text).toBe("a,b,");
+    expect(
+      render("{{#each .}}{{id}} {{/each}}", [{ id: 1 }, { id: 2 }]).text,
+    ).toBe("1 2 ");
+  });
+
+  test("a token outside the block is absolute; the same name inside is relative", () => {
+    const got = render("{{nome}}|{{#each resultados}}{{nome}}|{{/each}}", BODY);
+    expect(got.text).toBe(`${ABSENT_MARKER}|Cadeira|Mesa|Luminária|`);
+    expect(got.missing).toEqual(["nome"]);
+  });
+
+  test("a field an item lacks renders absent and is reported ONCE, at the first index lacking it", () => {
+    // In-grammar, so the operator can paste `resultados.0.desconto` into the sample field and
+    // see for themselves; deduped per field, or a fifty-row list would name it fifty times.
+    const got = render(
+      "{{#each resultados}}{{nome}}: {{desconto}}\n{{/each}}",
+      BODY,
+    );
+    expect(got.text).toBe(
+      `Cadeira: ${ABSENT_MARKER}\nMesa: ${ABSENT_MARKER}\nLuminária: 10\n`,
+    );
+    expect(got.missing).toEqual(["resultados.0.desconto"]);
+  });
+
+  test("{{.}} over a list of objects is reported at the item", () => {
+    const got = render("{{#each resultados}}{{.}}{{/each}}", BODY);
+    expect(got.text).toBe(ABSENT_MARKER.repeat(3));
+    expect(got.missing).toEqual(["resultados.0"]);
+  });
+
+  test("an empty list renders its own marker and is not reported", () => {
+    // "No results" is an answer, and a label followed by nothing is the gap the model fills.
+    const got = render("Lista: {{#each vazio}}{{.}}{{/each}}", BODY);
+    expect(got.text).toBe(`Lista: ${EMPTY_LIST_MARKER}`);
+    expect(got.missing).toEqual([]);
+  });
+
+  test.each([
+    ["an object", "objeto", ["objeto"]],
+    ["a scalar", "total", ["total"]],
+    ["a path that does not resolve", "nada", ["nada"]],
+    // The path is right and the API answered with nothing: same rule as a scalar token.
+    ["null", "nulo", []],
+  ])("a block over %s renders absent, reported: %p", (_l, path, missing) => {
+    expect(render(`{{#each ${path}}}x{{/each}}`, BODY)).toEqual({
+      text: ABSENT_MARKER,
+      missing,
+    });
+  });
+
+  test("past MAX_EACH_ITEMS the rest is COUNTED, never dropped silently", () => {
+    const items = Array.from({ length: MAX_EACH_ITEMS + 7 }, (_, i) => ({
+      n: i,
+    }));
+    const got = render("{{#each .}}{{n}},{{/each}}", items);
+    expect(
+      got.text.endsWith(`${MAX_EACH_ITEMS - 1},${moreItemsMarker(7)}`),
+    ).toBe(true);
+    expect(got.text).not.toContain(`${MAX_EACH_ITEMS},`);
+    expect(got.missing).toEqual([]);
+    // Exactly at the bound: everything shown, nothing counted.
+    expect(
+      render("{{#each .}}{{n}},{{/each}}", items.slice(0, MAX_EACH_ITEMS)).text,
+    ).not.toContain("more");
+  });
+
+  test("a block needs the body even with no token inside it", () => {
+    expect(templateNeedsBody("{{#each a}}x{{/each}}")).toBe(true);
+    expect(templateNeedsBody("{{a}}")).toBe(true);
+    expect(templateNeedsBody("Done.")).toBe(false);
+    // And the projection agrees: a body that is not JSON cannot say how many times to repeat.
+    expect(
+      projectToolResponse(
+        { mode: "template", template: "{{#each a}}x{{/each}}" },
+        200,
+        "not json",
+      ).skipped,
+    ).toBe("not-json");
+    expect(
+      projectToolResponse(
+        { mode: "template", template: "{{#each a}}x{{/each}}" },
+        200,
+        '{"a":[1,2]}',
+      ).text,
+    ).toBe("xx");
+  });
+
+  test("block markers are not tokens, and {{.}} is a usable one", () => {
+    expect(templateTokens("{{#each a}}{{b}}{{/each}}{{c}}")).toEqual([
+      "b",
+      "c",
+    ]);
+    expect(unusableTemplateTokens("{{#each a}}{{.}} {{x y}}{{/each}}")).toEqual(
+      ["x y"],
+    );
+  });
+
+  test("the write schema accepts a block and refuses a broken one", () => {
+    const base = {
+      name: "search",
+      label: "Search",
+      urlTemplate: "https://example.com/x",
+      allowedHosts: ["example.com"],
+    };
+    expect(
+      toolDefinitionCreateSchema.safeParse({
+        ...base,
+        outputSchema: {
+          mode: "template",
+          template: "{{#each items}}- {{name}}\n{{/each}}",
+        },
+      }).success,
+    ).toBe(true);
+    expect(
+      toolDefinitionCreateSchema.safeParse({
+        ...base,
+        outputSchema: {
+          mode: "template",
+          template: "{{#each items}}- {{name}}",
+        },
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe("parseTemplate refuses a broken structure, and the reader carries the reason", () => {
+  test.each([
+    ["an unclosed block", "{{#each a}}x", "no {{/each}} after it"],
+    ["a close with no open", "x{{/each}}", "no {{#each …}} before it"],
+    [
+      "a nested block",
+      "{{#each a}}{{#each b}}x{{/each}}{{/each}}",
+      "cannot contain another",
+    ],
+    ["a block with no path", "{{#each}}x{{/each}}", "does not name a list"],
+    [
+      "a block with a malformed path",
+      "{{#each a b}}x{{/each}}",
+      "does not name a list",
+    ],
+  ])("%s", (_label, template, needle) => {
+    expect(parseTemplate(template).problem).toContain(needle);
+    const r = readResponseTemplateResult({ mode: "template", template });
+    expect(r.declared && !r.ok ? r.problem : "").toContain(needle);
+    expect(readResponseTemplate({ mode: "template", template })).toBeNull();
+  });
+
+  test("a marker alone on its line takes the line; one sharing a line keeps it", () => {
+    expect(
+      parseTemplate("a\n  {{#each x}}  \nb\n{{/each}}\nc").segments,
+    ).toEqual([
+      { kind: "text", text: "a\n" },
+      { kind: "each", path: "x", body: "b\n" },
+      { kind: "text", text: "c" },
+    ]);
+    expect(parseTemplate("a {{#each x}}b{{/each}} c").segments).toEqual([
+      { kind: "text", text: "a " },
+      { kind: "each", path: "x", body: "b" },
+      { kind: "text", text: " c" },
+    ]);
+  });
+
+  test("{{.}} outside a block is the body itself, which is usually not a scalar", () => {
+    // Consistent rather than refused: `.` is the current scope everywhere. A JSON scalar body is
+    // the one case it renders.
+    expect(renderResponseTemplate({ template: "{{.}}" }, "ok")).toEqual({
+      text: "ok",
+      missing: [],
+    });
+    expect(renderResponseTemplate({ template: "{{.}}" }, { a: 1 })).toEqual({
+      text: ABSENT_MARKER,
+      missing: ["."],
+    });
+  });
+});
+
+describe("what the picker offers for a block", () => {
+  const BODY = {
+    total: 3,
+    resultados: [
+      { nome: "Cadeira", preco: 199.9, tags: ["madeira", "oferta"] },
+      { nome: "Mesa", preco: 899, tags: [] },
+      { nome: "Luminária", preco: 120, desconto: 10 },
+    ],
+    horarios: ["09:00", "10:30"],
+    vazio: [],
+  };
+
+  test("templateLists names every list with its length, the root as `.`", () => {
+    expect(templateLists(BODY)).toEqual([
+      { path: "resultados", length: 3 },
+      { path: "resultados.0.tags", length: 2 },
+      { path: "resultados.1.tags", length: 0 },
+      { path: "horarios", length: 2 },
+      { path: "vazio", length: 0 },
+    ]);
+    expect(templateLists([1, 2])).toEqual([{ path: ".", length: 2 }]);
+    expect(templateLists({ a: 1 })).toEqual([]);
+  });
+
+  test("templateItemLeaves is the union over the first items, and every offer renders", () => {
+    const items = templateListAt(BODY, "resultados");
+    expect(items).not.toBeNull();
+    const leaves = templateItemLeaves(items ?? []);
+    // `desconto` is on the THIRD item only, and is still a field of the list.
+    expect(leaves.map((l) => l.path)).toEqual([
+      "nome",
+      "preco",
+      "tags.0",
+      "tags.1",
+      "desconto",
+    ]);
+    for (const leaf of leaves) {
+      const rendered = renderResponseTemplate(
+        { template: `{{#each resultados}}{{${leaf.path}}}|{{/each}}` },
+        BODY,
+      );
+      expect(rendered.text.split("|")).toContain(leaf.value);
+    }
+    expect(templateItemLeaves(BODY.horarios)).toEqual([
+      { path: ".", value: "09:00" },
+    ]);
+    expect(templateListAt(BODY, "total")).toBeNull();
+    expect(templateListAt([1], ".")).toEqual([1]);
+  });
+
+  test("enclosingBlock answers by caret, and while the block is still unclosed", () => {
+    const t = "a {{#each xs}} b {{/each}} c {{#each ys}} d";
+    expect(enclosingBlock(t, 0)).toBeNull();
+    // Inside the opening marker: not passed yet.
+    expect(enclosingBlock(t, 5)).toBeNull();
+    expect(enclosingBlock(t, t.indexOf(" b "))).toBe("xs");
+    expect(enclosingBlock(t, t.indexOf(" c "))).toBeNull();
+    // The operator just typed the marker and opened the picker: the block is unclosed, and the
+    // item fields are exactly what they want.
+    expect(enclosingBlock(t, t.length)).toBe("ys");
   });
 });

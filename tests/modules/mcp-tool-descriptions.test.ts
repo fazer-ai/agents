@@ -388,6 +388,14 @@ describe("MCP tool descriptions", () => {
   // which no ceiling counts. The description ceiling goes to 27,900, and the schema one to 53,100:
   // its input is one required string, and 47 characters is what the envelope of a minimal schema
   // costs — the floor for any tool at all, worth recording as such.
+  //
+  // The list block of #459 takes the schema figure to 53,367: 410 characters, again the
+  // `output_schema` description on `tool_create` and `tool_update`, and again measured against a
+  // longer draft (484, which also said that blocks do not nest — dropped, because the write refuses
+  // a nested block with a sentence that says so, and a rule a caller learns by trying is not worth
+  // publishing on every session). What stays is what a caller cannot get by trying: the spelling of
+  // the block, that paths inside it are relative, that `{{.}}` is the item, and the 50-item cap,
+  // which the runtime applies silently from the caller's side. The ceiling goes to 53,500.
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;
@@ -397,7 +405,7 @@ describe("MCP tool descriptions", () => {
       schema += t.schema.length;
     }
     expect(desc).toBeLessThanOrEqual(27_900);
-    expect(schema).toBeLessThanOrEqual(53_100);
+    expect(schema).toBeLessThanOrEqual(53_500);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

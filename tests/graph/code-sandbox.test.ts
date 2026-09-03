@@ -454,7 +454,7 @@ describe("runSandboxedCode", () => {
        [validateCpf("123.516.128-50").valid, validateCnpj("12.ABC.345/01DE-35").valid,
         new Date(2026, 0, 15, 7, 30).toISOString(), new Date("2026-01-15T07:30").getDate(),
         new Date(NOW_LOCAL).getHours(), new Date(NOW_LOCAL).toString(),
-        typeof Date(), Date() === new Date().toString()]`,
+        typeof Date(), /^[A-Z][a-z]{2} [A-Z][a-z]{2} \\d{2} \\d{4} \\d{2}:\\d{2}:\\d{2} GMT\\+0900$/.test(Date())]`,
       {
         clock: {
           timezone: "Asia/Tokyo",
@@ -471,7 +471,8 @@ describe("runSandboxedCode", () => {
         15,
         7,
         "Thu Jan 15 2026 07:30:00 GMT+0900",
-        // Round 12: `Date()` without `new` is the current local date as a string.
+        // Round 12: `Date()` without `new` is the current local date as a string — checked by shape,
+        // since two reads of the clock can straddle a second (round 13).
         "string",
         true,
       ]),

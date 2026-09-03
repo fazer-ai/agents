@@ -13,7 +13,11 @@ import {
   useModalController,
   useToast,
 } from "@/client/components";
-import { CreateApiKeyModal } from "@/client/components/api-keys/CreateApiKeyModal";
+import {
+  type ApiKeyScope,
+  CreateApiKeyModal,
+} from "@/client/components/api-keys/CreateApiKeyModal";
+import { useAuth } from "@/client/contexts/AuthContext";
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
 import { formatDate } from "@/client/lib/utils";
@@ -24,12 +28,69 @@ type ApiKeysData = Awaited<
 >["data"];
 type ApiKey = NonNullable<ApiKeysData>["apiKeys"][number];
 
-// Per-tenant API keys console (TENANT_ADMIN). Lists keys, creates via a modal (the plaintext token is
-// revealed once), and revokes with a confirm. The same key authenticates the REST v1 API and the MCP
-// transport. The hash/plaintext never appear here — only the display prefix.
+// API keys console. The per-tenant list (TENANT_ADMIN): keys fenced to the selected tenant. Below
+// it, for a SUPER_ADMIN only, the FLEET list: keys with no home tenant and SUPER_ADMIN authority,
+// the principal the operator's own session is (issue #308). Each list creates via a modal (the
+// plaintext token is revealed once) and revokes with a confirm. The same key authenticates the REST
+// v1 API and the MCP transport. The hash/plaintext never appear here — only the display prefix.
 export function ApiKeysPage() {
   const { t } = useTranslation();
+  const { user } = useAuth();
+  const isSuperAdmin = user?.role === "SUPER_ADMIN";
+
+  return (
+    <PageContainer className="space-y-10">
+      <ApiKeySection
+        scope="tenant"
+        title={t("apiKeys.title", "API keys")}
+        subtitle={t(
+          "apiKeys.subtitle",
+          "Bearer keys for external clients of the REST API and the MCP server. Send as Authorization: Bearer <key>.",
+        )}
+        emptyTitle={t("apiKeys.emptyTitle", "No API keys yet")}
+        emptyDescription={t(
+          "apiKeys.emptyDescription",
+          "Create a key to let an external client call the REST API or the MCP server.",
+        )}
+      />
+      {isSuperAdmin && (
+        <ApiKeySection
+          scope="fleet"
+          title={t("apiKeys.fleetTitle", "Fleet keys")}
+          subtitle={t(
+            "apiKeys.fleetSubtitle",
+            "SUPER_ADMIN authority with no home tenant, for automation that operates the whole fleet: the key selects a tenant per request with X-Tenant-Id (REST) or the tenant argument (MCP), like your own session. Only a SUPER_ADMIN sees this list.",
+          )}
+          emptyTitle={t("apiKeys.fleetEmptyTitle", "No fleet keys")}
+          emptyDescription={t(
+            "apiKeys.fleetEmptyDescription",
+            "Create one to let server-side automation create tenants and operate across them without a browser session.",
+          )}
+        />
+      )}
+    </PageContainer>
+  );
+}
+
+// One scope: its list, its create modal and its revoke. The two scopes read and write different
+// routes (`/api-keys` under the selected tenant, `/api-keys/fleet` with none), and nothing else
+// differs, so the routes are the only thing the scope decides here.
+function ApiKeySection({
+  scope,
+  title,
+  subtitle,
+  emptyTitle,
+  emptyDescription,
+}: {
+  scope: ApiKeyScope;
+  title: string;
+  subtitle: string;
+  emptyTitle: string;
+  emptyDescription: string;
+}) {
+  const { t } = useTranslation();
   const { showToast } = useToast();
+  const fleet = scope === "fleet";
   const [keys, setKeys] = useState<ApiKey[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
@@ -40,7 +101,9 @@ export function ApiKeysPage() {
     setLoading(true);
     setError(false);
     try {
-      const { data, error: err } = await api.api.v1["api-keys"].get();
+      const { data, error: err } = fleet
+        ? await api.api.v1["api-keys"].fleet.get()
+        : await api.api.v1["api-keys"].get();
       if (err || !data) {
         setError(true);
         return;
@@ -51,7 +114,7 @@ export function ApiKeysPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [fleet]);
 
   useEffect(() => {
     void fetchAll();
@@ -67,9 +130,9 @@ export function ApiKeysPage() {
       confirmLabel: t("apiKeys.revoke", "Revoke"),
       danger: true,
       onConfirm: async () => {
-        const { error: err } = await api.api.v1["api-keys"]({
-          id: key.id,
-        }).delete();
+        const { error: err } = fleet
+          ? await api.api.v1["api-keys"].fleet({ id: key.id }).delete()
+          : await api.api.v1["api-keys"]({ id: key.id }).delete();
         if (err) {
           showToast(
             apiErrorMessage(err) ||
@@ -84,28 +147,36 @@ export function ApiKeysPage() {
     });
   };
 
+  const heading = fleet ? "h2" : "h1";
+  const Heading = heading;
+
   return (
-    <PageContainer className="space-y-6">
+    <section
+      className="space-y-6"
+      aria-labelledby={`api-keys-${scope}-title`}
+      data-testid={`api-keys-${scope}`}
+    >
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="font-bold text-2xl text-text-primary">
-            {t("apiKeys.title", "API keys")}
-          </h1>
-          <p className="mt-1 text-sm text-text-secondary">
-            {t(
-              "apiKeys.subtitle",
-              "Bearer keys for external clients of the REST API and the MCP server. Send as Authorization: Bearer <key>.",
-            )}
-          </p>
+          <Heading
+            id={`api-keys-${scope}-title`}
+            className="font-bold text-2xl text-text-primary"
+          >
+            {title}
+          </Heading>
+          <p className="mt-1 text-sm text-text-secondary">{subtitle}</p>
         </div>
         <Button onClick={() => createModal.open()}>
           <Plus className="h-4 w-4" aria-hidden="true" />
-          {t("apiKeys.create", "Create key")}
+          {fleet
+            ? t("apiKeys.createFleet", "Create fleet key")
+            : t("apiKeys.create", "Create key")}
         </Button>
       </header>
 
       <CreateApiKeyModal
         modal={createModal}
+        scope={scope}
         onCreated={() => void fetchAll()}
       />
       <ConfirmDialog modal={confirm} />
@@ -118,11 +189,8 @@ export function ApiKeysPage() {
         empty={
           <EmptyState
             icon={KeyRound}
-            title={t("apiKeys.emptyTitle", "No API keys yet")}
-            description={t(
-              "apiKeys.emptyDescription",
-              "Create a key to let an external client call the REST API or the MCP server.",
-            )}
+            title={emptyTitle}
+            description={emptyDescription}
           />
         }
       >
@@ -173,6 +241,6 @@ export function ApiKeysPage() {
           ))}
         </div>
       </DataBoundary>
-    </PageContainer>
+    </section>
   );
 }

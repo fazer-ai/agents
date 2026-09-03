@@ -1,24 +1,26 @@
 import { z } from "zod";
 import type { PrismaClient, UserRole } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
-import { AppError, NotFoundError } from "@/lib/errors";
+import { AppError, ForbiddenError, NotFoundError } from "@/lib/errors";
 import { parseInput } from "@/lib/parse-input";
-import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { recordAudit } from "@/modules/audit/service";
 import { generateApiKey } from "./verify";
 
-// CRUD for ApiKey — per-tenant Bearer credentials for the REST v1 API and the MCP transport.
-// ctx-based (mirrors the webhooks/vault services); the controller is a thin projection. RLS fences
-// every read/write to the active tenant. The plaintext token is returned ONLY by createApiKey (once,
-// at creation); listing exposes neither the hash nor the plaintext. TENANT_ADMIN-gated at the
-// controller.
+// CRUD for ApiKey — Bearer credentials for the REST v1 API and the MCP transport, in two scopes.
+// ctx-based (mirrors the webhooks/vault services); the controller is a thin projection. A TENANT key
+// is RLS-fenced to the active tenant on every read/write and TENANT_ADMIN-gated at the controller. A
+// FLEET key (the `*FleetApiKey` half below) has no tenant. The plaintext token is returned ONLY by
+// the create (once); listing exposes neither the hash nor the plaintext.
 //
 // NOTE: the AppError translationKeys thrown here (errors.apiKeyNotFound) are registered for the i18n
 // extractor via a translate() magic comment in the controller (api-keys.controller.ts), since the API
 // extractor only scans src/api.
 
-// The key's authority is fixed at TENANT_ADMIN (fine-grained scopes deferred); see docs.
+// A tenant key's authority is fixed at TENANT_ADMIN, a fleet key's at SUPER_ADMIN (fine-grained
+// scopes deferred); see docs.
 const FIXED_ROLE: UserRole = "TENANT_ADMIN";
+const FLEET_ROLE: UserRole = "SUPER_ADMIN";
 
 export interface ApiKeyDto {
   id: string;
@@ -133,6 +135,100 @@ export async function revokeApiKey(
     });
     if (res.count > 0) {
       await recordAudit(db, ctx.tenantId, {
+        actorId: ctx.userId,
+        actorType: ctx.actorType,
+        action: "api_key.revoke",
+        target: id.toString(),
+      });
+    }
+    return res.count;
+  });
+  if (count === 0)
+    throw new NotFoundError("api key not found", "errors.apiKeyNotFound");
+}
+
+// ── fleet-scoped keys (issue #308) ──
+//
+// A fleet key is the same row with no tenant and SUPER_ADMIN, the shape `users` gives a SUPER_ADMIN,
+// which is what lets the request boundary treat the principal it resolves to exactly like a
+// SUPER_ADMIN session (the tenant is chosen per request). Everything below follows from the NULL:
+// the row is never in a tenant's list and never reachable by the tenant revoke, because RLS hides it
+// from tenant scope; the fleet functions run cross-tenant and gate on the caller's ROLE, ignoring
+// whatever tenant the caller has selected (a SUPER_ADMIN in the console always has one, and the key
+// is not its); and the trail is fleet-level (tenant NULL), like `tenant.create`, because a row keyed
+// on the selected tenant would file the deployment's master credential under a stranger's history.
+
+function requireFleet(ctx: TenantContext): void {
+  if (ctx.role !== "SUPER_ADMIN") throw new ForbiddenError();
+}
+
+export async function listFleetApiKeys(
+  ctx: TenantContext,
+  base: PrismaClient = basePrisma,
+): Promise<ApiKeyDto[]> {
+  requireFleet(ctx);
+  const rows = await asSuperAdminOn(base, (db) =>
+    db.apiKey.findMany({
+      where: { tenantId: null },
+      select: SELECT,
+      orderBy: { id: "desc" },
+    }),
+  );
+  return rows.map(toDto);
+}
+
+export async function createFleetApiKey(
+  ctx: TenantContext,
+  input: ApiKeyCreate,
+  base: PrismaClient = basePrisma,
+): Promise<CreatedApiKey> {
+  requireFleet(ctx);
+  const parsed = parseInput(apiKeyCreateSchema, input);
+  const gen = generateApiKey();
+  const row = await asSuperAdminOn(base, async (db) => {
+    const created = await db.apiKey.create({
+      data: {
+        tenantId: null,
+        displayName: parsed.displayName,
+        keyHash: gen.hash,
+        keyPrefix: gen.prefix,
+        role: FLEET_ROLE,
+        createdByUserId: ctx.userId,
+      },
+      select: SELECT,
+    });
+    await recordAudit(db, null, {
+      actorId: ctx.userId,
+      actorType: ctx.actorType,
+      action: "api_key.create",
+      target: created.id.toString(),
+      after: {
+        displayName: created.displayName,
+        keyPrefix: created.keyPrefix,
+        role: created.role,
+      },
+    });
+    return created;
+  });
+  return { apiKey: toDto(row), token: gen.token };
+}
+
+// `tenantId: null` in the where is the fence: a tenant key keeps its tenant's revoke and its
+// tenant's trail, so the fleet path answers NotFound for it the way the tenant path does for a
+// fleet key.
+export async function revokeFleetApiKey(
+  ctx: TenantContext,
+  id: bigint,
+  base: PrismaClient = basePrisma,
+): Promise<void> {
+  requireFleet(ctx);
+  const count = await asSuperAdminOn(base, async (db) => {
+    const res = await db.apiKey.updateMany({
+      where: { id, tenantId: null, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+    if (res.count > 0) {
+      await recordAudit(db, null, {
         actorId: ctx.userId,
         actorType: ctx.actorType,
         action: "api_key.revoke",

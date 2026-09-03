@@ -152,7 +152,7 @@ const api = new Elysia()
               scheme: "bearer",
               bearerFormat: "JWT",
               description:
-                "Bearer token for the API / MCP transport: an MCP OAuth access token, or a per-tenant API key (`fazerai_…`) created at /api-keys.",
+                "Bearer token for the API / MCP transport: an MCP OAuth access token, or an API key (`fazerai_…`) created at /api-keys — per-tenant, or fleet-scoped (SUPER_ADMIN; selects a tenant per request with `X-Tenant-Id`).",
             },
           },
         },

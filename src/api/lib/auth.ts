@@ -38,9 +38,10 @@ export interface AuthUser {
 }
 
 // Resolves a Bearer API key from the Authorization header to an AuthUser, or null. The synthetic
-// identity carries the key's tenant + fixed role; `id` is the creator's user id (for audit), and
-// isApiKey lets the tenancy boundary tag audit rows accordingly. Used only when no session cookie is
-// present (the cookie path is unchanged).
+// identity carries the key's tenant + role (a fleet key: no tenant, SUPER_ADMIN — the same shape a
+// SUPER_ADMIN user has, so the tenancy boundary honours X-Tenant-Id for it the same way); `id` is
+// the creator's user id (for audit), and isApiKey lets the tenancy boundary tag audit rows
+// accordingly. Used only when no session cookie is present (the cookie path is unchanged).
 async function apiKeyAuthUser(
   authHeader: string | undefined,
 ): Promise<AuthUser | null> {

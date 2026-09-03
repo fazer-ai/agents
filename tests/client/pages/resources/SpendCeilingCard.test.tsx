@@ -245,20 +245,27 @@ describe("the spend ceiling card", () => {
     expect(has("failing since")).toBe(false);
   });
 
-  // The two reads can disagree for a poll: the flag is computed on the request, the sentinel was
-  // written by the last poll. Either one is enough to say the ceiling cannot be enforced.
-  test("a row carrying the not-configured sentinel says so even when the flag disagrees", async () => {
+  // THE FLAG IS THE PRESENT, THE SENTINEL IS THE LAST POLL (review round 9, reversing round 1's
+  // reading of this case). The flag resolves the credential on this request, the way the poll does,
+  // so once the operator configures Langfuse it is true at once, while the row keeps the sentinel
+  // until the next poll. Under a true flag the row reads as not read yet, and nothing says missing.
+  test("a row still carrying the sentinel under a true flag reads as not read yet", async () => {
     const usage = baseUsage();
-    usage.entries = usage.entries.map((e) => ({
-      ...e,
+    usage.langfuseConfigured = true;
+    usage.entries[0] = entry({
+      source: "inbox",
+      ceilingUsd: 20,
+      polledAt: null,
       pollError: "langfuse-not-configured",
-      pollFailedAt: "2026-08-15T12:00:00.000Z",
-    }));
+      pollFailedAt: "2026-08-15T12:20:00.000Z",
+      stale: true,
+    });
     installFetchStub(usage);
     renderCard();
     await waitFor(() => {
-      expect(has("Langfuse is not configured")).toBe(true);
+      expect(has("has not been read yet")).toBe(true);
     });
+    expect(has("Langfuse is not configured")).toBe(false);
     expect(has("failing since")).toBe(false);
   });
 

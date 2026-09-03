@@ -25,7 +25,7 @@ for the tenant (`langfuse.enabled` plus a `langfuse` vault credential with valid
 `resolveLangfuseConfig`); an install without it keeps no ceiling, and the console says so. "Configured"
 means the credential RESOLVES, asked the way the poll asks it: a reference to a deleted or malformed
 vault entry is what the poll writes on the row as `langfuse-not-configured`, and the console's flag
-agrees with the row rather than with the reference. A
+agrees with the row rather than with the reference. The flag is the present and the row's sentinel is the last poll's finding: once the operator configures Langfuse the flag is true at once while the sentinel stays on the row until the next poll, so the card shows the flag and reads such a row as not read yet (review round 9). A
 maintained external price table is worth more than a local one we would have to keep correct
 against six providers, OpenRouter and an operator-supplied `openai-compatible` base URL.
 

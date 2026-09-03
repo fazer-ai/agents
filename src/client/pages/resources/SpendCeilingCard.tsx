@@ -49,11 +49,13 @@ function BarRow({
   entry,
   money,
   when,
+  langfuseMissing,
 }: {
   label: string;
   entry: UsageEntry | undefined;
   money: Intl.NumberFormat;
   when: (iso: string) => string;
+  langfuseMissing: boolean;
 }) {
   const { t } = useTranslation();
   const used = entry?.usedUsd ?? 0;
@@ -120,7 +122,7 @@ function BarRow({
                   })}
             </span>
           )}
-          {entry.polledAt === null && entry.pollError !== NOT_CONFIGURED && (
+          {entry.polledAt === null && !langfuseMissing && (
             <span className="text-warning">
               {t(
                 "spendCeiling.usage.unpolled",
@@ -305,10 +307,12 @@ export function SpendCeilingCard({
       : value.legacyTokens;
   // Two reads can say "no Langfuse": the flag is computed on this request, the sentinel on a row was
   // written by the last poll. Either is enough, and the sentence is said once, above the bars.
-  const langfuseMissing =
-    usage !== null &&
-    (!usage.langfuseConfigured ||
-      usage.entries.some((e) => e.pollError === NOT_CONFIGURED));
+  // The flag is the PRESENT (it resolves the credential on this request, the way the poll does);
+  // a row's sentinel is the last poll's finding. The flag decides (review round 9): after the
+  // operator configures Langfuse, the sentinel stays on the row until the next poll, and a card
+  // that read it as current would say "not configured" over a credential that resolves. Under a
+  // true flag such a row reads as not read yet, which is what it is.
+  const langfuseMissing = usage !== null && !usage.langfuseConfigured;
 
   return (
     <Card className="flex flex-col gap-4">
@@ -377,6 +381,7 @@ export function SpendCeilingCard({
               entry={entry("inbox")}
               money={money}
               when={when}
+              langfuseMissing={langfuseMissing}
             />
             <BarRow
               label={t(
@@ -386,6 +391,7 @@ export function SpendCeilingCard({
               entry={entry("playground")}
               money={money}
               when={when}
+              langfuseMissing={langfuseMissing}
             />
           </>
         )}

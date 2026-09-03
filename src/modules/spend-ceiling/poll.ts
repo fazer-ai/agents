@@ -67,6 +67,9 @@ export type PollOutcome =
   | { status: "polled" }
   // The tenant has no usable Langfuse: nothing to ask, and the row says so.
   | { status: "langfuse-not-configured" }
+  // The credential changed while this poll was out asking: the answer belongs to a configuration
+  // that no longer exists, and is dropped rather than written (review round 9).
+  | { status: "superseded" }
   | { status: "failed"; error: string };
 
 const SOURCES: UsageSource[] = ["inbox", "playground"];
@@ -95,6 +98,14 @@ function union(a: string[], b: string[]): string[] {
 function num(v: unknown): number {
   const n = typeof v === "string" ? Number(v) : typeof v === "number" ? v : 0;
   return Number.isFinite(n) ? n : 0;
+}
+
+function sameCredential(a: LangfuseConfig, b: LangfuseConfig): boolean {
+  return (
+    a.publicKey === b.publicKey &&
+    a.secretKey === b.secretKey &&
+    (a.baseUrl ?? null) === (b.baseUrl ?? null)
+  );
 }
 
 function apiBaseOf(cfg: LangfuseConfig): string {
@@ -444,13 +455,30 @@ export async function pollTenantSpend(
         ),
       ),
     );
-    await runScopedOn(base, ctx, async (db) => {
+    // THE ANSWER IS TIED TO THE CREDENTIAL IT WAS ASKED WITH (review round 9). A save re-arms the
+    // job, so a poll asked under the old credential can land AFTER the one asked under the new:
+    // its row read would see the new project on the row, take that for a switch, carry the
+    // combined figure and add the old project's total on top of it, and the next poll would do
+    // the same the other way. The lock serializes the writes; this is what refuses the obsolete
+    // one. Asked inside the write's own transaction, so nothing can change between the check and
+    // the row.
+    const written = await runScopedOn(base, ctx, async (db) => {
+      const current = await resolveLangfuseConfig(db, tenantId);
+      if (!current || !sameCredential(current, cfg)) return false;
       for (const [i, source] of SOURCES.entries()) {
         const cost = seen[i];
         if (!cost) continue;
         await writeSuccess(db, tenantId, source, month, cost, now, projectKey);
       }
+      return true;
     });
+    if (!written) {
+      logger.info(
+        { tenantId: String(tenantId) },
+        "spend ceiling poll: the credential changed while asking; the answer was dropped",
+      );
+      return { status: "superseded" };
+    }
     return { status: "polled" };
   } catch (err) {
     // What Langfuse answered is not ours to store as it came: a parse error quotes the body, and a

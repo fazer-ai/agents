@@ -797,6 +797,69 @@ describe.skipIf(!dbUp)("the spend ceiling poll", () => {
       ]);
     });
 
+    // AN ANSWER FROM A CREDENTIAL THAT IS GONE IS DROPPED (review round 9). A save re-arms the job,
+    // so a poll asked under the old credential can land after the one asked under the new. Written,
+    // it would read the new project on the row as a switch and carry the combined figure on top of
+    // its own. Poll A is held inside its fetch; the credential is rotated to project B and poll B
+    // runs whole; A is then let go, and must write nothing.
+    test("a poll asked under a credential that changed meanwhile writes nothing", async () => {
+      const entry = await suDb.vaultEntry.findFirstOrThrow({
+        where: { tenantId: tenantA, name: "lf-poll" },
+        select: { id: true, secret: true },
+      });
+      let release: () => void = () => {};
+      const held = new Promise<void>((r) => {
+        release = r;
+      });
+      let paused = false;
+      const inner = langfuseStub(rows(40, 40), [], { projectId: "proj-a" });
+      const slowFetch = (async (
+        input: RequestInfo | URL,
+        init?: RequestInit,
+      ) => {
+        if (!paused) {
+          paused = true;
+          await held;
+        }
+        return inner.fetchFn(input, init);
+      }) as typeof fetch;
+      const a = pollTenantSpend(tenantA, {
+        base: appDb,
+        fetchFn: slowFetch,
+        now: NOW,
+      });
+      while (!paused) await Bun.sleep(5);
+      try {
+        await suDb.vaultEntry.update({
+          where: { id: entry.id },
+          data: {
+            secret: encryptJson({ publicKey: "pk-b", secretKey: "sk-b" }),
+          },
+        });
+        const b = langfuseStub(rows(20, 10), [], { projectId: "proj-b" });
+        expect(
+          (
+            await pollTenantSpend(tenantA, {
+              base: appDb,
+              fetchFn: b.fetchFn,
+              now: at(1),
+            })
+          ).status,
+        ).toBe("polled");
+        release();
+        expect((await a).status).toBe("superseded");
+        const row = await snapshot(tenantA, "inbox");
+        expect(Number(row?.costUsd)).toBe(20);
+        expect(row?.projectKey).toBe(`${BASE_URL}#proj-b`);
+        expect(Number(row?.carriedUsd)).toBe(0);
+      } finally {
+        await suDb.vaultEntry.update({
+          where: { id: entry.id },
+          data: { secret: entry.secret },
+        });
+      }
+    });
+
     test("a key rotated inside the same project carries nothing", async () => {
       const entry = await suDb.vaultEntry.findFirstOrThrow({
         where: { tenantId: tenantA, name: "lf-poll" },

@@ -231,13 +231,28 @@ export function SpendCeilingCard({
 
   const set = <K extends keyof SpendCeiling>(k: K, v: SpendCeiling[K]) =>
     setForm((f) => ({ ...f, [k]: v }));
+  // Empty is zero (no ceiling on that half); anything else has to be a finite amount at or above
+  // zero. A negative one is REFUSED rather than stored as zero (review round 6): zero means no
+  // ceiling, so rounding "-1" to it would switch the protection off in silence.
+  const parseUsd = (text: string): number | null => {
+    if (text.trim() === "") return 0;
+    const n = Number(text);
+    return Number.isFinite(n) && n >= 0 ? n : null;
+  };
+  const usdInvalid = {
+    inbox: parseUsd(usdText.inbox) === null,
+    playground: parseUsd(usdText.playground) === null,
+  };
+  const usdError = t(
+    "spendCeiling.usdInvalid",
+    "Enter zero or a positive amount in dollars.",
+  );
   const setUsd = (k: "inbox" | "playground", text: string) => {
     setUsdText((t) => ({ ...t, [k]: text }));
-    const n = Number(text);
-    set(
-      k === "inbox" ? "monthlyInboxUsd" : "monthlyPlaygroundUsd",
-      Number.isFinite(n) ? Math.max(0, n) : 0,
-    );
+    const n = parseUsd(text);
+    if (n !== null) {
+      set(k === "inbox" ? "monthlyInboxUsd" : "monthlyPlaygroundUsd", n);
+    }
   };
 
   async function save() {
@@ -389,6 +404,7 @@ export function SpendCeilingCard({
             "spendCeiling.usdHint",
             "US dollars per calendar month, as Langfuse costs the calls. 0 means no ceiling on this half.",
           )}
+          error={usdInvalid.inbox ? usdError : null}
         >
           <Input
             type="number"
@@ -404,6 +420,7 @@ export function SpendCeilingCard({
             "spendCeiling.usdHint",
             "US dollars per calendar month, as Langfuse costs the calls. 0 means no ceiling on this half.",
           )}
+          error={usdInvalid.playground ? usdError : null}
         >
           <Input
             type="number"
@@ -481,7 +498,11 @@ export function SpendCeilingCard({
       </FormField>
 
       <div className="flex justify-end">
-        <Button onClick={save} loading={saving}>
+        <Button
+          onClick={save}
+          loading={saving}
+          disabled={usdInvalid.inbox || usdInvalid.playground}
+        >
           {t("common.save", "Save")}
         </Button>
       </div>

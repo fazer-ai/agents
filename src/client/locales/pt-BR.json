@@ -2110,6 +2110,7 @@
       "updated": "Atualizado {{when}}"
     },
     "usdHint": "Dólares (USD) por mês corrente, como o Langfuse precifica as chamadas. 0 significa sem teto nesta metade.",
+    "usdInvalid": "Informe zero ou um valor positivo em dólares.",
     "warnAt": "Avisar em",
     "warnAtHint": "Percentual de um teto que dispara um aviso nos seus canais de alerta, para você saber antes de o agente ficar em silêncio. 0 desliga o aviso."
   },

@@ -101,7 +101,10 @@ moves the failure from **availability to staleness**, which is a failure the row
   added mid-month leaves the earlier calls unpriced (Langfuse does not re-price, measured on v3),
   and a call with no usage block is unpriced under a priced model. The metrics API cannot filter on
   a measure, but `avg(totalCost)` skips NULL where `count` does not, so `sum / avg` is the number of
-  generations that carried a cost; a model with any call the price did not reach is named.
+  generations that carried a cost; a model with any call the price did not reach is named. The
+  names follow the counters: an answer behind the row (ingestion lag) leaves the counters standing
+  and keeps the names too, and an answer at or past the row re-reads the list, so a model priced
+  since drops off.
 - **A billed call no callback saw reaches Langfuse by hand.** Vision reaches its provider by raw
   fetch, so the LangChain handler never observes it, and Langfuse only prices the generations it was
   shown: the ledger had the row and the ceiling had nothing, which left an extraction-only playground

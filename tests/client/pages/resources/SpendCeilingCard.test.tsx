@@ -172,6 +172,30 @@ describe("the spend ceiling card", () => {
     expect(has("openrouter/free-model")).toBe(true);
   });
 
+  // A NEGATIVE AMOUNT IS REFUSED, NOT ROUNDED TO ZERO (review round 6). Zero means no ceiling on
+  // that half, so storing it for "-1" would switch the protection off in silence; the field says
+  // why and the save waits until the amount is one the ceiling can take.
+  test("a negative amount cannot be saved, and the field says why", async () => {
+    installFetchStub(baseUsage());
+    renderCard();
+    await waitFor(() => {
+      expect(has("$22.50 of $20.00")).toBe(true);
+    });
+    const inputs = screen.getAllByRole("spinbutton") as HTMLInputElement[];
+    const inbox = inputs[0] as HTMLInputElement;
+    const save = screen.getByRole("button", {
+      name: "Save",
+    }) as HTMLButtonElement;
+    fireEvent.change(inbox, { target: { value: "-1" } });
+    expect(has("zero or a positive amount")).toBe(true);
+    expect(save.disabled).toBe(true);
+    fireEvent.click(save);
+    expect(requests.some((r) => r.method === "PUT")).toBe(false);
+    fireEvent.change(inbox, { target: { value: "12" } });
+    expect(has("zero or a positive amount")).toBe(false);
+    expect(save.disabled).toBe(false);
+  });
+
   // NOTHING READ IS SAID (review round 5): until the first poll lands the gate lets every call
   // through, and "$0 of $20" with nothing beside it reads as an enforcing ceiling at zero.
   test("a month nobody has polled yet says so beside the bar", async () => {

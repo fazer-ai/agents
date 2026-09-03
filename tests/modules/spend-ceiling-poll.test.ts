@@ -604,6 +604,52 @@ describe.skipIf(!dbUp)("the spend ceiling poll", () => {
     expect(Number((await snapshot(tenantA, "inbox"))?.costUsd)).toBe(9);
   });
 
+  // A PARTIAL ANSWER KEEPS THE NAMES TOO (review round 6). The counters are monotonic, so an answer
+  // behind the row (ingestion lag) leaves them standing; a list re-read from that same answer
+  // would drop a model whose calls are still in them. Behind keeps the names; a whole answer,
+  // which is any answer at or past the row, is the list as before, so a model priced since drops.
+  test("a partial answer keeps the names the retained counters still stand on", async () => {
+    const whole = langfuseStub({
+      [INBOX_ENV]: [
+        { providedModelName: "paid", sum_totalCost: 10, count_count: 10 },
+        { providedModelName: "free", sum_totalCost: 0, count_count: 5 },
+      ],
+      [PLAY_ENV]: [],
+    });
+    await pollTenantSpend(tenantA, {
+      base: appDb,
+      fetchFn: whole.fetchFn,
+      now: NOW,
+    });
+    const behind = langfuseStub({
+      [INBOX_ENV]: [
+        { providedModelName: "paid", sum_totalCost: 3, count_count: 3 },
+      ],
+      [PLAY_ENV]: [],
+    });
+    await pollTenantSpend(tenantA, {
+      base: appDb,
+      fetchFn: behind.fetchFn,
+      now: at(1),
+    });
+    const kept = await snapshot(tenantA, "inbox");
+    expect(kept?.tracedCalls).toBe(15);
+    expect(kept?.unpricedModels).toEqual(["free"]);
+    const priced = langfuseStub({
+      [INBOX_ENV]: [
+        { providedModelName: "paid", sum_totalCost: 12, count_count: 12 },
+        { providedModelName: "free", sum_totalCost: 1, count_count: 5 },
+      ],
+      [PLAY_ENV]: [],
+    });
+    await pollTenantSpend(tenantA, {
+      base: appDb,
+      fetchFn: priced.fetchFn,
+      now: at(2),
+    });
+    expect((await snapshot(tenantA, "inbox"))?.unpricedModels).toEqual([]);
+  });
+
   // THE INSTANT A FAILURE STREAK BEGAN (review round 5). The console says "failing since", so the
   // row has to keep the first failure of the streak, not the latest attempt; a success clears it,
   // and the next failure starts a new one.

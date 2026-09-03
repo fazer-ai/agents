@@ -2102,6 +2102,7 @@
       "updated": "Refreshed {{when}}"
     },
     "usdHint": "US dollars per calendar month, as Langfuse costs the calls. 0 means no ceiling on this half.",
+    "usdInvalid": "Enter zero or a positive amount in dollars.",
     "warnAt": "Warn at",
     "warnAtHint": "Percentage of a ceiling that triggers a warning on your alert channels, so you hear about it before the agent goes quiet. 0 disables the warning."
   },

@@ -285,11 +285,22 @@ async function writeSuccess(
         prev?.costedCalls ?? 0,
         carried.costed + seen.costedCalls,
       );
+      // A partial answer keeps the names too (review round 6): the counters above stand on the
+      // previous figure when the answer is behind it, and a list re-read from that answer would
+      // drop a model whose calls are still counted. At or past the row, the answer is whole and
+      // the list is re-read, so a model priced since drops off.
+      const behind =
+        prev !== null &&
+        !switched &&
+        carried.traced + seen.tracedCalls < prev.tracedCalls;
       const figure = {
         costUsd,
         tracedCalls,
         costedCalls,
-        unpricedModels: union(carried.unpriced, seen.unpricedModels),
+        unpricedModels: union(
+          behind ? asStringList(prev?.unpricedModels) : carried.unpriced,
+          seen.unpricedModels,
+        ),
         projectKey,
         carriedUsd: carried.usd,
         carriedTracedCalls: carried.traced,

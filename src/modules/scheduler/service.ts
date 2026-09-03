@@ -189,6 +189,56 @@ export async function upsertJobRow(
   return row.id;
 }
 
+// The SET-BASED sibling of `upsertJobRow`, for a caller arming many rows inside one transaction.
+//
+// Same row and the same `rearm` question, in one round trip. `reindexKnowledgeBase` commits the
+// status transition, the jobs and the audit row together, and a per-row loop there is N round trips
+// against a transaction with a five-second budget: an imported base with a few thousand documents
+// would blow the deadline and roll the whole reindex back.
+//
+// Deliberately narrower than the single-row version, because a bulk arming is a bulk arming: every
+// row shares one `kind`, one `rearm` and one `runAt`, and carries its own dedupe key and payload.
+// Anything that does not fit that shape stays on `upsertJobRow`. It lives HERE, beside it, because
+// `tests/modules/scheduler-row-writers.test.ts` fences row creation to this module.
+export async function upsertJobRows(
+  db: ScopedDb,
+  params: {
+    tenantId: bigint;
+    kind: SchedulerJobKind;
+    rearm: Rearm;
+    runAt: Date;
+    rows: { dedupeKey: string; payload?: Record<string, unknown> }[];
+  },
+): Promise<number> {
+  if (params.rows.length === 0) return 0;
+  const values = params.rows.map(
+    (r) => Prisma.sql`(
+      ${params.tenantId},
+      ${params.kind}::"SchedulerJobKind",
+      ${r.dedupeKey},
+      ${params.runAt},
+      ${JSON.stringify(r.payload ?? {})}::jsonb,
+      'PENDING'::"SchedulerJobStatus",
+      now(),
+      now())`,
+  );
+  return db.$executeRaw`
+    INSERT INTO scheduler_jobs
+      (tenant_id, kind, dedupe_key, run_at, payload, status, created_at, updated_at)
+    VALUES ${Prisma.join(values)}
+    ON CONFLICT (tenant_id, kind, dedupe_key) DO UPDATE
+       SET run_at = EXCLUDED.run_at,
+           status = 'PENDING'::"SchedulerJobStatus",
+           last_error = NULL,
+           payload = EXCLUDED.payload,
+           -- The payload is authoritative on a re-arm and its secret half travels with it, exactly
+           -- as the single-row version does; this shape never carries one, so it is cleared rather
+           -- than left behind from a previous arming.
+           payload_secret = NULL,
+           attempts = ${params.rearm === "new-work" ? Prisma.sql`0` : Prisma.sql`scheduler_jobs.attempts`},
+           updated_at = now()`;
+}
+
 // One live row per (tenant, kind, dedupeKey): a re-enqueue re-arms run_at and resets to PENDING.
 export async function enqueueJob(params: EnqueueParams): Promise<bigint> {
   const base = params.base ?? basePrisma;

@@ -15,7 +15,7 @@ import { emitDeadLetter } from "@/modules/flowlog/dead-letter";
 import {
   cancelPendingJob,
   enqueueJob,
-  upsertJobRow,
+  upsertJobRows,
 } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 import { readEmbeddingSettings } from "@/modules/tenant-settings/service";
@@ -242,7 +242,7 @@ async function readDocForAudit(
   >`
     SELECT id, knowledge_base_id, title, source_type, file_name, mime_type, status,
            length(content) AS chars,
-           (${compareText}::text IS NOT NULL AND content IS DISTINCT FROM ${compareText}::text) AS text_moved
+           (content IS DISTINCT FROM ${compareText}::text) AS text_moved
       FROM knowledge_documents
      WHERE id = ${id}
        FOR UPDATE`;
@@ -471,7 +471,10 @@ export async function updateDocument(
       hasText ? (params.text as string) : null,
     );
     if (!existing) throw new NotFoundError("document not found");
-    const reingest = existing.textMoved;
+    // `hasText` here rather than in the statement: a null comparand is DISTINCT FROM any content,
+    // so the SQL answers `true` for a title-only edit. Asking it in the query would mean binding the
+    // body a second time, which is the transfer this helper exists to avoid.
+    const reingest = hasText && existing.textMoved;
     await db.knowledgeDocument.update({
       where: { id },
       data: {
@@ -691,19 +694,19 @@ export async function reindexKnowledgeBase(
     // documents sitting in PENDING with no job: they are no longer UNINDEXED, so the next bulk
     // reindex does not select them either, and only a per-document retry gets them back. Committing
     // the status, the jobs and the row together makes the count in that row true by construction.
-    for (const d of moved) {
-      await upsertJobRow(db, {
-        tenantId,
-        kind: "RAG_INGEST",
+    await upsertJobRows(db, {
+      tenantId,
+      kind: "RAG_INGEST",
+      runAt: new Date(),
+      // NOTE: Same as the single-document retry, in bulk: an operator asked for the whole base to
+      // be indexed again, and a document that failed on a previous embedding provider is exactly
+      // the one this is for.
+      rearm: "new-work",
+      rows: moved.map((d) => ({
         dedupeKey: `doc:${d.id}`,
-        runAt: new Date(),
-        // NOTE: Same as the single-document retry, in bulk: an operator asked for the whole base to
-        // be indexed again, and a document that failed on a previous embedding provider is exactly
-        // the one this is for.
-        rearm: "new-work",
         payload: { documentId: String(d.id) },
-      });
-    }
+      })),
+    });
     if (moved.length > 0) {
       await auditMutation(db, ctx, {
         action: "knowledge.reindex",

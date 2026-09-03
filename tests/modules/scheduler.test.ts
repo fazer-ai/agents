@@ -16,6 +16,7 @@ import {
   reapStaleJobs,
   rescheduleJob,
   retireJobsByDedupeKey,
+  upsertJobRows,
 } from "@/modules/scheduler/service";
 import { registerJobHandler, runClaimed } from "@/modules/scheduler/worker";
 
@@ -161,6 +162,112 @@ describe.skipIf(!dbUp)("scheduler", () => {
   // opposite reasons — DEBOUNCE because it must be fast, MEMORY_COMPACT because it is slow and fires
   // for every agent on every closed attendance — and neither may be picked up here, or the split
   // buys nothing.
+  // The set-based sibling of the single-row upsert. It exists because a caller that arms many rows
+  // INSIDE one transaction pays a round trip per row against a five-second budget, and it has to
+  // answer the same two questions the single-row version does: what a re-arm means for the failure
+  // budget, and whether the payload it carries is authoritative.
+  describe("arming many rows at once", () => {
+    const key = (n: number) => `bulk-${process.pid}-${n}`;
+    const sysCtx = () => ({
+      tenantId,
+      userId: null,
+      role: "TENANT_ADMIN" as const,
+    });
+
+    test("arms every row it is given, and nothing for an empty list", async () => {
+      expect(
+        await runScopedOn(appDb, sysCtx(), (db) =>
+          upsertJobRows(db, {
+            tenantId,
+            kind: "RAG_INGEST",
+            rearm: "new-work",
+            runAt: past(),
+            rows: [],
+          }),
+        ),
+      ).toBe(0);
+      const written = await runScopedOn(appDb, sysCtx(), (db) =>
+        upsertJobRows(db, {
+          tenantId,
+          kind: "RAG_INGEST",
+          rearm: "new-work",
+          runAt: past(),
+          rows: [
+            { dedupeKey: key(1), payload: { documentId: "1" } },
+            { dedupeKey: key(2), payload: { documentId: "2" } },
+          ],
+        }),
+      );
+      expect(written).toBe(2);
+      const rows = await suDb.schedulerJob.findMany({
+        where: { tenantId, dedupeKey: { in: [key(1), key(2)] } },
+        orderBy: { dedupeKey: "asc" },
+        select: { status: true, attempts: true, payload: true },
+      });
+      expect(rows.map((r) => r.status)).toEqual(["PENDING", "PENDING"]);
+      expect(rows.map((r) => r.attempts)).toEqual([0, 0]);
+      expect(rows.map((r) => r.payload)).toEqual([
+        { documentId: "1" },
+        { documentId: "2" },
+      ]);
+    });
+
+    test("a re-arm answers the budget question the same way the single-row upsert does", async () => {
+      await suDb.schedulerJob.updateMany({
+        where: { tenantId, dedupeKey: key(1) },
+        data: { attempts: 4, status: "FAILED", lastError: "boom" },
+      });
+      await suDb.schedulerJob.updateMany({
+        where: { tenantId, dedupeKey: key(2) },
+        data: { attempts: 4, status: "FAILED", lastError: "boom" },
+      });
+      await runScopedOn(appDb, sysCtx(), (db) =>
+        upsertJobRows(db, {
+          tenantId,
+          kind: "RAG_INGEST",
+          rearm: "same-work",
+          runAt: past(),
+          rows: [{ dedupeKey: key(1), payload: { documentId: "1b" } }],
+        }),
+      );
+      await runScopedOn(appDb, sysCtx(), (db) =>
+        upsertJobRows(db, {
+          tenantId,
+          kind: "RAG_INGEST",
+          rearm: "new-work",
+          runAt: past(),
+          rows: [{ dedupeKey: key(2), payload: { documentId: "2b" } }],
+        }),
+      );
+      const same = await suDb.schedulerJob.findFirstOrThrow({
+        where: { tenantId, dedupeKey: key(1) },
+        select: {
+          attempts: true,
+          status: true,
+          lastError: true,
+          payload: true,
+        },
+      });
+      const fresh = await suDb.schedulerJob.findFirstOrThrow({
+        where: { tenantId, dedupeKey: key(2) },
+        select: {
+          attempts: true,
+          status: true,
+          lastError: true,
+          payload: true,
+        },
+      });
+      // Same work pushed again keeps the budget it has already spent; new work gets a fresh one.
+      expect(same.attempts).toBe(4);
+      expect(fresh.attempts).toBe(0);
+      // Both are live again, with the payload of the LATEST arming.
+      expect([same.status, fresh.status]).toEqual(["PENDING", "PENDING"]);
+      expect([same.lastError, fresh.lastError]).toEqual([null, null]);
+      expect(same.payload).toEqual({ documentId: "1b" });
+      expect(fresh.payload).toEqual({ documentId: "2b" });
+    });
+  });
+
   test("the shared lane claims neither debounce nor compaction jobs", async () => {
     const shared = await enqueueJob({
       rearm: "same-work",

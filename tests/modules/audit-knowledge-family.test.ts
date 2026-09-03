@@ -335,6 +335,37 @@ describe.skipIf(!dbUp)("the knowledge family records its own changes", () => {
     await collect();
   });
 
+  // A title-only edit is metadata: the chunks are the content, so nothing is re-embedded and the
+  // document does not leave the state it was in.
+  test("renaming a document records the rename and does not re-index it", async () => {
+    const doc = await makeDoc();
+    await suDb.knowledgeDocument.update({
+      where: { id: doc.id },
+      data: { status: "READY", chunkCount: 3 },
+    });
+    await clearAudit();
+    await updateDocument(ctx(), doc.id, { title: "Outro título" }, appDb);
+    const [row, ...rest] = await rows();
+    expect(rest).toEqual([]);
+    expect(row?.action).toBe("knowledge_document.update");
+    expect(row?.before).toMatchObject({ status: "READY" });
+    expect(row?.after).toMatchObject({
+      title: "Outro título",
+      status: "READY",
+      chars: BODY.length,
+      reindexed: false,
+    });
+    // And the document really did not go back to the queue: it is still the indexed one.
+    expect(
+      await suDb.knowledgeDocument.findUniqueOrThrow({
+        where: { id: doc.id },
+        select: { status: true, chunkCount: true },
+      }),
+    ).toEqual({ status: "READY", chunkCount: 3 });
+    await collect();
+    await deleteDocument(ctx(), doc.id, appDb);
+  });
+
   // A body re-submitted byte for byte is not a change, and the console sends the whole form.
   test("an edit that moves nothing records nothing", async () => {
     const doc = await makeDoc();

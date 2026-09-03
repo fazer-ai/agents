@@ -118,10 +118,12 @@ const RENDER_SOURCE = `(function () {
 
 function makeRenderer(vm: QuickJSContext): {
   render: (value: QuickJSHandle) => string;
+  handle: QuickJSHandle;
   dispose: () => void;
 } {
   const fn = vm.unwrapResult(vm.evalCode(RENDER_SOURCE, "render.js"));
   return {
+    handle: fn,
     render: (value) => {
       const r = vm.callFunction(fn, vm.undefined, value);
       if (r.error) {
@@ -143,34 +145,71 @@ function clip(s: string, max: number): string {
   return s.length <= max ? s : `${clipText(s, max)}…[truncated]`;
 }
 
-// `console` with the four methods a snippet reaches for, all writing to the same captured list.
+// `console` with the five methods a snippet reaches for, all writing to the same captured list.
 // Each argument is rendered like a result would be, so `console.log({a: 1})` reads back as JSON and
-// not as "[object Object]".
+// not as "[object Object]". The methods are VM code, and they cut each line to the budget BEFORE
+// handing it to the host: a `console.log("x".repeat(15_000_000))` used to cross the boundary whole
+// — copied out of the interpreter's 32 MB heap into the host's, where nothing bounds it — and
+// measured +75 MB of RSS for one call, +143 MB for eight at once (PR #485, round 8). What reaches
+// `emit` is at most one budget's worth, and the budget also caps how many calls reach it at all.
+const CONSOLE_SOURCE = `(function (emit, render, maxChars) {
+  var total = 0;
+  // One past the budget, so the host still sees the overflow and writes its marker.
+  function cut(s) { return s.length > maxChars ? s.slice(0, maxChars + 1) : s; }
+  function line(args) {
+    var parts = [];
+    for (var i = 0; i < args.length; i++) {
+      var a = args[i];
+      parts.push(cut(typeof a === "string" ? a : render(a)));
+    }
+    return cut(parts.join(" "));
+  }
+  var console = {};
+  ["log", "info", "warn", "error", "debug"].forEach(function (name) {
+    console[name] = function () {
+      if (total >= maxChars) return;
+      var l = line(arguments);
+      // NOTE: The separator counts, so a bare console.log() in a loop spends the budget too: with
+      // only the length counted, a million empty calls built a million-entry list on the host side
+      // of the memory ceiling (PR #485, round 2).
+      total += l.length + 1;
+      emit(l);
+    };
+  });
+  globalThis.console = console;
+})`;
+
+const UNCUT_CONSOLE_LINE =
+  "[console line reached the sandbox boundary uncut and was dropped]";
+
 function installConsole(
   vm: QuickJSContext,
-  render: (value: QuickJSHandle) => string,
+  render: QuickJSHandle,
   logs: string[],
   maxChars: number,
 ): void {
-  const consoleObj = vm.newObject();
-  let total = 0;
-  for (const method of ["log", "info", "warn", "error", "debug"]) {
-    const fn = vm.newFunction(method, (...args: QuickJSHandle[]) => {
-      if (total >= maxChars) return;
-      const line = args
-        .map((a) => (vm.typeof(a) === "string" ? vm.getString(a) : render(a)))
-        .join(" ");
-      // NOTE: The separator counts, so a bare `console.log()` in a loop spends the budget too: with
-      // only `line.length` counted, a million empty calls built a million-entry array on this side
-      // of the memory ceiling (PR #485, round 2).
-      total += line.length + 1;
-      logs.push(clip(line, maxChars));
-    });
-    vm.setProp(consoleObj, method, fn);
-    fn.dispose();
-  }
-  vm.setProp(vm.global, "console", consoleObj);
-  consoleObj.dispose();
+  const emit = vm.newFunction("__emit", (line: QuickJSHandle) => {
+    // NOTE: The length is read off the VM string without copying it, and a line the VM side did
+    // not cut is refused rather than copied: that is the fence on "bounded before it crosses",
+    // and what the test for it looks for.
+    const lengthHandle = vm.getProp(line, "length");
+    const length = vm.getNumber(lengthHandle);
+    lengthHandle.dispose();
+    if (length > maxChars + 1) {
+      logs.push(UNCUT_CONSOLE_LINE);
+      return;
+    }
+    // `clip` is the astral-safe cut and the marker.
+    logs.push(clip(vm.getString(line), maxChars));
+  });
+  const factory = vm.unwrapResult(vm.evalCode(CONSOLE_SOURCE, "console.js"));
+  const budget = vm.newNumber(maxChars);
+  vm.unwrapResult(
+    vm.callFunction(factory, vm.undefined, emit, render, budget),
+  ).dispose();
+  budget.dispose();
+  factory.dispose();
+  emit.dispose();
 }
 
 // Two validators the snippet can call instead of writing the algorithm. They exist because of a
@@ -742,7 +781,7 @@ function run(req: SandboxRequest): SandboxReply {
     );
   let unwound = false;
   try {
-    installConsole(vm, render, logs, req.maxChars);
+    installConsole(vm, renderer.handle, logs, req.maxChars);
     installZone(vm, req.clock.timezone);
     installPrelude(vm);
     installClock(vm, req.clock);

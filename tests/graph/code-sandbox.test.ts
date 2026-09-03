@@ -409,6 +409,20 @@ describe("runSandboxedCode", () => {
     });
   });
 
+  // Round 8, the same century bug seen from inside: year 99 rendered as 1999 with an offset of
+  // minus a billion minutes. Reference values from Bun under TZ=America/Sao_Paulo (LMT, −03:06:28).
+  test("a date in the first century is in the zone too", async () => {
+    const out = await runSandboxedCode(
+      `const d = new Date(0); d.setUTCFullYear(99, 5, 15); d.setUTCHours(12, 0, 0, 0);
+       [d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getTimezoneOffset(), d.toISOString()]`,
+      { clock: { timezone: "America/Sao_Paulo" } },
+    );
+    expect(out).toMatchObject({
+      kind: "value",
+      value: JSON.stringify([99, 5, 15, 8, 186, "0099-06-15T12:00:00.000Z"]),
+    });
+  });
+
   // Round 7: the renderer named `Date`, `JSON`, `Object`… as globals, resolved when it ran — after
   // the snippet, whose own `const Date = 1` had shadowed them, so the verdict rendered as
   // "[object Object]". The bindings are taken when the renderer is made, before any snippet.
@@ -631,6 +645,29 @@ describe("runSandboxedCode", () => {
   // empty `console.log()` spent nothing against the budget, so a loop of them built an array of a
   // million entries on this side of the memory ceiling; and `e.name` is one assignment away from a
   // megabyte, while only the message was clipped.
+  // Round 8: a logged string crossed the boundary WHOLE and was cut on the host side — copied out
+  // of the interpreter's 32 MB heap into the host's, where nothing bounds it: +75 MB of RSS for one
+  // call, +143 MB for eight at once, measured. The console methods now cut inside the VM, and the
+  // host reads the length off the VM string without copying and refuses an uncut line with a
+  // sentinel; that sentinel is what a host-side cut would leave here.
+  test("a huge console line is cut before it crosses the sandbox boundary", async () => {
+    const huge = await runSandboxedCode(
+      `console.log("x".repeat(15_000_000)); 1`,
+    );
+    expect(huge).toMatchObject({
+      kind: "value",
+      logs: [`${"x".repeat(4000)}…[truncated]`],
+    });
+    // A rendered argument is cut inside too, and the line keeps its marker.
+    const rendered = await runSandboxedCode(
+      `console.log("y".repeat(10), { k: "z".repeat(9000) }); 1`,
+    );
+    const line = (rendered as { logs: string[] }).logs[0] ?? "";
+    expect(line.startsWith("yyyyyyyyyy {")).toBe(true);
+    expect(line.endsWith("…[truncated]")).toBe(true);
+    expect(line.length).toBe(4000 + "…[truncated]".length);
+  });
+
   test("empty console calls and a huge error name are bounded like everything else", async () => {
     const empties = await runSandboxedCode(
       `for (let i = 0; i < 1000000; i++) console.log(); "done"`,
@@ -696,6 +733,18 @@ describe("runSandboxedCode", () => {
 // The text the model reads, as a decision table: one row per outcome, and every row that is not a
 // value tells the model what to change.
 describe("localIsoNow", () => {
+  // Round 8: `Date.UTC` reads a year of 0–99 as 1900–1999, so the wall clock of a date in that
+  // range was rebuilt nineteen centuries late and the offset came out as sixteen million hours.
+  test("a year below 100 keeps its own century", () => {
+    const y99 = new Date(0);
+    y99.setUTCFullYear(99, 5, 15);
+    y99.setUTCHours(12, 0, 0, 0);
+    expect(localIsoNow("America/Sao_Paulo", y99)).toBe(
+      "0099-06-15T08:53:32-03:06",
+    );
+    expect(localIsoNow("UTC", y99)).toBe("0099-06-15T12:00:00+00:00");
+  });
+
   const at = new Date("2026-01-15T01:30:00Z");
   const rows: Array<[string, string]> = [
     ["America/Sao_Paulo", "2026-01-14T22:30:00-03:00"],

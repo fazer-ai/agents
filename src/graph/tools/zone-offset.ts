@@ -67,14 +67,13 @@ export function zoneOffsetMinutes(
   } catch {
     return 0;
   }
-  const wallAsUtc = Date.UTC(
-    w.year,
-    w.month - 1,
-    w.day,
-    w.hour,
-    w.minute,
-    w.second,
-  );
+  // NOTE: Not `Date.UTC`: it reads a year of 0–99 as 1900–1999, and the offset for a date in that
+  // range came out as sixteen million hours (PR #485, round 8). `setUTCFullYear` takes the year
+  // as written.
+  const wall = new Date(0);
+  wall.setUTCFullYear(w.year, w.month - 1, w.day);
+  wall.setUTCHours(w.hour, w.minute, w.second, 0);
+  const wallAsUtc = wall.getTime();
   const wholeSecondMs = Math.floor(instantMs / 1000) * 1000;
   const minutes = Math.round((wallAsUtc - wholeSecondMs) / 60_000);
   return Number.isFinite(minutes) ? minutes : 0;

@@ -56,6 +56,16 @@ moves the failure from **availability to staleness**, which is a failure the row
   with load, so during the burst the ceiling exists for a total can read *lower* than the last one.
   A lower answer is never written over a higher one, and a poll that errors touches only the failure
   pair (`pollError`, `pollFailedAt`); the last good figure and its `polledAt` stand.
+- **The figure follows the month, not the project.** A tenant that points its Langfuse at another
+  project mid-month starts a new series there, and the floor above would sit on the old project's
+  last figure while the new one climbed from zero underneath it: $40 there plus $20 here would be a
+  $40 row. So the poll asks Langfuse which project it is talking to (`GET /api/public/projects`, one
+  call per poll on the same credential) and keeps the answer on the row (`projectKey`, keyed under
+  the instance); when it changes, what the row stood at is carried (`carriedUsd` and the two
+  counters, taken once, at the switch), and the figure is the carry plus the current project's own
+  total. Identity is the project's id, never the credential: a key rotated inside a project carries
+  nothing. A project that cannot be named is a failed poll. Switching back to the first project in
+  the same month counts its spend twice, which is the over-refusing direction.
 - **The overshoot bound is the poll period plus the ingestion lag, and the two add.** A tenant can
   spend for up to that long past the number before the gate sees it. Lowering the period buys lead
   time at one Langfuse query per tenant per period.

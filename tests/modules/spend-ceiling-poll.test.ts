@@ -102,18 +102,35 @@ interface Seen {
   auth: string | null;
 }
 
-// A Langfuse that answers per ENVIRONMENT, and records what it was asked.
+// A Langfuse that answers per ENVIRONMENT, and records what it was asked. `seen` is the metrics
+// queries; the projects endpoint (the identity the figure is carried across) is counted apart, so
+// a test about the queries does not have to know it is asked first.
 function langfuseStub(
   rowsByEnv: Record<string, unknown[] | Error | number>,
   seen: Seen[] = [],
+  opts: { projectId?: string; projectStatus?: number } = {},
 ) {
+  const projects = { calls: 0, auth: [] as Array<string | null> };
   const fetchFn = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input instanceof Request ? input.url : input));
+    const headers = new Headers(init?.headers);
+    if (url.pathname === "/api/public/projects") {
+      projects.calls += 1;
+      projects.auth.push(headers.get("authorization"));
+      if (opts.projectStatus !== undefined) {
+        return new Response("{}", { status: opts.projectStatus });
+      }
+      return new Response(
+        JSON.stringify({
+          data: [{ id: opts.projectId ?? "proj-1", name: "P" }],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }
     const query = JSON.parse(url.searchParams.get("query") ?? "{}") as Record<
       string,
       unknown
     >;
-    const headers = new Headers(init?.headers);
     seen.push({ url, query, auth: headers.get("authorization") });
     const env = (
       (query.filters as Array<{ column: string; value: string }>) ?? []
@@ -128,7 +145,7 @@ function langfuseStub(
       headers: { "content-type": "application/json" },
     });
   }) as typeof fetch;
-  return { fetchFn, seen };
+  return { fetchFn, seen, projects };
 }
 
 const INBOX_ENV = config.env;
@@ -220,7 +237,7 @@ describe.skipIf(!dbUp)("the spend ceiling poll", () => {
   });
 
   test("asks Langfuse for the month, per environment, and writes what it answered", async () => {
-    const { fetchFn, seen } = langfuseStub({
+    const { fetchFn, seen, projects } = langfuseStub({
       [INBOX_ENV]: [
         {
           providedModelName: "gpt-5.4-mini",
@@ -257,6 +274,9 @@ describe.skipIf(!dbUp)("the spend ceiling poll", () => {
     expect(seen.map((s) => s.url.origin)).toEqual([BASE_URL, BASE_URL]);
     const expectedAuth = `Basic ${Buffer.from("pk-poll:sk-poll").toString("base64")}`;
     expect(seen.map((s) => s.auth)).toEqual([expectedAuth, expectedAuth]);
+    // And which project it is talking to, once, with the same credential: the identity the figure
+    // is carried across (see "the figure across Langfuse projects").
+    expect(projects).toEqual({ calls: 1, auth: [expectedAuth] });
     const envs = seen.map(
       (s) =>
         (s.query.filters as Array<{ column: string; value: string }>).find(
@@ -479,6 +499,131 @@ describe.skipIf(!dbUp)("the spend ceiling poll", () => {
     expect(inbox?.pollError).toBe("langfuse-not-configured");
   });
 
+  // THE FIGURE FOLLOWS THE MONTH, NOT THE PROJECT (review round 3). A tenant that points its
+  // Langfuse at another project mid-month starts a new series there: the new project's total
+  // begins near zero, and a monotonic floor taken over the old figure would sit at $40 while
+  // $40 + $20 was spent. So the poll asks which project it is talking to and, when that changes,
+  // carries what the old one stood at into the row: the figure is the carry plus the new project's
+  // own total. A key rotated INSIDE a project is the same project and carries nothing: identity is
+  // the project's id, never the credential.
+  describe("the figure across Langfuse projects", () => {
+    const rows = (cost: number, calls: number) => ({
+      [INBOX_ENV]: [
+        { providedModelName: "m", sum_totalCost: cost, count_count: calls },
+      ],
+      [PLAY_ENV]: [],
+    });
+    const at = (minutes: number) => new Date(NOW.getTime() + minutes * 60_000);
+
+    test("a project switched mid-month carries what the first one stood at", async () => {
+      const first = langfuseStub(rows(40, 40), [], { projectId: "proj-a" });
+      await pollTenantSpend(tenantA, {
+        base: appDb,
+        fetchFn: first.fetchFn,
+        now: NOW,
+      });
+      const before = await snapshot(tenantA, "inbox");
+      expect(Number(before?.costUsd)).toBe(40);
+      expect(before?.projectKey).toBe(`${BASE_URL}#proj-a`);
+      expect(Number(before?.carriedUsd)).toBe(0);
+
+      const second = langfuseStub(rows(20, 10), [], { projectId: "proj-b" });
+      await pollTenantSpend(tenantA, {
+        base: appDb,
+        fetchFn: second.fetchFn,
+        now: at(1),
+      });
+      const switched = await snapshot(tenantA, "inbox");
+      expect(Number(switched?.costUsd)).toBe(60);
+      expect(switched?.tracedCalls).toBe(50);
+      expect(switched?.costedCalls).toBe(50);
+      expect(switched?.projectKey).toBe(`${BASE_URL}#proj-b`);
+      expect(Number(switched?.carriedUsd)).toBe(40);
+      expect(switched?.carriedTracedCalls).toBe(40);
+
+      // The carry is taken ONCE, at the switch: the new project's next answer adds to it.
+      const later = langfuseStub(rows(25, 12), [], { projectId: "proj-b" });
+      await pollTenantSpend(tenantA, {
+        base: appDb,
+        fetchFn: later.fetchFn,
+        now: at(2),
+      });
+      expect(Number((await snapshot(tenantA, "inbox"))?.costUsd)).toBe(65);
+      // And the floor still holds inside the new series.
+      const behind = langfuseStub(rows(15, 8), [], { projectId: "proj-b" });
+      await pollTenantSpend(tenantA, {
+        base: appDb,
+        fetchFn: behind.fetchFn,
+        now: at(3),
+      });
+      expect(Number((await snapshot(tenantA, "inbox"))?.costUsd)).toBe(65);
+    });
+
+    test("a key rotated inside the same project carries nothing", async () => {
+      const entry = await suDb.vaultEntry.findFirstOrThrow({
+        where: { tenantId: tenantA, name: "lf-poll" },
+        select: { id: true, secret: true },
+      });
+      const first = langfuseStub(rows(40, 40), [], { projectId: "proj-a" });
+      await pollTenantSpend(tenantA, {
+        base: appDb,
+        fetchFn: first.fetchFn,
+        now: NOW,
+      });
+      try {
+        await suDb.vaultEntry.update({
+          where: { id: entry.id },
+          data: {
+            secret: encryptJson({
+              publicKey: "pk-rotated",
+              secretKey: "sk-rotated",
+            }),
+          },
+        });
+        const rotated = langfuseStub(rows(41, 41), [], { projectId: "proj-a" });
+        await pollTenantSpend(tenantA, {
+          base: appDb,
+          fetchFn: rotated.fetchFn,
+          now: at(1),
+        });
+        // The new key was the one used, and the figure is the project's own, not doubled.
+        expect(rotated.seen[0]?.auth).toBe(
+          `Basic ${Buffer.from("pk-rotated:sk-rotated").toString("base64")}`,
+        );
+        const row = await snapshot(tenantA, "inbox");
+        expect(Number(row?.costUsd)).toBe(41);
+        expect(Number(row?.carriedUsd)).toBe(0);
+      } finally {
+        await suDb.vaultEntry.update({
+          where: { id: entry.id },
+          data: { secret: entry.secret },
+        });
+      }
+    });
+
+    test("a project that cannot be named is a failed poll, and the figure stands", async () => {
+      const first = langfuseStub(rows(40, 40), [], { projectId: "proj-a" });
+      await pollTenantSpend(tenantA, {
+        base: appDb,
+        fetchFn: first.fetchFn,
+        now: NOW,
+      });
+      const nameless = langfuseStub(rows(45, 45), [], { projectStatus: 503 });
+      const out = await pollTenantSpend(tenantA, {
+        base: appDb,
+        fetchFn: nameless.fetchFn,
+        now: at(1),
+      });
+      expect(out.status).toBe("failed");
+      // Nothing was summed on a project that could not be named.
+      expect(nameless.seen).toHaveLength(0);
+      const row = await snapshot(tenantA, "inbox");
+      expect(Number(row?.costUsd)).toBe(40);
+      expect(row?.pollError).toContain("503");
+      expect(row?.polledAt?.toISOString()).toBe(NOW.toISOString());
+    });
+  });
+
   describe("the job", () => {
     test("a tenant with the ceiling off ends the loop, without asking Langfuse", async () => {
       const { fetchFn, seen } = langfuseStub({});
@@ -529,6 +674,28 @@ describe.skipIf(!dbUp)("the spend ceiling poll", () => {
       expect((await snapshot(tenantA, "inbox"))?.pollError).toContain(
         "ECONNREFUSED",
       );
+    });
+
+    // The settings read sits BEFORE the poll's own try (review round 3): a pool with no free
+    // connection there threw out of the handler, and five of those in a row is DEAD, the one
+    // outcome this job must never reach. It is a failure like any other: log, re-arm, ask again.
+    test("a settings read that fails keeps the loop alive too", async () => {
+      const { fetchFn, seen } = langfuseStub({});
+      const broken = appDb.$extends({
+        query: {
+          tenant: {
+            async findUnique() {
+              throw new Error("pool exhausted");
+            },
+          },
+        },
+      }) as unknown as PrismaClient;
+      const result = await spendPollHandler(job(tenantA), broken, {
+        fetchFn,
+        now: NOW,
+      });
+      expect(result.outcome).toBe("reschedule");
+      expect(seen).toHaveLength(0);
     });
   });
 

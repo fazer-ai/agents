@@ -330,32 +330,32 @@ model ChatwootAgentBot {
 // event) → dedupes transport retries; semantic dedup (no double reply) is the per-conversation
 // advisory lock + attribution re-read in the runtime, not this row.
 model ChatwootWebhookDelivery {
-  id                 BigInt                @id @default(autoincrement())
-  tenantId           BigInt                @map("tenant_id")
-  chatwootInstanceId BigInt                @map("chatwoot_instance_id")
-  deliveryId         String                @map("delivery_id")
-  event              String
-  status             InboundDeliveryStatus @default(PENDING)
-  attempts           Int                   @default(0)
-  receivedAt         DateTime              @default(now()) @map("received_at")
-  processedAt        DateTime?             @map("processed_at")
+  id                  BigInt                @id @default(autoincrement())
+  tenantId            BigInt                @map("tenant_id")
+  chatwootInstanceId  BigInt                @map("chatwoot_instance_id")
+  deliveryId          String                @map("delivery_id")
+  event               String
+  status              InboundDeliveryStatus @default(PENDING)
+  attempts            Int                   @default(0)
+  receivedAt          DateTime              @default(now()) @map("received_at")
+  processedAt         DateTime?             @map("processed_at")
   // When the CURRENT attempt claimed this row (the tx1 CAS `PENDING -> PROCESSING`). The staleness
   // clock for a row being worked, and it has to be separate from `receivedAt`: a redelivery is
   // deliberately allowed to claim a row stranded on PENDING (see `recordAndProcessChatwootDelivery`),
   // and measuring that live attempt from the ORIGINAL receipt makes it look abandoned the moment it
   // starts. NULL = never claimed, so the row is still measured from receipt.
-  claimedAt          DateTime?             @map("claimed_at")
+  claimedAt           DateTime?             @map("claimed_at")
   // The Chatwoot display id this delivery was about. What the stranded-delivery sweep files its
   // report against, and deliberately the only thing stored: an id, never the event body, so nothing
   // here can hold what the customer wrote. Null on an event that names no conversation, and on every
   // row written before this column existed.
-  conversationId     Int?                  @map("conversation_id")
+  conversationId      Int?                  @map("conversation_id")
   // The INBOUND message this delivery carried, when it carried one. Null on every event that is not
   // a customer message — a conversation update, the bot's own reply coming back around — which is
   // what lets the sweep tell a row where nothing was lost from one where a customer went unanswered.
   // Matched by id when a turn retires the rows it covered, never read for content: an id, like the
   // column above, and nothing here can hold what the customer wrote.
-  inboundMessageId   Int?                  @map("inbound_message_id")
+  inboundMessageId    Int?                  @map("inbound_message_id")
   // WHAT THIS DELIVERY OWED, when what it owed was a human-reply takeover (issue #439). `composer`
   // or `device`, from `humanReplyShape` — the half of the route the PAYLOAD answers, written at
   // INSERT so a process that dies before the takeover still leaves the fact behind. Null on every
@@ -367,21 +367,21 @@ model ChatwootWebhookDelivery {
   //
   // Not the event body, and not a sender: the same rule the two ids above follow. What a person
   // wrote is never held here.
-  humanReplyShape    String?               @map("human_reply_shape")
+  humanReplyShape     String?               @map("human_reply_shape")
   // WHICH BOT ROUTE this delivery arrived on — the Chatwoot Agent Bot id the ownership question was
   // asked about when it was live. Chatwoot fans one message to up to TWO routes (the conversation's
   // assignee bot AND the inbox's), and only the route that holds the conversation passes the gate,
   // so a recovery that derived the identity from the inbox would ask a different question than the
   // delivery did and refuse the takeover it exists to run. Null on a delivery whose route resolved
   // to no bot, and on every row written before this column existed.
-  routeAgentBotId    Int?                  @map("route_agent_bot_id")
+  routeAgentBotId     Int?                  @map("route_agent_bot_id")
   // WHICH MESSAGE the owed takeover was about (issue #469), written at INSERT beside the shape. The
   // recovery of issue #439 rebuilds a takeover from this row, and the fence it has to pass is
   // ordered by the source's message sequence — a coordinate the row is the only place to hold, since
   // the payload is never stored (issue #228) and `inboundMessageId` is null on a colleague's reply
   // by construction. NULL on every delivery that owed no takeover, and on every row an older build
   // wrote, where the recovery falls back to its unfenced form.
-  humanReplyMessageId Int?                 @map("human_reply_message_id")
+  humanReplyMessageId Int?                  @map("human_reply_message_id")
 
   tenant   Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   instance ChatwootInstance @relation(fields: [chatwootInstanceId], references: [id], onDelete: Cascade)
@@ -1590,22 +1590,29 @@ model PromptVariantAssignment {
 // `costedCalls` and `unpricedModels` reconcile the figure against the local ledger, because Langfuse
 // prices a model it does not know at zero and a ceiling that undercounts has to say so.
 model SpendCostSnapshot {
-  id             BigInt    @id @default(autoincrement())
-  tenantId       BigInt    @map("tenant_id")
+  id                 BigInt    @id @default(autoincrement())
+  tenantId           BigInt    @map("tenant_id")
   // "inbox" | "playground": the same split `LlmUsage.source` carries, told apart on the Langfuse
   // side by the trace's environment (`environmentForSource`).
-  source         String
+  source             String
   // The calendar month, UTC, as `monthStart` derives it.
-  monthStart     DateTime  @map("month_start")
-  costUsd        Decimal   @default(0) @map("cost_usd") @db.Decimal(14, 6)
-  tracedCalls    Int       @default(0) @map("traced_calls")
-  costedCalls    Int       @default(0) @map("costed_calls")
-  unpricedModels Json      @default("[]") @map("unpriced_models")
-  polledAt       DateTime? @map("polled_at")
-  pollError      String?   @map("poll_error")
-  pollFailedAt   DateTime? @map("poll_failed_at")
-  createdAt      DateTime  @default(now()) @map("created_at")
-  updatedAt      DateTime  @updatedAt @map("updated_at")
+  monthStart         DateTime  @map("month_start")
+  costUsd            Decimal   @default(0) @map("cost_usd") @db.Decimal(14, 6)
+  tracedCalls        Int       @default(0) @map("traced_calls")
+  costedCalls        Int       @default(0) @map("costed_calls")
+  unpricedModels     Json      @default("[]") @map("unpriced_models")
+  // Which Langfuse project the series belongs to (`<apiBase>#<projectId>`), null until the first
+  // successful poll, and what was carried over from the previous project when the tenant switched
+  // mid-month: the figure is the carry plus the current project's own total (poll.ts).
+  projectKey         String?   @map("project_key")
+  carriedUsd         Decimal   @default(0) @map("carried_usd") @db.Decimal(14, 6)
+  carriedTracedCalls Int       @default(0) @map("carried_traced_calls")
+  carriedCostedCalls Int       @default(0) @map("carried_costed_calls")
+  polledAt           DateTime? @map("polled_at")
+  pollError          String?   @map("poll_error")
+  pollFailedAt       DateTime? @map("poll_failed_at")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 

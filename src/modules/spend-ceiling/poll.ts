@@ -21,6 +21,7 @@ import {
   readTenantSpendCeiling,
   SPEND_CEILING_WARN_COOLDOWN_MS,
 } from "./service";
+import type { SpendCeilingConfig } from "./settings";
 
 // THE POLL THAT WRITES WHAT THE GATE READS (issue #426).
 //
@@ -85,6 +86,41 @@ function num(v: unknown): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+function apiBaseOf(cfg: LangfuseConfig): string {
+  return cfg.baseUrl ?? "https://cloud.langfuse.com";
+}
+
+function authOf(cfg: LangfuseConfig): string {
+  return `Basic ${Buffer.from(`${cfg.publicKey}:${cfg.secretKey}`).toString("base64")}`;
+}
+
+// WHICH PROJECT THE FIGURE BELONGS TO (review round 3). A tenant that points its Langfuse at another
+// project mid-month starts a new series there, and the monotonic floor below would then sit on the
+// old project's last figure while the new one climbed from zero underneath it: $40 there plus $20
+// here is a $40 row. The identity is the project's id as Langfuse names it (one GET per poll, on
+// the same credential), keyed under the instance, never the credential: a key rotated inside a
+// project is the same project, and carrying the figure over a rotation would count the month
+// twice. A project that cannot be named fails the poll; nothing is summed on it.
+async function fetchProjectKey(
+  cfg: LangfuseConfig,
+  fetchFn: typeof fetch,
+): Promise<string> {
+  const apiBase = apiBaseOf(cfg);
+  const res = await fetchFn(`${apiBase}/api/public/projects`, {
+    headers: { Authorization: authOf(cfg) },
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!res.ok) {
+    throw new Error(`Langfuse projects API responded with ${res.status}`);
+  }
+  const body = (await res.json()) as { data?: Array<{ id?: unknown }> };
+  const id = body.data?.[0]?.id;
+  if (typeof id !== "string" || id === "") {
+    throw new Error("Langfuse projects response names no project");
+  }
+  return `${apiBase}#${id}`;
+}
+
 // One metrics query: the month's generations of one environment AND one tenant, summed and counted
 // per model. v1 endpoint, because v2 is Langfuse-cloud-only (../analytics/langfuse-costs.ts
 // measured the 404).
@@ -103,7 +139,6 @@ async function fetchMonthCost(
   to: Date,
   fetchFn: typeof fetch,
 ): Promise<MonthCost> {
-  const apiBase = cfg.baseUrl ?? "https://cloud.langfuse.com";
   const query = {
     view: "observations",
     metrics: [
@@ -126,12 +161,9 @@ async function fetchMonthCost(
     // Models, not observations: a tenant does not run a thousand distinct models in a month.
     config: { row_limit: 1000 },
   };
-  const url = `${apiBase}/api/public/metrics?query=${encodeURIComponent(JSON.stringify(query))}`;
-  const credentials = Buffer.from(`${cfg.publicKey}:${cfg.secretKey}`).toString(
-    "base64",
-  );
+  const url = `${apiBaseOf(cfg)}/api/public/metrics?query=${encodeURIComponent(JSON.stringify(query))}`;
   const res = await fetchFn(url, {
-    headers: { Authorization: `Basic ${credentials}` },
+    headers: { Authorization: authOf(cfg) },
     signal: AbortSignal.timeout(10_000),
   });
   if (!res.ok) {
@@ -168,6 +200,13 @@ async function fetchMonthCost(
 
 // The write, inside the tenant's own scope. Read-then-write so the figure can be kept monotonic;
 // `runScopedOn` is one transaction, so the pair cannot interleave with another poll of the same row.
+//
+// The figure is the CARRY plus the current project's own total. The carry is what the row stood at
+// the moment the project changed (taken once, at the switch, all three counters), and stays on the
+// row for the rest of the month; a row that never switched carries zero, and a row first written
+// by a failure (no project yet) starts the series without one. The floor is still taken against
+// the previous figure, so a switch never lowers the row and a lower answer inside one series is
+// still not written over a higher one.
 async function writeSuccess(
   db: ScopedDb,
   tenantId: bigint,
@@ -175,37 +214,54 @@ async function writeSuccess(
   month: Date,
   seen: MonthCost,
   at: Date,
+  projectKey: string,
 ): Promise<void> {
   const key = {
     tenantId_source_monthStart: { tenantId, source, monthStart: month },
   };
   const prev = await db.spendCostSnapshot.findUnique({ where: key });
-  const costUsd = Math.max(Number(prev?.costUsd ?? 0), seen.costUsd);
-  const tracedCalls = Math.max(prev?.tracedCalls ?? 0, seen.tracedCalls);
-  const costedCalls = Math.max(prev?.costedCalls ?? 0, seen.costedCalls);
+  const switched =
+    prev !== null && prev.projectKey !== null && prev.projectKey !== projectKey;
+  const carried = switched
+    ? {
+        usd: Number(prev.costUsd),
+        traced: prev.tracedCalls,
+        costed: prev.costedCalls,
+      }
+    : {
+        usd: Number(prev?.carriedUsd ?? 0),
+        traced: prev?.carriedTracedCalls ?? 0,
+        costed: prev?.carriedCostedCalls ?? 0,
+      };
+  const costUsd = Math.max(
+    Number(prev?.costUsd ?? 0),
+    carried.usd + seen.costUsd,
+  );
+  const tracedCalls = Math.max(
+    prev?.tracedCalls ?? 0,
+    carried.traced + seen.tracedCalls,
+  );
+  const costedCalls = Math.max(
+    prev?.costedCalls ?? 0,
+    carried.costed + seen.costedCalls,
+  );
+  const figure = {
+    costUsd,
+    tracedCalls,
+    costedCalls,
+    unpricedModels: seen.unpricedModels,
+    projectKey,
+    carriedUsd: carried.usd,
+    carriedTracedCalls: carried.traced,
+    carriedCostedCalls: carried.costed,
+    polledAt: at,
+    pollError: null,
+    pollFailedAt: null,
+  };
   await db.spendCostSnapshot.upsert({
     where: key,
-    create: {
-      tenantId,
-      source,
-      monthStart: month,
-      costUsd,
-      tracedCalls,
-      costedCalls,
-      unpricedModels: seen.unpricedModels,
-      polledAt: at,
-      pollError: null,
-      pollFailedAt: null,
-    },
-    update: {
-      costUsd,
-      tracedCalls,
-      costedCalls,
-      unpricedModels: seen.unpricedModels,
-      polledAt: at,
-      pollError: null,
-      pollFailedAt: null,
-    },
+    create: { tenantId, source, monthStart: month, ...figure },
+    update: figure,
   });
 }
 
@@ -300,6 +356,7 @@ export async function pollTenantSpend(
     if (!cfg.tenantSlug) {
       throw new Error("the tenant has no slug to scope the Langfuse query by");
     }
+    const projectKey = await fetchProjectKey(cfg, fetchFn);
     // Both sources are asked before either is written, so a failure on the second leaves neither
     // half-updated against the other's fresh figure.
     const seen = await Promise.all(
@@ -318,7 +375,7 @@ export async function pollTenantSpend(
       for (const [i, source] of SOURCES.entries()) {
         const cost = seen[i];
         if (!cost) continue;
-        await writeSuccess(db, tenantId, source, month, cost, now);
+        await writeSuccess(db, tenantId, source, month, cost, now, projectKey);
       }
     });
     return { status: "polled" };
@@ -357,13 +414,26 @@ export async function spendPollHandler(
   base: PrismaClient = basePrisma,
   deps: Omit<PollDeps, "base"> = {},
 ): Promise<JobResult> {
-  const cfg = await readTenantSpendCeiling(job.tenantId, base);
-  if (!cfg.enabled) return { outcome: "done" };
-  await pollTenantSpend(job.tenantId, { base, ...deps });
-  return {
+  const rearm = (): JobResult => ({
     outcome: "reschedule",
     runAt: new Date(Date.now() + config.spendCeiling.pollIntervalMs),
-  };
+  });
+  // The settings read is a failure like any other (review round 3): it sits before the poll's own
+  // try, and a pool with no free connection here would otherwise throw out of the handler and walk
+  // the ladder. Re-arm and ask again next period; "done" is reserved for a ceiling READ as off.
+  let cfg: SpendCeilingConfig;
+  try {
+    cfg = await readTenantSpendCeiling(job.tenantId, base);
+  } catch (err) {
+    logger.warn(
+      { err, tenantId: String(job.tenantId) },
+      "spend ceiling poll: the ceiling could not be read; asking again next period",
+    );
+    return rearm();
+  }
+  if (!cfg.enabled) return { outcome: "done" };
+  await pollTenantSpend(job.tenantId, { base, ...deps });
+  return rearm();
 }
 
 let registered = false;

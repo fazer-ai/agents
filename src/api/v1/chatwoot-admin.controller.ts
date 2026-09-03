@@ -1,6 +1,6 @@
 import { Elysia, t } from "elysia";
-import { getUserById, verifyPassword } from "@/api/features/auth/auth.service";
 import { doc, errors } from "@/api/lib/openapi";
+import { confirmStepUp, STEP_UP_PASSWORD_DESCRIPTION } from "@/api/lib/step-up";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
 import { optionalDbId, requireDbId } from "@/lib/db-id";
 import {
@@ -159,7 +159,7 @@ export const chatwootAdminController = new Elysia({
     "/deployment",
     async ({ tenantContext, body }) => {
       const ctx = ctxOrThrow(tenantContext);
-      const b = body as { confirmDomain: string; password: string };
+      const b = body as { confirmDomain: string; password?: string };
       const { deployment } = await getChatwootDeployment(ctx);
       if (!deployment) {
         throw new NotFoundError(
@@ -180,13 +180,7 @@ export const chatwootAdminController = new Elysia({
           "errors.chatwootDomainConfirmMismatch",
         );
       }
-      const user = ctx.userId ? await getUserById(ctx.userId) : null;
-      if (
-        !user?.passwordHash ||
-        !(await verifyPassword(b.password, user.passwordHash))
-      ) {
-        throw new AppError("Incorrect password", 403, "errors.invalidPassword");
-      }
+      await confirmStepUp(ctx, b.password);
       await disconnectChatwootDeployment(ctx);
       return { instance: instanceIdentity, success: true };
     },
@@ -200,10 +194,9 @@ export const chatwootAdminController = new Elysia({
         confirmDomain: t.String({
           description: "The deployment host, re-typed to confirm.",
         }),
-        password: t.String({
-          minLength: 1,
-          description: "The acting user's password (step-up confirmation).",
-        }),
+        password: t.Optional(
+          t.String({ minLength: 1, description: STEP_UP_PASSWORD_DESCRIPTION }),
+        ),
       }),
       response: errors(400, 401, 403, 404, 422),
     },
@@ -302,7 +295,7 @@ export const chatwootAdminController = new Elysia({
     "/instances/:id/remove",
     async ({ tenantContext, params, body }) => {
       const ctx = ctxOrThrow(tenantContext);
-      const b = body as { confirmName: string; password: string };
+      const b = body as { confirmName: string; password?: string };
       const id = requireDbId(params.id);
       const instance = await getChatwootInstance(ctx, id);
       const expected = instance.accountName ?? String(instance.accountId);
@@ -313,13 +306,7 @@ export const chatwootAdminController = new Elysia({
           "errors.chatwootNameConfirmMismatch",
         );
       }
-      const user = ctx.userId ? await getUserById(ctx.userId) : null;
-      if (
-        !user?.passwordHash ||
-        !(await verifyPassword(b.password, user.passwordHash))
-      ) {
-        throw new AppError("Incorrect password", 403, "errors.invalidPassword");
-      }
+      await confirmStepUp(ctx, b.password);
       await removeChatwootInstance(ctx, id);
       return { instance: instanceIdentity, success: true };
     },
@@ -336,10 +323,9 @@ export const chatwootAdminController = new Elysia({
         confirmName: t.String({
           description: "The account name (or its id), re-typed to confirm.",
         }),
-        password: t.String({
-          minLength: 1,
-          description: "The acting user's password (step-up confirmation).",
-        }),
+        password: t.Optional(
+          t.String({ minLength: 1, description: STEP_UP_PASSWORD_DESCRIPTION }),
+        ),
       }),
       response: errors(400, 401, 403, 404, 422),
     },

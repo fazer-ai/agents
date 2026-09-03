@@ -4,6 +4,7 @@ import type { UserRole } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import { doc, errors, OAuthErrorResponse } from "@/api/lib/openapi";
 import basePrisma from "@/api/lib/prisma";
+import { requireSession } from "@/api/lib/step-up";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
 import config from "@/config";
 import { NotFoundError, UnauthorizedError } from "@/lib/errors";
@@ -232,6 +233,9 @@ export const mcpOAuthController = new Elysia({
           },
         });
       }
+      // A Bearer API key is an authenticated principal here too, and would mint a code (a first-party
+      // client skips consent) whose grant outlives the key. Review round 2 on #308.
+      requireSession(ctx);
 
       const client = await basePrisma.mcpOAuthClient.findUnique({
         where: { clientId: query.client_id },
@@ -377,6 +381,9 @@ export const mcpOAuthController = new Elysia({
       // requireAuth already gated; this is defensive (and narrows the type).
       const user = await getAuthUser();
       if (!user) throw new UnauthorizedError();
+      // The pending record is bound to a user id, and a key carries its creator's: without this a
+      // key could read, and below approve, a consent the person parked from their browser.
+      requireSession(user);
       const pending = await getPendingAuthorization(params.req, user.id);
       if (!pending) throw new NotFoundError();
       const csrfToken = await issueConsentCsrf(params.req, user.id);
@@ -424,7 +431,7 @@ export const mcpOAuthController = new Elysia({
         "Returns the details of a pending authorization (client, redirect destination, scopes, tenant, account) for the SPA consent screen, plus a one-time CSRF token. 404 if the request is unknown, expired, already consumed, or owned by a different user.",
       ),
       requireAuth: true,
-      response: errors(401, 404),
+      response: errors(401, 403, 404),
       params: t.Object({
         req: t.String({
           minLength: 1,
@@ -441,6 +448,7 @@ export const mcpOAuthController = new Elysia({
     async ({ getAuthUser, params, body }) => {
       const user = await getAuthUser();
       if (!user) throw new UnauthorizedError();
+      requireSession(user);
       const pending = await consumePendingAuthorization(
         params.req,
         user.id,
@@ -495,7 +503,7 @@ export const mcpOAuthController = new Elysia({
         "Approves or denies a pending authorization. Verifies the CSRF token and single-use-consumes the request; on approve, mints the authorization code from the stored record and remembers the approval (revocable). Returns { redirect } for the SPA to navigate to.",
       ),
       requireAuth: true,
-      response: errors(400, 401, 404, 422),
+      response: errors(400, 401, 403, 404, 422),
       params: t.Object({
         req: t.String({
           minLength: 1,

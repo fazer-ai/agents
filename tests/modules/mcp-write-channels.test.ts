@@ -382,8 +382,15 @@ describe.skipIf(!dbUp)("MCP channel tools (DB)", () => {
     });
     expect(after).not.toBeNull();
     expect(after?.disconnectedAt).not.toBeNull();
+    // Scoped to THIS instance, not to the tenant: since #395 the row is written by the service, so
+    // another test in this file disconnecting another account leaves one too. One row for one apply
+    // is still the claim, and the target is what says which apply.
     const audits = await suDb.auditLog.count({
-      where: { tenantId: tenantA, action: "instance.disconnect" },
+      where: {
+        tenantId: tenantA,
+        action: "instance.disconnect",
+        target: `chatwoot_instance:${victim.id}`,
+      },
     });
     expect(audits).toBe(1);
   });

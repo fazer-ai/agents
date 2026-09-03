@@ -291,8 +291,6 @@ const DATE_SHIM_SOURCE = `(function (offsetAt) {
   var proto = NativeDate.prototype;
   var getTime = proto.getTime;
   var setTime = proto.setTime;
-  var hostOffset = proto.getTimezoneOffset;
-  var MINUTE = 60000;
   var SECOND = 1000;
   function wall(t) { return t + offsetAt(t) * SECOND; }
   // The wall time is not an instant, so the offset is not read AT it: read a day either side (the
@@ -390,28 +388,42 @@ const DATE_SHIM_SOURCE = `(function (offsetAt) {
   define("toLocaleString", function () { return local(this, function (w) { return isoDate(w) + " " + timeText(w); }); });
   // The wall clock is what the engine makes of the same text as UTC, so a field out of range is NaN
   // exactly where the engine says so (month 13, minute 60) and normalises exactly where it does
-  // (February 30, 24:00): the two spellings of one instant agree field for field.
-  var LOCAL = /^\\s*(\\d{4})-(\\d{2})-(\\d{2})T(\\d{2}):(\\d{2})(?::(\\d{2})(?:\\.(\\d{1,3}))?)?\\s*$/;
+  // (February 30, 24:00): the two spellings of one instant agree field for field. The engine's own
+  // ISO form (measured, round 14): an expanded year, a month or a day left out, and a fraction of
+  // ANY length after a dot or a comma, not the spec's three digits; a text the pattern missed went
+  // to the free-form path below instead, which is the engine's HOST reading.
+  var LOCAL = /^\\s*(?:[+-]\\d{6}|\\d{4})(?:-\\d{2}(?:-\\d{2})?)?T\\d{2}:\\d{2}(?::\\d{2}(?:[.,]\\d+)?)?\\s*$/;
   // What carries its own zone, or is a date alone (UTC by the spec): the engine's answer is final.
   // The engine's own table, measured token by token (PR #485, round 10): Z; UT/UTC/GMT with or
   // without an offset; a bare offset with one or two hour digits; the North American abbreviations
-  // and CET/CEST; any of them followed by a parenthesised name. A parenthesis alone, or a token
+  // and CET/CEST; any of them followed by parenthesised names. A parenthesis alone, or a token
   // the engine does not know (BST, JST), is not a zone — it reads as host-local or as NaN.
   // NOTE: Not \\b before the letters: "12:00:00Z" has no word boundary between the digit and the Z,
-  // and the ISO instant was read as host-local until this was a lookbehind.
-  var DESIGNATED = /(?:(?<![A-Za-z])Z|(?<![A-Za-z])(?:UTC?|GMT)(?:[+-]\\d{1,2}(?::?\\d{2})?)?|[+-]\\d{1,2}(?::?\\d{2})?|(?<![A-Za-z])(?:[ECMP][SD]T|CES?T))\\s*(?:\\([^)]*\\))?\\s*$/i;
-  var DATE_ONLY = /^\\s*[+-]?\\d{4,6}(?:-\\d{2}){0,2}\\s*$/;
+  // and the ISO instant was read as host-local until this was a lookbehind. And a bare offset is
+  // not one when it is the last part of a date: "09-05-2026", or "2026-09-05" with a space around
+  // it, ends in a sign and digits that the engine read as the day or the year (round 14).
+  var DESIGNATED = /(?:(?<![A-Za-z])Z|(?<![A-Za-z])(?:UTC?|GMT)(?:[+-]\\d{1,2}(?::?\\d{2})?)?|(?<!-\\d{1,2})[+-]\\d{1,2}(?::?\\d{2})?|(?<![A-Za-z])(?:[ECMP][SD]T|CES?T))(?:\\s*\\([^)]*\\))*\\s*$/i;
+  // The spec's date alone, exactly: padded with a space it is the free form, and local (measured
+  // in the engine and in JSC alike).
+  var DATE_ONLY = /^(?:[+-]\\d{6}|\\d{4})(?:-\\d{2}){0,2}$/;
   function parse(text) {
     var s = Str(text);
     var m = LOCAL.exec(s);
     if (m) return instant(NativeDate.parse(m[0].trim() + "Z"));
     var t = NativeDate.parse(s);
     if (nan(t) || DESIGNATED.test(s) || DATE_ONLY.test(s)) return t;
-    // Every other offset-less text the engine accepts ("2026/09/05 12:00", "Sep 5, 2026 12:00", a
-    // four-digit fraction) it read in the HOST's zone — measured: the value moved by three hours
-    // between a UTC host and a São Paulo one (PR #485, round 7). Recover the wall clock it saw
-    // through the host's own offset, and resolve that in the agent's zone.
-    return instant(t - hostOffset.call(new NativeDate(t)) * MINUTE);
+    // Every other offset-less text the engine accepts ("2026/09/05 12:00", "Sep 5, 2026 12:00") it
+    // read in the HOST's zone — measured: the value moved by three hours between a UTC host and a
+    // São Paulo one (PR #485, round 7). The instant it made does not give the wall clock back: the
+    // engine adds the host's offset AT THE WALL CLOCK READ AS UTC, so around a host transition two
+    // wall clocks make one instant (New York, March 8th: 06:30 and 07:30 both become 11:30Z), and
+    // reading the offset back off the instant (rounds 7 to 13) returned the later one, an hour late
+    // in the agent's zone (round 14). Read the text itself as UTC instead: the engine's free-form
+    // grammar takes a designator at the end of every form it accepts (measured, comments included),
+    // and the last one wins, which is why a text with its own was returned above. A form the engine
+    // accepts alone and refuses with the suffix is not known; it would be Invalid Date here, and
+    // never the host's reading.
+    return instant(NativeDate.parse(s + " UTC"));
   }
   function primitive(v) {
     if (v instanceof NativeDate) return getTime.call(v);

@@ -417,7 +417,13 @@ describe("runSandboxedCode", () => {
         Date.parse("Sep 5, 2026 12:00 +02"), Date.parse("Sep 5, 2026 12:00 CEST"),
         Date.parse("Sep 5, 2026 12:00 GMT (x)"), Date.parse("Sep 5, 2026 12:00 (Eastern)"),
         Date.parse("Sep 5, 2026 12:00 +2"), Date.parse("Sep 5, 2026 12:00 GMT+2"),
-        String(Date.parse("Sep 5, 2026 12:00 JST"))]`,
+        String(Date.parse("Sep 5, 2026 12:00 JST")),
+        // Round 14: a year alone is a date alone; an offset glued to the time, or followed by two
+        // comments, is a designator; a day or a year at the end of a date is NOT one, and a date
+        // padded with spaces is the free form, which the engine reads as local.
+        Date.parse("2026"), Date.parse("Sep 5, 2026 12:00-03"), Date.parse("Sep 5, 2026 12:00 -3 (x) (y)"),
+        Date.parse("2026-09-05T12:00:00+0200"),
+        Date.parse("09-05-2026"), Date.parse(" 2026-09-05 "), Date.parse("12:00 2026-09-05")]`,
       { clock: { timezone: "Asia/Tokyo" } },
     );
     expect(out).toMatchObject({
@@ -441,9 +447,56 @@ describe("runSandboxedCode", () => {
         1788602400000,
         1788602400000,
         "NaN",
+        1767225600000,
+        1788620400000,
+        1788620400000,
+        1788602400000,
+        1788534000000,
+        1788534000000,
+        1788577200000,
       ]),
     });
   });
+
+  // Round 14: the text the engine read in the host's zone was recovered from the instant it made,
+  // through the host's offset at that instant. The engine builds that instant from the offset at
+  // the WALL CLOCK read as UTC (measured), so on a host with a DST gap two wall clocks become one
+  // instant (New York, March 8th: 06:30 and 07:30 both land on 11:30Z), and the one the snippet
+  // wrote is gone before the shim sees it. The wall clock must come from the text: the engine
+  // reads the same text as UTC when it ends in a designator. The host's zone can only be set on a
+  // child process, so the vectors run there, on two hosts whose gaps fall on either side of UTC.
+  test("an offset-less text is read in TIMEZONE on a host with a DST gap, too", () => {
+    const expected = JSON.stringify([
+      "2026-03-07T17:30:00.000Z", // 02:30 Tokyo, a New York host's gap (was 18:30Z there)
+      "2026-03-07T21:30:00.000Z", // 06:30 Tokyo, inside a New York host's window (was 22:30Z)
+      "2026-03-07T17:30:00.000Z", // the slash form, same wall clock
+      "2026-03-07T17:30:00.123Z", // ISO with a four-digit fraction: the engine's local ISO form
+      "2026-03-07T17:30:00.000Z", // ISO with an expanded year
+      "2026-10-31T16:30:00.000Z", // 01:30 Tokyo, a New York host's overlap
+      "2026-09-26T16:30:00.000Z", // 01:30 Tokyo, the hour before an Auckland host's gap
+      "2026-09-26T17:30:00.000Z", // 02:30 Tokyo, an Auckland host's gap
+      "2026-09-05T17:00:00.000Z", // a designated text is the engine's, on any host
+      "2026-09-05T03:00:00.123Z", // ISO with a comma fraction: the engine's local ISO form too
+      "2026-09-01T03:00:00.000Z", // ISO without a day: the same
+      "2026-09-04T15:00:00.000Z", // a dashed date, read local by the engine: the zone's midnight
+    ]);
+    for (const tz of ["America/New_York", "Pacific/Auckland"]) {
+      const child = Bun.spawnSync(
+        ["bun", "tests/fixtures/code-sandbox/host-zone.ts"],
+        {
+          cwd: process.cwd(),
+          env: { ...process.env, TZ: tz },
+          stdout: "pipe",
+          stderr: "pipe",
+        },
+      );
+      expect(child.stderr.toString(), tz).toBe("");
+      expect(JSON.parse(child.stdout.toString()), tz).toMatchObject({
+        kind: "value",
+        value: expected,
+      });
+    }
+  }, 30_000);
 
   // Round 11: the helpers and the Date shim resolved `String`, `Number`, `Math`, `isNaN`, `Object`
   // when called — after the snippet, whose own top-level `const` had shadowed them. Bound when

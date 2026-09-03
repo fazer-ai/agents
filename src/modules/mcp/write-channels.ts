@@ -1,6 +1,10 @@
 import basePrisma from "@/api/lib/prisma";
 import { AppError } from "@/lib/errors";
 import {
+  assertAccountsClaimable,
+  assertDeploymentConnectable,
+  assertDeploymentNotSwitching,
+  assertInboxReconnectable,
   bindInbox,
   connectChatwootDeployment,
   getChatwootInstance,
@@ -61,16 +65,28 @@ export async function deploymentConnect(
   const ctx = adminGate(principal);
   if ("ok" in ctx) return ctx;
   if (!args.admin_token) return err("admin_token is required");
-  if (args.dry_run !== false) {
-    return ok({
-      dryRun: true,
-      action: "connect",
-      resource: "chatwoot_deployment",
-      // The raw token is never echoed back, not even in the preview.
-      preview: { baseUrl: args.base_url, adminToken: "(redacted)" },
-    });
-  }
   try {
+    if (args.dry_run !== false) {
+      // NOTE: the core's own question, asked before the preview answers it. It sits INSIDE the
+      // branch rather than above it because the apply reaches the core, which asks it again —
+      // and several of these read a row or resolve DNS, so above the branch is a second lookup
+      // that can even disagree with the first (#490).
+      const data = await assertDeploymentConnectable({
+        baseUrl: args.base_url,
+        adminToken: args.admin_token,
+      });
+      // ADVISORY, unlike the line above it: this one READS. It passes the base URL that line
+      // NORMALIZED, because that is what the write compares against and what it stores — asking
+      // with the raw string would call a connect to the same server a switch (#490).
+      await assertDeploymentNotSwitching(ctx, data.baseUrl, base);
+      return ok({
+        dryRun: true,
+        action: "connect",
+        resource: "chatwoot_deployment",
+        // The raw token is never echoed back, not even in the preview.
+        preview: { baseUrl: args.base_url, adminToken: "(redacted)" },
+      });
+    }
     const result = await connectChatwootDeployment(
       ctx,
       { baseUrl: args.base_url, adminToken: args.admin_token },
@@ -144,16 +160,21 @@ export async function deploymentSetAccounts(
   const ctx = adminGate(principal);
   if ("ok" in ctx) return ctx;
   const target = "chatwoot_deployment:accounts";
-  if (args.dry_run !== false) {
-    return ok({
-      dryRun: true,
-      action: "set_accounts",
-      target,
-      accountIds: args.account_ids,
-      note: "Connects newly-selected accounts (syncs their inboxes) and soft-disconnects de-selected ones (history kept). Calls Chatwoot.",
-    });
-  }
   try {
+    if (args.dry_run !== false) {
+      // NOTE: the core's own question, asked before the preview answers it. It sits INSIDE the
+      // branch rather than above it because the apply reaches the core, which asks it again —
+      // and several of these read a row or resolve DNS, so above the branch is a second lookup
+      // that can even disagree with the first (#490).
+      await assertAccountsClaimable(ctx, args.account_ids, base);
+      return ok({
+        dryRun: true,
+        action: "set_accounts",
+        target,
+        accountIds: args.account_ids,
+        note: "Connects newly-selected accounts (syncs their inboxes) and soft-disconnects de-selected ones (history kept). Calls Chatwoot.",
+      });
+    }
     const accounts = await setConnectedAccounts(
       ctx,
       args.account_ids,
@@ -340,15 +361,20 @@ export async function inboxReconnect(
   const inboxId = parseMcpId(args.inbox_id, "inbox_id");
   if (typeof inboxId !== "bigint") return inboxId;
   const target = `inbox:${inboxId}`;
-  if (args.dry_run !== false) {
-    return ok({
-      dryRun: true,
-      action: "reconnect",
-      target,
-      note: "Re-provisions the inbox's bot on Chatwoot (calls Chatwoot).",
-    });
-  }
   try {
+    if (args.dry_run !== false) {
+      // NOTE: the core's own question, asked before the preview answers it. It sits INSIDE the
+      // branch rather than above it because the apply reaches the core, which asks it again —
+      // and several of these read a row or resolve DNS, so above the branch is a second lookup
+      // that can even disagree with the first (#490).
+      await assertInboxReconnectable(ctx, inboxId, base);
+      return ok({
+        dryRun: true,
+        action: "reconnect",
+        target,
+        note: "Re-provisions the inbox's bot on Chatwoot (calls Chatwoot).",
+      });
+    }
     const updated = await reconnectInbox(ctx, inboxId, {}, base);
     return ok({ dryRun: false, applied: true, target, inbox: updated });
   } catch (e) {

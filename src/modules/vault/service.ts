@@ -596,7 +596,7 @@ export async function vaultNameByRef(
 const HTTPS_RE = /^https?:\/\//i;
 const PARAM_NAME_RE = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/;
 
-function validateBaseUrl(raw: string): string {
+export function validateBaseUrl(raw: string): string {
   const trimmed = raw.trim();
   if (!trimmed) return "";
   if (!HTTPS_RE.test(trimmed)) {
@@ -854,6 +854,70 @@ export interface CreateVaultEntryInput {
   paramName?: string | null;
 }
 
+// Everything `createVaultEntry` decides about its input, before any database is involved: the name,
+// the kind against the catalog, the VALUE against that kind's declared fields (non-empty, no
+// surrounding whitespace, no unexpected key), the base URL, and the param name. Split out so a
+// caller that will eventually reach this write can ask the same question first (#490).
+//
+// Its RETURN is part of the verdict, not a convenience: `kind` defaults to "generic" and `baseUrl`
+// normalizes, and a caller that re-derives either from the raw input will disagree with what gets
+// stored.
+// The base URL a write would STORE, refusing when the kind requires one and this is not it.
+//
+// It exists because the check has to sit after the normalization, and `updateVaultEntry` had it
+// before: it asked `secretTypeRequiresBaseUrl` only on the `null`/`""` branch, while the other
+// branch ran `validateBaseUrl`, which turns "   " into the empty string WITHOUT raising, and stored
+// the `null` that branch had just refused. So a langfuse entry that already existed could be
+// updated to `baseUrl: null` — a state its own create path rejects. Found by the MCP preview
+// answering the question the apply did not (#490), and it is the inverse of every other divergence
+// in that issue: the preview refused and the apply succeeded, leaving invalid configuration behind.
+function normalizeRequiredBaseUrl(
+  raw: string | null | undefined,
+  kind: string,
+): string | null {
+  const normalized =
+    raw == null || raw === "" ? null : validateBaseUrl(raw) || null;
+  if (normalized === null && secretTypeRequiresBaseUrl(kind)) {
+    throw new AppError(
+      "baseUrl is required for this credential type",
+      400,
+      "errors.vaultBaseUrlRequired",
+    );
+  }
+  return normalized;
+}
+
+export function assertVaultEntryCreatable(input: CreateVaultEntryInput): {
+  name: string;
+  kind: string;
+  baseUrl: string | null;
+  paramName: string | null;
+} {
+  const name = validateVaultName(input.name);
+  if (input.kind != null && !isSecretTypeId(input.kind)) {
+    throw new AppError("invalid secret type", 400, "errors.invalidSecretType");
+  }
+  const kind = input.kind ?? "generic";
+  validateVaultValue(kind, input.value);
+
+  const baseUrl = normalizeRequiredBaseUrl(input.baseUrl, kind);
+
+  const paramName =
+    input.paramName != null
+      ? validateParamName(input.paramName, kind)
+      : secretTypeNeedsParamName(kind)
+        ? (() => {
+            throw new AppError(
+              "paramName is required for this credential type",
+              400,
+              "errors.vaultParamNameRequired",
+            );
+          })()
+        : null;
+
+  return { name, kind, baseUrl, paramName };
+}
+
 // INSERT-only create: 409 if both name and kind already exist in the tenant.
 // What a credential's audit row carries, and what it only compares.
 //
@@ -970,44 +1034,18 @@ export async function createVaultEntry(
     rawParamName = undefined;
   }
 
-  const validName = validateVaultName(rawName);
-  if (rawKind != null && !isSecretTypeId(rawKind)) {
-    throw new AppError("invalid secret type", 400, "errors.invalidSecretType");
-  }
-
-  const normalizedKind = rawKind ?? "generic";
-
-  // Validate value shape for the kind.
-  validateVaultValue(normalizedKind, rawValue);
-
-  // Validate and normalize baseUrl.
-  let normalizedBaseUrl: string | null = null;
-  if (rawBaseUrl != null && rawBaseUrl !== "") {
-    const validated = validateBaseUrl(rawBaseUrl);
-    normalizedBaseUrl = validated || null;
-  }
-
-  if (secretTypeRequiresBaseUrl(normalizedKind) && !normalizedBaseUrl) {
-    throw new AppError(
-      "baseUrl is required for this credential type",
-      400,
-      "errors.vaultBaseUrlRequired",
-    );
-  }
-
-  // Validate paramName.
-  const normalizedParamName =
-    rawParamName != null
-      ? validateParamName(rawParamName, normalizedKind)
-      : secretTypeNeedsParamName(normalizedKind)
-        ? (() => {
-            throw new AppError(
-              "paramName is required for this credential type",
-              400,
-              "errors.vaultParamNameRequired",
-            );
-          })()
-        : null;
+  const {
+    name: validName,
+    kind: normalizedKind,
+    baseUrl: normalizedBaseUrl,
+    paramName: normalizedParamName,
+  } = assertVaultEntryCreatable({
+    name: rawName,
+    value: rawValue,
+    kind: rawKind,
+    baseUrl: rawBaseUrl,
+    paramName: rawParamName,
+  });
 
   return runScopedOn(base, ctx, async (db) => {
     const existing = await db.vaultEntry.findFirst({
@@ -1060,20 +1098,46 @@ export interface CreatePendingVaultEntryInput {
   paramName?: string | null;
 }
 
-// Creates a reference-only ("pending") vault entry: NO secret is supplied. Stores encryptJson({}) as
-// a placeholder with status="pending"; resolution treats it as missing (resolve* throw
-// errors.credentialPending, try* return null) until the operator fills it in the UI — updateVaultEntry
-// with a real value promotes it to "active". Used by the MCP `credential_create` tool, which by design
-// never receives a secret. INSERT-only: 409 if (name, kind) already exists in the tenant. baseUrl /
-// paramName are not secrets, so they are validated/required up front to keep the entry coherent.
-export async function createPendingVaultEntry(
+// Everything `createPendingVaultEntry` decides about its INPUT, before any database is involved: the
+// name, the kind against the catalog, the two kinds that can only come from a connect flow, the base
+// URL, and the param name. Split out so the MCP preview can ask the same question the apply asks
+// (#490) — the preview answers without reaching the core, so a rule that lives only inside it is a
+// rule the preview promises away. Returns the normalized fields the caller goes on to store.
+// The database half of `createPendingVaultEntry`'s verdict, ADVISORY like the others: it reads
+// outside the write's transaction, so the `(name, kind)` pair it finds free can be taken before the
+// apply gets there. The pre-read inside the write, and the unique index behind it, stay the
+// authority — this only lets the preview refuse the collision the operator actually causes, which
+// is reusing a name they already used (#490).
+//
+// It takes the NORMALIZED pair, not the raw input, because `kind` defaults to "generic" and the
+// uniqueness is on the stored value: asking with the raw `kind: null` would look up a row that
+// cannot exist and answer "free" for a name that is not.
+export async function assertVaultNameAvailable(
   ctx: TenantContext,
-  input: CreatePendingVaultEntryInput,
+  name: string,
+  kind: string,
   base: PrismaClient = basePrisma,
-): Promise<{ id: bigint; ref: string }> {
-  if (ctx.tenantId === null) throw new AppError("tenant required", 400);
-  const tenantId = ctx.tenantId;
+): Promise<void> {
+  const taken = await runScopedOn(base, ctx, (db) =>
+    db.vaultEntry.findFirst({ where: { name, kind }, select: { id: true } }),
+  );
+  if (taken) {
+    throw new ConflictError(
+      "vault entry name and type already in use",
+      "errors.vaultNameInUse",
+      "name",
+    );
+  }
+}
 
+export function assertPendingVaultEntryCreatable(
+  input: CreatePendingVaultEntryInput,
+): {
+  name: string;
+  kind: string;
+  baseUrl: string | null;
+  paramName: string | null;
+} {
   const validName = validateVaultName(input.name);
   if (input.kind != null && !isSecretTypeId(input.kind)) {
     throw new AppError("invalid secret type", 400, "errors.invalidSecretType");
@@ -1117,6 +1181,34 @@ export async function createPendingVaultEntry(
             );
           })()
         : null;
+
+  return {
+    name: validName,
+    kind: normalizedKind,
+    baseUrl: normalizedBaseUrl,
+    paramName: normalizedParamName || null,
+  };
+}
+
+// Creates a reference-only ("pending") vault entry: NO secret is supplied. Stores encryptJson({}) as
+// a placeholder with status="pending"; resolution treats it as missing (resolve* throw
+// errors.credentialPending, try* return null) until the operator fills it in the UI — updateVaultEntry
+// with a real value promotes it to "active". Used by the MCP `credential_create` tool, which by design
+// never receives a secret. INSERT-only: 409 if (name, kind) already exists in the tenant. baseUrl /
+// paramName are not secrets, so they are validated/required up front to keep the entry coherent.
+export async function createPendingVaultEntry(
+  ctx: TenantContext,
+  input: CreatePendingVaultEntryInput,
+  base: PrismaClient = basePrisma,
+): Promise<{ id: bigint; ref: string }> {
+  if (ctx.tenantId === null) throw new AppError("tenant required", 400);
+  const tenantId = ctx.tenantId;
+  const {
+    name: validName,
+    kind: normalizedKind,
+    baseUrl: normalizedBaseUrl,
+    paramName: normalizedParamName,
+  } = assertPendingVaultEntryCreatable(input);
 
   return runScopedOn(base, ctx, async (db) => {
     const existing = await db.vaultEntry.findFirst({
@@ -1237,19 +1329,7 @@ export async function updateVaultEntry(
     }
 
     if (patch.baseUrl !== undefined) {
-      if (patch.baseUrl === null || patch.baseUrl === "") {
-        if (secretTypeRequiresBaseUrl(entry.kind)) {
-          throw new AppError(
-            "baseUrl is required for this credential type",
-            400,
-            "errors.vaultBaseUrlRequired",
-          );
-        }
-        data.baseUrl = null;
-      } else {
-        const validated = validateBaseUrl(patch.baseUrl);
-        data.baseUrl = validated || null;
-      }
+      data.baseUrl = normalizeRequiredBaseUrl(patch.baseUrl, entry.kind);
     }
 
     if (patch.paramName !== undefined) {

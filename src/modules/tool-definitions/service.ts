@@ -371,6 +371,29 @@ function assertSupportedBody(body: unknown): void {
   if (reason) throw new AppError(reason, 400);
 }
 
+// Everything `createToolDefinition` decides about its INPUT — the schema (the name pattern, the
+// URL template, the declared response template) and the body shape — before any database is
+// involved. Split out so the MCP preview can ask the same question the apply asks (#490).
+export function assertToolDefinitionCreatable(input: ToolDefinitionCreate) {
+  const data = parseInput(toolDefinitionCreateSchema, input);
+  assertSupportedBody(data.body);
+  return data;
+}
+
+// The half of `createToolDefinition`'s verdict that has to READ, so the preview can give it too.
+// It is ADVISORY, and that word is load-bearing: `assertToolDefinitionCreatable` above judges the
+// input and cannot change its mind, while this runs its own scoped read outside the write's
+// transaction and can be overtaken. `assertNameFree` INSIDE the tx, and the unique index under it,
+// are what actually keep one name to one tool. This only moves the refusal an operator will hit
+// almost every time — a name they already used — to where they asked the question (#490).
+export async function assertToolNameAvailable(
+  ctx: TenantContext,
+  name: string,
+  base: PrismaClient = basePrisma,
+): Promise<void> {
+  await runScopedOn(base, ctx, (db) => assertNameFree(db, name));
+}
+
 export async function createToolDefinition(
   ctx: TenantContext,
   input: ToolDefinitionCreate,
@@ -380,8 +403,7 @@ export async function createToolDefinition(
     throw new AppError("tenant required", 400);
   }
   const tenantId = ctx.tenantId;
-  const data = parseInput(toolDefinitionCreateSchema, input);
-  assertSupportedBody(data.body);
+  const data = assertToolDefinitionCreatable(input);
   // NOTE: canonicalize programmatic authoring shapes (JSON-Schema inputSchema, single-brace
   // {var}) so storage always holds what the runtime executes.
   const { shapes } = normalizeToolShapes({

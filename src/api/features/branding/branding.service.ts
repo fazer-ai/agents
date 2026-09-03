@@ -1,6 +1,8 @@
+import type { PrismaClient } from "@/../generated/prisma/client";
 import prisma from "@/api/lib/prisma";
 import config from "@/config";
-import { sanitizeBranding } from "@/lib/branding";
+import { isValidColorToken, sanitizeBranding } from "@/lib/branding";
+import { AppError } from "@/lib/errors";
 import { clipText } from "@/lib/text";
 
 // Global app identity/branding (a single row, id = 1). GLOBAL state — NOT tenant-scoped — so this
@@ -171,11 +173,94 @@ export function toDto(row: BrandingRow): GlobalBrandingDto {
   };
 }
 
-export async function getGlobalBranding(): Promise<GlobalBrandingDto> {
-  const row = await prisma.appBranding.findUnique({
+export async function getGlobalBranding(
+  base: PrismaClient = prisma,
+): Promise<GlobalBrandingDto> {
+  const row = await base.appBranding.findUnique({
     where: { id: SINGLETON_ID },
   });
   return row ? toDto(row) : DEFAULT_DTO;
+}
+
+// Everything `updateBrandingColors` decides about its INPUT — the color mode, the brand color, the
+// two token maps, the footer links, and "did you name anything at all" — before any database is
+// involved. It lives HERE rather than beside the mutation because the Free derivation swaps
+// branding.admin.service for a stub, and the MCP preview has to ask the same question the apply
+// asks in both editions (#490). Returns the sanitized columns the caller goes on to write.
+export function assertBrandingColorsUpdatable(
+  input: ColorUpdate,
+): Record<string, unknown> {
+  const data: Record<string, unknown> = {};
+  if (input.brandName !== undefined) {
+    // Empty/whitespace clears back to the default; otherwise sanitize (bounded, single-line).
+    data.brandName = sanitizeBrandName(input.brandName);
+  }
+  if (input.colorMode !== undefined) {
+    if (input.colorMode !== "SIMPLE" && input.colorMode !== "ADVANCED") {
+      throw new AppError("invalid color mode", 400, "errors.invalidColorMode");
+    }
+    data.colorMode = input.colorMode;
+  }
+  if (input.brandColor !== undefined) {
+    if (input.brandColor === null || input.brandColor === "") {
+      data.brandColor = null;
+    } else if (isValidColorToken(input.brandColor)) {
+      data.brandColor = input.brandColor.trim();
+    } else {
+      throw new AppError(
+        "invalid brand color",
+        400,
+        "errors.invalidColorToken",
+      );
+    }
+  }
+  // Both token maps are sanitized to the allowlist + valid color tokens (unknown keys dropped).
+  if (input.tokensLight !== undefined) {
+    data.tokensLight = sanitizeBranding(input.tokensLight);
+  }
+  if (input.tokensDark !== undefined) {
+    data.tokensDark = sanitizeBranding(input.tokensDark);
+  }
+  // Footer links: empty/null clears back to the default; a non-empty value must survive its
+  // sanitizer — silently dropping a typo'd URL/e-mail would read as "saved" while reverting the
+  // footer to the default, so invalid input fails loudly instead (same contract as brandColor).
+  if (input.siteUrl !== undefined) {
+    if (input.siteUrl === null || input.siteUrl.trim() === "") {
+      data.siteUrl = null;
+    } else {
+      const cleaned = sanitizeSiteUrl(input.siteUrl);
+      if (!cleaned) {
+        throw new AppError("invalid site url", 400, "errors.invalidSiteUrl");
+      }
+      data.siteUrl = cleaned;
+    }
+  }
+  if (input.supportEmail !== undefined) {
+    if (input.supportEmail === null || input.supportEmail.trim() === "") {
+      data.supportEmail = null;
+    } else {
+      const cleaned = sanitizeSupportEmail(input.supportEmail);
+      if (!cleaned) {
+        throw new AppError(
+          "invalid support email",
+          400,
+          "errors.invalidSupportEmail",
+        );
+      }
+      data.supportEmail = cleaned;
+    }
+  }
+  if (input.hideGithubLink !== undefined) {
+    data.hideGithubLink = input.hideGithubLink === true;
+  }
+  if (Object.keys(data).length === 0) {
+    throw new AppError(
+      "no updatable fields provided",
+      400,
+      "errors.noUpdatableFields",
+    );
+  }
+  return data;
 }
 
 export interface ColorUpdate {

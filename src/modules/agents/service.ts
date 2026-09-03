@@ -598,6 +598,27 @@ async function assertCredentialRefsResolve(
   }
 }
 
+// The credential half of `createAgent`'s verdict, on its own scoped read. ADVISORY: the entry it
+// finds can be deleted or re-kinded before the apply lands, and the copy inside the write's
+// transaction stays the authority.
+//
+// NOTE: it REWRITES the refs it was handed, because `assertCredentialRefsResolve` does — canonical
+// on the way in is the point of that function. The preview echoes the payload it validated, so what
+// the operator reads back is the spelling the apply would store, not the one they typed.
+export async function assertCredentialRefsUsable(
+  ctx: TenantContext,
+  next: { modelConfig?: unknown; settings?: unknown },
+  base: PrismaClient = basePrisma,
+  // The bag this write REPLACES. `{}` on create, where nothing is stored yet and every ref the
+  // payload carries is one this write introduces; the stored row on update, because "did this write
+  // change the ref" can only be asked of the value being replaced.
+  stored: { modelConfig?: unknown; settings?: unknown } = {},
+): Promise<void> {
+  await runScopedOn(base, ctx, (db) =>
+    assertCredentialRefsResolve(db, next, stored),
+  );
+}
+
 // Allowlist of editable fields. tenantId/id are never touched; modelConfig/settings must be
 // objects (the runtime's own parser validates their inner shape at load time).
 // NOTE: The EFFECTIVE follow-up state: an ENABLED agent with followUp.enabled, in ANY mode — the
@@ -632,16 +653,22 @@ export const agentUpdateSchema = z
 
 export type AgentUpdate = z.infer<typeof agentUpdateSchema>;
 
-export async function updateAgent(
-  ctx: TenantContext,
-  id: bigint,
-  patch: AgentUpdate,
-  base: PrismaClient = basePrisma,
-  // Optimistic concurrency (editor): when set, the update only applies if the row's updatedAt still
-  // matches; a mismatch yields 409 (errors.agentModifiedElsewhere) instead of silently overwriting a
-  // change made elsewhere (another tab, the REST API, or the MCP server). Omitted ⇒ last-write-wins.
-  opts: { expectedUpdatedAt?: Date } = {},
-): Promise<AgentDto> {
+// Everything `updateAgent` decides about its PATCH before any database is involved: the prompt
+// size, the schema, the model config, the "nothing to update" refusal, and the two schedule ids.
+// Split out so the MCP preview can ask the same question the apply asks (#490) — that preview had
+// no preflight at all, and its fence row passed an agent id that does not exist, so it proved the
+// not-found path and nothing else.
+//
+// The two ids come back parsed, for the same reason `assertAgentCreatable` hands them back: a
+// second `requireDbId` in the caller could disagree with this one about which row was asked for.
+export function assertAgentUpdatable(patch: AgentUpdate): {
+  data: AgentUpdate;
+  rest: Omit<AgentUpdate, "businessHoursId" | "followUpHoursId">;
+  hasBh: boolean;
+  hasFuh: boolean;
+  businessHoursId: bigint | null;
+  followUpHoursId: bigint | null;
+} {
   assertPromptSize(patch.systemPrompt);
   const data = parseInput(agentUpdateSchema, patch);
   validateModelConfigForWrite(data.modelConfig);
@@ -655,43 +682,45 @@ export async function updateAgent(
       "errors.noUpdatableFields",
     );
   }
-  // NOTE: refused, not collapsed into the NotFound the ownership check below raises. This used
-  // to answer 404 for a non-numeric id, which tells a caller who mistyped that the row is gone —
-  // and the same file already answered 400 for a malformed tool-grant id (`bigOrThrow`), so one
-  // mistake got two answers depending on which field carried it. Issue #407.
-  const bhId =
-    hasBh && businessHoursId !== null
-      ? requireDbId(businessHoursId, "businessHoursId")
-      : null;
-  const fuhId =
-    hasFuh && followUpHoursId !== null
-      ? requireDbId(followUpHoursId, "followUpHoursId")
-      : null;
+  // NOTE: refused, not collapsed into the NotFound the ownership check raises. This used to answer
+  // 404 for a non-numeric id, which tells a caller who mistyped that the row is gone — and the same
+  // file already answered 400 for a malformed tool-grant id (`bigOrThrow`), so one mistake got two
+  // answers depending on which field carried it. Issue #407.
+  return {
+    data,
+    rest,
+    hasBh,
+    hasFuh,
+    businessHoursId:
+      hasBh && businessHoursId !== null
+        ? requireDbId(businessHoursId, "businessHoursId")
+        : null,
+    followUpHoursId:
+      hasFuh && followUpHoursId !== null
+        ? requireDbId(followUpHoursId, "followUpHoursId")
+        : null,
+  };
+}
+
+export async function updateAgent(
+  ctx: TenantContext,
+  id: bigint,
+  patch: AgentUpdate,
+  base: PrismaClient = basePrisma,
+  // Optimistic concurrency (editor): when set, the update only applies if the row's updatedAt still
+  // matches; a mismatch yields 409 (errors.agentModifiedElsewhere) instead of silently overwriting a
+  // change made elsewhere (another tab, the REST API, or the MCP server). Omitted ⇒ last-write-wins.
+  opts: { expectedUpdatedAt?: Date } = {},
+): Promise<AgentDto> {
+  const {
+    rest,
+    hasBh,
+    hasFuh,
+    businessHoursId: bhId,
+    followUpHoursId: fuhId,
+  } = assertAgentUpdatable(patch);
   const dto = await runScopedOn(base, ctx, async (db) => {
-    if (bhId !== null) {
-      const bh = await db.businessHours.findUnique({
-        where: { id: bhId },
-        select: { id: true },
-      });
-      if (!bh) {
-        throw new NotFoundError(
-          "business hours not found",
-          "errors.businessHoursNotFound",
-        );
-      }
-    }
-    if (fuhId !== null) {
-      const fuh = await db.businessHours.findUnique({
-        where: { id: fuhId },
-        select: { id: true },
-      });
-      if (!fuh) {
-        throw new NotFoundError(
-          "business hours not found",
-          "errors.businessHoursNotFound",
-        );
-      }
-    }
+    await assertSchedulesExistOn(db, bhId, fuhId);
     const updateData: Record<string, unknown> = { ...rest };
     if (hasBh) updateData.businessHoursId = bhId;
     if (hasFuh) updateData.followUpHoursId = fuhId;
@@ -883,12 +912,54 @@ export const agentCreateSchema = z
   .strict();
 export type AgentCreate = z.infer<typeof agentCreateSchema>;
 
-export async function createAgent(
+// Everything `createAgent` can refuse about an input WITHOUT reading the database, as one call. It
+// exists so the MCP dry run can answer with the same verdict the apply will: the preview returns
+// before the core is ever reached, so a rule that lives only inside `createAgent` is a rule the
+// preview promises away (issue #490). Returns the parsed row so the caller does not parse twice.
+// The two schedule ids EXIST, asked on whatever scoped handle the caller already has. It reads,
+// so it lives here rather than in `assertAgentCreatable`, which is pure.
+async function assertSchedulesExistOn(
+  db: ScopedDb,
+  businessHoursId: bigint | null,
+  followUpHoursId: bigint | null,
+): Promise<void> {
+  for (const id of [businessHoursId, followUpHoursId]) {
+    if (id === null) continue;
+    const row = await db.businessHours.findUnique({
+      where: { id },
+      select: { id: true },
+    });
+    if (!row) {
+      throw new NotFoundError(
+        "business hours not found",
+        "errors.businessHoursNotFound",
+      );
+    }
+  }
+}
+
+// The half of `createAgent`'s verdict that has to read. ADVISORY, like the uniqueness checks: the
+// schedule it finds can be deleted before the apply arrives, and the scoped read inside the write
+// stays the authority. `assertAgentCreatable` already parses both ids and hands them back, so the
+// preview passes those rather than parsing a second time — a caller that re-parsed could disagree
+// with the write about which row it even asked for.
+export async function assertSchedulesExist(
   ctx: TenantContext,
-  input: AgentCreate,
+  businessHoursId: bigint | null,
+  followUpHoursId: bigint | null,
   base: PrismaClient = basePrisma,
-): Promise<AgentDto> {
-  const tenantId = requireTenant(ctx);
+): Promise<void> {
+  if (businessHoursId === null && followUpHoursId === null) return;
+  await runScopedOn(base, ctx, (db) =>
+    assertSchedulesExistOn(db, businessHoursId, followUpHoursId),
+  );
+}
+
+export function assertAgentCreatable(input: AgentCreate): {
+  data: AgentCreate;
+  businessHoursId: bigint | null;
+  followUpHoursId: bigint | null;
+} {
   assertPromptSize(input.systemPrompt);
   assertSettingsTextSizes(input.settings, undefined);
   assertSettingsDebugWindow(input.settings, undefined);
@@ -896,14 +967,34 @@ export async function createAgent(
   assertSettingsToolPreconditions(input.settings, undefined);
   const data = parseInput(agentCreateSchema, input);
   validateModelConfigForWrite(data.modelConfig);
-  const bhId =
-    data.businessHoursId != null
-      ? requireDbId(data.businessHoursId, "businessHoursId")
-      : null;
-  const fuhId =
-    data.followUpHoursId != null
-      ? requireDbId(data.followUpHoursId, "followUpHoursId")
-      : null;
+  // NOTE: the two schedule ids are parsed HERE and handed back, not left to the caller. They are a
+  // pure judgement about the input — a malformed id, or one past the column's range — and leaving
+  // them out let the preview approve an `agent_create` the apply then 400s on. The ids come back
+  // rather than being parsed twice, so the two readings cannot disagree.
+  return {
+    data,
+    businessHoursId:
+      data.businessHoursId != null
+        ? requireDbId(data.businessHoursId, "businessHoursId")
+        : null,
+    followUpHoursId:
+      data.followUpHoursId != null
+        ? requireDbId(data.followUpHoursId, "followUpHoursId")
+        : null,
+  };
+}
+
+export async function createAgent(
+  ctx: TenantContext,
+  input: AgentCreate,
+  base: PrismaClient = basePrisma,
+): Promise<AgentDto> {
+  const tenantId = requireTenant(ctx);
+  const {
+    data,
+    businessHoursId: bhId,
+    followUpHoursId: fuhId,
+  } = assertAgentCreatable(input);
   const dto = await runScopedOn(base, ctx, async (db) => {
     if (bhId !== null) {
       const bh = await db.businessHours.findUnique({

@@ -7,6 +7,10 @@ import type { AgentMode } from "@/modules/agents/mode";
 import {
   type AgentCreate,
   type AgentUpdate,
+  assertAgentCreatable,
+  assertAgentUpdatable,
+  assertCredentialRefsUsable,
+  assertSchedulesExist,
   cloneAgent,
   createAgent,
   deleteAgent,
@@ -18,6 +22,9 @@ import {
 } from "@/modules/agents/service";
 import { agentExportSchema, importAgent } from "@/modules/agents/transfer";
 import {
+  assertMcpConnectionCreatable,
+  assertMcpConnectionNameAvailable,
+  assertMcpConnectionUpdatable,
   createMcpConnection,
   deleteMcpConnection,
   discoverMcpTools,
@@ -33,6 +40,8 @@ import {
   storableResponseTemplate,
 } from "@/modules/tool-definitions/response-template";
 import {
+  assertToolDefinitionCreatable,
+  assertToolNameAvailable,
   createToolDefinition,
   deleteToolDefinition,
   getToolDefinition,
@@ -122,6 +131,20 @@ export async function agentCreate(
 
   try {
     if (args.dry_run !== false) {
+      // NOTE: the core's own question, asked before the preview answers it. It sits INSIDE the
+      // branch rather than above it because the apply reaches the core, which asks it again —
+      // and several of these read a row or resolve DNS, so above the branch is a second lookup
+      // that can even disagree with the first (#490).
+      const { businessHoursId, followUpHoursId } = assertAgentCreatable(input);
+      // ADVISORY, unlike the line above it: this one READS. It passes the ids that line already
+      // PARSED rather than re-reading `input`, so the preview and the write cannot end up asking
+      // about different rows (#490).
+      await assertSchedulesExist(ctx, businessHoursId, followUpHoursId, base);
+      // ADVISORY too, and it asks the OTHER thing `createAgent` reads for: that every credential
+      // ref in the payload resolves AND that an entry of that kind can serve the field. A
+      // `google_oauth` entry holds an object where eight of these nine fields hand a plain string
+      // to a provider SDK, so "it exists" is not the question (#471, #490).
+      await assertCredentialRefsUsable(ctx, input, base);
       return ok({
         dryRun: true,
         action: "create",
@@ -197,6 +220,18 @@ export async function agentUpdate(
     }
     const target = `agent:${id}`;
     if (args.dry_run !== false) {
+      // NOTE: this preview had NO preflight, and its fence row hid that — the row passes an agent
+      // id that does not exist, so it proved the not-found path and every rule `updateAgent`
+      // applies after it went unasked. Measured: an empty name, a schedule id naming no row, and a
+      // credentialRef whose kind cannot serve the field all previewed ok and applied refused (#490).
+      const { rest, businessHoursId, followUpHoursId } =
+        assertAgentUpdatable(patch);
+      await assertSchedulesExist(ctx, businessHoursId, followUpHoursId, base);
+      // Against the STORED bag, not `{}`: on an update the question is whether this write CHANGES
+      // a ref, and `current` is the same row the diff above was rendered from.
+      await assertCredentialRefsUsable(ctx, rest, base, {
+        modelConfig: current.modelConfig,
+      });
       return ok({
         dryRun: true,
         target,
@@ -520,6 +555,16 @@ export async function toolCreate(
   const warnings = norm.warnings.length > 0 ? { warnings: norm.warnings } : {};
   try {
     if (args.dry_run !== false) {
+      // NOTE: the core's own question, asked before the preview answers it. It sits INSIDE the
+      // branch rather than above it because the apply reaches the core, which asks it again —
+      // and several of these read a row or resolve DNS, so above the branch is a second lookup
+      // that can even disagree with the first (#490).
+      const parsed = assertToolDefinitionCreatable(input);
+      // ADVISORY, unlike the line above it: this one READS, outside the transaction the apply
+      // will write in, so a free name here can be taken before the apply arrives. It answers the
+      // collision that actually happens (a name the operator already used), and the unique index
+      // inside the write remains what guarantees one name to one row (#490).
+      await assertToolNameAvailable(ctx, parsed.name, base);
       return ok({
         dryRun: true,
         action: "create",
@@ -697,6 +742,16 @@ export async function mcpConnectionCreate(
   } as McpConnectionCreate;
   try {
     if (args.dry_run !== false) {
+      // NOTE: the core's own question, asked before the preview answers it. It sits INSIDE the
+      // branch rather than above it because the apply reaches the core, which asks it again —
+      // and several of these read a row or resolve DNS, so above the branch is a second lookup
+      // that can even disagree with the first (#490).
+      const parsed = await assertMcpConnectionCreatable(input);
+      // ADVISORY, unlike the line above it: this one READS, outside the transaction the apply
+      // will write in, so a free name here can be taken before the apply arrives. It answers the
+      // collision that actually happens (a name the operator already used), and the unique index
+      // inside the write remains what guarantees one name to one row (#490).
+      await assertMcpConnectionNameAvailable(ctx, parsed.name, base);
       return ok({
         dryRun: true,
         action: "create",
@@ -738,6 +793,19 @@ export async function mcpConnectionUpdate(
     }
     const target = `mcp_connection:${id}`;
     if (args.dry_run !== false) {
+      // NOTE: the core's own question, asked before the preview answers it. It sits INSIDE the
+      // branch rather than above it because the apply reaches the core, which asks it again —
+      // and several of these read a row or resolve DNS, so above the branch is a second lookup
+      // that can even disagree with the first (#490).
+      // NOTE: judged against `current` — the SAME row the diff above was rendered from. Reading it
+      // again here would let a concurrent write land between the two, and the preview would then
+      // approve one state while describing a diff against another.
+      await assertMcpConnectionUpdatable(built.patch, current);
+      // ADVISORY, and only when the patch actually renames. `exceptId` is what keeps a connection
+      // keeping its own name from being read as a collision (#490).
+      if (built.patch.name !== undefined) {
+        await assertMcpConnectionNameAvailable(ctx, built.patch.name, base, id);
+      }
       return ok({
         dryRun: true,
         target,

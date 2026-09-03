@@ -1,6 +1,11 @@
 import basePrisma from "@/api/lib/prisma";
 import { createTenant } from "@/api/v1/tenants.admin.service";
-import { getTenant, listTenants } from "@/api/v1/tenants.service";
+import {
+  assertTenantCreatable,
+  assertTenantSlugAvailable,
+  getTenant,
+  listTenants,
+} from "@/api/v1/tenants.service";
 import { AppError } from "@/lib/errors";
 import type { TenantContext } from "@/lib/tenancy";
 import { parseMcpId } from "@/modules/mcp/write";
@@ -70,6 +75,19 @@ export async function tenantCreate(
   if ("ok" in ctx) return ctx;
   try {
     if (args.dry_run !== false) {
+      // NOTE: the core's own question, asked before the preview answers it. It sits INSIDE the
+      // branch rather than above it because the apply reaches the core, which asks it again —
+      // and several of these read a row or resolve DNS, so above the branch is a second lookup
+      // that can even disagree with the first (#490).
+      const parsed = assertTenantCreatable({
+        name: args.name,
+        slug: args.slug,
+      });
+      // ADVISORY, unlike the line above it: this one READS, outside the transaction the apply
+      // will write in, so a free name here can be taken before the apply arrives. It answers the
+      // collision that actually happens (a name the operator already used), and the unique index
+      // inside the write remains what guarantees one name to one row (#490).
+      await assertTenantSlugAvailable(parsed.slug, base);
       return ok({
         dryRun: true,
         action: "create",

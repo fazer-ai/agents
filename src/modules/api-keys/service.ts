@@ -132,6 +132,24 @@ export async function createApiKey(
   return { apiKey: toDto(row), token: gen.token };
 }
 
+// The half of `revokeApiKey` that decides whether there is anything to revoke: a key this tenant
+// can see, not already revoked. Same rule as the `updateMany` below, asked ahead of the write so
+// the MCP preview refuses exactly where the apply refuses (#490).
+export async function assertApiKeyRevocable(
+  ctx: TenantContext,
+  id: bigint,
+  base: PrismaClient = basePrisma,
+): Promise<void> {
+  const found = await runScopedOn(base, ctx, (db) =>
+    db.apiKey.findFirst({
+      where: { id, revokedAt: null },
+      select: { id: true },
+    }),
+  );
+  if (!found)
+    throw new NotFoundError("api key not found", "errors.apiKeyNotFound");
+}
+
 // Soft-revoke (sets revokedAt). updateMany → count 0 for a foreign/missing id under RLS → NotFound
 // (never a cross-tenant write). Re-revoking an already-revoked key is a no-op NotFound.
 export async function revokeApiKey(

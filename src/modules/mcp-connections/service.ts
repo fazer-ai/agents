@@ -251,6 +251,31 @@ async function assertNameFree(
   }
 }
 
+// Everything `createMcpConnection` refuses about an input WITHOUT reading the database, as one
+// call, so the MCP dry run can answer with the verdict the apply will (issue #490). See the note on
+// `assertAgentCreatable`. Async only because `assertTransportValid` is; it makes no query.
+export async function assertMcpConnectionCreatable(input: McpConnectionCreate) {
+  const data = parseInput(mcpConnectionCreateSchema, input);
+  await assertTransportValid(data);
+  return data;
+}
+
+// Same split, same caveat as `assertToolNameAvailable`: ADVISORY. It reads outside the write's
+// transaction, so a name free here can be taken before the apply arrives; `assertNameFree` inside
+// the tx stays the authority. It exists so the preview refuses the reuse the operator actually
+// makes, instead of promising a connection the apply will not create (#490).
+// `exceptId` for the update path: a connection keeping its own name is not a collision, and
+// omitting it would make every rename-to-itself preview refuse a write that succeeds — the inverse
+// divergence, which is just as wrong.
+export async function assertMcpConnectionNameAvailable(
+  ctx: TenantContext,
+  name: string,
+  base: PrismaClient = basePrisma,
+  exceptId?: bigint,
+): Promise<void> {
+  await runScopedOn(base, ctx, (db) => assertNameFree(db, name, exceptId));
+}
+
 export async function createMcpConnection(
   ctx: TenantContext,
   input: McpConnectionCreate,
@@ -258,8 +283,7 @@ export async function createMcpConnection(
 ): Promise<McpConnectionDto> {
   if (ctx.tenantId === null) throw new AppError("tenant required", 400);
   const tenantId = ctx.tenantId;
-  const data = parseInput(mcpConnectionCreateSchema, input);
-  await assertTransportValid(data);
+  const data = await assertMcpConnectionCreatable(input);
   return runScopedOn(base, ctx, async (db) => {
     await assertNameFree(db, data.name);
     const credentialRef = data.credentialRef
@@ -286,13 +310,34 @@ export async function createMcpConnection(
   });
 }
 
+// Everything `updateMcpConnection` decides before it writes: the schema, that the row exists, and
+// that the MERGED transport/url/command is coherent and reachable. Split out so the MCP preview can
+// ask the same question the apply asks (#490) — the merge is the point, since a patch that only
+// moves the url is judged against the transport already stored.
+// The judgement `updateMcpConnection` makes about a patch, against a snapshot the CALLER supplies.
+// The snapshot is a parameter rather than a read of its own so the MCP preview can validate and
+// render from the same row: reading it twice means a concurrent write can land between the two, and
+// the preview then describes a diff against one state while having approved another (#490).
+export async function assertMcpConnectionUpdatable(
+  patch: McpConnectionUpdate,
+  current: { transport: string; url: string | null; command: string | null },
+): Promise<McpConnectionUpdate> {
+  const data = parseInput(mcpConnectionUpdateSchema, patch);
+  // Re-validate the merged result (SSRF/DNS outside the tx).
+  await assertTransportValid({
+    transport: data.transport ?? current.transport,
+    url: data.url !== undefined ? data.url : current.url,
+    command: data.command !== undefined ? data.command : current.command,
+  });
+  return data;
+}
+
 export async function updateMcpConnection(
   ctx: TenantContext,
   id: bigint,
   patch: McpConnectionUpdate,
   base: PrismaClient = basePrisma,
 ): Promise<McpConnectionDto> {
-  const data = parseInput(mcpConnectionUpdateSchema, patch);
   const current = await runScopedOn(base, ctx, (db) =>
     db.mcpServerConnection.findUnique({
       where: { id },
@@ -305,12 +350,7 @@ export async function updateMcpConnection(
       "errors.mcpConnectionNotFound",
     );
   }
-  // Re-validate the merged result (SSRF/DNS outside the tx).
-  await assertTransportValid({
-    transport: data.transport ?? current.transport,
-    url: data.url !== undefined ? data.url : current.url,
-    command: data.command !== undefined ? data.command : current.command,
-  });
+  const data = await assertMcpConnectionUpdatable(patch, current);
   return runScopedOn(base, ctx, async (db) => {
     // LOCKED before the snapshot the trail compares against. The `current` read above is outside
     // this transaction on purpose — it feeds the SSRF check, which does DNS — so it is not the

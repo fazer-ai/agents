@@ -2,9 +2,13 @@ import { z } from "zod";
 import basePrisma from "@/api/lib/prisma";
 import { AppError } from "@/lib/errors";
 import { parseInput } from "@/lib/parse-input";
-import { revokeApiKey } from "@/modules/api-keys/service";
+import {
+  assertApiKeyRevocable,
+  revokeApiKey,
+} from "@/modules/api-keys/service";
 import { truncForAudit } from "@/modules/audit/projection";
 import {
+  assertBusinessHoursCreatable,
   createBusinessHours,
   deleteBusinessHours,
   getBusinessHours,
@@ -23,6 +27,7 @@ import {
   updateLangfuse,
 } from "@/modules/tenant-settings/service";
 import {
+  assertVaultEntryCreatable,
   createVaultEntry,
   resolveVaultRefByName,
   updateVaultEntry,
@@ -255,6 +260,16 @@ export async function businessHoursCreate(
   if ("ok" in ctx) return ctx;
   try {
     if (args.dry_run !== false) {
+      // NOTE: the core's own question, asked before the preview answers it. It sits INSIDE the
+      // branch rather than above it because the apply reaches the core, which asks it again —
+      // and several of these read a row or resolve DNS, so above the branch is a second lookup
+      // that can even disagree with the first (#490).
+      assertBusinessHoursCreatable({
+        name: args.name,
+        timezone: args.timezone,
+        windows: args.windows,
+        exceptions: args.exceptions,
+      });
       return ok({
         dryRun: true,
         action: "create",
@@ -532,22 +547,36 @@ export async function langfuseConnect(
   if (!args.base_url) return err("base_url is required");
   const name = args.name?.trim() || "langfuse";
   const enabled = args.enabled ?? true;
-  if (args.dry_run !== false) {
-    return ok({
-      dryRun: true,
-      action: "connect",
-      resource: "langfuse",
-      // The keys are never echoed back, not even in the preview.
-      preview: {
-        name,
-        baseUrl: args.base_url,
-        enabled,
-        publicKey: "(redacted)",
-        secretKey: "(redacted)",
-      },
-    });
-  }
   try {
+    if (args.dry_run !== false) {
+      // NOTE: the vault's own rule, asked before the preview answers, on the ENTRY THE APPLY WOULD
+      // BUILD rather than on one field of it. An earlier version checked `base_url` alone, and the
+      // apply also judges the vault name and both key values through `createVaultEntry` — a key
+      // with surrounding whitespace previewed clean and then refused, which is the same shape as
+      // the divergence this whole change is about, one level in (#490).
+      //
+      // `langfuse` is a kind that REQUIRES a base URL, so "   " — which normalizes to the empty
+      // string without raising — is refused in here rather than by a separate check out here.
+      assertVaultEntryCreatable({
+        name,
+        value: { publicKey: args.public_key, secretKey: args.secret_key },
+        kind: "langfuse",
+        baseUrl: args.base_url,
+      });
+      return ok({
+        dryRun: true,
+        action: "connect",
+        resource: "langfuse",
+        // The keys are never echoed back, not even in the preview.
+        preview: {
+          name,
+          baseUrl: args.base_url,
+          enabled,
+          publicKey: "(redacted)",
+          secretKey: "(redacted)",
+        },
+      });
+    }
     // Upsert the filled vault entry so a re-connect (e.g. rotated keys) is idempotent.
     const existing = await resolveVaultRefByName(ctx, name, "langfuse", base);
     let ref: string;
@@ -620,6 +649,11 @@ export async function apiKeyRevoke(
   const target = `api_key:${id}`;
   try {
     if (args.dry_run !== false) {
+      // NOTE: the core's own question, asked before the preview answers it. It sits INSIDE the
+      // branch rather than above it because the apply reaches the core, which asks it again —
+      // and several of these read a row or resolve DNS, so above the branch is a second lookup
+      // that can even disagree with the first (#490).
+      await assertApiKeyRevocable(ctx, id, base);
       return ok({
         dryRun: true,
         action: "revoke",

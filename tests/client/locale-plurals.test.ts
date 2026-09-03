@@ -163,7 +163,6 @@ describe.each(Object.entries(LOCALES))(
       for (const base of bases) {
         const needle = `"${base}"`;
         let anyCall = false;
-        let seen = false;
         for (const [file, text] of located.entries()) {
           const code = codes[file] ?? "";
           for (
@@ -172,17 +171,19 @@ describe.each(Object.entries(LOCALES))(
             at = text.indexOf(needle, at + 1)
           ) {
             anyCall = true;
-            if (/\bcount\b/.test(restOfCall(code, at + needle.length))) {
-              seen = true;
-              break;
+            // EVERY OCCURRENCE, never "the key is fine because one call was fixed". Review found
+            // that exact hole: `editor.tools.mcpSelected` is called from three places in
+            // `ToolGrantsEditor`, two of them moved to `count` and the third left on `n` — so a
+            // single enabled integration tool still read "1 selecionadas" while this test was green.
+            if (!/\bcount\b/.test(restOfCall(code, at + needle.length))) {
+              const line = text.slice(0, at).split("\n").length;
+              missing.push(`${files[file]}:${line} ${base}`);
             }
           }
-          if (seen) break;
         }
         // Called through a variable or a template key. The extractor could not have kept the key
         // without SOME literal, so this is worth reporting rather than skipping.
         if (!anyCall) missing.push(`${base} (no literal call site)`);
-        else if (!seen) missing.push(base);
       }
       expect(missing).toEqual([]);
     });

@@ -19,6 +19,8 @@ import { UpdatesProvider } from "@/client/contexts/UpdatesContext";
 import { AcceptInvitePage } from "@/client/pages/AcceptInvitePage";
 import { AgentsPage } from "@/client/pages/AgentsPage";
 import { ApiKeysPage } from "@/client/pages/ApiKeysPage";
+// NOTE: SettingsAboutPage removed (item 13); /settings/about now redirects to profile.
+import { AuditPage } from "@/client/pages/AuditPage";
 import { AdminBrandingPage } from "@/client/pages/admin/AdminBrandingPage";
 import { AdminLayout } from "@/client/pages/admin/AdminLayout";
 import { AdminTenantsPage } from "@/client/pages/admin/AdminTenantsPage";
@@ -29,7 +31,6 @@ import { ConversationDetailPage } from "@/client/pages/ConversationDetailPage";
 import { ConversationsPage } from "@/client/pages/ConversationsPage";
 import { DashboardPage } from "@/client/pages/DashboardPage";
 import { LoginPage } from "@/client/pages/LoginPage";
-// NOTE: SettingsAboutPage removed (item 13); /settings/about now redirects to profile.
 import { LogsPage } from "@/client/pages/LogsPage";
 import { McpPage } from "@/client/pages/McpPage";
 import { OAuthConsentPage } from "@/client/pages/OAuthConsentPage";
@@ -175,6 +176,14 @@ export function App() {
                                 element={
                                   <ProtectedRoute requireAdmin>
                                     <ApiKeysPage />
+                                  </ProtectedRoute>
+                                }
+                              />
+                              <Route
+                                path="/audit"
+                                element={
+                                  <ProtectedRoute requireAdmin>
+                                    <AuditPage />
                                   </ProtectedRoute>
                                 }
                               />

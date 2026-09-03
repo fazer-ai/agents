@@ -1,5 +1,6 @@
 import basePrisma from "@/api/lib/prisma";
 import { AppError } from "@/lib/errors";
+import { ACTOR_TYPES, type ActorType } from "@/lib/tenancy/actor";
 import { readAgentConfigHealth } from "@/modules/agents/config-health-read";
 import { getAgent, getAgentToolSelections } from "@/modules/agents/service";
 import type { MetricsFilter } from "@/modules/analytics/service";
@@ -783,21 +784,70 @@ export async function apiKeyList(
 
 // ── audit log ──
 
+export interface AuditQueryArgs {
+  action?: string;
+  actor_type?: string;
+  actor_id?: string;
+  since?: string;
+  until?: string;
+  limit?: number;
+  cursor?: string;
+}
+
 export async function auditList(
   principal: VerifiedToken,
-  args: { action?: string; limit?: number },
+  args: AuditQueryArgs,
   deps: WriteDeps = {},
 ): Promise<WriteResult> {
   const base = deps.base ?? basePrisma;
   const ctx = readGate(principal);
   if ("ok" in ctx) return ctx;
+  const opts: Parameters<typeof listAudit>[1] = {};
+  // NOTE: PRESENCE is `!== undefined`, never truthiness, and it is the same rule the REST filters
+  // answer to. `""` is what a caller sends for a field it meant to fill and did not, and reading it
+  // as "no filter" answers a narrowed request with the WHOLE trail — which on a trail reads as "and
+  // nothing else happened". An empty cursor is worse still: it silently restarts the walk.
+  if (args.action !== undefined) {
+    if (args.action === "") return err("action must not be empty");
+    opts.action = args.action;
+  }
+  // NOTE: `parseIsoInstant`, never `new Date`: that one normalises February 30 into March 2 without
+  // saying so, and reads a non-ISO string in the SERVER's timezone. Either way the tool answers with
+  // rows from an interval the caller did not ask for, while the REST endpoint refuses the same value.
+  for (const [key, raw] of [
+    ["since", args.since],
+    ["until", args.until],
+  ] as const) {
+    if (raw === undefined) continue;
+    const d = parseIsoInstant(raw);
+    if (d === null) {
+      return err(`${key} must be an ISO 8601 instant with an offset`);
+    }
+    opts[key] = d;
+  }
+  if (args.limit !== undefined) opts.limit = args.limit;
+  if (args.actor_type !== undefined) {
+    if (!(ACTOR_TYPES as readonly string[]).includes(args.actor_type)) {
+      return err(`actor_type must be one of: ${ACTOR_TYPES.join(", ")}`);
+    }
+    opts.actorType = args.actor_type as ActorType;
+  }
+  if (args.actor_id !== undefined) {
+    const v = parseMcpId(args.actor_id, "actor_id");
+    if (typeof v !== "bigint") return v;
+    opts.actorId = v;
+  }
+  if (args.cursor !== undefined) {
+    const v = parseMcpId(args.cursor, "cursor");
+    if (typeof v !== "bigint") return v;
+    opts.cursor = v;
+  }
   try {
+    const res = await listAudit(ctx, opts, base);
     return ok({
-      entries: await listAudit(
-        ctx,
-        { action: args.action, limit: args.limit },
-        base,
-      ),
+      entries: res.entries,
+      nextCursor: res.nextCursor,
+      latestAt: res.latestAt,
     });
   } catch (e) {
     return failOf(e);

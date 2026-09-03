@@ -7,6 +7,7 @@ import config from "@/config";
 import { AppError } from "@/lib/errors";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import type { TenantContext } from "@/lib/tenancy";
+import { ACTOR_TYPES } from "@/lib/tenancy/actor";
 import {
   BEHAVIOR_PATCH_SHAPE,
   type BehaviorPatchArgs,
@@ -1031,14 +1032,32 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "audit_list",
       {
         description:
-          "Read the tenant's audit log (most recent first). before/after were allowlist-sanitized at write time (never secrets). Optionally filter by action; limit defaults to 100 (max 500).",
+          "Tenant audit log, newest first. before/after are sanitized at write time, never secrets. Keyset cursor; limit 100 (max 500). `latestAt` is the trail's newest row, past any filter.",
         inputSchema: {
           action: z.string().optional(),
+          // NOTE: derived from the vocabulary and never hand-listed, for the reason `logs_query`
+          // carries one line below: a copy drifts, and the server then refuses a value it had just
+          // advertised.
+          actor_type: z.enum(ACTOR_TYPES).optional(),
+          actor_id: z.string().optional(),
+          since: z.string().optional(),
+          until: z.string().optional(),
           limit: z.number().int().optional(),
+          cursor: z.string().optional(),
         },
       },
-      async (args: { action?: string; limit?: number }, eff) =>
-        writeContent(await auditList(eff, args)),
+      async (
+        args: {
+          action?: string;
+          actor_type?: string;
+          actor_id?: string;
+          since?: string;
+          until?: string;
+          limit?: number;
+          cursor?: string;
+        },
+        eff,
+      ) => writeContent(await auditList(eff, args)),
     );
 
     registerTenantTool(

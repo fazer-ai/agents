@@ -1355,8 +1355,8 @@ describe.skipIf(!dbUp)(
       await runScopedOn(appDb, ctx(tenant), (db: ScopedDb) =>
         recordAudit(db, tenant, { action: "test.action", target: "thing" }),
       );
-      const entries = await listAudit(ctx(tenant), {}, appDb);
-      expect(entries.some((e) => e.action === "test.action")).toBe(true);
+      const page = await listAudit(ctx(tenant), {}, appDb);
+      expect(page.entries.some((e) => e.action === "test.action")).toBe(true);
     });
   },
 );

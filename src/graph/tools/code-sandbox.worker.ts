@@ -29,6 +29,9 @@ export interface SandboxRequest {
   // Cap on the rendered result and on the captured console output, each. Applied HERE so the
   // message back to the host is bounded by construction, whatever the snippet built.
   maxChars: number;
+  // The agent's clock, exposed as `TIMEZONE` and `NOW_LOCAL`. The interpreter's own clock is UTC
+  // and it has no Intl, so without these "today" is tomorrow's date every evening in Brazil.
+  clock: { timezone: string; nowLocal: string };
 }
 
 export type SandboxReply =
@@ -40,7 +43,23 @@ export type SandboxReply =
       message: string;
       logs: string[];
       ms: number;
+      // Set when the error is the interpreter's own limit rather than the snippet's, classified
+      // HERE from the raw message, before the source line is appended to it.
+      limit?: SandboxLimit;
     };
+
+export type SandboxLimit = "time" | "memory" | "stack";
+
+// The three InternalError messages QuickJS uses for its own limits. Anything else the snippet
+// raised is the snippet's error, InternalError included.
+function limitOf(error: unknown): SandboxLimit | undefined {
+  const e = error as { name?: unknown; message?: unknown } | null;
+  if (e?.name !== "InternalError") return undefined;
+  if (e.message === "interrupted") return "time";
+  if (e.message === "out of memory") return "memory";
+  if (e.message === "stack overflow") return "stack";
+  return undefined;
+}
 
 const QuickJS = await newQuickJSWASMModuleFromVariant(variant);
 
@@ -176,6 +195,24 @@ function installPrelude(vm: QuickJSContext): void {
   vm.unwrapResult(vm.evalCode(PRELUDE_SOURCE, "prelude.js")).dispose();
 }
 
+// The agent's clock, as two strings: the IANA zone and the current instant written in that zone
+// with its UTC offset (`2026-09-02T19:05:33-03:00`). A model doing date arithmetic reads the local
+// date off the string and `new Date(NOW_LOCAL)` is the exact instant, which is what n8n's `$now` /
+// `$today` give a Code node from the workflow's timezone.
+function installClock(
+  vm: QuickJSContext,
+  clock: SandboxRequest["clock"],
+): void {
+  for (const [name, value] of [
+    ["TIMEZONE", clock.timezone],
+    ["NOW_LOCAL", clock.nowLocal],
+  ] as const) {
+    const handle = vm.newString(value);
+    vm.setProp(vm.global, name, handle);
+    handle.dispose();
+  }
+}
+
 // A snippet is evaluated as a script, so its result is the completion value: the last expression,
 // REPL-style, which is how the tool description tells the model to end it. A snippet that ends in
 // `return` instead is a SyntaxError as a script and a perfectly good function body, and a model told
@@ -187,27 +224,52 @@ const RENDER_BUDGET_MS = 200;
 function evaluate(
   vm: QuickJSContext,
   code: string,
-): { ok: true; value: QuickJSHandle } | { ok: false; error: unknown } {
+):
+  | { ok: true; value: QuickJSHandle }
+  | { ok: false; error: unknown; limit?: SandboxLimit } {
   const first = vm.evalCode(code, "snippet.js");
   if (!first.error) return { ok: true, value: first.value };
-  const error = vm.dump(first.error) as { name?: string; message?: string };
-  first.error.dispose();
+  const error = dumpError(vm, first.error) as {
+    name?: string;
+    message?: string;
+  };
   if (
     error?.name !== "SyntaxError" ||
     !RETURN_AT_TOP_LEVEL.test(error.message ?? "")
   ) {
-    return { ok: false, error: withSourceLine(error, code, 0) };
+    return {
+      ok: false,
+      error: withSourceLine(error, code, 0),
+      limit: limitOf(error),
+    };
   }
   const second = vm.evalCode(`(function () {\n${code}\n})()`, "snippet.js");
   if (second.error) {
-    const err = vm.dump(second.error);
-    second.error.dispose();
-    return { ok: false, error: withSourceLine(err, code, 1) };
+    const err = dumpError(vm, second.error);
+    return {
+      ok: false,
+      error: withSourceLine(err, code, 1),
+      limit: limitOf(err),
+    };
   }
   return { ok: true, value: second.value };
 }
 
-// A SyntaxError names its line, and the model needs the line more than the message: measured live,
+// Reading a thrown value RUNS the snippet's code again: `message` can be a getter, `toString` a
+// method, and both are the snippet's. n8n's Python sandbox was escaped through exactly that seam
+// (CVE-2026-0863: the formatting of an attacker-built exception ran outside the sandbox's checks).
+// Here the read happens inside the interpreter, so the snippet's own deadline still governs it, and
+// `dump` returns a placeholder rather than throwing when it is interrupted. Measured: a getter that
+// loops forever comes back as "[object Object]" at the deadline. The deadline is deliberately NOT
+// renewed for this read — renewing it handed that getter 200 ms more, and a legitimate error object
+// takes microseconds to read.
+function dumpError(vm: QuickJSContext, handle: QuickJSHandle): unknown {
+  const value = vm.dump(handle);
+  handle.dispose();
+  return value;
+}
+
+// An error names its line, and the model needs the line more than the message: measured live,
 // gpt-4o-mini re-sent the same unparseable snippet nine times on "unexpected token in expression:
 // ''" alone. `offset` is the wrapper line the function-body retry adds above the snippet.
 function withSourceLine(error: unknown, code: string, offset: number): unknown {
@@ -215,10 +277,23 @@ function withSourceLine(error: unknown, code: string, offset: number): unknown {
     name?: unknown;
     message?: unknown;
     lineNumber?: unknown;
+    stack?: unknown;
   } | null;
-  if (e?.name !== "SyntaxError" || typeof e.lineNumber !== "number")
-    return error;
-  const line = e.lineNumber - offset;
+  if (!e || typeof e !== "object") return error;
+  // NOTE: A SyntaxError carries `lineNumber`; a runtime error carries the line in the first frame of
+  // its stack (`at <eval> (snippet.js:2:5)`).
+  const fromStack =
+    typeof e.stack === "string"
+      ? /snippet\.js:(\d+)/.exec(e.stack)?.[1]
+      : undefined;
+  const reported =
+    typeof e.lineNumber === "number"
+      ? e.lineNumber
+      : fromStack
+        ? Number(fromStack)
+        : undefined;
+  if (reported === undefined) return error;
+  const line = reported - offset;
   const text = code.split("\n")[line - 1];
   if (text === undefined) return error;
   return {
@@ -239,17 +314,21 @@ function run(req: SandboxRequest): SandboxReply {
   const vm = runtime.newContext();
   const renderer = makeRenderer(vm);
   const render = renderer.render;
+  const renewDeadline = () =>
+    runtime.setInterruptHandler(
+      shouldInterruptAfterDeadline(Date.now() + RENDER_BUDGET_MS),
+    );
   try {
     installConsole(vm, render, logs, req.maxChars);
     installPrelude(vm);
+    installClock(vm, req.clock);
     const out = evaluate(vm, req.code);
     const ms = Math.round(performance.now() - started);
     if (out.ok) {
       // NOTE: Rendering runs interpreter code too, on its own short deadline: a snippet that spent its
-      // whole budget building the value would otherwise have its result interrupted mid-render.
-      runtime.setInterruptHandler(
-        shouldInterruptAfterDeadline(Date.now() + RENDER_BUDGET_MS),
-      );
+      // whole budget building the value would otherwise have its result interrupted mid-render and
+      // come back as "[object Object]" (measured, and fenced by test).
+      renewDeadline();
       const value = clip(render(out.value), req.maxChars);
       out.value.dispose();
       return { kind: "value", value, logs, ms };
@@ -268,6 +347,7 @@ function run(req: SandboxRequest): SandboxReply {
       message: clip(message, req.maxChars),
       logs,
       ms,
+      ...(out.limit ? { limit: out.limit } : {}),
     };
   } finally {
     // NOTE: Best effort. A runtime the engine already gave up on (a native stack overflow that the

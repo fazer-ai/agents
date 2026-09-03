@@ -1002,6 +1002,30 @@ describe("run_code", () => {
     );
   });
 
+  test("the sandbox runs on the agent's clock, and on the default zone when none is set", async () => {
+    const seen: unknown[] = [];
+    const runCode = (async (code: string, opts?: unknown) => {
+      seen.push(opts);
+      return { kind: "value", value: code, logs: [], ms: 0 };
+    }) as unknown as NonNullable<
+      Parameters<typeof buildNativeTools>[0]["runCode"]
+    >;
+    await byName(
+      buildNativeTools({ ...ctx(), runCode, timezone: "Europe/Lisbon" }, [
+        "run_code",
+      ]),
+      "run_code",
+    ).invoke({ code: "1" });
+    await byName(
+      buildNativeTools({ ...ctx(), runCode }, ["run_code"]),
+      "run_code",
+    ).invoke({ code: "1" });
+    expect(seen).toEqual([
+      { clock: { timezone: "Europe/Lisbon" } },
+      { clock: { timezone: "America/Sao_Paulo" } },
+    ]);
+  });
+
   test("its description asks for the verdict and forbids re-comparing, and carries operator guidance", () => {
     const plain = byName(buildNativeTools(ctx(), ["run_code"]), "run_code");
     expect(plain.description).toMatch(/FINAL VERDICT/);
@@ -1009,6 +1033,7 @@ describe("run_code", () => {
     expect(plain.description).toMatch(
       /validateCpf\(text\) and validateCnpj\(text\)/,
     );
+    expect(plain.description).toMatch(/TIMEZONE .* NOW_LOCAL/);
     expect(plain.description).not.toContain("Operator guidance");
     const guided = byName(
       buildNativeTools(

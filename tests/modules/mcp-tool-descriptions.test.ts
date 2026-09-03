@@ -211,7 +211,11 @@ const SETTINGS_DESC_CEILING = 2_000;
 // BLOCK and not a field on an existing one, which is what makes it cost more than its own sentence —
 // the thirteen-times-published patterns above are per block. Re-measured on the tree that ships:
 // 22,567.
-const SETTINGS_SCHEMA_CEILING = 22_600;
+// A round after that, a fourteenth NATIVE tool (`run_code`, issue #363), which is the other axis a
+// native name is published on: `toolGuidance` and `toolPreconditions` carry one key per native, so
+// a native costs its name twice plus the precondition pattern — 393 characters, with no field of its
+// own anywhere in this schema. Re-measured on the tree that ships: 22,960.
+const SETTINGS_SCHEMA_CEILING = 23_000;
 
 describe("MCP tool descriptions", () => {
   test("agent_settings_set stays under its ceiling", async () => {
@@ -408,6 +412,14 @@ describe("MCP tool descriptions", () => {
   // `latestAt` answers, and the four fit in 27 characters LESS than the sentence they replaced, so
   // the description ceiling does not move at all: `audit_list` ends up smaller than it was. The
   // schema ceiling goes to 53,600.
+  //
+  //
+  // `run_code` (#363) takes the schema total from 53,047 to 53,440, and every character of it is on
+  // `agent_settings_set` (measured per tool, base against fix: one line differs). A native tool is
+  // not an MCP tool, so it publishes no description and no schema of its own here; what it costs is
+  // its NAME, once per native-keyed settings map (`toolGuidance`, `toolPreconditions`) — 393
+  // characters the tools/list of every session pays for a tool the session may never grant. The
+  // schema ceiling goes to 53,500.
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;

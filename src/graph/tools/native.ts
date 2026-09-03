@@ -1382,6 +1382,7 @@ const RUN_CODE_DESCRIPTION = [
   "Write the code so that it produces the FINAL VERDICT itself (for example, end with an object like { valid: true }) and relay that result to the customer. Never redo the comparison or the arithmetic yourself after the tool answered.",
   "The value of the last expression is the result (REPL style); console.log output is returned with it. Plain JavaScript only: no network, no files, no imports, no async/await.",
   "Built-in helpers, to be used instead of writing the algorithm: validateCpf(text) and validateCnpj(text) return { valid: boolean } and ignore punctuation.",
+  "For dates, use the globals TIMEZONE (IANA zone) and NOW_LOCAL (the current instant as an ISO string with the agent's UTC offset, e.g. 2026-09-02T19:05:33-03:00): the sandbox clock itself is UTC and knows no timezone.",
   `Limits: ${SANDBOX_TIMEOUT_MS} ms of CPU, ${Math.round(SANDBOX_MEMORY_BYTES / (1024 * 1024))} MB of memory.`,
 ].join(" ");
 
@@ -1389,7 +1390,9 @@ function runCodeTool(ctx: ToolCtx) {
   const run = ctx.runCode ?? runSandboxedCode;
   return failableTool(
     async ({ code }: { code: string }) => {
-      const out = await run(code);
+      const out = await run(code, {
+        clock: { timezone: ctx.timezone || DEFAULT_TIMEZONE },
+      });
       if (out.kind === "unavailable") {
         return toolFailure(
           `The code sandbox could not start (${out.reason}). Answer without it, and do not tell the customer their data is invalid on that basis.`,

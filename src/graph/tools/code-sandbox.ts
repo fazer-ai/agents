@@ -33,6 +33,15 @@ export const SANDBOX_STACK_BYTES = 512 * 1024;
 // The snippet itself: a model does not write more than a few hundred lines in one call, and the
 // bound keeps a runaway generation from being handed to a thread as a megabyte of source.
 export const SANDBOX_CODE_MAX_CHARS = 20_000;
+// How many sandbox threads may run at once, process-wide. Without a cap every call spawns its own
+// thread the moment it arrives — a ToolNode runs a turn's calls in parallel, and turns run in
+// parallel — and the ceiling is the machine's, not ours. Measured with 50 at once on an 18-core
+// machine: RSS 15 → 2,485 MB across three batches, and 4 of the 50 busy ones reported "unavailable"
+// because their thread had not even booted when the kill timer fired. n8n's task runner caps the
+// same thing at 10 per runner (N8N_RUNNERS_MAX_CONCURRENCY). Calls past the cap wait their turn,
+// and the deadline only starts once they have it. The same 50-at-once through this gate: RSS
+// peaked at 571 MB, and all 50 came back with their real outcome.
+export const SANDBOX_MAX_CONCURRENCY = 8;
 // Boot (module load, ~6 ms measured) plus the deadline plus slack for a loaded machine, after
 // which the thread is killed whether or not the interrupt ever fired.
 const HARD_KILL_GRACE_MS = 1500;
@@ -58,41 +67,123 @@ export interface SandboxOptions {
   memoryBytes?: number;
   stackBytes?: number;
   maxChars?: number;
+  // The agent's clock, exposed inside as `TIMEZONE` and `NOW_LOCAL`. Absent ⇒ UTC, now.
+  clock?: { timezone: string; now?: Date };
 }
 
 export interface SandboxDeps {
   // The thread's entry, overridable so a test can stand in a thread that never boots or never
   // answers; the default is the real worker beside this file.
   workerUrl?: string;
+  // The concurrency gate, overridable so a test can prove the cap with a small one.
+  queue?: SandboxQueue;
+}
+
+// A counting semaphore: `acquire` resolves at once while fewer than `limit` calls hold it, and in
+// arrival order after that. Nothing about a waiting call runs — no thread, no timer — so a burst of
+// calls costs memory only for the ones actually executing.
+export class SandboxQueue {
+  private running = 0;
+  private readonly waiting: Array<() => void> = [];
+  constructor(readonly limit: number) {}
+  get active(): number {
+    return this.running;
+  }
+  get queued(): number {
+    return this.waiting.length;
+  }
+  acquire(): Promise<void> {
+    if (this.running < this.limit) {
+      this.running += 1;
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => {
+      this.waiting.push(() => {
+        this.running += 1;
+        resolve();
+      });
+    });
+  }
+  release(): void {
+    this.running -= 1;
+    const next = this.waiting.shift();
+    if (next) next();
+  }
+}
+
+const defaultQueue = new SandboxQueue(SANDBOX_MAX_CONCURRENCY);
+
+// The current instant written in `timezone` with its UTC offset, e.g. `2026-09-02T19:05:33-03:00`:
+// a string whose first ten characters are the local date and which `new Date()` parses back to
+// the same instant. Computed HERE because the interpreter has no Intl. An unknown zone falls back
+// to UTC rather than to nothing, so the snippet always has a clock.
+export function localIsoNow(timezone: string, now: Date = new Date()): string {
+  let parts: Intl.DateTimeFormatPart[];
+  try {
+    parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: timezone,
+      hourCycle: "h23",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    }).formatToParts(now);
+  } catch {
+    return localIsoNow("UTC", now);
+  }
+  const get = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((p) => p.type === type)?.value ?? "00";
+  const wall = `${get("year")}-${get("month")}-${get("day")}T${get("hour")}:${get("minute")}:${get("second")}`;
+  const wallAsUtc = Date.UTC(
+    Number(get("year")),
+    Number(get("month")) - 1,
+    Number(get("day")),
+    Number(get("hour")),
+    Number(get("minute")),
+    Number(get("second")),
+  );
+  const offsetMinutes = Math.round(
+    (wallAsUtc - Math.floor(now.getTime() / 1000) * 1000) / 60_000,
+  );
+  const sign = offsetMinutes < 0 ? "-" : "+";
+  const abs = Math.abs(offsetMinutes);
+  const hh = String(Math.floor(abs / 60)).padStart(2, "0");
+  const mm = String(abs % 60).padStart(2, "0");
+  return `${wall}${sign}${hh}:${mm}`;
 }
 
 const WORKER_URL = new URL("./code-sandbox.worker.ts", import.meta.url).href;
 
-// The two InternalError messages QuickJS uses for its own limits, mapped to the limit they mean.
-// Anything else the snippet raised is the snippet's error, InternalError included.
-function limitOf(
-  name: string,
-  message: string,
-): "time" | "memory" | "stack" | null {
-  if (name !== "InternalError") return null;
-  if (message === "interrupted") return "time";
-  if (message === "out of memory") return "memory";
-  if (message === "stack overflow") return "stack";
-  return null;
-}
-
-export function runSandboxedCode(
+export async function runSandboxedCode(
   code: string,
   opts: SandboxOptions = {},
   deps: SandboxDeps = {},
 ): Promise<SandboxOutcome> {
+  const queue = deps.queue ?? defaultQueue;
+  await queue.acquire();
+  try {
+    return await spawnAndRun(code, opts, deps);
+  } finally {
+    queue.release();
+  }
+}
+
+function spawnAndRun(
+  code: string,
+  opts: SandboxOptions,
+  deps: SandboxDeps,
+): Promise<SandboxOutcome> {
   const timeoutMs = opts.timeoutMs ?? SANDBOX_TIMEOUT_MS;
+  const timezone = opts.clock?.timezone ?? "UTC";
   const request: SandboxRequest = {
     code,
     timeoutMs,
     memoryBytes: opts.memoryBytes ?? SANDBOX_MEMORY_BYTES,
     stackBytes: opts.stackBytes ?? SANDBOX_STACK_BYTES,
     maxChars: opts.maxChars ?? MODEL_RESPONSE_CHAR_LIMIT,
+    clock: { timezone, nowLocal: localIsoNow(timezone, opts.clock?.now) },
   };
   return new Promise((resolve) => {
     let worker: Worker;
@@ -134,8 +225,12 @@ export function runSandboxedCode(
         finish(reply);
         return;
       }
-      const limit = limitOf(reply.name, reply.message);
-      finish(limit ? { kind: "limit", limit, logs: reply.logs } : reply);
+      if (reply.limit) {
+        finish({ kind: "limit", limit: reply.limit, logs: reply.logs });
+        return;
+      }
+      const { limit: _none, ...error } = reply;
+      finish(error);
     };
     // NOTE: An uncaught error in the thread, or the thread ending without a reply. Before `ready` it is
     // the sandbox failing to boot (a missing WASM file, a broken install): ours. After, it is the
@@ -171,6 +266,11 @@ function describe(e: unknown): string {
 // The text the model reads. Output first (it was produced first), the result or the reason last,
 // and every branch says what to do next in one clause, because the model calls again on what it
 // reads here and a bare "interrupted" gives it nothing to change.
+//
+// The tail is what the tool exists to deliver, so it is never the part that gets cut: the output
+// block is given whatever budget the tail leaves, and clipped on its own. A single head-first clip
+// over the whole text (the first version of this) let 4,000 characters of `console.log` push the
+// `Result:` line — or the error and its retry instruction — off the end (PR #485, round 1).
 export function formatSandboxResult(
   out: Exclude<SandboxOutcome, { kind: "unavailable" }>,
   opts: { timeoutMs?: number; memoryBytes?: number; maxChars?: number } = {},
@@ -180,15 +280,13 @@ export function formatSandboxResult(
     (opts.memoryBytes ?? SANDBOX_MEMORY_BYTES) / (1024 * 1024),
   );
   const maxChars = opts.maxChars ?? MODEL_RESPONSE_CHAR_LIMIT;
-  const output =
-    out.logs.length > 0 ? `Output:\n${out.logs.join("\n")}\n\n` : "";
   let tail: string;
   switch (out.kind) {
     case "value":
-      tail = `Result: ${out.value}`;
+      tail = `Result: ${clipToModelLimit(out.value, maxChars).text}`;
       break;
     case "error":
-      tail = `Error: ${out.name}: ${out.message}\nThe code did not finish. Fix it and call run_code again.`;
+      tail = `Error: ${out.name}: ${clipToModelLimit(out.message, maxChars).text}\nThe code did not finish. Fix it and call run_code again.`;
       break;
     case "limit":
       switch (out.limit) {
@@ -208,5 +306,16 @@ export function formatSandboxResult(
           break;
       }
   }
-  return clipToModelLimit(output + tail, maxChars).text;
+  if (out.logs.length === 0) return tail;
+  const joined = out.logs.join("\n");
+  const frame = "Output:\n\n\n".length + OUTPUT_TRUNCATED.length;
+  const budget = maxChars - tail.length - frame;
+  if (budget < 40) return tail;
+  const shown = clipToModelLimit(joined, budget);
+  const body = shown.clipped
+    ? `${shown.text.slice(0, -"…[truncated]".length)}${OUTPUT_TRUNCATED}`
+    : shown.text;
+  return `Output:\n${body}\n\n${tail}`;
 }
+
+const OUTPUT_TRUNCATED = "…[output truncated]";

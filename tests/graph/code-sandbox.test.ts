@@ -1,11 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import {
   formatSandboxResult,
+  localIsoNow,
   runSandboxedCode,
+  SANDBOX_MAX_CONCURRENCY,
   SANDBOX_MEMORY_BYTES,
   SANDBOX_STACK_BYTES,
   SANDBOX_TIMEOUT_MS,
   type SandboxOutcome,
+  SandboxQueue,
 } from "@/graph/tools/code-sandbox";
 
 // The snippet the issue is about, as a model writes it: normalise, weigh, `%11%10`, and END with
@@ -121,6 +124,72 @@ describe("runSandboxedCode", () => {
     expect((wrapped as { message: string }).message).toContain(
       "(line 2: const c = ;)",
     );
+  });
+
+  test("a runtime error names its line too", async () => {
+    const out = await runSandboxedCode(`const a = 1;\nconst b = null;\nb.x`);
+    expect(out).toMatchObject({ kind: "error", name: "TypeError" });
+    expect((out as { message: string }).message).toContain("(line 3: b.x)");
+  });
+
+  // The CVE-2026-0863 shape: reading the thrown value runs the snippet's own code. Both reads
+  // below would spin forever; they come back as an error at the snippet's OWN deadline (the read
+  // is not given a fresh one), not as a dead thread.
+  test("a hostile thrown value is read under the snippet's deadline and cannot hang the sandbox", async () => {
+    for (const code of [
+      `throw { get message() { while (true) {} } }`,
+      `throw { toString() { while (true) {} } }`,
+    ]) {
+      const started = performance.now();
+      const out = await runSandboxedCode(code, { timeoutMs: 300 });
+      const elapsed = performance.now() - started;
+      expect(out.kind, code).toBe("error");
+      expect(elapsed, code).toBeLessThan(600);
+    }
+    const plain = await runSandboxedCode(
+      `throw { name: "Custom", message: "plain" }`,
+    );
+    expect(plain).toMatchObject({
+      kind: "error",
+      name: "Custom",
+      message: "plain",
+    });
+  });
+
+  // The value path is the one that DOES get a fresh deadline: rendering runs interpreter code, and
+  // a snippet that spends its budget building a large value would otherwise have the render
+  // interrupted and come back as "[object Object]". Sized from a measurement: 60k objects build in
+  // ~20 ms and render in ~80 ms, so 250 ms of the 300 ms spent first leaves the render no room.
+  test("a value built with the last of the budget is still rendered whole", async () => {
+    const out = await runSandboxedCode(
+      `const t = Date.now(); while (Date.now() - t < 250) {}\nArray.from({ length: 60000 }, (_, i) => ({ i }))`,
+      { timeoutMs: 300, maxChars: 2_000_000 },
+    );
+    expect(out.kind).toBe("value");
+    const v = (out as { value: string }).value;
+    expect(v.startsWith('[{"i":0},{"i":1}')).toBe(true);
+    expect(v.endsWith('{"i":59999}]')).toBe(true);
+  });
+
+  test("the agent's clock is inside: TIMEZONE and NOW_LOCAL, not the interpreter's UTC", async () => {
+    // 01:30 UTC on the 15th is still the 14th in São Paulo; the string says so and parses back to
+    // the same instant.
+    const now = new Date("2026-01-15T01:30:00Z");
+    const out = await runSandboxedCode(
+      `[TIMEZONE, NOW_LOCAL, new Date(NOW_LOCAL).toISOString(), NOW_LOCAL.slice(0, 10)]`,
+      { clock: { timezone: "America/Sao_Paulo", now } },
+    );
+    expect(out).toMatchObject({
+      kind: "value",
+      value: JSON.stringify([
+        "America/Sao_Paulo",
+        "2026-01-14T22:30:00-03:00",
+        "2026-01-15T01:30:00.000Z",
+        "2026-01-14",
+      ]),
+    });
+    const utc = await runSandboxedCode(`[TIMEZONE, typeof NOW_LOCAL]`);
+    expect(utc).toMatchObject({ kind: "value", value: '["UTC","string"]' });
   });
 
   test("a snippet that throws is ITS error, with the output it produced before", async () => {
@@ -292,6 +361,66 @@ describe("runSandboxedCode", () => {
 
 // The text the model reads, as a decision table: one row per outcome, and every row that is not a
 // value tells the model what to change.
+describe("localIsoNow", () => {
+  const at = new Date("2026-01-15T01:30:00Z");
+  const rows: Array<[string, string]> = [
+    ["America/Sao_Paulo", "2026-01-14T22:30:00-03:00"],
+    ["UTC", "2026-01-15T01:30:00+00:00"],
+    ["Asia/Kolkata", "2026-01-15T07:00:00+05:30"],
+    ["Pacific/Kiritimati", "2026-01-15T15:30:00+14:00"],
+    // A zone Intl does not know falls back to UTC rather than to nothing.
+    ["Mars/Olympus", "2026-01-15T01:30:00+00:00"],
+  ];
+  for (const [tz, want] of rows) {
+    test(tz, () => expect(localIsoNow(tz, at)).toBe(want));
+  }
+  test("the string parses back to the instant it was written from", () => {
+    for (const [tz] of rows) {
+      expect(new Date(localIsoNow(tz, at)).getTime()).toBe(at.getTime());
+    }
+  });
+});
+
+describe("SandboxQueue", () => {
+  test("holds a burst to its limit, and every call still runs", async () => {
+    // Six busy snippets through a gate of two: three batches of ~200 ms, not one. The elapsed
+    // time is the proof the gate exists; the outcomes are the proof nothing was dropped or
+    // misreported as the sandbox failing to start, which is what 50-at-once measured with no gate.
+    const queue = new SandboxQueue(2);
+    const started = performance.now();
+    const outs = await Promise.all(
+      Array.from({ length: 6 }, () =>
+        runSandboxedCode(`while (true) {}`, { timeoutMs: 200 }, { queue }),
+      ),
+    );
+    expect(performance.now() - started).toBeGreaterThanOrEqual(600);
+    expect(outs.map((o) => o.kind)).toEqual(Array(6).fill("limit"));
+    expect(queue.active).toBe(0);
+    expect(queue.queued).toBe(0);
+  });
+
+  test("a burst of fifty cheap calls all come back as values under the default gate", async () => {
+    const outs = await Promise.all(
+      Array.from({ length: 50 }, (_, i) => runSandboxedCode(`${i} * 2`)),
+    );
+    expect(outs.map((o) => o.kind)).toEqual(Array(50).fill("value"));
+    expect(SANDBOX_MAX_CONCURRENCY).toBe(8);
+  });
+
+  test("a call that never boots still releases its slot", async () => {
+    const queue = new SandboxQueue(1);
+    const first = await runSandboxedCode(
+      "1",
+      { timeoutMs: 200 },
+      { queue, workerUrl: fixture("worker-boot-fails.ts") },
+    );
+    expect(first.kind).toBe("unavailable");
+    expect(queue.active).toBe(0);
+    const second = await runSandboxedCode("1 + 1", {}, { queue });
+    expect(second).toMatchObject({ kind: "value", value: "2" });
+  });
+});
+
 describe("formatSandboxResult", () => {
   const rows: Array<
     [Exclude<SandboxOutcome, { kind: "unavailable" }>, RegExp[]]
@@ -332,12 +461,48 @@ describe("formatSandboxResult", () => {
     });
   }
 
-  test("clips at the model limit, marker included", () => {
+  test("clips a value at the model limit, marker included", () => {
     const text = formatSandboxResult(
       { kind: "value", value: "x".repeat(10000), logs: [], ms: 1 },
       { maxChars: 100 },
     );
-    expect(text.length).toBe(100 + "…[truncated]".length);
-    expect(text.endsWith("…[truncated]")).toBe(true);
+    expect(text).toBe(`Result: ${"x".repeat(100)}…[truncated]`);
+  });
+
+  // PR #485, round 1: a head-first clip over the whole text let 4,000 characters of console output
+  // push the `Result:` line off the end, so a snippet that finished correctly handed the model no
+  // verdict at all. The tail is the deliverable; the output takes what is left.
+  test("console output never pushes the result or the error off the end", () => {
+    const logs = Array.from({ length: 100 }, () => "y".repeat(100));
+    const ok = formatSandboxResult(
+      { kind: "value", value: '{"valid":true}', logs, ms: 1 },
+      { maxChars: 500 },
+    );
+    expect(ok.endsWith('\n\nResult: {"valid":true}')).toBe(true);
+    expect(ok.startsWith("Output:\n")).toBe(true);
+    expect(ok).toContain("…[output truncated]");
+    expect(ok.length).toBeLessThanOrEqual(500);
+
+    const err = formatSandboxResult(
+      { kind: "error", name: "TypeError", message: "boom", logs, ms: 1 },
+      { maxChars: 500 },
+    );
+    expect(err).toMatch(
+      /Error: TypeError: boom\nThe code did not finish\. Fix it and call run_code again\.$/,
+    );
+    expect(err.length).toBeLessThanOrEqual(500);
+
+    // Output that FITS is shown whole, and a tail that leaves no room drops the output rather than
+    // the tail.
+    const fits = formatSandboxResult(
+      { kind: "value", value: "1", logs: ["a", "b"], ms: 1 },
+      { maxChars: 500 },
+    );
+    expect(fits).toBe("Output:\na\nb\n\nResult: 1");
+    const noRoom = formatSandboxResult(
+      { kind: "value", value: "v".repeat(480), logs: ["a"], ms: 1 },
+      { maxChars: 500 },
+    );
+    expect(noRoom).toBe(`Result: ${"v".repeat(480)}`);
   });
 });

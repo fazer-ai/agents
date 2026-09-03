@@ -396,7 +396,14 @@ describe("runSandboxedCode", () => {
         Date.parse("2026/09/05 12:00"), Date.parse("Sep 5, 2026 12:00"),
         Date.parse("2026-09-05T12:00:00.1234"),
         Date.parse("2026-09-05"), Date.parse("2026-09-05T12:00:00+02:00"),
-        Date.parse("Sat, 05 Sep 2026 12:00:00 GMT"), String(Date.parse("not a date"))]`,
+        Date.parse("Sat, 05 Sep 2026 12:00:00 GMT"), String(Date.parse("not a date")),
+        // Round 10: the engine's own zone table, absolute in any host — and a parenthesis alone is not a zone.
+        Date.parse("Sep 5, 2026 12:00 EST"), Date.parse("Sep 5, 2026 12:00 UT"),
+        Date.parse("Sat Sep 05 2026 12:00:00 GMT+0200 (Central European Summer Time)"),
+        Date.parse("Sep 5, 2026 12:00 +02"), Date.parse("Sep 5, 2026 12:00 CEST"),
+        Date.parse("Sep 5, 2026 12:00 GMT (x)"), Date.parse("Sep 5, 2026 12:00 (Eastern)"),
+        Date.parse("Sep 5, 2026 12:00 +2"), Date.parse("Sep 5, 2026 12:00 GMT+2"),
+        String(Date.parse("Sep 5, 2026 12:00 JST"))]`,
       { clock: { timezone: "Asia/Tokyo" } },
     );
     expect(out).toMatchObject({
@@ -409,6 +416,16 @@ describe("runSandboxedCode", () => {
         1788566400000,
         1788602400000,
         1788609600000,
+        "NaN",
+        1788627600000,
+        1788609600000,
+        1788602400000,
+        1788602400000,
+        1788602400000,
+        1788609600000,
+        1788577200000,
+        1788602400000,
+        1788602400000,
         "NaN",
       ]),
     });
@@ -689,6 +706,42 @@ describe("runSandboxedCode", () => {
   // call, +143 MB for eight at once, measured. The console methods now cut inside the VM, and the
   // host reads the length off the VM string without copying and refuses an uncut line with a
   // sentinel; that sentinel is what a host-side cut would leave here.
+  // Round 10, the same for the result and for a thrown value: 15 million characters as the last
+  // expression added 101 MB of RSS for one call; the renderer and the error reader now cut inside
+  // the VM, and the host refuses an uncut string with a sentinel rather than copying it.
+  test("a huge result and a huge thrown value are cut before they cross the boundary", async () => {
+    const marker = "…[truncated]";
+    const result = await runSandboxedCode(`"x".repeat(15_000_000)`);
+    const value = (result as { value: string }).value;
+    expect(result.kind).toBe("value");
+    expect(value.startsWith('"xxx')).toBe(true);
+    expect(value.endsWith(marker)).toBe(true);
+    expect(value.length).toBe(4000 + marker.length);
+    const thrown = await runSandboxedCode(
+      `throw new Error("y".repeat(15_000_000))`,
+    );
+    expect(thrown).toMatchObject({ kind: "error", name: "Error" });
+    const message = (thrown as { message: string }).message;
+    expect(message.startsWith("yyy")).toBe(true);
+    expect(message.endsWith(marker)).toBe(true);
+    expect(message.length).toBe(4000 + marker.length);
+    // The reader's own bindings are taken before the snippet runs, like the renderer's.
+    const shadowed = await runSandboxedCode(
+      `const JSON = null, String = 0; throw new TypeError("kept")`,
+    );
+    expect(shadowed).toMatchObject({
+      kind: "error",
+      name: "TypeError",
+      message: expect.stringMatching(/^kept \(line 1:/),
+    });
+    const plain = await runSandboxedCode("throw { a: 1 }");
+    expect(plain).toMatchObject({
+      kind: "error",
+      name: "Error",
+      message: '{"a":1}',
+    });
+  });
+
   test("a huge console line is cut before it crosses the sandbox boundary", async () => {
     const huge = await runSandboxedCode(
       `console.log("x".repeat(15_000_000)); 1`,

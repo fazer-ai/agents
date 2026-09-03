@@ -55,9 +55,8 @@ export type SandboxLimit = "time" | "memory" | "stack";
 
 // The three InternalError messages QuickJS uses for its own limits. Anything else the snippet
 // raised is the snippet's error, InternalError included.
-function limitOf(error: unknown): SandboxLimit | undefined {
-  const e = error as { name?: unknown; message?: unknown } | null;
-  if (e?.name !== "InternalError") return undefined;
+function limitOf(e: ThrownValue): SandboxLimit | undefined {
+  if (e.name !== "InternalError") return undefined;
   if (e.message === "interrupted") return "time";
   if (e.message === "out of memory") return "memory";
   if (e.message === "stack overflow") return "stack";
@@ -79,7 +78,7 @@ const RENDER_SOURCE = `(function () {
   var NativeDate = Date, NativeMap = Map, NativeSet = Set, NativeError = Error;
   var isArray = Array.isArray, arrayFrom = Array.from, objectKeys = Object.keys, objectCreate = Object.create;
   var stringify = JSON.stringify, Str = String, finite = isFinite, nan = isNaN;
-  return function (root) {
+  function text(root) {
   function conv(x, stack) {
     if (typeof x === "bigint") return x.toString();
     if (typeof x === "number" && !finite(x)) return Str(x);
@@ -113,22 +112,43 @@ const RENDER_SOURCE = `(function () {
   } catch (e) {
     return Str(root);
   }
+  }
+  // One past the budget when a budget is given, so the host still sees the overflow and writes its
+  // marker; the console passes none and cuts on its own side of the same boundary.
+  return function (root, max) {
+    var s = text(root);
+    return typeof max === "number" && s.length > max ? s.slice(0, max + 1) : s;
   };
 })()`;
 
+const UNCUT_RESULT =
+  "[result reached the sandbox boundary uncut and was dropped]";
+
 function makeRenderer(vm: QuickJSContext): {
-  render: (value: QuickJSHandle) => string;
+  render: (value: QuickJSHandle, max: number) => string;
   handle: QuickJSHandle;
   dispose: () => void;
 } {
   const fn = vm.unwrapResult(vm.evalCode(RENDER_SOURCE, "render.js"));
   return {
     handle: fn,
-    render: (value) => {
-      const r = vm.callFunction(fn, vm.undefined, value);
+    render: (value, max) => {
+      const budget = vm.newNumber(max);
+      const r = vm.callFunction(fn, vm.undefined, value, budget);
+      budget.dispose();
       if (r.error) {
         r.error.dispose();
-        return String(vm.dump(value));
+        return "[value not rendered]";
+      }
+      // NOTE: The length is read off the VM string without copying it, and a result the VM side did
+      // not cut is refused rather than copied — the fence on "bounded before it crosses". Measured
+      // before: a 15-million-character result added 101 MB of RSS for one call (PR #485, round 10).
+      const lengthHandle = vm.getProp(r.value, "length");
+      const length = vm.getNumber(lengthHandle);
+      lengthHandle.dispose();
+      if (length > max + 1) {
+        r.value.dispose();
+        return UNCUT_RESULT;
       }
       const s = vm.getString(r.value);
       r.value.dispose();
@@ -365,7 +385,13 @@ const DATE_SHIM_SOURCE = `(function (offsetAt) {
   // (February 30, 24:00): the two spellings of one instant agree field for field.
   var LOCAL = /^\\s*(\\d{4})-(\\d{2})-(\\d{2})T(\\d{2}):(\\d{2})(?::(\\d{2})(?:\\.(\\d{1,3}))?)?\\s*$/;
   // What carries its own zone, or is a date alone (UTC by the spec): the engine's answer is final.
-  var DESIGNATED = /(Z|[+-]\\d{2}:?\\d{2}|\\b(?:GMT|UTC)\\b)\\s*$/i;
+  // The engine's own table, measured token by token (PR #485, round 10): Z; UT/UTC/GMT with or
+  // without an offset; a bare offset with one or two hour digits; the North American abbreviations
+  // and CET/CEST; any of them followed by a parenthesised name. A parenthesis alone, or a token
+  // the engine does not know (BST, JST), is not a zone — it reads as host-local or as NaN.
+  // NOTE: Not \\b before the letters: "12:00:00Z" has no word boundary between the digit and the Z,
+  // and the ISO instant was read as host-local until this was a lookbehind.
+  var DESIGNATED = /(?:(?<![A-Za-z])Z|(?<![A-Za-z])(?:UTC?|GMT)(?:[+-]\\d{1,2}(?::?\\d{2})?)?|[+-]\\d{1,2}(?::?\\d{2})?|(?<![A-Za-z])(?:[ECMP][SD]T|CES?T))\\s*(?:\\([^)]*\\))?\\s*$/i;
   var DATE_ONLY = /^\\s*[+-]?\\d{4,6}(?:-\\d{2}){0,2}\\s*$/;
   function parse(text) {
     var s = String(text);
@@ -668,7 +694,7 @@ const ERROR_NAME_MAX_CHARS = 100;
 // this is the exception (code-sandbox.ts), and this is what a thread with less room gets.
 const HOST_STACK_LIMIT = {
   ok: false,
-  error: { name: "InternalError", message: "stack overflow" },
+  error: { name: "InternalError", message: "stack overflow" } as ThrownValue,
   limit: "stack",
   unwound: true,
 } as const;
@@ -688,18 +714,19 @@ function evalOrUnwind(
 function evaluate(
   vm: QuickJSContext,
   code: string,
+  readError: (handle: QuickJSHandle) => ThrownValue,
 ):
   | { ok: true; value: QuickJSHandle }
-  | { ok: false; error: unknown; limit?: SandboxLimit; unwound?: true } {
+  | { ok: false; error: ThrownValue; limit?: SandboxLimit; unwound?: true } {
   const wrapped = withTrailingObjectWrapped(code);
   if (wrapped !== undefined) {
     const asObject = evalOrUnwind(vm, wrapped);
     if (asObject === undefined) return HOST_STACK_LIMIT;
     if (!asObject.error) return { ok: true, value: asObject.value };
-    const err = dumpError(vm, asObject.error) as { name?: string } | null;
+    const err = readError(asObject.error);
     // NOTE: Only a parse failure sends the original source through; a snippet that threw at runtime
     // with the parentheses on would throw the same without them, and would run twice.
-    if (err?.name !== "SyntaxError") {
+    if (err.name !== "SyntaxError") {
       return {
         ok: false,
         error: withSourceLine(err, code, 0),
@@ -710,13 +737,10 @@ function evaluate(
   const first = evalOrUnwind(vm, code);
   if (first === undefined) return HOST_STACK_LIMIT;
   if (!first.error) return { ok: true, value: first.value };
-  const error = dumpError(vm, first.error) as {
-    name?: string;
-    message?: string;
-  };
+  const error = readError(first.error);
   if (
-    error?.name !== "SyntaxError" ||
-    !RETURN_AT_TOP_LEVEL.test(error.message ?? "")
+    error.name !== "SyntaxError" ||
+    !RETURN_AT_TOP_LEVEL.test(error.message)
   ) {
     return {
       ok: false,
@@ -727,7 +751,7 @@ function evaluate(
   const second = evalOrUnwind(vm, `(function () {\n${code}\n})()`);
   if (second === undefined) return HOST_STACK_LIMIT;
   if (second.error) {
-    const err = dumpError(vm, second.error);
+    const err = readError(second.error);
     return {
       ok: false,
       error: withSourceLine(err, code, 1),
@@ -741,27 +765,99 @@ function evaluate(
 // method, and both are the snippet's. n8n's Python sandbox was escaped through exactly that seam
 // (CVE-2026-0863: the formatting of an attacker-built exception ran outside the sandbox's checks).
 // Here the read happens inside the interpreter, so the snippet's own deadline still governs it, and
-// `dump` returns a placeholder rather than throwing when it is interrupted. Measured: a getter that
-// loops forever comes back as "[object Object]" at the deadline. The deadline is deliberately NOT
-// renewed for this read — renewing it handed that getter 200 ms more, and a legitimate error object
-// takes microseconds to read.
-function dumpError(vm: QuickJSContext, handle: QuickJSHandle): unknown {
-  const value = vm.dump(handle);
-  handle.dispose();
-  return value;
+// an interrupted read is reported as such rather than thrown. Measured: a getter that loops forever
+// comes back at the deadline. The deadline is deliberately NOT renewed for this read — renewing it
+// handed that getter 200 ms more, and a legitimate error object takes microseconds to read. The
+// reader also CUTS name, message and stack to one past the budget before anything crosses the
+// boundary: `throw new Error("y".repeat(15_000_000))` used to be copied whole into the host's heap
+// (PR #485, round 10), and the bindings it uses are taken before any snippet runs.
+const DESCRIBE_ERROR_SOURCE = `(function () {
+  var stringify = JSON.stringify, Str = String;
+  return function (e, max) {
+    function cut(s) { return s.length > max ? s.slice(0, max + 1) : s; }
+    function read(get, fallback) { try { return get(); } catch (x) { return fallback; } }
+    var out = {};
+    if (e === null || typeof e !== "object") {
+      out.name = "Error";
+      out.message = cut(read(function () { return Str(e); }, "[unreadable]"));
+      return stringify(out);
+    }
+    var name = read(function () { return e.name; }, undefined);
+    var message = read(function () { return e.message; }, undefined);
+    out.name = typeof name === "string" ? cut(name) : "Error";
+    out.message = typeof message === "string"
+      ? cut(message)
+      : cut(read(function () { var s = stringify(e); return s === undefined ? Str(e) : s; }, "[unreadable]"));
+    var line = read(function () { return e.lineNumber; }, undefined);
+    if (typeof line === "number") out.lineNumber = line;
+    var stack = read(function () { return e.stack; }, undefined);
+    if (typeof stack === "string") out.stack = cut(stack);
+    return stringify(out);
+  };
+})()`;
+
+interface ThrownValue {
+  name: string;
+  message: string;
+  lineNumber?: number;
+  stack?: string;
+}
+
+const UNREAD_ERROR: ThrownValue = {
+  name: "Error",
+  message: "[the thrown value could not be read within the deadline]",
+};
+const UNCUT_ERROR: ThrownValue = {
+  name: "Error",
+  message: "[thrown value reached the sandbox boundary uncut and was dropped]",
+};
+
+function makeErrorReader(
+  vm: QuickJSContext,
+  maxChars: number,
+): { read: (handle: QuickJSHandle) => ThrownValue; dispose: () => void } {
+  const fn = vm.unwrapResult(vm.evalCode(DESCRIBE_ERROR_SOURCE, "describe.js"));
+  // Three cut fields, each up to six times longer once JSON-escaped, plus the envelope: the ceiling
+  // the description of a thrown value cannot legitimately pass.
+  const ceiling = 3 * 6 * (maxChars + 1) + 256;
+  return {
+    read: (handle) => {
+      const budget = vm.newNumber(maxChars);
+      const r = vm.callFunction(fn, vm.undefined, handle, budget);
+      budget.dispose();
+      handle.dispose();
+      if (r.error) {
+        r.error.dispose();
+        return UNREAD_ERROR;
+      }
+      const lengthHandle = vm.getProp(r.value, "length");
+      const length = vm.getNumber(lengthHandle);
+      lengthHandle.dispose();
+      if (length > ceiling) {
+        r.value.dispose();
+        return UNCUT_ERROR;
+      }
+      const json = vm.getString(r.value);
+      r.value.dispose();
+      try {
+        return JSON.parse(json) as ThrownValue;
+      } catch {
+        return UNREAD_ERROR;
+      }
+    },
+    dispose: () => fn.dispose(),
+  };
 }
 
 // An error names its line, and the model needs the line more than the message: measured live,
 // gpt-4o-mini re-sent the same unparseable snippet nine times on "unexpected token in expression:
 // ''" alone. `offset` is the wrapper line the function-body retry adds above the snippet.
-function withSourceLine(error: unknown, code: string, offset: number): unknown {
-  const e = error as {
-    name?: unknown;
-    message?: unknown;
-    lineNumber?: unknown;
-    stack?: unknown;
-  } | null;
-  if (!e || typeof e !== "object") return error;
+function withSourceLine(
+  error: ThrownValue,
+  code: string,
+  offset: number,
+): ThrownValue {
+  const e = error;
   // NOTE: A SyntaxError carries `lineNumber`; a runtime error carries the line in the first frame of
   // its stack (`at <eval> (snippet.js:2:5)`).
   const fromStack =
@@ -796,6 +892,7 @@ function run(req: SandboxRequest): SandboxReply {
   const vm = runtime.newContext();
   const renderer = makeRenderer(vm);
   const render = renderer.render;
+  const errors = makeErrorReader(vm, req.maxChars);
   const renewDeadline = () =>
     runtime.setInterruptHandler(
       shouldInterruptAfterDeadline(Date.now() + RENDER_BUDGET_MS),
@@ -806,30 +903,22 @@ function run(req: SandboxRequest): SandboxReply {
     installZone(vm, req.clock.timezone);
     installPrelude(vm);
     installClock(vm, req.clock);
-    const out = evaluate(vm, req.code);
+    const out = evaluate(vm, req.code, errors.read);
     const ms = Math.round(performance.now() - started);
     if (out.ok) {
       // NOTE: Rendering runs interpreter code too, on its own short deadline: a snippet that spent its
       // whole budget building the value would otherwise have its result interrupted mid-render and
       // come back as "[object Object]" (measured, and fenced by test).
       renewDeadline();
-      const value = clip(render(out.value), req.maxChars);
+      const value = clip(render(out.value, req.maxChars), req.maxChars);
       out.value.dispose();
       return { kind: "value", value, logs, ms };
     }
-    const e = out.error as { name?: unknown; message?: unknown } | null;
+    const e = out.error as ThrownValue;
     // NOTE: The name is the snippet's too (`e.name = "x".repeat(1e6)` is one assignment), so it is
     // bounded like the message; a real error name is an identifier.
-    const name = clip(
-      typeof e?.name === "string" ? e.name : "Error",
-      ERROR_NAME_MAX_CHARS,
-    );
-    const message =
-      typeof e?.message === "string"
-        ? e.message
-        : e === null || typeof e !== "object"
-          ? String(e)
-          : JSON.stringify(e);
+    const name = clip(e.name, ERROR_NAME_MAX_CHARS);
+    const message = e.message;
     unwound = out.unwound === true;
     return {
       kind: "error",
@@ -847,6 +936,7 @@ function run(req: SandboxRequest): SandboxReply {
     // discarded with the reply either way. Freeing is best effort on the normal path too.
     if (!unwound) {
       try {
+        errors.dispose();
         renderer.dispose();
         vm.dispose();
         runtime.dispose();

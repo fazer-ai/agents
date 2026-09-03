@@ -1353,8 +1353,17 @@ export async function replaceVaultSecret(
 // What moved is the line. An access token is a DERIVED, short-lived artifact of the credential; the
 // refresh token and the granted scopes ARE the credential. A refresh token rotating replaces the
 // durable secret and revokes the old one, and scopes changing under a refresh means the grant itself
-// changed upstream — both are things an operator would want to find in the trail, and neither is
+// changed upstream: both are things an operator would want to find in the trail, and neither is
 // hourly. The access token moving on its own is not, and gets no row.
+//
+// The comparison is against the value read HERE, under the row lock, and NOT against the snapshot
+// the caller decrypted: that snapshot predates a network round trip to the provider, so two
+// overlapping refreshes of the same expired credential would both compare with the same stale value
+// and both record the same rotation. It is the same defect this module's own rule names (a row only
+// when something changed), and the same shape as every other read that decided something a
+// concurrent write could move underneath it. `FOR UPDATE` and not `FOR NO KEY UPDATE`, because that
+// is the mode the rest of this module takes on this table and a mixed mode is a deadlock with no
+// green test to show it (#395).
 //
 // `system` and a null actor, for the same reason /reset's rows are (#398): the refresh is triggered
 // by a clock and a use, and the principal whose request happened to notice the expiry did not rotate
@@ -1364,27 +1373,38 @@ export async function persistRefreshedOAuthSecret<
 >(
   ctx: TenantContext,
   id: bigint,
-  before: T,
   after: T,
   base: PrismaClient = basePrisma,
 ): Promise<void> {
   const scopeKey = (v: string[] | null | undefined) =>
     JSON.stringify([...(v ?? [])].sort());
-  const durableMoved =
-    (before.refreshToken ?? null) !== (after.refreshToken ?? null) ||
-    scopeKey(before.scopes) !== scopeKey(after.scopes);
   await runScopedOn(base, ctx, async (db) => {
-    const row = durableMoved
-      ? await db.vaultEntry.findFirst({
-          where: { id },
-          select: VAULT_AUDIT_SELECT,
-        })
-      : null;
+    await db.$queryRaw`SELECT id FROM vault_entries WHERE id = ${id} FOR UPDATE`;
+    const row = await db.vaultEntry.findFirst({
+      where: { id },
+      select: VAULT_AUDIT_SELECT,
+    });
+    // Deleted under us: there is nothing to refresh and nothing to record. The caller already has
+    // its access token and the next use will fail on the missing reference, which is the truth.
+    if (!row) return;
+    // A blob that will not decrypt into the shape (a pending placeholder, a hand-edited row) is
+    // treated as MOVED rather than as equal: recording a rotation that may not have happened is the
+    // side that keeps the trail honest, and staying silent is the side that loses one.
+    let stored: T | null = null;
+    try {
+      stored = decryptJson<T>(row.secret);
+    } catch {
+      stored = null;
+    }
     await db.vaultEntry.updateMany({
       where: { id },
       data: { secret: encryptJson(after) },
     });
-    if (!row) return;
+    const durableMoved =
+      stored === null ||
+      (stored.refreshToken ?? null) !== (after.refreshToken ?? null) ||
+      scopeKey(stored.scopes) !== scopeKey(after.scopes);
+    if (!durableMoved) return;
     const proj = auditProjection(row);
     await auditMutation(
       db,

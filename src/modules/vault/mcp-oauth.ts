@@ -550,7 +550,7 @@ async function refreshNow(
   // Through the seam, not straight at the column: see `persistRefreshedOAuthSecret`, which writes
   // the same blob and records a row ONLY when the durable half moved (a rotated refresh token, or
   // scopes the grant changed upstream). A renewed access token on its own is bookkeeping.
-  await persistRefreshedOAuthSecret(ctx, entryId, cred, refreshed, base);
+  await persistRefreshedOAuthSecret(ctx, entryId, refreshed, base);
 
   return refreshed.accessToken as string;
 }

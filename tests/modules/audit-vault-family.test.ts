@@ -133,7 +133,6 @@ describe.skipIf(!dbUp)("the vault family records its own changes", () => {
     await persistRefreshedOAuthSecret(
       ctx(),
       id,
-      baseCred,
       { ...baseCred, accessToken: "at-2", expiresAt: 2 },
       appDb,
     );
@@ -151,7 +150,6 @@ describe.skipIf(!dbUp)("the vault family records its own changes", () => {
     await persistRefreshedOAuthSecret(
       ctx(),
       id,
-      baseCred,
       { ...baseCred, accessToken: "at-2", refreshToken: "rt-2" },
       appDb,
     );
@@ -173,11 +171,42 @@ describe.skipIf(!dbUp)("the vault family records its own changes", () => {
     await persistRefreshedOAuthSecret(
       ctx(),
       id,
-      baseCred,
       { ...baseCred, scopes: ["a", "b", "c"] },
       appDb,
     );
     expect((await rows("credential.update")).length).toBe(1);
+  });
+
+  // The stale-snapshot half, which is what the review round after the first fix found. The gate used
+  // to compare with the value the CALLER decrypted, and that snapshot predates a network round trip
+  // to the provider: two overlapping refreshes of the same expired credential both saw the old
+  // refresh token and both recorded the same rotation. Comparing under the row lock against what is
+  // STORED makes the second one a no-op, which is what "a row only when something changed" means
+  // when two writers are asking.
+  test("two refreshes carrying the same rotation record it once", async () => {
+    const id = await oauthEntry(`twice${uniq()}`, baseCred);
+    const rotated = { ...baseCred, accessToken: "at-2", refreshToken: "rt-2" };
+    await persistRefreshedOAuthSecret(ctx(), id, rotated, appDb);
+    await persistRefreshedOAuthSecret(ctx(), id, rotated, appDb);
+    expect((await rows("credential.update")).length).toBe(1);
+  });
+
+  // A source fence, and the same instrument #395 put on `chatwoot/management.ts`: the lock this
+  // module takes on `vault_entries` is what makes "compare, then write" one decision, and a lock
+  // that is missing or in a DIFFERENT mode has no failing test to show it. A mixed mode is the
+  // deadlock: an INSERT of a row whose foreign key points at a locked row takes `KEY SHARE`, which
+  // `FOR UPDATE` conflicts with and `FOR NO KEY UPDATE` does not, so two paths in one module that
+  // disagree can wait on each other over a key nobody was changing.
+  test("every row lock in the vault service takes the same mode", async () => {
+    const src = await Bun.file(
+      new URL("../../src/modules/vault/service.ts", import.meta.url),
+    ).text();
+    // Comments stripped first: this file's own NOTEs name the other mode while explaining it, and a
+    // fence that counts prose reports a mode nobody takes.
+    const code = src.replace(/^\s*\/\/.*$/gm, "");
+    const locks = code.match(/FOR (?:NO KEY )?UPDATE/g) ?? [];
+    expect(locks.length).toBeGreaterThanOrEqual(4);
+    expect(new Set(locks)).toEqual(new Set(["FOR UPDATE"]));
   });
 
   test("the same scopes in another order are not a change", async () => {
@@ -185,7 +214,6 @@ describe.skipIf(!dbUp)("the vault family records its own changes", () => {
     await persistRefreshedOAuthSecret(
       ctx(),
       id,
-      baseCred,
       { ...baseCred, scopes: ["b", "a"] },
       appDb,
     );

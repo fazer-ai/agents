@@ -172,9 +172,14 @@ function BarRow({
 export function SpendCeilingCard({
   value,
   onSaved,
+  reloadKey = 0,
 }: {
   value: SpendCeiling;
   onSaved: (next: SpendCeiling) => void;
+  // Bumped by the page when the Langfuse card beside this one saves (review round 13): the flag
+  // above the bars is the credential's present, and it has to be re-read the moment that present
+  // changes, not at the next spend-ceiling save or reload.
+  reloadKey?: number;
 }) {
   const { t, i18n } = useTranslation();
   const { showToast } = useToast();
@@ -233,9 +238,10 @@ export function SpendCeilingCard({
     }
   }, []);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reloadKey is the page's signal to re-read, not a value the effect reads
   useEffect(() => {
     void loadUsage();
-  }, [loadUsage]);
+  }, [loadUsage, reloadKey]);
 
   const set = <K extends keyof SpendCeiling>(k: K, v: SpendCeiling[K]) =>
     setForm((f) => ({ ...f, [k]: v }));

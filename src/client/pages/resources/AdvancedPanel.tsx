@@ -53,6 +53,8 @@ export function AdvancedPanel() {
   const [lfSendContent, setLfSendContent] = useState(false);
   const [lfDebug, setLfDebug] = useState(false);
   const [lfSaving, setLfSaving] = useState(false);
+  // Counts the Langfuse saves, so the spend ceiling card re-reads its flag on each.
+  const [lfVersion, setLfVersion] = useState(0);
   const lfRefusal = useFieldRefusal(LANGFUSE_FIELDS);
   const lfRefRef = useRef(lfCredentialRef);
   lfRefRef.current = lfCredentialRef;
@@ -128,6 +130,7 @@ export function AdvancedPanel() {
       if (err || !data) throw err ?? new Error("no data");
       lfRefusal.clear();
       setLfCredentialRef(data.langfuse.credentialRef);
+      setLfVersion((v) => v + 1);
       showToast(
         t("advanced.observability.saved", "Observability settings saved."),
         "success",
@@ -152,7 +155,11 @@ export function AdvancedPanel() {
     <DataBoundary loading={loading} error={error} onRetry={load}>
       <div className="flex flex-col gap-4">
         {spendCeiling && (
-          <SpendCeilingCard value={spendCeiling} onSaved={setSpendCeiling} />
+          <SpendCeilingCard
+            value={spendCeiling}
+            onSaved={setSpendCeiling}
+            reloadKey={lfVersion}
+          />
         )}
         <Card className="flex flex-col gap-4">
           <div>

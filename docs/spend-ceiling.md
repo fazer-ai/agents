@@ -25,7 +25,7 @@ for the tenant (`langfuse.enabled` plus a `langfuse` vault credential with valid
 `resolveLangfuseConfig`); an install without it keeps no ceiling, and the console says so. "Configured"
 means the credential RESOLVES, asked the way the poll asks it: a reference to a deleted or malformed
 vault entry is what the poll writes on the row as `langfuse-not-configured`, and the console's flag
-agrees with the row rather than with the reference. The flag is the present and the row's sentinel is the last poll's finding: once the operator configures Langfuse the flag is true at once while the sentinel stays on the row until the next poll, so the card says two things from two places (review rounds 9 and 10): the flag, above the bars, says whether the cost can be read, and each bar says from its own row whether calls go through, because the gate reads the row and learns of a credential only at the next poll. A
+agrees with the row rather than with the reference. The flag is the present and the row's sentinel is the last poll's finding: once the operator configures Langfuse the flag is true at once while the sentinel stays on the row until the next poll, so the card says two things from two places (review rounds 9 and 10): the flag, above the bars, says whether the cost can be read, and each bar says from its own row whether calls go through, because the gate reads the row and learns of a credential only at the next poll; the card re-reads the flag the moment the Langfuse card beside it saves. A
 maintained external price table is worth more than a local one we would have to keep correct
 against six providers, OpenRouter and an operator-supplied `openai-compatible` base URL.
 
@@ -69,7 +69,7 @@ moves the failure from **availability to staleness**, which is a failure the row
   counters, taken once, at the switch), and the figure is the carry plus the current project's own
   total. Identity is the project's id, never the credential: a key rotated inside a project carries
   nothing. A project that cannot be named is a failed poll. Switching back to the first project in
-  the same month counts its spend twice, which is the over-refusing direction. The names of the
+  the same month counts its spend twice, which is the over-refusing direction. The old credential is gone with the switch, so spend that reached the old project after its last reading (one poll period plus the ingestion lag, the bound every poll has) is not counted, in the under-refusing direction; the switch is announced once on the `spend_ceiling` stage at warn, because only the operator can act on it, by switching after a quiet period. The names of the
   models the old project could not price travel with the figure (`carriedUnpricedModels`): it is
   never asked again, and its calls stay in the carried counters.
 - **The overshoot bound is the poll period plus the ingestion lag, and the two add.** A tenant can

@@ -361,7 +361,7 @@ const ERROR_COLUMN_LINES: Record<string, [number, ErrorSite | string]> = {
   // The balloon send that no longer reports its failure by throwing (issue #429): the flow line is
   // the only place an operator can see that part of a reply went missing.
   // The poll's failure line: the Langfuse error text travels as a flow event (issue #426).
-  "src/modules/spend-ceiling/poll.ts": [1, "flow-event"],
+  "src/modules/spend-ceiling/poll.ts": [2, "flow-event"],
   "src/modules/split/service.ts": [1, "flow-event"],
   "src/modules/stt/service.ts": [2, "flow-event"],
   "src/modules/vision/service.ts": [2, "flow-event"],

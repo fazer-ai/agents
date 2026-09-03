@@ -172,6 +172,33 @@ describe("the spend ceiling card", () => {
     expect(has("openrouter/free-model")).toBe(true);
   });
 
+  // THE FLAG IS RE-READ WHEN THE LANGFUSE CARD SAVES (review round 13): the page bumps
+  // `reloadKey`, and the card asks for the usage again instead of showing the pre-save state until
+  // an unrelated save or a reload.
+  test("a bumped reloadKey re-reads the usage", async () => {
+    installFetchStub(baseUsage());
+    const r = render(
+      <ToastProvider>
+        <SpendCeilingCard value={settings} onSaved={() => {}} reloadKey={0} />
+      </ToastProvider>,
+    );
+    await waitFor(() => {
+      expect(has("$22.50 of $20.00")).toBe(true);
+    });
+    const reads = () =>
+      requests.filter((q) => q.method === "GET" && q.path.endsWith("/usage"))
+        .length;
+    expect(reads()).toBe(1);
+    r.rerender(
+      <ToastProvider>
+        <SpendCeilingCard value={settings} onSaved={() => {}} reloadKey={1} />
+      </ToastProvider>,
+    );
+    await waitFor(() => {
+      expect(reads()).toBe(2);
+    });
+  });
+
   // A NEGATIVE AMOUNT IS REFUSED, NOT ROUNDED TO ZERO (review round 6). Zero means no ceiling on
   // that half, so storing it for "-1" would switch the protection off in silence; the field says
   // why and the save waits until the amount is one the ceiling can take.

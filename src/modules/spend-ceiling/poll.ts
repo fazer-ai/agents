@@ -252,8 +252,8 @@ async function writeSuccess(
   seen: MonthCost,
   at: Date,
   projectKey: string,
-): Promise<void> {
-  await withEntityLock(
+): Promise<{ switched: boolean }> {
+  return withEntityLock(
     db,
     snapshotLockKey(tenantId, source, month),
     async () => {
@@ -330,6 +330,7 @@ async function writeSuccess(
         create: { tenantId, source, monthStart: month, ...figure },
         update: figure,
       });
+      return { switched };
     },
   );
 }
@@ -417,6 +418,29 @@ function announcePollFailure(
   );
 }
 
+// A SWITCH IS SAID OUT LOUD (review round 13). What the old project stood at is carried, and the
+// old credential is gone with the switch, so spend that reached the old project after its last
+// reading (one poll period plus the ingestion lag, the same bound every poll has) is not counted,
+// in the under-refusing direction. The operator is the only one who can act on that, by switching
+// after a quiet period, so the line goes to the channels once per switch.
+function announceProjectSwitch(
+  tenantId: bigint,
+  projectKey: string,
+  base: PrismaClient,
+): void {
+  emitFlowEvent(
+    { tenantId, turnId: randomUUID(), source: "inbox", base },
+    {
+      stage: "spend_ceiling",
+      level: "warn",
+      status: "ok",
+      detail: { subject: "project", projectKey },
+      errorMessage:
+        "spend ceiling: the Langfuse project changed mid-month; what the old project stood at is carried, and spend that reached it after its last reading is not counted",
+    },
+  );
+}
+
 // Reads the month's cost for both sources into the snapshot. Never throws: every outcome is on the
 // row, and the caller (the job) has nothing to do with an exception but die.
 export async function pollTenantSpend(
@@ -483,11 +507,12 @@ export async function pollTenantSpend(
     const written = await runScopedOn(base, ctx, (db) =>
       withEntityLock(db, monthLockKey(tenantId, month), async () => {
         const current = await resolveLangfuseConfig(db, tenantId);
-        if (!current || !sameCredential(current, cfg)) return false;
+        if (!current || !sameCredential(current, cfg)) return null;
+        let switched = false;
         for (const [i, source] of SOURCES.entries()) {
           const cost = seen[i];
           if (!cost) continue;
-          await writeSuccess(
+          const r = await writeSuccess(
             db,
             tenantId,
             source,
@@ -496,17 +521,19 @@ export async function pollTenantSpend(
             now,
             projectKey,
           );
+          if (r.switched) switched = true;
         }
-        return true;
+        return { switched };
       }),
     );
-    if (!written) {
+    if (written === null) {
       logger.info(
         { tenantId: String(tenantId) },
         "spend ceiling poll: the credential changed while asking; the answer was dropped",
       );
       return { status: "superseded" };
     }
+    if (written.switched) announceProjectSwitch(tenantId, projectKey, base);
     return { status: "polled" };
   } catch (err) {
     // What Langfuse answered is not ours to store as it came: a parse error quotes the body, and a

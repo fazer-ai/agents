@@ -811,6 +811,19 @@ describe.skipIf(!dbUp)("the spend ceiling poll", () => {
       expect(switched?.projectKey).toBe(`${BASE_URL}#proj-b`);
       expect(Number(switched?.carriedUsd)).toBe(40);
       expect(switched?.carriedTracedCalls).toBe(40);
+      // And the switch is said once (review round 13): the old credential is gone with it, so
+      // spend that reached the old project after its last reading is not counted, and only the
+      // operator can act on that.
+      const said = async () => {
+        // flowlog-scope: tenant-wide (the file clears each tenant's rows before every case)
+        const rows = await flowLogRows(suDb, {
+          where: { tenantId: tenantA, stage: "spend_ceiling" },
+        });
+        return rows.filter(
+          (r) => (r.detail as { subject?: string })?.subject === "project",
+        );
+      };
+      expect(await said()).toHaveLength(1);
 
       // The carry is taken ONCE, at the switch: the new project's next answer adds to it.
       const later = langfuseStub(rows(25, 12), [], { projectId: "proj-b" });
@@ -820,6 +833,7 @@ describe.skipIf(!dbUp)("the spend ceiling poll", () => {
         now: at(2),
       });
       expect(Number((await snapshot(tenantA, "inbox"))?.costUsd)).toBe(65);
+      expect(await said()).toHaveLength(1);
       // And the floor still holds inside the new series.
       const behind = langfuseStub(rows(15, 8), [], { projectId: "proj-b" });
       await pollTenantSpend(tenantA, {

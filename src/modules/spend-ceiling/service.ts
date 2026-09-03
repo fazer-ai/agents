@@ -586,7 +586,8 @@ export async function spendCeilingUsage(params: {
             polledAt: health?.polledAt?.toISOString() ?? null,
             pollError: health?.pollError ?? null,
             pollFailedAt: health?.pollFailedAt?.toISOString() ?? null,
-            stale: health?.stale ?? false,
+            // Nothing read is nothing fresh: a month with no row is one the gate lets through.
+            stale: health?.stale ?? true,
             tracedCalls: snapshot?.tracedCalls ?? 0,
             costedCalls: snapshot?.costedCalls ?? 0,
             ledgerCalls,

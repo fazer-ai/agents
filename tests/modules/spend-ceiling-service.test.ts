@@ -561,7 +561,10 @@ describe.skipIf(!dbUp)("the spend ceiling against the cost snapshot", () => {
       });
     });
 
-    test("a month with no snapshot shows zero and no health", async () => {
+    // Nothing read is nothing fresh (review round 5): the gate lets every call through until the
+    // first poll lands, and a bar reading "$0 of $20" with no sentence beside it would say the
+    // opposite. `polledAt: null` is what the card renders the sentence on; `stale` agrees.
+    test("a month with no snapshot shows zero, and says nothing has been read", async () => {
       const usage = await spendCeilingUsage({
         ctx: ctx(),
         base: appDb,
@@ -571,7 +574,7 @@ describe.skipIf(!dbUp)("the spend ceiling against the cost snapshot", () => {
       expect(inbox).toMatchObject({
         usedUsd: 0,
         polledAt: null,
-        stale: false,
+        stale: true,
         tracedCalls: 0,
         costedCalls: 0,
         ledgerCalls: 0,

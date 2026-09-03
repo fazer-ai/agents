@@ -9,6 +9,7 @@ import {
   resolveLangfuseConfig,
 } from "@/graph/observability";
 import type { UsageSource } from "@/graph/usage";
+import { withEntityLock } from "@/lib/locks";
 import { sanitizeErrorMessage } from "@/lib/redact";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { claimContactAuthNotice } from "@/modules/contact-auth/state";
@@ -218,8 +219,13 @@ async function fetchMonthCost(
   return out;
 }
 
-// The write, inside the tenant's own scope. Read-then-write so the figure can be kept monotonic;
-// `runScopedOn` is one transaction, so the pair cannot interleave with another poll of the same row.
+// The write, inside the tenant's own scope. Read-then-write so the figure can be kept monotonic,
+// UNDER THE ROW'S ADVISORY LOCK (review round 5): `runScopedOn` is one transaction, but two polls
+// of the same tenant can run at once (a save re-arms the job, which resets a CLAIMED row to
+// PENDING, and the next tick claims it while the first run is still inside its write), and two
+// transactions that each read the previous figure and each write their own would let the lower
+// answer land last. The lock is taken before the read, so the second poll reads what the first
+// committed. The lock and the transaction end together.
 //
 // The figure is the CARRY plus the current project's own total. The carry is what the row stood at
 // the moment the project changed (taken once, at the switch, all three counters), and stays on the
@@ -236,66 +242,82 @@ async function writeSuccess(
   at: Date,
   projectKey: string,
 ): Promise<void> {
-  const key = {
-    tenantId_source_monthStart: { tenantId, source, monthStart: month },
-  };
-  const prev = await db.spendCostSnapshot.findUnique({ where: key });
-  const switched =
-    prev !== null && prev.projectKey !== null && prev.projectKey !== projectKey;
-  const carried = switched
-    ? {
-        usd: Number(prev.costUsd),
-        traced: prev.tracedCalls,
-        costed: prev.costedCalls,
-        // The names travel with the figure (review round 4): the old project is never asked again,
-        // so a model it could not price would otherwise vanish from the screen while its calls
-        // stay in the carried counters.
-        unpriced: union(
-          asStringList(prev.carriedUnpricedModels),
-          asStringList(prev.unpricedModels),
-        ),
-      }
-    : {
-        usd: Number(prev?.carriedUsd ?? 0),
-        traced: prev?.carriedTracedCalls ?? 0,
-        costed: prev?.carriedCostedCalls ?? 0,
-        unpriced: asStringList(prev?.carriedUnpricedModels),
+  await withEntityLock(
+    db,
+    snapshotLockKey(tenantId, source, month),
+    async () => {
+      const key = {
+        tenantId_source_monthStart: { tenantId, source, monthStart: month },
       };
-  const costUsd = Math.max(
-    Number(prev?.costUsd ?? 0),
-    carried.usd + seen.costUsd,
+      const prev = await db.spendCostSnapshot.findUnique({ where: key });
+      const switched =
+        prev !== null &&
+        prev.projectKey !== null &&
+        prev.projectKey !== projectKey;
+      const carried = switched
+        ? {
+            usd: Number(prev.costUsd),
+            traced: prev.tracedCalls,
+            costed: prev.costedCalls,
+            // The names travel with the figure (review round 4): the old project is never asked again,
+            // so a model it could not price would otherwise vanish from the screen while its calls
+            // stay in the carried counters.
+            unpriced: union(
+              asStringList(prev.carriedUnpricedModels),
+              asStringList(prev.unpricedModels),
+            ),
+          }
+        : {
+            usd: Number(prev?.carriedUsd ?? 0),
+            traced: prev?.carriedTracedCalls ?? 0,
+            costed: prev?.carriedCostedCalls ?? 0,
+            unpriced: asStringList(prev?.carriedUnpricedModels),
+          };
+      const costUsd = Math.max(
+        Number(prev?.costUsd ?? 0),
+        carried.usd + seen.costUsd,
+      );
+      const tracedCalls = Math.max(
+        prev?.tracedCalls ?? 0,
+        carried.traced + seen.tracedCalls,
+      );
+      const costedCalls = Math.max(
+        prev?.costedCalls ?? 0,
+        carried.costed + seen.costedCalls,
+      );
+      const figure = {
+        costUsd,
+        tracedCalls,
+        costedCalls,
+        unpricedModels: union(carried.unpriced, seen.unpricedModels),
+        projectKey,
+        carriedUsd: carried.usd,
+        carriedTracedCalls: carried.traced,
+        carriedCostedCalls: carried.costed,
+        carriedUnpricedModels: carried.unpriced,
+        polledAt: at,
+        pollError: null,
+        pollFailedAt: null,
+      };
+      await db.spendCostSnapshot.upsert({
+        where: key,
+        create: { tenantId, source, monthStart: month, ...figure },
+        update: figure,
+      });
+    },
   );
-  const tracedCalls = Math.max(
-    prev?.tracedCalls ?? 0,
-    carried.traced + seen.tracedCalls,
-  );
-  const costedCalls = Math.max(
-    prev?.costedCalls ?? 0,
-    carried.costed + seen.costedCalls,
-  );
-  const figure = {
-    costUsd,
-    tracedCalls,
-    costedCalls,
-    unpricedModels: union(carried.unpriced, seen.unpricedModels),
-    projectKey,
-    carriedUsd: carried.usd,
-    carriedTracedCalls: carried.traced,
-    carriedCostedCalls: carried.costed,
-    carriedUnpricedModels: carried.unpriced,
-    polledAt: at,
-    pollError: null,
-    pollFailedAt: null,
-  };
-  await db.spendCostSnapshot.upsert({
-    where: key,
-    create: { tenantId, source, monthStart: month, ...figure },
-    update: figure,
-  });
+}
+
+function snapshotLockKey(tenantId: bigint, source: UsageSource, month: Date) {
+  return `spend-snapshot:${tenantId}:${source}:${month.toISOString()}`;
 }
 
 // The failure, which touches the failure pair and nothing else: the last good figure and its
 // `polledAt` stay, which is what lets the gate keep deciding on a floor and the console say both.
+// `pollFailedAt` is the instant the CURRENT streak began (review round 5): the console says
+// "failing since", so a failure on top of a failure keeps the first one's instant, and a success,
+// which clears the pair, is what lets the next failure start a new streak. Same lock as the
+// success write, for the same reason.
 async function writeFailure(
   db: ScopedDb,
   tenantId: bigint,
@@ -307,17 +329,28 @@ async function writeFailure(
   const key = {
     tenantId_source_monthStart: { tenantId, source, monthStart: month },
   };
-  await db.spendCostSnapshot.upsert({
-    where: key,
-    create: {
-      tenantId,
-      source,
-      monthStart: month,
-      pollError: error,
-      pollFailedAt: at,
+  await withEntityLock(
+    db,
+    snapshotLockKey(tenantId, source, month),
+    async () => {
+      const prev = await db.spendCostSnapshot.findUnique({
+        where: key,
+        select: { pollFailedAt: true },
+      });
+      const pollFailedAt = prev?.pollFailedAt ?? at;
+      await db.spendCostSnapshot.upsert({
+        where: key,
+        create: {
+          tenantId,
+          source,
+          monthStart: month,
+          pollError: error,
+          pollFailedAt,
+        },
+        update: { pollError: error, pollFailedAt },
+      });
     },
-    update: { pollError: error, pollFailedAt: at },
-  });
+  );
 }
 
 // The operator hears about a failing poll ONCE per window (the warning's own six hours), not once

@@ -2097,6 +2097,7 @@
       "pollFailing": "Reading the cost from Langfuse has been failing since {{when}}: {{error}}",
       "stale": "Not refreshed since {{when}}. The last figure stands, and it can only undercount.",
       "title": "Spent this month",
+      "unpolled": "The month's cost has not been read yet: calls go through until the first reading lands.",
       "unpriced": "No price in Langfuse for: {{models}}",
       "updated": "Refreshed {{when}}"
     },

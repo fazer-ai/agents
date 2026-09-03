@@ -2105,6 +2105,7 @@
       "pollFailing": "A leitura do custo no Langfuse está falhando desde {{when}}: {{error}}",
       "stale": "Sem atualização desde {{when}}. O último valor continua valendo, e ele só pode subestimar.",
       "title": "Gasto neste mês",
+      "unpolled": "O custo do mês ainda não foi lido: as chamadas passam até a primeira leitura chegar.",
       "unpriced": "Sem preço no Langfuse para: {{models}}",
       "updated": "Atualizado {{when}}"
     },

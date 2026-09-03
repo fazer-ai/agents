@@ -55,7 +55,11 @@ moves the failure from **availability to staleness**, which is a failure the row
 - **The figure is monotonic inside a month.** Langfuse ingests asynchronously and the lag correlates
   with load, so during the burst the ceiling exists for a total can read *lower* than the last one.
   A lower answer is never written over a higher one, and a poll that errors touches only the failure
-  pair (`pollError`, `pollFailedAt`); the last good figure and its `polledAt` stand.
+  pair (`pollError`, `pollFailedAt`); the last good figure and its `polledAt` stand. `pollFailedAt`
+  is the instant the current failure streak began, which is what the console's "failing since"
+  means. Both writes run under the row's advisory lock: a save re-arms the job, which resets a
+  claimed row to pending, so two polls of one tenant can overlap, and two read-then-writes that
+  each saw the previous figure would let the lower answer land last.
 - **The figure follows the month, not the project.** A tenant that points its Langfuse at another
   project mid-month starts a new series there, and the floor above would sit on the old project's
   last figure while the new one climbed from zero underneath it: $40 there plus $20 here would be a
@@ -106,9 +110,10 @@ moves the failure from **availability to staleness**, which is a failure the row
   trace identity as a turn (id = turnId, `userId` = slug, the source's environment) with usage keyed
   the way the handler keys it, so one model definition prices both paths and the poll's filters find
   it. A tenant with no Langfuse keeps the row and skips the trace.
-- **A month nobody has polled yet is nothing spent.** The first poll writes the row; until then the
-  ceiling cannot refuse on a figure it does not have, which is the same direction the
-  unreadable-ceiling rule takes.
+- **A month nobody has polled yet is nothing spent, and the console says so.** The first poll writes
+  the row; until then the ceiling cannot refuse on a figure it does not have, which is the same
+  direction the unreadable-ceiling rule takes, and the card says beside the bar that nothing has
+  been read yet rather than showing "$0 of $20" as if it were enforcing.
 
 **A block written in tokens is no ceiling, and says so.** A `spendCeiling` block saved before this
 change carries `monthlyInboxTokens` / `monthlyPlaygroundTokens`, and there is no price to convert

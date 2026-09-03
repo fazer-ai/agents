@@ -172,6 +172,38 @@ describe("the spend ceiling card", () => {
     expect(has("openrouter/free-model")).toBe(true);
   });
 
+  // NOTHING READ IS SAID (review round 5): until the first poll lands the gate lets every call
+  // through, and "$0 of $20" with nothing beside it reads as an enforcing ceiling at zero.
+  test("a month nobody has polled yet says so beside the bar", async () => {
+    const usage = baseUsage();
+    usage.entries[0] = entry({
+      source: "inbox",
+      ceilingUsd: 20,
+      polledAt: null,
+      stale: true,
+    });
+    installFetchStub(usage);
+    renderCard();
+    await waitFor(() => {
+      expect(has("has not been read yet")).toBe(true);
+    });
+    expect(has("failing since")).toBe(false);
+  });
+
+  // THE SETTINGS' EXPLICIT NULL WINS (review round 5). After a save in dollars the settings say
+  // `legacyTokens: null`; a usage response that resolved after that save but was read before it
+  // still carries the marker, and `??` let it revive a notice about a ceiling that IS enforced.
+  test("the settings' explicit null retires the token notice whatever an older usage says", async () => {
+    const usage = baseUsage();
+    usage.legacyTokens = { inbox: 250_000, playground: 1 } as unknown as null;
+    installFetchStub(usage);
+    renderCard({ ...settings, legacyTokens: null });
+    await waitFor(() => {
+      expect(has("$22.50 of $20.00")).toBe(true);
+    });
+    expect(has("set in tokens")).toBe(false);
+  });
+
   test("a tenant with no Langfuse is told the ceiling cannot be enforced", async () => {
     const usage = { ...baseUsage(), langfuseConfigured: false };
     usage.entries = usage.entries.map((e) => ({

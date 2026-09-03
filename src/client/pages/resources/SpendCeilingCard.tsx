@@ -120,6 +120,14 @@ function BarRow({
                   })}
             </span>
           )}
+          {entry.polledAt === null && entry.pollError !== NOT_CONFIGURED && (
+            <span className="text-warning">
+              {t(
+                "spendCeiling.usage.unpolled",
+                "The month's cost has not been read yet: calls go through until the first reading lands.",
+              )}
+            </span>
+          )}
           {failing && entry.pollFailedAt && (
             <span className="text-warning">
               {t(
@@ -274,7 +282,12 @@ export function SpendCeilingCard({
   const entry = (source: string) =>
     usage?.entries.find((e) => e.source === source);
   // The marker rides both reads; the settings prop is what the page holds after a save, so it wins.
-  const legacy = value.legacyTokens ?? usage?.legacyTokens ?? null;
+  // The settings' explicit null wins (review round 5): after a save in dollars, a usage response
+  // read before the save can still carry the marker, and `??` would let it revive the notice.
+  const legacy =
+    value.legacyTokens === undefined
+      ? (usage?.legacyTokens ?? null)
+      : value.legacyTokens;
   // Two reads can say "no Langfuse": the flag is computed on this request, the sentinel on a row was
   // written by the last poll. Either is enough, and the sentence is said once, above the bars.
   const langfuseMissing =

@@ -162,6 +162,13 @@ function langfuseStub(
 
 const INBOX_ENV = config.env;
 const PLAY_ENV = `${config.env}-playground`;
+const rows = (cost: number, calls: number) => ({
+  [INBOX_ENV]: [
+    { providedModelName: "m", sum_totalCost: cost, count_count: calls },
+  ],
+  [PLAY_ENV]: [],
+});
+const at = (minutes: number) => new Date(NOW.getTime() + minutes * 60_000);
 
 const snapshot = (tenantId: bigint, source: string, at = NOW) =>
   suDb.spendCostSnapshot.findUnique({
@@ -552,6 +559,85 @@ describe.skipIf(!dbUp)("the spend ceiling poll", () => {
     expect(row?.unpricedModels).toEqual(["mixed", "zeroed"]);
   });
 
+  // TWO POLLS ON ONE ROW (review round 5). A save re-arms the job with `enqueueJob`, which resets a
+  // CLAIMED row to PENDING, so the next tick can claim it while the first run is still inside its
+  // write: both read the same previous figure, and the one that finishes last writes what it
+  // computed, lower answer included. The write takes the row's advisory lock before it reads, so
+  // the second poll reads what the first committed. Poll A reads and is held inside its
+  // transaction; poll B, with the higher answer, is let run meanwhile; without the lock B commits 9
+  // and A then writes 5 over it.
+  test("two polls racing on one row keep the higher figure", async () => {
+    let release: () => void = () => {};
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    let paused = false;
+    const slow = appDb.$extends({
+      query: {
+        spendCostSnapshot: {
+          async findUnique({ args, query }) {
+            const out = await query(args);
+            if (!paused) {
+              paused = true;
+              await held;
+            }
+            return out;
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+    const a = pollTenantSpend(tenantA, {
+      base: slow,
+      fetchFn: langfuseStub(rows(5, 5)).fetchFn,
+      now: NOW,
+    });
+    while (!paused) await Bun.sleep(5);
+    const b = pollTenantSpend(tenantA, {
+      base: appDb,
+      fetchFn: langfuseStub(rows(9, 9)).fetchFn,
+      now: at(1),
+    });
+    // Long enough for B to reach the row: with the lock it waits there, without it, it commits.
+    await Bun.sleep(300);
+    release();
+    await Promise.all([a, b]);
+    expect(Number((await snapshot(tenantA, "inbox"))?.costUsd)).toBe(9);
+  });
+
+  // THE INSTANT A FAILURE STREAK BEGAN (review round 5). The console says "failing since", so the
+  // row has to keep the first failure of the streak, not the latest attempt; a success clears it,
+  // and the next failure starts a new one.
+  test("a streak of failures keeps the instant it began", async () => {
+    const down = langfuseStub({ [INBOX_ENV]: 500, [PLAY_ENV]: 500 });
+    await pollTenantSpend(tenantA, {
+      base: appDb,
+      fetchFn: down.fetchFn,
+      now: NOW,
+    });
+    await pollTenantSpend(tenantA, {
+      base: appDb,
+      fetchFn: down.fetchFn,
+      now: at(1),
+    });
+    expect(
+      (await snapshot(tenantA, "inbox"))?.pollFailedAt?.toISOString(),
+    ).toBe(NOW.toISOString());
+    await pollTenantSpend(tenantA, {
+      base: appDb,
+      fetchFn: langfuseStub(rows(1, 1)).fetchFn,
+      now: at(2),
+    });
+    expect((await snapshot(tenantA, "inbox"))?.pollFailedAt).toBeNull();
+    await pollTenantSpend(tenantA, {
+      base: appDb,
+      fetchFn: down.fetchFn,
+      now: at(3),
+    });
+    expect(
+      (await snapshot(tenantA, "inbox"))?.pollFailedAt?.toISOString(),
+    ).toBe(at(3).toISOString());
+  });
+
   // THE FIGURE FOLLOWS THE MONTH, NOT THE PROJECT (review round 3). A tenant that points its
   // Langfuse at another project mid-month starts a new series there: the new project's total
   // begins near zero, and a monotonic floor taken over the old figure would sit at $40 while
@@ -560,14 +646,6 @@ describe.skipIf(!dbUp)("the spend ceiling poll", () => {
   // own total. A key rotated INSIDE a project is the same project and carries nothing: identity is
   // the project's id, never the credential.
   describe("the figure across Langfuse projects", () => {
-    const rows = (cost: number, calls: number) => ({
-      [INBOX_ENV]: [
-        { providedModelName: "m", sum_totalCost: cost, count_count: calls },
-      ],
-      [PLAY_ENV]: [],
-    });
-    const at = (minutes: number) => new Date(NOW.getTime() + minutes * 60_000);
-
     test("a project switched mid-month carries what the first one stood at", async () => {
       const first = langfuseStub(rows(40, 40), [], { projectId: "proj-a" });
       await pollTenantSpend(tenantA, {

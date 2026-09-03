@@ -36,7 +36,10 @@ import {
 } from "@/modules/tool-definitions/service";
 import { outboundUrl } from "../utils/outbound";
 
-// Five configuration families whose trail was written by the MCP transport and by nothing else.
+// Five configuration families whose trail was written by the MCP transport and by nothing else, plus
+// the vault (#444), which joins the FENCE at the bottom of this file rather than the matrix: the
+// invariant it guards is about every audited family, and a sixth model added to it is one more
+// column list read out of the schema.
 //
 // The seam (#392) puts the row inside the service, in the mutation's own transaction, so it covers
 // whichever door the change came through. This file is the family measurement for the five that
@@ -1362,6 +1365,17 @@ const FENCED: {
     exempt: {
       lastNumber:
         "the issuer's counter, advanced by issuing a document and not by editing the template",
+    },
+  },
+  // #444. Not one of the five, and here for the reason the fence exists at all: the invariant is
+  // about every audited family, and this is the one where the projection sits one column away from
+  // the credential itself.
+  {
+    model: "VaultEntry",
+    file: "src/modules/vault/service.ts",
+    exempt: {},
+    whole: {
+      id: "projected whole, as a decimal string, because the audit columns are jsonb and JSON has no BigInt",
     },
   },
 ];

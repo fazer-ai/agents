@@ -6,6 +6,12 @@ import { AppError, ConflictError, NotFoundError } from "@/lib/errors";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { SETTINGS_CREDENTIAL_PATHS } from "@/modules/agents/credential-paths";
 import {
+  markUndisclosed,
+  redactEndpoint,
+  undisclosedMoved,
+} from "@/modules/audit/projection";
+import { auditMutation, projectionMoved } from "@/modules/audit/service";
+import {
   runSecretTest,
   type SecretTestDeps,
   type SecretTestResult,
@@ -849,6 +855,91 @@ export interface CreateVaultEntryInput {
 }
 
 // INSERT-only create: 409 if both name and kind already exist in the tenant.
+// What a credential's audit row carries, and what it only compares.
+//
+// This is the family where the metadata and the thing that authenticates are adjacent columns, so
+// the two halves are drawn tightly. PROJECTED: the identity (`id`, `name`), the type, the lifecycle
+// and the two fields that say how the credential is used. `baseUrl` is an operator-typed URL and
+// reaches the row as its ORIGIN, by the same rule every such URL answers to (`redactEndpoint`): a
+// self-hosted API root is exactly the kind of destination that carries a token in its path, and this
+// row is append-only and outlives the entry.
+//
+// UNDISCLOSED, compared and never carried: the `secret` itself, and the whole `baseUrl` so a change
+// living in the path is still recorded as a change.
+type VaultAuditRow = {
+  id: bigint;
+  name: string;
+  kind: string;
+  status: string;
+  baseUrl: string | null;
+  paramName: string | null;
+  secret: string;
+};
+
+function auditProjection(r: VaultAuditRow) {
+  return {
+    id: String(r.id),
+    name: r.name,
+    kind: r.kind,
+    status: r.status,
+    baseUrl: r.baseUrl === null ? null : redactEndpoint(r.baseUrl),
+    paramName: r.paramName,
+  };
+}
+
+const VAULT_AUDIT_SELECT = {
+  id: true,
+  name: true,
+  kind: true,
+  status: true,
+  baseUrl: true,
+  paramName: true,
+  secret: true,
+} as const;
+
+const UNDISCLOSED = ["secret", "baseUrl"] as const;
+
+// Whether the credential BEHIND the reference moved, asked of the plaintext.
+//
+// The ciphertext cannot answer it: `encryptJson` randomizes, so re-submitting the value already
+// stored produces a different blob every time, and a comparison on the column would report a
+// rotation on every save of an unchanged credential. A blob that cannot be read counts as moved:
+// the write replaces it, and an unreadable secret becoming a readable one is a change.
+function secretMoved(before: string, after: string): boolean {
+  // The column UNCHANGED is the one answer the ciphertext can give: a metadata-only save leaves the
+  // blob byte-identical, and asking anything else about it (including whether it can be read) would
+  // report a rotation on every edit of a row whose key has since changed.
+  if (before === after) return false;
+  let a: unknown;
+  let b: unknown;
+  try {
+    a = decryptJson(before);
+  } catch {
+    return true;
+  }
+  try {
+    b = decryptJson(after);
+  } catch {
+    return true;
+  }
+  return stableJson(a) !== stableJson(b);
+}
+
+// Key order is not part of a credential. A multi-field secret is stored as an object and read by
+// key, so `{publicKey, secretKey}` and `{secretKey, publicKey}` are the same credential and a
+// comparison that says otherwise reports a rotation nobody performed.
+function stableJson(v: unknown): string {
+  return JSON.stringify(v, (_k, val) =>
+    val && typeof val === "object" && !Array.isArray(val)
+      ? Object.fromEntries(
+          Object.entries(val as Record<string, unknown>).sort(([x], [y]) =>
+            x < y ? -1 : x > y ? 1 : 0,
+          ),
+        )
+      : val,
+  );
+}
+
 export async function createVaultEntry(
   ctx: TenantContext,
   nameOrInput: string | CreateVaultEntryInput,
@@ -941,7 +1032,12 @@ export async function createVaultEntry(
           baseUrl: normalizedBaseUrl,
           paramName: normalizedParamName || null,
         },
-        select: { id: true },
+        select: VAULT_AUDIT_SELECT,
+      });
+      await auditMutation(db, ctx, {
+        action: "credential.create",
+        target: formatVaultRef(created.id),
+        after: auditProjection(created),
       });
       return { id: created.id, ref: formatVaultRef(created.id) };
     } catch (e) {
@@ -1047,7 +1143,19 @@ export async function createPendingVaultEntry(
           paramName: normalizedParamName || null,
           status: "pending",
         },
-        select: { id: true },
+        select: VAULT_AUDIT_SELECT,
+      });
+      // NOTE: The same action as a filled create, because it is the same act: a credential now
+      // exists under this name. `status` is what tells the two apart, and it is on the row.
+      //
+      // This is also where the agent import starts leaving a trail. It creates one reference-only
+      // entry per credential the bundle names and the tenant does not have, and its own `agent.import`
+      // row projects the AGENT, so six pending credentials used to appear in the vault with nothing
+      // naming where they came from. One row each, under the operator who ran the import.
+      await auditMutation(db, ctx, {
+        action: "credential.create",
+        target: formatVaultRef(created.id),
+        after: auditProjection(created),
       });
       return { id: created.id, ref: formatVaultRef(created.id) };
     } catch (e) {
@@ -1083,9 +1191,14 @@ export async function updateVaultEntry(
 ): Promise<bigint> {
   if (ctx.tenantId === null) throw new AppError("tenant required", 400);
   return runScopedOn(base, ctx, async (db) => {
+    // NOTE: LOCKED before it is read, because this snapshot is what the row's `before` reports. Two
+    // overlapping saves both read the same entry otherwise, and the second wakes to an `after` that
+    // includes the first one's changes: its row then claims a transition, or a rotation, that its
+    // actor never performed.
+    await db.$queryRaw`SELECT id FROM vault_entries WHERE id = ${id} FOR UPDATE`;
     const entry = await db.vaultEntry.findFirst({
       where: { id },
-      select: { id: true, kind: true },
+      select: VAULT_AUDIT_SELECT,
     });
     if (!entry) throw new NotFoundError(`vault entry ${id} not found`);
 
@@ -1158,7 +1271,151 @@ export async function updateVaultEntry(
       }
       throw e;
     }
+    const after = await db.vaultEntry.findUniqueOrThrow({
+      where: { id: entry.id },
+      select: VAULT_AUDIT_SELECT,
+    });
+    const beforeProj = auditProjection(entry);
+    const afterProj = auditProjection(after);
+    // NOTE: Over the declared list, so a column added to it later is compared without anyone having
+    // to remember this line; `secret` is the one whose comparison cannot be a column comparison.
+    const undisclosed = UNDISCLOSED.some((c) =>
+      c === "secret"
+        ? secretMoved(entry.secret, after.secret)
+        : undisclosedMoved(entry, after, [c]),
+    );
+    // NOTE: The action with no name on any transport before #444: replacing the value behind a live
+    // reference. Every consumer of that reference starts authenticating with something else on the
+    // next call, and nothing said so.
+    //
+    // The marker rather than the value, on both sides, because what a reader needs is that the
+    // secret moved. `undisclosedMoved` is what the write is gated on, never the marker: two
+    // identical markers move nothing, so gating on `projectionMoved` alone would drop the one row
+    // that matters most here, the save whose ONLY change was the credential itself.
+    if (undisclosed || projectionMoved(beforeProj, afterProj)) {
+      await auditMutation(db, ctx, {
+        action: "credential.update",
+        target: formatVaultRef(entry.id),
+        before: undisclosed ? markUndisclosed(beforeProj) : beforeProj,
+        after: undisclosed ? markUndisclosed(afterProj) : afterProj,
+      });
+    }
     return entry.id;
+  });
+}
+
+// Replace the secret behind an existing entry, recording it like any other credential edit.
+//
+// The OAuth flows write `vaultEntry.secret` themselves — connecting merges the tokens in,
+// disconnecting strips them back out — and they are operator actions on a credential like any
+// other. Reaching the column directly is what left them off the trail: this is the same write, with
+// the seam around it, so the row says a credential moved without saying what it moved to.
+//
+// The value is never projected. `credential.update` carries the marker and the metadata, exactly as
+// the console's own edit does.
+export async function replaceVaultSecret(
+  ctx: TenantContext,
+  id: bigint,
+  value: unknown,
+  base: PrismaClient = basePrisma,
+): Promise<void> {
+  await runScopedOn(base, ctx, async (db) => {
+    await db.$queryRaw`SELECT id FROM vault_entries WHERE id = ${id} FOR UPDATE`;
+    const before = await db.vaultEntry.findFirst({
+      where: { id },
+      select: VAULT_AUDIT_SELECT,
+    });
+    if (!before) throw new NotFoundError(`vault entry ${id} not found`);
+    const blob = encryptJson(value);
+    await db.vaultEntry.updateMany({ where: { id }, data: { secret: blob } });
+    if (secretMoved(before.secret, blob)) {
+      const proj = auditProjection(before);
+      await auditMutation(db, ctx, {
+        action: "credential.update",
+        target: formatVaultRef(id),
+        before: markUndisclosed(proj),
+        after: markUndisclosed(proj),
+      });
+    }
+  });
+}
+
+// The refresh path's write, with the seam around it and a gate the other secret writes do not have.
+//
+// A token refresh IS a write to `vault_entries.secret`, so `replaceVaultSecret` above would take it
+// unchanged, and that is exactly what must not happen: an access token expires hourly and is renewed
+// by USE, not by a decision, so routing it through there puts a row into an append-only table every
+// hour per connected credential, and the operator's own edits drown in machine bookkeeping. This
+// family already answered that question once in the other direction (#395: the Channels page
+// auto-syncs on load, so an unconditional `instance.sync_inboxes` recorded a row per account per
+// visit, and the fix was to record only what actually moved).
+//
+// What moved is the line. An access token is a DERIVED, short-lived artifact of the credential; the
+// refresh token and the granted scopes ARE the credential. A refresh token rotating replaces the
+// durable secret and revokes the old one, and scopes changing under a refresh means the grant itself
+// changed upstream: both are things an operator would want to find in the trail, and neither is
+// hourly. The access token moving on its own is not, and gets no row.
+//
+// The comparison is against the value read HERE, under the row lock, and NOT against the snapshot
+// the caller decrypted: that snapshot predates a network round trip to the provider, so two
+// overlapping refreshes of the same expired credential would both compare with the same stale value
+// and both record the same rotation. It is the same defect this module's own rule names (a row only
+// when something changed), and the same shape as every other read that decided something a
+// concurrent write could move underneath it. `FOR UPDATE` and not `FOR NO KEY UPDATE`, because that
+// is the mode the rest of this module takes on this table and a mixed mode is a deadlock with no
+// green test to show it (#395).
+//
+// `system` and a null actor, for the same reason /reset's rows are (#398): the refresh is triggered
+// by a clock and a use, and the principal whose request happened to notice the expiry did not rotate
+// anything. Left on `ctx` the row would name a person who did not act.
+export async function persistRefreshedOAuthSecret<
+  T extends { refreshToken?: string | null; scopes?: string[] | null },
+>(
+  ctx: TenantContext,
+  id: bigint,
+  after: T,
+  base: PrismaClient = basePrisma,
+): Promise<void> {
+  const scopeKey = (v: string[] | null | undefined) =>
+    JSON.stringify([...(v ?? [])].sort());
+  await runScopedOn(base, ctx, async (db) => {
+    await db.$queryRaw`SELECT id FROM vault_entries WHERE id = ${id} FOR UPDATE`;
+    const row = await db.vaultEntry.findFirst({
+      where: { id },
+      select: VAULT_AUDIT_SELECT,
+    });
+    // Deleted under us: there is nothing to refresh and nothing to record. The caller already has
+    // its access token and the next use will fail on the missing reference, which is the truth.
+    if (!row) return;
+    // A blob that will not decrypt into the shape (a pending placeholder, a hand-edited row) is
+    // treated as MOVED rather than as equal: recording a rotation that may not have happened is the
+    // side that keeps the trail honest, and staying silent is the side that loses one.
+    let stored: T | null = null;
+    try {
+      stored = decryptJson<T>(row.secret);
+    } catch {
+      stored = null;
+    }
+    await db.vaultEntry.updateMany({
+      where: { id },
+      data: { secret: encryptJson(after) },
+    });
+    const durableMoved =
+      stored === null ||
+      (stored.refreshToken ?? null) !== (after.refreshToken ?? null) ||
+      scopeKey(stored.scopes) !== scopeKey(after.scopes);
+    if (!durableMoved) return;
+    const proj = auditProjection(row);
+    await auditMutation(
+      db,
+      { ...ctx, userId: null, actorType: "system" },
+      {
+        action: "credential.update",
+        target: formatVaultRef(id),
+        before: markUndisclosed(proj),
+        after: markUndisclosed(proj),
+      },
+    );
   });
 }
 
@@ -1167,9 +1424,28 @@ export async function deleteVaultEntry(
   id: bigint,
   base: PrismaClient = basePrisma,
 ): Promise<void> {
-  await runScopedOn(base, ctx, (db) =>
-    db.vaultEntry.deleteMany({ where: { id } }),
-  );
+  await runScopedOn(base, ctx, async (db) => {
+    // NOTE: Read before the delete with the row LOCKED, so the row describes the version actually
+    // removed: an update committing between the read and the delete would otherwise leave the trail
+    // describing the credential as it was two saves ago. And only recorded when this call is the one
+    // that removed it:
+    // `deleteMany` is idempotent by design, and a row per attempt would put the same removal on the
+    // trail as many times as it was retried. Creating a credential was audited and removing one was
+    // not, which is the asymmetry #444 opened with.
+    await db.$queryRaw`SELECT id FROM vault_entries WHERE id = ${id} FOR UPDATE`;
+    const entry = await db.vaultEntry.findFirst({
+      where: { id },
+      select: VAULT_AUDIT_SELECT,
+    });
+    const { count } = await db.vaultEntry.deleteMany({ where: { id } });
+    if (entry && count > 0) {
+      await auditMutation(db, ctx, {
+        action: "credential.delete",
+        target: formatVaultRef(entry.id),
+        before: auditProjection(entry),
+      });
+    }
+  });
 }
 
 // ── credential connectivity test (test-on-save) ──

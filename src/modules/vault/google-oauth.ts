@@ -1,5 +1,5 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
-import { decryptJson, encryptJson } from "@/api/lib/crypto";
+import { decryptJson } from "@/api/lib/crypto";
 import basePrisma from "@/api/lib/prisma";
 import { AppError } from "@/lib/errors";
 import { fetchBounded, fetchBoundedNoBody } from "@/lib/outbound";
@@ -9,7 +9,7 @@ import {
   newNonce,
   OAUTH_CALLBACK_SCRIPT,
 } from "./oauth-core";
-import { vaultRefWhere } from "./service";
+import { persistRefreshedOAuthSecret, vaultRefWhere } from "./service";
 
 // Re-export the shared OAuth primitives under their existing names so callers of this module
 // (oauth-google.controller.ts, tests) keep importing them from here.
@@ -376,12 +376,10 @@ export async function ensureFreshGoogleAccessToken(
     scopes: json.scope ? json.scope.split(/\s+/).filter(Boolean) : cred.scopes,
   };
 
-  await runScopedOn(base, ctx, async (db) => {
-    await db.vaultEntry.updateMany({
-      where: vaultRefWhere(ref),
-      data: { secret: encryptJson(refreshed) },
-    });
-  });
+  // Through the seam, not straight at the column: see `persistRefreshedOAuthSecret`, which writes
+  // the same blob and records a row ONLY when the durable half moved (a rotated refresh token, or
+  // scopes the grant changed upstream). A renewed access token on its own is bookkeeping.
+  await persistRefreshedOAuthSecret(ctx, entryId, refreshed, base);
 
   return refreshed.accessToken as string;
 }

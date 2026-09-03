@@ -3,6 +3,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { z } from "zod";
 import { PrismaClient } from "@/../generated/prisma/client";
 import config from "@/config";
+import { normalizeToolName } from "@/graph/tools/toolName";
 import type { TenantContext } from "@/lib/tenancy";
 import { TOOL_INSTRUCTIONS_MAX } from "@/modules/agents/text-caps";
 import {
@@ -1711,6 +1712,313 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     expect(
       warnings.some(
         (w) => w.code === "httpToolReused" && w.params?.name === "lookup_order",
+      ),
+    ).toBe(true);
+  });
+
+  // Round 15 of PR #485: a bundle authored before a native took the name. The assembly reserves
+  // every native name (#457), so a tool imported under one would exist in the console and never
+  // reach the model, and this path writes straight to the DB, past the service's refusal. Renamed
+  // the way the migration renames a row already there — the first free `<name>_N` — and warned;
+  // the grant follows the tool, not the name it had in the bundle.
+  test("a bundled HTTP tool named after a native lands under a free name, warned, and its grant follows", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const bundle = structuredClone(exp);
+    const tool = bundle.components?.httpTools.find(
+      (h) => h.name === "lookup_order",
+    );
+    if (!tool) throw new Error("bundle missing lookup_order");
+    tool.name = "run_code";
+    const grant = bundle.agent.tools.find(
+      (g) => g?.source === "HTTP" && g.tool === "lookup_order",
+    );
+    if (grant?.source === "HTTP") grant.tool = "run_code";
+    // `run_code_2` already exists on the destination: it is REUSED, warned, the way any same-name
+    // component is — a second import of the same bundle lands on the same row (round 17), and the
+    // bundle's tool is not stored under a third name.
+    const existing = await suDb.toolDefinition.create({
+      data: {
+        tenantId: dstTenant,
+        name: "run_code_2",
+        label: "Já existia",
+        method: "GET",
+        urlTemplate: "https://api.example.com/x",
+        allowedHosts: ["api.example.com"],
+      },
+    });
+    const { agent, warnings } = await importAgent(dstCtx(), bundle, appDb);
+    const row = await suDb.toolDefinition.findFirst({
+      where: { tenantId: dstTenant, name: "run_code_2" },
+    });
+    expect(row?.id).toBe(existing.id);
+    expect(row?.label).toBe("Já existia");
+    expect(
+      await suDb.toolDefinition.count({
+        where: {
+          tenantId: dstTenant,
+          name: { in: ["run_code", "run_code_3"] },
+        },
+      }),
+    ).toBe(0);
+    expect(
+      warnings.some(
+        (w) =>
+          w.code === "httpToolRenamed" &&
+          w.params?.name === "run_code" &&
+          w.params?.renamed === "run_code_2",
+      ),
+    ).toBe(true);
+    expect(
+      warnings.some(
+        (w) => w.code === "httpToolReused" && w.params?.name === "run_code_2",
+      ),
+    ).toBe(true);
+    const grants = await suDb.agentToolSelection.findMany({
+      where: { agentId: BigInt(agent.id), source: "HTTP" },
+      select: { toolDefinitionId: true },
+    });
+    expect(grants.map((g) => g.toolDefinitionId)).toEqual([row?.id ?? null]);
+  });
+
+  // Round 16: the free name was chosen against the rows already stored, and a bundle can carry the
+  // suffix itself — `calculator` and `calculator_2` side by side. The native one took `_2`, the
+  // genuine `_2` was then "reused" onto it, and two grants for one row broke the unique index and
+  // aborted the whole import. The bundle's own names are taken before any suffix is chosen.
+  test("a bundle carrying both a native name and its suffix keeps two rows and two grants", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const bundle = structuredClone(exp);
+    const tool = bundle.components?.httpTools.find(
+      (h) => h.name === "lookup_order",
+    );
+    if (!tool || !bundle.components)
+      throw new Error("bundle missing lookup_order");
+    tool.name = "calculator";
+    bundle.components.httpTools.push({
+      ...structuredClone(tool),
+      name: "calculator_2",
+      label: "Segunda",
+    });
+    const grant = bundle.agent.tools.find(
+      (g) => g?.source === "HTTP" && g.tool === "lookup_order",
+    );
+    if (grant?.source !== "HTTP")
+      throw new Error("bundle missing the HTTP grant");
+    grant.tool = "calculator";
+    bundle.agent.tools.push({ ...grant, tool: "calculator_2" });
+    const { agent, warnings } = await importAgent(dstCtx(), bundle, appDb);
+    const rows = await suDb.toolDefinition.findMany({
+      where: { tenantId: dstTenant, name: { startsWith: "calculator" } },
+      select: { id: true, name: true, label: true },
+      orderBy: { name: "asc" },
+    });
+    expect(rows.map((r) => [r.name, r.label])).toEqual([
+      ["calculator_2", "Segunda"],
+      ["calculator_3", "Buscar pedido"],
+    ]);
+    expect(
+      warnings.some(
+        (w) =>
+          w.code === "httpToolRenamed" && w.params?.renamed === "calculator_3",
+      ),
+    ).toBe(true);
+    expect(warnings.some((w) => w.code === "httpToolReused")).toBe(false);
+    const grants = await suDb.agentToolSelection.findMany({
+      where: { agentId: BigInt(agent.id), source: "HTTP" },
+      select: { toolDefinitionId: true },
+    });
+    expect(new Set(grants.map((g) => g.toolDefinitionId))).toEqual(
+      new Set(rows.map((r) => r.id)),
+    );
+  });
+
+  // Round 17: the free name was chosen past the rows already stored, so importing the same bundle
+  // twice stored its native-named tool twice (`_2`, then `_3`), each agent bound to its own copy.
+  // The renamed name is decided by the bundle alone, and a row already under it is reused like
+  // every other same-name component.
+  test("importing the same bundle twice binds both agents to one renamed row", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const bundle = structuredClone(exp);
+    const tool = bundle.components?.httpTools.find(
+      (h) => h.name === "lookup_order",
+    );
+    if (!tool) throw new Error("bundle missing lookup_order");
+    tool.name = "handoff_to_human";
+    const grant = bundle.agent.tools.find(
+      (g) => g?.source === "HTTP" && g.tool === "lookup_order",
+    );
+    if (grant?.source === "HTTP") grant.tool = "handoff_to_human";
+    const first = await importAgent(dstCtx(), structuredClone(bundle), appDb);
+    const second = await importAgent(dstCtx(), structuredClone(bundle), appDb);
+    const rows = await suDb.toolDefinition.findMany({
+      where: { tenantId: dstTenant, name: { startsWith: "handoff_to_human" } },
+      select: { id: true, name: true },
+    });
+    expect(rows.map((r) => r.name)).toEqual(["handoff_to_human_2"]);
+    expect(
+      second.warnings.some(
+        (w) =>
+          w.code === "httpToolReused" &&
+          w.params?.name === "handoff_to_human_2",
+      ),
+    ).toBe(true);
+    for (const { agent } of [first, second]) {
+      const grants = await suDb.agentToolSelection.findMany({
+        where: { agentId: BigInt(agent.id), source: "HTTP" },
+        select: { toolDefinitionId: true },
+      });
+      expect(grants.map((g) => g.toolDefinitionId)).toEqual([
+        rows[0]?.id ?? null,
+      ]);
+    }
+  });
+
+  // Round 18: a bundle can carry the same native-named component twice (a hand-edited file). Each
+  // occurrence chose a new suffix and the last one overwrote the grant mapping, so one grant went
+  // to the last row and the two of them collided on the unique index and aborted the import. The
+  // name is chosen once per bundle name, and two grants on one row are one grant.
+  test("the same native-named tool twice in a bundle lands once, and its two grants collapse to one", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const bundle = structuredClone(exp);
+    const tool = bundle.components?.httpTools.find(
+      (h) => h.name === "lookup_order",
+    );
+    if (!tool || !bundle.components)
+      throw new Error("bundle missing lookup_order");
+    tool.name = "set_custom_attribute";
+    bundle.components.httpTools.push({
+      ...structuredClone(tool),
+      label: "Cópia",
+    });
+    const grant = bundle.agent.tools.find(
+      (g) => g?.source === "HTTP" && g.tool === "lookup_order",
+    );
+    if (grant?.source !== "HTTP")
+      throw new Error("bundle missing the HTTP grant");
+    grant.tool = "set_custom_attribute";
+    bundle.agent.tools.push({ ...grant });
+    const { agent, warnings } = await importAgent(dstCtx(), bundle, appDb);
+    const rows = await suDb.toolDefinition.findMany({
+      where: {
+        tenantId: dstTenant,
+        name: { startsWith: "set_custom_attribute" },
+      },
+      select: { id: true, name: true, label: true },
+    });
+    expect(rows.map((r) => [r.name, r.label])).toEqual([
+      ["set_custom_attribute_2", "Buscar pedido"],
+    ]);
+    expect(warnings.filter((w) => w.code === "httpToolRenamed")).toHaveLength(
+      1,
+    );
+    expect(
+      warnings.some(
+        (w) =>
+          w.code === "httpToolReused" &&
+          w.params?.name === "set_custom_attribute_2",
+      ),
+    ).toBe(true);
+    const grants = await suDb.agentToolSelection.findMany({
+      where: { agentId: BigInt(agent.id), source: "HTTP" },
+      select: { toolDefinitionId: true },
+    });
+    expect(grants.map((g) => g.toolDefinitionId)).toEqual([
+      rows[0]?.id ?? null,
+    ]);
+  });
+
+  // Round 20: the console derives the name from the label on every save, so a renamed row whose
+  // label still derived the reserved name could not be saved again from there. The label follows
+  // the name where it derived the old one, and is the operator's own otherwise.
+  test("a renamed tool's label follows the name where the console would derive the old one", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const bundle = structuredClone(exp);
+    const tool = bundle.components?.httpTools.find(
+      (h) => h.name === "lookup_order",
+    );
+    if (!tool) throw new Error("bundle missing lookup_order");
+    tool.name = "private_note";
+    tool.label = "Private note";
+    await importAgent(dstCtx(), bundle, appDb);
+    const row = await suDb.toolDefinition.findFirst({
+      where: { tenantId: dstTenant, name: "private_note_2" },
+      select: { label: true },
+    });
+    expect(row?.label).toBe("Private note 2");
+    expect(normalizeToolName(row?.label ?? "")).toBe("private_note_2");
+  });
+
+  // Round 22: a label at the authoring limit (200) that derives the name cannot carry the suffix
+  // without passing the limit, which would lock the row out of the console the other way; it
+  // becomes the name itself, which derives to itself.
+  test("a renamed tool's label at the authoring limit becomes the name", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const bundle = structuredClone(exp);
+    const tool = bundle.components?.httpTools.find(
+      (h) => h.name === "lookup_order",
+    );
+    if (!tool) throw new Error("bundle missing lookup_order");
+    tool.name = "react_to_message";
+    tool.label = `react${" ".repeat(185)}to message`;
+    await importAgent(dstCtx(), bundle, appDb);
+    const row = await suDb.toolDefinition.findFirst({
+      where: { tenantId: dstTenant, name: "react_to_message_2" },
+      select: { label: true },
+    });
+    expect(row?.label).toBe("react_to_message_2");
+  });
+
+  // Round 16: the rename was recorded and reported before the checks that can skip the component,
+  // so a native-named tool with a method this version does not send was announced as imported
+  // under a name no row carries, next to the warning that it was not imported.
+  test("a native-named tool skipped for its method is not reported as renamed", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const bundle = structuredClone(exp);
+    const tool = bundle.components?.httpTools.find(
+      (h) => h.name === "lookup_order",
+    );
+    if (!tool) throw new Error("bundle missing lookup_order");
+    tool.name = "get_current_time";
+    (tool as { method?: string }).method = "OPTIONS";
+    const grant = bundle.agent.tools.find(
+      (g) => g?.source === "HTTP" && g.tool === "lookup_order",
+    );
+    if (grant?.source === "HTTP") grant.tool = "get_current_time";
+    const { warnings } = await importAgent(dstCtx(), bundle, appDb);
+    expect(
+      warnings.some(
+        (w) =>
+          w.code === "httpToolMethodUnsupported" &&
+          w.params?.name === "get_current_time",
+      ),
+    ).toBe(true);
+    expect(warnings.some((w) => w.code === "httpToolRenamed")).toBe(false);
+    expect(
+      await suDb.toolDefinition.count({
+        where: {
+          tenantId: dstTenant,
+          name: { startsWith: "get_current_time" },
+        },
+      }),
+    ).toBe(0);
+    expect(
+      warnings.some(
+        (w) =>
+          w.code === "httpGrantNotFound" &&
+          w.params?.name === "get_current_time",
       ),
     ).toBe(true);
   });

@@ -17,7 +17,7 @@ import { SETTINGS_CREDENTIAL_PATHS } from "@/modules/agents/credential-paths";
 // wrong for the fifth. Restating it would be a fourth copy of a list that has already been wrong
 // three times.
 
-// The native-tool notes the console draws no control for. `toolGuidance` takes one for all thirteen
+// The native-tool notes the console draws no control for. `toolGuidance` takes one for all fourteen
 // tools in NATIVE_TOOL_NAMES and the editor renders three, so this set is closed and derivable --
 // which is what makes it safe to TELL the operator a value can only be changed through the API.
 //
@@ -63,7 +63,7 @@ const SETTINGS_PREFIX = "settings.";
 
 // Matched by pattern, because three of these families are open-ended: a guardrails direction holds
 // two capped fields, and a follow-up step is one of ten. A path with no entry has no control in the
-// editor at all — `toolGuidance` accepts a note for all thirteen native tools and the console draws
+// editor at all — `toolGuidance` accepts a note for all fourteen native tools and the console draws
 // three — and those must keep answering "there is nowhere to send you" rather than offering a jump
 // to a section that will not scroll.
 const TEXT_TARGETS: ReadonlyArray<{ match: RegExp } & EditorTarget> = [

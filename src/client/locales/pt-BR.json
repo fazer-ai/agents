@@ -1081,6 +1081,7 @@
       "httpToolBodyIgnored": "A ferramenta \"{{name}}\" tinha um corpo de requisição num formato que esta versão não aceita, então ele foi reduzido à parte que de fato estava sendo enviada. A requisição não mudou; abra em Corpo da requisição para conferir.",
       "httpToolCredNotFound": "A credencial \"{{credential}}\" da ferramenta \"{{tool}}\" não foi encontrada aqui, então ficou em branco.",
       "httpToolMethodUnsupported": "A ferramenta \"{{name}}\" pede o método HTTP {{method}}, que não é um dos que a plataforma envia, então ela não foi importada. O resto do agente foi.",
+      "httpToolRenamed": "A ferramenta \"{{name}}\" tem o nome de uma ferramenta nativa, então foi importada como \"{{renamed}}\"; um prompt que a cite pelo nome precisa acompanhar.",
       "httpToolReused": "A ferramenta \"{{name}}\" já existia e foi reaproveitada; confira se está certa.",
       "integrationGrantNotFound": "A integração \"{{name}}\" não foi encontrada, então a concessão foi ignorada.",
       "integrationReused": "A integração \"{{name}}\" já existia e foi reaproveitada; confira se está certa.",
@@ -1866,6 +1867,10 @@
     "resolve_conversation": {
       "desc": "Marca a conversa como resolvida quando o pedido foi totalmente atendido.",
       "label": "Resolver"
+    },
+    "run_code": {
+      "desc": "Executa um trecho de JavaScript num sandbox isolado para cálculo exato e vereditos (dígitos verificadores, datas, parsing).",
+      "label": "Executar código"
     },
     "send_image": {
       "desc": "Entrega uma imagem ao cliente a partir da URL dela, restrita aos hosts que você liberar.",

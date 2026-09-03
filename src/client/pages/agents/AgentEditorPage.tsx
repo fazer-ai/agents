@@ -641,7 +641,7 @@ function AgentEditor() {
   //
   // `section` is the form whose write produced it, so a later success elsewhere cannot take it down.
   // `named` is the value the server refused, when it named one, so the banner can say WHY it offers
-  // no way to it: `toolGuidance` takes a note for all thirteen native tools and the console draws
+  // no way to it: `toolGuidance` takes a note for all fourteen native tools and the console draws
   // three, and the server's sentence names the field without knowing that.
   //
   // Written by every `capture` and read only while the holder has a sentence, so neither can go stale
@@ -2187,6 +2187,12 @@ function AgentEditor() {
         return t(
           "editor.importWarning.httpToolReused",
           'Tool "{{name}}" already existed and was reused; check it is right.',
+          p,
+        );
+      case "httpToolRenamed":
+        return t(
+          "editor.importWarning.httpToolRenamed",
+          'Tool "{{name}}" carries the name of a built-in tool, so it was imported as "{{renamed}}"; a prompt that names it must follow.',
           p,
         );
       case "httpToolCredNotFound":

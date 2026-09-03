@@ -1078,6 +1078,7 @@
       "httpToolBodyIgnored": "Tool \"{{name}}\" had a request body in a shape this version does not accept, so it was reduced to the part that was actually being sent. The request is unchanged; open it under Body to check it.",
       "httpToolCredNotFound": "Tool \"{{tool}}\" credential \"{{credential}}\" was not found here, so it was left unset.",
       "httpToolMethodUnsupported": "Tool \"{{name}}\" asks for the HTTP method {{method}}, which is not one this platform sends, so the tool was not imported. The rest of the agent was.",
+      "httpToolRenamed": "Tool \"{{name}}\" carries the name of a built-in tool, so it was imported as \"{{renamed}}\"; a prompt that names it must follow.",
       "httpToolReused": "Tool \"{{name}}\" already existed and was reused; check it is right.",
       "integrationGrantNotFound": "Integration \"{{name}}\" was not found, so its grant was skipped.",
       "integrationReused": "Integration \"{{name}}\" already existed and was reused; check it is right.",
@@ -1860,6 +1861,10 @@
     "resolve_conversation": {
       "desc": "Mark the conversation as resolved when the request is fully handled.",
       "label": "Resolve"
+    },
+    "run_code": {
+      "desc": "Run a JavaScript snippet in an isolated sandbox for exact computation and verdicts (check digits, dates, parsing).",
+      "label": "Run code"
     },
     "send_image": {
       "desc": "Deliver an image to the customer from its URL, limited to the hosts you allow.",

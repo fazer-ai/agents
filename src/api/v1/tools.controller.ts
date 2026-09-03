@@ -26,6 +26,7 @@ import {
 // throw site rather than an English sentence on a pt-BR caller's screen.
 // translate('errors.toolDefinitionNotFound', 'Tool definition not found.')
 // translate('errors.toolNameTaken', 'That tool name is already in use.')
+// translate('errors.toolNameReserved', 'That name belongs to a built-in tool; choose another.')
 
 // Custom HTTP tool definitions (per-tenant). TENANT_ADMIN; the scoped service is the hard
 // boundary. The deeper field validation lives in the service zod schema; the credential is a vault

@@ -10,7 +10,11 @@ import { type AuthUser, authPlugin } from "@/api/lib/auth";
 import { translate } from "@/api/lib/i18n";
 import { doc, errors } from "@/api/lib/openapi";
 import { parseQueryCount, parseQueryId } from "@/api/lib/query-filters";
-import { confirmStepUp, STEP_UP_PASSWORD_DESCRIPTION } from "@/api/lib/step-up";
+import {
+  confirmStepUp,
+  STEP_UP_PASSWORD_DESCRIPTION,
+  stepUpPrincipalOf,
+} from "@/api/lib/step-up";
 import config from "@/config";
 import { optionalDbId, requireDbId } from "@/lib/db-id";
 import { UnauthorizedError } from "@/lib/errors";
@@ -216,10 +220,7 @@ export const adminController = new Elysia({
         set.status = 401;
         return { error: translate("errors.unauthorized", "Unauthorized") };
       }
-      await confirmStepUp(
-        { userId: user.id, actorType: user.isApiKey ? "api_key" : "user" },
-        body.password,
-      );
+      await confirmStepUp(stepUpPrincipalOf(user), body.password);
       try {
         await deleteUser(
           resolveScope(user, undefined),

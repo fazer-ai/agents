@@ -167,6 +167,8 @@
     "fleetTitle": "Chaves de fleet",
     "fleetTokenHint": "Esta chave não tem tenant fixo: escolha o tenant a cada requisição com o header X-Tenant-Id (REST) ou o argumento tenant (MCP), exatamente como a sua sessão.",
     "lastUsed": "Usada por último em {{date}}",
+    "legacyStepUpBadge": "Pede a senha do criador",
+    "legacyStepUpTitle": "Criada antes de as chaves serem confirmadas com senha, então as rotas destrutivas ainda pedem a senha do criador desta chave. Crie uma chave nova e revogue esta para ter uma chave que responde sozinha.",
     "name": "Nome",
     "nameHint": "Um rótulo para reconhecer esta chave depois (ex.: o cliente ou serviço que a usa).",
     "namePlaceholder": "Integração externa",

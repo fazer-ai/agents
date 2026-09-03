@@ -35,6 +35,9 @@ export interface AuthUser {
   // Set when the principal resolved from a Bearer API key (vs the cookie session). Lets the
   // tenancy boundary tag audit rows as actorType "api_key".
   isApiKey?: boolean;
+  // For a key: when its minter answered the password step-up, or null for a key that predates the
+  // rule. Absent for a session, which answers the step-up per request. Read by `confirmStepUp`.
+  stepUpAt?: Date | null;
 }
 
 // Resolves a Bearer API key from the Authorization header to an AuthUser, or null. The synthetic
@@ -61,6 +64,7 @@ async function apiKeyAuthUser(
     role: principal.role,
     googleId: null,
     isApiKey: true,
+    stepUpAt: principal.stepUpAt,
   };
 }
 

@@ -111,6 +111,8 @@ let tenantToken = "";
 let fleetToken = "";
 let agentByKey = "";
 let agentBySession = "";
+let legacyToken = "";
+let agentByLegacy = "";
 let cookie = "";
 
 const send = (
@@ -181,6 +183,26 @@ describe.skipIf(!dbUp)("a fleet-scoped API key at the request boundary", () => {
       await realAgents.createAgent(
         ctxA,
         { name: `by-session-${process.pid}`, systemPrompt: "x" },
+        app,
+      )
+    ).id;
+    // A key that predates the password rule, written the way every row was before `step_up_at`
+    // existed: no step-up on record. Its creator is the session's user, whose password is below.
+    legacyToken = `fazerai_${"L".repeat(43)}${process.pid}`;
+    await su.apiKey.create({
+      data: {
+        tenantId: tenantA,
+        displayName: "tenant A legacy key",
+        keyHash: realVerify.hashApiKey(legacyToken),
+        keyPrefix: legacyToken.slice(0, 14),
+        role: "TENANT_ADMIN",
+        createdByUserId: SUPER_ID,
+      },
+    });
+    agentByLegacy = (
+      await realAgents.createAgent(
+        ctxA,
+        { name: `by-legacy-${process.pid}`, systemPrompt: "x" },
         app,
       )
     ).id;
@@ -456,5 +478,34 @@ describe.skipIf(!dbUp)("a fleet-scoped API key at the request boundary", () => {
     expect(
       await su?.agent.count({ where: { id: BigInt(agentBySession) } }),
     ).toBe(0);
+  });
+
+  // Review round 3: a key minted before the rule was minted with no password anywhere, so it has no
+  // step-up to carry, and it answers the way every key did before this change: with its creator's
+  // password. The rule widens nothing for a key that already exists.
+  test("a key minted before the rule still answers with its creator's password", async () => {
+    const name = `by-legacy-${process.pid}`;
+    const path = `/api/v1/agents/${agentByLegacy}`;
+    const left = () =>
+      su?.agent.count({ where: { id: BigInt(agentByLegacy) } });
+    const noPw = await send("DELETE", path, bearer(legacyToken), {
+      confirmName: name,
+    });
+    expect(noPw.status).toBe(400);
+    expect(((await noPw.json()) as { error: string }).error).toBe(
+      "Your password is required to confirm this action",
+    );
+    const wrongPw = await send("DELETE", path, bearer(legacyToken), {
+      confirmName: name,
+      password: "not-it",
+    });
+    expect(wrongPw.status).toBe(403);
+    expect(await left()).toBe(1);
+    const withPw = await send("DELETE", path, bearer(legacyToken), {
+      confirmName: name,
+      password: PASSWORD,
+    });
+    expect(withPw.status).toBe(200);
+    expect(await left()).toBe(0);
   });
 });

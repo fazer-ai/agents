@@ -1741,6 +1741,10 @@ model ApiKey {
   keyPrefix       String    @map("key_prefix")
   role            UserRole
   createdByUserId BigInt?   @map("created_by_user_id")
+  // When the person minting this key answered the password step-up (#308, review round 3). NULL for
+  // a key that predates the rule: it keeps answering the step-up with its creator's password, the
+  // way every key did before; only a key with a step-up on record answers by itself.
+  stepUpAt        DateTime? @map("step_up_at")
   lastUsedAt      DateTime? @map("last_used_at")
   revokedAt       DateTime? @map("revoked_at")
   createdAt       DateTime  @default(now()) @map("created_at")

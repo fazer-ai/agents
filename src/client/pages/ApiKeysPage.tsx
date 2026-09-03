@@ -33,6 +33,9 @@ type ApiKey = NonNullable<ApiKeysData>["apiKeys"][number];
 // the principal the operator's own session is (issue #308). Each list creates via a modal (the
 // plaintext token is revealed once) and revokes with a confirm. The same key authenticates the REST
 // v1 API and the MCP transport. The hash/plaintext never appear here — only the display prefix.
+// A key minted before keys were confirmed with a password (`stepUpAt` null) still answers the
+// destructive routes with its creator's password; the list marks it, since rotating it is the only
+// way to a key that answers by itself, and nothing else on the page would say which one that is.
 export function ApiKeysPage() {
   const { t } = useTranslation();
   const { user } = useAuth();
@@ -209,6 +212,21 @@ function ApiKeySection({
                     <Badge variant="secondary">
                       {t("apiKeys.revokedBadge", "Revoked")}
                     </Badge>
+                  )}
+                  {!key.stepUpAt && !key.revokedAt && (
+                    <span
+                      title={t(
+                        "apiKeys.legacyStepUpTitle",
+                        "Minted before keys were confirmed with a password, so the destructive routes still ask for this key's creator's password. Create a new key and revoke this one to get a key that answers by itself.",
+                      )}
+                    >
+                      <Badge variant="warning">
+                        {t(
+                          "apiKeys.legacyStepUpBadge",
+                          "Asks the creator's password",
+                        )}
+                      </Badge>
+                    </span>
                   )}
                 </div>
                 <code className="w-fit rounded bg-bg-tertiary px-1.5 py-0.5 font-mono text-text-secondary text-xs">

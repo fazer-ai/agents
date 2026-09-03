@@ -17,6 +17,10 @@ import { countInSrc } from "@/tests/utils/source-text";
 // breaks). The key is presented on every request and was itself minted under a step-up; there is
 // nothing left for a password to prove, so the helper answers for the principal kind, once, and the
 // routes stop spelling the check themselves.
+//
+// "Minted under a step-up" is what the key carries (`stepUpAt`), not what its kind implies: a key
+// that predates the rule was minted with no password anywhere, and it keeps answering the way every
+// key did before, with its creator's password (review round 3).
 
 setupPrismaMock();
 const { confirmStepUp, requireSession } = await import("@/api/lib/step-up");
@@ -75,15 +79,33 @@ describe("confirmStepUp", () => {
     expect(mockFindUnique).not.toHaveBeenCalled();
   });
 
-  test("an API-key principal passes with no password and no lookup; a password it sends is not read", async () => {
-    await expect(
-      confirmStepUp(session({ actorType: "api_key" }), undefined),
-    ).resolves.toBeUndefined();
-    // The creator's password is NOT what a key proves: even a wrong one changes nothing.
-    await expect(
-      confirmStepUp(session({ actorType: "api_key" }), "wrong"),
-    ).resolves.toBeUndefined();
+  test("a key minted under step-up passes with no password and no lookup; a password it sends is not read", async () => {
+    const key = session({ actorType: "api_key", stepUpAt: new Date() });
+    await expect(confirmStepUp(key, undefined)).resolves.toBeUndefined();
+    // The creator's password is NOT what such a key proves: even a wrong one changes nothing.
+    await expect(confirmStepUp(key, "wrong")).resolves.toBeUndefined();
     expect(mockFindUnique).not.toHaveBeenCalled();
+  });
+
+  // Review round 3 on #308: a key that predates the rule has no step-up to carry, so it answers
+  // the way every key did before this change, with its creator's password (`userId` names the
+  // creator for a key). Nothing it could do yesterday is refused, nothing it could not do is
+  // allowed. Absent is the same as null: no step-up on record is no step-up.
+  test("a key minted before the rule (no step-up on record) still answers with its creator's password", async () => {
+    for (const legacy of [
+      session({ actorType: "api_key", stepUpAt: null }),
+      session({ actorType: "api_key" }),
+    ]) {
+      const missing = await confirmStepUp(legacy, undefined).catch((e) => e);
+      expect((missing as AppError).statusCode).toBe(400);
+      expect((missing as AppError).translationKey).toBe(
+        "errors.passwordRequired",
+      );
+      const wrong = await confirmStepUp(legacy, "nope").catch((e) => e);
+      expect((wrong as AppError).statusCode).toBe(403);
+      expect((wrong as AppError).translationKey).toBe("errors.invalidPassword");
+      await expect(confirmStepUp(legacy, "s3cret")).resolves.toBeUndefined();
+    }
   });
 
   // The cookie session's `actorType` is absent (the tenancy boundary only stamps "api_key"); absent
@@ -138,5 +160,23 @@ describe("every step-up goes through confirmStepUp", () => {
     expect(strays).toEqual([]);
     // Control: the sweep can see a call at all, or an empty stray list proves nothing.
     expect(found["src/api/lib/step-up.ts"]).toBe(1);
+  });
+
+  // The principal the helper reads is the one the boundary stamped (`stepUpAt` included). A route
+  // that builds `{ userId, actorType }` by hand has dropped the step-up on record, and every key
+  // reaching it, legacy or not, is asked the creator's password — or, with a different hand-built
+  // shape, none is. One spelling at the AuthUser seam (`stepUpPrincipalOf`), the context elsewhere.
+  test("every call site hands the helper the boundary's principal, never a hand-built one", async () => {
+    const calls = await countInSrc(/\bconfirmStepUp\(/g);
+    const whole = await countInSrc(
+      /\bconfirmStepUp\(\s*(?:ctx\b|stepUpPrincipalOf\()/g,
+    );
+    const sites = Object.entries(calls).filter(
+      ([file]) => file !== "src/api/lib/step-up.ts",
+    );
+    expect(sites.length).toBeGreaterThan(1);
+    for (const [file, n] of sites) {
+      expect([file, whole[file] ?? 0]).toEqual([file, n]);
+    }
   });
 });

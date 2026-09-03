@@ -29,6 +29,9 @@ export interface ApiKeyDto {
   role: UserRole;
   lastUsedAt: Date | null;
   revokedAt: Date | null;
+  // null for a key that predates the password rule: it still answers the step-up with its
+  // creator's password, and the console marks it so the operator knows which key to rotate.
+  stepUpAt: Date | null;
   createdAt: Date;
 }
 
@@ -39,6 +42,7 @@ const SELECT = {
   role: true,
   lastUsedAt: true,
   revokedAt: true,
+  stepUpAt: true,
   createdAt: true,
 } as const;
 
@@ -49,6 +53,7 @@ function toDto(row: {
   role: UserRole;
   lastUsedAt: Date | null;
   revokedAt: Date | null;
+  stepUpAt: Date | null;
   createdAt: Date;
 }): ApiKeyDto {
   return {
@@ -58,6 +63,7 @@ function toDto(row: {
     role: row.role,
     lastUsedAt: row.lastUsedAt,
     revokedAt: row.revokedAt,
+    stepUpAt: row.stepUpAt,
     createdAt: row.createdAt,
   };
 }
@@ -84,6 +90,10 @@ export interface CreatedApiKey {
   token: string;
 }
 
+// The caller has answered the password step-up before calling here (the two minting routes do, and
+// they are the only callers): the row records the moment, and that record is what lets the key
+// answer every later step-up by itself (`confirmStepUp`). A row written without it is a key that
+// predates the rule, and keeps answering with its creator's password.
 export async function createApiKey(
   ctx: TenantContext,
   input: ApiKeyCreate,
@@ -102,6 +112,7 @@ export async function createApiKey(
         keyPrefix: gen.prefix,
         role: FIXED_ROLE,
         createdByUserId: ctx.userId,
+        stepUpAt: new Date(),
       },
       select: SELECT,
     });
@@ -194,6 +205,8 @@ export async function createFleetApiKey(
         keyPrefix: gen.prefix,
         role: FLEET_ROLE,
         createdByUserId: ctx.userId,
+        // Under step-up, like the tenant mint: see `createApiKey`.
+        stepUpAt: new Date(),
       },
       select: SELECT,
     });

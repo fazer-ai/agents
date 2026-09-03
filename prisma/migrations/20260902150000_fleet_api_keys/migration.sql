@@ -9,3 +9,9 @@ ALTER TABLE "api_keys" ADD CONSTRAINT "api_keys_role_tenant_check" CHECK (
   ("role" = 'SUPER_ADMIN' AND "tenant_id" IS NULL)
   OR ("role" <> 'SUPER_ADMIN' AND "tenant_id" IS NOT NULL)
 );
+
+-- The password step-up a key was minted under (review round 3 on #308). NULL for every row that
+-- predates the rule: such a key was minted with no password anywhere, so it keeps answering the
+-- step-up with its creator's password rather than by itself. Not backfilled on purpose: a step-up
+-- that never happened is not invented by a migration.
+ALTER TABLE "api_keys" ADD COLUMN "step_up_at" TIMESTAMP(3);

@@ -14,8 +14,14 @@ import type { ActorType } from "@/lib/tenancy/context";
 // is the key's CREATOR,
 // so an automation could only pass by also holding a person's password. That coupling is the
 // fragility issue #308 reports (the password rotates, the person leaves, the run breaks), and it
-// proved nothing a key had not already proved. So the key answers by itself, and a password it
-// sends is not read: the creator's password is not what a key is.
+// proved nothing a key had not already proved. So a key minted under a step-up answers by itself,
+// and a password it sends is not read: the creator's password is not what such a key is.
+//
+// "Minted under a step-up" is what the key CARRIES (`stepUpAt`, stamped at the mint), not what its
+// kind implies. A key that predates the rule was minted with no password anywhere, so it has no
+// step-up to carry, and it answers the way every key did before: with its creator's password. The
+// rule widens nothing for a key that already exists (review round 3). No step-up on record is no
+// step-up: absent reads the same as null.
 //
 // `actorType` is what the tenancy boundary stamps on the context ("api_key" for a Bearer key,
 // absent for the cookie session); absent is a session. Missing is not incorrect: a session that
@@ -29,17 +35,18 @@ import type { ActorType } from "@/lib/tenancy/context";
 export interface StepUpPrincipal {
   userId: bigint | null;
   actorType?: ActorType;
+  stepUpAt?: Date | null;
 }
 
 // The one spelling of the field on the wire, so the six routes cannot describe it six ways.
 export const STEP_UP_PASSWORD_DESCRIPTION =
-  "The acting user's password (step-up confirmation). Required for a session; a Bearer API key answers the step-up by itself and omits it.";
+  "The acting user's password (step-up confirmation). Required for a session. A Bearer API key minted under this rule answers the step-up by itself and omits it; a key minted before the rule (no step-up on record) sends its creator's password, as it always did.";
 
 export async function confirmStepUp(
   principal: StepUpPrincipal,
   password: string | undefined,
 ): Promise<void> {
-  if (principal.actorType === "api_key") return;
+  if (principal.actorType === "api_key" && principal.stepUpAt) return;
   if (!password) {
     throw new AppError("password required", 400, "errors.passwordRequired");
   }
@@ -50,6 +57,22 @@ export async function confirmStepUp(
   ) {
     throw new AppError("Incorrect password", 403, "errors.invalidPassword");
   }
+}
+
+// The step-up principal an AuthUser is, spelled once. The tenancy boundary stamps the same three
+// fields on a TenantContext, so a route that holds a context passes it whole; a route that holds
+// the AuthUser (the admin scope, which has no tenant context) goes through here, so the step-up on
+// record travels with the key instead of being dropped by a hand-built `{ userId, actorType }`.
+export function stepUpPrincipalOf(user: {
+  id: bigint;
+  isApiKey?: boolean;
+  stepUpAt?: Date | null;
+}): StepUpPrincipal {
+  return {
+    userId: user.id,
+    actorType: user.isApiKey ? "api_key" : "user",
+    stepUpAt: user.stepUpAt ?? null,
+  };
 }
 
 // A key never mints a credential that outlives it.

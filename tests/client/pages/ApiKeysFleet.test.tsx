@@ -58,7 +58,21 @@ function installFetchStub() {
       typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
     requests.push({ method, path, body });
     if (method === "GET" && path === "/api/v1/api-keys") {
-      return json({ apiKeys: [] });
+      // One key that predates the password rule: no step-up on record.
+      return json({
+        apiKeys: [
+          {
+            id: "3",
+            displayName: "old integration",
+            keyPrefix: "fazerai_old123",
+            role: "TENANT_ADMIN",
+            lastUsedAt: null,
+            revokedAt: null,
+            stepUpAt: null,
+            createdAt: "2026-08-01T00:00:00.000Z",
+          },
+        ],
+      });
     }
     if (method === "GET" && path === "/api/v1/api-keys/fleet") {
       return json({
@@ -70,6 +84,7 @@ function installFetchStub() {
             role: "SUPER_ADMIN",
             lastUsedAt: null,
             revokedAt: null,
+            stepUpAt: "2026-09-01T00:00:00.000Z",
             createdAt: "2026-09-01T00:00:00.000Z",
           },
         ],
@@ -128,6 +143,24 @@ afterAll(() => {
 });
 
 describe("the fleet keys section", () => {
+  // Review round 3: a key minted before the password rule has no step-up on record and keeps
+  // answering with its creator's password. The list says so, because rotating it is the only way to
+  // get a key that answers by itself, and nothing else on the page would tell the operator which.
+  test("a key minted before the rule is marked in the list; one minted under it is not", async () => {
+    currentRole = "SUPER_ADMIN";
+    installFetchStub();
+    renderPage();
+    await waitFor(() => {
+      expect(screen.queryByText("provisioner") !== null).toBe(true);
+      expect(screen.queryByText("old integration") !== null).toBe(true);
+    });
+    const mark = "Asks the creator's password";
+    const tenant = screen.getByTestId("api-keys-tenant");
+    const fleet = screen.getByTestId("api-keys-fleet");
+    expect(within(tenant).queryByText(mark) !== null).toBe(true);
+    expect(within(fleet).queryByText(mark) === null).toBe(true);
+  });
+
   test("a SUPER_ADMIN sees the fleet list, read from the fleet route", async () => {
     currentRole = "SUPER_ADMIN";
     installFetchStub();

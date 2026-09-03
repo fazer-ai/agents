@@ -1961,7 +1961,7 @@
                 "properties": {
                   "password": {
                     "minLength": 1,
-                    "description": "The acting user's password (step-up confirmation). Required for a session; a Bearer API key answers the step-up by itself and omits it.",
+                    "description": "The acting user's password (step-up confirmation). Required for a session. A Bearer API key minted under this rule answers the step-up by itself and omits it; a key minted before the rule (no step-up on record) sends its creator's password, as it always did.",
                     "type": "string"
                   }
                 }
@@ -1973,7 +1973,7 @@
                 "properties": {
                   "password": {
                     "minLength": 1,
-                    "description": "The acting user's password (step-up confirmation). Required for a session; a Bearer API key answers the step-up by itself and omits it.",
+                    "description": "The acting user's password (step-up confirmation). Required for a session. A Bearer API key minted under this rule answers the step-up by itself and omits it; a key minted before the rule (no step-up on record) sends its creator's password, as it always did.",
                     "type": "string"
                   }
                 }
@@ -1985,7 +1985,7 @@
                 "properties": {
                   "password": {
                     "minLength": 1,
-                    "description": "The acting user's password (step-up confirmation). Required for a session; a Bearer API key answers the step-up by itself and omits it.",
+                    "description": "The acting user's password (step-up confirmation). Required for a session. A Bearer API key minted under this rule answers the step-up by itself and omits it; a key minted before the rule (no step-up on record) sends its creator's password, as it always did.",
                     "type": "string"
                   }
                 }
@@ -4071,7 +4071,7 @@
                   },
                   "password": {
                     "minLength": 1,
-                    "description": "The acting user's password (step-up confirmation). Required for a session; a Bearer API key answers the step-up by itself and omits it.",
+                    "description": "The acting user's password (step-up confirmation). Required for a session. A Bearer API key minted under this rule answers the step-up by itself and omits it; a key minted before the rule (no step-up on record) sends its creator's password, as it always did.",
                     "type": "string"
                   }
                 }
@@ -4090,7 +4090,7 @@
                   },
                   "password": {
                     "minLength": 1,
-                    "description": "The acting user's password (step-up confirmation). Required for a session; a Bearer API key answers the step-up by itself and omits it.",
+                    "description": "The acting user's password (step-up confirmation). Required for a session. A Bearer API key minted under this rule answers the step-up by itself and omits it; a key minted before the rule (no step-up on record) sends its creator's password, as it always did.",
                     "type": "string"
                   }
                 }
@@ -4109,7 +4109,7 @@
                   },
                   "password": {
                     "minLength": 1,
-                    "description": "The acting user's password (step-up confirmation). Required for a session; a Bearer API key answers the step-up by itself and omits it.",
+                    "description": "The acting user's password (step-up confirmation). Required for a session. A Bearer API key minted under this rule answers the step-up by itself and omits it; a key minted before the rule (no step-up on record) sends its creator's password, as it always did.",
                     "type": "string"
                   }
                 }
@@ -7057,7 +7057,7 @@
                   },
                   "password": {
                     "minLength": 1,
-                    "description": "The acting user's password (step-up confirmation). Required for a session; a Bearer API key answers the step-up by itself and omits it.",
+                    "description": "The acting user's password (step-up confirmation). Required for a session. A Bearer API key minted under this rule answers the step-up by itself and omits it; a key minted before the rule (no step-up on record) sends its creator's password, as it always did.",
                     "type": "string"
                   }
                 }
@@ -7076,7 +7076,7 @@
                   },
                   "password": {
                     "minLength": 1,
-                    "description": "The acting user's password (step-up confirmation). Required for a session; a Bearer API key answers the step-up by itself and omits it.",
+                    "description": "The acting user's password (step-up confirmation). Required for a session. A Bearer API key minted under this rule answers the step-up by itself and omits it; a key minted before the rule (no step-up on record) sends its creator's password, as it always did.",
                     "type": "string"
                   }
                 }
@@ -7095,7 +7095,7 @@
                   },
                   "password": {
                     "minLength": 1,
-                    "description": "The acting user's password (step-up confirmation). Required for a session; a Bearer API key answers the step-up by itself and omits it.",
+                    "description": "The acting user's password (step-up confirmation). Required for a session. A Bearer API key minted under this rule answers the step-up by itself and omits it; a key minted before the rule (no step-up on record) sends its creator's password, as it always did.",
                     "type": "string"
                   }
                 }
@@ -23667,7 +23667,7 @@
                   },
                   "password": {
                     "minLength": 1,
-                    "description": "The acting user's password (step-up confirmation). Required for a session; a Bearer API key answers the step-up by itself and omits it.",
+                    "description": "The acting user's password (step-up confirmation). Required for a session. A Bearer API key minted under this rule answers the step-up by itself and omits it; a key minted before the rule (no step-up on record) sends its creator's password, as it always did.",
                     "type": "string"
                   }
                 }
@@ -23689,7 +23689,7 @@
                   },
                   "password": {
                     "minLength": 1,
-                    "description": "The acting user's password (step-up confirmation). Required for a session; a Bearer API key answers the step-up by itself and omits it.",
+                    "description": "The acting user's password (step-up confirmation). Required for a session. A Bearer API key minted under this rule answers the step-up by itself and omits it; a key minted before the rule (no step-up on record) sends its creator's password, as it always did.",
                     "type": "string"
                   }
                 }
@@ -23711,7 +23711,7 @@
                   },
                   "password": {
                     "minLength": 1,
-                    "description": "The acting user's password (step-up confirmation). Required for a session; a Bearer API key answers the step-up by itself and omits it.",
+                    "description": "The acting user's password (step-up confirmation). Required for a session. A Bearer API key minted under this rule answers the step-up by itself and omits it; a key minted before the rule (no step-up on record) sends its creator's password, as it always did.",
                     "type": "string"
                   }
                 }
@@ -36139,7 +36139,7 @@
                   },
                   "password": {
                     "minLength": 1,
-                    "description": "The acting user's password (step-up confirmation). Required for a session; a Bearer API key answers the step-up by itself and omits it.",
+                    "description": "The acting user's password (step-up confirmation). Required for a session. A Bearer API key minted under this rule answers the step-up by itself and omits it; a key minted before the rule (no step-up on record) sends its creator's password, as it always did.",
                     "type": "string"
                   }
                 }
@@ -36158,7 +36158,7 @@
                   },
                   "password": {
                     "minLength": 1,
-                    "description": "The acting user's password (step-up confirmation). Required for a session; a Bearer API key answers the step-up by itself and omits it.",
+                    "description": "The acting user's password (step-up confirmation). Required for a session. A Bearer API key minted under this rule answers the step-up by itself and omits it; a key minted before the rule (no step-up on record) sends its creator's password, as it always did.",
                     "type": "string"
                   }
                 }
@@ -36177,7 +36177,7 @@
                   },
                   "password": {
                     "minLength": 1,
-                    "description": "The acting user's password (step-up confirmation). Required for a session; a Bearer API key answers the step-up by itself and omits it.",
+                    "description": "The acting user's password (step-up confirmation). Required for a session. A Bearer API key minted under this rule answers the step-up by itself and omits it; a key minted before the rule (no step-up on record) sends its creator's password, as it always did.",
                     "type": "string"
                   }
                 }
@@ -36975,7 +36975,7 @@
                   },
                   "password": {
                     "minLength": 1,
-                    "description": "The acting user's password (step-up confirmation). Required for a session; a Bearer API key answers the step-up by itself and omits it.",
+                    "description": "The acting user's password (step-up confirmation). Required for a session. A Bearer API key minted under this rule answers the step-up by itself and omits it; a key minted before the rule (no step-up on record) sends its creator's password, as it always did.",
                     "type": "string"
                   }
                 }
@@ -36994,7 +36994,7 @@
                   },
                   "password": {
                     "minLength": 1,
-                    "description": "The acting user's password (step-up confirmation). Required for a session; a Bearer API key answers the step-up by itself and omits it.",
+                    "description": "The acting user's password (step-up confirmation). Required for a session. A Bearer API key minted under this rule answers the step-up by itself and omits it; a key minted before the rule (no step-up on record) sends its creator's password, as it always did.",
                     "type": "string"
                   }
                 }
@@ -37013,7 +37013,7 @@
                   },
                   "password": {
                     "minLength": 1,
-                    "description": "The acting user's password (step-up confirmation). Required for a session; a Bearer API key answers the step-up by itself and omits it.",
+                    "description": "The acting user's password (step-up confirmation). Required for a session. A Bearer API key minted under this rule answers the step-up by itself and omits it; a key minted before the rule (no step-up on record) sends its creator's password, as it always did.",
                     "type": "string"
                   }
                 }

@@ -137,9 +137,13 @@ describe.skipIf(!dbUp)("api key service + verify (RLS)", () => {
     });
     expect(row?.keyHash).toBe(hashApiKey(created.token));
     expect(row?.createdByUserId).toBe(USER_A);
+    // Minted under a step-up (the route asks the password before calling here): the row says so,
+    // and the DTO carries it so the console can tell a key that predates the rule apart.
+    expect(created.apiKey.stepUpAt).toBeInstanceOf(Date);
+    expect(row?.stepUpAt).toEqual(created.apiKey.stepUpAt);
   });
 
-  test("verify resolves the principal (tenant, role, creator)", async () => {
+  test("verify resolves the principal (tenant, role, creator, step-up on record)", async () => {
     const { token } = await createApiKey(
       ctxA(),
       { displayName: "verify me" },
@@ -150,6 +154,7 @@ describe.skipIf(!dbUp)("api key service + verify (RLS)", () => {
     expect(principal?.tenantId).toBe(tenantA);
     expect(principal?.role).toBe("TENANT_ADMIN");
     expect(principal?.userId).toBe(USER_A);
+    expect(principal?.stepUpAt).toBeInstanceOf(Date);
   });
 
   // The load-bearing half of the compatibility window: a key an operator is already using was
@@ -174,6 +179,10 @@ describe.skipIf(!dbUp)("api key service + verify (RLS)", () => {
     expect(principal?.tenantId).toBe(tenantA);
     expect(principal?.role).toBe("TENANT_ADMIN");
     expect(principal?.userId).toBe(USER_A);
+    // Written with no `stepUpAt`, the way every row that predates the password rule is: the
+    // principal says so, and the step-up asks that key the creator's password as it always did
+    // (review round 3 on #308).
+    expect(principal?.stepUpAt).toBeNull();
   });
 
   test("verify rejects a malformed or unknown key", async () => {
@@ -311,6 +320,7 @@ describe.skipIf(!dbUp)("fleet-scoped api keys", () => {
     expect(row?.role).toBe("SUPER_ADMIN");
     expect(row?.createdByUserId).toBe(FLEET_USER);
     expect(row?.keyHash).toBe(hashApiKey(created.token));
+    expect(row?.stepUpAt).not.toBeNull();
   });
 
   test("verify resolves a fleet principal: no tenant, SUPER_ADMIN, and the MCP seam gives it the fleet scopes", async () => {
@@ -324,6 +334,7 @@ describe.skipIf(!dbUp)("fleet-scoped api keys", () => {
     expect(principal?.tenantId).toBeNull();
     expect(principal?.role).toBe("SUPER_ADMIN");
     expect(principal?.userId).toBe(FLEET_USER);
+    expect(principal?.stepUpAt).toBeInstanceOf(Date);
     // The MCP transport already models a tenant-less SUPER_ADMIN token (the `tenant` selector per
     // call); a fleet key rides that model unchanged.
     const mcp = mcpPrincipalFromApiKey(principal as ApiKeyPrincipal);
@@ -431,5 +442,17 @@ describe.skipIf(!dbUp)("fleet-scoped api keys", () => {
     await expect(insert("TENANT_ADMIN", "NULL")).rejects.toThrow(
       /api_keys_role_tenant_check/,
     );
+  });
+
+  // A key that predates the password rule has no step-up on record, and the migration must leave
+  // it that way rather than invent one: the column admits NULL, and a row written without it (the
+  // shape every pre-rule row has) reads back as null.
+  test("a key that predates the rule keeps a NULL step-up", async () => {
+    if (!su) return;
+    const col = await su.$queryRawUnsafe<{ is_nullable: string }[]>(
+      `SELECT is_nullable FROM information_schema.columns
+       WHERE table_name = 'api_keys' AND column_name = 'step_up_at'`,
+    );
+    expect(col).toEqual([{ is_nullable: "YES" }]);
   });
 });

@@ -58,6 +58,9 @@ export interface ApiKeyPrincipal {
   // null for a fleet key (role SUPER_ADMIN), the way a SUPER_ADMIN user has no tenant.
   tenantId: bigint | null;
   role: UserRole;
+  // When the minter answered the password step-up; null for a key that predates the rule, which
+  // answers the step-up with its creator's password instead (review round 3 on #308).
+  stepUpAt: Date | null;
 }
 
 // Resolves a Bearer API key to its principal, or null (caller maps null → 401). Never throws on a
@@ -76,6 +79,7 @@ export async function verifyApiKey(
         tenantId: true,
         role: true,
         createdByUserId: true,
+        stepUpAt: true,
         revokedAt: true,
         lastUsedAt: true,
       },
@@ -97,6 +101,7 @@ export async function verifyApiKey(
       tenantId: k.tenantId,
       role: k.role,
       createdByUserId: k.createdByUserId,
+      stepUpAt: k.stepUpAt,
       lastUsedAt: k.lastUsedAt,
     };
   });
@@ -122,5 +127,6 @@ export async function verifyApiKey(
     userId: resolved.createdByUserId,
     tenantId: resolved.tenantId,
     role: resolved.role,
+    stepUpAt: resolved.stepUpAt,
   };
 }

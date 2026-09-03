@@ -733,12 +733,12 @@ function withSourceLine(
   // body's last line instead.
   const line =
     offset > 0 ? Math.min(reported - offset, lines.length) : reported - offset;
-  const text = lines[line - 1];
-  if (text === undefined) return error;
-  return {
-    ...e,
-    message: `${String(e.message)} (line ${line}: ${clipText(text.trim(), 120)})`,
-  };
+  if (lines[line - 1] === undefined) return error;
+  // The NUMBER, never the text of the line. This message is what the model reads, what the flow log
+  // stores and what the alert channels carry into a chat, and the line is the operator's own source:
+  // a literal they pasted into a body travels to the model provider and into a Discord message with
+  // it. The operator has the body open in the editor, where a line number is the whole address.
+  return { ...e, message: `${String(e.message)} (line ${line})` };
 }
 
 // Everything that stands before the snippet: the runtime and its limits, the context, the renderer,

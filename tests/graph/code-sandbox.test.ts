@@ -122,25 +122,27 @@ describe("runSandboxedCode", () => {
     }
   });
 
-  test("a SyntaxError names the line and shows it", async () => {
-    const out = await runSandboxedCode(`const a = 1;\nconst b = ;\na + b`);
+  // The NUMBER and not the text: this message reaches the model, the flow log and the alert
+  // channels, and the line is the operator's own source (a literal pasted into a body would travel
+  // with it). The operator reads the number against the body in their editor.
+  test("a SyntaxError names the line, and never quotes it", async () => {
+    const secret = "const b = ; // sk-not-a-real-key";
+    const out = await runSandboxedCode(`const a = 1;\n${secret}\na + b`);
     expect(out).toMatchObject({ kind: "error", name: "SyntaxError" });
-    expect((out as { message: string }).message).toContain(
-      "(line 2: const b = ;)",
-    );
+    const message = (out as { message: string }).message;
+    expect(message).toContain("(line 2)");
+    expect(message).not.toContain("sk-not-a-real-key");
     // In function-body mode the line is still the body's own, not the wrapper's.
     const wrapped = await runSandboxedCode(`return 1;\nconst c = ;`, {
       call: { input: {}, context: {} },
     });
-    expect((wrapped as { message: string }).message).toContain(
-      "(line 2: const c = ;)",
-    );
+    expect((wrapped as { message: string }).message).toContain("(line 2)");
   });
 
   test("a runtime error names its line too", async () => {
     const out = await runSandboxedCode(`const a = 1;\nconst b = null;\nb.x`);
     expect(out).toMatchObject({ kind: "error", name: "TypeError" });
-    expect((out as { message: string }).message).toContain("(line 3: b.x)");
+    expect((out as { message: string }).message).toContain("(line 3)");
   });
 
   // The CVE-2026-0863 shape: reading the thrown value runs the snippet's own code. Both reads
@@ -779,7 +781,7 @@ describe("runSandboxedCode", () => {
     expect(shadowed).toMatchObject({
       kind: "error",
       name: "TypeError",
-      message: expect.stringMatching(/^kept \(line 1:/),
+      message: "kept (line 1)",
     });
     const plain = await runSandboxedCode("throw { a: 1 }");
     expect(plain).toMatchObject({
@@ -1217,17 +1219,13 @@ describe("function-body mode (a code tool's call)", () => {
       call({}),
     );
     expect(syntax).toMatchObject({ kind: "error", name: "SyntaxError" });
-    expect((syntax as { message: string }).message).toMatch(
-      /\(line 2: const x = ;\)$/,
-    );
+    expect((syntax as { message: string }).message).toMatch(/\(line 2\)$/);
     const thrown = await runSandboxedCode(
       '\n\nthrow new Error("boom")',
       call({}),
     );
     expect(thrown).toMatchObject({ kind: "error", name: "Error" });
-    expect((thrown as { message: string }).message).toBe(
-      'boom (line 3: throw new Error("boom"))',
-    );
+    expect((thrown as { message: string }).message).toBe("boom (line 3)");
   });
 
   test("the body sees input and context as parameters and nothing new on the global object", async () => {

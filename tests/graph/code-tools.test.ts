@@ -132,7 +132,10 @@ describe("a code tool", () => {
     expect(text.startsWith("validar_cpf failed: Error: SyntaxError:")).toBe(
       true,
     );
-    expect(text.split("\n")[0]).toContain("(line 1: return input.cpf.)");
+    expect(text.split("\n")[0]).toContain("(line 1)");
+    // The line NUMBER travels; the operator's own source does not (it would reach the provider,
+    // the flow log and the alert channels).
+    expect(text).not.toContain("input.cpf.");
     expect(text).toContain("do not tell the customer their data is invalid");
   });
 

@@ -306,7 +306,9 @@ export function CodeToolEditModal({
       modal.close();
       onSaved?.({ id: data.tool.id, name: data.tool.name }, !editId);
     } catch (e) {
-      setFormError(held(e));
+      // Same rule as the branch above: a transport failure of a save whose dialog is gone has
+      // nowhere to land, and would mark the form the operator has open now.
+      if (sessionRef.current === session) setFormError(held(e));
     } finally {
       setSaving(false);
     }

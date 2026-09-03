@@ -2269,6 +2269,52 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     ]);
   });
 
+  // A rename has to fit inside the ceiling it is renaming for. A 64-character name is legal, and
+  // `<name>_2` is 66 — refused by the provider with the whole function list for a code tool, and
+  // normalized back to the original by the HTTP builder, which silently undoes the rename.
+  test("a rename of a name already at the 64-character ceiling stays inside it", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const bundle = structuredClone(exp);
+    const code = bundle.components?.codeTools?.find(
+      (c) => c.name === "validar_cpf",
+    );
+    if (!code) throw new Error("bundle missing validar_cpf");
+    const long = `l${"o".repeat(62)}g`;
+    expect(long.length).toBe(64);
+    code.name = long;
+    code.label = long;
+    const grant = bundle.agent.tools.find(
+      (g) => g?.source === "CODE" && g.tool === "validar_cpf",
+    );
+    if (grant?.source !== "CODE") throw new Error("bundle missing the grant");
+    grant.tool = long;
+    // The destination already holds the name, under the other kind.
+    await suDb.toolDefinition.create({
+      data: {
+        tenantId: dstTenant,
+        name: long,
+        label: "Held by HTTP",
+        urlTemplate: "https://api.example.com/x",
+        allowedHosts: ["api.example.com"],
+      },
+    });
+    const { warnings } = await importAgent(dstCtx(), bundle, appDb);
+    const stored = await suDb.codeToolDefinition.findFirst({
+      where: { tenantId: dstTenant, name: { startsWith: long.slice(0, 40) } },
+      select: { name: true },
+    });
+    expect(stored?.name.length).toBeLessThanOrEqual(64);
+    expect(stored?.name.endsWith("_2")).toBe(true);
+    expect(
+      warnings.some(
+        (w) =>
+          w.code === "codeToolRenamed" && w.params?.renamed === stored?.name,
+      ),
+    ).toBe(true);
+  });
+
   // The mirror of the cross-kind rule above. The HTTP service refuses a name a code tool holds
   // where it is typed (tool-definitions/service.ts asks the code table), and this path writes
   // past the service, so a bundled HTTP tool named like a code tool the destination stores would

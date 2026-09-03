@@ -1492,11 +1492,37 @@ async function createMissingBusinessHours(
 // same bundle imported twice binds both agents to one row instead of storing a copy per import
 // (round 17). The migration `rename_http_tools_named_after_natives` walks past stored rows
 // instead, because both of its rows are real and both must survive.
+// The provider's own ceiling on a tool name, and `normalizeToolName`'s: a name past it is refused
+// with the WHOLE function list.
+const TOOL_NAME_MAX = 64;
 function renamedToolName(base: string, taken: ReadonlySet<string>): string {
   for (let n = 2; ; n++) {
-    const candidate = `${base}_${n}`;
+    const suffix = `_${n}`;
+    // The suffix has to fit INSIDE the ceiling, not past it: a 64-character name already at the
+    // limit would otherwise be renamed to 66 characters — refused by the provider for a code tool,
+    // and normalized back to the original by the HTTP builder, which undoes the rename and leaves
+    // the stored name disagreeing with the callable one.
+    const stem =
+      base.length + suffix.length > TOOL_NAME_MAX
+        ? base.slice(0, TOOL_NAME_MAX - suffix.length)
+        : base;
+    const candidate = `${stem}${suffix}`;
     if (!taken.has(candidate)) return candidate;
   }
+}
+
+// The services bound what they store, and this path writes past them: a bundle carrying a longer
+// label or description would create a row the console and the REST update can no longer save, and
+// the operator would meet that only when they next edited the tool. Clipped rather than refused,
+// the trade this file makes for prose everywhere else. `clipText` and never a bare slice, because
+// these bound TEXT an operator wrote: a cut between the halves of an astral character leaves an
+// orphan surrogate that Postgres refuses inside a jsonb write (src/lib/text.ts).
+const TOOL_DESCRIPTION_MAX = 2000;
+function clipLabel(label: string): string {
+  return clipText(label, TOOL_LABEL_MAX);
+}
+function clipDescription(text: string): string {
+  return clipText(text, TOOL_DESCRIPTION_MAX);
 }
 
 // The label a renamed tool is stored with. It follows the name where the console would derive
@@ -1506,21 +1532,6 @@ function renamedToolName(base: string, taken: ReadonlySet<string>): string {
 // migration's. A label the suffix would push past the authoring limit becomes the name itself,
 // which derives to itself (round 22). Shared by the HTTP and the code loop: both kinds are
 // authored in the same console, under the same derivation.
-// The services bound what they store, and this path writes past them: a bundle carrying a longer
-// label or description would create a row the console and the REST update can no longer save, and
-// the operator would meet that only when they next edited the tool. Clipped rather than refused,
-// the trade this file makes for prose everywhere else.
-// `clipText`, never a bare slice: these bound TEXT an operator wrote, and a cut that lands between
-// the halves of an astral character leaves an orphan surrogate that Postgres refuses inside a jsonb
-// write and that renders as a replacement character everywhere it survives (src/lib/text.ts).
-const TOOL_DESCRIPTION_MAX = 2000;
-function clipLabel(label: string): string {
-  return clipText(label, TOOL_LABEL_MAX);
-}
-function clipDescription(text: string): string {
-  return clipText(text, TOOL_DESCRIPTION_MAX);
-}
-
 function renamedLabel(
   bundledName: string,
   storedName: string,

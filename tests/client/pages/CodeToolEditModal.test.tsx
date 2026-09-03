@@ -413,3 +413,70 @@ test("a save that lands after the dialog was dismissed does not close the next o
     globalThis.fetch = realFetch;
   }
 });
+
+test("a save that FAILS after the dialog was dismissed does not mark the next one", async () => {
+  // A refusal that arrives for a dialog that is gone has nowhere to land, and would put the
+  // previous tool's error on the form now open. This drives the RESPONSE branch — the client
+  // returns a transport failure as `error` rather than throwing — and the `catch` beside it carries
+  // the same guard for the exceptions the client does not convert.
+  const realFetch = globalThis.fetch;
+  let fail = () => {};
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const href =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.href
+          : input.url;
+    if (
+      href.includes("/code-tools") &&
+      (init?.method ?? "GET").toUpperCase() === "POST"
+    ) {
+      await new Promise<void>((r) => {
+        fail = r;
+      });
+      throw new Error("network is down");
+    }
+    return realFetch(input as RequestInfo, init);
+  }) as typeof fetch;
+  try {
+    render(<TwoToolsHarness />);
+    fireEvent.click(screen.getByText("open-new"));
+    await waitFor(() =>
+      expect(document.body.querySelectorAll("input").length > 0).toBe(true),
+    );
+    const fill = () => {
+      fireEvent.change(
+        document.body.querySelector("input") as HTMLInputElement,
+        {
+          target: { value: "Look up CPF" },
+        },
+      );
+      const areas = [...document.body.querySelectorAll("textarea")];
+      fireEvent.change(
+        areas.find(
+          (ta) => !ta.className.includes("font-mono"),
+        ) as HTMLTextAreaElement,
+        { target: { value: "a description" } },
+      );
+      fireEvent.change(
+        areas.find((ta) =>
+          ta.className.includes("font-mono"),
+        ) as HTMLTextAreaElement,
+        { target: { value: "return 1" } },
+      );
+    };
+    fill();
+    fireEvent.click(screen.getByText("Save").closest("button") as HTMLElement);
+    fireEvent.click(screen.getByText("close-it"));
+    fireEvent.click(screen.getByText("open-new"));
+    await waitFor(() =>
+      expect(document.body.querySelectorAll("input").length > 0).toBe(true),
+    );
+    fail();
+    await new Promise((r) => setTimeout(r, 30));
+    expect(screen.queryAllByText(/Could not save/i).length).toBe(0);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});

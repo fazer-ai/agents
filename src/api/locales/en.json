@@ -195,6 +195,7 @@
     "vaultFieldUnknown": "This credential type has no field called \"{{field}}\"",
     "vaultFieldWhitespace": "The \"{{field}}\" field must not begin or end with a space or line break. Remove it and save again.",
     "vaultNameInUse": "A secret with this name and type already exists",
+    "vaultParamNameNotApplicable": "The \"{{kind}}\" credential type does not use a param name. The types that do are: {{kinds}}.",
     "vaultParamNameRequired": "Param name is required for this credential type",
     "vaultRefNotFound": "That vault reference does not point to any credential: {{ref}}",
     "vaultSecretWhitespace": "A vault secret must not begin or end with a space or line break. Remove it and save again.",

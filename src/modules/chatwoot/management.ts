@@ -827,6 +827,34 @@ export async function softDisconnectChatwootInstance(
     }
     if (client) {
       for (const inboxId of detach) {
+        // NOTE: Re-asked immediately before each call, because this loop runs OUTSIDE any lock and
+        // one unreachable inbox holds it for a whole network timeout. In that span an operator can
+        // reconnect the account and bind an agent — two clicks on the page they are already looking
+        // at — and the detach would then pull the bot that bind had just attached, leaving an inbox
+        // bound here with no bot upstream. Nothing repairs that state: `reconcileInboxBots` asks
+        // whether the BOT exists, not whether it is attached, so it reports `active`; and binding
+        // the same agent again is a no-op, because the binding is already there.
+        //
+        // The BINDING is the question, and not whether the account is still disconnected. A bot is
+        // on an inbox because something bound it, so the column that says a bot is there is the one
+        // that must authorize pulling it; the flag is a proxy for that, and a fence on both says the
+        // same thing twice, with the second copy unfalsifiable — `bindInbox` takes the account lock
+        // and refuses on a disconnected account, so the two can never disagree in the direction the
+        // flag would be needed for (measured: with either half alone the whole family still passes).
+        //
+        // And it narrows the window rather than closing it: no transaction of ours spans Chatwoot,
+        // so a bind landing between this read and the call still loses its attachment. What it buys
+        // is that we never issue a detach our own committed state has stopped authorizing.
+        const authorized = await runScopedOn(base, ctx, (db) =>
+          db.inbox.count({
+            where: {
+              chatwootInstanceId: id,
+              chatwootInboxId: inboxId,
+              agentId: null,
+            },
+          }),
+        );
+        if (authorized === 0) continue;
         try {
           await client.setInboxAgentBot(inboxId, null);
         } catch {

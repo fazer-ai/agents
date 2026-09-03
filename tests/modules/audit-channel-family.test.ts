@@ -644,7 +644,7 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
   async function connectedFixture(
     accountId: number,
     label: string,
-    opts: { bound?: boolean } = {},
+    opts: { bound?: boolean; inboxes?: 1 | 2 } = {},
   ) {
     const dep = await suDb.chatwootDeployment.findFirstOrThrow({
       where: { tenantId },
@@ -664,20 +664,27 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
       },
       select: { id: true },
     });
-    const inbox = await suDb.inbox.create({
-      data: {
-        tenantId,
-        chatwootInstanceId: inst.id,
-        chatwootInboxId: accountId,
-        name: label,
-        agentId: opts.bound === false ? null : agent.id,
-      },
-      select: { id: true },
-    });
+    const mkInbox = async (chatwootInboxId: number) =>
+      suDb.inbox.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: inst.id,
+          chatwootInboxId,
+          name: `${label} ${chatwootInboxId}`,
+          agentId: opts.bound === false ? null : agent.id,
+        },
+        select: { id: true, chatwootInboxId: true },
+      });
+    const inbox = await mkInbox(accountId);
+    // A second one only where a test needs the loop to still have work left after the first call.
+    const other = opts.inboxes === 2 ? await mkInbox(accountId + 1) : null;
     await clearAudit();
     return {
       instanceId: inst.id,
       inboxId: inbox.id,
+      chatwootInboxId: inbox.chatwootInboxId,
+      otherInboxId: other?.id ?? 0n,
+      otherChatwootInboxId: other?.chatwootInboxId ?? 0,
       agentId: agent.id,
       cleanup: async () => {
         await collect();
@@ -781,6 +788,56 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
       // Awaited before the cleanup either way: the bind is still holding a connection and would
       // otherwise write onto rows this is about to delete.
       await bind;
+      await fx.cleanup();
+    }
+  });
+
+  // The detach loop runs after the commit and outside every lock, and one unreachable inbox holds it
+  // for a whole network timeout. Two clicks on the page the operator is already looking at — reconnect,
+  // then bind — put a live bot on an inbox this loop is still walking, and an unconditional detach
+  // pulls it. Nothing repairs the result: the reconcile asks whether the BOT exists rather than
+  // whether it is attached, so it answers `active`, and re-binding the same agent is a no-op.
+  test("a detach does not pull a bot the operator re-attached while it was still walking", async () => {
+    const fx = await connectedFixture(4446, "Reatada", { inboxes: 2 });
+    const seen: number[] = [];
+    const stub: ReturnType<typeof stubClient> = stubClient({
+      setInboxAgentBot: async (inboxId: number) => {
+        seen.push(inboxId);
+        stub.calls.push("setInboxAgentBot");
+        if (seen.length === 1) {
+          // The other half of the race, made deterministic: the operator gets the account back and
+          // binds it again while this very loop still has the second inbox to walk.
+          const target =
+            inboxId === fx.chatwootInboxId ? fx.otherInboxId : fx.inboxId;
+          await reconnectChatwootInstance(ctx(), fx.instanceId, appDb);
+          await bindInbox(
+            ctx(),
+            target,
+            fx.agentId,
+            { makeClient: stubClient().makeClient },
+            appDb,
+          );
+        }
+        return {};
+      },
+    });
+    try {
+      await softDisconnectChatwootInstance(ctx(), fx.instanceId, appDb, {
+        makeClient: stub.makeClient,
+      });
+      // One detach, for the inbox that was still unbound on a still-disconnected account.
+      expect(seen.length).toBe(1);
+      const rebound =
+        seen[0] === fx.chatwootInboxId ? fx.otherInboxId : fx.inboxId;
+      expect(
+        (
+          await suDb.inbox.findUniqueOrThrow({
+            where: { id: rebound },
+            select: { agentId: true },
+          })
+        ).agentId,
+      ).toBe(fx.agentId);
+    } finally {
       await fx.cleanup();
     }
   });

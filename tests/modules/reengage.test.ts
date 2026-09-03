@@ -181,6 +181,7 @@ describe.skipIf(!dbUp)("reengage", () => {
   afterAll(async () => {
     if (tenantId) {
       for (const table of [
+        "audit_logs",
         "llm_usage",
         "conversations",
         "contacts",
@@ -247,6 +248,85 @@ describe.skipIf(!dbUp)("reengage", () => {
     );
     expect(res.outcome).toBe("gate-closed");
     expect(sent).toEqual([]);
+  });
+
+  // #398: the re-engage is the one action of the conversation family that does not record every
+  // apply, because most of its outcomes are the button declining to act. These two pin both sides of
+  // that line against the same harness, so the "no row" is measured next to a row that does appear.
+  test("a re-engage that reached the customer records itself", async () => {
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM audit_logs WHERE tenant_id = ${tenantId}`,
+    );
+    const id = await seedConversation(940);
+    const sent: Array<[number, string]> = [];
+    const res = await reengageConversation(
+      ctx(),
+      id,
+      {
+        makeModel: fakeModel,
+        makeClient: makeStub({
+          page: page([{ id: 1, content: "oi, alguém aí?" }]),
+          sent,
+        }),
+        checkpointer: new MemorySaver(),
+      },
+      appDb,
+    );
+    expect(res.outcome).toBe("posted");
+    const rows = await suDb.auditLog.findMany({ where: { tenantId } });
+    expect(rows.length).toBe(1);
+    expect(rows[0]?.action).toBe("conversation.reengage");
+    expect(rows[0]?.target).toBe(`conversation:${id}`);
+    expect(rows[0]?.after).toEqual({ outcome: "posted" });
+  });
+
+  // The negative half has to be an outcome that REACHES the recording, which a closed gate does not:
+  // it returns before the turn, so a version that recorded unconditionally would still leave no row
+  // there and the assertion would prove nothing. `superseded` is a turn that ran, chose a burst,
+  // and handed it to a newer delivery instead of posting: nothing reached the customer.
+  test("a re-engage the customer never saw records nothing", async () => {
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM audit_logs WHERE tenant_id = ${tenantId}`,
+    );
+    const id = await seedConversation(941, { lastHandledMessageId: 289 });
+    const sent: Array<[number, string]> = [];
+    const thread = page([
+      { id: 290, content: "alguém aí?", type: 0 },
+      { id: 291, content: "?", type: 0 },
+    ]);
+    let fetches = 0;
+    const client = {
+      getMessages: async () => {
+        fetches += 1;
+        // The post gate's supersede re-fetch: the model has run and the claim is one step away when
+        // another delivery consumes the burst.
+        if (fetches === 3) {
+          await suDb.conversation.update({
+            where: { id },
+            data: { lastHandledMessageId: 295 },
+          });
+        }
+        return thread;
+      },
+      sendMessage: async (conversationId: number, content: string) => {
+        sent.push([conversationId, content]);
+        return {};
+      },
+      toggleTyping: async () => ({}),
+    } as unknown as ChatwootClient;
+    const res = await reengageConversation(
+      ctx(),
+      id,
+      {
+        makeModel: fakeModel,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+      },
+      appDb,
+    );
+    expect(res.outcome).toBe("superseded");
+    expect(sent).toEqual([]);
+    expect(await suDb.auditLog.findMany({ where: { tenantId } })).toEqual([]);
   });
 
   // NOTE: Our bot is 9 (beforeAll); 77 is another AgentBot on the same Chatwoot account. The

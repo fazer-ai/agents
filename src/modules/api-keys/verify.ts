@@ -10,6 +10,11 @@ import { asSuperAdminOn } from "@/lib/tenancy";
 // known, so the hash lookup runs as super admin (the key row carries its own tenantId; RLS still
 // fences every downstream tenant query). `role` is fixed on the key (NOT re-derived from the
 // creator's current role); revocation is the soft `revokedAt`. Never log the plaintext.
+//
+// A FLEET key carries no tenant (`tenantId` null) and SUPER_ADMIN: the principal it resolves to is
+// the one a SUPER_ADMIN session is, so the request boundary selects a tenant per request the same
+// way (`X-Tenant-Id`, or the MCP `tenant` argument). The row shape is held by a CHECK in the
+// database, so the two fields cannot disagree by the time they are read here. Issue #308.
 
 export const API_KEY_PREFIX = "fazerai_";
 // Compatibility window for the brand rename: keys minted before it carry `secv4_`. The stored hash
@@ -50,8 +55,12 @@ export interface ApiKeyPrincipal {
   apiKeyId: bigint;
   // The creator's user id, used as the principal's userId for audit attribution.
   userId: bigint;
-  tenantId: bigint;
+  // null for a fleet key (role SUPER_ADMIN), the way a SUPER_ADMIN user has no tenant.
+  tenantId: bigint | null;
   role: UserRole;
+  // When the minter answered the password step-up; null for a key that predates the rule, which
+  // answers the step-up with its creator's password instead (review round 3 on #308).
+  stepUpAt: Date | null;
 }
 
 // Resolves a Bearer API key to its principal, or null (caller maps null → 401). Never throws on a
@@ -70,6 +79,7 @@ export async function verifyApiKey(
         tenantId: true,
         role: true,
         createdByUserId: true,
+        stepUpAt: true,
         revokedAt: true,
         lastUsedAt: true,
       },
@@ -78,16 +88,20 @@ export async function verifyApiKey(
     // one is malformed). createdByUserId becomes the principal's userId for audit attribution.
     if (!k || k.revokedAt || k.createdByUserId === null) return null;
     // Reject keys whose tenant no longer exists (deleted tenant → 401, not a silent empty result).
-    const tenant = await db.tenant.findUnique({
-      where: { id: k.tenantId },
-      select: { id: true },
-    });
-    if (!tenant) return null;
+    // A fleet key has no tenant to outlive.
+    if (k.tenantId !== null) {
+      const tenant = await db.tenant.findUnique({
+        where: { id: k.tenantId },
+        select: { id: true },
+      });
+      if (!tenant) return null;
+    }
     return {
       id: k.id,
       tenantId: k.tenantId,
       role: k.role,
       createdByUserId: k.createdByUserId,
+      stepUpAt: k.stepUpAt,
       lastUsedAt: k.lastUsedAt,
     };
   });
@@ -113,5 +127,6 @@ export async function verifyApiKey(
     userId: resolved.createdByUserId,
     tenantId: resolved.tenantId,
     role: resolved.role,
+    stepUpAt: resolved.stepUpAt,
   };
 }

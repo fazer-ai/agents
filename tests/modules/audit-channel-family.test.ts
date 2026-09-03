@@ -219,6 +219,61 @@ function afterStamp(
   return wrap(client);
 }
 
+// A hook that fires right after `connectAccount` looks the account up and BEFORE it decides what to
+// write, which is the one window `removeChatwootInstance` fits in: that function locks the INSTANCE
+// row while this path holds the DEPLOYMENT, so nothing serialises the two. The hook writes from the
+// SUPERUSER client on purpose — it is standing in for a concurrent request on another connection,
+// and forwarding it into this transaction would be the opposite of the race being staged.
+function afterAccountLookup(
+  client: PrismaClient,
+  hook: () => Promise<void>,
+): PrismaClient {
+  let fired = false;
+  // biome-ignore lint/suspicious/noExplicitAny: proxying Prisma's client surface
+  const wrap = (target: any): any =>
+    new Proxy(target, {
+      get(t, prop, recv) {
+        if (prop === "$extends") {
+          return (...a: unknown[]) => wrap(t.$extends(...a));
+        }
+        if (prop === "$transaction") {
+          return (fn: (tx: unknown) => unknown, ...rest: unknown[]) =>
+            t.$transaction((tx: unknown) => fn(wrap(tx)), ...rest);
+        }
+        if (prop !== "chatwootInstance") return Reflect.get(t, prop, recv);
+        const delegate = Reflect.get(t, prop, recv);
+        return new Proxy(delegate, {
+          get(d, k, r) {
+            const inner = Reflect.get(d, k, r);
+            if (k !== "findFirst") return inner;
+            return async (args: {
+              where?: { accountId?: number; serverKey?: string };
+            }) => {
+              const res = await (
+                inner as (a: unknown) => Promise<unknown>
+              ).call(d, args);
+              // Only the lookup that DECIDES the connect. `assertAccountNotTakenByAnotherTenant`
+              // runs first and also asks by `accountId`, from OUTSIDE the transaction: firing there
+              // deletes the row before the decision is even reached, the create path runs on its
+              // own, and the test passes with the fix removed. The two are told apart by the
+              // cross-tenant check carrying `serverKey`, which the connect lookup does not.
+              if (
+                !fired &&
+                args?.where?.accountId !== undefined &&
+                args?.where?.serverKey === undefined
+              ) {
+                fired = true;
+                await hook();
+              }
+              return res;
+            };
+          },
+        });
+      },
+    });
+  return wrap(client);
+}
+
 // A client whose audit INSERT throws for ONE action, so the summary fails while the per-account
 // writes it summarises are already committed. Forwards to the REAL delegate of the transaction it is
 // handed, never to a client from out here: under RLS an out-of-scope statement matches zero rows and
@@ -1245,6 +1300,129 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
     expect(await rows()).toEqual([]);
   });
 
+  // The reconcile that moves nothing does not WRITE either, which is a stronger claim than the row
+  // count above and the one that closes the race the review found: the comparison used to be a
+  // `findUnique` before the upsert, and a webhook's `upsertInbox` (`mirror.ts` takes no lock on this
+  // account) commits between the two, so the pre-read matched, the upsert overwrote the webhook's
+  // value, and `updated` stayed zero, a change with no row. With the condition on the conflict arm
+  // there is no window at all, and a row nothing touched keeps the stamp it had.
+  test("a reconcile that moves nothing does not touch the row it read", async () => {
+    await clearAudit();
+    const inst = await suDb.chatwootInstance.findFirstOrThrow({
+      where: { tenantId, accountId: 1 },
+      select: { id: true },
+    });
+    const stored = await suDb.inbox.findFirstOrThrow({
+      where: { chatwootInstanceId: inst.id, chatwootInboxId: 77 },
+      select: { id: true },
+    });
+    // A stamp no clock could produce, so "unchanged" cannot pass by two writes landing in the same
+    // millisecond.
+    const frozen = new Date("2020-03-04T05:06:07.000Z");
+    await suDb.$executeRaw`UPDATE inboxes SET updated_at = ${frozen} WHERE id = ${stored.id}`;
+    const res = await syncInboxes(
+      ctx(),
+      inst.id,
+      {
+        makeClient: stubClient({ listInboxes: async () => remoteInbox() })
+          .makeClient,
+      },
+      appDb,
+    );
+    expect(res).toEqual({ total: 1, created: 0, updated: 0 });
+    const after = await suDb.inbox.findUniqueOrThrow({
+      where: { id: stored.id },
+      select: { updatedAt: true },
+    });
+    expect(after.updatedAt).toEqual(frozen);
+    expect(await rows()).toEqual([]);
+  });
+
+  // The NULL arm of that comparison, which is not decoration. A provider only APPEARS on an inbox
+  // once a sync reads it off Chatwoot, so null -> value is the ordinary first sync of a WhatsApp
+  // inbox. Written as `<>` the whole OR chain evaluates to NULL for that row, which is not TRUE, so
+  // the conflict arm skips it: the provider never lands, the reconcile reports nothing moved, and
+  // the 24h service-window gate downstream keeps reading a null it should not have.
+  test("a provider that appears for the first time is a change, not a null comparison", async () => {
+    await clearAudit();
+    const inst = await suDb.chatwootInstance.findFirstOrThrow({
+      where: { tenantId, accountId: 1 },
+      select: { id: true },
+    });
+    const before = await suDb.inbox.findFirstOrThrow({
+      where: { chatwootInstanceId: inst.id, chatwootInboxId: 77 },
+      select: { id: true, provider: true },
+    });
+    expect(before.provider).toBeNull();
+    const res = await syncInboxes(
+      ctx(),
+      inst.id,
+      {
+        makeClient: stubClient({
+          listInboxes: async () => remoteInbox({ provider: "baileys" }),
+        }).makeClient,
+      },
+      appDb,
+    );
+    expect(res).toEqual({ total: 1, created: 0, updated: 1 });
+    const after = await suDb.inbox.findUniqueOrThrow({
+      where: { id: before.id },
+      select: { provider: true },
+    });
+    expect(after.provider).toBe("baileys");
+    expect((await rows("instance.sync_inboxes")).length).toBe(1);
+    // Put it back, so the tests after this one still read the fixture they were written against.
+    await suDb.inbox.update({
+      where: { id: before.id },
+      data: { provider: null },
+    });
+  });
+
+  // The other half of the same review round. `connectAccount` reads the account, then writes it
+  // conditionally, and a zero from that write has TWO causes: another request already reconnected it
+  // (idempotent success) or the row was DELETED under it. Reading zero as the first answered the
+  // operator with the id of a row that no longer exists, and `setConnectedAccounts` then synced
+  // inboxes for it and reported the account connected.
+  test("a reconnect whose row is deleted under it connects the account, instead of naming a row that is gone", async () => {
+    const dep = await suDb.chatwootDeployment.findFirstOrThrow({
+      where: { tenantId },
+      select: { id: true, baseUrl: true },
+    });
+    const doomed = await suDb.chatwootInstance.create({
+      data: {
+        tenantId,
+        deploymentId: dep.id,
+        accountId: 7311,
+        serverKey: normalizeChatwootBaseUrl(dep.baseUrl),
+        accountName: "Race",
+        disconnectedAt: new Date(),
+      },
+      select: { id: true },
+    });
+    await clearAudit();
+    const staged = afterAccountLookup(appDb, async () => {
+      await suDb.chatwootInstance.delete({ where: { id: doomed.id } });
+    });
+    await setConnectedAccounts(
+      ctx(),
+      [7311],
+      { fetchProfile, makeClient: stubClient().makeClient },
+      staged,
+    );
+    const live = await suDb.chatwootInstance.findMany({
+      where: { tenantId, accountId: 7311 },
+      select: { id: true, disconnectedAt: true },
+    });
+    expect(live).toHaveLength(1);
+    expect(live[0]?.disconnectedAt).toBeNull();
+    expect(live[0]?.id).not.toEqual(doomed.id);
+    const connects = await rows("instance.connect");
+    expect(connects.map((r) => r.target)).toEqual([
+      `chatwoot_instance:${live[0]?.id}`,
+    ]);
+    await suDb.chatwootInstance.deleteMany({ where: { accountId: 7311 } });
+  });
+
   test("a reconcile that finds an inbox renamed upstream records it as a change", async () => {
     await clearAudit();
     const inst = await suDb.chatwootInstance.findFirstOrThrow({
@@ -1385,6 +1563,26 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
     // The fence is worthless if it matched nothing, which is how a refactor that renames the lock
     // turns it green forever.
     expect(checked).toBeGreaterThanOrEqual(3);
+  });
+
+  // A source fence, for the same reason the lock-order one exists: the window it closes is between
+  // two statements, so no green test can report its return. What it measures is that the reconcile
+  // decides inside the write (the guard on the conflict arm) and that it does not read the row
+  // first, which is the shape that had the window.
+  test("the reconcile compares inside the write, and reads no row before it", async () => {
+    const src = await Bun.file(
+      new URL("../../src/modules/chatwoot/management.ts", import.meta.url),
+    ).text();
+    const body =
+      src
+        .split(/\n(?=(?:export )?async function )/)
+        .find((b) => /async function syncInboxes/.test(b)) ?? "";
+    expect(body).not.toBe("");
+    const code = body.replace(/^\s*\/\/.*$/gm, "");
+    expect(code).toContain("ON CONFLICT");
+    expect(code).toContain("IS DISTINCT FROM");
+    expect(code).not.toContain("db.inbox.findUnique");
+    expect(code).not.toContain("db.inbox.upsert");
   });
 
   // The fence, over every row the file wrote. `docs/mcp.md` names the deployment admin token as one

@@ -552,8 +552,23 @@ async function connectAccount(
           target: `chatwoot_instance:${existing.id}`,
           after: { id: String(existing.id), accountId, accountName },
         });
+        return { id: existing.id, reconnected: true, changed: true };
       }
-      return { id: existing.id, reconnected: count > 0, changed: count > 0 };
+      // NOTE: Zero has TWO causes and only one of them is success. Either the row is still there and
+      // already connected (another request won the race above, and reporting no change is right), or
+      // `removeChatwootInstance` deleted it between the read and this write: it locks the INSTANCE
+      // row while this transaction holds the DEPLOYMENT, so nothing serialises the two. Reading zero
+      // as the first cause would answer the operator with the id of a row that no longer exists, and
+      // `setConnectedAccounts` would then sync inboxes for it and report the account connected. Ask
+      // again before deciding: still there means idempotent success, gone means this account is not
+      // connected and the create below is what the caller asked for.
+      const stillThere = await db.chatwootInstance.findUnique({
+        where: { id: existing.id },
+        select: { id: true },
+      });
+      if (stillThere) {
+        return { id: existing.id, reconnected: false, changed: false };
+      }
     }
     try {
       const row = await db.chatwootInstance.create({
@@ -2193,51 +2208,36 @@ export async function syncInboxes(
     let created = 0;
     let updated = 0;
     for (const inbox of remote) {
-      const existing = await db.inbox.findUnique({
-        where: {
-          tenantId_chatwootInstanceId_chatwootInboxId: {
-            tenantId,
-            chatwootInstanceId: instanceId,
-            chatwootInboxId: inbox.chatwootInboxId,
-          },
-        },
-        select: { name: true, channelType: true, provider: true },
-      });
-      // Atomic INSERT … ON CONFLICT: concurrent syncs (the load-time auto-sync and the manual
-      // button) can race on the unique key, and a failed create inside this scoped $transaction
-      // would poison every later statement (P2002 aborts the whole tx — a catch-and-update here
-      // can never run). The pre-read only feeds the created/updated counters, so the worst a race
-      // can do is report a created row that a concurrent sync actually created first.
-      await db.inbox.upsert({
-        where: {
-          tenantId_chatwootInstanceId_chatwootInboxId: {
-            tenantId,
-            chatwootInstanceId: instanceId,
-            chatwootInboxId: inbox.chatwootInboxId,
-          },
-        },
-        create: {
-          tenantId,
-          chatwootInstanceId: instanceId,
-          chatwootInboxId: inbox.chatwootInboxId,
-          name: inbox.name,
-          channelType: inbox.channelType,
-          provider: inbox.provider,
-        },
-        update: {
-          name: inbox.name,
-          channelType: inbox.channelType,
-          provider: inbox.provider,
-        },
-      });
-      if (!existing) created++;
-      else if (
-        existing.name !== inbox.name ||
-        existing.channelType !== inbox.channelType ||
-        existing.provider !== inbox.provider
-      ) {
-        updated++;
-      }
+      // NOTE: The comparison lives INSIDE the write, not in a read before it. It used to be a
+      // `findUnique` followed by an upsert, and between those two statements a webhook's
+      // `upsertInbox` (`mirror.ts`, which takes no lock on this account) can commit a rename: the
+      // pre-read matched the snapshot, the upsert then overwrote the webhook's value, and `updated`
+      // stayed zero, a change with no row, against the one invariant this family is built on. With
+      // the condition on the conflict arm the write itself decides, so nothing can move under it.
+      //
+      // Raw rather than `db.inbox.upsert` for two reasons that both need the statement to be one:
+      // a create-then-catch cannot work here at all (a P2002 aborts the whole scoped transaction, so
+      // the catch's UPDATE can never run), and Prisma's upsert has no way to say "update only if it
+      // differs". `xmax = 0` separates a row that was INSERTED from one that was UPDATED; a conflict
+      // whose values already match returns NO row, which is the reconcile that moved nothing.
+      const [touched] = await db.$queryRaw<{ inserted: boolean }[]>`
+        INSERT INTO inboxes
+          (tenant_id, chatwoot_instance_id, chatwoot_inbox_id, name, channel_type, provider,
+           created_at, updated_at)
+        VALUES (${tenantId}::bigint, ${instanceId}::bigint, ${inbox.chatwootInboxId}::int,
+                ${inbox.name}::text, ${inbox.channelType}::text, ${inbox.provider}::text,
+                now(), now())
+        ON CONFLICT (tenant_id, chatwoot_instance_id, chatwoot_inbox_id) DO UPDATE
+           SET name = EXCLUDED.name,
+               channel_type = EXCLUDED.channel_type,
+               provider = EXCLUDED.provider,
+               updated_at = now()
+         WHERE inboxes.name IS DISTINCT FROM EXCLUDED.name
+            OR inboxes.channel_type IS DISTINCT FROM EXCLUDED.channel_type
+            OR inboxes.provider IS DISTINCT FROM EXCLUDED.provider
+        RETURNING (xmax = 0) AS inserted`;
+      if (touched?.inserted) created++;
+      else if (touched) updated++;
     }
     const result = { total: remote.length, created, updated };
     // NOTE: `updated` counts the inboxes this sync CHANGED, not the ones that already existed. It

@@ -59,7 +59,7 @@ moves the failure from **availability to staleness**, which is a failure the row
   is the instant the current failure streak began, which is what the console's "failing since"
   means. Both writes run under the row's advisory lock: a save re-arms the job, which resets a
   claimed row to pending, so two polls of one tenant can overlap, and two read-then-writes that
-  each saw the previous figure would let the lower answer land last. The poll also re-reads the tenant's credential under that same lock before writing, and drops its answer (`superseded`) when the credential is no longer the one it asked with: a poll asked under the old credential landing after the new project's would otherwise read that row as a switch and carry the combined figure on top of its own.
+  each saw the previous figure would let the lower answer land last. A failure whose poll began before the row's last success writes nothing: the older of two overlapping polls finishing last would otherwise put its failure, or its not-configured sentinel, over the figure the newer one had just refreshed. The poll also re-reads the tenant's credential under that same lock before writing, and drops its answer (`superseded`) when the credential is no longer the one it asked with: a poll asked under the old credential landing after the new project's would otherwise read that row as a switch and carry the combined figure on top of its own.
 - **The figure follows the month, not the project.** A tenant that points its Langfuse at another
   project mid-month starts a new series there, and the floor above would sit on the old project's
   last figure while the new one climbed from zero underneath it: $40 there plus $20 here would be a

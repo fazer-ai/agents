@@ -650,6 +650,41 @@ describe.skipIf(!dbUp)("the spend ceiling poll", () => {
     expect((await snapshot(tenantA, "inbox"))?.unpricedModels).toEqual([]);
   });
 
+  // A FAILURE OLDER THAN THE ROW'S LAST SUCCESS IS DROPPED (review round 11). Two polls can
+  // overlap, and the older one finishing last would write its failure, or its not-configured
+  // sentinel, over a figure the newer one had just refreshed; on the sentinel the gate would open
+  // until the next period. The poll's own instant decides: older than `polledAt`, it is history.
+  test("a failure that began before the row's last success writes nothing", async () => {
+    await pollTenantSpend(tenantA, {
+      base: appDb,
+      fetchFn: langfuseStub(rows(3, 3)).fetchFn,
+      now: at(2),
+    });
+    const down = langfuseStub({ [INBOX_ENV]: 500, [PLAY_ENV]: 500 });
+    expect(
+      (
+        await pollTenantSpend(tenantA, {
+          base: appDb,
+          fetchFn: down.fetchFn,
+          now: at(1),
+        })
+      ).status,
+    ).toBe("failed");
+    const row = await snapshot(tenantA, "inbox");
+    expect(row?.pollError).toBeNull();
+    expect(row?.pollFailedAt).toBeNull();
+    expect(row?.polledAt?.toISOString()).toBe(at(2).toISOString());
+    // A failure that began after it is the row's present, and is recorded.
+    await pollTenantSpend(tenantA, {
+      base: appDb,
+      fetchFn: down.fetchFn,
+      now: at(3),
+    });
+    expect(
+      (await snapshot(tenantA, "inbox"))?.pollFailedAt?.toISOString(),
+    ).toBe(at(3).toISOString());
+  });
+
   // THE INSTANT A FAILURE STREAK BEGAN (review round 5). The console says "failing since", so the
   // row has to keep the first failure of the streak, not the latest attempt; a success clears it,
   // and the next failure starts a new one.

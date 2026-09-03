@@ -361,8 +361,13 @@ async function writeFailure(
     async () => {
       const prev = await db.spendCostSnapshot.findUnique({
         where: key,
-        select: { pollFailedAt: true },
+        select: { pollFailedAt: true, polledAt: true },
       });
+      // A failure older than the row's last success is not the row's present (review round 11):
+      // two polls can overlap, and the older one finishing last would otherwise write its
+      // failure, or its not-configured sentinel, over a figure the newer one had just refreshed,
+      // and the gate would open on it until the next period. `at` is the instant the poll began.
+      if (prev?.polledAt && prev.polledAt > at) return;
       const pollFailedAt = prev?.pollFailedAt ?? at;
       await db.spendCostSnapshot.upsert({
         where: key,

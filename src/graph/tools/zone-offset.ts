@@ -6,6 +6,9 @@ export function zoneFormatter(timezone: string): Intl.DateTimeFormat {
   return new Intl.DateTimeFormat("en-US", {
     timeZone: timezone,
     hourCycle: "h23",
+    // The era too: a year before 1 CE comes back as a year OF ITS ERA (astronomical −1 is "2 BC"),
+    // and without the era the wall clock was rebuilt in 2 CE, an offset of years (round 21).
+    era: "short",
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -43,8 +46,11 @@ export function wallClock(
   const parts = fmt.formatToParts(new Date(instantMs));
   const get = (type: Intl.DateTimeFormatPartTypes) =>
     Number(parts.find((p) => p.type === type)?.value ?? "0");
+  // Folded back into the astronomical count JavaScript's Date uses: 1 BC is year 0, 2 BC is −1.
+  const era = parts.find((p) => p.type === "era")?.value ?? "";
+  const yearOfEra = get("year");
   return {
-    year: get("year"),
+    year: /^B/i.test(era) ? 1 - yearOfEra : yearOfEra,
     month: get("month"),
     day: get("day"),
     hour: get("hour"),

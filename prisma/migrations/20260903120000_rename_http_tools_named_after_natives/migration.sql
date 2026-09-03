@@ -7,9 +7,14 @@
 -- it: the console submits `normalizeToolName(label)` as the name on every save (the label is its
 -- single source of truth), so a moved row whose label still derived the reserved name could never
 -- be saved again from there (round 20). "Run code" becomes "Run code 3" for `run_code_3`; a label
--- that never derived the name is the operator's own and does not move. The derivation below is
--- the console's without its NFD step (no unaccent here): a label that reaches a native name only
--- by shedding diacritics keeps its label, and the console will then rename the row on its next save.
+-- that never derived the name is the operator's own and does not move. The derivation is the
+-- console's `normalizeToolName`, step for step: its NFD-and-strip-diacritics step is a translate
+-- table generated from Unicode (every letter of Latin-1 Supplement, Latin Extended-A/B and Latin
+-- Extended Additional whose canonical decomposition is an ASCII letter plus combining marks, both
+-- cases, mapped to the lowercase letter; the combining marks U+0300–U+036F deleted, for a label
+-- already spelled decomposed), then the ASCII case fold, the non-name characters to "_", the
+-- collapse, the trim, the cap at 64, "tool" for nothing left. A temporary function, so the test
+-- can ask it the console's answer on every character of the table (round 21).
 --
 -- What the rename cannot follow is a PROMPT that names the tool: after this, "chame run_code" reaches
 -- the native, or a name no tool answers to. So the move is written to the audit trail under the
@@ -25,6 +30,23 @@
 -- zero rows and report success — and so would the SELECT over "agents" that decides which audit
 -- lines to write (round 19: the rename landed, the lines did not). Lifted on the three tables for
 -- the file and put back (.claude/rules/prisma.md).
+CREATE OR REPLACE FUNCTION pg_temp.console_tool_name(label text) RETURNS text
+LANGUAGE sql IMMUTABLE AS $fn$
+  SELECT coalesce(
+    nullif(
+      left(
+        regexp_replace(
+          regexp_replace(
+            regexp_replace(
+              lower(translate(label, 'ÀÁÂÃÄÅÇÈÉÊËÌÍÎÏÑÒÓÔÕÖÙÚÛÜÝàáâãäåçèéêëìíîïñòóôõöùúûüýÿĀāĂăĄąĆćĈĉĊċČčĎďĒēĔĕĖėĘęĚěĜĝĞğĠġĢģĤĥĨĩĪīĬĭĮįİĴĵĶķĹĺĻļĽľŃńŅņŇňŌōŎŏŐőŔŕŖŗŘřŚśŜŝŞşŠšŢţŤťŨũŪūŬŭŮůŰűŲųŴŵŶŷŸŹźŻżŽžƠơƯưǍǎǏǐǑǒǓǔǕǖǗǘǙǚǛǜǞǟǠǡǦǧǨǩǪǫǬǭǰǴǵǸǹǺǻȀȁȂȃȄȅȆȇȈȉȊȋȌȍȎȏȐȑȒȓȔȕȖȗȘșȚțȞȟȦȧȨȩȪȫȬȭȮȯȰȱȲȳḀḁḂḃḄḅḆḇḈḉḊḋḌḍḎḏḐḑḒḓḔḕḖḗḘḙḚḛḜḝḞḟḠḡḢḣḤḥḦḧḨḩḪḫḬḭḮḯḰḱḲḳḴḵḶḷḸḹḺḻḼḽḾḿṀṁṂṃṄṅṆṇṈṉṊṋṌṍṎṏṐṑṒṓṔṕṖṗṘṙṚṛṜṝṞṟṠṡṢṣṤṥṦṧṨṩṪṫṬṭṮṯṰṱṲṳṴṵṶṷṸṹṺṻṼṽṾṿẀẁẂẃẄẅẆẇẈẉẊẋẌẍẎẏẐẑẒẓẔẕẖẗẘẙẠạẢảẤấẦầẨẩẪẫẬậẮắẰằẲẳẴẵẶặẸẹẺẻẼẽẾếỀềỂểỄễỆệỈỉỊịỌọỎỏỐốỒồỔổỖỗỘộỚớỜờỞởỠỡỢợỤụỦủỨứỪừỬửỮữỰựỲỳỴỵỶỷỸỹ̴̵̶̷̸̡̢̧̨̛̖̗̘̙̜̝̞̟̠̣̤̥̦̩̪̫̬̭̮̯̰̱̲̳̹̺̻̼͇͈͉͍͎̀́̂̃̄̅̆̇̈̉̊̋̌̍̎̏̐̑̒̓̔̽̾̿̀́͂̓̈́͆͊͋͌̕̚ͅ͏͓͔͕͖͙͚͐͑͒͗͛ͣͤͥͦͧͨͩͪͫͬͭͮͯ͘͜͟͢͝͞͠͡', 'aaaaaaceeeeiiiinooooouuuuyaaaaaaceeeeiiiinooooouuuuyyaaaaaaccccccccddeeeeeeeeeegggggggghhiiiiiiiiijjkkllllllnnnnnnoooooorrrrrrssssssssttttuuuuuuuuuuuuwwyyyzzzzzzoouuaaiioouuuuuuuuuuaaaaggkkoooojggnnaaaaaaeeeeiiiioooorrrruuuusstthhaaeeooooooooyyaabbbbbbccddddddddddeeeeeeeeeeffgghhhhhhhhhhiiiikkkkkkllllllllmmmmmmnnnnnnnnoooooooopppprrrrrrrrssssssssssttttttttuuuuuuuuuuvvvvwwwwwwwwwwxxxxyyzzzzzzhtwyaaaaaaaaaaaaaaaaaaaaaaaaeeeeeeeeeeeeeeeeiiiioooooooooooooooooooooooouuuuuuuuuuuuuuyyyyyyyy')),
+              '[^a-z0-9_-]', '_', 'g'),
+            '_+', '_', 'g'),
+          '^_+|_+$', '', 'g'),
+        64),
+      ''),
+    'tool')
+$fn$;
+
 ALTER TABLE "tool_definitions" NO FORCE ROW LEVEL SECURITY;
 ALTER TABLE "audit_logs" NO FORCE ROW LEVEL SECURITY;
 ALTER TABLE "agents" NO FORCE ROW LEVEL SECURITY;
@@ -56,8 +78,7 @@ BEGIN
       n := n + 1;
     END LOOP;
     new_label := CASE
-      WHEN regexp_replace(regexp_replace(regexp_replace(lower(r.label), '[^a-z0-9_-]', '_', 'g'), '_+', '_', 'g'), '^_+|_+$', '', 'g') = r.name
-        THEN r.label || ' ' || n
+      WHEN pg_temp.console_tool_name(r.label) = r.name THEN r.label || ' ' || n
       ELSE r.label
     END;
     UPDATE "tool_definitions" SET name = candidate, label = new_label, updated_at = NOW() WHERE id = r.id;

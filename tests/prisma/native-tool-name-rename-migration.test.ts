@@ -108,6 +108,9 @@ describe.skipIf(!dbUp)(
       // there), so the label decides whether the row can be saved again: "Run code" derives the
       // reserved name and must follow; a label that never derived it is left alone.
       ids.a_run_code = await tool(a, "run_code", "Run code");
+      // A label that reaches the reserved name only by shedding a diacritic (round 21): the console\'s
+      // NFD step, which the file reproduces with a translate table generated from Unicode.
+      ids.a_calc = await tool(a, "calculator", "Calculátor");
       ids.a_run_code_2 = await tool(a, "run_code_2");
       ids.a_handoff = await tool(a, "handoff_to_human");
       ids.a_lookup = await tool(a, "lookup_order");
@@ -165,11 +168,82 @@ describe.skipIf(!dbUp)(
         label: "handoff_to_human 2",
       });
       expect(normalizeToolName(h.label)).toBe(h.name);
+      const c = await rowOf(ids.a_calc as bigint);
+      expect(c).toEqual({ name: "calculator_2", label: "Calculátor 2" });
+      expect(normalizeToolName(c.label)).toBe(c.name);
       // A label that never derived the name is the operator's own; it does not move.
       expect(await rowOf(ids.b_run_code as bigint)).toEqual({
         name: "run_code_2",
         label: "Validador",
       });
+    });
+
+    // The file's derivation IS the console's, asked on every character its translate table names
+
+    // (read off the file, so the two cannot drift), on their decomposed spellings, and on words the
+
+    // two would answer differently if the table, the case fold, the collapse or the cap were off.
+
+    test("the file derives a name from a label exactly as the console does", async () => {
+      const table = /translate\(label, '([^']+)', '([^']*)'\)/.exec(sql);
+
+      if (!table)
+        throw new Error("the migration no longer carries a translate table");
+
+      const named = [...(table[1] as string)];
+
+      expect(named.length).toBeGreaterThan(400);
+
+      const corpus = [
+        ...named,
+
+        ...named.map((ch) => ch.normalize("NFD")),
+
+        "Calculátor",
+
+        "Executar código",
+
+        "Run code 2",
+
+        "Ação!",
+
+        "ØL",
+
+        "łódź",
+
+        "Straße",
+
+        "",
+
+        "É",
+
+        "__x__",
+        "a  b",
+
+        "a".repeat(70),
+
+        "e\u0301",
+
+        "Ελληνικά",
+      ];
+
+      const r = await suDb.query(
+        "SELECT x, pg_temp.console_tool_name(x) AS n FROM unnest($1::text[]) AS t(x)",
+
+        [corpus],
+      );
+
+      const bySql = new Map<string, string>(
+        r.rows.map((row: { x: string; n: string }) => [row.x, row.n]),
+      );
+
+      const diff = corpus
+
+        .filter((x) => bySql.get(x) !== normalizeToolName(x))
+
+        .map((x) => [x, bySql.get(x), normalizeToolName(x)]);
+
+      expect(diff).toEqual([]);
     });
 
     test("leaves every other row alone, the one already carrying the suffix included", async () => {
@@ -207,6 +281,13 @@ describe.skipIf(!dbUp)(
           {
             actor_type: "system",
             action: "tool.renamed_by_upgrade",
+            target: `tool:${ids.a_calc}`,
+            before: { name: "calculator", label: "Calculátor" },
+            after: { name: "calculator_2", label: "Calculátor 2" },
+          },
+          {
+            actor_type: "system",
+            action: "tool.renamed_by_upgrade",
             target: `tool:${ids.a_handoff}`,
             before: { name: "handoff_to_human", label: "handoff_to_human" },
             after: { name: "handoff_to_human_2", label: "handoff_to_human 2" },
@@ -224,7 +305,7 @@ describe.skipIf(!dbUp)(
           after: { tool: "run_code", renamed: "run_code_3" },
         },
       ]);
-      expect(inA).toHaveLength(3);
+      expect(inA).toHaveLength(4);
       expect((await auditOf(b)).map((r) => [r.action, r.target])).toEqual([
         ["tool.renamed_by_upgrade", `tool:${ids.b_run_code}`],
       ]);

@@ -10,6 +10,7 @@ import {
   type SandboxOutcome,
   SandboxQueue,
 } from "@/graph/tools/code-sandbox";
+import { zoneFormatter, zoneOffsetSeconds } from "@/graph/tools/zone-offset";
 import { replaceLoneSurrogates } from "@/lib/text";
 
 // The snippet the issue is about, as a model writes it: normalise, weigh, `%11%10`, and END with
@@ -925,6 +926,38 @@ describe("runSandboxedCode", () => {
     const text = JSON.stringify(out);
     expect(text.includes("\u0000")).toBe(false);
     expect(replaceLoneSurrogates(text)).toBe(text);
+  });
+
+  // Round 21: Intl reports a year BEFORE 1 CE as a year of its era (astronomical −1 is "2 BC"),
+  // and the formatter neither asked for the era nor read it, so the wall clock was rebuilt in 2 CE
+  // and the offset came out as years — even in UTC. The era is read and folded back into the
+  // astronomical year JavaScript's Date counts in; year 0 is 1 BC.
+  test("a date before 1 CE is in the zone too, era folded into the astronomical year", async () => {
+    const out = await runSandboxedCode(
+      `const d = new Date("-000001-01-01T12:00:00Z"); const z = new Date("0000-06-15T12:00:00Z");
+       [d.getFullYear(), d.getHours(), d.getMinutes(), d.getSeconds(), z.getFullYear(), z.getMonth(),
+        new Date(-1, 0, 1, 21, 18, 59).toISOString()]`,
+      { clock: { timezone: "Asia/Tokyo" } },
+    );
+    // Tokyo's local mean time, +09:18:59, is what Intl answers for that year.
+    expect(out).toMatchObject({
+      kind: "value",
+      value: JSON.stringify([
+        -1,
+        21,
+        18,
+        59,
+        0,
+        5,
+        "-000001-01-01T12:00:00.000Z",
+      ]),
+    });
+    expect(
+      zoneOffsetSeconds(zoneFormatter("UTC"), Date.UTC(-1, 0, 1, 12)),
+    ).toBe(0);
+    expect(localIsoNow("UTC", new Date("-000001-01-01T12:00:00Z"))).toBe(
+      "-000001-01-01T12:00:00.000+00:00",
+    );
   });
 
   test("a thread that cannot boot is the sandbox's failure, reported as such", async () => {

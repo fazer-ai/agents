@@ -139,7 +139,12 @@ export function localIsoNow(timezone: string, now: Date = new Date()): string {
   // NOTE: With the milliseconds: without them, `new Date(NOW_LOCAL)` was up to 999 ms before the
   // instant it was written from, and the description promises the instant (PR #485, round 11).
   const ms = now.getTime() - Math.floor(now.getTime() / 1000) * 1000;
-  const wall = `${pad(w.year, 4)}-${pad(w.month)}-${pad(w.day)}T${pad(w.hour)}:${pad(w.minute)}:${pad(w.second)}.${pad(ms, 3)}`;
+  // The expanded year of ISO 8601 outside 0000–9999, the spelling `new Date` reads back (round 21).
+  const year =
+    w.year >= 0 && w.year <= 9999
+      ? pad(w.year, 4)
+      : `${w.year < 0 ? "-" : "+"}${pad(Math.abs(w.year), 6)}`;
+  const wall = `${year}-${pad(w.month)}-${pad(w.day)}T${pad(w.hour)}:${pad(w.minute)}:${pad(w.second)}.${pad(ms, 3)}`;
   const offsetMinutes = zoneOffsetMinutes(fmt, now.getTime());
   const sign = offsetMinutes < 0 ? "-" : "+";
   const abs = Math.abs(offsetMinutes);

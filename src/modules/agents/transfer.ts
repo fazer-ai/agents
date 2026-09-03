@@ -17,6 +17,7 @@ import { z } from "zod";
 import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
+import { isNativeToolName } from "@/graph/tools/catalog";
 import { normalizeExpectedStatuses } from "@/graph/tools/http-status";
 import { parseDbId } from "@/lib/db-id";
 import { AppError, NotFoundError } from "@/lib/errors";
@@ -1146,18 +1147,19 @@ export async function importAgent(
     // Create any bundled components that don't already exist on the target tenant, BEFORE resolving
     // the grants (so buildGrantRows finds them by name). Components of the same name are reused, never
     // overwritten. Credentials are re-linked by name where resolved; otherwise left unset.
+    let renamedHttpTools = new Map<string, string>();
     if (components) {
       const resolveCredName = (
         name: string | null | undefined,
       ): string | null =>
         name && !isVaultIdRef(name) ? (refByName.get(name) ?? null) : null;
-      await createMissingComponents(
+      ({ renamedHttpTools } = await createMissingComponents(
         db,
         tenantId,
         components,
         resolveCredName,
         warnings,
-      );
+      ));
     }
 
     // Grants of a source this build does not know arrive as null (see importedGrantSchema) and are
@@ -1179,6 +1181,7 @@ export async function importAgent(
       created.id,
       knownGrants,
       warnings,
+      renamedHttpTools,
     );
     if (grantRows.length > 0) {
       await db.agentToolSelection.createMany({ data: grantRows });
@@ -1412,6 +1415,20 @@ async function createMissingBusinessHours(
   }
 }
 
+// The first `<base>_N` (N from 2) no tool of this tenant carries — the same rule the migration
+// `rename_http_tools_named_after_natives` applies to rows written before the name was native, so a
+// bundle and a row that collide the same way land on the same name.
+async function freeHttpToolName(db: ScopedDb, base: string): Promise<string> {
+  for (let n = 2; ; n++) {
+    const candidate = `${base}_${n}`;
+    const taken = await db.toolDefinition.findFirst({
+      where: { name: candidate },
+      select: { id: true },
+    });
+    if (!taken) return candidate;
+  }
+}
+
 // Creates the bundled components missing on the target tenant. Existing same-name components are
 // reused — and ONLY a reuse warns (so the operator verifies it matches the source); a fresh creation
 // is silent (correct by construction). Integrations regenerate a fresh routeToken hash + reset inbound
@@ -1424,17 +1441,35 @@ async function createMissingComponents(
   components: ExportedComponents,
   resolveCredName: (name: string | null | undefined) => string | null,
   warnings: ImportWarning[],
-): Promise<void> {
+): Promise<{ renamedHttpTools: Map<string, string> }> {
+  // Bundle name → stored name, for the HTTP tools this loop could not store under their own.
+  const renamedHttpTools = new Map<string, string>();
   for (const tdef of components.httpTools) {
+    // A bundle authored before a native took the name (PR #485, round 15). The assembly reserves
+    // every native name (#457), so a tool stored under one would exist in the console and never
+    // reach the model; the service refuses the name where it is typed, and this path writes past
+    // the service. The migration that renamed such rows in place used the first free `<name>_N`,
+    // and this does the same, warned, so the operator learns the name a prompt may still use.
+    const name = isNativeToolName(tdef.name)
+      ? await freeHttpToolName(db, tdef.name)
+      : tdef.name;
+    if (name !== tdef.name) {
+      renamedHttpTools.set(tdef.name, name);
+      warnings.push({
+        code: "httpToolRenamed",
+        params: { name: tdef.name, renamed: name },
+        target: { kind: "tool", name },
+      });
+    }
     const existing = await db.toolDefinition.findFirst({
-      where: { name: tdef.name },
+      where: { name },
       select: { id: true },
     });
     if (existing) {
       warnings.push({
         code: "httpToolReused",
-        params: { name: tdef.name },
-        target: { kind: "tool", name: tdef.name },
+        params: { name },
+        target: { kind: "tool", name },
       });
       continue;
     }
@@ -1458,8 +1493,8 @@ async function createMissingComponents(
     if (method === null) {
       warnings.push({
         code: "httpToolMethodUnsupported",
-        params: { name: tdef.name, method: String(tdef.method) },
-        target: { kind: "tool", name: tdef.name },
+        params: { name, method: String(tdef.method) },
+        target: { kind: "tool", name },
       });
       continue;
     }
@@ -1480,7 +1515,7 @@ async function createMissingComponents(
       data: [
         {
           tenantId,
-          name: tdef.name,
+          name,
           // label is required now; legacy exports without one fall back to the identifier.
           label: tdef.label ?? tdef.name,
           description: tdef.description ?? null,
@@ -1517,8 +1552,8 @@ async function createMissingComponents(
       // Lost the race. The name is taken now, which is exactly the reuse the pre-check reports.
       warnings.push({
         code: "httpToolReused",
-        params: { name: tdef.name },
-        target: { kind: "tool", name: tdef.name },
+        params: { name },
+        target: { kind: "tool", name },
       });
       continue;
     }
@@ -1527,15 +1562,15 @@ async function createMissingComponents(
     if (badBody) {
       warnings.push({
         code: "httpToolBodyIgnored",
-        params: { name: tdef.name },
-        target: { kind: "tool", name: tdef.name },
+        params: { name },
+        target: { kind: "tool", name },
       });
     }
     if (tdef.credentialRef && !resolveCredName(tdef.credentialRef)) {
       warnings.push({
         code: "httpToolCredNotFound",
         params: { tool: tdef.name, credential: tdef.credentialRef },
-        target: { kind: "tool", name: tdef.name },
+        target: { kind: "tool", name },
       });
     }
   }
@@ -1841,6 +1876,7 @@ async function createMissingComponents(
     // A freshly created KB is silent (only reused ones warn). Imported-but-unindexed documents surface
     // through the editor's live "needs indexing" alert (config-health), not a one-shot import warning.
   }
+  return { renamedHttpTools };
 }
 
 async function buildGrantRows(
@@ -1849,6 +1885,8 @@ async function buildGrantRows(
   agentId: bigint,
   tools: ExportedGrant[],
   warnings: ImportWarning[],
+  // Bundle name → stored name, for an HTTP tool the import could not store under its own name.
+  renamedHttpTools: ReadonlyMap<string, string>,
 ): Promise<Prisma.AgentToolSelectionCreateManyInput[]> {
   const rows: Prisma.AgentToolSelectionCreateManyInput[] = [];
   for (const g of tools) {
@@ -1911,7 +1949,7 @@ async function buildGrantRows(
       }
       case "HTTP": {
         const td = await db.toolDefinition.findFirst({
-          where: { name: g.tool },
+          where: { name: renamedHttpTools.get(g.tool) ?? g.tool },
           select: { id: true },
         });
         if (!td) {

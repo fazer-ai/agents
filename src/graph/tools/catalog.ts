@@ -21,6 +21,17 @@ export const NATIVE_TOOL_NAMES = [
 ] as const;
 export type NativeToolName = (typeof NATIVE_TOOL_NAMES)[number];
 
+// A name in the list above is RESERVED: the assembly drops any other tool that claims it, granted or
+// not (unique-names.ts, #457); the HTTP tool writers refuse it (tool-definitions/service.ts, which
+// REST, the console and MCP all reach); an import renames a bundled tool that carries it. None of
+// those reaches a row a tenant wrote BEFORE the name was native, which would sit in the console and
+// never reach the model — so a name added here ships with a migration named
+// `*_rename_http_tools_named_after_natives` that moves such rows to the first free `<name>_N`, the
+// way the import does. tests/prisma/native-tool-names-renamed-by-migration.test.ts asks for it.
+export function isNativeToolName(name: string): name is NativeToolName {
+  return (NATIVE_TOOL_NAMES as readonly string[]).includes(name);
+}
+
 // Native tools split into two families: `conversation` tools act on the current Chatwoot
 // conversation (handoff/note/resolve/…) and need a live client + conversation id; `utility` tools
 // are context-free (calculator, clock, code sandbox) and therefore safe to expose in the playground

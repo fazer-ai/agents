@@ -2189,6 +2189,12 @@ function AgentEditor() {
           'Tool "{{name}}" already existed and was reused; check it is right.',
           p,
         );
+      case "httpToolRenamed":
+        return t(
+          "editor.importWarning.httpToolRenamed",
+          'Tool "{{name}}" carries the name of a built-in tool, so it was imported as "{{renamed}}"; a prompt that names it must follow.',
+          p,
+        );
       case "httpToolCredNotFound":
         return t(
           "editor.importWarning.httpToolCredNotFound",

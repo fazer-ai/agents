@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
+import { isNativeToolName } from "@/graph/tools/catalog";
 import { normalizeExpectedStatuses } from "@/graph/tools/http-status";
 import { AppError, ConflictError, NotFoundError } from "@/lib/errors";
 import { parseInput } from "@/lib/parse-input";
@@ -336,6 +337,18 @@ async function assertNameFree(
   name: string,
   exceptId?: bigint,
 ): Promise<void> {
+  // A native's name is reserved at assembly (#457): a tool written under one would exist in the
+  // console, be granted, and never reach the model, with a flow-log line as the only trace. Refused
+  // where it is typed, the way a document slug is (documents/slug.ts). The import path does not
+  // come through here and renames instead (agents/transfer.ts), as the migration did for rows
+  // written before the name was native.
+  if (isNativeToolName(name)) {
+    throw new ConflictError(
+      "tool name belongs to a built-in tool",
+      "errors.toolNameReserved",
+      "name",
+    );
+  }
   const existing = await db.toolDefinition.findFirst({
     where: { name },
     select: { id: true },

@@ -1714,6 +1714,61 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
       ),
     ).toBe(true);
   });
+
+  // Round 15 of PR #485: a bundle authored before a native took the name. The assembly reserves
+  // every native name (#457), so a tool imported under one would exist in the console and never
+  // reach the model, and this path writes straight to the DB, past the service's refusal. Renamed
+  // the way the migration renames a row already there — the first free `<name>_N` — and warned;
+  // the grant follows the tool, not the name it had in the bundle.
+  test("a bundled HTTP tool named after a native lands under a free name, warned, and its grant follows", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const bundle = structuredClone(exp);
+    const tool = bundle.components?.httpTools.find(
+      (h) => h.name === "lookup_order",
+    );
+    if (!tool) throw new Error("bundle missing lookup_order");
+    tool.name = "run_code";
+    const grant = bundle.agent.tools.find(
+      (g) => g?.source === "HTTP" && g.tool === "lookup_order",
+    );
+    if (grant?.source === "HTTP") grant.tool = "run_code";
+    // `run_code_2` is taken on the destination, so the free name is the one after it.
+    await suDb.toolDefinition.create({
+      data: {
+        tenantId: dstTenant,
+        name: "run_code_2",
+        label: "Já existia",
+        method: "GET",
+        urlTemplate: "https://api.example.com/x",
+        allowedHosts: ["api.example.com"],
+      },
+    });
+    const { agent, warnings } = await importAgent(dstCtx(), bundle, appDb);
+    const row = await suDb.toolDefinition.findFirst({
+      where: { tenantId: dstTenant, name: "run_code_3" },
+    });
+    expect(row?.label).toBe("Buscar pedido");
+    expect(
+      await suDb.toolDefinition.count({
+        where: { tenantId: dstTenant, name: "run_code" },
+      }),
+    ).toBe(0);
+    expect(
+      warnings.some(
+        (w) =>
+          w.code === "httpToolRenamed" &&
+          w.params?.name === "run_code" &&
+          w.params?.renamed === "run_code_3",
+      ),
+    ).toBe(true);
+    const grants = await suDb.agentToolSelection.findMany({
+      where: { agentId: BigInt(agent.id), source: "HTTP" },
+      select: { toolDefinitionId: true },
+    });
+    expect(grants.map((g) => g.toolDefinitionId)).toEqual([row?.id ?? null]);
+  });
 });
 
 // Phase 5: ?documents=true bundles the KB documents' SOURCE TEXT; import recreates them as UNINDEXED

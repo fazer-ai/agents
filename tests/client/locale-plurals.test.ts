@@ -101,6 +101,24 @@ describe.each(Object.entries(LOCALES))(
       expect(flatCounters).toEqual([]);
     });
 
+    // A BASE CANNOT BE BOTH FLAT AND PLURALIZED. `i18next-parser` writes whatever it sees, so while
+    // ONE call site of a key still passes `{ n: … }` the catalogs carry the flat key next to the
+    // plural set — and the flat one is dead weight the next extract deletes, which turns the
+    // generated-file check in CI red on a tree that looked finished. Review found exactly that here:
+    // `editor.tools.mcpSelected` kept its flat entry in both catalogs because a third call site had
+    // been missed, and the rule above could not see it, since the leftover interpolates `{{n}}`
+    // rather than `{{count}}`.
+    test("no base is both flat and pluralized", async () => {
+      const entries = await catalog(locale);
+      const pluralized = new Set(
+        Object.keys(entries)
+          .map((k) => PLURAL_SUFFIX.exec(k)?.[1])
+          .filter((b): b is string => Boolean(b)),
+      );
+      const both = Object.keys(entries).filter((k) => pluralized.has(k));
+      expect(both).toEqual([]);
+    });
+
     test("every plural set carries all the categories this locale resolves", async () => {
       const entries = Object.entries(await catalog(locale));
       const sets = new Map<string, Set<string>>();

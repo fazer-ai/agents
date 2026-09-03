@@ -1286,7 +1286,6 @@
       "mcpDesc": "Expose a chosen subset of an MCP server's tools.",
       "mcpExpandList": "Show tools",
       "mcpNoTools": "Select at least one tool, or this server does nothing.",
-      "mcpSelected": "{{n}} selected",
       "mcpSelected_one": "{{count}} selected",
       "mcpSelected_other": "{{count}} selected",
       "native": "Native tools",

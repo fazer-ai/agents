@@ -1303,7 +1303,6 @@
       "mcpDesc": "Exponha um subconjunto escolhido das ferramentas de um servidor MCP.",
       "mcpExpandList": "Mostrar ferramentas",
       "mcpNoTools": "Selecione ao menos uma ferramenta, ou este servidor não terá efeito.",
-      "mcpSelected": "{{n}} selecionadas",
       "mcpSelected_zero": "{{count}} selecionadas",
       "mcpSelected_one": "{{count}} selecionada",
       "mcpSelected_many": "{{count}} selecionadas",

@@ -4,6 +4,7 @@ import { badQueryParam } from "@/lib/query-param";
 import {
   asPrincipalOn,
   asSuperAdminOn,
+  type ScopedDb,
   type TenantContext,
 } from "@/lib/tenancy";
 import { auditMutationOn } from "@/modules/audit/service";
@@ -26,6 +27,28 @@ const USER_SELECT = {
 // explicitly. tenantId === null means a SUPER_ADMIN caller (fleet-wide visibility).
 function tenantScope(tenantId: bigint | null) {
   return tenantId === null ? {} : { tenantId };
+}
+
+// The lock, carrying the same fence the read after it carries.
+//
+// `users` is global, so an unscoped `FOR UPDATE` by id locks a row this caller may have no business
+// touching — and it does so BEFORE the scoped read decides it is a 404. A tenant admin could then
+// hold a lock on another tenant's user for the length of their transaction, which is contention
+// somebody else's role change, deletion or login write waits behind. The scope has to be part of
+// the lock, not of the check after it.
+//
+// `IS NULL OR` rather than two queries: a SUPER_ADMIN has no home tenant and reaches every row, and
+// keeping one statement is what keeps the lock and the read (`tenantScope`) provably the same fence.
+async function lockUserInScope(
+  db: ScopedDb,
+  tenantId: bigint | null,
+  userId: bigint,
+): Promise<void> {
+  await db.$queryRaw`
+    SELECT id FROM users
+     WHERE id = ${userId}
+       AND (${tenantId}::bigint IS NULL OR tenant_id = ${tenantId}::bigint)
+     FOR UPDATE`;
 }
 
 // What a user's row carries when their membership changes.
@@ -183,7 +206,7 @@ export async function updateUserRole(
     // Two admins re-roling the same person otherwise both read the same value and both record the
     // same transition, so the trail shows one of the two changes twice and the other not at all —
     // on the family where the recorded transition is the entire point.
-    await db.$queryRaw`SELECT id FROM users WHERE id = ${userId} FOR UPDATE`;
+    await lockUserInScope(db, ctx.tenantId, userId);
     const before = await db.user.findFirst({
       where: { id: userId, ...tenantScope(ctx.tenantId) },
       select: USER_SELECT,
@@ -237,7 +260,7 @@ export async function deleteUser(
     // locking the scope's whole admin set rather than the target, and the same invariant is broken
     // more cheaply one function up (`updateUserRole` demotes the last admin with no guard at all),
     // so it is one question about the invariant and not two about this transaction. Issue #496.
-    await db.$queryRaw`SELECT id FROM users WHERE id = ${userId} FOR UPDATE`;
+    await lockUserInScope(db, callerTenantId, userId);
     const target = await db.user.findFirst({
       where: { id: userId, ...tenantScope(callerTenantId) },
       select: USER_SELECT,

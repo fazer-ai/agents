@@ -471,6 +471,52 @@ describe.skipIf(!dbUp)("the actor family records its own changes", () => {
     ).toBe("AGENT");
   });
 
+  test("a cross-tenant id never takes the lock it is about to be refused for", async () => {
+    // `users` and `invitations` are global, so an unscoped `FOR UPDATE` by id locks a row the caller
+    // has no business touching — BEFORE the scoped read decides it is a 404. A tenant admin could
+    // then hold another tenant's user row for the length of their own transaction, and somebody
+    // else's role change, deletion or login write waits behind it. Round 1 on #498.
+    //
+    // Asserted as an ORDER and not as a duration: the refusal has to arrive while the lock is still
+    // held by somebody else. Unscoped, the call blocks until the holder commits, so `released` would
+    // already be true by the time it returned.
+    const outsider = await newUser(otherTenantId, "AGENT");
+    const invite = await createInvite(
+      { ...fleetAdmin },
+      {
+        tenantId: otherTenantId,
+        email: `lock${uniq()}@aud400.test`,
+        role: "AGENT",
+      },
+      appDb,
+    );
+    await clearAudit();
+
+    for (const attempt of [
+      () => updateUserRole(tenantAdmin(), outsider.id, "TENANT_ADMIN", appDb),
+      () => deleteUser(tenantAdmin(), outsider.id, appDb),
+      () => revokeInvite(tenantAdmin(), invite.id, appDb),
+    ]) {
+      let released = false;
+      const holder = suDb.$transaction(
+        async (tx) => {
+          await tx.$queryRaw`SELECT id FROM users WHERE id = ${outsider.id} FOR UPDATE`;
+          await tx.$queryRaw`SELECT id FROM invitations WHERE id = ${invite.id} FOR UPDATE`;
+          await new Promise((r) => setTimeout(r, 2_000));
+          released = true;
+        },
+        { timeout: 15_000 },
+      );
+      await new Promise((r) => setTimeout(r, 250));
+      await expect(attempt()).rejects.toThrow();
+      expect(released).toBe(false);
+      await holder;
+    }
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM audit_logs WHERE tenant_id = ${otherTenantId}`,
+    );
+  }, 30_000);
+
   test("a deleted user's row outlives them, and is the only place their identity survives", async () => {
     const user = await newUser(tenantId, "AGENT");
     await clearAudit();
@@ -627,16 +673,28 @@ describe.skipIf(!dbUp)("the actor family records its own changes", () => {
       "src/modules/mcp/oauth/admin.ts",
     ]) {
       const src = await Bun.file(path).text();
+      // One level of indirection is followed, and no more: a module may spell its lock in a helper
+      // (`lockUserInScope` carries the tenant fence the lock has to have), and a mutation that calls
+      // it has taken the lock as surely as one that writes the SQL. Anything deeper would make the
+      // fence agree with a call chain nobody can see from the mutation.
+      const lockHelpers = [
+        ...src.matchAll(/\nasync function (\w+)\(([\s\S]*?)\n}/g),
+      ]
+        .filter(([, , body]) => /FOR UPDATE/.test(body ?? ""))
+        .map(([, fnName]) => fnName);
+      const takesLock = (chunk: string) =>
+        /FOR UPDATE/.test(chunk) ||
+        lockHelpers.some((fn) => new RegExp(`\\b${fn}\\(`).test(chunk));
       for (const chunk of src.split(/\nexport async function /).slice(1)) {
         const name = `${path.split("/").pop()}:${chunk.slice(0, chunk.indexOf("("))}`;
         // A mutation that records a `before` is the one this is about. A pure create has nothing to
         // compare against and nothing to lock.
-        if (/\bbefore:/.test(chunk)) blocks.push([name, chunk]);
+        if (/\bbefore:/.test(chunk)) blocks.push([name, `${takesLock(chunk)}`]);
       }
     }
     expect(blocks.length).toBeGreaterThanOrEqual(4);
-    for (const [name, chunk] of blocks) {
-      expect(`${name}: ${/FOR UPDATE/.test(chunk)}`).toBe(`${name}: true`);
+    for (const [name, locked] of blocks) {
+      expect(`${name}: ${locked}`).toBe(`${name}: true`);
     }
   });
 

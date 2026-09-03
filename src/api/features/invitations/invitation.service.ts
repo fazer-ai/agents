@@ -225,7 +225,14 @@ export async function revokeInvite(
   base: PrismaClient = basePrisma,
 ): Promise<void> {
   await asPrincipalOn(base, ctx, async (db) => {
-    await db.$queryRaw`SELECT id FROM invitations WHERE id = ${id} FOR UPDATE`;
+    // Scoped like the read below it, and for the same reason `admin.service.ts` scopes its own:
+    // `invitations` is global, so an unscoped lock by id would let a tenant admin hold another
+    // tenant's invitation row for the length of a request that is about to 404.
+    await db.$queryRaw`
+      SELECT id FROM invitations
+       WHERE id = ${id}
+         AND (${ctx.tenantId}::bigint IS NULL OR tenant_id = ${ctx.tenantId}::bigint)
+       FOR UPDATE`;
     const before = await db.invitation.findFirst({
       where: { id, ...tenantScope(ctx.tenantId) },
       select: {

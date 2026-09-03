@@ -974,7 +974,7 @@ export async function brandingAssetSet(
 
   const target = `branding:asset:${kind}:${variant}`;
   try {
-    const before = await getGlobalBranding();
+    const before = await getGlobalBranding(base);
     const replacingExisting = before[kind][variant];
 
     // dry-run is the default: a binary has no field-level diff, so preview the metadata that WOULD

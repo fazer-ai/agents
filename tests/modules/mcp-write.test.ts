@@ -1039,3 +1039,75 @@ describe.skipIf(!dbUp)("MCP write tools (DB)", () => {
     expect(entries).toHaveLength(1);
   });
 });
+
+// `brandingAssetSet` takes a Prisma client precisely so the caller decides which database the tool
+// answers from, and then read the CURRENT branding off the module-level client instead. The row it
+// reported as "already there" came from a different database than the one it was about to write.
+// Issue #502.
+//
+// Nothing reached it before: every other branding_asset_set test in this file refuses ahead of the
+// read (wrong scope, wrong kind, wrong mime, bad base64), and the dry-run fence's row for this tool
+// refuses on `content_base64` for the same reason. `brandingSet` had the identical defect and #490
+// fixed it because that tool had to be measurable; this is the sibling that was left behind.
+//
+// `app_branding` is a fleet singleton (id 1, no tenant column, outside RLS), so seeding it is a
+// global mutation rather than a per-tenant one. The block restores whatever it found.
+describe.skipIf(!dbUp)(
+  "branding_asset_set reads through the client it was handed",
+  () => {
+    const BRANDING_ID = 1;
+    const superAdmin = () =>
+      principal({ scopes: ["mcp:admin"], role: "SUPER_ADMIN", tenantId: null });
+    let saved: string | null = null;
+    let hadRow = false;
+
+    async function setLogoDark(key: string | null) {
+      await suDb.appBranding.upsert({
+        where: { id: BRANDING_ID },
+        create: { id: BRANDING_ID, logoDarkKey: key },
+        update: { logoDarkKey: key },
+      });
+    }
+
+    // The preview it returns, for a logo/dark upload that passes every cheap check.
+    async function previewLogoDark() {
+      const r = await brandingAssetSet(
+        superAdmin(),
+        {
+          kind: "logo",
+          variant: "dark",
+          content_base64: "AAAA",
+          mime: "image/png",
+        },
+        { base: appDb },
+      );
+      if (!r.ok) throw new Error(`expected a preview, got: ${r.error}`);
+      const preview = r.data.preview as Record<string, unknown>;
+      return preview;
+    }
+
+    beforeAll(async () => {
+      const row = await suDb.appBranding.findUnique({
+        where: { id: BRANDING_ID },
+      });
+      hadRow = row !== null;
+      saved = row?.logoDarkKey ?? null;
+    });
+
+    afterAll(async () => {
+      if (hadRow) await setLogoDark(saved);
+      else await suDb.appBranding.deleteMany({ where: { id: BRANDING_ID } });
+    });
+
+    // BOTH directions, on the same injected client. One of them alone is satisfied by a constant:
+    // asserting only `true` passes for a tool that always claims a replacement, and only `false`
+    // passes for one that never looks. The pair is what says the answer TRACKS the row.
+    test("replacingExisting follows the row written through that client", async () => {
+      await setLogoDark("seeded/logo-dark.png");
+      expect((await previewLogoDark()).replacingExisting).toBe(true);
+
+      await setLogoDark(null);
+      expect((await previewLogoDark()).replacingExisting).toBe(false);
+    });
+  },
+);

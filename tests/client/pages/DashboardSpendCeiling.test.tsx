@@ -470,6 +470,149 @@ describe("the spend ceiling on the dashboard", () => {
     }
   });
 
+  // AND WHILE IT IS OUT, THE SLOT HOLDS A SKELETON, NOT A CLAIM (review round 4). Rendering the
+  // absent cost would tell a configured tenant to connect Langfuse, and keeping the previous value
+  // would put the inbox's cost beside the playground's metrics.
+  test("the cost slot says nothing while its request is out", async () => {
+    let releaseCost: (() => void) | null = null;
+    const slowCost = (async (input: unknown) => {
+      const url = String(
+        typeof input === "string" ? input : ((input as Request).url ?? input),
+      );
+      asked.push(url);
+      if (url.includes("/metrics/costs")) {
+        await new Promise<void>((r) => {
+          releaseCost = r;
+        });
+        return json({
+          costs: {
+            status: "ok",
+            totalCostUsd: 7,
+            days: [],
+            byModel: [],
+            baseUrl: "https://lf.example",
+          },
+        });
+      }
+      return stubFetch(input as RequestInfo);
+    }) as unknown as typeof globalThis.fetch;
+    globalThis.fetch = slowCost;
+    try {
+      usage = baseUsage();
+      asked.length = 0;
+      render(
+        withI18n(
+          <ThemeProvider>
+            <MemoryRouter>
+              <DashboardPage />
+            </MemoryRouter>
+          </ThemeProvider>,
+        ),
+      );
+      await waitFor(() => {
+        expect(has("$22.50 of $30.00")).toBe(true);
+      });
+      // The figures are up and the cost is still out: the slot claims neither a value nor a missing
+      // Langfuse.
+      expect(has("Connect Langfuse")).toBe(false);
+      expect(has("$7.00")).toBe(false);
+      await act(async () => {
+        (releaseCost as (() => void) | null)?.();
+        for (let i = 0; i < 5; i += 1) {
+          await new Promise((r) => setTimeout(r, 0));
+        }
+      });
+      await waitFor(() => {
+        expect(has("$7.00")).toBe(true);
+      });
+    } finally {
+      globalThis.fetch = stubFetch;
+    }
+  });
+
+  // AND A SEGMENT SWITCH PUTS IT BACK TO PENDING (review round 4): keeping the previous segment's
+  // figure on screen while the new one is out is the same claim in a different direction, the
+  // inbox's money labelled as the playground's.
+  test("switching segments does not leave the previous cost on screen", async () => {
+    let releaseSecond: (() => void) | null = null;
+    let costCalls = 0;
+    const held = (async (input: unknown) => {
+      const url = String(
+        typeof input === "string" ? input : ((input as Request).url ?? input),
+      );
+      asked.push(url);
+      if (url.includes("/metrics/costs")) {
+        costCalls += 1;
+        if (costCalls === 1) {
+          return json({
+            costs: {
+              status: "ok",
+              totalCostUsd: 31,
+              days: [],
+              byModel: [],
+              baseUrl: "https://lf.example",
+            },
+          });
+        }
+        await new Promise<void>((r) => {
+          releaseSecond = r;
+        });
+        return json({
+          costs: {
+            status: "ok",
+            totalCostUsd: 2,
+            days: [],
+            byModel: [],
+            baseUrl: "https://lf.example",
+          },
+        });
+      }
+      return stubFetch(input as RequestInfo);
+    }) as unknown as typeof globalThis.fetch;
+    globalThis.fetch = held;
+    try {
+      usage = baseUsage();
+      asked.length = 0;
+      render(
+        withI18n(
+          <ThemeProvider>
+            <MemoryRouter>
+              <DashboardPage />
+            </MemoryRouter>
+          </ThemeProvider>,
+        ),
+      );
+      await waitFor(() => {
+        expect(has("$31.00")).toBe(true);
+      });
+      const segments = await screen.findByRole("group", {
+        name: "Usage segment",
+      });
+      fireEvent.click(
+        within(segments).getByRole("button", { name: "Playground" }),
+      );
+      await waitFor(() => {
+        expect(releaseSecond).not.toBeNull();
+      });
+      await waitFor(() => {
+        expect(has("$4.25 of $5.00")).toBe(true);
+      });
+      // The playground's ceiling is up and its cost is still out: the inbox's figure is gone.
+      expect(has("$31.00")).toBe(false);
+      await act(async () => {
+        (releaseSecond as (() => void) | null)?.();
+        for (let i = 0; i < 5; i += 1) {
+          await new Promise((r) => setTimeout(r, 0));
+        }
+      });
+      await waitFor(() => {
+        expect(has("$2.00")).toBe(true);
+      });
+    } finally {
+      globalThis.fetch = stubFetch;
+    }
+  });
+
   // AND THE SEGMENT'S CEILING TAKES ITS NUMBER WHEN IT ASKS, NOT WHEN IT COMMITS (review round 3).
   // Its answer can be ready and still be waiting inside the `Promise.all` for a slower sibling, and
   // a refresh landing in that window would otherwise be overwritten by the older read, walking the

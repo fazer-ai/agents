@@ -438,6 +438,12 @@ export function DashboardPage() {
   const [kpis, setKpis] = useState<Kpis | null>(null);
   const [points, setPoints] = useState<Point[]>([]);
   const [costs, setCosts] = useState<Costs | null>(null);
+  // The cost's OWN pending state (review round 4). It settles outside the section's loading gate, so
+  // between the local figures arriving and Langfuse answering there is a window with no cost yet:
+  // rendering `costs === null` there tells a configured tenant to connect Langfuse, and keeping the
+  // previous value puts the inbox's cost beside the playground's metrics. The slot holds a skeleton
+  // instead, which is what the shape of that card is for.
+  const [costsLoading, setCostsLoading] = useState(true);
   const [ceiling, setCeiling] = useState<Ceiling | null>(null);
   const [agentNames, setAgentNames] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
@@ -515,15 +521,18 @@ export function DashboardPage() {
     // tokens, the timeseries and the ceiling — all already in hand, all ours — sat behind a
     // skeleton for that whole timeout. It is best-effort with a card of its own for the failure,
     // so it settles on its own and only the latest segment's answer is taken.
+    setCostsLoading(true);
     void api.api.v1.metrics.costs
       .get({ query: costQuery })
       .then((res) => {
         if (seq !== usageSeq.current) return;
         setCosts(res.data ? res.data.costs : { status: "error" as const });
+        setCostsLoading(false);
       })
       .catch(() => {
         if (seq !== usageSeq.current) return;
         setCosts({ status: "error" as const });
+        setCostsLoading(false);
       });
     // The ceiling's own number is RESERVED HERE, when the request goes out, not taken when it
     // commits (review round 3): its answer can be ready and still be waiting inside the `Promise.all`
@@ -995,7 +1004,13 @@ export function DashboardPage() {
                         : "sm:grid-cols-3",
                     )}
                   >
-                    {showCost ? (
+                    {costsLoading ? (
+                      <Card className="flex flex-col gap-2" aria-hidden="true">
+                        <Skeleton className="h-4 w-24" />
+                        <Skeleton className="h-8 w-28" />
+                        <Skeleton className="h-3 w-32" />
+                      </Card>
+                    ) : showCost ? (
                       <KpiCard
                         icon={Coins}
                         label={t("dashboard.totalCost", "LLM cost")}

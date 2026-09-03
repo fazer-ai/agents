@@ -102,13 +102,14 @@ describe("runSandboxedCode", () => {
       ["let w = 0; while (w < 1) /{/.test('{') ? w++ : 0; { w }", '{"w":1}'],
       ["const n = (4) / 2; { n }", '{"n":2}'],
       // Round 17: a template hole is code, so a regex, a comment and a division inside it read as
-      // in the outer pass; the brace inside the regex or the comment is not a hole brace.
+      // in the outer pass; the brace inside the regex or the comment is not a hole brace. Split
+      // like the hole above, so the lint does not read the snippet's hole as this file's.
       [
-        'const s = `${/{/.test("{")}`; const valid = true; { valid }',
+        `const s = \`$${"{"}/{/.test("{")}\`; const valid = true; { valid }`,
         '{"valid":true}',
       ],
-      ["const s = `${1 /* } */}`; { s }", '{"s":"1"}'],
-      ["const s = `${(4) / 2}`; { s }", '{"s":"2"}'],
+      [`const s = \`$${"{"}1 /* } */}\`; { s }`, '{"s":"1"}'],
+      [`const s = \`$${"{"}(4) / 2}\`; { s }`, '{"s":"2"}'],
       // Not an object: a real block, and braces that belong to a statement, run as written.
       ["{ let x = 1; x + 1 }", "2"],
       ["if (true) { 5 }", "5"],

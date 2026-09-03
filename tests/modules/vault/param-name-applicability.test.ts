@@ -3,6 +3,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { AppError } from "@/lib/errors";
 import type { TenantContext } from "@/lib/tenancy";
+import { credentialCreate } from "@/modules/mcp/write";
 import {
   getSecretType,
   getSecretTypeFields,
@@ -91,7 +92,7 @@ describe("the catalog is the rule", () => {
     const takes = SECRET_TYPE_IDS.filter(secretTypeNeedsParamName);
     expect(takes).toEqual(["header", "query", "mcp_env"]);
     expect(PARAM_NAME_KIND_IDS).toEqual(takes);
-    // The other side of the same count, spelled out so a kind added to the catalog without a
+    // NOTE: The other side of the same count, spelled out so a kind added to the catalog without a
     // decision about this field shows up here instead of silently joining the refusing majority.
     expect(SECRET_TYPE_IDS.filter(secretTypeRefusesParamName).length).toBe(
       SECRET_TYPE_IDS.length - takes.length,
@@ -107,7 +108,7 @@ describe("the catalog is the rule", () => {
   });
 
   test("a kind this build does not know refuses nothing", () => {
-    // The legacy escape hatch: an entry written by a build whose catalog had a kind this one
+    // NOTE: The legacy escape hatch: an entry written by a build whose catalog had a kind this one
     // dropped must stay editable, so the refusal is scoped to kinds the catalog KNOWS.
     expect(getSecretType("kind_from_a_future_build")).toBeNull();
     expect(secretTypeRefusesParamName("kind_from_a_future_build")).toBe(false);
@@ -140,7 +141,7 @@ describe.skipIf(!dbUp)("vault: a param name the kind cannot use", () => {
     }
   });
 
-  // The matrix: every kind in the catalog, against the same non-empty param name. Enumerating it
+  // NOTE: The matrix: every kind in the catalog, against the same non-empty param name. Enumerating it
   // instead of sampling is what makes the rule the catalog's — a kind added later is covered the
   // day it is added, on whichever side its own entry puts it.
   for (const kind of SECRET_TYPE_IDS) {
@@ -159,10 +160,10 @@ describe.skipIf(!dbUp)("vault: a param name the kind cannot use", () => {
         );
         expect(e.statusCode).toBe(400);
         expect(e.translationKey).toBe("errors.vaultParamNameNotApplicable");
-        // The refusal is ABOUT the field, by the name the server uses for it, so the console and
+        // NOTE: The refusal is ABOUT the field, by the name the server uses for it, so the console and
         // the MCP caller key on the same string.
         expect(e.field).toBe("paramName");
-        // The door: the sentence has to say which kinds do take one, or the operator learns only
+        // NOTE: The door: the sentence has to say which kinds do take one, or the operator learns only
         // that this one does not.
         for (const id of PARAM_NAME_KIND_IDS) expect(e.message).toContain(id);
         const rows = await suDb.vaultEntry.count({
@@ -187,7 +188,7 @@ describe.skipIf(!dbUp)("vault: a param name the kind cannot use", () => {
   }
 
   test("the reporter's config is refused, and the one that works is not", async () => {
-    // Issue #488 verbatim: a bare JWT that the API wants in `Authorization`, with no Bearer. The
+    // NOTE: Issue #488 verbatim: a bare JWT that the API wants in `Authorization`, with no Bearer. The
     // kind that does that is `header`; `generic` never injects anything.
     const e = await refusal(() =>
       createVaultEntry(
@@ -226,7 +227,7 @@ describe.skipIf(!dbUp)("vault: a param name the kind cannot use", () => {
   });
 
   test("an empty param name still means none, on a kind that cannot use one", async () => {
-    // A client that always sends the field (the console sends `undefined`, an API caller may not)
+    // NOTE: A client that always sends the field (the console sends `undefined`, an API caller may not)
     // must not be refused for sending nothing in it: "" has always meant absent here.
     for (const paramName of ["", "   "]) {
       const { id } = await createVaultEntry(
@@ -249,8 +250,58 @@ describe.skipIf(!dbUp)("vault: a param name the kind cannot use", () => {
     }
   });
 
+  test("the MCP dry run refuses it too, so the preview cannot promise what apply rejects", async () => {
+    // NOTE: `credential_create` defaults to dry_run and answers BEFORE reaching the core, so a rule
+    // the core learns later is a rule the preview promises away (padroes: "dry run tem que prever o
+    // apply"). Both halves have to refuse, and the apply half must not create a row.
+    const p = {
+      tenantId,
+      userId: null,
+      role: "TENANT_ADMIN",
+      scopes: ["mcp:write"],
+    } as unknown as Parameters<typeof credentialCreate>[0];
+    for (const dry_run of [undefined, false]) {
+      const r = await credentialCreate(
+        p,
+        {
+          name: "pn-mcp",
+          kind: "generic",
+          param_name: "Authorization",
+          dry_run,
+        },
+        { base: appDb },
+      );
+      expect(r.ok).toBe(false);
+      if (!r.ok) {
+        expect(r.error).toContain("does not use a param name");
+        for (const id of PARAM_NAME_KIND_IDS) expect(r.error).toContain(id);
+      }
+    }
+    expect(
+      await suDb.vaultEntry.count({ where: { tenantId, name: "pn-mcp" } }),
+    ).toBe(0);
+  });
+
+  test("the MCP dry run still previews the config that works", async () => {
+    // NOTE: the control for the case above — the guard has to refuse the dead field and nothing
+    // else, or it is the preview lying in the other direction.
+    const p = {
+      tenantId,
+      userId: null,
+      role: "TENANT_ADMIN",
+      scopes: ["mcp:write"],
+    } as unknown as Parameters<typeof credentialCreate>[0];
+    const r = await credentialCreate(
+      p,
+      { name: "pn-mcp-ok", kind: "header", param_name: "Authorization" },
+      { base: appDb },
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.data.dryRun).toBe(true);
+  });
+
   test("createPendingVaultEntry refuses it too — the surface the MCP tool writes through", async () => {
-    // `credential_create` is reference-only and never carries a secret, so it is the one path where
+    // NOTE: `credential_create` is reference-only and never carries a secret, so it is the one path where
     // paramName is the only thing the operator supplies besides name and kind.
     const e = await refusal(() =>
       createPendingVaultEntry(
@@ -290,7 +341,7 @@ describe.skipIf(!dbUp)("vault: a param name the kind cannot use", () => {
   });
 
   test("a row that already carries a dead param name stays editable", async () => {
-    // The refusal covers what a write INTRODUCES. Rows written before it exists keep their stray
+    // NOTE: The refusal covers what a write INTRODUCES. Rows written before it exists keep their stray
     // value, and a save that does not touch the field must still go through, or the rule strands
     // exactly the operators who hit the defect.
     const { id } = await createVaultEntry(
@@ -315,7 +366,7 @@ describe.skipIf(!dbUp)("vault: a param name the kind cannot use", () => {
   });
 
   test("a stored kind this build no longer knows keeps accepting one", async () => {
-    // `createVaultEntry` refuses an unknown kind up front, so this state is only reachable through
+    // NOTE: `createVaultEntry` refuses an unknown kind up front, so this state is only reachable through
     // a row an older build wrote. Patching it must not be refused by a catalog that has moved on.
     const { id } = await createVaultEntry(
       ctx(),

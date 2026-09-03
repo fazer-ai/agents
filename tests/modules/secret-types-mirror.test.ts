@@ -27,7 +27,7 @@ describe("secret-types client mirror", () => {
     }
   });
 
-  // `needsParamName` is the one meta field the two copies have to agree on for the SERVER's sake,
+  // NOTE: `needsParamName` is the one meta field the two copies have to agree on for the SERVER's sake,
   // and it became load-bearing with issue #488: the write now REFUSES a param name on a kind that
   // declares none, and the form is what keeps the console from ever sending one (it submits
   // `paramName: undefined` unless its own copy says the kind needs it). Drift in either direction

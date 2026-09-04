@@ -2041,6 +2041,24 @@ export async function replaceAgentToolSelections(
       });
     }
     return next;
+  }).catch(async (err: unknown) => {
+    // A target can be DELETED between `assertGrantTargetsExist` above and the insert: the check
+    // reads the row, a delete commits in the gap, and the foreign key refuses the selection. That
+    // is the same event as "no such tool", which the check itself would have reported a moment
+    // earlier, so it gets the same terminal answer instead of a 500 for the console and a bare
+    // P2003 in the log (round 31). The precedent, and the reasoning, is `issueDocument`'s in
+    // documents/issue.ts.
+    //
+    // WHICH target vanished is asked afterwards, in a fresh scoped read, rather than parsed out of
+    // the driver's constraint name: the aborted transaction can answer nothing,
+    // `assertGrantTargetsExist` already knows how to name every source, and re-asking it costs one
+    // round trip on a path that is already losing a race. If it now finds everything (the row came
+    // back, or the key that failed was the agent's own), the original error stands rather than
+    // being dressed up as a not-found.
+    if (err instanceof Error && (err as { code?: string }).code === "P2003") {
+      await runScopedOn(base, ctx, (db) => assertGrantTargetsExist(db, grants));
+    }
+    throw err;
   });
   // Heads-up for any open editor (other tab / another operator) — best-effort, metadata-only.
   if (ctx.tenantId !== null && view.agentUpdatedAt) {

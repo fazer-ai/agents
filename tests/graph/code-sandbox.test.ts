@@ -1289,4 +1289,43 @@ describe("function-body mode (a code tool's call)", () => {
     });
     expect(out).toMatchObject({ kind: "value", value: "[null,null]" });
   });
+
+  // A body that returns a promise did not finish, and there is no event loop here to finish it. The
+  // renderer walks the object, finds no own keys, and answers `Result: {}` with `failed: false`, so
+  // the agent reads an empty object as the operator's verdict and nobody is alerted -- including
+  // when the async body THREW, which came back the same way (round 31, measured on all four).
+  test("a returned promise is an error, not an empty object", async () => {
+    const bodies = [
+      "return Promise.resolve(42);",
+      "return (async () => 42)();",
+      "return (async () => { throw new Error('boom'); })();",
+      // A thenable is what an `await` would have unwrapped, so it is the same mistake wearing a
+      // different shape.
+      "return { then(r) { r(7); } };",
+    ];
+    for (const body of bodies) {
+      const out = await runSandboxedCode(body, call({}));
+      expect([body, (out as { kind: string }).kind]).toEqual([body, "error"]);
+      expect([body, (out as { name: string }).name]).toEqual([
+        body,
+        "TypeError",
+      ]);
+      expect((out as { message: string }).message).toContain(
+        "returned a promise",
+      );
+    }
+  });
+
+  // The control, and it is the one that matters: an ordinary object has to keep rendering. A check
+  // that reads `.then` off every result would be answered by refusing every object.
+  test("an object that merely HAS keys is still a value", async () => {
+    const out = await runSandboxedCode(
+      "return { then: 1, valid: true, name: 'Maria' };",
+      call({}),
+    );
+    expect(out).toMatchObject({
+      kind: "value",
+      value: '{"then":1,"valid":true,"name":"Maria"}',
+    });
+  });
 });

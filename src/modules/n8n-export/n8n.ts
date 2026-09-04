@@ -55,8 +55,16 @@ function scanString(value: string, where: string): void {
 // expression is a reference to a value that lives elsewhere; a quoted run of characters is the
 // value itself. Everything else the scanner knows (the shaped patterns: `sk-`, `AKIA`, a JWT) is
 // applied unchanged, since those are recognisable wherever they appear, quoted or not.
+//
+// THREE delimiters, not two, and the third is not symmetric with the others. JavaScript writes a
+// literal with `'`, `"` or a backtick, and a backtick one is exactly as concrete as the other two
+// (round 31: `const apiKey = \`abcdef123456\`` walked out of the scanner untouched) -- until it
+// INTERPOLATES, at which point it is an expression again and `const api_key = \`${input.chave}\``
+// is the same forwarding body the paragraph above exists to allow. So the backtick arm rejects the
+// whole literal when a `${` appears anywhere inside it, which is the template equivalent of the
+// `{{` guard the JSON scanner already carries.
 const SECRET_KV_IN_CODE_PATTERN =
-  /(?:access[_-]?token|api[_-]?key|client[_-]?secret|password|authorization|secret)["']?\s*[:=]\s*(["'])(?!\s*\{\{)([^"'\s&]{6,})\1/i;
+  /(?:access[_-]?token|api[_-]?key|client[_-]?secret|password|authorization|secret)["'`]?\s*[:=]\s*(?:(["'])(?!\s*\{\{)[^"'\s&]{6,}\1|`(?!\s*\{\{)(?![^`]*\$\{)[^`\s&]{6,}`)/i;
 
 export function assertNoSecretsInCode(code: string, where: string): void {
   if (isPlaceholder(code)) return;

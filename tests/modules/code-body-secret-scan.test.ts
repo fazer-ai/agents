@@ -27,6 +27,14 @@ describe("a code tool's body is scanned as source, not as a value", () => {
     "return { valid: input.cpf.length === 11 };",
     // A key named in a comment, which is prose inside a program.
     "// pass the api_key through unchanged\nreturn input.k;",
+    // A template literal that INTERPOLATES is an expression again, and these two are the shape a
+    // body that forwards a credential actually takes (round 31, when the backtick was added as a
+    // delimiter: without the `${` guard, both of these started reading as leaks).
+    // biome-ignore-start lint/suspicious/noTemplateCurlyInString: these strings ARE source, and the
+    // interpolation is the point: it is what makes the literal an expression again.
+    "const api_key = `${input.chave}`;\nreturn api_key;",
+    "return { authorization: `Bearer ${input.token}` };",
+    // biome-ignore-end lint/suspicious/noTemplateCurlyInString: back to ordinary strings.
   ];
   for (const code of allowed) {
     test(`allows ${JSON.stringify(code.slice(0, 40))}`, () => {
@@ -40,6 +48,10 @@ describe("a code tool's body is scanned as source, not as a value", () => {
     "const password = 'hunter2-real-secret';",
     'const h = { api_key: "abc123def456" };',
     'return { authorization: "Bearer 0123456789abcdef" };',
+    // A backtick literal with nothing interpolated is as concrete as a quoted one, and JavaScript
+    // writes it as readily. It walked out untouched until round 31.
+    "const apiKey = `abcdef123456`;",
+    "const password = `hunter2hunter2`;",
     // Shaped secrets are recognisable wherever they appear, quoted or not.
     "return fetchish(sk-0123456789abcdefghij);",
   ];

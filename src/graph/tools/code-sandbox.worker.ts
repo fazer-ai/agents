@@ -632,6 +632,53 @@ const DESCRIBE_ERROR_SOURCE = `(function () {
   };
 })()`;
 
+// A body that returns a promise is a body that did not finish, and the sandbox has no event loop to
+// finish it: `return Promise.resolve(42)` and `return (async () => 42)()` both reach the renderer as
+// an object with no own keys and were reported as `Result: {}` with `failed: false` (round 31,
+// measured). The agent then read an empty object as the operator's verdict, and the async body that
+// THREW read the same way, so a broken tool looked like a working one answering nothing.
+//
+// Asked INSIDE the interpreter, because `.then` can be a getter and reading it is running the
+// body's code: under the render deadline, and a getter that throws answers `false` and leaves the
+// verdict to the render path, which reports a throw-while-reading as the error it is.
+const IS_THENABLE_SOURCE = `(function (v) {
+  try {
+    return v !== null
+      && (typeof v === "object" || typeof v === "function")
+      && typeof v.then === "function";
+  } catch (e) {
+    return false;
+  }
+})`;
+
+const ASYNC_NOT_SUPPORTED: ThrownValue = {
+  name: "TypeError",
+  message:
+    "the body returned a promise, and a code tool runs synchronously: there is no event loop to " +
+    "settle it, so `async`, `await` and a returned promise are not supported. Return the value " +
+    "itself.",
+};
+
+function makeThenableProbe(vm: QuickJSContext): {
+  isThenable: (value: QuickJSHandle) => boolean;
+  dispose: () => void;
+} {
+  const fn = vm.unwrapResult(vm.evalCode(IS_THENABLE_SOURCE, "thenable.js"));
+  return {
+    isThenable: (value) => {
+      const r = vm.callFunction(fn, vm.undefined, value);
+      if (r.error) {
+        r.error.dispose();
+        return false;
+      }
+      const answer = vm.dump(r.value) === true;
+      r.value.dispose();
+      return answer;
+    },
+    dispose: () => fn.dispose(),
+  };
+}
+
 interface ThrownValue {
   name: string;
   message: string;
@@ -727,6 +774,7 @@ interface Session {
   runtime: ReturnType<typeof QuickJS.newRuntime>;
   vm: QuickJSContext;
   renderer: ReturnType<typeof makeRenderer>;
+  thenable: ReturnType<typeof makeThenableProbe>;
   errors: ReturnType<typeof makeErrorReader>;
   logs: string[];
 }
@@ -741,12 +789,13 @@ function open(req: SandboxRequest): Session {
   );
   const vm = runtime.newContext();
   const renderer = makeRenderer(vm);
+  const thenable = makeThenableProbe(vm);
   const errors = makeErrorReader(vm, req.maxChars);
   installConsole(vm, renderer.handle, logs, req.maxChars);
   installZone(vm, req.clock.timezone);
   installClock(vm, req.clock);
   if (req.call) installCall(vm, req.call);
-  return { runtime, vm, renderer, errors, logs };
+  return { runtime, vm, renderer, thenable, errors, logs };
 }
 
 function run(req: SandboxRequest): SandboxReply {
@@ -762,7 +811,7 @@ function run(req: SandboxRequest): SandboxReply {
       reason: `the interpreter could not be set up: ${reason}`,
     };
   }
-  const { runtime, vm, renderer, errors, logs } = session;
+  const { runtime, vm, renderer, thenable, errors, logs } = session;
   const render = renderer.render;
   const renewDeadline = () =>
     runtime.setInterruptHandler(
@@ -777,6 +826,17 @@ function run(req: SandboxRequest): SandboxReply {
       // whole budget building the value would otherwise have its result interrupted mid-render and
       // come back as "[object Object]" (measured, and fenced by test).
       renewDeadline();
+      // BEFORE the render, because the render is what turns a promise into `{}`.
+      if (thenable.isThenable(out.value)) {
+        out.value.dispose();
+        return {
+          kind: "error",
+          name: ASYNC_NOT_SUPPORTED.name,
+          message: storable(clip(ASYNC_NOT_SUPPORTED.message, req.maxChars)),
+          logs: logs.map(storable),
+          ms,
+        };
+      }
       const rendered = render(out.value, req.maxChars);
       out.value.dispose();
       if (!rendered.ok) {
@@ -822,6 +882,7 @@ function run(req: SandboxRequest): SandboxReply {
     if (!unwound) {
       try {
         errors.dispose();
+        thenable.dispose();
         renderer.dispose();
         vm.dispose();
         runtime.dispose();

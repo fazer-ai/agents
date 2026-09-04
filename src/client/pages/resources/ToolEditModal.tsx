@@ -23,6 +23,7 @@ import {
 import { Tooltip } from "@/client/components/Tooltip";
 import { useFieldRefusal } from "@/client/hooks/useFieldRefusal";
 import { api } from "@/client/lib/api";
+import { dialableBaseUrl } from "@/client/lib/secretTypes";
 import { cn } from "@/client/lib/utils";
 import { isValidUrlTemplate } from "@/client/lib/validation";
 import { normalizeToolName } from "@/graph/tools/toolName";
@@ -1345,7 +1346,13 @@ export function ToolEditModal({
     }
   }
 
-  const credBaseUrl = selectedCredential?.baseUrl ?? null;
+  // NOTE: the DIALABLE base, not the stored one (#504): a relative url_template is valid only when a
+  // credential supplies a base the runtime will actually prepend, and a stray value on a kind that
+  // takes none is no longer one.
+  const credBaseUrl = dialableBaseUrl(
+    selectedCredential?.kind,
+    selectedCredential?.baseUrl,
+  );
   // A relative path (starts with /) is valid only when a credential provides its base.
   const isRelativeTemplate =
     form.urlTemplate.trim().startsWith("/") &&

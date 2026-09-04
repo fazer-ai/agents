@@ -164,7 +164,10 @@ describe("useVaultBaseUrls", () => {
       {
         id: "7",
         name: "llama",
-        kind: "openai",
+        // NOTE: `openai_compatible` and not `openai`, since #504: this hook answers with the base URL
+        // the runtime will DIAL, and a base stored on a kind whose form never offered the field is no
+        // longer one. `llama` behind an OpenAI-compatible endpoint is what this fixture always meant.
+        kind: "openai_compatible",
         baseUrl: "http://llama:8080/v1",
       },
       { id: "8", name: "openai", kind: "openai" },
@@ -190,7 +193,10 @@ describe("useVaultBaseUrls", () => {
       {
         id: "7",
         name: "llama",
-        kind: "openai",
+        // NOTE: `openai_compatible` and not `openai`, since #504: this hook answers with the base URL
+        // the runtime will DIAL, and a base stored on a kind whose form never offered the field is no
+        // longer one. `llama` behind an OpenAI-compatible endpoint is what this fixture always meant.
+        kind: "openai_compatible",
         baseUrl: "http://llama:8080/v1",
       },
     ];
@@ -282,7 +288,10 @@ describe("useVaultBaseUrls with a noncanonical ref", () => {
       {
         id: "7",
         name: "llama",
-        kind: "openai",
+        // NOTE: `openai_compatible` and not `openai`, since #504: this hook answers with the base URL
+        // the runtime will DIAL, and a base stored on a kind whose form never offered the field is no
+        // longer one. `llama` behind an OpenAI-compatible endpoint is what this fixture always meant.
+        kind: "openai_compatible",
         baseUrl: "http://llama:8080/v1",
       },
     ];

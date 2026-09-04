@@ -32,7 +32,11 @@ import {
   computeCodeChallenge,
   generateCodeVerifier,
 } from "@/modules/vault/oauth-core";
-import { replaceVaultSecret, vaultRefWhere } from "@/modules/vault/service";
+import {
+  dialableBaseUrl,
+  replaceVaultSecret,
+  vaultRefWhere,
+} from "@/modules/vault/service";
 
 // Generic MCP OAuth 2.1 *consumer* flow for the `mcp_oauth` vault kind (this app acting as an OAuth
 // client of an external MCP server — distinct from the PROVIDER-side mcpOAuthController under
@@ -110,7 +114,7 @@ async function loadMcpCredential(
     }
     return {
       cred: decryptJson<McpOAuthCredential>(entry.secret),
-      baseUrl: entry.baseUrl,
+      baseUrl: dialableBaseUrl(entry.kind, entry.baseUrl),
     };
   });
 }

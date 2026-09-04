@@ -34,7 +34,7 @@ import { readMemoryConfig } from "@/modules/memory/settings";
 import { readSttConfig } from "@/modules/stt/settings";
 import { getTenantSettings } from "@/modules/tenant-settings/service";
 import { readTtsConfig } from "@/modules/tts/settings";
-import { listVaultEntryInfos } from "@/modules/vault/service";
+import { dialableBaseUrl, listVaultEntryInfos } from "@/modules/vault/service";
 import { readVisionConfig } from "@/modules/vision/settings";
 
 // "Is this agent's configuration healthy?", answered for a caller that is not the browser.
@@ -149,8 +149,14 @@ export async function readAgentConfigHealth(
       { kind: e.kind, valueFitsKind: e.valueFitsKind },
     ]),
   );
+  // NOTE: the DIALABLE one, not the stored one. `listVaultInfos` reports the row as it is, so the
+  // console can show a base URL sitting on a kind whose form never rendered the field; what the
+  // runtime will actually use is the resolved value, and this block answers for the runtime.
   const baseUrlByRef = new Map(
-    vault.map((e) => [formatVaultRef(e.id), e.baseUrl]),
+    vault.map((e) => [
+      formatVaultRef(e.id),
+      dialableBaseUrl(e.kind, e.baseUrl),
+    ]),
   );
   const vaultBaseUrl = (ref: string | null | undefined): string | null => {
     const canonical = canonicalVaultRef(ref ?? "");

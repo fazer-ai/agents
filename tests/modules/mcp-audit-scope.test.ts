@@ -276,12 +276,31 @@ describe.skipIf(!dbUp)("what a targetless audit_list actually reads", () => {
     const rows = (r: unknown) =>
       JSON.stringify((r as { data: { entries: unknown } }).data.entries);
     expect(rows(viaOld)).toBe(rows(viaNew));
-    // ...and the cursor it hands back carries the bound, which is what keeps the REST of the walk
-    // on the set the old release still owed. The one started under this release carries none.
-    const nextOf = (r: unknown) =>
-      (r as { data: { nextCursor: string | null } }).data.nextCursor ?? "";
-    expect(nextOf(viaOld).split("|")[2]).toBe(bareId);
-    expect(nextOf(viaNew).split("|")[2]).toBeUndefined();
+
+    // ...and the bound holds for the WHOLE walk, not just its first page: every id it hands back
+    // stays under the ceiling the old release stopped at, and none comes back twice. Asserted over
+    // the walk rather than over one `nextCursor`, because how many pages this shared fixture yields
+    // is not this test's to know -- pinned to a second page it passed here and failed on a CI shard
+    // where the `all` trail had one row under the bound.
+    const seen: string[] = [];
+    let at: string | null = bareId;
+    for (let i = 0; i < 20 && at; i++) {
+      const page = (await auditList(
+        p,
+        { limit: 1, scope: "all", cursor: at },
+        { base: appDb },
+      )) as {
+        ok: true;
+        data: { entries: { id: string }[]; nextCursor: string | null };
+      };
+      seen.push(...page.data.entries.map((e) => e.id));
+      at = page.data.nextCursor;
+      // While the walk continues, the ceiling travels with it.
+      if (at) expect(at.split("|")[2]).toBe(bareId);
+    }
+    expect(seen.length).toBeGreaterThan(0);
+    expect(new Set(seen).size).toBe(seen.length);
+    for (const id of seen) expect(BigInt(id) < BigInt(bareId)).toBe(true);
   });
 
   // A BARE ID IS A BOUND AND NOT A LOOKUP, so it cannot reach across trails at all -- which is what

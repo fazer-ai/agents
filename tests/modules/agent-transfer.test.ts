@@ -2762,7 +2762,11 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
       where: { tenantId: dstTenant, name: stored?.name },
       select: { label: true },
     });
-    expect(storedRow.label).toBe(`${long} 2`);
+    // Round 26: asserted as the QUESTION, not as the text. `${long} 2` is 66 characters and
+    // normalizes back to 64 with the suffix cut, so it derives the name the row could not take:
+    // the console submits that name on every save and the tool cannot be saved again. What the
+    // label owes is deriving the name the row actually has.
+    expect(normalizeToolName(storedRow.label)).toBe(stored?.name ?? "");
     expect(
       warnings.some(
         (w) =>

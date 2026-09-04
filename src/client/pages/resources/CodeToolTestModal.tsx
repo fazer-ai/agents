@@ -46,7 +46,11 @@ import { fieldTypeLabels } from "./toolFieldTypes";
 export function contextNamesUsedBy(code: string): string[] {
   const used = new Set<string>();
   for (const m of code.matchAll(
-    /\bcontext\s*(?:\.\s*([A-Za-z_$][\w$]*)|\[\s*(?:"([^"]*)"|'([^']*)')\s*\])/g,
+    // Four spellings, and optional chaining is not the exotic one: a body reading a variable the
+    // turn may not have is WRITTEN `context?.contact_email` (round 26). Two top-level alternatives
+    // because `?.` sits in a different place in each: before the bracket in `context?.["x"]`, in
+    // place of the dot in `context?.x`.
+    /\bcontext\s*(?:\?\.\s*\[|\[)\s*(?:"([^"]*)"|'([^']*)')\s*\]|\bcontext\s*\??\.\s*([A-Za-z_$][\w$]*)/g,
   )) {
     const name = m[1] ?? m[2] ?? m[3];
     if (name) used.add(name);

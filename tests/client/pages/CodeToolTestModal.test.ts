@@ -40,6 +40,13 @@ describe("contextNamesUsedBy", () => {
     ],
     // A body that reads nothing asks for nothing, which is what keeps the dialog empty for the
     // ordinary tool.
+    // Round 26: optional chaining is how a careful body reads a variable a turn may not have, so it
+    // is the FIRST spelling to expect here, not an exotic one.
+    [
+      "optional chaining, dot and bracket",
+      `return [context?.contact_email, context?.["inbox_name"]];`,
+      ["contact_email", "inbox_name"],
+    ],
     ["a body that reads no context", "return input.cpf.length;", []],
     ["something that is not code", "", []],
   ];

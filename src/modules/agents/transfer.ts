@@ -1572,10 +1572,17 @@ function renamedLabel(
   if (normalizeToolName(bundledLabel) !== bundledName) return bundledLabel;
   // The suffix comes off the STORED name, not from the bundled one's length: a name at the 64
   // ceiling has its stem trimmed before `_N` is appended (renamedToolName), so counting from the
-  // bundled name starts past the end and the label keeps deriving the identifier the row could not
-  // take — leaving the tool unsaveable from the console without renaming it by hand.
+  // bundled name starts past the end.
   const suffixed = `${bundledLabel} ${storedName.slice(storedName.lastIndexOf("_") + 1)}`;
-  return suffixed.length > TOOL_LABEL_MAX ? storedName : suffixed;
+  // And then the only question that matters is asked of the RESULT, because the length rule this
+  // replaces answered a different one (round 26). A bundled name at the 64 ceiling has a label at
+  // the ceiling too, and ` 2` on the end of it normalizes back to 64 characters with the suffix
+  // CUT: the label derives the name the row could not take, the console submits that name on every
+  // save, and the tool cannot be saved again without renaming it by hand. Clipped first, since a
+  // label past TOOL_LABEL_MAX is trimmed on the way to the column and the trim can break the
+  // derivation the same way. The stored name always derives itself, so it is the fallback.
+  const clipped = clipLabel(suffixed);
+  return normalizeToolName(clipped) === storedName ? clipped : storedName;
 }
 
 // The name a bundled HTTP or code tool is stored under. A native's name moves first, decided by

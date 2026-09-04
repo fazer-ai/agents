@@ -21,9 +21,24 @@ import { normalizeToolShapes, type ToolShapePatch } from "./normalize";
 import { DEFAULT_HTTP_METHOD } from "./service";
 
 // The SAME grammar the runtime interpolates with (`PLACEHOLDER` in graph/tools/http.ts): the braces
-// take surrounding whitespace, so a scanner matching only the tight spelling would call a working
+// take surrounding whitespace, so a reader matching only the tight spelling would call a working
 // `{{ secret }}` unused and warn about a tool that is wired correctly.
-const placeholder = (name: string) => new RegExp(`\\{\\{\\s*${name}\\s*\\}\\}`);
+//
+// Read as TOKENS rather than by compiling a regex around each name, and that is not a style choice:
+// an input-schema key is not held to this grammar, so `new RegExp(\`…${name}…\`)` on a field called
+// `a[b` throws — out of `tool_create`, before its try block, as an unhandled error rather than a
+// write result. Extracting the names a template actually carries has no such edge, and it answers
+// the same question the runtime asks: a name outside `[a-zA-Z0-9_]` can never be a placeholder.
+const PLACEHOLDER = /\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g;
+
+function namesIn(template: string): Set<string> {
+  return new Set(
+    [...template.matchAll(PLACEHOLDER)].map((m) => m[1] as string),
+  );
+}
+
+const mentions = (templates: string[], name: string): boolean =>
+  templates.some((t) => namesIn(t).has(name));
 
 // Mirrors `isBodyMethod` in graph/tools/http.ts. DELETE is deliberately absent there — a DELETE tool
 // carrying a raw body sends none of it — and a copy of that list which quietly included DELETE would
@@ -38,6 +53,38 @@ function stringValues(v: unknown): string[] {
   return isPlainObject(v)
     ? Object.values(v).filter((x): x is string => typeof x === "string")
     : [];
+}
+
+// The query map as the runtime reads it (`parseQuery`): a null/undefined value is dropped and
+// everything else is STRINGIFIED, so `{ token: 123 }` is a real, non-empty query value. Reading only
+// the strings would call that entry absent and then conclude the credential is auto-injected into a
+// parameter the operator has already taken.
+function queryMap(raw: unknown): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!isPlainObject(raw)) return out;
+  for (const [k, v] of Object.entries(raw)) {
+    if (v == null) continue;
+    out[k] = typeof v === "string" ? v : String(v);
+  }
+  return out;
+}
+
+// The query keys the URL template already carries. The runtime applies the explicit query map with
+// `if (v !== "" && !url.searchParams.has(k))`, so a key the template spells wins and the map's value
+// for it is DISCARDED — never interpolated into anything that leaves.
+function urlQueryKeys(urlTemplate: unknown): Set<string> {
+  if (typeof urlTemplate !== "string") return new Set();
+  const q = urlTemplate.split("?")[1];
+  return q ? new Set([...new URLSearchParams(q).keys()]) : new Set();
+}
+
+// The explicit query entries that survive to the request: everything the URL template does not
+// already spell.
+function reachingQuery(shapes: ToolShapePatch): Record<string, string> {
+  const taken = urlQueryKeys(shapes.urlTemplate);
+  return Object.fromEntries(
+    Object.entries(queryMap(shapes.query)).filter(([k]) => !taken.has(k)),
+  );
 }
 
 function bodyTemplates(body: unknown): string[] {
@@ -83,7 +130,10 @@ export function reachableTemplates(
 ): string[] {
   const emitted: string[] = [];
   if (typeof shapes.urlTemplate === "string") emitted.push(shapes.urlTemplate);
-  emitted.push(...stringValues(shapes.headers), ...stringValues(shapes.query));
+  emitted.push(
+    ...stringValues(shapes.headers),
+    ...Object.values(reachingQuery(shapes)),
+  );
   const m = (method ?? DEFAULT_HTTP_METHOD).toUpperCase();
   if (BODY_METHODS.has(m)) emitted.push(...bodyTemplates(shapes.body));
 
@@ -99,7 +149,7 @@ export function reachableTemplates(
     // the runtime's assembly rules for a case that costs a MISSED warning either way. Over-counting
     // here can only make this file too quiet; under-counting would make it warn about a tool that
     // works.
-    if (legacy || emitted.some((t) => placeholder(name).test(t))) {
+    if (legacy || mentions(emitted, name)) {
       out.push(value);
     }
   }
@@ -126,20 +176,16 @@ function autoInjectionReaches(
       : [];
     return !names.some((h) => h.toLowerCase() === inj.name.toLowerCase());
   }
-  // Query: the runtime injects unless the param is already on the URL — hand-written in the template,
-  // or set from the explicit query map, which it applies first and only for a value that resolves
-  // NON-EMPTY. A template value may resolve to nothing, and that is unknowable here, so only a
-  // literal counts as shadowing. Guessing the other way would warn about a tool that is wired.
-  const query = isPlainObject(shapes.query) ? shapes.query : {};
-  const explicit = query[inj.name];
+  // Query: the runtime injects unless the param is already on the URL — spelled in the template, or
+  // set from the explicit query map, which it applies first and only for a value that resolves
+  // NON-EMPTY. A value carrying a placeholder may resolve to nothing, and that is unknowable here,
+  // so only a literal counts as shadowing. Guessing the other way would warn about a tool that is
+  // wired.
+  if (urlQueryKeys(shapes.urlTemplate).has(inj.name)) return false;
+  const explicit = reachingQuery(shapes)[inj.name];
   const literalNonEmpty =
-    typeof explicit === "string" &&
-    explicit !== "" &&
-    !/\{\{\s*[a-zA-Z0-9_]+\s*\}\}/.test(explicit);
-  if (literalNonEmpty) return false;
-  const url = typeof shapes.urlTemplate === "string" ? shapes.urlTemplate : "";
-  const q = url.split("?")[1];
-  return !(q && new URLSearchParams(q).has(inj.name));
+    explicit !== undefined && explicit !== "" && namesIn(explicit).size === 0;
+  return !literalNonEmpty;
 }
 
 export function credentialReachesRequest(
@@ -148,13 +194,7 @@ export function credentialReachesRequest(
   method: string | null | undefined,
   shapes: ToolShapePatch,
 ): boolean {
-  if (
-    reachableTemplates(method, shapes).some((t) =>
-      placeholder("secret").test(t),
-    )
-  ) {
-    return true;
-  }
+  if (mentions(reachableTemplates(method, shapes), "secret")) return true;
   return autoInjectionReaches(kind, paramName, shapes);
 }
 

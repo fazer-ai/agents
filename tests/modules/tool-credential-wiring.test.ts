@@ -53,7 +53,7 @@ interface Wiring {
   paramName?: string | null;
   urlTemplate?: string;
   headers?: Record<string, string>;
-  query?: Record<string, string>;
+  query?: Record<string, unknown>;
   body?: unknown;
   inputSchema?: unknown;
 }
@@ -228,6 +228,38 @@ const CASES: Wiring[] = [
     kind: "query",
     paramName: "token",
     urlTemplate: `https://${PUBLIC}/v1/thing?token=constant`,
+  },
+
+  // ── the query map, which the runtime reads on its own terms ──
+  {
+    label: "a query value the URL template already spells is discarded",
+    reaches: false,
+    urlTemplate: `https://${PUBLIC}/v1/thing?token=fixed`,
+    query: { token: "{{secret}}" },
+  },
+  {
+    label:
+      "a query kind shadowed by a NON-string literal the runtime stringifies",
+    reaches: false,
+    kind: "query",
+    paramName: "token",
+    query: { token: 123 },
+  },
+  {
+    label: "…and not shadowed by an empty one, which the runtime skips",
+    reaches: true,
+    kind: "query",
+    paramName: "token",
+    query: { token: "" },
+  },
+  {
+    label: "a fixed field whose NAME cannot be a placeholder reaches nothing",
+    reaches: false,
+    method: "POST",
+    body: { mode: "kv", rows: [{ key: "a", value: "1" }] },
+    inputSchema: {
+      "a[b": { type: "string", source: "fixed", value: "{{secret}}" },
+    },
   },
 
   // ── spelling ──

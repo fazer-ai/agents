@@ -3,6 +3,7 @@ import {
   ChevronLeft,
   ChevronRight,
   ClipboardList,
+  Download,
   Filter,
   X,
 } from "lucide-react";
@@ -24,9 +25,11 @@ import {
   PageContainer,
   Skeleton,
   Tooltip,
+  useToast,
 } from "@/client/components";
 import { useAuth } from "@/client/contexts/AuthContext";
 import { api } from "@/client/lib/api";
+import { apiErrorMessage } from "@/client/lib/apiError";
 import {
   AUDIT_PERIOD_PRESETS,
   type AuditPeriodPreset,
@@ -464,6 +467,7 @@ export function AuditPage() {
   // have: a scope in the URL that this operator may not use is dropped from the URL as well as from
   // the query, the same way an unparseable date is below — left there, the address bar would claim a
   // trail the page is not showing.
+  const { showToast } = useToast();
   const isSuperAdmin = user?.role === "SUPER_ADMIN";
   const scopeParam = searchParams.get("scope") ?? "";
   const scope: AuditScope =
@@ -682,6 +686,69 @@ export function AuditPage() {
     void load();
   }, [load]);
 
+  // THE EXPORT ASKS THE QUESTION THAT IS ON SCREEN, and that is the whole design: it is built from
+  // the SAME values `load` sends, minus the cursor. The page's position is not part of the question,
+  // and an export that started halfway down the trail under a filename claiming the filter would be a
+  // wrong answer nobody could see was wrong. The server bounds and serializes (the file rides back in
+  // `content`), the same division the Logs page's button has -- which is also why this route is not an
+  // optional extra surface: the browser has no way to produce the file itself.
+  const [exporting, setExporting] = useState(false);
+  const runExport = async () => {
+    setExporting(true);
+    try {
+      const query: Record<string, string> = {};
+      if (scope !== "tenant") query.scope = scope;
+      if (action) query.action = action;
+      if (actorType) query.actorType = actorType;
+      const since = from ? localDayBounds(from) : null;
+      const until = to ? localDayBounds(to) : null;
+      if (since) query.since = since.since;
+      if (until) query.until = until.until;
+      const { data, error: err } = await api.api.v1.audit.export.get({ query });
+      if (err || !data) throw err ?? new Error("no data");
+      if (data.count === 0) {
+        showToast(
+          t("audit.exportEmpty", "No entries matched. Nothing to export."),
+          "info",
+        );
+        return;
+      }
+      const url = URL.createObjectURL(
+        new Blob([data.content], { type: data.contentType }),
+      );
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = data.filename;
+      a.click();
+      URL.revokeObjectURL(url);
+      if (data.truncated) {
+        showToast(
+          t(
+            "audit.exportTruncated",
+            "Exported the newest {{count}} entries; more matched. Narrow the period to take the rest.",
+            { count: data.count },
+          ),
+          "warning",
+        );
+      } else {
+        showToast(
+          t("audit.exportDone", "Exported {{count}} entries.", {
+            count: data.count,
+          }),
+          "success",
+        );
+      }
+    } catch (e) {
+      showToast(
+        apiErrorMessage(e) ||
+          t("audit.exportError", "Could not export the trail."),
+        "error",
+      );
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const pageIdx = cursorStack.length - 1;
   const scoped = action || actorType || from || to || scope !== "tenant";
   // NOTE: An empty page has two very different reasons, and only one of them is "nothing happened".
@@ -801,6 +868,15 @@ export function AuditPage() {
             {t("audit.clearFilters", "Clear")}
           </Button>
         )}
+        <Button
+          variant="secondary"
+          size="sm"
+          loading={exporting}
+          onClick={() => void runExport()}
+        >
+          <Download className="h-4 w-4" aria-hidden="true" />
+          {t("audit.export", "Export")}
+        </Button>
       </div>
 
       {loading ? (

@@ -24,6 +24,7 @@ import { TooltipProvider } from "@radix-ui/react-tooltip";
 import { cleanup, render, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router";
+import { ToastProvider } from "@/client/components";
 
 // The page reads the principal's role to decide whether to offer the scope selector (#520). These
 // files are not about that, so the mock hands it the ordinary operator: a TENANT_ADMIN, which is
@@ -76,11 +77,13 @@ test("the trail-wide newest row is not printed anywhere", async () => {
   // harness. The app supplies one on its own (verified live: the trigger reaches `delayed-open` and
   // the content renders); this is the same wrapper `KnowledgeDocsBlock.test.tsx` already uses.
   const view = render(
-    <TooltipProvider>
-      <MemoryRouter initialEntries={["/audit"]}>
-        <AuditPage />
-      </MemoryRouter>
-    </TooltipProvider>,
+    <ToastProvider>
+      <TooltipProvider>
+        <MemoryRouter initialEntries={["/audit"]}>
+          <AuditPage />
+        </MemoryRouter>
+      </TooltipProvider>
+    </ToastProvider>,
   );
 
   // The row landed, so the response WAS read and the assertion below is about rendering.

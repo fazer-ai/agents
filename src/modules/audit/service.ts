@@ -137,7 +137,9 @@ export interface AuditLogItem {
   createdAt: string;
 }
 
-export interface ListAuditOpts {
+// The filter surface the page's controls project onto, shared by the list and the export so the two
+// cannot drift. Pagination and scope are deliberately NOT here: see `buildAuditWhere`.
+export interface AuditFilterOpts {
   action?: string;
   // How the actor authenticated. Its value is one word on every row until the write side of #306
   // lands, which is exactly why it is worth filtering by afterwards: it is what separates a change
@@ -147,6 +149,9 @@ export interface ListAuditOpts {
   // Both bounds inclusive, matching the Logs page's own since/until.
   since?: Date;
   until?: Date;
+}
+
+export interface ListAuditOpts extends AuditFilterOpts {
   limit?: number;
   // Keyset: rows with id < cursor. On the ID and never on the time, because `created_at` here is
   // written by the CLIENT and not by the database (measured: rows appended inside one transaction
@@ -205,6 +210,58 @@ const AUDIT_SELECT = {
 // The two wider scopes enter the fleet role and are refused outright to anyone but a SUPER_ADMIN:
 // REFUSED AND NOT NARROWED, because a scope that quietly answered with the caller's own rows would
 // be the same silent omission this exists to end, wearing the name of the fix.
+// THE OPERATOR'S FILTER, alone: what the page's controls say, and nothing about which trail or where
+// the page is. Extracted so a second reader cannot answer a different question than the list did --
+// an export whose rows do not match the screen is worse than no export, because it is quoted.
+//
+// The cursor is NOT here, and that is the seam: it is where the reader is, not what it asked for, so
+// a one-shot dump has no use for it and would silently start halfway down.
+export function buildAuditWhere(
+  opts: AuditFilterOpts,
+): Prisma.AuditLogWhereInput {
+  const createdAt: Prisma.DateTimeFilter = {};
+  if (opts.since) createdAt.gte = opts.since;
+  if (opts.until) createdAt.lte = opts.until;
+  return {
+    ...(opts.action ? { action: opts.action } : {}),
+    ...(opts.actorType ? { actorType: opts.actorType } : {}),
+    ...(opts.actorId !== undefined ? { actorId: opts.actorId } : {}),
+    ...(opts.since || opts.until ? { createdAt } : {}),
+  };
+}
+
+// WHICH TRAIL, and who may ask for it. Refused and never narrowed: a scope that quietly answered
+// with the caller's own rows would be the omission #520 exists to end, wearing the name of the fix.
+// Returns the trail's own predicate, kept SEPARATE from the operator's filter above because
+// `latestAt` is documented as the newest row of the trail PAST ANY FILTER -- it takes this one and
+// not the other.
+export function auditTrailFor(
+  ctx: TenantContext,
+  scope: AuditScope,
+): Prisma.AuditLogWhereInput {
+  if (scope !== "tenant" && ctx.role !== "SUPER_ADMIN") {
+    throw new ForbiddenError(
+      "Reading the fleet trail requires SUPER_ADMIN",
+      "errors.auditScopeForbidden",
+    );
+  }
+  return scope === "fleet" ? { tenantId: null } : {};
+}
+
+// Runs a read under the role the scope requires: the tenant's own RLS transaction, or the fleet role
+// that the `fleet_super_admin` policy (`USING true`) is the only admitter of. Both readers go through
+// here so neither can reach a trail by a route the other does not have.
+export function readInScope<T>(
+  base: PrismaClient,
+  ctx: TenantContext,
+  scope: AuditScope,
+  read: (db: ScopedDb) => Promise<T>,
+): Promise<T> {
+  return scope === "tenant"
+    ? runScopedOn(base, ctx, read)
+    : asSuperAdminOn(base, read);
+}
+
 export async function listAudit(
   ctx: TenantContext,
   opts: ListAuditOpts = {},
@@ -212,28 +269,12 @@ export async function listAudit(
 ): Promise<AuditPage> {
   assertUsableCount(opts.limit, "limit");
   const take = Math.min(opts.limit ?? 100, 500);
-  const createdAt: Prisma.DateTimeFilter = {};
-  if (opts.since) createdAt.gte = opts.since;
-  if (opts.until) createdAt.lte = opts.until;
   const where: Prisma.AuditLogWhereInput = {
-    ...(opts.action ? { action: opts.action } : {}),
-    ...(opts.actorType ? { actorType: opts.actorType } : {}),
-    ...(opts.actorId !== undefined ? { actorId: opts.actorId } : {}),
-    ...(opts.since || opts.until ? { createdAt } : {}),
+    ...buildAuditWhere(opts),
     ...(opts.cursor !== undefined ? { id: { lt: opts.cursor } } : {}),
   };
   const scope = opts.scope ?? "tenant";
-  if (scope !== "tenant" && ctx.role !== "SUPER_ADMIN") {
-    throw new ForbiddenError(
-      "Reading the fleet trail requires SUPER_ADMIN",
-      "errors.auditScopeForbidden",
-    );
-  }
-  // The predicate that says which trail, kept SEPARATE from `where` above: `where` is the operator's
-  // filter and this is the read's own boundary, and `latestAt` is documented as the newest row of
-  // the trail PAST ANY FILTER — so it takes this one and not the other.
-  const trail: Prisma.AuditLogWhereInput =
-    scope === "fleet" ? { tenantId: null } : {};
+  const trail = auditTrailFor(ctx, scope);
   const read = async (db: ScopedDb) => ({
     rows: await db.auditLog.findMany({
       where: { ...trail, ...where },
@@ -248,10 +289,7 @@ export async function listAudit(
       where: trail,
     }),
   });
-  const { rows, latest } =
-    scope === "tenant"
-      ? await runScopedOn(base, ctx, read)
-      : await asSuperAdminOn(base, read);
+  const { rows, latest } = await readInScope(base, ctx, scope, read);
   const hasMore = rows.length > take;
   const page = hasMore ? rows.slice(0, take) : rows;
   return {

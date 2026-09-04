@@ -13,6 +13,7 @@ import { ForbiddenError, TenantTargetRequiredError } from "@/lib/errors";
 import { instanceIdentity } from "@/lib/instance";
 import type { TenantContext } from "@/lib/tenancy";
 import { ACTOR_TYPES } from "@/lib/tenancy/actor";
+import { exportAudit } from "@/modules/audit/export";
 import { listAudit } from "@/modules/audit/service";
 
 // Audit log read surface. TENANT_ADMIN for a tenant's own trail; `scope=fleet|all` reaches the rows
@@ -109,6 +110,74 @@ export const auditController = new Elysia({
       detail: doc(
         "List audit entries",
         "Lists audit log entries with keyset pagination. Tenant-scoped by default; `scope=fleet|all` widens to the rows keyed to no tenant and requires SUPER_ADMIN.",
+      ),
+      response: errors(400, 401, 403, 404),
+    },
+  )
+  // Bulk export of the trail the operator is looking at (#521). SAME filter surface as the list, minus
+  // pagination -- the two share `buildAuditWhere`, so an export cannot answer a different question
+  // than the screen it was taken from. The scope travels with it and is refused, never narrowed, by
+  // the same gate. The serialized file rides back in `content` (the client turns it into a Blob)
+  // alongside `filename` / `contentType`, plus `truncated` and `truncatedBy` when a ceiling cut it.
+  .get(
+    "/export",
+    async ({ tenantContext, query }) => {
+      const scope =
+        parseQueryEnum(query.scope, "scope", AUDIT_SCOPES) ?? "tenant";
+      return {
+        instance: instanceIdentity,
+        ...(await exportAudit(ctxOrThrow(tenantContext, scope), {
+          scope,
+          action: parseQueryText(query.action, "action"),
+          actorType: parseQueryEnum(query.actorType, "actorType", ACTOR_TYPES),
+          actorId: parseQueryId(query.actorId, "actorId"),
+          since: parseQueryInstant(query.since, "since"),
+          until: parseQueryInstant(query.until, "until"),
+          maxRows: parseQueryCount(query.maxRows, "maxRows"),
+        })),
+      };
+    },
+    {
+      requireRole: "TENANT_ADMIN",
+      query: t.Object({
+        action: t.Optional(
+          t.String({ description: "Filter by audit action name." }),
+        ),
+        actorType: t.Optional(
+          t.String({
+            description: `How the actor authenticated: ${ACTOR_TYPES.join(" | ")}.`,
+          }),
+        ),
+        actorId: t.Optional(
+          t.String({ description: "Filter by actor id (BigInt string)." }),
+        ),
+        since: t.Optional(
+          t.String({
+            description:
+              "Lower bound on row time, as an ISO 8601 instant with an offset (2026-01-01T00:00:00Z). A date alone is rejected with 400.",
+          }),
+        ),
+        until: t.Optional(
+          t.String({
+            description:
+              "Upper bound on row time, as an ISO 8601 instant with an offset (2026-01-01T00:00:00Z). A date alone is rejected with 400.",
+          }),
+        ),
+        scope: t.Optional(
+          t.String({
+            description: `Which trail to export: ${AUDIT_SCOPES.join(" | ")} (default tenant). \`fleet\`/\`all\` require SUPER_ADMIN and are refused with 403 otherwise, never narrowed.`,
+          }),
+        ),
+        maxRows: t.Optional(
+          t.String({
+            description:
+              "Max rows to export (positive integer string, clamped to the hard cap). A byte ceiling can cut earlier; `truncatedBy` says which did.",
+          }),
+        ),
+      }),
+      detail: doc(
+        "Export audit entries",
+        "Exports the audit entries matching the given filters as a CSV file, newest first, bounded by a row cap and a byte budget (whichever comes first). `before`/`after` are one JSON column each.",
       ),
       response: errors(400, 401, 403, 404),
     },

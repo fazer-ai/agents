@@ -385,8 +385,6 @@
     "descriptionPlaceholder": "e.g. Check whether a CPF is valid before quoting.",
     "duplicateNames": "Two arguments share a name. Give each one a distinct name.",
     "editTitle": "Edit code tool",
-    "enabled": "Agents may call this tool",
-    "enabledHelp": "Off, the tool reaches no agent at all, including the ones it is already granted to. The definition is kept and the grants stay; nothing is offered to the model until you turn it back on.",
     "identifierPreview": "Identifier:",
     "inputs": "Arguments",
     "inputsHint": "The arguments the agent fills in. The body reads them as `input.<name>`.",

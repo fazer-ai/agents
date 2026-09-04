@@ -11,7 +11,6 @@ import {
   ModalCancelButton,
   type ModalController,
   Skeleton,
-  SwitchField,
   Textarea,
   useModalController,
   useOnModalOpen,
@@ -106,6 +105,13 @@ export function payloadOfCodeTool(form: CodeToolForm) {
     description: form.description.trim(),
     inputSchema: schemaFromAiFields(form.aiFields),
     code: form.code,
+    // Carried, never edited here: the form has no switch for it. Which agents may call the tool is
+    // decided by the GRANT, on the agent, and that is the whole control the console offers for the
+    // HTTP tool this kind is the sibling of. A second, tool-wide switch beside it would be a second
+    // answer to one question, and the two disagree the moment an operator uses only one of them.
+    // The column stays (the assembly skips a disabled row, a bundle carries the flag, the list
+    // badges it, MCP can write it) — what it does not get is a door in this modal that its sibling
+    // does not have.
     enabled: form.enabled,
   };
 }
@@ -538,16 +544,6 @@ export function CodeToolEditModal({
                 )}
               </span>
             </div>
-
-            <SwitchField
-              checked={form.enabled}
-              onCheckedChange={(enabled) => setForm((f) => ({ ...f, enabled }))}
-              label={t("codeTools.enabled", "Agents may call this tool")}
-              help={t(
-                "codeTools.enabledHelp",
-                "Off, the tool reaches no agent at all — including the ones it is already granted to. The definition is kept and the grants stay; nothing is offered to the model until you turn it back on.",
-              )}
-            />
           </div>
         )}
       </Modal>

@@ -393,8 +393,6 @@
     "descriptionPlaceholder": "ex.: Verifica se um CPF é válido antes de orçar.",
     "duplicateNames": "Dois argumentos têm o mesmo nome. Dê um nome distinto a cada um.",
     "editTitle": "Editar ferramenta de código",
-    "enabled": "Os agentes podem chamar esta ferramenta",
-    "enabledHelp": "Desligada, a ferramenta não chega a agente nenhum, inclusive os que já a têm concedida. A definição continua salva e as concessões ficam; nada é oferecido ao modelo até você ligar de novo.",
     "identifierPreview": "Identificador:",
     "inputs": "Argumentos",
     "inputsHint": "Os argumentos que o agente preenche. O código os lê como `input.<nome>`.",

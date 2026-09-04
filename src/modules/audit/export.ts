@@ -199,13 +199,13 @@ export async function exportAudit(
 
   const header = COLUMNS.join(",");
   const headerBytes = Buffer.byteLength(header, "utf8");
-  // A CEILING THE FORMAT CANNOT MEET IS REFUSED, not quietly exceeded. Below the header there is no
+  // NOTE: A CEILING THE FORMAT CANNOT MEET IS REFUSED, not quietly exceeded. Below the header there is no
   // answer to give: the file is already over budget before a single row is weighed, and it would come
   // back with `truncated: false` because nothing was cut -- a result that breaks the promise and
   // reports having kept it. Same 400 the rest of the range checks raise.
   if (maxBytes < headerBytes) badQueryParam("maxBytes");
   const lines: string[] = [];
-  // BYTES AND NOT `.length`, which counts UTF-16 code units. The budget exists to bound a DOWNLOAD,
+  // NOTE: BYTES AND NOT `.length`, which counts UTF-16 code units. The budget exists to bound a DOWNLOAD,
   // and the file goes out as UTF-8: a trail written in Portuguese measures 1.18x its code-unit count
   // (measured on an ordinary projection), and one carrying emoji or CJK measures up to 3x -- so a
   // budget spent in code units is a budget silently overrun by everyone whose data is not ASCII.
@@ -213,16 +213,16 @@ export async function exportAudit(
   // is nothing.
   let bytes = Buffer.byteLength(header, "utf8");
   let truncatedBy: "rows" | "bytes" | null = null;
-  // Newest first, walked by the same keyset the page uses, so "the newest `count` win" is the same
+  // NOTE: newest first, walked by the same keyset the page uses, so "the newest `count` win" is the same
   // sentence for both readers.
   let cursor: bigint | null = null;
-  // The widest row of the last trip, which is what sizes the next one (see BATCH_PROBE above).
+  // NOTE: the widest row of the last trip, which is what sizes the next one (see BATCH_PROBE above).
   let widest = 0;
   let batch = BATCH_PROBE;
 
   while (truncatedBy === null) {
     const want = Math.min(batch, maxRows - lines.length);
-    // One extra row per trip answers "is there more?" without a second count over a growing table.
+    // NOTE: one extra row per trip answers "is there more?" without a second count over a growing table.
     const rows: Row[] = await readInScope(base, ctx, scope, (db) =>
       db.auditLog.findMany({
         where: {
@@ -239,7 +239,7 @@ export async function exportAudit(
     widest = 0;
     for (const r of rows.slice(0, want)) {
       const line = toLine(r);
-      // +2 for the CRLF this line will be joined with. Checked BEFORE appending, so the file never
+      // NOTE: +2 for the CRLF this line will be joined with. Checked BEFORE appending, so the file never
       // exceeds the budget it reports having respected -- and a row is kept whole or not at all,
       // which is also why nothing here cuts a string and no character can be split in half.
       const size = Buffer.byteLength(line, "utf8") + 2;

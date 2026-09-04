@@ -54,13 +54,6 @@ mock.module("@/modules/audit/service", () => ({
     ctx: TenantContext,
     opts: Parameters<typeof auditService.listAudit>[1],
   ) => realAudit.listAudit(ctx, opts, app),
-  // Same call-through: the controller resolves a pre-#530 cursor through this, and it reads the
-  // table to do it.
-  resolveLegacyAuditCursor: (
-    ctx: TenantContext,
-    raw: string,
-    scope: Parameters<typeof auditService.resolveLegacyAuditCursor>[2],
-  ) => realAudit.resolveLegacyAuditCursor(ctx, raw, scope, app),
 }));
 
 const auditExport = await import("@/modules/audit/export");
@@ -268,13 +261,13 @@ describe.skipIf(!dbUp)("the trail has a door the console can use", () => {
       });
     }
 
-    // A CURSOR FROM BEFORE #530 IS A BARE ID, and it is RESOLVED rather than reinterpreted. The
-    // format changed and deploys are rolling, so for one overlap the previous release is still
-    // handing these out; refusing would be a 400 in the middle of an operator's walk. Resolving asks
-    // the table which instant that row carries, so the page continues from the SAME place the old
-    // walk would have -- which reinterpreting the number as the new key would not, and that
-    // distinction is the whole point.
-    test("a cursor from before the keyset change resolves to the same position", async () => {
+    // A CURSOR FROM BEFORE #530 IS A BARE ID, and it is read as THAT RELEASE'S OWN `id <` BOUND
+    // rather than reinterpreted or translated. The format changed and deploys are rolling, so for
+    // one overlap the previous release is still handing these out; refusing would be a 400 in the
+    // middle of an operator's walk. The bound continues from the same place the old walk would
+    // have, which neither reading the number as the new key nor translating it into that row's
+    // instant does -- see `AuditCursor.beforeId`, and the walk asserted in the service's own file.
+    test("a cursor from before the keyset change continues the same walk", async () => {
       role = "TENANT_ADMIN";
       const first = await get("?limit=1", await sign("TENANT_ADMIN"));
       const page = (await first.json()) as Page & { nextCursor: string };
@@ -300,8 +293,9 @@ describe.skipIf(!dbUp)("the trail has a door the console can use", () => {
         "abc",
         "|",
         "2026-01-01T00:00:00.000Z|x",
-        // An id in the old shape that names no row this reader can see is not a position either.
-        "99999999",
+        // Bounded like every other id: past 2^63-1 Postgres refuses it at bind time, so parsing it
+        // here would answer a plainly malformed value with a 500.
+        "9".repeat(40),
       ]) {
         const res = await get(
           `?cursor=${encodeURIComponent(bad)}`,

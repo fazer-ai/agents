@@ -1,7 +1,7 @@
 import { Elysia, t } from "elysia";
-import { auditCursorFrom } from "@/api/lib/audit-cursor";
 import { doc, errors } from "@/api/lib/openapi";
 import {
+  parseQueryAuditCursor,
   parseQueryCount,
   parseQueryEnum,
   parseQueryId,
@@ -56,11 +56,7 @@ export const auditController = new Elysia({
         ...(await listAudit(ctxOrThrow(tenantContext, scope), {
           scope,
           limit: parseQueryCount(query.limit, "limit"),
-          cursor: await auditCursorFrom(
-            query.cursor,
-            ctxOrThrow(tenantContext, scope),
-            scope,
-          ),
+          cursor: parseQueryAuditCursor(query.cursor, "cursor"),
           action: parseQueryText(query.action, "action"),
           actorType: parseQueryEnum(query.actorType, "actorType", ACTOR_TYPES),
           actorId: parseQueryId(query.actorId, "actorId"),
@@ -103,7 +99,7 @@ export const auditController = new Elysia({
         cursor: t.Optional(
           t.String({
             description:
-              "Keyset cursor: pass back `nextCursor` from the previous page, verbatim. Opaque -- do not build one, and a cursor from before #530 (a bare id) is refused rather than reinterpreted, because reading it as the new key would answer from a different place in the trail.",
+              "Keyset cursor: pass back `nextCursor` from the previous page, verbatim. Opaque -- do not build one. A cursor from before #530 (a bare id) is read as that release's own `id <` bound, so a walk that spans a rolling deploy finishes without losing a row; anything else is refused.",
           }),
         ),
         scope: t.Optional(

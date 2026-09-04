@@ -1,5 +1,6 @@
 import { parseDbId } from "@/lib/db-id";
 import { badQueryParam } from "@/lib/query-param";
+import { type AuditCursor, parseAuditCursor } from "@/modules/audit/service";
 import { parseIsoInstant } from "@/modules/flowlog/settings";
 
 // NOTE: the refusal is raised from `src/lib/query-param.ts`, which the API extractor's input glob
@@ -94,4 +95,19 @@ export function parseQueryCount(
   const n = Number(s);
   if (!Number.isSafeInteger(n)) badQueryParam(param);
   return n;
+}
+
+// TWO COLUMNS SINCE #530, so not `parseQueryId`: a cursor is `<ISO instant>|<id>`, opaque by
+// contract, and the parse belongs to the codec that emits it. A cursor from the previous release is
+// a bare id and is read as that release's own `id <` bound, so a walk that spans a rolling deploy
+// finishes without losing a row -- see `AuditCursor.beforeId`. Anything else is the same 400 every
+// other malformed parameter gets.
+export function parseQueryAuditCursor(
+  s: string | undefined,
+  param: string,
+): AuditCursor | undefined {
+  if (s === undefined) return undefined;
+  const c = parseAuditCursor(s);
+  if (c === null) badQueryParam(param);
+  return c;
 }

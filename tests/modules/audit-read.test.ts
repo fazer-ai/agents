@@ -118,8 +118,12 @@ describe.skipIf(!dbUp)("reading the trail", () => {
     expect(page.entries.map((e) => e.action)).toEqual(["c.six", "b.five"]);
     // The cursor names the row it stopped on, in both of the columns the page is ordered by.
     expect(parseAuditCursor(page.nextCursor ?? "")).toEqual({
-      createdAt: new Date(page.entries[1]?.createdAt ?? ""),
-      id: BigInt(page.entries[1]?.id ?? "0"),
+      at: {
+        createdAt: new Date(page.entries[1]?.createdAt ?? ""),
+        id: BigInt(page.entries[1]?.id ?? "0"),
+      },
+      // No pre-#530 bound: this walk began under this release.
+      beforeId: null,
     });
   });
 
@@ -152,13 +156,16 @@ describe.skipIf(!dbUp)("reading the trail", () => {
     expect(cursor).toBeNull();
   });
 
-  // THE CURSOR FROM BEFORE #530 IS REFUSED, NOT REINTERPRETED. It is a bare id, and it still looks
-  // like a perfectly good string: read as the new key it would answer from a different place in the
-  // trail while the pager goes on saying "Page 2", which is the one failure a cursor has. Refused,
-  // the operator gets an error they can recover from by starting the walk again.
+  // A CURSOR THAT IS NEITHER SHAPE IS REFUSED, NOT READ. It still looks like a perfectly good
+  // string, and read as the new key it would answer from a different place in the trail while the
+  // pager goes on saying "Page 2", which is the one failure a cursor has. Refused, the operator gets
+  // an error they can recover from by starting the walk again.
+  //
+  // A BARE ID IS NOT IN THIS LIST: it is the previous release's own cursor and is read as that
+  // release's `id <` bound, which is the one reading of it that answers from the same place. The
+  // test above walks it.
   test("a cursor that is not one of ours is refused rather than read", () => {
     for (const raw of [
-      "115",
       "",
       "|",
       "abc|1",
@@ -196,13 +203,16 @@ describe.skipIf(!dbUp)("reading the trail", () => {
       new Date(0),
       new Date("1999-12-31T23:59:59.999Z"),
     ]) {
-      const c = { createdAt: d, id: 7n };
-      expect(parseAuditCursor(encodeAuditCursor(c))).toEqual(c);
+      const at = { createdAt: d, id: 7n };
+      expect(parseAuditCursor(encodeAuditCursor(at))).toEqual({
+        at,
+        beforeId: null,
+      });
     }
     // ...and a real one still reads back to the pair it names.
     expect(parseAuditCursor("2026-02-01T12:00:00.000Z|7")).toEqual({
-      createdAt: new Date("2026-02-01T12:00:00.000Z"),
-      id: 7n,
+      at: { createdAt: new Date("2026-02-01T12:00:00.000Z"), id: 7n },
+      beforeId: null,
     });
   });
 
@@ -256,7 +266,7 @@ describe.skipIf(!dbUp)("reading the trail", () => {
       expect(new Set(first.entries.map((e) => e.createdAt)).size).toBe(1);
       // The three stamps are identical, so nothing but the id can place the boundary -- which is
       // exactly why the id stayed in the key when #530 put `created_at` in front of it.
-      expect(parseAuditCursor(first.nextCursor ?? "")?.id).toBe(
+      expect(parseAuditCursor(first.nextCursor ?? "")?.at?.id).toBe(
         BigInt(first.entries[1]?.id ?? "0"),
       );
       const second = await listAudit(
@@ -350,6 +360,95 @@ describe.skipIf(!dbUp)("reading the trail", () => {
         `DELETE FROM audit_logs WHERE tenant_id = ${tenantId} AND action LIKE 'skew.%'`,
       );
     }
+  });
+
+  // A WALK THAT STARTED UNDER THE OLD ORDERING FINISHES UNDER THE NEW ONE, LOSING NOTHING.
+  //
+  // A cursor from before #530 is a bare id, and the previous release handed it out meaning `id <
+  // X` under `ORDER BY id`. Translating it into the `(created_at, id)` of row X -- which is what
+  // this PR did until round 9 -- is NOT the same position, because the two orders are not the same
+  // order: `created_at` is written by the client, so a row can carry a stamp older than a row with
+  // a smaller id. Every unseen row stamped AHEAD of X then sits ahead of the translated tuple and
+  // is never returned. Measured on the dev trail, which is written by one process and still holds
+  // two such inversions in 75 rows: from id 88 the old walk owed 19 rows and the translated cursor
+  // returned 2, skipping all 19.
+  //
+  // So the id stays an ID BOUND and is carried to the end of the walk. The page is ordered the new
+  // way and bounded the old way, which enumerates exactly the set the old walk still owed -- no row
+  // skipped, and no row already shown repeated.
+  test("a walk resumed from a pre-#530 cursor loses no row and repeats none", async () => {
+    try {
+      // Stamped so id order and time order DISAGREE, which is the whole case: `inv.old` has the
+      // largest id of the three and the oldest stamp, so a cursor translated to its instant would
+      // put the other two behind it.
+      await seed("inv.newest", "2026-03-03T00:00:00Z");
+      await seed("inv.middle", "2026-03-02T00:00:00Z");
+      await seed("inv.old", "2026-01-15T12:00:00Z");
+      const all = await listAudit(ctx(), { limit: 500 }, appDb);
+      const boundary = all.entries.find(
+        (e) => e.action === syntheticAction("inv.old"),
+      );
+      const bound = BigInt(boundary?.id ?? "0");
+
+      // What the previous release still owed this caller: every row with a smaller id, which is
+      // what `id < bound` under `ORDER BY id DESC` would have returned.
+      const owed = new Set(
+        all.entries.filter((e) => BigInt(e.id) < bound).map((e) => e.id),
+      );
+      expect(owed.size).toBeGreaterThan(0);
+
+      const seen: string[] = [];
+      let cursor: string | null = String(bound);
+      for (let i = 0; i < 20 && cursor; i++) {
+        const page: Awaited<ReturnType<typeof listAudit>> = await listAudit(
+          ctx(),
+          { limit: 2, cursor: parseAuditCursor(cursor) ?? undefined },
+          appDb,
+        );
+        seen.push(...page.entries.map((e) => e.id));
+        cursor = page.nextCursor;
+      }
+      // Every row exactly once, and exactly the rows that were owed.
+      expect(new Set(seen)).toEqual(owed);
+      expect(seen.length).toBe(owed.size);
+      // ...and the two rows stamped AFTER the boundary row are in there, which is the half the
+      // translated cursor dropped.
+      expect(seen).toContain(
+        all.entries.find((e) => e.action === syntheticAction("inv.newest"))
+          ?.id ?? "",
+      );
+      expect(seen).toContain(
+        all.entries.find((e) => e.action === syntheticAction("inv.middle"))
+          ?.id ?? "",
+      );
+    } finally {
+      await suDb.$executeRawUnsafe(
+        `DELETE FROM audit_logs WHERE tenant_id = ${tenantId} AND action LIKE 'inv.%'`,
+      );
+    }
+  });
+
+  // The bound has to SURVIVE the walk, not just its first page: dropped after page one, the pages
+  // that follow are keyed on the tuple alone and start handing back rows the caller already saw.
+  test("the pre-#530 bound rides along in every cursor the walk emits", () => {
+    const c = parseAuditCursor("2026-02-01T12:00:00.000Z|7|99");
+    expect(c).toEqual({
+      at: { createdAt: new Date("2026-02-01T12:00:00.000Z"), id: 7n },
+      beforeId: 99n,
+    });
+    expect(
+      encodeAuditCursor(
+        { createdAt: new Date("2026-02-01T12:00:00.000Z"), id: 7n },
+        99n,
+      ),
+    ).toBe("2026-02-01T12:00:00.000Z|7|99");
+    // A bare id is a bound and NOT a position: there is no page behind it yet.
+    expect(parseAuditCursor("115")).toEqual({ at: null, beforeId: 115n });
+    // ...and the same bounded parse every id gets, so a 40-digit string is still not a cursor.
+    expect(parseAuditCursor("9".repeat(40))).toBeNull();
+    expect(parseAuditCursor("0")).toBeNull();
+    expect(parseAuditCursor("2026-02-01T12:00:00.000Z|7|0")).toBeNull();
+    expect(parseAuditCursor("2026-02-01T12:00:00.000Z|7|8|9")).toBeNull();
   });
 
   test("an empty trail reports no newest row rather than a wrong one", async () => {

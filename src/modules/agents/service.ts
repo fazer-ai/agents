@@ -1744,15 +1744,24 @@ export async function getAgentToolSelections(
 // both after. Same shape as `deployment_set_accounts` (#492), same chunk.
 const ID_CHUNK = 1000;
 
-async function countChunked(
+// SHORT-CIRCUITS on the first deficient chunk, and the reason is that the answer is already known
+// there: a chunk that finds fewer rows than it asked for cannot be rescued by a later one. Without
+// it a grant of 500,000 ids that names nothing spent 500 queries to reach a refusal the first one
+// had settled (measured: 637ms; with the exit, one query).
+//
+// It is NOT the transaction timeout the review round suspected. `runScopedOn` gives 5s and the
+// unshortened loop stayed three orders of magnitude inside it at every size a published schema can
+// deliver — 40k ids in 94ms, 200k in 261ms, 500k in 637ms. The exit is worth having on its own
+// terms; the timeout it was proposed to avoid does not happen.
+async function assertAllPresent(
   ids: bigint[],
   count: (chunk: bigint[]) => Promise<number>,
-): Promise<number> {
-  let total = 0;
+  missing: () => never,
+): Promise<void> {
   for (let i = 0; i < ids.length; i += ID_CHUNK) {
-    total += await count(ids.slice(i, i + ID_CHUNK));
+    const chunk = ids.slice(i, i + ID_CHUNK);
+    if ((await count(chunk)) !== chunk.length) missing();
   }
-  return total;
 }
 
 // Every id inside a grant array, checked against what the tenant actually has: an HTTP grant naming
@@ -1795,65 +1804,63 @@ async function assertGrantTargetsExist(
   ];
   const kbIds = [...new Set(grants.flatMap((g) => g.knowledgeBaseIds))];
 
-  if (tdIds.length > 0) {
-    const found = await countChunked(tdIds, (ids) =>
-      db.toolDefinition.count({ where: { id: { in: ids } } }),
-    );
-    if (found !== tdIds.length) {
+  await assertAllPresent(
+    tdIds,
+    (ids) => db.toolDefinition.count({ where: { id: { in: ids } } }),
+    () => {
       throw new NotFoundError(
         "tool definition not found",
         "errors.toolDefinitionNotFound",
       );
-    }
-  }
-  if (mcpIds.length > 0) {
-    const found = await countChunked(mcpIds, (ids) =>
-      db.mcpServerConnection.count({ where: { id: { in: ids } } }),
-    );
-    if (found !== mcpIds.length) {
+    },
+  );
+  await assertAllPresent(
+    mcpIds,
+    (ids) => db.mcpServerConnection.count({ where: { id: { in: ids } } }),
+    () => {
       throw new NotFoundError(
         "mcp connection not found",
         "errors.mcpConnectionNotFound",
       );
-    }
-  }
-  if (docIds.length > 0) {
-    const found = await countChunked(docIds, (ids) =>
-      db.documentTemplate.count({ where: { id: { in: ids } } }),
-    );
-    if (found !== docIds.length) {
+    },
+  );
+  await assertAllPresent(
+    docIds,
+    (ids) => db.documentTemplate.count({ where: { id: { in: ids } } }),
+    () => {
       throw new NotFoundError(
         "document template not found",
         "errors.documentTemplateNotFound",
       );
-    }
-  }
-  if (kbIds.length > 0) {
-    const found = await countChunked(kbIds, (ids) =>
-      db.knowledgeBase.count({ where: { id: { in: ids } } }),
-    );
-    if (found !== kbIds.length) {
+    },
+  );
+  await assertAllPresent(
+    kbIds,
+    (ids) => db.knowledgeBase.count({ where: { id: { in: ids } } }),
+    () => {
       throw new NotFoundError(
         "knowledge base not found",
         "errors.knowledgeBaseNotFound",
       );
-    }
-  }
+    },
+  );
   if (intIds.length > 0) {
+    // This one GATHERS rather than counts (the catalog type of each instance is the next rule's
+    // input), so its short-circuit is the same comparison one chunk at a time.
     const instances: Array<{ id: bigint; catalogType: string }> = [];
     for (let i = 0; i < intIds.length; i += ID_CHUNK) {
-      instances.push(
-        ...(await db.integrationInstance.findMany({
-          where: { id: { in: intIds.slice(i, i + ID_CHUNK) } },
-          select: { id: true, catalogType: true },
-        })),
-      );
-    }
-    if (instances.length !== intIds.length) {
-      throw new NotFoundError(
-        "integration instance not found",
-        "errors.integrationInstanceNotFound",
-      );
+      const chunk = intIds.slice(i, i + ID_CHUNK);
+      const rows = await db.integrationInstance.findMany({
+        where: { id: { in: chunk } },
+        select: { id: true, catalogType: true },
+      });
+      if (rows.length !== chunk.length) {
+        throw new NotFoundError(
+          "integration instance not found",
+          "errors.integrationInstanceNotFound",
+        );
+      }
+      instances.push(...rows);
     }
     const typeById = new Map(
       instances.map((i) => [String(i.id), i.catalogType]),

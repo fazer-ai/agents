@@ -1895,22 +1895,69 @@ describe.skipIf(!dbUp)(
         },
       });
       const ids = Array.from({ length: 40_000 }, (_, i) => String(900_000 + i));
-      const r = await both(
-        (a) =>
-          writeAgents.agentToolsSet(principal(), a as never, { base: appDb }),
-        {
-          agent_id: String(ag.id),
-          grants: [
-            {
-              source: "RAG",
-              knowledgeBaseIds: ids,
-              enabledTools: ["search_knowledge"],
-            },
-          ],
-        },
+      // The COUNT of queries too, because the chunking has an obvious wrong shape: asking all forty
+      // chunks and comparing the total at the end answers the same refusal after 40 round trips,
+      // and no verdict assertion can tell the two apart. `$extends` is wrapped for the same reason
+      // #492's probe wraps it: `runScopedOn` issues everything on the client it returns.
+      let counts = 0;
+      const wrap = (c: object): object =>
+        new Proxy(c, {
+          get(t, prop, recv) {
+            const inner = Reflect.get(t, prop, recv);
+            if (prop === "$extends") {
+              return (...a: unknown[]) =>
+                wrap((inner as (...x: unknown[]) => object).apply(t, a));
+            }
+            if (prop === "$transaction") {
+              return (fn: (tx: unknown) => unknown, ...rest: unknown[]) =>
+                (inner as (...a: unknown[]) => unknown).call(
+                  t,
+                  (tx: unknown) => fn(wrap(tx as object)),
+                  ...rest,
+                );
+            }
+            if (prop !== "knowledgeBase") return inner;
+            return new Proxy(inner as object, {
+              get(d, k, r) {
+                const fn = Reflect.get(d, k, r);
+                if (k !== "count") return fn;
+                return (...a: unknown[]) => {
+                  counts += 1;
+                  return (fn as (...x: unknown[]) => unknown).apply(d, a);
+                };
+              },
+            });
+          },
+        });
+      const counting = wrap(appDb as object) as typeof appDb;
+      const args = {
+        agent_id: String(ag.id),
+        grants: [
+          {
+            source: "RAG",
+            knowledgeBaseIds: ids,
+            enabledTools: ["search_knowledge"],
+          },
+        ],
+      };
+      const previewed = await verdict(() =>
+        writeAgents.agentToolsSet(principal(), args as never, {
+          base: counting,
+        }),
       );
-      expect(r.previewed).toBe("refused");
-      expect(r.applied).toBe("refused");
+      expect(previewed).toBe("refused");
+      // ONE: none of these ids exists, so the first chunk settles it.
+      expect(counts).toBe(1);
+      counts = 0;
+      const applied = await verdict(() =>
+        writeAgents.agentToolsSet(
+          principal(),
+          { ...args, dry_run: false } as never,
+          { base: counting },
+        ),
+      );
+      expect(applied).toBe("refused");
+      expect(counts).toBe(1);
     });
 
     test("agent_tools_set: a grant naming a tool that DOES exist is previewed ok", async () => {

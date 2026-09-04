@@ -12,10 +12,16 @@
 // tests/modules/tool-credential-wiring.test.ts is that same execution: one table, read as a tool
 // definition the executor runs and as the shapes a write would store, asserting the two agree.
 //
-// Where the copy cannot be sure, it errs QUIET — the legacy-fields body counts every fixed field as
-// emitted, a query value that may interpolate empty counts as not shadowing. A gap therefore costs a
-// warning that does not appear, never a warning about a tool that works. That is a property of the
-// choices below, not a proof about the ones nobody has thought of.
+// Where the copy cannot be sure, it is written to err QUIET — the legacy-fields body counts every
+// fixed field as emitted, a query value that may interpolate empty counts as not shadowing, a kv row
+// the model may not overwrite keeps what came before it. The intent is that a gap costs a warning
+// that does not appear rather than a warning about a tool that works.
+//
+// THAT IS AN INTENT, NOT A PROPERTY, and it has been violated twice — both times by a fix for a gap
+// in the other direction. Collapsing kv rows by key (round 4) erased a value the model's silence
+// leaves in the payload; substituting a fixed query key raw (round 5) read `token&x` as two
+// parameters and called the credential's own shadowed. Each new rule here is a chance to warn about
+// a working tool, so a rule that CANNOT be stated in the safe direction does not belong.
 //
 // THE QUESTION IS NOT "does a template mention {{secret}}". It is "does the credential reach the
 // request", and the two come apart in four ways the runtime decides and a text scan does not see: a
@@ -43,6 +49,9 @@ import { DEFAULT_HTTP_METHOD } from "./service";
 // write result. Extracting the names a template actually carries has no such edge, and it answers
 // the same question the runtime asks: a name outside `[a-zA-Z0-9_]` can never be a placeholder.
 const PLACEHOLDER = /\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g;
+// A value that is EXACTLY one placeholder, which the kv body treats specially (`LONE_PLACEHOLDER` in
+// graph/tools/http.ts): a lone AI field the model OMITS makes the runtime skip that row entirely.
+const LONE_PLACEHOLDER = /^\{\{\s*([a-zA-Z0-9_]+)\s*\}\}$/;
 
 function namesIn(template: string): Set<string> {
   return new Set(
@@ -127,7 +136,13 @@ function parseUrlTemplate(
     const value = fixed.get(name);
     // One level, like everywhere else here: a fixed value that is itself a template resolves from
     // context, which is unknowable, so it stays neutral.
-    return value !== undefined && namesIn(value).size === 0 ? value : "_";
+    // ENCODED, because the runtime's interpolation is: `encodeURIComponent(v)` on every substituted
+    // value. A fixed key holding a URL metacharacter (`token&x`) is ONE parameter of that name
+    // there, and three separate ones here if the substitution goes in raw — which would read the
+    // credential's own parameter as already taken and warn about a tool that injects it.
+    return value !== undefined && namesIn(value).size === 0
+      ? encodeURIComponent(value)
+      : "_";
   });
   try {
     return new URL(resolved, "https://placeholder.invalid");
@@ -171,21 +186,40 @@ function reachingQuery(shapes: ToolShapePatch): Record<string, string> {
   );
 }
 
-function bodyTemplates(body: unknown): string[] {
+// The declared fields the MODEL fills, which is the half of the schema the runtime may not get a
+// value for. `source` absent means "ai" there (`s.source === "fixed" ? "fixed" : "ai"`).
+function aiFieldNames(schema: unknown): Set<string> {
+  if (!isPlainObject(schema)) return new Set();
+  return new Set(
+    Object.entries(schema)
+      .filter(([, spec]) => !isPlainObject(spec) || spec.source !== "fixed")
+      .map(([name]) => name),
+  );
+}
+
+function bodyTemplates(body: unknown, aiNames: Set<string>): string[] {
   if (!isPlainObject(body)) return [];
   if (body.mode === "raw" && typeof body.raw === "string") return [body.raw];
   if (body.mode === "kv" && Array.isArray(body.rows)) {
     // Collapsed by TRIMMED key, last one winning, because that is what `payload[k] = …` does row by
     // row: a `{{secret}}` written into a row a later row overwrites is assembled and thrown away.
     // An empty key is skipped there too, and its row emits nothing at all.
-    const byKey = new Map<string, string>();
+    //
+    // Except when the later row is a LONE placeholder naming an AI field, which the runtime skips
+    // when the model omits it — leaving the earlier row's value in the payload. That row does not
+    // erase what came before it, it only MAY, so both survive here. Collapsing it unconditionally
+    // warned about a tool that sends the credential on every call where the model stays quiet, which
+    // is the one direction this file must not get wrong.
+    const byKey = new Map<string, string[]>();
     for (const r of body.rows) {
       if (!isPlainObject(r) || typeof r.value !== "string") continue;
       const k = typeof r.key === "string" ? r.key.trim() : "";
       if (!k) continue;
-      byKey.set(k, r.value);
+      const lone = r.value.match(LONE_PLACEHOLDER)?.[1];
+      const skippable = lone !== undefined && aiNames.has(lone);
+      byKey.set(k, skippable ? [...(byKey.get(k) ?? []), r.value] : [r.value]);
     }
-    return [...byKey.values()];
+    return [...byKey.values()].flat();
   }
   return [];
 }
@@ -225,7 +259,11 @@ export function reachableTemplates(
     ...Object.values(reachingQuery(shapes)),
   );
   const m = (method ?? DEFAULT_HTTP_METHOD).toUpperCase();
-  if (BODY_METHODS.has(m)) emitted.push(...bodyTemplates(shapes.body));
+  if (BODY_METHODS.has(m)) {
+    emitted.push(
+      ...bodyTemplates(shapes.body, aiFieldNames(shapes.inputSchema)),
+    );
+  }
 
   const out = [...emitted];
   const legacy = isLegacyFieldsBody(shapes.body);

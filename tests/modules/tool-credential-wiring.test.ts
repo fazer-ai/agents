@@ -82,6 +82,9 @@ const asShapes = (w: Wiring): ToolShapePatch => ({
   inputSchema: w.inputSchema ?? {},
 });
 
+// Invoked with NO model input, which is the reading the warning has to take: a credential that
+// leaves on some invocations is a credential that leaves. One row below depends on exactly that —
+// the runtime skips a lone AI placeholder the model omits, and the earlier row's `{{secret}}` stays.
 async function secretLeft(w: Wiring): Promise<boolean> {
   const captured: Captured = {};
   const tool = buildHttpTool(asDef(w), {
@@ -385,6 +388,47 @@ const CASES: Wiring[] = [
     },
   },
 
+  {
+    label: "a kv row a later LONE AI placeholder may not overwrite",
+    reaches: true,
+    method: "POST",
+    body: {
+      mode: "kv",
+      rows: [
+        { key: "auth", value: "{{secret}}" },
+        { key: "auth", value: "{{override}}" },
+      ],
+    },
+    inputSchema: { override: { type: "string" } },
+  },
+  {
+    label:
+      "…but a lone FIXED placeholder always resolves, so it always overwrites",
+    reaches: false,
+    method: "POST",
+    body: {
+      mode: "kv",
+      rows: [
+        { key: "auth", value: "{{secret}}" },
+        { key: "auth", value: "{{override}}" },
+      ],
+    },
+    inputSchema: {
+      override: { type: "string", source: "fixed", value: "constant" },
+    },
+  },
+  {
+    label:
+      "a fixed query key holding a URL metacharacter is ONE parameter, not two",
+    reaches: true,
+    kind: "query",
+    paramName: "token",
+    urlTemplate: `https://${PUBLIC}/v1/thing?{{auth_param}}=constant`,
+    inputSchema: {
+      auth_param: { type: "string", source: "fixed", value: "token&x" },
+    },
+  },
+
   // ── spelling ──
   {
     label:
@@ -452,8 +496,8 @@ describe("the scanner answers what the runtime does", () => {
     // NOTE: the floor. Every assertion above is `toBe(w.reaches)`, so a table that drifted to a
     // single verdict would still pass while proving nothing about the boundary between them.
     const reaching = CASES.filter((c) => c.reaches).length;
-    expect(reaching).toBeGreaterThan(12);
-    expect(CASES.length - reaching).toBeGreaterThan(12);
+    expect(reaching).toBeGreaterThan(13);
+    expect(CASES.length - reaching).toBeGreaterThan(13);
   });
 });
 

@@ -357,8 +357,15 @@ export function encodeAuditCursor(c: AuditCursor): string {
 export function parseAuditCursor(raw: string): AuditCursor | null {
   const at = raw.indexOf(CURSOR_SEP);
   if (at < 0) return null;
-  const when = new Date(raw.slice(0, at));
-  if (Number.isNaN(when.getTime())) return null;
+  const head = raw.slice(0, at);
+  const when = new Date(head);
+  // CANONICAL OR NOTHING, checked by round trip against the exact spelling this codec emits.
+  // `new Date` is not a validator: it ROLLS FORWARD a date that does not exist (`2026-02-30` becomes
+  // March 2nd, so the walk resumes at an instant nobody asked for and skips whatever lies between),
+  // and it accepts forms with no offset -- `Sep 4 2026`, `2026-09-04T12:00` -- by reading them in the
+  // SERVER'S OWN ZONE, which measured three hours off here and would make one cursor name different
+  // instants on two deployments. Six of seven such spellings were accepted before this line.
+  if (Number.isNaN(when.getTime()) || when.toISOString() !== head) return null;
   // `parseDbId` and not a `BigInt` cast: it is the one bounded parse in the tree, so the id half of
   // a cursor is held to the same range as an id arriving anywhere else. A cast would take a
   // 40-digit string and hand Postgres a value it answers with a 500 at bind time.

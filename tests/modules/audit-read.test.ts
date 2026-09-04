@@ -3,6 +3,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import {
+  encodeAuditCursor,
   listAudit,
   parseAuditCursor,
   recordAudit,
@@ -166,8 +167,30 @@ describe.skipIf(!dbUp)("reading the trail", () => {
       "2026-02-01T12:00:00.000Z|-1",
       "2026-02-01T12:00:00.000Z|1x",
       "not-a-date|7",
+      // A DATE THAT DOES NOT EXIST, which `new Date` does not refuse -- it rolls it forward, so
+      // February 30th becomes March 2nd and the walk continues from an instant nobody asked for,
+      // quietly skipping whatever lies between.
+      "2026-02-30T00:00:00.000Z|7",
+      // Forms this codec never emits. Each one parses, and two of them parse in the SERVER'S OWN
+      // ZONE: `Sep 4 2026` and `…T12:00` (no offset) resolved three hours off on the machine that
+      // measured this, so one cursor would name different instants on two deployments.
+      "2026-09-04|7",
+      "Sep 4 2026|7",
+      "2026-09-04T12:00|7",
+      "2026-09-04T12:00:00.000+00:00|7",
+      "2026-09-04T12:00:00.0000Z|7",
     ]) {
       expect(parseAuditCursor(raw)).toBeNull();
+    }
+    // ...and every cursor the codec itself emits survives its own round trip, which is the rule the
+    // refusals above are the other side of: canonical or nothing.
+    for (const d of [
+      new Date("2026-02-01T12:00:00.000Z"),
+      new Date(0),
+      new Date("1999-12-31T23:59:59.999Z"),
+    ]) {
+      const c = { createdAt: d, id: 7n };
+      expect(parseAuditCursor(encodeAuditCursor(c))).toEqual(c);
     }
     // ...and a real one still reads back to the pair it names.
     expect(parseAuditCursor("2026-02-01T12:00:00.000Z|7")).toEqual({

@@ -140,14 +140,27 @@ describe.skipIf(!dbUp)("latestAt reaches its index on every scope", () => {
         // it takes the ordered walk (3 buffers), and on a table holding two it bitmap-scans the same
         // index and sorts, which at that size is right. Pinning either would make this test pass or
         // fail on how much other suites happened to leave in a shared table.
-        expect(withIndex).toContain(`"Index Name":"${INDEX_FOR.fleet}"`);
+        // EITHER FLEET INDEX, and that is the assertion rather than a lapse. Both are partial on
+        // `tenant_id IS NULL`, so either one bounds the work by the fleet slice instead of by the
+        // trail -- which is the property. Which one the planner picks is a cost choice that flips
+        // with the slice's size: on a large one it walks `..._fleet_created_at_id_idx` in order, on
+        // a table holding a handful it bitmap-scans `..._fleet_id_idx` and sorts. Pinning either
+        // would make this test pass or fail on how much other suites left in a shared table
+        // (measured: it did, between the two trees of this same PR).
+        expect(withIndex).toMatch(
+          /"Index Name":"audit_logs_fleet_(created_at_id|id)_idx"/,
+        );
         expect(withIndex).not.toContain('"Index Name":"audit_logs_pkey"');
         // A `Filter` is a row read for some other reason and then rejected; the fleet index leaves
         // nothing to reject. (A bitmap scan's `Recheck Cond` is not that -- it re-reads only rows the
         // same index already chose.)
         expect(withIndex).not.toContain('"Filter"');
 
+        // BOTH of them, for the negative half: leaving one standing proves nothing about the other.
         await db.$executeRawUnsafe(`DROP INDEX ${INDEX_FOR.fleet}`);
+        await db.$executeRawUnsafe(
+          `DROP INDEX IF EXISTS audit_logs_fleet_id_idx`,
+        );
         const without = await planIn(db, FLEET_PAGE);
         // WITHOUT it, no index gives BOTH the predicate and the id order, so the plan has to buy one
         // of them with a full pass. Which pass depends on the table: on a large one the planner
@@ -155,7 +168,9 @@ describe.skipIf(!dbUp)("latestAt reaches its index on every scope", () => {
         // page of 51); on a small one it gathers every fleet row off the other partial index and
         // sorts. Either is unbounded by the page size, which is the property being asserted -- so
         // the assertion names both rather than pinning the plan of whichever table it runs on.
-        expect(without).not.toContain(`"Index Name":"${INDEX_FOR.fleet}"`);
+        expect(without).not.toMatch(
+          /"Index Name":"audit_logs_fleet_(created_at_id|id)_idx"/,
+        );
         expect(without).toMatch(
           /"Node Type":"Sort"|"Filter":"\(tenant_id IS NULL\)"/,
         );

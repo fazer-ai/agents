@@ -1,6 +1,5 @@
 import { parseDbId } from "@/lib/db-id";
 import { badQueryParam } from "@/lib/query-param";
-import { type AuditCursor, parseAuditCursor } from "@/modules/audit/service";
 import { parseIsoInstant } from "@/modules/flowlog/settings";
 
 // NOTE: the refusal is raised from `src/lib/query-param.ts`, which the API extractor's input glob
@@ -95,18 +94,4 @@ export function parseQueryCount(
   const n = Number(s);
   if (!Number.isSafeInteger(n)) badQueryParam(param);
   return n;
-}
-
-// The audit trail's keyset, which is TWO columns since #530 and therefore not a `parseQueryId`. A
-// cursor from before that change is a bare id: it parses as a string and means nothing here, so it
-// is refused with the same 400 as any other malformed parameter rather than read as the new key --
-// which would silently answer from a different place in the trail under a pager still saying
-// "Page 2".
-export function parseAuditCursorParam(
-  s: string | undefined,
-): AuditCursor | undefined {
-  if (s === undefined) return undefined;
-  const c = parseAuditCursor(s);
-  if (c === null) badQueryParam("cursor");
-  return c;
 }

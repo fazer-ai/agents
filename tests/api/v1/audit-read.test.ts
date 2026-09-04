@@ -54,6 +54,13 @@ mock.module("@/modules/audit/service", () => ({
     ctx: TenantContext,
     opts: Parameters<typeof auditService.listAudit>[1],
   ) => realAudit.listAudit(ctx, opts, app),
+  // Same call-through: the controller resolves a pre-#530 cursor through this, and it reads the
+  // table to do it.
+  resolveLegacyAuditCursor: (
+    ctx: TenantContext,
+    raw: string,
+    scope: Parameters<typeof auditService.resolveLegacyAuditCursor>[2],
+  ) => realAudit.resolveLegacyAuditCursor(ctx, raw, scope, app),
 }));
 
 const auditExport = await import("@/modules/audit/export");
@@ -261,13 +268,41 @@ describe.skipIf(!dbUp)("the trail has a door the console can use", () => {
       });
     }
 
-    // THE CURSOR FROM BEFORE #530 IS A BARE ID, and it is refused with the same 400 as any other
-    // malformed parameter. Read as the new key it would silently answer from another place in the
-    // trail, under a pager that goes on saying "Page 2" -- so a stored bookmark fails loudly and its
-    // holder starts the walk again, instead of quietly reading the wrong page.
-    test("a cursor from before the keyset change is refused, not reinterpreted", async () => {
+    // A CURSOR FROM BEFORE #530 IS A BARE ID, and it is RESOLVED rather than reinterpreted. The
+    // format changed and deploys are rolling, so for one overlap the previous release is still
+    // handing these out; refusing would be a 400 in the middle of an operator's walk. Resolving asks
+    // the table which instant that row carries, so the page continues from the SAME place the old
+    // walk would have -- which reinterpreting the number as the new key would not, and that
+    // distinction is the whole point.
+    test("a cursor from before the keyset change resolves to the same position", async () => {
       role = "TENANT_ADMIN";
-      for (const bad of ["115", "abc", "|", "2026-01-01T00:00:00.000Z|x"]) {
+      const first = await get("?limit=1", await sign("TENANT_ADMIN"));
+      const page = (await first.json()) as Page & { nextCursor: string };
+      const oldStyle = page.nextCursor.split("|")[1] as string;
+
+      const viaOld = await get(
+        `?limit=1&cursor=${encodeURIComponent(oldStyle)}`,
+        await sign("TENANT_ADMIN"),
+      );
+      const viaNew = await get(
+        `?limit=1&cursor=${encodeURIComponent(page.nextCursor)}`,
+        await sign("TENANT_ADMIN"),
+      );
+      expect(viaOld.status).toBe(200);
+      expect((await viaOld.json()).entries).toEqual(
+        (await viaNew.json()).entries,
+      );
+    });
+
+    test("a cursor that is neither shape is still refused", async () => {
+      role = "TENANT_ADMIN";
+      for (const bad of [
+        "abc",
+        "|",
+        "2026-01-01T00:00:00.000Z|x",
+        // An id in the old shape that names no row this reader can see is not a position either.
+        "99999999",
+      ]) {
         const res = await get(
           `?cursor=${encodeURIComponent(bad)}`,
           await sign("TENANT_ADMIN"),

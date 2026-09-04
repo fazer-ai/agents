@@ -1,7 +1,7 @@
 import { Elysia, t } from "elysia";
+import { auditCursorFrom } from "@/api/lib/audit-cursor";
 import { doc, errors } from "@/api/lib/openapi";
 import {
-  parseAuditCursorParam,
   parseQueryCount,
   parseQueryEnum,
   parseQueryId,
@@ -56,7 +56,11 @@ export const auditController = new Elysia({
         ...(await listAudit(ctxOrThrow(tenantContext, scope), {
           scope,
           limit: parseQueryCount(query.limit, "limit"),
-          cursor: parseAuditCursorParam(query.cursor),
+          cursor: await auditCursorFrom(
+            query.cursor,
+            ctxOrThrow(tenantContext, scope),
+            scope,
+          ),
           action: parseQueryText(query.action, "action"),
           actorType: parseQueryEnum(query.actorType, "actorType", ACTOR_TYPES),
           actorId: parseQueryId(query.actorId, "actorId"),

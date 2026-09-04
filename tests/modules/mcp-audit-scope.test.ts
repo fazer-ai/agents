@@ -233,8 +233,8 @@ describe.skipIf(!dbUp)("what a targetless audit_list actually reads", () => {
   // one has to refuse it as well, and for the same reason -- read as the new key it would continue
   // the walk from somewhere else while the caller believes it is paging the same trail. An agent
   // that stored a cursor is the likeliest holder of an old one.
-  test("a cursor from before the keyset change is refused here too", async () => {
-    for (const bad of ["115", "abc", "|", "2026-01-01T00:00:00.000Z|x"]) {
+  test("a cursor that is neither shape is refused here too", async () => {
+    for (const bad of ["abc", "|", "2026-01-01T00:00:00.000Z|x", "99999999"]) {
       const r = await read(
         principal({ tenantId: mine, role: "TENANT_ADMIN" }),
         {
@@ -243,6 +243,56 @@ describe.skipIf(!dbUp)("what a targetless audit_list actually reads", () => {
       );
       expect(JSON.stringify(r)).toContain("nextCursor` from a previous");
     }
+  });
+
+  // AND A BARE ID FROM THE PREVIOUS RELEASE IS RESOLVED, not refused: an agent that stored one
+  // mid-walk keeps walking, from the same place that cursor named rather than from a different one.
+  // Both doors agree on that, as they do on the refusals above.
+  test("a bare id from before the keyset change continues the same walk", async () => {
+    const p = principal();
+    const first = (await auditList(
+      p,
+      { limit: 1, scope: "all" },
+      { base: appDb },
+    )) as { ok: true; data: { nextCursor: string | null } };
+    const cursor = first.data.nextCursor ?? "";
+    const bareId = cursor.split("|")[1] as string;
+    const viaOld = await auditList(
+      p,
+      { limit: 1, scope: "all", cursor: bareId },
+      { base: appDb },
+    );
+    const viaNew = await auditList(
+      p,
+      { limit: 1, scope: "all", cursor },
+      { base: appDb },
+    );
+    expect(JSON.stringify(viaOld)).not.toContain("nextCursor` from a previous");
+    expect(JSON.stringify(viaOld)).toBe(JSON.stringify(viaNew));
+  });
+
+  // AND THE RESOLUTION IS SCOPED, which RLS alone does not give here. On a tenant read the policy
+  // already bounds it, but `fleet` and `all` are read under the fleet role where every row is
+  // visible -- so the trail predicate is the ONLY thing separating them. Without it, a bare id
+  // naming a TENANT row would resolve while paging the fleet trail, and the walk would continue from
+  // a position that is not on it.
+  test("a bare id from another trail does not resolve", async () => {
+    const p = principal();
+    // The id of a row that belongs to a tenant, offered as a cursor for the fleet trail.
+    const mineRow = (await auditList(
+      principal({ tenantId: mine, role: "TENANT_ADMIN" }),
+      { limit: 1 },
+      { base: appDb },
+    )) as { ok: true; data: { entries: { id: string }[] } };
+    const tenantRowId = mineRow.data.entries[0]?.id as string;
+    expect(tenantRowId).toBeTruthy();
+
+    const r = await auditList(
+      p,
+      { limit: 1, scope: "fleet", cursor: tenantRowId },
+      { base: appDb },
+    );
+    expect(JSON.stringify(r)).toContain("nextCursor` from a previous");
   });
 
   test("the cursor this tool handed out is accepted, and continues the walk", async () => {

@@ -260,6 +260,45 @@ export function readInScope<T>(
     : asSuperAdminOn(base, read);
 }
 
+// A CURSOR FROM THE RELEASE BEFORE #530, RESOLVED RATHER THAN REFUSED.
+//
+// The format changed, and `docs/deploy.md` describes rolling deploys: for one overlap a container
+// from the previous release is still handing out bare ids, and an operator paging the trail can send
+// one of those to a container that has already moved. Refusing it is a 400 in the middle of a walk.
+//
+// It is RESOLVED and not reinterpreted, which is the distinction round 1 of this PR's review was
+// about: reading `115` as if it were the new key answers from a different place in the trail, but
+// asking the table what instant row 115 carries answers from exactly the same place the old walk
+// would have. One primary-key lookup, and only for a cursor in the old shape.
+//
+// Returns null when the id names no row this reader can see, which is the same answer the caller
+// gives a malformed cursor: a bookmark to a row that is gone, or to another tenant's, is not a
+// position in this trail.
+//
+// THE OTHER HALF OF THE OVERLAP CANNOT BE CLOSED FROM HERE: a container still on the old release
+// refuses the `<instant>|<id>` this one emits, because its own parser predates the format. That is a
+// 400 for the length of the drain, recoverable by reloading the page.
+//
+// TEMPORARY. Remove one release after #530 ships, together with the fleet index kept for the same
+// reason (docs/roadmap.md).
+export async function resolveLegacyAuditCursor(
+  ctx: TenantContext,
+  raw: string,
+  scope: AuditScope,
+  base: PrismaClient = basePrisma,
+): Promise<AuditCursor | null> {
+  const id = parseDbId(raw);
+  if (id === null || id <= 0n) return null;
+  const trail = auditTrailFor(ctx, scope);
+  const row = await readInScope(base, ctx, scope, (db) =>
+    db.auditLog.findFirst({
+      where: { ...trail, id },
+      select: { id: true, createdAt: true },
+    }),
+  );
+  return row ? { createdAt: row.createdAt, id: row.id } : null;
+}
+
 export async function listAudit(
   ctx: TenantContext,
   opts: ListAuditOpts = {},

@@ -81,14 +81,17 @@ describe("a concurrent index drop is alone in its migration", () => {
     for (const name of readdirSync(dir)) {
       const file = `${dir}/${name}/migration.sql`;
       if (!existsSync(file)) continue;
-      // Comments carry semicolons of their own, and a comment is not a statement -- and it is not a
-      // DROP either, which is the half this used to get wrong: the file was SELECTED by matching the
-      // raw text, so a migration whose header merely EXPLAINS the rule was swept in and then counted
-      // as a violation of it. Strip once, and use the stripped text for both questions.
+      // TWO KINDS OF TEXT THAT ARE NOT STATEMENTS, and this sweep used to read both as if they were.
+      // A comment carries semicolons and can NAME the command it explains, so a migration whose
+      // header merely describes this rule was swept in and then reported as breaking it. A
+      // `DO $$ … $$` block is ONE statement holding several semicolons and, in this repository, the
+      // text of a RAISE that tells an operator which command to run. Strip both once, and use what
+      // is left for both questions -- which file to look at, and how many statements it holds.
       const sql = readFileSync(file, "utf8")
         .split("\n")
         .filter((l) => !l.trimStart().startsWith("--"))
-        .join("\n");
+        .join("\n")
+        .replace(/\$\$[\s\S]*?\$\$/g, "$$BODY$$");
       const statements = sql.split(";").filter((s) => s.trim().length > 0);
       if (!/DROP\s+INDEX\s+CONCURRENTLY/i.test(sql)) continue;
       concurrent += 1;

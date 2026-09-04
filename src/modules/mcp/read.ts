@@ -12,7 +12,11 @@ import {
   getTimeseries,
 } from "@/modules/analytics/service";
 import { listApiKeys } from "@/modules/api-keys/service";
-import { listAudit, parseAuditCursor } from "@/modules/audit/service";
+import {
+  listAudit,
+  parseAuditCursor,
+  resolveLegacyAuditCursor,
+} from "@/modules/audit/service";
 import { listBusinessHours } from "@/modules/business-hours/service";
 import {
   getChatwootDeployment,
@@ -920,7 +924,17 @@ export async function auditList(
     // TWO COLUMNS SINCE #530, so not `parseMcpId`. A cursor from before it is a bare id, refused
     // rather than read as the new key: reinterpreting it would answer from another place in the
     // trail while the caller believes it is continuing the same walk.
-    const c = parseAuditCursor(args.cursor);
+    // A cursor from the release before #530 is a bare id, resolved against the table rather than
+    // refused, for the length of one rolling deploy -- an agent that stored one mid-walk keeps
+    // walking, from the same place and not from a different one. See `resolveLegacyAuditCursor`.
+    const c =
+      parseAuditCursor(args.cursor) ??
+      (await resolveLegacyAuditCursor(
+        ctx,
+        args.cursor,
+        opts.scope ?? "tenant",
+        base,
+      ));
     if (c === null) {
       return err(
         "cursor must be the `nextCursor` from a previous audit_list response, passed back verbatim.",

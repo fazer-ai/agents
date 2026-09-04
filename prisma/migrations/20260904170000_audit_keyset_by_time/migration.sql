@@ -1,3 +1,20 @@
+-- EACH BUILD IS PRECEDED BY ITS OWN `DROP INDEX IF EXISTS`, which is the rule in
+-- `.claude/rules/prisma.md`: without a transaction this file is not atomic, and an interrupted
+-- `CREATE INDEX CONCURRENTLY` leaves an `indisvalid=false` index that Postgres silently refuses to
+-- use -- the plan goes back to what it was, the migration reads as applied, and nothing says so. The
+-- drop is what makes the redeploy rebuild from scratch instead of finding the residue and keeping it.
+--
+-- Round 6 of review took these out, on the grounds that a plain `DROP INDEX` takes ACCESS EXCLUSIVE
+-- on the table. That is true and it is the trade this rule already weighed: the drops run only on a
+-- retry, they are metadata-only on an index that exists, and the alternative measured worse in every
+-- direction -- `IF NOT EXISTS` skips the dead index and never builds it, `DROP INDEX CONCURRENTLY`
+-- cannot share a file with a `CREATE INDEX CONCURRENTLY`, and moving the cleanup to an earlier
+-- migration does nothing because Prisma re-runs only the migration that failed (measured: the dead
+-- index survived the retry untouched). Leaving the deploy stuck on `42P07` for a human to clear is a
+-- worse outage than a brief lock on the retry path.
+--
+-- The catalog assertion the rule asks for is the migration right after this one: a `DO $$` block
+-- puts the file in an implicit transaction, which these `CREATE INDEX CONCURRENTLY` cannot share.
 -- THE ORDERING KEY, INDEXED IN FULL (#530).
 --
 -- The trail is now paged by `(created_at, id)` -- the column its window is cut on, plus the id as
@@ -50,10 +67,13 @@
 --
 -- then re-run the deploy.
 
+DROP INDEX IF EXISTS "audit_logs_tenant_id_created_at_id_idx";
 CREATE INDEX CONCURRENTLY "audit_logs_tenant_id_created_at_id_idx"
   ON "audit_logs" ("tenant_id", "created_at" DESC, "id" DESC);
+DROP INDEX IF EXISTS "audit_logs_created_at_id_idx";
 CREATE INDEX CONCURRENTLY "audit_logs_created_at_id_idx"
   ON "audit_logs" ("created_at" DESC, "id" DESC);
+DROP INDEX IF EXISTS "audit_logs_fleet_created_at_id_idx";
 CREATE INDEX CONCURRENTLY "audit_logs_fleet_created_at_id_idx"
   ON "audit_logs" ("created_at" DESC, "id" DESC) WHERE "tenant_id" IS NULL;
 

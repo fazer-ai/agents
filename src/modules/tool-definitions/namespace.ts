@@ -75,6 +75,50 @@ export async function toolHoldingName(
 // a spelling the model never sees: `Foo` reaches it as `foo`. So the namespace is compared on the
 // MODEL-FACING name, which means reading the tenant's names and normalizing them here rather than
 // asking the index for an exact match. A tenant has tens of tools, and this runs on a write.
+// WHICH row a name resolves to, when the answer has to be one row and not a set.
+//
+// `toolsUnderModelName` answers "is this name taken", where every match counts. This answers "which
+// tool does this name mean", and the two are different questions the moment a destination holds
+// legacy rows the old case-sensitive unique index allowed: `Foo` and `foo` both derive `foo`, and
+// picking `[0]` off an unordered read hands the agent whichever the database listed first, which is
+// a different endpoint and a different credential from the one the bundle named (round 29).
+//
+// The exact stored spelling wins, because it is the one thing that is not a guess. Failing that, a
+// single derived match is unambiguous and is the case the canonicalization exists to serve. More
+// than one is ambiguous and is answered as such: a caller that cannot say WHICH must not pick.
+export type NameMatch =
+  | { kind: "none" }
+  | { kind: "one"; id: bigint }
+  | { kind: "ambiguous"; ids: bigint[] };
+
+export function resolveByModelName(
+  rows: Array<{ id: bigint; name: string }>,
+  name: string,
+): NameMatch {
+  const exact = rows.find((r) => r.name === name);
+  if (exact) return { kind: "one", id: exact.id };
+  const wanted = normalizeToolName(name);
+  const derived = rows.filter((r) => normalizeToolName(r.name) === wanted);
+  if (derived.length === 0) return { kind: "none" };
+  const only = derived[0];
+  if (derived.length === 1 && only) return { kind: "one", id: only.id };
+  return { kind: "ambiguous", ids: derived.map((r) => r.id) };
+}
+
+export async function toolUnderModelName(
+  db: ScopedDb,
+  name: string,
+  kind: "http" | "code",
+): Promise<NameMatch> {
+  const rows =
+    kind === "http"
+      ? await db.toolDefinition.findMany({ select: { id: true, name: true } })
+      : await db.codeToolDefinition.findMany({
+          select: { id: true, name: true },
+        });
+  return resolveByModelName(rows, name);
+}
+
 export async function toolsUnderModelName(
   db: ScopedDb,
   name: string,

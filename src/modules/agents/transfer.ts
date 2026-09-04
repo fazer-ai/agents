@@ -72,6 +72,7 @@ import {
   lockToolNames,
   toolHoldingName,
   toolsUnderModelName,
+  toolUnderModelName,
 } from "@/modules/tool-definitions/namespace";
 import { normalizeToolShapes } from "@/modules/tool-definitions/normalize";
 import { storableResponseTemplate } from "@/modules/tool-definitions/response-template";
@@ -1815,7 +1816,23 @@ async function createMissingComponents(
     // Reuse is decided by the MODEL-FACING name, not the stored spelling: a row written as `Foo`
     // before names were canonicalized answers to `foo`, and an exact lookup would miss it and
     // insert a SECOND row under the same name the model sees (namespace.ts).
-    const existing = (await toolsUnderModelName(db, name)).httpIds[0] ?? null;
+    // Same resolution the grant uses, and for the same reason: with `Foo` and `foo` both stored,
+    // "reuse" has to name ONE row. Ambiguous reads as taken and is left alone rather than reused,
+    // because a third row under that name would only deepen it (round 29).
+    const reuse = await toolUnderModelName(db, name, "http");
+    // Ambiguous is TAKEN, not free. Two rows already answer to this name here; writing a third
+    // would deepen the collision, and reusing one would pick an endpoint on the destination's row
+    // order. The component is skipped and said out loud, and the grant below reports it too, which
+    // is the honest pair: neither the tool nor its grant landed.
+    if (reuse.kind === "ambiguous") {
+      warnings.push({
+        code: "httpToolAmbiguous",
+        params: { name, n: reuse.ids.length },
+        target: { kind: "tool", name },
+      });
+      continue;
+    }
+    const existing = reuse.kind === "one" ? reuse.id : null;
     if (existing) {
       landed();
       warnings.push({
@@ -1976,7 +1993,18 @@ async function createMissingComponents(
       });
     };
     // By the model-facing name, for the reason the HTTP loop gives.
-    const existing = (await toolsUnderModelName(db, name)).codeIds[0] ?? null;
+    // Same resolution the HTTP loop uses, for the reason it gives.
+    const reuseCode = await toolUnderModelName(db, name, "code");
+    // Taken, not free, for the reason the HTTP loop gives.
+    if (reuseCode.kind === "ambiguous") {
+      warnings.push({
+        code: "codeToolAmbiguous",
+        params: { name, n: reuseCode.ids.length },
+        target: { kind: "codeTool", name },
+      });
+      continue;
+    }
+    const existing = reuseCode.kind === "one" ? reuseCode.id : null;
     if (existing) {
       landed();
       warnings.push({
@@ -2443,8 +2471,20 @@ async function buildGrantRows(
         // and an exact lookup would drop the grant with `httpGrantNotFound` for a tool that is
         // right there (namespace.ts).
         const wanted = renamed.httpTools.get(g.tool) ?? g.tool;
-        const tdId = (await toolsUnderModelName(db, wanted)).httpIds[0] ?? null;
-        const td = tdId === null ? null : { id: tdId };
+        // WHICH row, not "is the name taken": a destination can hold `Foo` and `foo` from before
+        // the unique index was case-insensitive, and binding the grant to the wrong one hands the
+        // agent another endpoint with another credential (round 29). Ambiguity is reported, never
+        // resolved by picking.
+        const match = await toolUnderModelName(db, wanted, "http");
+        if (match.kind === "ambiguous") {
+          warnings.push({
+            code: "httpGrantAmbiguous",
+            params: { name: g.tool, n: match.ids.length },
+            target: { kind: "tool", name: g.tool },
+          });
+          break;
+        }
+        const td = match.kind === "one" ? { id: match.id } : null;
         if (!td) {
           warnings.push({
             code: "httpGrantNotFound",
@@ -2473,9 +2513,16 @@ async function buildGrantRows(
       case "CODE": {
         // By the model-facing name, for the reason the HTTP arm gives.
         const wantedCode = renamed.codeTools.get(g.tool) ?? g.tool;
-        const cdId =
-          (await toolsUnderModelName(db, wantedCode)).codeIds[0] ?? null;
-        const cd = cdId === null ? null : { id: cdId };
+        const codeMatch = await toolUnderModelName(db, wantedCode, "code");
+        if (codeMatch.kind === "ambiguous") {
+          warnings.push({
+            code: "codeGrantAmbiguous",
+            params: { name: g.tool, n: codeMatch.ids.length },
+            target: { kind: "codeTool", name: g.tool },
+          });
+          break;
+        }
+        const cd = codeMatch.kind === "one" ? { id: codeMatch.id } : null;
         if (!cd) {
           warnings.push({
             code: "codeGrantNotFound",

@@ -359,7 +359,16 @@ async function assertNameFree(
   // carries the same note).
   currentName?: string,
 ): Promise<void> {
-  const moving = name !== currentName;
+  // Compared through the DERIVATION, not as text. The row may predate canonicalization on write
+  // (`Search_Knowledge`), the console submits `normalizeToolName(label)` on every save, and the two
+  // spellings are ONE identity to the model. Read as text, that save reads as a rename and meets
+  // the namespace rules added later, which refuse an edit that moved nothing (round 29).
+  // `undefined` is a CREATE, which always asks the namespace question. Not folded into the
+  // comparison: `normalizeToolName("")` answers `"tool"`, so an absent current name would read as
+  // unchanged for a tool actually named `tool`.
+  const moving =
+    currentName === undefined ||
+    normalizeToolName(name) !== normalizeToolName(currentName);
   await lockToolNames(db);
   // A native's name is reserved at assembly (#457): a tool written under one would exist in the
   // console, be granted, and never reach the model, with a flow-log line as the only trace. Refused
@@ -522,6 +531,15 @@ export async function updateToolDefinition(
     // the two the #397 round wrote). At READ COMMITTED two concurrent PATCHes both read state A;
     // the first commits B; the second's `update` blocks, wakes and writes C — and files a row
     // saying A became C, attributing B's change to whoever wrote C.
+    // The NAMESPACE lock first, and it is an ordering rule rather than a need of this statement.
+    // An agent import takes it once, before it touches any tool row (agents/transfer.ts), and reads
+    // and writes rows under it. Taking the row lock first here inverts that order and the two
+    // deadlock: this transaction holds the row and waits for the namespace, the import holds the
+    // namespace and waits for the row (round 29). Unconditional, because a patch that carries no
+    // name still locks the row and an order that depends on the payload is not an order.
+    // Re-acquiring it inside the name check below costs nothing: `pg_advisory_xact_lock` is
+    // re-entrant within a transaction, and every copy is released at commit.
+    await lockToolNames(db);
     await db.$queryRaw`SELECT 1 FROM "tool_definitions" WHERE "id" = ${id} FOR UPDATE`;
     const current = await db.toolDefinition.findUnique({
       where: { id },

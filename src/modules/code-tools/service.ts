@@ -211,7 +211,16 @@ async function assertNameFree(
   // native-name one).
   currentName?: string,
 ): Promise<void> {
-  const moving = name !== currentName;
+  // Compared through the DERIVATION, not as text. The row may predate canonicalization on write
+  // (`Search_Knowledge`), the console submits `normalizeToolName(label)` on every save, and the two
+  // spellings are ONE identity to the model. Read as text, that save reads as a rename and meets
+  // the namespace rules added later, which refuse an edit that moved nothing (round 29).
+  // `undefined` is a CREATE, which always asks the namespace question. Not folded into the
+  // comparison: `normalizeToolName("")` answers `"tool"`, so an absent current name would read as
+  // unchanged for a tool actually named `tool`.
+  const moving =
+    currentName === undefined ||
+    normalizeToolName(name) !== normalizeToolName(currentName);
   await lockToolNames(db);
   if (isNativeToolName(name)) {
     throw new ConflictError(
@@ -354,6 +363,9 @@ export async function updateCodeTool(
   const warnings =
     data.code !== undefined ? await checkCodeToolSyntax(data.code) : [];
   const tool = await runScopedOn(base, ctx, async (db) => {
+    // The namespace lock before the row lock, for the ordering reason `updateToolDefinition` in
+    // tool-definitions/service.ts spells out.
+    await lockToolNames(db);
     // Locked before the snapshot the trail compares against (tool-definitions/service.ts explains
     // the interleaving this prevents).
     await db.$queryRaw`SELECT 1 FROM "code_tool_definitions" WHERE "id" = ${id} FOR UPDATE`;

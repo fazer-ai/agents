@@ -767,6 +767,10 @@ export async function updateDocumentTemplate(
   // no single-process test reaches; the same guard on the settings blob (patchBlock) IS covered,
   // because a test there does fail without it.
   return runScopedOn(base, ctx, async (db) => {
+    // The namespace lock before the row lock, for the ordering reason `updateToolDefinition` in
+    // modules/tool-definitions/service.ts spells out: a slug change asks the tool namespace
+    // (assertToolNameFreeForSlug) and an agent import takes that lock before any row.
+    await lockToolNames(db);
     await db.$queryRaw`SELECT 1 FROM "document_templates" WHERE "id" = ${id} FOR UPDATE`;
     const found = await db.documentTemplate.findUnique({
       where: { id },

@@ -2255,6 +2255,32 @@ function AgentEditor() {
           'Tool "{{name}}" was not found, so its grant was skipped.',
           p,
         );
+      // Says WHY nothing was granted, which "not found" would not: the tools are there, and there
+      // are too many of them for the name to mean one of them.
+      case "httpToolAmbiguous":
+        return t(
+          "editor.importWarning.httpToolAmbiguous",
+          '{{n}} tools here already answer to the name "{{name}}", so the bundled tool was not imported. Rename them apart and import again.',
+          p,
+        );
+      case "codeToolAmbiguous":
+        return t(
+          "editor.importWarning.codeToolAmbiguous",
+          '{{n}} code tools here already answer to the name "{{name}}", so the bundled tool was not imported. Rename them apart and import again.',
+          p,
+        );
+      case "httpGrantAmbiguous":
+        return t(
+          "editor.importWarning.httpGrantAmbiguous",
+          '{{n}} tools here answer to the name "{{name}}", so the grant was skipped rather than bound to one of them. Rename them apart and grant it by hand.',
+          p,
+        );
+      case "codeGrantAmbiguous":
+        return t(
+          "editor.importWarning.codeGrantAmbiguous",
+          '{{n}} code tools here answer to the name "{{name}}", so the grant was skipped rather than bound to one of them. Rename them apart and grant it by hand.',
+          p,
+        );
       case "mcpGrantNotFound":
         return t(
           "editor.importWarning.mcpGrantNotFound",

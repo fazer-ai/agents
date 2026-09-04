@@ -121,4 +121,47 @@ describe.skipIf(!dbUp)("an HTTP tool cannot take a native tool's name", () => {
     );
     expect(renamed.name).toBe("calculator_http");
   });
+
+  // Round 29. Names are canonicalized on write only since #363, so a row can carry a spelling from
+  // before it. The console derives the identifier from the label and submits it on EVERY save, so
+  // editing a legacy row's description sends `search_knowledge` for a row stored `Search_Knowledge`
+  // — one identity to the model, two strings. Compared as text that reads as a rename, and the
+  // namespace rules added later then refuse an edit that moved no name at all: the operator can
+  // never touch the row again from the console.
+  test("a legacy spelling can still be edited: the identity, not the string, decides a rename", async () => {
+    // Written past the service, which would canonicalize it: this is a row from before that rule.
+    const legacy = await suDb.toolDefinition.create({
+      data: {
+        tenantId,
+        name: "Search_Knowledge",
+        label: "Search Knowledge",
+        urlTemplate: "https://api.example.com/x",
+        allowedHosts: ["api.example.com"],
+      },
+      select: { id: true },
+    });
+    const updated = await updateToolDefinition(
+      ctx(),
+      legacy.id,
+      { name: "search_knowledge", label: "Buscar na base" } as never,
+      appDb,
+    );
+    expect(updated.label).toBe("Buscar na base");
+    // ...and a real move onto that same RAG name is still refused, so the fix did not open the door
+    // it was guarding.
+    const other = await createToolDefinition(
+      ctx(),
+      toolInput("outra_ferramenta") as never,
+      appDb,
+    );
+    const err = await refusal(
+      updateToolDefinition(
+        ctx(),
+        BigInt(other.id),
+        { name: "search_knowledge" } as never,
+        appDb,
+      ),
+    );
+    expect(err).not.toBeNull();
+  });
 });

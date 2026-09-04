@@ -1869,6 +1869,66 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     );
   });
 
+  // Round 29: the destination can hold two rows the model reads as one name. `Foo` and `foo` were
+  // both legal while the unique index was case-sensitive, and both derive `foo`. Picking `[0]` off
+  // an unordered read bound the grant to whichever the database listed first, which is another URL
+  // with another credential, and nothing on screen said which one the agent got.
+  test("a grant whose name matches two stored rows is reported, never guessed", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const bundle = structuredClone(exp);
+    const tool = bundle.components?.httpTools.find(
+      (h) => h.name === "lookup_order",
+    );
+    if (!tool || !bundle.components)
+      throw new Error("bundle missing lookup_order");
+    tool.name = "ambigua";
+    const grant = bundle.agent.tools.find(
+      (g) => g?.source === "HTTP" && g.tool === "lookup_order",
+    );
+    if (grant?.source !== "HTTP")
+      throw new Error("bundle missing the HTTP grant");
+    grant.tool = "ambigua";
+    // Two rows the model reads as one name, written past the service the way a legacy row was.
+    for (const [name, host] of [
+      ["Ambigua", "a.example.com"],
+      ["AMBIGUA", "b.example.com"],
+    ] as Array<[string, string]>) {
+      await suDb.toolDefinition.create({
+        data: {
+          tenantId: dstTenant,
+          name,
+          label: name,
+          urlTemplate: `https://${host}/x`,
+          allowedHosts: [host],
+        },
+      });
+    }
+
+    const { agent, warnings } = await importAgent(dstCtx(), bundle, appDb);
+    expect(
+      warnings.some(
+        (w) => w.code === "httpGrantAmbiguous" && w.params?.name === "ambigua",
+      ),
+    ).toBe(true);
+    // No grant at all is the point: binding to either row is the failure being avoided.
+    const rows = await suDb.toolDefinition.findMany({
+      where: { tenantId: dstTenant, name: { in: ["Ambigua", "AMBIGUA"] } },
+      select: { id: true },
+    });
+    const grants = await suDb.agentToolSelection.findMany({
+      where: { agentId: BigInt(agent.id), source: "HTTP" },
+      select: { toolDefinitionId: true },
+    });
+    for (const r of rows) {
+      expect(grants.some((g) => g.toolDefinitionId === r.id)).toBe(false);
+    }
+    await suDb.toolDefinition.deleteMany({
+      where: { tenantId: dstTenant, name: { in: ["Ambigua", "AMBIGUA"] } },
+    });
+  });
+
   // Round 21: two DISTINCT bundled tools whose names normalize to the same identifier -- "buscar
   // pedido" and "buscar_pedido", which a hand-edited bundle or an older build can both carry --
   // resolved to the same stored name. The walk only consults `taken` once a native, a RAG tool or

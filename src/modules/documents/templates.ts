@@ -309,11 +309,27 @@ export async function documentTemplateWriteProblem(
   // (a patch that touches only the description, say).
   if (slug === undefined && name === undefined) return null;
   if (slug !== undefined) {
-    const heldByTool = await runScopedOn(base, ctx, (db) =>
-      toolHoldingName(db, slug),
-    );
-    if (heldByTool) {
-      return `slug: the tool name ${documentToolName(slug)} is already used by the tool "${heldByTool.name}".`;
+    // Only when the slug MOVES, which is what the apply does: a template whose `send_<slug>` already
+    // collides was legal before this rule, and a full-state client sends the unchanged slug on every
+    // patch — a preview refusing what the apply performs is the divergence #490 is about, backwards.
+    const storedSlug =
+      opts.excludeId === undefined
+        ? null
+        : ((
+            await runScopedOn(base, ctx, (db) =>
+              db.documentTemplate.findUnique({
+                where: { id: opts.excludeId },
+                select: { slug: true },
+              }),
+            )
+          )?.slug ?? null);
+    if (slug !== storedSlug) {
+      const heldByTool = await runScopedOn(base, ctx, (db) =>
+        toolHoldingName(db, slug),
+      );
+      if (heldByTool) {
+        return `slug: the tool name ${documentToolName(slug)} is already used by the tool "${heldByTool.name}".`;
+      }
     }
   }
   const clash = await existingClash(ctx, base, slug, name, excludeId);

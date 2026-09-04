@@ -1421,15 +1421,17 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     const racing = appDb.$extends({
       query: {
         toolDefinition: {
-          async findFirst({ args, query }) {
-            const answer = await query(args);
-            // Matched against the name under test, not just "the first miss": the import asks this
-            // table again when it resolves the HTTP grant, and a looser guard would fire on that
-            // call instead, which happens after the insert it is supposed to race.
-            const asksForIt =
-              (args as { where?: { name?: unknown } }).where?.name ===
-              tool.name;
-            if (!raced && asksForIt && answer === null) {
+          // Hooked on the INSERT, which is the far side of the window: the pre-check has already
+          // answered "free" by the time this runs, so taking the name here is exactly the writer
+          // that commits in between. (It used to hook the pre-check's `findFirst`; the check now
+          // reads every name and compares the model-facing spelling, so there is no per-name query
+          // left to recognise.)
+          async createMany({ args, query }) {
+            const rows = (args as { data?: unknown }).data;
+            const first = (Array.isArray(rows) ? rows[0] : rows) as
+              | { name?: unknown }
+              | undefined;
+            if (!raced && first?.name === tool.name) {
               raced = true;
               await suDb.toolDefinition.create({
                 data: {
@@ -1442,7 +1444,7 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
                 },
               });
             }
-            return answer;
+            return query(args);
           },
         },
       },
@@ -2521,6 +2523,59 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     expect(row.inputSchema).toEqual({
       cpf: { type: "string", required: true },
     });
+  });
+
+  // Reuse is decided by the name the MODEL sees. A row written before names were canonicalized is
+  // stored `Legado_Foo` and answers to `legado_foo`, so an exact lookup would miss it and insert a
+  // SECOND row under the same model-facing name — two catalog entries, one name, and the assembly
+  // dropping whichever came second.
+  test("an imported tool whose name a legacy row already answers to is reused, not duplicated", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const bundle = structuredClone(exp);
+    const code = bundle.components?.codeTools?.find(
+      (c) => c.name === "validar_cpf",
+    );
+    if (!code) throw new Error("bundle missing validar_cpf");
+    code.name = "legado_foo";
+    const grant = bundle.agent.tools.find(
+      (g) => g?.source === "CODE" && g.tool === "validar_cpf",
+    );
+    if (grant?.source !== "CODE") throw new Error("bundle missing the grant");
+    grant.tool = "legado_foo";
+    const legacy = await suDb.codeToolDefinition.create({
+      data: {
+        tenantId: dstTenant,
+        name: "Legado_Foo",
+        label: "Legado foo",
+        description: "d",
+        inputSchema: {},
+        code: "return 1",
+      },
+    });
+
+    const { agent, warnings } = await importAgent(dstCtx(), bundle, appDb);
+    const rows = await suDb.codeToolDefinition.findMany({
+      where: {
+        tenantId: dstTenant,
+        name: { in: ["Legado_Foo", "legado_foo"] },
+      },
+      select: { id: true },
+    });
+    expect(rows.map((r) => r.id)).toEqual([legacy.id]);
+    expect(
+      warnings.some(
+        (w) => w.code === "codeToolReused" && w.params?.name === "legado_foo",
+      ),
+    ).toBe(true);
+    // ...and the grant points at the row that already existed.
+    const grants = await suDb.agentToolSelection.findMany({
+      where: { agentId: BigInt(agent.id), source: "CODE" },
+      select: { codeToolDefinitionId: true },
+    });
+    expect(grants.map((g) => g.codeToolDefinitionId)).toEqual([legacy.id]);
+    await suDb.codeToolDefinition.delete({ where: { id: legacy.id } });
   });
 
   // A rename has to fit inside the ceiling it is renaming for. A 64-character name is legal, and

@@ -16,6 +16,7 @@ import {
 import { documentStarter } from "@/modules/documents/starters";
 import {
   createDocumentTemplate,
+  documentTemplateWriteProblem,
   updateDocumentTemplate,
 } from "@/modules/documents/templates";
 import { lockToolNames } from "@/modules/tool-definitions/namespace";
@@ -461,6 +462,38 @@ describe.skipIf(!dbUp)("code tools service", () => {
     );
     expect(onLegacy?.translationKey).toBe("errors.documentToolNameTaken");
     await suDb.toolDefinition.delete({ where: { id: legacyHttp.id } });
+
+    // ...and the PREVIEW answers the same way the apply does, on both sides of that rule: a legacy
+    // collision left alone is previewable, a move onto a taken name is refused.
+    const legacyPair = await suDb.toolDefinition.create({
+      data: {
+        tenantId,
+        name: "send_antigo",
+        label: "Send antigo",
+        urlTemplate: "https://example.com/x",
+        allowedHosts: ["example.com"],
+      },
+    });
+    const collided = await suDb.documentTemplate.create({
+      data: {
+        tenantId,
+        name: "Antigo",
+        slug: "antigo",
+        blocks: starterDoc.blocks as never,
+        fields: starterDoc.fields as never,
+        style: starterDoc.style as never,
+      },
+    });
+    expect(
+      await documentTemplateWriteProblem(
+        ctx(),
+        { name: "Antigo", slug: "antigo" },
+        appDb,
+        { deriveSlugFromName: false, excludeId: collided.id },
+      ),
+    ).toBeNull();
+    await suDb.documentTemplate.delete({ where: { id: collided.id } });
+    await suDb.toolDefinition.delete({ where: { id: legacyPair.id } });
 
     // Moving it onto another reserved name is still refused.
     const moved = await refusal(

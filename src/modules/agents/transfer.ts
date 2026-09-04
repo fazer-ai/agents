@@ -1705,10 +1705,10 @@ async function createMissingComponents(
         target: { kind: "tool", name },
       });
     };
-    const existing = await db.toolDefinition.findFirst({
-      where: { name },
-      select: { id: true },
-    });
+    // Reuse is decided by the MODEL-FACING name, not the stored spelling: a row written as `Foo`
+    // before names were canonicalized answers to `foo`, and an exact lookup would miss it and
+    // insert a SECOND row under the same name the model sees (namespace.ts).
+    const existing = (await toolsUnderModelName(db, name)).httpIds[0] ?? null;
     if (existing) {
       landed();
       warnings.push({
@@ -1865,10 +1865,8 @@ async function createMissingComponents(
         target: { kind: "codeTool", name },
       });
     };
-    const existing = await db.codeToolDefinition.findFirst({
-      where: { name },
-      select: { id: true },
-    });
+    // By the model-facing name, for the reason the HTTP loop gives.
+    const existing = (await toolsUnderModelName(db, name)).codeIds[0] ?? null;
     if (existing) {
       landed();
       warnings.push({
@@ -2347,10 +2345,13 @@ async function buildGrantRows(
         break;
       }
       case "HTTP": {
-        const td = await db.toolDefinition.findFirst({
-          where: { name: renamed.httpTools.get(g.tool) ?? g.tool },
-          select: { id: true },
-        });
+        // Resolved by the MODEL-FACING name, like every other question about a tool name: the row
+        // the loops just reused may be stored under an older spelling (`Foo` answering to `foo`),
+        // and an exact lookup would drop the grant with `httpGrantNotFound` for a tool that is
+        // right there (namespace.ts).
+        const wanted = renamed.httpTools.get(g.tool) ?? g.tool;
+        const tdId = (await toolsUnderModelName(db, wanted)).httpIds[0] ?? null;
+        const td = tdId === null ? null : { id: tdId };
         if (!td) {
           warnings.push({
             code: "httpGrantNotFound",
@@ -2377,10 +2378,11 @@ async function buildGrantRows(
         break;
       }
       case "CODE": {
-        const cd = await db.codeToolDefinition.findFirst({
-          where: { name: renamed.codeTools.get(g.tool) ?? g.tool },
-          select: { id: true },
-        });
+        // By the model-facing name, for the reason the HTTP arm gives.
+        const wantedCode = renamed.codeTools.get(g.tool) ?? g.tool;
+        const cdId =
+          (await toolsUnderModelName(db, wantedCode)).codeIds[0] ?? null;
+        const cd = cdId === null ? null : { id: cdId };
         if (!cd) {
           warnings.push({
             code: "codeGrantNotFound",

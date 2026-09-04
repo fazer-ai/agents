@@ -345,6 +345,14 @@ export interface AuditCursor {
 // is "which page was it on": a cursor nobody can read is one nobody can check.
 const CURSOR_SEP = "|";
 
+// The instant half, as `toISOString` spells it for any year of four digits. The bound is the point:
+// beyond four digits that method switches to the EXPANDED form (`-100000-…`, `+275760-…`), which is
+// canonical JavaScript and outside what a Postgres `timestamptz` holds -- the negative one is
+// refused at bind time, turning a malformed cursor into a 500 where this endpoint promises a 400.
+// Matching the shape excludes both ends at once, without this module having to carry the database's
+// exact range as a pair of magic instants.
+const CURSOR_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+
 export function encodeAuditCursor(c: AuditCursor): string {
   return `${c.createdAt.toISOString()}${CURSOR_SEP}${c.id}`;
 }
@@ -365,6 +373,7 @@ export function parseAuditCursor(raw: string): AuditCursor | null {
   // and it accepts forms with no offset -- `Sep 4 2026`, `2026-09-04T12:00` -- by reading them in the
   // SERVER'S OWN ZONE, which measured three hours off here and would make one cursor name different
   // instants on two deployments. Six of seven such spellings were accepted before this line.
+  if (!CURSOR_INSTANT.test(head)) return null;
   if (Number.isNaN(when.getTime()) || when.toISOString() !== head) return null;
   // `parseDbId` and not a `BigInt` cast: it is the one bounded parse in the tree, so the id half of
   // a cursor is held to the same range as an id arriving anywhere else. A cast would take a

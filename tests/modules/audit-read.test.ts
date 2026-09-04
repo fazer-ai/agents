@@ -179,6 +179,13 @@ describe.skipIf(!dbUp)("reading the trail", () => {
       "2026-09-04T12:00|7",
       "2026-09-04T12:00:00.000+00:00|7",
       "2026-09-04T12:00:00.0000Z|7",
+      // EXPANDED YEARS, which are canonical JavaScript and outside what the column can hold.
+      // `toISOString` emits the `±YYYYYY` form beyond four digits, so these survive the round trip
+      // above -- and the negative one is refused by Postgres at bind time, which turns a malformed
+      // cursor into a 500 where the endpoint promises a 400 (measured: the positive extreme binds
+      // fine, so this is about the spelling and not about probing the server's exact range).
+      "-100000-01-01T00:00:00.000Z|1",
+      "+275760-09-13T00:00:00.000Z|1",
     ]) {
       expect(parseAuditCursor(raw)).toBeNull();
     }

@@ -18,6 +18,7 @@ import {
 import { useAuth } from "@/client/contexts/AuthContext";
 import { useFieldRefusal } from "@/client/hooks/useFieldRefusal";
 import { api } from "@/client/lib/api";
+import { dialableBaseUrl } from "@/client/lib/secretTypes";
 import { isValidHttpUrl } from "@/client/lib/validation";
 import {
   composeStdioCommand,
@@ -414,7 +415,10 @@ export function McpEditModal({
               defaultCreateType={isStdio ? "mcp_env" : "mcp_oauth"}
               defaultCreateBaseUrl={mcpCredBaseUrl ?? form.url}
               onEntryChange={(entry: VaultEntry | null) => {
-                const credUrl = entry?.baseUrl ?? null;
+                // NOTE: the DIALABLE base (#504). This value LOCKS the connection URL field and
+                // fills it, so a stray base on a kind that carries none would show the operator an
+                // endpoint the runtime ignores — and let Save pass with `form.url` empty.
+                const credUrl = dialableBaseUrl(entry?.kind, entry?.baseUrl);
                 setMcpCredBaseUrl(credUrl);
                 if (credUrl) {
                   mcpUserUrlRef.current = form.url;

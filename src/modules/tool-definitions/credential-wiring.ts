@@ -31,6 +31,9 @@
 // does reach. Each of those was a wrong answer in the first draft of this file, and each is fenced by
 // executing the real tool rather than by a list written here.
 
+import { isIP } from "node:net";
+import config from "@/config";
+import { isBlockedIp } from "@/lib/ssrf";
 import {
   INJECTING_MECHANISM_KIND_IDS,
   isNonInjectableSecret,
@@ -170,11 +173,19 @@ function fixedValuesByName(schema: unknown): Map<string, string> {
 // or more values the key depends on what the model picked, so the executor's answer differs between
 // invocations and no single row can assert it. Unknowable falls to the quiet side, like every other
 // unknown here.
-function knownValuesByName(schema: unknown): Map<string, string> {
+function knownValuesByName(
+  schema: unknown,
+  ackArg = false,
+): Map<string, string> {
   const out = fixedValuesByName(schema);
+  if (ackArg) out.delete(WAIT_MESSAGE_ARG);
   if (typeof schema !== "object" || schema === null) return out;
   for (const [name, spec] of Object.entries(schema)) {
     if (!isPlainObject(spec) || spec.source === "fixed") continue;
+    // NOTE: on an ack tool the executor REPLACES this field's schema with its own unrestricted
+    // non-empty argument, so a `__wait_message` declared as a singleton enum binds nothing: whatever
+    // the model writes as the wait message is what the key becomes.
+    if (ackArg && name === WAIT_MESSAGE_ARG) continue;
     if (!spec.required) continue;
     // `zodFor` reads `enumValues` only for `type: "enum"`; on a string field it is decoration and
     // the model may send anything, so the key stays unknowable.
@@ -309,10 +320,13 @@ function transmittedUrl(urlTemplate: unknown): string[] {
 
 // The explicit query entries that survive to the request: everything the URL template does not
 // already spell.
-function reachingQuery(shapes: ToolShapePatch): Record<string, string> {
+function reachingQuery(
+  shapes: ToolShapePatch,
+  ackArg = false,
+): Record<string, string> {
   const taken = urlQueryKeys(
     shapes.urlTemplate,
-    knownValuesByName(shapes.inputSchema),
+    knownValuesByName(shapes.inputSchema, ackArg),
   );
   return Object.fromEntries(
     Object.entries(queryMap(shapes.query)).filter(([k]) => !taken.has(k)),
@@ -455,22 +469,27 @@ function buildsARequest(
   ackArg: boolean,
   allowedHosts: string[] | null | undefined,
   relative: boolean,
+  // The deployment's SSRF policy, read from config by default and overridable so the branch below is
+  // testable: where private targets are allowed the guard lifts BOTH of its decidable refusals, and
+  // the suite runs with them on.
+  privateAllowed: boolean,
 ): boolean {
   if (typeof urlTemplate !== "string") return false;
   // The ORIGIN is pinned: `buildHttpTool` takes it from the neutralized template and throws
   // "interpolation altered the origin" when the real one differs, so a placeholder anywhere in the
   // scheme, host or port is a tool that never fetches. The two sentinels answer where it sits — the
   // origins differ only if a placeholder is inside one.
-  // The protocol the SSRF guard will accept. It runs on the FINAL URL, immediately before the fetch,
-  // and refuses anything that is not https — http only where the deployment allows it, which this
-  // boundary cannot know and therefore does not claim. An `ftp://` template parses, stores, and never
-  // leaves.
-  const scheme = parseUrlTemplate(
-    urlTemplate,
-    new Map(),
-    UNRESOLVED_A,
-  )?.protocol;
-  if (scheme !== "https:") return false;
+  // The SSRF guard, which runs on the FINAL URL immediately before the fetch. Two of its refusals are
+  // decidable here: a protocol that is not https (http only where the deployment allows it, which is
+  // also a per-call flag this boundary cannot see), and a literal address in a blocked range. Both
+  // are lifted wholesale when the deployment allows private targets, and THAT is readable — it is
+  // the same `config.ssrf.allowPrivateTargets` the guard itself reads.
+  const probe = parseUrlTemplate(urlTemplate, new Map(), UNRESOLVED_A);
+  if (!privateAllowed) {
+    if (probe?.protocol !== "https:") return false;
+    const host = probe.hostname.replace(/^\[|\]$/g, "");
+    if (isIP(host) && isBlockedIp(host)) return false;
+  }
   const a = parseUrlTemplate(urlTemplate, new Map(), UNRESOLVED_A);
   const b = parseUrlTemplate(urlTemplate, new Map(), UNRESOLVED_B);
   if (!a || !b || a.origin !== b.origin) return false;
@@ -535,7 +554,7 @@ export function reachableTemplates(
   const emitted: string[] = [...transmittedUrl(shapes.urlTemplate)];
   emitted.push(
     ...headerTemplates(shapes.headers),
-    ...Object.values(reachingQuery(shapes)),
+    ...Object.values(reachingQuery(shapes, ackArg)),
   );
   const m = (method ?? DEFAULT_HTTP_METHOD).toUpperCase();
   if (BODY_METHODS.has(m)) {
@@ -675,7 +694,7 @@ function autoInjectionVerdict(
   ) {
     return shadowed("tool");
   }
-  const explicit = reachingQuery(shapes)[inj.name];
+  const explicit = reachingQuery(shapes, ackArg)[inj.name];
   const alwaysSet =
     explicit !== undefined &&
     alwaysNonEmpty(
@@ -730,7 +749,11 @@ export function unusedCredentialWarning(
   // The tool's own ack, when it has one. `buildHttpTool` then DECLARES a required, non-empty
   // `__wait_message` argument of its own, so a query value of `{{__wait_message}}` is set on every
   // executable call and takes its parameter — a field that is in no input schema anywhere.
-  opts: { ackMessage?: string | null; allowedHosts?: string[] | null } = {},
+  opts: {
+    ackMessage?: string | null;
+    allowedHosts?: string[] | null;
+    privateAllowed?: boolean;
+  } = {},
 ): string | null {
   if (isNonInjectableSecret(facts.kind)) return null;
   const { shapes: normalized } = normalizeToolShapes(raw);
@@ -744,6 +767,7 @@ export function unusedCredentialWarning(
       ackArg,
       opts.allowedHosts,
       isRelativeTemplate(normalized.urlTemplate),
+      opts.privateAllowed ?? config.ssrf.allowPrivateTargets,
     )
   ) {
     return null;

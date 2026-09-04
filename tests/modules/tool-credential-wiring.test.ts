@@ -828,6 +828,37 @@ const CASES: Wiring[] = [
     allowedHosts: [PUBLIC],
   },
 
+  {
+    label:
+      "an ack replaces a declared __wait_message, so its enum binds no key",
+    reaches: true,
+    kind: "query",
+    paramName: "token",
+    urlTemplate: `https://${PUBLIC}/v1/thing?{{__wait_message}}=fixed`,
+    query: { token: "{{secret}}" },
+    inputSchema: {
+      __wait_message: {
+        type: "enum",
+        required: true,
+        enumValues: ["token"],
+      },
+    },
+    ackMessage: "one moment",
+  },
+
+  {
+    label: "…and an ack replaces a FIXED __wait_message the same way",
+    reaches: true,
+    kind: "query",
+    paramName: "token",
+    urlTemplate: `https://${PUBLIC}/v1/thing?{{__wait_message}}=fixed`,
+    query: { token: "{{secret}}" },
+    inputSchema: {
+      __wait_message: { type: "string", source: "fixed", value: "token" },
+    },
+    ackMessage: "one moment",
+  },
+
   // ── spelling ──
   {
     label:
@@ -1085,6 +1116,37 @@ describe("the scanner answers what the runtime does", () => {
       ),
     ).toBeNull();
 
+    // NOTE: and the eighth: a literal address the SSRF guard blocks. Decidable here because the
+    // deployment's own `allowPrivateTargets` is the same value the guard reads — where it is ON,
+    // every one of these checks is lifted and this boundary claims nothing.
+    expect(
+      unusedCredentialWarning(
+        { kind: "generic", paramName: null, baseUrl: null },
+        "GET",
+        { urlTemplate: "https://127.0.0.1/x", headers: {}, inputSchema: {} },
+        { allowedHosts: ["127.0.0.1"] },
+      ),
+    ).toBeNull();
+
+    // NOTE: and where the deployment ALLOWS private targets, the guard lifts both of those
+    // refusals — so this boundary claims nothing about either, and judges the tool normally.
+    expect(
+      unusedCredentialWarning(
+        { kind: "generic", paramName: null, baseUrl: null },
+        "GET",
+        { urlTemplate: "https://127.0.0.1/x", headers: {}, inputSchema: {} },
+        { allowedHosts: ["127.0.0.1"], privateAllowed: true },
+      ),
+    ).not.toBeNull();
+    expect(
+      unusedCredentialWarning(
+        { kind: "generic", paramName: null, baseUrl: null },
+        "GET",
+        { urlTemplate: "http://example.com/x", headers: {}, inputSchema: {} },
+        { allowedHosts: ["example.com"], privateAllowed: true },
+      ),
+    ).not.toBeNull();
+
     // NOTE: the control — with a base, the same tool is judged normally.
     expect(
       unusedCredentialWarning(
@@ -1131,7 +1193,7 @@ describe("the scanner answers what the runtime does", () => {
     // NOTE: the floor. Every assertion above is `toBe(w.reaches)`, so a table that drifted to a
     // single verdict would still pass while proving nothing about the boundary between them.
     const reaching = CASES.filter((c) => c.reaches).length;
-    expect(reaching).toBeGreaterThan(27);
+    expect(reaching).toBeGreaterThan(29);
     expect(CASES.length - reaching).toBeGreaterThan(32);
   });
 });

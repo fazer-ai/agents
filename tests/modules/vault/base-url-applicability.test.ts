@@ -151,6 +151,49 @@ describe("nothing reads a base URL past the gate", () => {
     expect(found.size).toBeGreaterThan(3);
   });
 
+  // NOTE: the CLIENT half, and it exists because the gate reached the console one reader at a time —
+  // the tool editor in one round, the MCP editor in the next. A page that DECIDES with this value
+  // (locking a field, enabling Save, accepting a relative template) has to use the dialable one; a
+  // page that DISPLAYS the row, or edits the row itself, keeps the raw value on purpose.
+  const CLIENT_LEDGER: Record<
+    string,
+    "gated" | "via the hook" | "raw by design"
+  > = {
+    // Displays what the picker holds, and hands the raw value to the credential form, which edits
+    // the row itself.
+    "src/client/components/CredentialPicker.tsx": "raw by design",
+    "src/client/lib/vaultCache.ts": "gated",
+    "src/client/pages/resources/McpEditModal.tsx": "gated",
+    "src/client/pages/resources/ToolEditModal.tsx": "gated",
+    // The credential listing: the row as it is, which is the one surface that must keep showing a
+    // base URL sitting on a kind whose form never rendered the field.
+    "src/client/pages/resources/VaultPanel.tsx": "raw by design",
+    // Asks `useVaultBaseUrls`, which is gated above — it never touches an entry itself.
+    "src/client/pages/agents/AgentEditorPage.tsx": "via the hook",
+  };
+
+  test("every client reader of a vault base URL is in the ledger", async () => {
+    const files = new Glob("src/client/**/*.{ts,tsx}").scanSync(".");
+    const found = new Set<string>();
+    for (const file of files) {
+      if (file.endsWith("secretTypes.ts")) continue;
+      const code = codeOnly(await Bun.file(file).text());
+      if (!/\bVaultEntry\b|loadVault|vault\.get/.test(code)) continue;
+      if (/\.baseUrl\b|baseUrl:/.test(code)) found.add(file);
+    }
+    expect([...found].sort()).toEqual(Object.keys(CLIENT_LEDGER).sort());
+    expect(found.size).toBeGreaterThan(4);
+  });
+
+  test("every gated client file CALLS the gate", async () => {
+    for (const [file, how] of Object.entries(CLIENT_LEDGER)) {
+      if (how !== "gated") continue;
+      const code = codeOnly(await Bun.file(file).text());
+      const calls = [...code.matchAll(/dialableBaseUrl\(/g)].length;
+      expect([file, calls > 0]).toEqual([file, true]);
+    }
+  });
+
   test("every gated file CALLS the gate, not merely imports it", async () => {
     // NOTE: the call and not the name. Both mutations that put a raw `entry.baseUrl` back left the
     // import untouched, so a file-contains-the-word check passed while the read was ungated again.

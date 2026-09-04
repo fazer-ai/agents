@@ -1869,6 +1869,140 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     );
   });
 
+  // Round 21: two DISTINCT bundled tools whose names normalize to the same identifier -- "buscar
+  // pedido" and "buscar_pedido", which a hand-edited bundle or an older build can both carry --
+  // resolved to the same stored name. The walk only consults `taken` once a native, a RAG tool or
+  // the OTHER kind holds the name, so nothing stopped the second one, and the row the first had
+  // just written was then read as a same-kind REUSE: the second definition was discarded and both
+  // grants collapsed onto one row. A name a previous component of this loop CLAIMED is occupied
+  // like any other, so the second takes the next suffix.
+  test("two bundled tools whose names normalize alike keep two rows", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const bundle = structuredClone(exp);
+    const tool = bundle.components?.httpTools.find(
+      (h) => h.name === "lookup_order",
+    );
+    if (!tool || !bundle.components)
+      throw new Error("bundle missing lookup_order");
+    // The FIRST one is stored under its own name, which is the case that decides where the claim is
+    // recorded: a component that was not renamed occupies its name just as much as one that was.
+    tool.name = "buscar_pedido";
+    bundle.components.httpTools.push({
+      ...structuredClone(tool),
+      name: "buscar pedido",
+      label: "Segunda",
+    });
+    bundle.components.httpTools.push({
+      ...structuredClone(tool),
+      name: "buscar  pedido",
+      label: "Terceira",
+    });
+    const grant = bundle.agent.tools.find(
+      (g) => g?.source === "HTTP" && g.tool === "lookup_order",
+    );
+    if (grant?.source !== "HTTP")
+      throw new Error("bundle missing the HTTP grant");
+    grant.tool = "buscar_pedido";
+    bundle.agent.tools.push({ ...grant, tool: "buscar pedido" });
+    bundle.agent.tools.push({ ...grant, tool: "buscar  pedido" });
+    const { agent, warnings } = await importAgent(dstCtx(), bundle, appDb);
+    const rows = await suDb.toolDefinition.findMany({
+      where: { tenantId: dstTenant, name: { startsWith: "buscar_pedido" } },
+      select: { id: true, name: true, label: true },
+      orderBy: { name: "asc" },
+    });
+    expect(rows.map((r) => [r.name, r.label])).toEqual([
+      ["buscar_pedido", "Buscar pedido"],
+      ["buscar_pedido_2", "Segunda"],
+      ["buscar_pedido_3", "Terceira"],
+    ]);
+    expect(warnings.some((w) => w.code === "httpToolReused")).toBe(false);
+    expect(
+      warnings.some(
+        (w) =>
+          w.code === "httpToolRenamed" &&
+          w.params?.name === "buscar pedido" &&
+          w.params?.renamed === "buscar_pedido_2",
+      ),
+    ).toBe(true);
+    expect(
+      warnings.some(
+        (w) =>
+          w.code === "httpToolRenamed" &&
+          w.params?.name === "buscar  pedido" &&
+          w.params?.renamed === "buscar_pedido_3",
+      ),
+    ).toBe(true);
+    const grants = await suDb.agentToolSelection.findMany({
+      where: { agentId: BigInt(agent.id), source: "HTTP" },
+      select: { toolDefinitionId: true },
+    });
+    expect(new Set(grants.map((g) => g.toolDefinitionId))).toEqual(
+      new Set(rows.map((r) => r.id)),
+    );
+  });
+
+  // Round 21: the `send_<slug>` names were reserved for every template the bundle CARRIES, before
+  // anything asked whether those templates would be imported at all. A template the loop below
+  // skips -- unreadable, or named like one the destination already has -- publishes no tool, so a
+  // bundled tool renamed off its name was renamed for nothing: the grant follows the rename, but a
+  // prompt naming the tool stops finding it, and no document tool ever took the name. Only the
+  // templates that will actually claim a name reserve one.
+  test("a tool keeps its name when the template that would take it is skipped", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const bundle = structuredClone(exp);
+    const tool = bundle.components?.httpTools.find(
+      (h) => h.name === "lookup_order",
+    );
+    if (!tool || !bundle.components)
+      throw new Error("bundle missing lookup_order");
+    tool.name = "send_relatorio";
+    const grant = bundle.agent.tools.find(
+      (g) => g?.source === "HTTP" && g.tool === "lookup_order",
+    );
+    if (grant?.source !== "HTTP")
+      throw new Error("bundle missing the HTTP grant");
+    grant.tool = "send_relatorio";
+    const starter = documentStarter("quote", "pt-BR");
+    if (!starter) throw new Error("no starter");
+    bundle.components = {
+      ...bundle.components,
+      documentTemplates: [
+        {
+          // Refused by `templateMetadataProblem`, so the template below is skipped and never
+          // publishes `send_relatorio`.
+          name: "",
+          slug: "relatorio",
+          description: null,
+          blocks: starter.blocks,
+          fields: starter.fields,
+          style: starter.style,
+          numberPrefix: null,
+          enabled: true,
+        } as never,
+      ],
+    };
+    const { warnings } = await importAgent(dstCtx(), bundle, appDb);
+    expect(warnings.some((w) => w.code === "documentTemplateInvalid")).toBe(
+      true,
+    );
+    expect(
+      await suDb.documentTemplate.count({
+        where: { tenantId: dstTenant, slug: "relatorio" },
+      }),
+    ).toBe(0);
+    const rows = await suDb.toolDefinition.findMany({
+      where: { tenantId: dstTenant, name: { startsWith: "send_relatorio" } },
+      select: { name: true },
+    });
+    expect(rows.map((r) => r.name)).toEqual(["send_relatorio"]);
+    expect(warnings.some((w) => w.code === "httpToolRenamed")).toBe(false);
+  });
+
   // Round 17: the free name was chosen past the rows already stored, so importing the same bundle
   // twice stored its native-named tool twice (`_2`, then `_3`), each agent bound to its own copy.
   // The renamed name is decided by the bundle alone, and a row already under it is reused like
@@ -2351,15 +2485,20 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
       name: "send_contrato_bundle",
       label: "Send contrato bundle",
     });
+    // A REAL starter, not an empty shell: only a template that will actually be imported reserves
+    // its `send_<slug>` name (round 21), and `blocks: []` is refused by the validity gate — the
+    // fixture would then be asserting a rename for a template that never publishes anything.
+    const bundleStarter = documentStarter("quote", "pt-BR");
+    if (!bundleStarter) throw new Error("no starter");
     bundle.components.documentTemplates = [
       ...(bundle.components.documentTemplates ?? []),
       {
         name: "Contrato bundle",
         slug: "contrato_bundle",
         description: null,
-        blocks: [],
-        fields: [],
-        style: {},
+        blocks: bundleStarter.blocks,
+        fields: bundleStarter.fields,
+        style: bundleStarter.style,
         numberPrefix: null,
         enabled: true,
       } as never,

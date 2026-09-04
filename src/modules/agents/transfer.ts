@@ -1590,6 +1590,7 @@ function renamedLabel(
 async function storedToolName(
   bundled: string,
   taken: Set<string>,
+  claimed: Set<string>,
   heldByOtherKind: (name: string) => Promise<boolean>,
 ): Promise<string> {
   // The bundle's own spelling is not necessarily a name the model can be offered. A provider
@@ -1608,12 +1609,61 @@ async function storedToolName(
   while (
     isNativeToolName(name) ||
     isRagToolName(name) ||
+    // A name a component of THIS import already landed on. The same-kind row under a name is
+    // normally REUSED (a second occurrence of one bundle entry finds the row the first wrote), and
+    // that is decided below, outside this walk — but two DISTINCT entries whose names normalize
+    // alike ("a b" and "a_b") are not one entry twice, and reading the second as a reuse discarded
+    // its definition and collapsed both grants onto one row (round 21). `claimed` carries only
+    // names a row actually exists under, so an entry the loop skipped frees the name again.
+    claimed.has(name) ||
     (await heldByOtherKind(name))
   ) {
     taken.add(name);
     name = renamedToolName(base, taken);
   }
   return name;
+}
+
+// The part of a bundled template's validity that asks nothing of the database. Extracted because
+// TWO passes need the same answer and a second copy of the rules would drift from the first: the
+// name reservation below runs before the tool loops, and the insert loop runs after them.
+//
+// Re-validated on the way IN, never trusted as exported: a template written by a newer build can
+// carry a block this one does not know how to render, and a warning that names the reason is a
+// better import than a document that renders wrong in front of a customer. The SLUG goes through
+// the same gate as a hand-written one, because it becomes a tool name: one reading `image` produces
+// `send_image`, which the assembly then drops as a duplicate of the built-in. A bundle is
+// hand-editable and this path writes to the table directly rather than through
+// createDocumentTemplate, so every rule that write applies has to be applied here too. The
+// description is the one that bites: it is appended verbatim to the agent's tool description on
+// every turn, and an oversized one arriving in a bundle would do that on the destination.
+function readBundledTemplate(
+  tpl: z.infer<typeof exportedDocumentTemplateSchema>,
+):
+  | {
+      ok: true;
+      name: string;
+      content: Extract<
+        ReturnType<typeof parseAuthoredTemplate>,
+        { ok: true }
+      >["content"];
+    }
+  | { ok: false; reason: string } {
+  const metaFault =
+    templateMetadataProblem({
+      name: tpl.name,
+      description: tpl.description ?? null,
+      numberPrefix: tpl.numberPrefix ?? null,
+    }) ?? (slugProblem(tpl.slug) ? `slug: ${slugProblem(tpl.slug)}.` : null);
+  if (metaFault) return { ok: false, reason: metaFault };
+  const content = parseAuthoredTemplate(tpl.blocks, tpl.fields, tpl.style);
+  if (!content.ok) return { ok: false, reason: content.reason };
+  // Safe only past `templateMetadataProblem`, which is the same schema: the value the gate
+  // APPROVED, not the one it was handed — it trims before it measures, so a name padded with
+  // whitespace passes a bound the raw string fails.
+  // not-caller-input: a name read off the template being imported, not a value from this request
+  const name = templateNameSchema.parse(tpl.name);
+  return { ok: true, name, content: content.content };
 }
 
 // Bundle name → stored name, per kind, for the tools the import could not store under their own.
@@ -1642,9 +1692,49 @@ async function createMissingComponents(
   await lockToolNames(db);
   // The `send_<slug>` tools the bundle's own templates will publish. They do not exist in the
   // database yet — the templates are inserted after the tool loops — so the loops carry them.
-  const bundledDocumentNames = new Set(
-    (components.documentTemplates ?? []).map((d) => documentToolName(d.slug)),
-  );
+  //
+  // Only the templates that will actually CLAIM one, which is not the same as the templates the
+  // bundle carries (round 21). A template the loop below skips — unreadable, named like one the
+  // destination already has, or blocked by a tool that was already there — publishes nothing, and
+  // a bundled tool renamed off its name was renamed for nothing: the grant follows the rename, but
+  // a prompt naming the tool stops finding it while no document tool ever took the name.
+  //
+  // The questions are that loop's own, asked here against the tree BEFORE the tool loops write,
+  // and that order is the only one that terminates: reserving the name is precisely what keeps a
+  // bundled tool off it, so asking `toolHoldingName` afterwards would answer a question this
+  // answer decides.
+  const bundledDocumentNames = new Set<string>();
+  const bundledTemplateTitles = new Set<string>();
+  for (const tpl of components.documentTemplates ?? []) {
+    const toolName = documentToolName(tpl.slug);
+    // A slug the destination already has is REUSED, not inserted — and the template that is
+    // already there publishes the name, so it stays reserved.
+    if (
+      await db.documentTemplate.findFirst({
+        where: { slug: tpl.slug },
+        select: { id: true },
+      })
+    ) {
+      bundledDocumentNames.add(toolName);
+      continue;
+    }
+    const read = readBundledTemplate(tpl);
+    if (!read.ok) continue;
+    // A tool STORED on the destination under `send_<slug>` blocks the template instead of moving,
+    // which is the one direction this reservation does not decide: it was there first.
+    if (await toolHoldingName(db, tpl.slug)) continue;
+    if (
+      bundledTemplateTitles.has(read.name) ||
+      (await db.documentTemplate.findFirst({
+        where: { name: read.name },
+        select: { slug: true },
+      }))
+    ) {
+      continue;
+    }
+    bundledTemplateTitles.add(read.name);
+    bundledDocumentNames.add(toolName);
+  }
   // Bundle name → stored name, for the HTTP tools this loop could not store under their own.
   const renamedHttpTools = new Map<string, string>();
   // Both kinds share the model's namespace, so a name either loop chooses is taken from the
@@ -1660,6 +1750,11 @@ async function createMissingComponents(
     // STORED templates are asked per name below; these do not exist yet to be asked about.
     ...bundledDocumentNames,
   ]);
+  // The names a component of THIS import has actually landed on, shared by both tool loops because
+  // the model reads one namespace. Added by `landed` below rather than at the moment a name is
+  // chosen: a component the loop then skips (an unsupported method) writes no row, and holding its
+  // name would push the next one off it for nothing.
+  const claimed = new Set<string>();
   // One stored name per bundle name: a bundle carrying the same native-named component twice (a
   // hand-edited file) chose a new suffix per occurrence and the last one overwrote the grant
   // mapping (round 18); the second occurrence now finds the first one's row and is reused.
@@ -1677,6 +1772,7 @@ async function createMissingComponents(
       (await storedToolName(
         tdef.name,
         taken,
+        claimed,
         async (n) =>
           // By the MODEL-FACING name (namespace.ts): a row stored `Foo` before names were
           // canonicalized answers to `foo`, which is the name being claimed here.
@@ -1697,6 +1793,10 @@ async function createMissingComponents(
     // or the race — and not before: a component the checks below skip was otherwise announced
     // as imported under a name no row carries, next to the warning that it was not (round 16).
     const landed = (): void => {
+      // Before the early return: a component stored under its OWN name occupies it just as much as
+      // a renamed one, and the next component whose name normalizes to it must not read that row
+      // as a reuse of itself.
+      claimed.add(name);
       if (name === tdef.name) return;
       renamedHttpTools.set(tdef.name, name);
       warnings.push({
@@ -1844,6 +1944,7 @@ async function createMissingComponents(
       (await storedToolName(
         tdef.name,
         taken,
+        claimed,
         async (n) =>
           (await toolsUnderModelName(db, n)).httpIds.length > 0 ||
           bundledDocumentNames.has(n) ||
@@ -1857,6 +1958,8 @@ async function createMissingComponents(
     // Recorded once a row under the new name EXISTS, and not before, for the reason the HTTP
     // loop's `landed` gives.
     const landed = (): void => {
+      // Before the early return, for the reason the HTTP loop's `landed` gives.
+      claimed.add(name);
       if (name === tdef.name) return;
       renamedCodeTools.set(tdef.name, name);
       warnings.push({
@@ -2083,31 +2186,15 @@ async function createMissingComponents(
       });
       continue;
     }
-    // Re-validated on the way IN, never trusted as exported: a template written by a newer build can
-    // carry a block this one does not know how to render, and a warning that names the reason is a
-    // better import than a document that renders wrong in front of a customer.
-    //
-    // The SLUG goes through the same gate as a hand-written one. A bundle is user-supplied, and the
-    // slug becomes a tool name: one reading `image` produces `send_image`, which the assembly then
-    // drops as a duplicate of the built-in — the operator would see a granted template whose tool
-    // never appears, with nothing anywhere saying why.
-    // A bundle is hand-editable, and this path writes to the table directly rather than through
-    // createDocumentTemplate — so every rule that write applies has to be applied here too. The
-    // description is the one that bites: it is appended verbatim to the agent's tool description on
-    // every turn, and an oversized one arriving in a bundle would do that on the destination.
-    const metaFault =
-      templateMetadataProblem({
-        name: tpl.name,
-        description: tpl.description ?? null,
-        numberPrefix: tpl.numberPrefix ?? null,
-      }) ?? (slugProblem(tpl.slug) ? `slug: ${slugProblem(tpl.slug)}.` : null);
-    const content = metaFault
-      ? ({ ok: false, reason: metaFault } as const)
-      : parseAuthoredTemplate(tpl.blocks, tpl.fields, tpl.style);
-    if (!content.ok) {
+    // Through the same reader the name reservation above used, so the two passes cannot disagree
+    // about which templates are importable: the reservation decided whether a bundled tool had to
+    // move off `send_<slug>`, and a second copy of these rules answering differently here would
+    // move a tool for a template this loop then skips (round 21).
+    const read = readBundledTemplate(tpl);
+    if (!read.ok) {
       warnings.push({
         code: "documentTemplateInvalid",
-        params: { name: tpl.name, reason: content.reason },
+        params: { name: tpl.name, reason: read.reason },
       });
       continue;
     }
@@ -2119,8 +2206,7 @@ async function createMissingComponents(
     //
     // Asked AFTER the validity gate, and the order is the message: a bundle carrying a template that
     // is both unreadable and named like an existing one is more usefully told about the first.
-    // not-caller-input: a name read off the template being imported, not a value from this request
-    const approvedName = templateNameSchema.parse(tpl.name);
+    const approvedName = read.name;
     // The destination may already have a TOOL under the name this template would publish. The
     // template is assembled first, so importing it would silently take that tool off the agents
     // that hold it — and the tool could no longer be saved under its own name either. Skipped with
@@ -2172,8 +2258,8 @@ async function createMissingComponents(
           name: approvedName,
           slug: tpl.slug,
           description: tpl.description ?? null,
-          blocks: content.content.blocks as unknown as Prisma.InputJsonValue,
-          fields: content.content.fields as unknown as Prisma.InputJsonValue,
+          blocks: read.content.blocks as unknown as Prisma.InputJsonValue,
+          fields: read.content.fields as unknown as Prisma.InputJsonValue,
           style: parseDocumentStyle(
             tpl.style,
           ) as unknown as Prisma.InputJsonValue,

@@ -1119,6 +1119,14 @@ export async function cloneAgent(
 ): Promise<AgentDto> {
   const tenantId = requireTenant(ctx);
   return runScopedOn(base, ctx, async (db) => {
+    // The namespace lock BEFORE the grants are read, for the reason `replaceAgentToolSelections`
+    // gives and one step earlier: a clone copies target ids out of one agent and writes them under
+    // another, so a tool deleted between the read and the insert leaves the copy pointing at a row
+    // that is gone. The foreign key then refuses it, and because the whole clone is one transaction
+    // the operator loses the agent, not the grant (round 35). Behind the lock the delete either
+    // goes first, and its cascade takes the source grant with it so there is nothing to copy, or it
+    // waits and takes both rows afterwards.
+    await lockToolNames(db);
     const src = await db.agent.findUnique({
       where: { id },
       select: {

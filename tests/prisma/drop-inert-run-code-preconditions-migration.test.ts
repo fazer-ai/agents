@@ -13,15 +13,19 @@ import { Client } from "pg";
 // `run_code` and put it back. Deleting unconditionally handed it back its name without its
 // condition: callable, ungated, and nothing anywhere saying a guard had been dropped.
 //
-// Round 33 widened WHAT answers. An MCP server's tool names live upstream, but what reaches the
-// model does not: the grant is fail-closed and allowlisted, so `agent_tool_selections.enabled_tools`
-// is the list of names that server can answer to, in this database. A predicate that stopped at the
-// two tables with a `name` column reinstated for MCP the exact hole round 32 closed for HTTP.
+// Round 33 widened WHAT answers, and round 35 narrowed it back by one source. An integration's tool
+// names are not in a `name` column but they ARE here: the grant is fail-closed and allowlisted, so
+// `agent_tool_selections.enabled_tools` is the list a toolpack can answer to, exposed BARE. MCP
+// looks identical and is not: an MCP tool reaches the model as `mcp__<server>__<tool>`, and the
+// allowlist holds the upstream name because the filter runs before the rename, so a rule keyed
+// `run_code` cannot be guarding one and keeping the key for it preserves the invisible inert rule
+// this migration removes.
 //
 // What it pins: the key goes when nothing answers to the name, STAYS when something does (an HTTP
-// tool, a code tool, an MCP grant naming it, and a spelling that only DERIVES the name), the
-// agent's other preconditions and settings are untouched, an agent without the key is not
-// rewritten, and FORCE ROW LEVEL SECURITY is back on all four tables.
+// tool, a code tool, an integration grant naming it, and a spelling that only DERIVES the name),
+// goes despite an MCP grant naming it, the agent's other preconditions and settings are untouched,
+// an agent without the key is not rewritten, and FORCE ROW LEVEL SECURITY is back on all four
+// tables.
 
 const suUrl = process.env.MIGRATION_DATABASE_URL;
 const MIGRATION =
@@ -111,6 +115,24 @@ async function mcpGrant(
   );
 }
 
+async function integrationGrant(
+  tenantId: bigint,
+  agentId: bigint,
+  tools: string[],
+): Promise<void> {
+  const inst = await suDb.query(
+    `INSERT INTO "integration_instances" (tenant_id, catalog_type, name, config, updated_at)
+     VALUES ($1, 'google_drive', 'inst', '{}'::jsonb, NOW()) RETURNING id`,
+    [String(tenantId)],
+  );
+  await suDb.query(
+    `INSERT INTO "agent_tool_selections"
+       (tenant_id, agent_id, source, integration_instance_id, knowledge_base_ids, enabled_tools, created_at, updated_at)
+     VALUES ($1, $2, 'INTEGRATION', $3, ARRAY[]::bigint[], $4::text[], NOW(), NOW())`,
+    [String(tenantId), String(agentId), inst.rows[0].id, tools],
+  );
+}
+
 async function settingsOf(id: bigint): Promise<Record<string, unknown>> {
   const r = await suDb.query('SELECT settings FROM "agents" WHERE id = $1', [
     String(id),
@@ -157,20 +179,35 @@ describe.skipIf(!dbUp)("migration: drop INERT run_code preconditions", () => {
     });
     await codeTool(coded, "run_code");
 
-    // Nothing in any table is named `run_code`, but an MCP grant allowlists it: that IS the name
-    // reaching the model, and it is the only place this database can learn it.
-    const viaMcp = await tenant("mcp");
-    ids.liveMcp = await agent(viaMcp, "live-mcp", {
+    // Nothing in any table is named `run_code`, but an integration grant allowlists it: a toolpack
+    // exposes its tools bare, so that IS the name reaching the model and the allowlist is the only
+    // place this database can learn it.
+    const viaPack = await tenant("pack");
+    ids.livePack = await agent(viaPack, "live-pack", {
       toolPreconditions: { run_code: RULE("cpf_ok") },
     });
-    await mcpGrant(viaMcp, ids.liveMcp as bigint, ["run_code", "search_docs"]);
+    await integrationGrant(viaPack, ids.livePack as bigint, [
+      "run_code",
+      "drive_find_file",
+    ]);
 
-    // The control for that arm: an MCP grant that allowlists something else leaves the rule inert.
-    const otherMcp = await tenant("mcp-other");
-    ids.inertMcp = await agent(otherMcp, "inert-mcp", {
+    // The control for that arm: a grant that allowlists something else leaves the rule inert.
+    const otherPack = await tenant("pack-other");
+    ids.inertPack = await agent(otherPack, "inert-pack", {
       toolPreconditions: { run_code: RULE("cpf_ok") },
     });
-    await mcpGrant(otherMcp, ids.inertMcp as bigint, ["search_docs"]);
+    await integrationGrant(otherPack, ids.inertPack as bigint, [
+      "drive_find_file",
+    ]);
+
+    // MCP looks like the case above and is not: the tool reaches the model as
+    // `mcp__<server>__run_code`, so a rule keyed `run_code` was never guarding it and the key is
+    // inert whatever the allowlist says.
+    const viaMcp = await tenant("mcp");
+    ids.inertMcp = await agent(viaMcp, "inert-mcp", {
+      toolPreconditions: { run_code: RULE("cpf_ok") },
+    });
+    await mcpGrant(viaMcp, ids.inertMcp as bigint, ["run_code"]);
 
     // A spelling that only DERIVES the name. The model calls it `run_code` either way, which is why
     // the migration asks the derivation and not the stored text.
@@ -207,14 +244,24 @@ describe.skipIf(!dbUp)("migration: drop INERT run_code preconditions", () => {
     expect(await updatedAtOf(ids.untouched as bigint)).toBe(before);
 
     expect(await settingsOf(ids.bare as bigint)).toEqual({ temperature: 0.2 });
-    // The MCP arm's control: allowlisting other names does not save the rule.
-    expect(await settingsOf(ids.inertMcp as bigint)).toEqual({
-      toolPreconditions: {},
-    });
+    // The integration arm's control: allowlisting other names does not save the rule. And the MCP
+    // grant that DOES allowlist the name still does not, because the name it exposes is not this
+    // one.
+    for (const key of ["inertPack", "inertMcp"] as const) {
+      expect([key, await settingsOf(ids[key] as bigint)]).toEqual([
+        key,
+        { toolPreconditions: {} },
+      ]);
+    }
   });
 
   test("keeps the rule wherever something still answers to the name", async () => {
-    for (const key of ["live", "liveCode", "liveDerived", "liveMcp"] as const) {
+    for (const key of [
+      "live",
+      "liveCode",
+      "liveDerived",
+      "livePack",
+    ] as const) {
       const s = await settingsOf(ids[key] as bigint);
       expect([key, s.toolPreconditions]).toEqual([
         key,

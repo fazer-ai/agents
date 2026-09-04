@@ -29,18 +29,25 @@
 -- derivation is the one both earlier migrations used, copied rather than referenced because a
 -- migration is frozen by design and `pg_temp` does not outlive the session that made it.
 --
--- FOUR kinds are asked, not two, because "source-agnostic" is the whole premise and a predicate
--- that stops at the two tables holding a `name` column reinstates exactly the hole it closes for
--- HTTP tools (round 33). An MCP server's tool names live upstream, not here, but what reaches the
--- model does not: the grant is fail-closed and allowlisted, so `agent_tool_selections.enabled_tools`
--- IS the list of names that server can answer to, in this database, for MCP and for integrations
--- alike. NATIVE and RAG rows carry the same column and are deliberately NOT consulted: the native
--- `run_code` grant is what the migration two files earlier removes, and reading it back here would
--- resurrect the guard for the only case this file exists to clean.
+-- THREE kinds are asked, not two, because "source-agnostic" is the whole premise and a predicate
+-- that stops at the tables holding a `name` column reinstates exactly the hole it closes for HTTP
+-- tools (round 33). An integration's tool names are not in a `name` column but they ARE in this
+-- database: the grant is fail-closed and allowlisted, so `agent_tool_selections.enabled_tools` is
+-- the list of names that toolpack can answer to, and a toolpack exposes them BARE (`drive_find_file`
+-- and its siblings, measured).
+--
+-- MCP is the source that looks like it belongs here and does not, which round 33 got wrong and
+-- round 35 measured: an MCP tool never reaches the model under its upstream name. It is namespaced
+-- to `mcp__<server>__<tool>` (graph/tools/mcp.ts), and the allowlist holds the BARE name because
+-- filtering happens before the rename. So a rule keyed `run_code` cannot be guarding an MCP tool,
+-- and keeping the key for one preserves exactly the invisible inert rule this file removes. NATIVE
+-- and RAG rows are out for a different reason: the native `run_code` grant is what the migration
+-- two files earlier removes, and reading it back here would resurrect the guard for the only case
+-- this file exists to clean.
 --
 -- The integration arm cannot fire today (measured: no registered toolpack publishes a tool named
--- `run_code`, and the set is a closed allowlist in code, not operator text), and it costs one OR to
--- keep a toolpack added later from walking into this.
+-- `run_code`, and the set is a closed allowlist in code, not operator text), and it costs one
+-- predicate to keep a toolpack added later from walking into this.
 --
 -- Data migration over FORCE RLS tables: lifted for the statement on every table it writes AND
 -- reads, restored after (.claude/rules/prisma.md). The write is idempotent: a second run matches no
@@ -91,7 +98,7 @@ UPDATE "agents" a
        FROM "agent_tool_selections" s,
             unnest(s.enabled_tools) AS granted(name)
       WHERE s.tenant_id = a.tenant_id
-        AND s.source IN ('MCP', 'INTEGRATION')
+        AND s.source = 'INTEGRATION'
         AND pg_temp.console_tool_name(granted.name) = 'run_code'
    );
 

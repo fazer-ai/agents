@@ -3,7 +3,10 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { AppError } from "@/lib/errors";
 import type { TenantContext } from "@/lib/tenancy";
-import { replaceAgentToolSelections } from "@/modules/agents/service";
+import {
+  cloneAgent,
+  replaceAgentToolSelections,
+} from "@/modules/agents/service";
 import { deleteCodeTool } from "@/modules/code-tools/service";
 
 // The gap between "this grant names a tool that exists" and the insert that points at it.
@@ -238,6 +241,61 @@ describe.skipIf(!dbUp)("a grant target deleted mid-save", () => {
       deleted && String(deleted),
       false,
     ]);
+  }, 30_000);
+
+  // The third path that writes selection rows, and the one whose ids come from ANOTHER agent: a
+  // clone reads the source's grants and writes them under a new agent. A tool deleted between the
+  // two leaves the copy pointing at a row that is gone, the foreign key refuses it, and because the
+  // clone is one transaction the operator loses the agent and not the grant (round 35). The same
+  // lock orders it: the delete either goes first, and its cascade takes the source grant with it so
+  // there is nothing to copy, or it waits.
+  test("a clone racing a delete of what it copies still produces an agent", async () => {
+    const src = await agent();
+    const tool = await suDb.codeToolDefinition.create({
+      data: {
+        tenantId,
+        name: `cloned-${process.pid}`,
+        label: "l",
+        description: "d",
+        code: "return 1",
+      },
+    });
+    await suDb.agentToolSelection.create({
+      data: {
+        tenantId,
+        agentId: src.id,
+        source: "CODE",
+        codeToolDefinitionId: tool.id,
+        knowledgeBaseIds: [],
+        enabledTools: [],
+      },
+    });
+
+    let deleting: Promise<unknown> | undefined;
+    const interleaved = appDb.$extends({
+      query: {
+        agentToolSelection: {
+          async createMany({ args, query }) {
+            deleting = deleteCodeTool(ctx, tool.id, appDb2).then(
+              () => undefined,
+              (e: unknown) => e,
+            );
+            await new Promise((r) => setTimeout(r, 400));
+            return query(args);
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+
+    const cloned = await cloneAgent(ctx, src.id, "copy", interleaved).then(
+      (a) => a,
+      (e: unknown) => e,
+    );
+    await deleting;
+    expect([
+      cloned instanceof Error ? String(cloned) : "ok",
+      cloned instanceof Error,
+    ]).toEqual([cloned instanceof Error ? String(cloned) : "ok", false]);
   }, 30_000);
 
   // The control, and it is what keeps the catch from becoming "answer not-found whenever the write

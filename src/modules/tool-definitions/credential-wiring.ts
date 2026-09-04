@@ -96,7 +96,7 @@ function alwaysNonEmpty(
   if (template.replace(PLACEHOLDER, "") !== "") return true;
   if (!resolveFixed) return false;
   for (const name of namesIn(template)) {
-    const value = fixed.get(name);
+    const value = fixedSubstitution(name, fixed);
     if (value !== undefined && alwaysNonEmpty(value, fixed, false)) return true;
   }
   return false;
@@ -104,6 +104,21 @@ function alwaysNonEmpty(
 
 function fixedValuesByName(schema: unknown): Map<string, string> {
   return new Map(fixedFields(schema).map((f) => [f.name, f.value]));
+}
+
+// The fixed value the runtime would substitute for this placeholder, or undefined when it would not
+// substitute one. `valueLookup` asks `n in input` FIRST, and `in` walks the prototype: a field named
+// `toString` (or `constructor`, or `valueOf`) resolves to Object.prototype's member, not to the
+// operator's fixed value, whatever the schema says. Reading the map for those names claimed a URL
+// key the request does not carry — and, on a query credential of that name, called it shadowed.
+//
+// The runtime's `in` is the defect; this is not the place to change it, and treating those names as
+// unresolvable is the reading that agrees with what it does today.
+function fixedSubstitution(
+  name: string,
+  fixed: Map<string, string>,
+): string | undefined {
+  return name in {} ? undefined : fixed.get(name);
 }
 
 // Mirrors `isBodyMethod` in graph/tools/http.ts. DELETE is deliberately absent there — a DELETE tool
@@ -159,7 +174,7 @@ function parseUrlTemplate(
 ): URL | null {
   if (typeof urlTemplate !== "string") return null;
   const resolved = urlTemplate.replace(PLACEHOLDER, (_whole, name: string) => {
-    const value = fixed.get(name);
+    const value = fixedSubstitution(name, fixed);
     // One level, like everywhere else here: a fixed value that is itself a template resolves from
     // context, which is unknowable, so it stays neutral.
     // ENCODED, because the runtime's interpolation is: `encodeURIComponent(v)` on every substituted
@@ -319,9 +334,11 @@ export function effectiveUrlTemplate(
   if (typeof urlTemplate !== "string" || !urlTemplate.startsWith("/")) {
     return urlTemplate;
   }
-  // No base and a relative template is a tool `buildHttpTool` refuses to build at all; there is no
-  // request to say anything about.
-  return credentialBaseUrl ? `${credentialBaseUrl}${urlTemplate}` : urlTemplate;
+  // No base and a relative template is a tool `buildHttpTool` REFUSES to build — it throws "relative
+  // urlTemplate requires a credential with a base URL" before there is a request at all. Answering
+  // `null` here is what lets the caller stay quiet: a warning that the request goes out
+  // unauthenticated diagnoses a failure that cannot happen, and points away from the one that does.
+  return credentialBaseUrl ? `${credentialBaseUrl}${urlTemplate}` : null;
 }
 
 export function reachableTemplates(
@@ -491,11 +508,11 @@ export function unusedCredentialWarning(
 ): string | null {
   if (isNonInjectableSecret(facts.kind)) return null;
   const { shapes: normalized } = normalizeToolShapes(raw);
+  const effective = effectiveUrlTemplate(normalized.urlTemplate, facts.baseUrl);
+  if (effective === null) return null;
   const shapes: ToolShapePatch = {
     ...normalized,
-    urlTemplate: effectiveUrlTemplate(normalized.urlTemplate, facts.baseUrl) as
-      | string
-      | undefined,
+    urlTemplate: effective as string | undefined,
   };
   const m = (method ?? DEFAULT_HTTP_METHOD).toUpperCase();
   if (mentions(reachableTemplates(method, shapes), "secret")) return null;

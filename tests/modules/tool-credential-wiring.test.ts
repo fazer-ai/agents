@@ -559,6 +559,18 @@ const CASES: Wiring[] = [
     inputSchema: { field: { type: "string", required: true } },
   },
 
+  {
+    label:
+      "a fixed field named like an Object member does not resolve a URL key",
+    reaches: true,
+    kind: "query",
+    paramName: "token",
+    urlTemplate: `https://${PUBLIC}/v1/thing?{{toString}}=x`,
+    inputSchema: {
+      toString: { type: "string", source: "fixed", value: "token" },
+    },
+  },
+
   // ── spelling ──
   {
     label:
@@ -589,6 +601,43 @@ describe("the scanner answers what the runtime does", () => {
       expect(scannerSaysReaches(w)).toBe(w.reaches);
     });
   }
+
+  test("a relative template with no base builds no request, so it gets no warning", async () => {
+    // NOTE: not a row of the table, because there is nothing to execute: `buildHttpTool` refuses the
+    // pairing outright. A warning that the request goes out unauthenticated would diagnose a failure
+    // that cannot happen and point away from the one that does.
+    expect(() =>
+      buildHttpTool(
+        asDef({
+          label: "",
+          reaches: false,
+          urlTemplate: "/v1/thing",
+        }),
+        { resolveCredential: async () => SECRET, fetchImpl: stubFetch({}) },
+      ),
+    ).toThrow("relative urlTemplate requires a credential with a base URL");
+
+    expect(
+      unusedCredentialWarning(
+        { kind: "generic", paramName: null, baseUrl: null },
+        "GET",
+        {
+          urlTemplate: "/v1/thing",
+          headers: {},
+          inputSchema: {},
+        },
+      ),
+    ).toBeNull();
+
+    // NOTE: the control — with a base, the same tool is judged normally.
+    expect(
+      unusedCredentialWarning(
+        { kind: "generic", paramName: null, baseUrl: `https://${PUBLIC}` },
+        "GET",
+        { urlTemplate: "/v1/thing", headers: {}, inputSchema: {} },
+      ),
+    ).not.toBeNull();
+  });
 
   test("a fragment does not reach the upstream, which is why the table cuts it", async () => {
     // NOTE: the PREMISE behind the row above, measured rather than assumed, because the stub fetch
@@ -626,7 +675,7 @@ describe("the scanner answers what the runtime does", () => {
     // NOTE: the floor. Every assertion above is `toBe(w.reaches)`, so a table that drifted to a
     // single verdict would still pass while proving nothing about the boundary between them.
     const reaching = CASES.filter((c) => c.reaches).length;
-    expect(reaching).toBeGreaterThan(20);
+    expect(reaching).toBeGreaterThan(21);
     expect(CASES.length - reaching).toBeGreaterThan(17);
   });
 });

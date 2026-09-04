@@ -85,8 +85,14 @@ export const writeBody = t.Object({
         "Static request headers; values may contain {{secret}} placeholders.",
     }),
   ),
+  // `t.Unknown`, not `t.Record`: the record schema REBUILDS the map, and a field named `__proto__`
+  // becomes the object's prototype on the way in — the service's refusal (code-tools/service.ts)
+  // would then judge a schema the caller never sent, and the tool would save with the declared
+  // argument missing. Measured: `t.Record` answers own keys `["cpf"]` for a body that also sent
+  // `__proto__`; `t.Unknown` keeps both. The shape is still described here and validated by the
+  // service's own zod.
   inputSchema: t.Optional(
-    t.Record(t.String(), t.Unknown(), {
+    t.Unknown({
       description:
         'Input fields the agent supplies, as a compact map: {"field": {"type": "string"|"integer"|"number"|"boolean"|"enum"|"array"|"object", "required"?, "description"?, "enumValues"?, "itemType"?}}. Standard JSON Schema ({"properties", "required"}) is accepted and converted to this shape on write.',
     }),
@@ -290,7 +296,8 @@ export const toolsController = new Elysia({
           }),
           allowedHosts: t.Optional(t.Array(t.String())),
           headers: t.Optional(t.Record(t.String(), t.Unknown())),
-          inputSchema: t.Optional(t.Record(t.String(), t.Unknown())),
+          // Same reason as writeBody's: a record schema rebuilds the map.
+          inputSchema: t.Optional(t.Unknown()),
           query: t.Optional(t.Record(t.String(), t.Unknown())),
           body: t.Optional(t.Record(t.String(), t.Unknown())),
           credentialRef: t.Optional(t.Union([t.String(), t.Null()])),

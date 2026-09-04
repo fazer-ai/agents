@@ -12332,11 +12332,7 @@
                     }
                   },
                   "inputSchema": {
-                    "description": "Input fields the agent supplies, as a compact map: {\"field\": {\"type\": \"string\"|\"integer\"|\"number\"|\"boolean\"|\"enum\"|\"array\"|\"object\", \"required\"?, \"description\"?, \"enumValues\"?, \"itemType\"?}}. Standard JSON Schema ({\"properties\", \"required\"}) is accepted and converted to this shape on write.",
-                    "type": "object",
-                    "patternProperties": {
-                      "^(.*)$": {}
-                    }
+                    "description": "Input fields the agent supplies, as a compact map: {\"field\": {\"type\": \"string\"|\"integer\"|\"number\"|\"boolean\"|\"enum\"|\"array\"|\"object\", \"required\"?, \"description\"?, \"enumValues\"?, \"itemType\"?}}. Standard JSON Schema ({\"properties\", \"required\"}) is accepted and converted to this shape on write."
                   },
                   "outputSchema": {
                     "description": "How this tool's response should read by the time it reaches the model: {\"mode\": \"template\", \"template\": \"**{{razao_social}}** — {{municipio}}\nStatus: {{situacao}}\"}. A token is a dot-separated path into the response body, with a number for a list position (data.items.0.name); a path that does not resolve renders \"(not returned)\" and is reported on the tool stage. A list of unknown length renders through a block: {{#each items}}- {{name}}\n{{/each}} repeats its content per item, paths inside it are relative to the item, {{.}} is the item itself, blocks do not nest, and at most 50 items render, fewer when they would not fit the clip, with the rest counted. Rendered before the response is clipped, so a field past the clip is reachable. Omitted (or any other shape) hands the model the raw body, clipped, which is the old behaviour.",
@@ -12480,11 +12476,7 @@
                     }
                   },
                   "inputSchema": {
-                    "description": "Input fields the agent supplies, as a compact map: {\"field\": {\"type\": \"string\"|\"integer\"|\"number\"|\"boolean\"|\"enum\"|\"array\"|\"object\", \"required\"?, \"description\"?, \"enumValues\"?, \"itemType\"?}}. Standard JSON Schema ({\"properties\", \"required\"}) is accepted and converted to this shape on write.",
-                    "type": "object",
-                    "patternProperties": {
-                      "^(.*)$": {}
-                    }
+                    "description": "Input fields the agent supplies, as a compact map: {\"field\": {\"type\": \"string\"|\"integer\"|\"number\"|\"boolean\"|\"enum\"|\"array\"|\"object\", \"required\"?, \"description\"?, \"enumValues\"?, \"itemType\"?}}. Standard JSON Schema ({\"properties\", \"required\"}) is accepted and converted to this shape on write."
                   },
                   "outputSchema": {
                     "description": "How this tool's response should read by the time it reaches the model: {\"mode\": \"template\", \"template\": \"**{{razao_social}}** — {{municipio}}\nStatus: {{situacao}}\"}. A token is a dot-separated path into the response body, with a number for a list position (data.items.0.name); a path that does not resolve renders \"(not returned)\" and is reported on the tool stage. A list of unknown length renders through a block: {{#each items}}- {{name}}\n{{/each}} repeats its content per item, paths inside it are relative to the item, {{.}} is the item itself, blocks do not nest, and at most 50 items render, fewer when they would not fit the clip, with the rest counted. Rendered before the response is clipped, so a field past the clip is reachable. Omitted (or any other shape) hands the model the raw body, clipped, which is the old behaviour.",
@@ -12628,11 +12620,7 @@
                     }
                   },
                   "inputSchema": {
-                    "description": "Input fields the agent supplies, as a compact map: {\"field\": {\"type\": \"string\"|\"integer\"|\"number\"|\"boolean\"|\"enum\"|\"array\"|\"object\", \"required\"?, \"description\"?, \"enumValues\"?, \"itemType\"?}}. Standard JSON Schema ({\"properties\", \"required\"}) is accepted and converted to this shape on write.",
-                    "type": "object",
-                    "patternProperties": {
-                      "^(.*)$": {}
-                    }
+                    "description": "Input fields the agent supplies, as a compact map: {\"field\": {\"type\": \"string\"|\"integer\"|\"number\"|\"boolean\"|\"enum\"|\"array\"|\"object\", \"required\"?, \"description\"?, \"enumValues\"?, \"itemType\"?}}. Standard JSON Schema ({\"properties\", \"required\"}) is accepted and converted to this shape on write."
                   },
                   "outputSchema": {
                     "description": "How this tool's response should read by the time it reaches the model: {\"mode\": \"template\", \"template\": \"**{{razao_social}}** — {{municipio}}\nStatus: {{situacao}}\"}. A token is a dot-separated path into the response body, with a number for a list position (data.items.0.name); a path that does not resolve renders \"(not returned)\" and is reported on the tool stage. A list of unknown length renders through a block: {{#each items}}- {{name}}\n{{/each}} repeats its content per item, paths inside it are relative to the item, {{.}} is the item itself, blocks do not nest, and at most 50 items render, fewer when they would not fit the clip, with the rest counted. Rendered before the response is clipped, so a field past the clip is reachable. Omitted (or any other shape) hands the model the raw body, clipped, which is the old behaviour.",
@@ -13093,11 +13081,7 @@
                     }
                   },
                   "inputSchema": {
-                    "description": "Input fields the agent supplies, as a compact map: {\"field\": {\"type\": \"string\"|\"integer\"|\"number\"|\"boolean\"|\"enum\"|\"array\"|\"object\", \"required\"?, \"description\"?, \"enumValues\"?, \"itemType\"?}}. Standard JSON Schema ({\"properties\", \"required\"}) is accepted and converted to this shape on write.",
-                    "type": "object",
-                    "patternProperties": {
-                      "^(.*)$": {}
-                    }
+                    "description": "Input fields the agent supplies, as a compact map: {\"field\": {\"type\": \"string\"|\"integer\"|\"number\"|\"boolean\"|\"enum\"|\"array\"|\"object\", \"required\"?, \"description\"?, \"enumValues\"?, \"itemType\"?}}. Standard JSON Schema ({\"properties\", \"required\"}) is accepted and converted to this shape on write."
                   },
                   "outputSchema": {
                     "description": "How this tool's response should read by the time it reaches the model: {\"mode\": \"template\", \"template\": \"**{{razao_social}}** — {{municipio}}\nStatus: {{situacao}}\"}. A token is a dot-separated path into the response body, with a number for a list position (data.items.0.name); a path that does not resolve renders \"(not returned)\" and is reported on the tool stage. A list of unknown length renders through a block: {{#each items}}- {{name}}\n{{/each}} repeats its content per item, paths inside it are relative to the item, {{.}} is the item itself, blocks do not nest, and at most 50 items render, fewer when they would not fit the clip, with the rest counted. Rendered before the response is clipped, so a field past the clip is reachable. Omitted (or any other shape) hands the model the raw body, clipped, which is the old behaviour.",
@@ -13235,11 +13219,7 @@
                     }
                   },
                   "inputSchema": {
-                    "description": "Input fields the agent supplies, as a compact map: {\"field\": {\"type\": \"string\"|\"integer\"|\"number\"|\"boolean\"|\"enum\"|\"array\"|\"object\", \"required\"?, \"description\"?, \"enumValues\"?, \"itemType\"?}}. Standard JSON Schema ({\"properties\", \"required\"}) is accepted and converted to this shape on write.",
-                    "type": "object",
-                    "patternProperties": {
-                      "^(.*)$": {}
-                    }
+                    "description": "Input fields the agent supplies, as a compact map: {\"field\": {\"type\": \"string\"|\"integer\"|\"number\"|\"boolean\"|\"enum\"|\"array\"|\"object\", \"required\"?, \"description\"?, \"enumValues\"?, \"itemType\"?}}. Standard JSON Schema ({\"properties\", \"required\"}) is accepted and converted to this shape on write."
                   },
                   "outputSchema": {
                     "description": "How this tool's response should read by the time it reaches the model: {\"mode\": \"template\", \"template\": \"**{{razao_social}}** — {{municipio}}\nStatus: {{situacao}}\"}. A token is a dot-separated path into the response body, with a number for a list position (data.items.0.name); a path that does not resolve renders \"(not returned)\" and is reported on the tool stage. A list of unknown length renders through a block: {{#each items}}- {{name}}\n{{/each}} repeats its content per item, paths inside it are relative to the item, {{.}} is the item itself, blocks do not nest, and at most 50 items render, fewer when they would not fit the clip, with the rest counted. Rendered before the response is clipped, so a field past the clip is reachable. Omitted (or any other shape) hands the model the raw body, clipped, which is the old behaviour.",
@@ -13377,11 +13357,7 @@
                     }
                   },
                   "inputSchema": {
-                    "description": "Input fields the agent supplies, as a compact map: {\"field\": {\"type\": \"string\"|\"integer\"|\"number\"|\"boolean\"|\"enum\"|\"array\"|\"object\", \"required\"?, \"description\"?, \"enumValues\"?, \"itemType\"?}}. Standard JSON Schema ({\"properties\", \"required\"}) is accepted and converted to this shape on write.",
-                    "type": "object",
-                    "patternProperties": {
-                      "^(.*)$": {}
-                    }
+                    "description": "Input fields the agent supplies, as a compact map: {\"field\": {\"type\": \"string\"|\"integer\"|\"number\"|\"boolean\"|\"enum\"|\"array\"|\"object\", \"required\"?, \"description\"?, \"enumValues\"?, \"itemType\"?}}. Standard JSON Schema ({\"properties\", \"required\"}) is accepted and converted to this shape on write."
                   },
                   "outputSchema": {
                     "description": "How this tool's response should read by the time it reaches the model: {\"mode\": \"template\", \"template\": \"**{{razao_social}}** — {{municipio}}\nStatus: {{situacao}}\"}. A token is a dot-separated path into the response body, with a number for a list position (data.items.0.name); a path that does not resolve renders \"(not returned)\" and is reported on the tool stage. A list of unknown length renders through a block: {{#each items}}- {{name}}\n{{/each}} repeats its content per item, paths inside it are relative to the item, {{.}} is the item itself, blocks do not nest, and at most 50 items render, fewer when they would not fit the clip, with the rest counted. Rendered before the response is clipped, so a field past the clip is reachable. Omitted (or any other shape) hands the model the raw body, clipped, which is the old behaviour.",
@@ -13893,12 +13869,7 @@
                           "^(.*)$": {}
                         }
                       },
-                      "inputSchema": {
-                        "type": "object",
-                        "patternProperties": {
-                          "^(.*)$": {}
-                        }
-                      },
+                      "inputSchema": {},
                       "query": {
                         "type": "object",
                         "patternProperties": {
@@ -13989,12 +13960,7 @@
                           "^(.*)$": {}
                         }
                       },
-                      "inputSchema": {
-                        "type": "object",
-                        "patternProperties": {
-                          "^(.*)$": {}
-                        }
-                      },
+                      "inputSchema": {},
                       "query": {
                         "type": "object",
                         "patternProperties": {
@@ -14085,12 +14051,7 @@
                           "^(.*)$": {}
                         }
                       },
-                      "inputSchema": {
-                        "type": "object",
-                        "patternProperties": {
-                          "^(.*)$": {}
-                        }
-                      },
+                      "inputSchema": {},
                       "query": {
                         "type": "object",
                         "patternProperties": {
@@ -14430,11 +14391,7 @@
                 ],
                 "properties": {
                   "inputSchema": {
-                    "description": "The arguments the agent supplies, as the compact map an HTTP tool uses: {\"field\": {\"type\": \"string\"|\"integer\"|\"number\"|\"boolean\"|\"enum\"|\"array\"|\"object\", \"required\"?, \"description\"?, \"enumValues\"?, \"itemType\"?}}. Standard JSON Schema ({\"properties\", \"required\"}) is accepted and converted to this shape on write. The body receives them as `input`.",
-                    "type": "object",
-                    "patternProperties": {
-                      "^(.*)$": {}
-                    }
+                    "description": "The arguments the agent supplies, as the compact map an HTTP tool uses: {\"field\": {\"type\": \"string\"|\"integer\"|\"number\"|\"boolean\"|\"enum\"|\"array\"|\"object\", \"required\"?, \"description\"?, \"enumValues\"?, \"itemType\"?}}. Standard JSON Schema ({\"properties\", \"required\"}) is accepted and converted to this shape on write. The body receives them as `input`."
                   },
                   "enabled": {
                     "description": "Whether the tool is available to agents.",
@@ -14470,11 +14427,7 @@
                 ],
                 "properties": {
                   "inputSchema": {
-                    "description": "The arguments the agent supplies, as the compact map an HTTP tool uses: {\"field\": {\"type\": \"string\"|\"integer\"|\"number\"|\"boolean\"|\"enum\"|\"array\"|\"object\", \"required\"?, \"description\"?, \"enumValues\"?, \"itemType\"?}}. Standard JSON Schema ({\"properties\", \"required\"}) is accepted and converted to this shape on write. The body receives them as `input`.",
-                    "type": "object",
-                    "patternProperties": {
-                      "^(.*)$": {}
-                    }
+                    "description": "The arguments the agent supplies, as the compact map an HTTP tool uses: {\"field\": {\"type\": \"string\"|\"integer\"|\"number\"|\"boolean\"|\"enum\"|\"array\"|\"object\", \"required\"?, \"description\"?, \"enumValues\"?, \"itemType\"?}}. Standard JSON Schema ({\"properties\", \"required\"}) is accepted and converted to this shape on write. The body receives them as `input`."
                   },
                   "enabled": {
                     "description": "Whether the tool is available to agents.",
@@ -14510,11 +14463,7 @@
                 ],
                 "properties": {
                   "inputSchema": {
-                    "description": "The arguments the agent supplies, as the compact map an HTTP tool uses: {\"field\": {\"type\": \"string\"|\"integer\"|\"number\"|\"boolean\"|\"enum\"|\"array\"|\"object\", \"required\"?, \"description\"?, \"enumValues\"?, \"itemType\"?}}. Standard JSON Schema ({\"properties\", \"required\"}) is accepted and converted to this shape on write. The body receives them as `input`.",
-                    "type": "object",
-                    "patternProperties": {
-                      "^(.*)$": {}
-                    }
+                    "description": "The arguments the agent supplies, as the compact map an HTTP tool uses: {\"field\": {\"type\": \"string\"|\"integer\"|\"number\"|\"boolean\"|\"enum\"|\"array\"|\"object\", \"required\"?, \"description\"?, \"enumValues\"?, \"itemType\"?}}. Standard JSON Schema ({\"properties\", \"required\"}) is accepted and converted to this shape on write. The body receives them as `input`."
                   },
                   "enabled": {
                     "description": "Whether the tool is available to agents.",
@@ -14860,11 +14809,7 @@
                     "type": "string"
                   },
                   "inputSchema": {
-                    "description": "The arguments the agent supplies, as the compact map an HTTP tool uses: {\"field\": {\"type\": \"string\"|\"integer\"|\"number\"|\"boolean\"|\"enum\"|\"array\"|\"object\", \"required\"?, \"description\"?, \"enumValues\"?, \"itemType\"?}}. Standard JSON Schema ({\"properties\", \"required\"}) is accepted and converted to this shape on write. The body receives them as `input`.",
-                    "type": "object",
-                    "patternProperties": {
-                      "^(.*)$": {}
-                    }
+                    "description": "The arguments the agent supplies, as the compact map an HTTP tool uses: {\"field\": {\"type\": \"string\"|\"integer\"|\"number\"|\"boolean\"|\"enum\"|\"array\"|\"object\", \"required\"?, \"description\"?, \"enumValues\"?, \"itemType\"?}}. Standard JSON Schema ({\"properties\", \"required\"}) is accepted and converted to this shape on write. The body receives them as `input`."
                   },
                   "code": {
                     "description": "The body of `function (input, context) { … }`, plain JavaScript (ES2023): `input` holds the arguments, `context` the conversation variables (conversation_id, message_id, contact_id, contact_name, contact_email, contact_phone, inbox_id, inbox_name, company_name, agent_name, conversationAttributes, contactAttributes), and the result is what the body `return`s (rendered as JSON for the agent; console.log output is returned with it). Available inside: validateCpf(text) and validateCnpj(text) → { valid }, TIMEZONE, NOW_LOCAL, and Date in the agent's zone. No network, no imports, no async. Limits: 1000 ms of CPU, 32 MB. A `throw` or a limit is an integration failure (alerted); a business outcome is a returned value. Code that does not parse is saved and reported in `warnings`; it fails at call time.",
@@ -14894,11 +14839,7 @@
                     "type": "string"
                   },
                   "inputSchema": {
-                    "description": "The arguments the agent supplies, as the compact map an HTTP tool uses: {\"field\": {\"type\": \"string\"|\"integer\"|\"number\"|\"boolean\"|\"enum\"|\"array\"|\"object\", \"required\"?, \"description\"?, \"enumValues\"?, \"itemType\"?}}. Standard JSON Schema ({\"properties\", \"required\"}) is accepted and converted to this shape on write. The body receives them as `input`.",
-                    "type": "object",
-                    "patternProperties": {
-                      "^(.*)$": {}
-                    }
+                    "description": "The arguments the agent supplies, as the compact map an HTTP tool uses: {\"field\": {\"type\": \"string\"|\"integer\"|\"number\"|\"boolean\"|\"enum\"|\"array\"|\"object\", \"required\"?, \"description\"?, \"enumValues\"?, \"itemType\"?}}. Standard JSON Schema ({\"properties\", \"required\"}) is accepted and converted to this shape on write. The body receives them as `input`."
                   },
                   "code": {
                     "description": "The body of `function (input, context) { … }`, plain JavaScript (ES2023): `input` holds the arguments, `context` the conversation variables (conversation_id, message_id, contact_id, contact_name, contact_email, contact_phone, inbox_id, inbox_name, company_name, agent_name, conversationAttributes, contactAttributes), and the result is what the body `return`s (rendered as JSON for the agent; console.log output is returned with it). Available inside: validateCpf(text) and validateCnpj(text) → { valid }, TIMEZONE, NOW_LOCAL, and Date in the agent's zone. No network, no imports, no async. Limits: 1000 ms of CPU, 32 MB. A `throw` or a limit is an integration failure (alerted); a business outcome is a returned value. Code that does not parse is saved and reported in `warnings`; it fails at call time.",
@@ -14928,11 +14869,7 @@
                     "type": "string"
                   },
                   "inputSchema": {
-                    "description": "The arguments the agent supplies, as the compact map an HTTP tool uses: {\"field\": {\"type\": \"string\"|\"integer\"|\"number\"|\"boolean\"|\"enum\"|\"array\"|\"object\", \"required\"?, \"description\"?, \"enumValues\"?, \"itemType\"?}}. Standard JSON Schema ({\"properties\", \"required\"}) is accepted and converted to this shape on write. The body receives them as `input`.",
-                    "type": "object",
-                    "patternProperties": {
-                      "^(.*)$": {}
-                    }
+                    "description": "The arguments the agent supplies, as the compact map an HTTP tool uses: {\"field\": {\"type\": \"string\"|\"integer\"|\"number\"|\"boolean\"|\"enum\"|\"array\"|\"object\", \"required\"?, \"description\"?, \"enumValues\"?, \"itemType\"?}}. Standard JSON Schema ({\"properties\", \"required\"}) is accepted and converted to this shape on write. The body receives them as `input`."
                   },
                   "code": {
                     "description": "The body of `function (input, context) { … }`, plain JavaScript (ES2023): `input` holds the arguments, `context` the conversation variables (conversation_id, message_id, contact_id, contact_name, contact_email, contact_phone, inbox_id, inbox_name, company_name, agent_name, conversationAttributes, contactAttributes), and the result is what the body `return`s (rendered as JSON for the agent; console.log output is returned with it). Available inside: validateCpf(text) and validateCnpj(text) → { valid }, TIMEZONE, NOW_LOCAL, and Date in the agent's zone. No network, no imports, no async. Limits: 1000 ms of CPU, 32 MB. A `throw` or a limit is an integration failure (alerted); a business outcome is a returned value. Code that does not parse is saved and reported in `warnings`; it fails at call time.",
@@ -15352,12 +15289,7 @@
                       "name": {
                         "type": "string"
                       },
-                      "inputSchema": {
-                        "type": "object",
-                        "patternProperties": {
-                          "^(.*)$": {}
-                        }
-                      },
+                      "inputSchema": {},
                       "code": {
                         "description": "The body of `function (input, context) { … }`.",
                         "type": "string"
@@ -15403,12 +15335,7 @@
                       "name": {
                         "type": "string"
                       },
-                      "inputSchema": {
-                        "type": "object",
-                        "patternProperties": {
-                          "^(.*)$": {}
-                        }
-                      },
+                      "inputSchema": {},
                       "code": {
                         "description": "The body of `function (input, context) { … }`.",
                         "type": "string"
@@ -15454,12 +15381,7 @@
                       "name": {
                         "type": "string"
                       },
-                      "inputSchema": {
-                        "type": "object",
-                        "patternProperties": {
-                          "^(.*)$": {}
-                        }
-                      },
+                      "inputSchema": {},
                       "code": {
                         "description": "The body of `function (input, context) { … }`.",
                         "type": "string"

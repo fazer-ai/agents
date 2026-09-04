@@ -57,8 +57,14 @@ export const writeBody = t.Object({
         "What the tool answers and when to call it, read by the agent to decide. Required on create.",
     }),
   ),
+  // `t.Unknown`, not `t.Record`: the record schema REBUILDS the map, and a field named `__proto__`
+  // becomes the object's prototype on the way in — the service's refusal (code-tools/service.ts)
+  // would then judge a schema the caller never sent, and the tool would save with the declared
+  // argument missing. Measured: `t.Record` answers own keys `["cpf"]` for a body that also sent
+  // `__proto__`; `t.Unknown` keeps both. The shape is still described here and validated by the
+  // service's own zod.
   inputSchema: t.Optional(
-    t.Record(t.String(), t.Unknown(), {
+    t.Unknown({
       description:
         'The arguments the agent supplies, as the compact map an HTTP tool uses: {"field": {"type": "string"|"integer"|"number"|"boolean"|"enum"|"array"|"object", "required"?, "description"?, "enumValues"?, "itemType"?}}. Standard JSON Schema ({"properties", "required"}) is accepted and converted to this shape on write. The body receives them as `input`.',
     }),
@@ -179,7 +185,9 @@ export const codeToolsController = new Elysia({
       body: t.Object({
         definition: t.Object({
           name: t.Optional(t.String()),
-          inputSchema: t.Optional(t.Record(t.String(), t.Unknown())),
+          // `t.Unknown` for the reason writeBody gives: the record schema rebuilds the map and a
+          // `__proto__` field would be gone before the run can refuse it.
+          inputSchema: t.Optional(t.Unknown()),
           code: t.String({
             description: "The body of `function (input, context) { … }`.",
           }),

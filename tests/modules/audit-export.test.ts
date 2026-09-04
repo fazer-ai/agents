@@ -345,6 +345,188 @@ describe.skipIf(!dbUp)("exporting the trail", () => {
     }
   });
 
+  // WHAT IS FETCHED, and not only what is written. The byte budget bounds the file, and a fixed row
+  // batch bounds nothing: `truncForAudit` clips each STRING at 4,000 and clips neither the number of
+  // fields nor the depth, so a row has no structural ceiling at all. Measured on this projection, a
+  // batch of 500 materializes 8 MB at two fields per row, 191 MB at fifty, 765 MB at two hundred --
+  // all of it read to then be thrown away by a ceiling of 8 MB. So the trip has to be sized by the
+  // budget that is left and by the width already observed, and the assertion is on the `take` the
+  // database actually received.
+  test("a trip is sized by the budget left, so a fat trail is not materialized whole", async () => {
+    const fat = {
+      um: "x".repeat(3900),
+      dois: "y".repeat(3900),
+      tres: "z".repeat(3900),
+    };
+    try {
+      for (let i = 0; i < 14; i++) {
+        await seed(mine, "agent.update", `${TAG}:fat${i}`, { after: fat });
+      }
+      // One row's real size on this projection, measured rather than assumed.
+      const one = await exportAudit(ctx(), { maxRows: 1 }, appDb);
+      const rowBytes = Buffer.byteLength(one.content, "utf8");
+      const budget = rowBytes * 5;
+
+      const takes: number[] = [];
+      const spy = appDb.$extends({
+        query: {
+          auditLog: {
+            findMany({ args, query }) {
+              takes.push(Number(args.take ?? 0));
+              return query(args);
+            },
+          },
+        },
+      }) as unknown as PrismaClient;
+
+      const r = await exportAudit(ctx(), { maxBytes: budget }, spy);
+      expect(r.truncated).toBe(true);
+      expect(takes.length).toBeGreaterThan(0);
+      // No single trip may read several times the whole budget it is spending.
+      expect(Math.max(...takes) * rowBytes).toBeLessThanOrEqual(budget * 4);
+    } finally {
+      await suDb.$executeRawUnsafe(
+        `DELETE FROM audit_logs WHERE target LIKE '${TAG}:fat%'`,
+      );
+    }
+  });
+
+  // The other half of the same rule: sizing the trip by the width observed must not turn an ordinary
+  // trail into one round trip per handful of rows. The first trip knows nothing, so it is small; each
+  // one after it is allowed to grow.
+  test("an ordinary trail widens its trips instead of crawling", async () => {
+    try {
+      for (let i = 0; i < 24; i++) {
+        await seed(mine, "agent.update", `${TAG}:thin${i}`);
+      }
+      const takes: number[] = [];
+      const spy = appDb.$extends({
+        query: {
+          auditLog: {
+            findMany({ args, query }) {
+              takes.push(Number(args.take ?? 0));
+              return query(args);
+            },
+          },
+        },
+      }) as unknown as PrismaClient;
+
+      await exportAudit(ctx(), {}, spy);
+      expect(takes.length).toBeGreaterThan(1);
+      expect(takes[1] ?? 0).toBeGreaterThan(takes[0] ?? 0);
+      // ...and grows by DOUBLING, not by jumping straight to the cap. The estimate that sizes a trip
+      // is only as good as the rows it has already seen, so the ceiling it may reach is bounded by
+      // how much has already fit inside the budget. Without this bound the second trip would ask for
+      // the whole cap on the strength of eight thin rows.
+      expect(takes[1] ?? 0).toBeLessThanOrEqual((takes[0] ?? 0) * 2);
+    } finally {
+      await suDb.$executeRawUnsafe(
+        `DELETE FROM audit_logs WHERE target LIKE '${TAG}:thin%'`,
+      );
+    }
+  });
+
+  // THE WIDEST ROW SEEN, NOT THE AVERAGE, and the difference is the whole point of the estimate. An
+  // average is dragged down by every thin row around a fat one, so a trail that opens thin and turns
+  // fat -- which is the ordinary shape, since one `agent.settings` write sits among a hundred logins
+  // -- would keep asking for trips sized as if the fat row had never appeared. The widest row is a
+  // fact already measured; the average is a guess about rows not yet read.
+  test("one fat row shrinks the next trip, instead of being averaged away", async () => {
+    try {
+      const fat = {
+        um: "x".repeat(3900),
+        dois: "y".repeat(3900),
+        tres: "z".repeat(3900),
+      };
+      for (let i = 0; i < 10; i++) {
+        await seed(mine, "agent.create", `${TAG}:mixf${i}`, { after: fat });
+      }
+      const oneFat = await exportAudit(ctx(), { maxRows: 1 }, appDb);
+      const head = (oneFat.content.split("\r\n")[0] ?? "") as string;
+      const headBytes = Buffer.byteLength(head, "utf8");
+      const fatBytes = Buffer.byteLength(oneFat.content, "utf8") - headBytes;
+
+      // Seven thin rows, so the probe trip ends on its eighth row being the first fat one.
+      for (let i = 0; i < 7; i++) {
+        await seed(mine, "agent.update", `${TAG}:mixt${i}`);
+      }
+      const oneThin = await exportAudit(ctx(), { maxRows: 1 }, appDb);
+      const thinBytes = Buffer.byteLength(oneThin.content, "utf8") - headBytes;
+
+      const spent = headBytes + 7 * thinBytes + fatBytes;
+      const fits = 7;
+      const takes: number[] = [];
+      const spy = appDb.$extends({
+        query: {
+          auditLog: {
+            findMany({ args, query }) {
+              takes.push(Number(args.take ?? 0));
+              return query(args);
+            },
+          },
+        },
+      }) as unknown as PrismaClient;
+
+      await exportAudit(ctx(), { maxBytes: spent + fits * fatBytes }, spy);
+      expect(takes.length).toBeGreaterThan(1);
+      // The trip after the fat row asks for what is left divided by THAT row, and no more. Sized by
+      // the average instead, it would ask for the doubling cap -- more than twice as many.
+      expect((takes[1] ?? 0) - 1).toBeLessThanOrEqual(fits);
+    } finally {
+      await suDb.$executeRawUnsafe(
+        `DELETE FROM audit_logs WHERE target LIKE '${TAG}:mix%'`,
+      );
+    }
+  });
+
+  // A CUT IS ALWAYS ANNOUNCED, including the one that happens between two trips. When a trip ends
+  // with the budget spent to the last row and more rows still match, the next trip is sized down to
+  // its floor of one row -- which then does not fit, and truncates. Sizing it down to ZERO instead
+  // ends the walk with `truncated: false`: a file quietly missing rows while reporting it respected
+  // every ceiling, which is the worst answer this module can give.
+  test("a budget spent exactly at a trip boundary still reports the cut", async () => {
+    try {
+      for (let i = 0; i < 14; i++) {
+        await seed(mine, "agent.update", `${TAG}:edge${i}`);
+      }
+      const eight = await exportAudit(ctx(), { maxRows: 8 }, appDb);
+      const budget = Buffer.byteLength(eight.content, "utf8");
+      const r = await exportAudit(ctx(), { maxBytes: budget }, appDb);
+      expect(r.count).toBe(8);
+      expect(r.truncated).toBe(true);
+      expect(r.truncatedBy).toBe("bytes");
+    } finally {
+      await suDb.$executeRawUnsafe(
+        `DELETE FROM audit_logs WHERE target LIKE '${TAG}:edge%'`,
+      );
+    }
+  });
+
+  // A ceiling the FORMAT cannot respect is a ceiling the caller has to hear about. Below the header
+  // there is no answer at all: the file would be over budget before a single row is considered, and
+  // `truncated` would still be false because nothing was cut. Refused with the same 400 the rest of
+  // the range checks raise, rather than silently answered with a file that breaks the promise.
+  test("a byte ceiling the header alone cannot respect is refused", async () => {
+    await expect(exportAudit(ctx(), { maxBytes: 10 }, appDb)).rejects.toThrow(
+      /maxBytes/,
+    );
+  });
+
+  test("a ceiling of exactly the header is honoured, and says it cut", async () => {
+    const header = (
+      await exportAudit(ctx(), { maxRows: 1 }, appDb)
+    ).content.split("\r\n")[0] as string;
+    const r = await exportAudit(
+      ctx(),
+      { maxBytes: Buffer.byteLength(header, "utf8") },
+      appDb,
+    );
+    expect(r.content).toBe(header);
+    expect(r.count).toBe(0);
+    expect(r.truncated).toBe(true);
+    expect(r.truncatedBy).toBe("bytes");
+  });
+
   test("the filename carries the instant, and the content type is CSV", async () => {
     const r = await exportAudit(
       ctx(),

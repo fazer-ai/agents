@@ -231,6 +231,26 @@ test("a truncated export says so, and says how many it kept", async () => {
   expect(toastText()).toContain("500");
 });
 
+// A CUT THAT KEPT NOTHING IS NOT AN EMPTY MATCH. When the newest matching row alone exceeds the byte
+// ceiling the server answers `count: 0, truncated: true` -- rows matched, none fit. Reading only the
+// count tells the operator that nothing happened in the period they are auditing, which is the one
+// sentence an audit trail must never say when it is false.
+test("a cut that kept nothing is not reported as an empty match", async () => {
+  dump = {
+    ...dump,
+    count: 0,
+    content: "id,created_at",
+    truncated: true,
+    truncatedBy: "bytes",
+  };
+  const view = mount("/audit");
+  await clickExport(view);
+  await waitFor(() => expect(toastCount()).toBeGreaterThan(0));
+  expect(clicked).toHaveLength(0);
+  expect(toastText().toLowerCase()).not.toContain("nothing to export");
+  expect(toastText().toLowerCase()).toContain("too large");
+});
+
 test("an empty match downloads nothing and says nothing matched", async () => {
   dump = { ...dump, count: 0, content: "id,created_at" };
   const view = mount("/audit");

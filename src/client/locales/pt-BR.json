@@ -245,6 +245,7 @@
     "exportDone_other": "{{count}} registros exportados.",
     "exportEmpty": "Nenhum registro correspondeu. Nada a exportar.",
     "exportError": "Não foi possível exportar a trilha.",
+    "exportTooLarge": "O registro mais recente que corresponde é grande demais para o limite da exportação. Estreite o filtro ou o período e tente de novo.",
     "exportTruncated_zero": "Exportados os {{count}} registros mais recentes; havia mais. Estreite o período para levar o resto.",
     "exportTruncated_one": "Exportado o registro mais recente; havia mais. Estreite o período para levar o resto.",
     "exportTruncated_many": "Exportados os {{count}} registros mais recentes; havia mais. Estreite o período para levar o resto.",

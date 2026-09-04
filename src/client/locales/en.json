@@ -241,6 +241,7 @@
     "exportDone_other": "Exported {{count}} entries.",
     "exportEmpty": "No entries matched. Nothing to export.",
     "exportError": "Could not export the trail.",
+    "exportTooLarge": "The newest matching entry is too large for the export limit. Narrow the filter or the period and try again.",
     "exportTruncated_one": "Exported the newest entry; more matched. Narrow the period to take the rest.",
     "exportTruncated_other": "Exported the newest {{count}} entries; more matched. Narrow the period to take the rest.",
     "field": "Field",

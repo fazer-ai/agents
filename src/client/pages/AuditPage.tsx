@@ -706,10 +706,19 @@ export function AuditPage() {
       if (until) query.until = until.until;
       const { data, error: err } = await api.api.v1.audit.export.get({ query });
       if (err || !data) throw err ?? new Error("no data");
+      // ZERO ROWS HAS TWO REASONS AND ONLY ONE OF THEM IS "NOTHING HAPPENED". When the newest
+      // matching row alone exceeds the server's byte ceiling it answers `count: 0, truncated: true`:
+      // rows matched, none fit. Reading the count alone would tell the operator that nothing happened
+      // in the period they are auditing, which is the one sentence a trail must never say falsely.
       if (data.count === 0) {
         showToast(
-          t("audit.exportEmpty", "No entries matched. Nothing to export."),
-          "info",
+          data.truncated
+            ? t(
+                "audit.exportTooLarge",
+                "The newest matching entry is too large for the export limit. Narrow the filter or the period and try again.",
+              )
+            : t("audit.exportEmpty", "No entries matched. Nothing to export."),
+          data.truncated ? "warning" : "info",
         );
         return;
       }

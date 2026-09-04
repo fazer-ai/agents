@@ -1,7 +1,7 @@
 import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import type { AuditScope } from "@/lib/audit/scope";
-import { assertUsableCount } from "@/lib/query-param";
+import { assertUsableCount, badQueryParam } from "@/lib/query-param";
 import type { TenantContext } from "@/lib/tenancy";
 import {
   type AuditFilterOpts,
@@ -31,11 +31,29 @@ export const AUDIT_EXPORT_FORMAT = "csv" as const;
 export const AUDIT_EXPORT_MAX_ROWS = 10_000;
 export const AUDIT_EXPORT_MAX_BYTES = 8 * 1024 * 1024;
 
-// How many rows to pull per round trip. The byte budget has to bound what is FETCHED and not only
-// what is written: reading `AUDIT_EXPORT_MAX_ROWS` up front to then throw most of it away would
-// materialize those same 77 MB in the server before deciding to cut. Sized so an ordinary trail
-// (161 bytes a row) finishes in a couple of trips and a fat one stops after the first.
-const BATCH = 500;
+// HOW MANY ROWS PER TRIP, and this is the one number a fixed value gets wrong in both directions.
+//
+// The budget has to bound what is FETCHED and not only what is written, and a row has no structural
+// ceiling to bound it with: `truncForAudit` clips each STRING at 4,000 and clips neither the number
+// of fields nor the depth, so `agent.settings` -- an open-ended bag -- is as wide as the tenant made
+// it. Measured on this projection, a fixed batch of 500 materializes 8 MB at two fields per row,
+// 191 MB at fifty and 765 MB at two hundred, all of it read only to be discarded by a ceiling of
+// 8 MB. A batch small enough to be safe there would then walk an ordinary trail (161 bytes a row) in
+// a thousand round trips.
+//
+// So the trip is sized instead of chosen: the FIRST one is small, because nothing is known yet, and
+// each one after it is sized by the budget still unspent divided by the WIDEST row seen so far --
+// the widest and not the average, so one fat row shrinks the next trip immediately instead of being
+// averaged away by the thin ones around it. Doubling caps how fast it may grow, which is what keeps
+// the estimate honest: reaching a wide trip costs several trips that already fit inside the budget.
+//
+// What this does NOT promise: a trail whose first rows are thin and whose next ones are enormous can
+// still overshoot one trip, because no row count can bound bytes that are not known until they are
+// read. Bounding it exactly would mean asking the database for the sizes first, in SQL, which means
+// spelling the predicate a second time -- and a predicate that can drift from the list's is the one
+// failure this module exists to make structurally impossible.
+const BATCH_PROBE = 8;
+const BATCH_MAX = 500;
 
 // The ceilings a call actually runs under. Split out as a function because it is the one part of the
 // bounding that CANNOT be observed from a result: a caller asking for more than the module allows is
@@ -153,6 +171,12 @@ export async function exportAudit(
   const where = buildAuditWhere(opts);
 
   const header = COLUMNS.join(",");
+  const headerBytes = Buffer.byteLength(header, "utf8");
+  // A CEILING THE FORMAT CANNOT MEET IS REFUSED, not quietly exceeded. Below the header there is no
+  // answer to give: the file is already over budget before a single row is weighed, and it would come
+  // back with `truncated: false` because nothing was cut -- a result that breaks the promise and
+  // reports having kept it. Same 400 the rest of the range checks raise.
+  if (maxBytes < headerBytes) badQueryParam("maxBytes");
   const lines: string[] = [];
   // BYTES AND NOT `.length`, which counts UTF-16 code units. The budget exists to bound a DOWNLOAD,
   // and the file goes out as UTF-8: a trail written in Portuguese measures 1.18x its code-unit count
@@ -165,9 +189,12 @@ export async function exportAudit(
   // Newest first, walked by the same keyset the page uses, so "the newest `count` win" is the same
   // sentence for both readers.
   let cursor: bigint | null = null;
+  // The widest row written so far, which is what sizes the next trip (see BATCH_PROBE above).
+  let widest = 0;
+  let batch = BATCH_PROBE;
 
   while (truncatedBy === null) {
-    const want = Math.min(BATCH, maxRows - lines.length);
+    const want = Math.min(batch, maxRows - lines.length);
     // One extra row per trip answers "is there more?" without a second count over a growing table.
     const rows: Row[] = await readInScope(base, ctx, scope, (db) =>
       db.auditLog.findMany({
@@ -194,8 +221,14 @@ export async function exportAudit(
       }
       lines.push(line);
       bytes += size;
+      if (size > widest) widest = size;
     }
     if (truncatedBy) break;
+    batch = Math.min(
+      BATCH_MAX,
+      batch * 2,
+      Math.max(1, Math.floor((maxBytes - bytes) / Math.max(widest, 1))),
+    );
     if (lines.length >= maxRows) {
       if (more) truncatedBy = "rows";
       break;

@@ -5,10 +5,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { buildHttpTool, type HttpToolDef } from "@/graph/tools/http";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import { toolCreate, toolUpdate } from "@/modules/mcp/write-agents";
-import {
-  toolUsesSecretPlaceholder,
-  unusedCredentialWarning,
-} from "@/modules/tool-definitions/credential-wiring";
+import { unusedCredentialWarning } from "@/modules/tool-definitions/credential-wiring";
 import type { ToolShapePatch } from "@/modules/tool-definitions/normalize";
 import { SECRET_TYPE_IDS } from "@/modules/vault/secret-types";
 import { createVaultEntry } from "@/modules/vault/service";
@@ -18,10 +15,15 @@ import { createVaultEntry } from "@/modules/vault/service";
 // reference it has not wired yet — but the request then goes out UNAUTHENTICATED and the upstream
 // answers 401/403, which reads as a bad credential rather than one that was never sent.
 //
-// The warning is only as good as its site list, so the list is not asserted against a list written
-// here: each site is placed in a REAL tool and executed, and the same placement is put to the
-// scanner. A site the runtime interpolates and the scanner misses shows up as a secret in the
-// captured request with `toolUsesSecretPlaceholder` saying false.
+// THE FENCE IS EXECUTION, NOT A LIST. Every row below is built ONCE and read two ways: as a tool
+// definition the real executor runs against a captured fetch, and as the shapes a write would store.
+// The assertion is that the two agree. A rule the runtime has and this file does not shows up as a
+// secret in the captured request with the warning saying it was never sent, or the reverse.
+//
+// Four of these rows were wrong answers in the first draft, and none of them is a site the scan
+// missed: the body of a GET is assembled and discarded, a fixed field only leaves if something
+// emitted names it, a typed credential's auto-injection is SKIPPED when the operator already wrote
+// its target header, and a stored single-brace `{secret}` is normalized at build time and does reach.
 
 const PUBLIC = "8.8.8.8";
 const SECRET = "SECRET123";
@@ -41,25 +43,46 @@ const stubFetch = (captured: Captured) =>
     });
   }) as unknown as typeof fetch;
 
-function def(over: Partial<HttpToolDef> = {}): HttpToolDef {
-  return {
-    name: "thing",
-    method: "GET",
-    urlTemplate: `https://${PUBLIC}/v1/thing`,
-    allowedHosts: [PUBLIC],
-    headers: {},
-    inputSchema: {},
-    credentialRef: "vault:1",
-    credentialKind: "generic",
-    ...over,
-  };
+// One row, and the two projections of it. Written once so the executor and the scanner cannot be
+// given different tools by accident, which is the only way a fence like this lies.
+interface Wiring {
+  label: string;
+  reaches: boolean;
+  method?: string;
+  kind?: string;
+  paramName?: string | null;
+  urlTemplate?: string;
+  headers?: Record<string, string>;
+  query?: Record<string, string>;
+  body?: unknown;
+  inputSchema?: unknown;
 }
 
-// What the request actually carried, as one string: the URL, every header value and the body. The
-// question is only ever "did the secret leave", so where it left is not part of the assertion.
-async function sent(over: Partial<HttpToolDef>): Promise<string> {
+const asDef = (w: Wiring): HttpToolDef => ({
+  name: "thing",
+  method: w.method ?? "GET",
+  urlTemplate: w.urlTemplate ?? `https://${PUBLIC}/v1/thing`,
+  allowedHosts: [PUBLIC],
+  headers: w.headers ?? {},
+  query: w.query,
+  body: w.body,
+  inputSchema: w.inputSchema ?? {},
+  credentialRef: "vault:1",
+  credentialKind: w.kind ?? "generic",
+  credentialParamName: w.paramName ?? null,
+});
+
+const asShapes = (w: Wiring): ToolShapePatch => ({
+  urlTemplate: w.urlTemplate ?? `https://${PUBLIC}/v1/thing`,
+  headers: w.headers ?? {},
+  query: w.query,
+  body: w.body,
+  inputSchema: w.inputSchema ?? {},
+});
+
+async function secretLeft(w: Wiring): Promise<boolean> {
   const captured: Captured = {};
-  const tool = buildHttpTool(def(over), {
+  const tool = buildHttpTool(asDef(w), {
     resolveCredential: async () => SECRET,
     fetchImpl: stubFetch(captured),
   });
@@ -69,151 +92,207 @@ async function sent(over: Partial<HttpToolDef>): Promise<string> {
     captured.url ?? "",
     ...Object.values(headers ?? {}),
     String(captured.init?.body ?? ""),
-  ].join(" | ");
+  ]
+    .join(" | ")
+    .includes(SECRET);
 }
 
-// Each of the five sites the runtime interpolates {{secret}} into, as a tool definition the executor
-// accepts and as the shapes a write would store. The two halves are the SAME placement, which is
-// what makes this a fence and not two independent lists.
-const SITES: {
-  site: string;
-  def: Partial<HttpToolDef>;
-  shapes: ToolShapePatch;
-}[] = [
+const scannerSaysReaches = (w: Wiring): boolean =>
+  unusedCredentialWarning(
+    { kind: w.kind ?? "generic", paramName: w.paramName ?? null },
+    w.method ?? "GET",
+    asShapes(w),
+  ) === null;
+
+const CASES: Wiring[] = [
+  // ── the five interpolation sites ──
   {
-    site: "url_template",
-    def: { urlTemplate: `https://${PUBLIC}/v1/{{secret}}` },
-    shapes: { urlTemplate: `https://${PUBLIC}/v1/{{secret}}` },
+    label: "{{secret}} in url_template",
+    reaches: true,
+    urlTemplate: `https://${PUBLIC}/v1/{{secret}}`,
   },
   {
-    site: "headers",
-    def: { headers: { "X-Auth": "{{secret}}" } },
-    shapes: { headers: { "X-Auth": "{{secret}}" } },
+    label: "{{secret}} in a header",
+    reaches: true,
+    headers: { "X-Auth": "{{secret}}" },
   },
   {
-    site: "query",
-    def: { query: { token: "{{secret}}" } },
-    shapes: { query: { token: "{{secret}}" } },
+    label: "{{secret}} in a query value",
+    reaches: true,
+    query: { token: "{{secret}}" },
   },
   {
-    site: "body.raw",
-    def: {
-      method: "POST",
-      body: { mode: "raw", raw: '{"t":"{{secret}}"}' },
-    },
-    shapes: { body: { mode: "raw", raw: '{"t":"{{secret}}"}' } },
+    label: "{{secret}} in a raw body, on a POST",
+    reaches: true,
+    method: "POST",
+    body: { mode: "raw", raw: '{"t":"{{secret}}"}' },
   },
   {
-    site: "body.kv",
-    def: {
-      method: "POST",
-      body: { mode: "kv", rows: [{ key: "t", value: "{{secret}}" }] },
+    label: "{{secret}} in a kv body row, on a POST",
+    reaches: true,
+    method: "POST",
+    body: { mode: "kv", rows: [{ key: "t", value: "{{secret}}" }] },
+  },
+  {
+    label: "{{secret}} in a fixed field the URL names",
+    reaches: true,
+    urlTemplate: `https://${PUBLIC}/v1/{{tok}}`,
+    inputSchema: {
+      tok: { type: "string", source: "fixed", value: "{{secret}}" },
     },
-    shapes: {
-      body: { mode: "kv", rows: [{ key: "t", value: "{{secret}}" }] },
+  },
+
+  // ── a template that is assembled and discarded ──
+  {
+    label: "a raw body on a GET is never sent",
+    reaches: false,
+    method: "GET",
+    body: { mode: "raw", raw: '{"t":"{{secret}}"}' },
+  },
+  {
+    label: "a raw body on a DELETE is never sent either",
+    reaches: false,
+    method: "DELETE",
+    body: { mode: "raw", raw: '{"t":"{{secret}}"}' },
+  },
+  {
+    label: "a fixed field nothing references, with a kv body",
+    reaches: false,
+    method: "POST",
+    body: { mode: "kv", rows: [{ key: "a", value: "1" }] },
+    inputSchema: {
+      tok: { type: "string", source: "fixed", value: "{{secret}}" },
     },
   },
   {
-    site: "a fixed input field",
-    def: {
-      urlTemplate: `https://${PUBLIC}/v1/{{tok}}`,
-      inputSchema: {
-        tok: { type: "string", source: "fixed", value: "{{secret}}" },
-      },
+    label: "the same fixed field, with a legacy fields body that assembles it",
+    reaches: true,
+    method: "POST",
+    inputSchema: {
+      tok: { type: "string", source: "fixed", value: "{{secret}}" },
     },
-    shapes: {
-      urlTemplate: `https://${PUBLIC}/v1/{{tok}}`,
-      inputSchema: {
-        tok: { type: "string", source: "fixed", value: "{{secret}}" },
-      },
-    },
+  },
+  {
+    label: "{{secret}} in an AI field's value is not interpolated",
+    reaches: false,
+    inputSchema: { tok: { type: "string", value: "{{secret}}" } },
+  },
+
+  // ── auto-injection, and the operator's value winning over it ──
+  {
+    label: "bearer_token injects on its own",
+    reaches: true,
+    kind: "bearer_token",
+  },
+  {
+    label: "bearer_token whose Authorization header the operator already wrote",
+    reaches: false,
+    kind: "bearer_token",
+    headers: { Authorization: "constant" },
+  },
+  {
+    label: "…unless what they wrote is {{secret}}",
+    reaches: true,
+    kind: "bearer_token",
+    headers: { Authorization: "Bearer {{secret}}" },
+  },
+  {
+    label: "a header kind injects into its own param name",
+    reaches: true,
+    kind: "header",
+    paramName: "X-Api-Key",
+  },
+  {
+    label: "…and is shadowed by that header in any casing",
+    reaches: false,
+    kind: "header",
+    paramName: "X-Api-Key",
+    headers: { "x-api-key": "constant" },
+  },
+  {
+    label: "a query kind injects its param",
+    reaches: true,
+    kind: "query",
+    paramName: "token",
+  },
+  {
+    label: "…and is shadowed by an explicit query value",
+    reaches: false,
+    kind: "query",
+    paramName: "token",
+    query: { token: "constant" },
+  },
+  {
+    label: "…and by one hand-written into the URL",
+    reaches: false,
+    kind: "query",
+    paramName: "token",
+    urlTemplate: `https://${PUBLIC}/v1/thing?token=constant`,
+  },
+
+  // ── spelling ──
+  {
+    label:
+      "a stored single-brace {secret} is normalized at build time and does reach",
+    reaches: true,
+    headers: { "X-Auth": "{secret}" },
+  },
+  {
+    label: "the spacing the runtime accepts",
+    reaches: true,
+    headers: { "X-Auth": "{{ secret }}" },
+  },
+
+  // ── the control every row above needs ──
+  {
+    label: "a generic credential and no wiring at all",
+    reaches: false,
+    headers: { "X-Other": "constant" },
+    query: { page: "1" },
+    inputSchema: { note: { type: "string" } },
   },
 ];
 
-describe("the scanner covers exactly what the runtime interpolates", () => {
-  for (const { site, def: over, shapes } of SITES) {
-    test(`{{secret}} in ${site} is sent, and counts as wired`, async () => {
-      expect(await sent(over)).toContain(SECRET);
-      expect(toolUsesSecretPlaceholder(shapes)).toBe(true);
-      expect(unusedCredentialWarning("generic", shapes)).toBeNull();
+describe("the scanner answers what the runtime does", () => {
+  for (const w of CASES) {
+    test(`${w.reaches ? "reaches" : "never reaches"}: ${w.label}`, async () => {
+      expect(await secretLeft(w)).toBe(w.reaches);
+      expect(scannerSaysReaches(w)).toBe(w.reaches);
     });
   }
 
-  test("the same tool with no placeholder sends nothing, and is warned about", async () => {
-    // NOTE: the control the six above need. Without it they would all pass on a scanner that
-    // answered true unconditionally, and the executor half would pass on a runtime that leaked the
-    // credential everywhere.
-    const shapes: ToolShapePatch = {
-      urlTemplate: `https://${PUBLIC}/v1/thing`,
-      headers: { "X-Other": "constant" },
-      query: { page: "1" },
-      inputSchema: { note: { type: "string" } },
-    };
-    expect(
-      await sent({
-        headers: { "X-Other": "constant" },
-        query: { page: "1" },
-        inputSchema: { note: { type: "string" } },
-      }),
-    ).not.toContain(SECRET);
-    expect(toolUsesSecretPlaceholder(shapes)).toBe(false);
-    expect(unusedCredentialWarning("generic", shapes)).toContain("never sent");
-  });
-
-  test("{{secret}} in an AI field's value is not interpolated, and does not count", async () => {
-    // NOTE: `buildHttpTool` reads `source === "fixed" ? "fixed" : "ai"` and precomputes only the
-    // fixed values with the secret in scope. A scanner that took any field `value` would call this
-    // tool wired, and the operator would get no warning about a request that carries nothing.
-    const inputSchema = {
-      tok: { type: "string", value: "{{secret}}" },
-    };
-    const out = await sent({
-      urlTemplate: `https://${PUBLIC}/v1/thing`,
-      inputSchema,
-    });
-    expect(out).not.toContain(SECRET);
-    expect(
-      toolUsesSecretPlaceholder({
-        urlTemplate: `https://${PUBLIC}/v1/thing`,
-        inputSchema,
-      }),
-    ).toBe(false);
-  });
-
-  test("the spacing the runtime accepts is the spacing the scanner accepts", async () => {
-    // NOTE: the runtime's PLACEHOLDER takes whitespace inside the braces. A scanner matching only
-    // the tight spelling would warn about a tool that works.
-    const headers = { "X-Auth": "{{ secret }}" };
-    expect(await sent({ headers })).toContain(SECRET);
-    expect(toolUsesSecretPlaceholder({ headers })).toBe(true);
+  test("the table is not all one answer", () => {
+    // NOTE: the floor. Every assertion above is `toBe(w.reaches)`, so a table that drifted to a
+    // single verdict would still pass while proving nothing about the boundary between them.
+    const reaching = CASES.filter((c) => c.reaches).length;
+    expect(reaching).toBeGreaterThan(5);
+    expect(CASES.length - reaching).toBeGreaterThan(5);
   });
 });
 
 describe("which kinds the warning is about", () => {
   const bare: ToolShapePatch = { urlTemplate: `https://${PUBLIC}/v1/thing` };
+  const warn = (kind: string | null) =>
+    unusedCredentialWarning({ kind, paramName: "X-Probe" }, "GET", bare);
 
-  test("only the kinds that auto-inject nothing and may still be sent", () => {
-    const warned = SECRET_TYPE_IDS.filter(
-      (id) => unusedCredentialWarning(id, bare) !== null,
-    );
+  test("only the kinds that put nothing on the request by themselves", () => {
+    const warned = SECRET_TYPE_IDS.filter((id) => warn(id) !== null);
     // NOTE: `generic` is the whole point — the escape hatch whose contract IS that the operator
-    // writes {{secret}} by hand, so it is the one kind where attached and sent come apart silently.
-    // `mcp_env` and `langfuse` also inject nothing, and are deliberately NOT warned about: their
-    // catalog entry says the value must never travel outbound, so "write {{secret}} where the API
-    // expects it" would be advice to mail an stdio token to a third party. That they can be attached
-    // to an HTTP tool at all is a separate defect, and a refusal rather than a warning.
+    // writes {{secret}} by hand. `mcp_env` and `langfuse` also inject nothing and are deliberately
+    // NOT warned about: their catalog entry says the value must never travel outbound, so "write
+    // {{secret}} where the API expects it" would be advice to mail an stdio token to a third party.
+    // That they can be attached to an HTTP tool at all is a separate defect, and a refusal rather
+    // than a warning.
     expect(warned).toEqual(["generic"]);
   });
 
   test("a kind this build does not know is the legacy generic, and is warned about", () => {
-    expect(unusedCredentialWarning(null, bare)).not.toBeNull();
-    expect(
-      unusedCredentialWarning("kind_from_a_future_build", bare),
-    ).not.toBeNull();
+    expect(warn(null)).not.toBeNull();
+    expect(warn("kind_from_a_future_build")).not.toBeNull();
   });
 
   test("the sentence names a way out, and the ways out come from the catalog", () => {
-    const w = unusedCredentialWarning("generic", bare) ?? "";
+    const w = warn("generic") ?? "";
     for (const id of ["bearer_token", "header", "basic_auth", "query"]) {
       expect(w).toContain(id);
     }
@@ -222,7 +301,6 @@ describe("which kinds the warning is about", () => {
     expect(w).not.toContain("anthropic");
   });
 });
-
 // ── the write surface ──
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
@@ -254,11 +332,13 @@ afterAll(async () => {
 });
 
 const appDb = app as PrismaClient;
+const suDb = su as PrismaClient;
 
 describe.skipIf(!dbUp)("tool_create / tool_update say so", () => {
   let tenantId = 0n;
   let genericRef = "";
   let bearerRef = "";
+  let headerRef = "";
   let n = 0;
 
   const principal = (): VerifiedToken =>
@@ -296,6 +376,20 @@ describe.skipIf(!dbUp)("tool_create / tool_update say so", () => {
       await createVaultEntry(
         ctx,
         { name: "wiring-bearer", value: "abc123TOKEN", kind: "bearer_token" },
+        undefined,
+        undefined,
+        appDb,
+      )
+    ).ref;
+    headerRef = (
+      await createVaultEntry(
+        ctx,
+        {
+          name: "wiring-header",
+          value: "abc123TOKEN",
+          kind: "header",
+          paramName: "X-Api-Key",
+        },
         undefined,
         undefined,
         appDb,
@@ -367,6 +461,28 @@ describe.skipIf(!dbUp)("tool_create / tool_update say so", () => {
     expect(wiringWarning(r)).toHaveLength(0);
   });
 
+  test("where a header credential lands is read off the ENTRY, not guessed", async () => {
+    // NOTE: `header` is the one kind whose injection target is operator-supplied, so the answer to
+    // "does this credential reach the request" is in the vault row and nowhere else. Without the
+    // stored param name the writer cannot resolve an injection at all, and every tool holding one of
+    // these credentials would be reported as unwired — the shape a mutation of exactly that line
+    // survived until this test existed.
+    const clean = await create({ credential_ref: headerRef });
+    expect(clean.ok).toBe(true);
+    expect(wiringWarning(clean)).toHaveLength(0);
+
+    // NOTE: and the other side of the same read — the operator wrote that header themselves, so the
+    // runtime leaves their value alone and the credential never leaves. Different casing, because
+    // the runtime compares case-insensitively and a warning that missed this would be a warning
+    // about a header the operator can see.
+    const shadowed = await create({
+      credential_ref: headerRef,
+      headers: { "x-api-key": "constant" },
+    });
+    expect(shadowed.ok).toBe(true);
+    expect(wiringWarning(shadowed)).toHaveLength(1);
+  });
+
   test("no credential attached, no warning", async () => {
     // NOTE: most tools need none. A warning here would fire on nearly every write.
     const r = await create({});
@@ -413,6 +529,30 @@ describe.skipIf(!dbUp)("tool_create / tool_update say so", () => {
     );
     expect(r.ok).toBe(true);
     expect(wiringWarning(r)).toHaveLength(1);
+  });
+
+  test("a legacy single-brace {secret} in the stored row is not reported as unwired", async () => {
+    // NOTE: the write normalizes, so this row cannot be produced through the write — it is what a
+    // build older than that normalization left behind. `buildHttpTool` normalizes at BUILD time, so
+    // the secret IS sent; a warning here would tell the operator to fix a tool that works, on an
+    // update that never touched the template.
+    const created = await create({
+      credential_ref: genericRef,
+      dry_run: false,
+    });
+    const id = created.ok
+      ? (created.data as { target: string }).target.split(":")[1]
+      : "";
+    await suDb.$executeRawUnsafe(
+      `UPDATE tool_definitions SET headers = '{"X-Auth":"{secret}"}'::jsonb WHERE id = ${id}`,
+    );
+    const r = await toolUpdate(
+      principal(),
+      { tool_id: id as string, label: "Renamed" },
+      { base: appDb },
+    );
+    expect(r.ok).toBe(true);
+    expect(wiringWarning(r)).toHaveLength(0);
   });
 
   test("a patch that touches neither still reads the row, and stays quiet on a wired tool", async () => {

@@ -500,6 +500,10 @@ function vaultValueFits(kind: string | null, encrypted: string): boolean {
 export interface VaultEntryFacts {
   kind: string;
   valueFitsKind: boolean;
+  // The operator-supplied header/query name, for the two kinds that read one. Part of the facts and
+  // not a second lookup because WHERE the credential lands is as much a property of the entry as
+  // whether it fits — the tool write asks both in one breath (#504).
+  paramName: string | null;
 }
 
 export async function readVaultRefFacts(
@@ -508,13 +512,14 @@ export async function readVaultRefFacts(
 ): Promise<VaultEntryFacts | null> {
   const row = await db.vaultEntry.findFirst({
     where: vaultRefWhere(ref),
-    select: { kind: true, status: true, secret: true },
+    select: { kind: true, status: true, secret: true, paramName: true },
   });
   if (!row) return null;
   return {
     kind: row.kind,
     valueFitsKind:
       row.status === "pending" || vaultValueFits(row.kind, row.secret),
+    paramName: row.paramName,
   };
 }
 

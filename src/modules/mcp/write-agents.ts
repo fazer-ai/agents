@@ -556,20 +556,26 @@ function toolShapesOf(src: {
 // write and spread into BOTH halves of the answer, like `norm.warnings` beside it: a preview that
 // stays quiet about wiring the apply will not fix is the preview promising something away (#490).
 //
-// `shapes` must be the EFFECTIVE, NORMALIZED templates — what the row will hold — not the raw
-// arguments. A single-brace `{secret}` is rewritten to `{{secret}}` on the way in, so scanning the
-// arguments would warn about a tool that is wired correctly the moment it is stored.
+// `shapes` is the EFFECTIVE row — patch over stored — and RAW: `unusedCredentialWarning` runs the
+// normalization itself, because `buildHttpTool` runs it too and a legacy single-brace `{secret}`
+// sitting in a stored template is therefore sent. Normalizing only the patch, as the preview does
+// for its own purposes, would leave the stored half raw and report a working tool as unwired.
 async function credentialWiringWarning(
   ctx: TenantContext,
   base: PrismaClient,
   credentialRef: string | null | undefined,
+  method: string | null | undefined,
   shapes: ToolShapePatch,
 ): Promise<string[]> {
   if (!credentialRef) return [];
   const facts = await runScopedOn(base, ctx, (db) =>
     readVaultRefFacts(db, credentialRef),
   );
-  const warning = unusedCredentialWarning(facts?.kind ?? null, shapes);
+  const warning = unusedCredentialWarning(
+    { kind: facts?.kind ?? null, paramName: facts?.paramName ?? null },
+    method,
+    shapes,
+  );
   return warning ? [warning] : [];
 }
 
@@ -603,10 +609,13 @@ export async function toolCreate(
     body: input.body,
     inputSchema: input.inputSchema,
   });
-  const wiring = await credentialWiringWarning(ctx, base, input.credentialRef, {
-    ...toolShapesOf(input),
-    ...norm.shapes,
-  });
+  const wiring = await credentialWiringWarning(
+    ctx,
+    base,
+    input.credentialRef,
+    input.method,
+    toolShapesOf(input),
+  );
   const all = [...norm.warnings, ...wiring];
   const warnings = all.length > 0 ? { warnings: all } : {};
   try {
@@ -692,11 +701,8 @@ export async function toolUpdate(
       built.patch.credentialRef !== undefined
         ? built.patch.credentialRef
         : current.credentialRef,
-      {
-        ...toolShapesOf(current),
-        ...toolShapesOf(built.patch),
-        ...norm.shapes,
-      },
+      built.patch.method ?? current.method,
+      { ...toolShapesOf(current), ...toolShapesOf(built.patch) },
     );
     const all = [...norm.warnings, ...wiring];
     const warnings = all.length > 0 ? { warnings: all } : {};

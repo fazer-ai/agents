@@ -428,13 +428,15 @@ function fixedFields(schema: unknown): { name: string; value: string }[] {
 // The template the runtime actually requests. A urlTemplate starting with "/" is RELATIVE and gets
 // the credential's own base URL prepended before anything is interpolated, so a `{{secret}}` stored
 // in that base is sent — the row alone cannot say whether the credential leaves.
+export function isRelativeTemplate(urlTemplate: unknown): boolean {
+  return typeof urlTemplate === "string" && urlTemplate.startsWith("/");
+}
+
 export function effectiveUrlTemplate(
   urlTemplate: unknown,
   credentialBaseUrl: string | null | undefined,
 ): unknown {
-  if (typeof urlTemplate !== "string" || !urlTemplate.startsWith("/")) {
-    return urlTemplate;
-  }
+  if (!isRelativeTemplate(urlTemplate)) return urlTemplate;
   // No base and a relative template is a tool `buildHttpTool` REFUSES to build — it throws "relative
   // urlTemplate requires a credential with a base URL" before there is a request at all. Answering
   // `null` here is what lets the caller stay quiet: a warning that the request goes out
@@ -452,6 +454,7 @@ function buildsARequest(
   shapes: ToolShapePatch,
   ackArg: boolean,
   allowedHosts: string[] | null | undefined,
+  relative: boolean,
 ): boolean {
   if (typeof urlTemplate !== "string") return false;
   // The ORIGIN is pinned: `buildHttpTool` takes it from the neutralized template and throws
@@ -463,10 +466,14 @@ function buildsARequest(
   if (!a || !b || a.origin !== b.origin) return false;
   // The allowlist, which is checked before the fetch and throws. The origins above being equal is
   // what makes the host literal, so this is a decision and not a guess: a non-empty list that does
-  // not name it refuses every call of this tool. (The credential-base exemption is for RELATIVE
-  // templates, and by here the template is absolute — a relative one was already joined to its base
-  // by `effectiveUrlTemplate`, and that host has to be listed too.)
+  // not name it refuses every call of this tool.
+  //
+  // ABSOLUTE templates only. A relative one is explicitly EXEMPT when its host is the credential's
+  // own base — `buildHttpTool` keeps `isRelative` for exactly that — and by here the two have been
+  // joined into one string, so the host looks like any other. Judging it as one would call a working
+  // tool unrunnable and silence a real warning.
   if (
+    !relative &&
     allowedHosts &&
     allowedHosts.length > 0 &&
     !allowedHosts.includes(a.hostname)
@@ -721,7 +728,13 @@ export function unusedCredentialWarning(
   const ackArg = !!opts.ackMessage;
   if (
     effective === null ||
-    !buildsARequest(effective, normalized, ackArg, opts.allowedHosts)
+    !buildsARequest(
+      effective,
+      normalized,
+      ackArg,
+      opts.allowedHosts,
+      isRelativeTemplate(normalized.urlTemplate),
+    )
   ) {
     return null;
   }

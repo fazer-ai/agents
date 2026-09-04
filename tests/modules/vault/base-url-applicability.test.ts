@@ -119,6 +119,54 @@ describe("nothing writes a base URL past the rule", () => {
   });
 });
 
+describe("nothing reads a base URL past the gate", () => {
+  // NOTE: the write-side sweep above has a read-side twin, and it exists because the first version of
+  // the gate missed two readers: `assemble.ts` and `test-run.ts` build their OWN vault query and copy
+  // `baseUrl` straight into `credentialBaseUrl`, so a relative HTTP tool kept dialling the stray host
+  // after the resolvers had stopped. A ledger rather than a rule, because two of these files are
+  // supposed to read the row raw — the audit projection and the console listing — and the point is
+  // that a NEW reader has to be looked at rather than silently join either side.
+  const SELECTS = /baseUrl:\s*true/g;
+  const LEDGER: Record<string, "gated" | "raw by design"> = {
+    "src/api/v1/oauth-mcp.controller.ts": "gated",
+    "src/graph/tools/assemble.ts": "gated",
+    "src/modules/tool-definitions/test-run.ts": "gated",
+    // The four resolvers, the audit projection (the row as it was), `listVaultInfos` (the row as the
+    // console shows it) and `readVaultRefFacts` (which hands the tool writer the stored value on
+    // purpose — the wiring warning judges what the ROW says, and its own gate is the resolve).
+    "src/modules/vault/service.ts": "gated",
+  };
+
+  test("every file that selects a vault base URL is in the ledger", async () => {
+    const files = new Glob("src/**/*.ts").scanSync(".");
+    const found = new Set<string>();
+    for (const file of files) {
+      const code = codeOnly(await Bun.file(file).text());
+      // NOTE: the Chatwoot deployment has a `baseUrl` of its own and is not this column.
+      if (!/vaultEntry\./.test(code)) continue;
+      for (const _ of code.matchAll(SELECTS)) found.add(file);
+    }
+    expect([...found].sort()).toEqual(Object.keys(LEDGER).sort());
+    // NOTE: a FLOOR, so a sweep that stops matching cannot pass as "nothing reads it".
+    expect(found.size).toBeGreaterThan(3);
+  });
+
+  test("every gated file CALLS the gate, not merely imports it", async () => {
+    // NOTE: the call and not the name. Both mutations that put a raw `entry.baseUrl` back left the
+    // import untouched, so a file-contains-the-word check passed while the read was ungated again.
+    //
+    // What this fences is that the gate is present in the file, not that it wraps the right read —
+    // the placement is what the resolve-level tests above measure, and these two readers build their
+    // own query, so a behavioural test of them means an agent, a tool and a grant apiece.
+    for (const [file, how] of Object.entries(LEDGER)) {
+      if (how !== "gated") continue;
+      const code = codeOnly(await Bun.file(file).text());
+      const calls = [...code.matchAll(/dialableBaseUrl\(/g)].length;
+      expect([file, calls > 0]).toEqual([file, true]);
+    }
+  });
+});
+
 describe("the catalog is the rule", () => {
   test("exactly the kinds that declare a base URL take one", () => {
     const takes = SECRET_TYPE_IDS.filter(secretTypeSupportsBaseUrl);

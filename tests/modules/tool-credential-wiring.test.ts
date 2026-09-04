@@ -818,6 +818,15 @@ const CASES: Wiring[] = [
     ),
   },
 
+  {
+    label:
+      "a RELATIVE tool is exempt from its own allowlist at the credential host",
+    reaches: false,
+    urlTemplate: "/v1/thing",
+    credentialBaseUrl: "https://1.1.1.1/api",
+    allowedHosts: [PUBLIC],
+  },
+
   // ── spelling ──
   {
     label:
@@ -1097,7 +1106,7 @@ describe("the scanner answers what the runtime does", () => {
     // single verdict would still pass while proving nothing about the boundary between them.
     const reaching = CASES.filter((c) => c.reaches).length;
     expect(reaching).toBeGreaterThan(27);
-    expect(CASES.length - reaching).toBeGreaterThan(31);
+    expect(CASES.length - reaching).toBeGreaterThan(32);
   });
 });
 

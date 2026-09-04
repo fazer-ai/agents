@@ -386,12 +386,16 @@ export function assertToolDefinitionCreatable(input: ToolDefinitionCreate) {
 // transaction and can be overtaken. `assertNameFree` INSIDE the tx, and the unique index under it,
 // are what actually keep one name to one tool. This only moves the refusal an operator will hit
 // almost every time — a name they already used — to where they asked the question (#490).
+// `exceptId` for the update path: a tool keeping its own name is not a collision, and omitting it
+// would make every rename-to-itself preview refuse a write that succeeds — the inverse divergence,
+// which is just as wrong.
 export async function assertToolNameAvailable(
   ctx: TenantContext,
   name: string,
   base: PrismaClient = basePrisma,
+  exceptId?: bigint,
 ): Promise<void> {
-  await runScopedOn(base, ctx, (db) => assertNameFree(db, name));
+  await runScopedOn(base, ctx, (db) => assertNameFree(db, name, exceptId));
 }
 
 export async function createToolDefinition(

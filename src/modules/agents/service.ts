@@ -1735,6 +1735,168 @@ export async function getAgentToolSelections(
 
 // Replace-the-set: the editor sends the full desired grant set; we validate ownership + the
 // integration tool allowlist, then atomically delete-and-recreate the agent's grants.
+// Every id list here comes off an UNCAPPED array on the published schema (`grants`, and
+// `knowledgeBaseIds` inside each one), and each id is a BIND PARAMETER: Postgres takes at most
+// 32,767, so one grant carrying 40k knowledge-base ids raised "The query parameter limit supported
+// by your database is exceeded" rather than refusing. That was already true of the apply; making the
+// preview ask the same question would have doubled the surface, and the dry run is the call an
+// operator makes FIRST. Measured at 40,000 ids: a crash on both halves before this, a refusal on
+// both after. Same shape as `deployment_set_accounts` (#492), same chunk.
+const ID_CHUNK = 1000;
+
+// SHORT-CIRCUITS on the first deficient chunk, and the reason is that the answer is already known
+// there: a chunk that finds fewer rows than it asked for cannot be rescued by a later one. Without
+// it a grant of 500,000 ids that names nothing spent 500 queries to reach a refusal the first one
+// had settled (measured: 637ms; with the exit, one query).
+//
+// It is NOT the transaction timeout the review round suspected. `runScopedOn` gives 5s and the
+// unshortened loop stayed three orders of magnitude inside it at every size a published schema can
+// deliver — 40k ids in 94ms, 200k in 261ms, 500k in 637ms. The exit is worth having on its own
+// terms; the timeout it was proposed to avoid does not happen.
+async function assertAllPresent(
+  ids: bigint[],
+  count: (chunk: bigint[]) => Promise<number>,
+  missing: () => never,
+): Promise<void> {
+  for (let i = 0; i < ids.length; i += ID_CHUNK) {
+    const chunk = ids.slice(i, i + ID_CHUNK);
+    if ((await count(chunk)) !== chunk.length) missing();
+  }
+}
+
+// Every id inside a grant array, checked against what the tenant actually has: an HTTP grant naming
+// no tool, an MCP grant naming no connection, and the same for document templates, knowledge bases
+// and integrations (plus the sub-tool allowlist an integration publishes). Split out of
+// `replaceAgentToolSelections` so the preview can ask it (#490): the fence row for `agent_tools_set`
+// passes `grants: []` behind an agent id that names no agent, so it proved the ownership check and
+// none of this — and a preview echoed back `nextGrants` for a set the apply refuses (#510).
+async function assertGrantTargetsExist(
+  db: ScopedDb,
+  grants: NormalizedGrant[],
+): Promise<void> {
+  const tdIds = [
+    ...new Set(
+      grants
+        .filter((g) => g.source === "HTTP")
+        .map((g) => g.toolDefinitionId as bigint),
+    ),
+  ];
+  const mcpIds = [
+    ...new Set(
+      grants
+        .filter((g) => g.source === "MCP")
+        .map((g) => g.mcpServerConnectionId as bigint),
+    ),
+  ];
+  const intIds = [
+    ...new Set(
+      grants
+        .filter((g) => g.source === "INTEGRATION")
+        .map((g) => g.integrationInstanceId as bigint),
+    ),
+  ];
+  const docIds = [
+    ...new Set(
+      grants
+        .filter((g) => g.source === "DOCUMENT")
+        .map((g) => g.documentTemplateId as bigint),
+    ),
+  ];
+  const kbIds = [...new Set(grants.flatMap((g) => g.knowledgeBaseIds))];
+
+  await assertAllPresent(
+    tdIds,
+    (ids) => db.toolDefinition.count({ where: { id: { in: ids } } }),
+    () => {
+      throw new NotFoundError(
+        "tool definition not found",
+        "errors.toolDefinitionNotFound",
+      );
+    },
+  );
+  await assertAllPresent(
+    mcpIds,
+    (ids) => db.mcpServerConnection.count({ where: { id: { in: ids } } }),
+    () => {
+      throw new NotFoundError(
+        "mcp connection not found",
+        "errors.mcpConnectionNotFound",
+      );
+    },
+  );
+  await assertAllPresent(
+    docIds,
+    (ids) => db.documentTemplate.count({ where: { id: { in: ids } } }),
+    () => {
+      throw new NotFoundError(
+        "document template not found",
+        "errors.documentTemplateNotFound",
+      );
+    },
+  );
+  await assertAllPresent(
+    kbIds,
+    (ids) => db.knowledgeBase.count({ where: { id: { in: ids } } }),
+    () => {
+      throw new NotFoundError(
+        "knowledge base not found",
+        "errors.knowledgeBaseNotFound",
+      );
+    },
+  );
+  if (intIds.length > 0) {
+    // This one GATHERS rather than counts (the catalog type of each instance is the next rule's
+    // input), so its short-circuit is the same comparison one chunk at a time.
+    const instances: Array<{ id: bigint; catalogType: string }> = [];
+    for (let i = 0; i < intIds.length; i += ID_CHUNK) {
+      const chunk = intIds.slice(i, i + ID_CHUNK);
+      const rows = await db.integrationInstance.findMany({
+        where: { id: { in: chunk } },
+        select: { id: true, catalogType: true },
+      });
+      if (rows.length !== chunk.length) {
+        throw new NotFoundError(
+          "integration instance not found",
+          "errors.integrationInstanceNotFound",
+        );
+      }
+      instances.push(...rows);
+    }
+    const typeById = new Map(
+      instances.map((i) => [String(i.id), i.catalogType]),
+    );
+    for (const g of grants) {
+      if (g.source !== "INTEGRATION") continue;
+      const catalogType = typeById.get(String(g.integrationInstanceId));
+      const allowed = new Set(
+        catalogType ? getToolpackToolNames(catalogType) : [],
+      );
+      const bad = g.enabledTools.find((t) => !allowed.has(t));
+      if (bad) {
+        throw new AppError(
+          `tool ${bad} is not available for integration ${catalogType}`,
+          400,
+          "errors.toolGrantToolNotInIntegration",
+          { tool: bad, integration: String(catalogType) },
+        );
+      }
+    }
+  }
+}
+
+// The ADVISORY wrapper, and the word is load-bearing for the same reason as everywhere else on this
+// surface: it opens its own scoped read outside the write's transaction, so a tool deleted between
+// the preview and the apply still refuses there. The check inside `replaceAgentToolSelections`
+// stays the authority; this only moves the refusal an operator actually hits to where they asked.
+export async function assertAgentToolGrantsResolvable(
+  ctx: TenantContext,
+  input: ToolGrantInput[],
+  base: PrismaClient = basePrisma,
+): Promise<void> {
+  const grants = normalizeGrants(input);
+  await runScopedOn(base, ctx, (db) => assertGrantTargetsExist(db, grants));
+}
+
 export async function replaceAgentToolSelections(
   ctx: TenantContext,
   agentId: bigint,
@@ -1770,111 +1932,7 @@ export async function replaceAgentToolSelections(
       );
     }
 
-    const tdIds = [
-      ...new Set(
-        grants
-          .filter((g) => g.source === "HTTP")
-          .map((g) => g.toolDefinitionId as bigint),
-      ),
-    ];
-    const mcpIds = [
-      ...new Set(
-        grants
-          .filter((g) => g.source === "MCP")
-          .map((g) => g.mcpServerConnectionId as bigint),
-      ),
-    ];
-    const intIds = [
-      ...new Set(
-        grants
-          .filter((g) => g.source === "INTEGRATION")
-          .map((g) => g.integrationInstanceId as bigint),
-      ),
-    ];
-    const docIds = [
-      ...new Set(
-        grants
-          .filter((g) => g.source === "DOCUMENT")
-          .map((g) => g.documentTemplateId as bigint),
-      ),
-    ];
-    const kbIds = [...new Set(grants.flatMap((g) => g.knowledgeBaseIds))];
-
-    if (tdIds.length > 0) {
-      const found = await db.toolDefinition.count({
-        where: { id: { in: tdIds } },
-      });
-      if (found !== tdIds.length) {
-        throw new NotFoundError(
-          "tool definition not found",
-          "errors.toolDefinitionNotFound",
-        );
-      }
-    }
-    if (mcpIds.length > 0) {
-      const found = await db.mcpServerConnection.count({
-        where: { id: { in: mcpIds } },
-      });
-      if (found !== mcpIds.length) {
-        throw new NotFoundError(
-          "mcp connection not found",
-          "errors.mcpConnectionNotFound",
-        );
-      }
-    }
-    if (docIds.length > 0) {
-      const found = await db.documentTemplate.count({
-        where: { id: { in: docIds } },
-      });
-      if (found !== docIds.length) {
-        throw new NotFoundError(
-          "document template not found",
-          "errors.documentTemplateNotFound",
-        );
-      }
-    }
-    if (kbIds.length > 0) {
-      const found = await db.knowledgeBase.count({
-        where: { id: { in: kbIds } },
-      });
-      if (found !== kbIds.length) {
-        throw new NotFoundError(
-          "knowledge base not found",
-          "errors.knowledgeBaseNotFound",
-        );
-      }
-    }
-    if (intIds.length > 0) {
-      const instances = await db.integrationInstance.findMany({
-        where: { id: { in: intIds } },
-        select: { id: true, catalogType: true },
-      });
-      if (instances.length !== intIds.length) {
-        throw new NotFoundError(
-          "integration instance not found",
-          "errors.integrationInstanceNotFound",
-        );
-      }
-      const typeById = new Map(
-        instances.map((i) => [String(i.id), i.catalogType]),
-      );
-      for (const g of grants) {
-        if (g.source !== "INTEGRATION") continue;
-        const catalogType = typeById.get(String(g.integrationInstanceId));
-        const allowed = new Set(
-          catalogType ? getToolpackToolNames(catalogType) : [],
-        );
-        const bad = g.enabledTools.find((t) => !allowed.has(t));
-        if (bad) {
-          throw new AppError(
-            `tool ${bad} is not available for integration ${catalogType}`,
-            400,
-            "errors.toolGrantToolNotInIntegration",
-            { tool: bad, integration: String(catalogType) },
-          );
-        }
-      }
-    }
+    await assertGrantTargetsExist(db, grants);
 
     // The set as it stands, read before the delete-and-recreate replaces it. Same shape the view
     // returns, so the row's two halves are comparable.

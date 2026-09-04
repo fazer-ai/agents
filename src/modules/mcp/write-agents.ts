@@ -9,6 +9,7 @@ import {
   type AgentCreate,
   type AgentUpdate,
   assertAgentCreatable,
+  assertAgentToolGrantsResolvable,
   assertAgentUpdatable,
   assertCredentialRefsUsable,
   assertSchedulesExist,
@@ -426,6 +427,10 @@ export async function agentToolsSet(
     const current = await getAgentToolSelections(ctx, id, base);
     const target = `agent:${id}`;
     if (args.dry_run !== false) {
+      // NOTE: the core's own question about the ids INSIDE the array, which the row's single
+      // `agent_id` never reaches — and INSIDE the branch, because the apply reaches
+      // `replaceAgentToolSelections`, which asks it again under its lock (#490, #510).
+      await assertAgentToolGrantsResolvable(ctx, grants, base);
       return ok({
         dryRun: true,
         target,
@@ -763,6 +768,13 @@ export async function toolUpdate(
     }
     const target = `tool:${id}`;
     if (args.dry_run !== false) {
+      // ADVISORY, and the same one `tool_create` has asked since #490 — asked here at last because
+      // this tool's fence row passes an id that names no tool, so it proved the ownership check and
+      // never the rename. An operator reusing a name they already used read "will update" and got a
+      // 409 from the apply (#510). `id` is excluded: keeping your own name is not a collision.
+      if (built.patch.name !== undefined) {
+        await assertToolNameAvailable(ctx, built.patch.name, base, id);
+      }
       // NOTE: the EFFECTIVE row, patch over stored, because a patch that only attaches a credential
       // says nothing about the templates and a patch that only rewrites a template says nothing
       // about the credential. Judging either half alone is how this warning would fire on a tool

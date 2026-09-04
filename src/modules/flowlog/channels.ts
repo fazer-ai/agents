@@ -200,6 +200,22 @@ export const alertChannelCreateSchema = z
 
 export type AlertChannelCreate = z.infer<typeof alertChannelCreateSchema>;
 
+// The two things both writes decide about a channel's DESTINATION and its filter, in one place so
+// the MCP preview can ask them (#490). Neither is answerable from the MCP arguments alone, which is
+// why both were missing there: the stage list is a closed set this module owns, and the URL does not
+// travel in the arguments at all — it arrives as a vault ref whose VALUE the apply resolves and
+// vets. A preview that stopped at "the ref resolves" approved a channel the write refuses (#510).
+//
+// Returns the normalized stages (deduplicated, in first-seen order), because that is what gets
+// stored and the caller would otherwise have to run the same loop again.
+export async function assertAlertChannelWritable(input: {
+  url?: string;
+  stages?: string[];
+}): Promise<string[] | undefined> {
+  if (input.url !== undefined) await assertSafeOutboundUrl(input.url);
+  return input.stages === undefined ? undefined : assertStages(input.stages);
+}
+
 export async function createAlertChannel(
   ctx: TenantContext,
   input: AlertChannelCreate,
@@ -208,8 +224,10 @@ export async function createAlertChannel(
   if (ctx.tenantId === null) throw new AppError("tenant required", 400);
   const tenantId = ctx.tenantId;
   const parsed = parseInput(alertChannelCreateSchema, input);
-  await assertSafeOutboundUrl(parsed.url);
-  const stages = assertStages(parsed.stages ?? []);
+  const stages = (await assertAlertChannelWritable({
+    url: parsed.url,
+    stages: parsed.stages ?? [],
+  })) as string[];
   const row = await runScopedOn(base, ctx, async (db) => {
     const secretRef = parsed.secretRef
       ? await requireVaultRef(db, parsed.secretRef, "secretRef")
@@ -261,12 +279,13 @@ export async function updateAlertChannel(
   const data: Record<string, unknown> = {};
   if (parsed.name !== undefined) data.name = parsed.name;
   if (parsed.type !== undefined) data.type = parsed.type;
-  if (parsed.url !== undefined) {
-    await assertSafeOutboundUrl(parsed.url);
-    data.url = encryptJson(parsed.url);
-  }
+  const stages = await assertAlertChannelWritable({
+    url: parsed.url,
+    stages: parsed.stages,
+  });
+  if (parsed.url !== undefined) data.url = encryptJson(parsed.url);
   if (parsed.minLevel !== undefined) data.minLevel = parsed.minLevel;
-  if (parsed.stages !== undefined) data.stages = assertStages(parsed.stages);
+  if (stages !== undefined) data.stages = stages;
   // secretRef: undefined = leave; null = clear; string = set.
   if (parsed.secretRef !== undefined) data.secretRef = parsed.secretRef;
   if (parsed.enabled !== undefined) data.enabled = parsed.enabled;

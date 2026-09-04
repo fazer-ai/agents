@@ -5,6 +5,7 @@ import {
   assertAccountsSelectable,
   assertDeploymentConnectable,
   assertDeploymentNotSwitching,
+  assertInboxBindable,
   assertInboxReconnectable,
   bindInbox,
   connectChatwootDeployment,
@@ -310,6 +311,10 @@ export async function inboxBind(
     if (!current) return err("inbox not found");
     const target = `inbox:${inboxId}`;
     if (args.dry_run !== false) {
+      // NOTE: the core's own two questions past existence — the account is still connected, and the
+      // agent being bound exists. `listInboxes` above answers neither, and the preview approved a
+      // bind the apply refuses with a 409 (#510).
+      await assertInboxBindable(ctx, inboxId, agentId, base);
       return ok({
         dryRun: true,
         action: "bind",

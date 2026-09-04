@@ -4,6 +4,7 @@ import type { TenantContext } from "@/lib/tenancy";
 import { firstUnstorableField } from "@/lib/text";
 import {
   assertChunkingUpdatable,
+  assertDocumentRetryable,
   createDocument,
   deleteDocument,
   type EmbeddingBlock,
@@ -325,6 +326,10 @@ export async function knowledgeDocumentRetry(
     const current = await getDocument(ctx, id, base);
     const target = `knowledge_document:${id}`;
     if (args.dry_run !== false) {
+      // NOTE: the core's own question, on the status this preview already had in hand. Reporting it
+      // in the note below is not asking it: a document that is INDEXED read back "would re-queue"
+      // and the apply answered 409 (#510).
+      assertDocumentRetryable(current.status);
       return ok({
         dryRun: true,
         action: "retry",

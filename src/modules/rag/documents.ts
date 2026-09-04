@@ -556,6 +556,22 @@ export async function updateDocument(
   return { id: doc.id, status: doc.status };
 }
 
+// FAILED = errored ingestion (retry); UNINDEXED = imported-but-never-indexed (first index). Both
+// re-run through the same PENDING → ingest path; anything else is already on it or already done.
+//
+// Split out so the MCP preview can ask the same question the apply asks (#490). Its row passes a
+// document id that names no row, so it proved the ownership check and never this — and the preview
+// was already READING the status, to report it in a note saying "Re-queues a FAILED document",
+// while answering ok for a document that is not one (#510).
+export function assertDocumentRetryable(status: string): void {
+  if (status !== "FAILED" && status !== "UNINDEXED") {
+    throw new AppError(
+      "only FAILED or UNINDEXED documents can be re-indexed",
+      409,
+    );
+  }
+}
+
 export async function retryDocument(
   ctx: TenantContext,
   id: bigint,
@@ -572,14 +588,7 @@ export async function retryDocument(
       select: { id: true, status: true, knowledgeBaseId: true },
     });
     if (!existing) throw new NotFoundError("document not found");
-    // FAILED = errored ingestion (retry); UNINDEXED = imported-but-never-indexed (first index). Both
-    // re-run through the same PENDING → ingest path.
-    if (existing.status !== "FAILED" && existing.status !== "UNINDEXED") {
-      throw new AppError(
-        "only FAILED or UNINDEXED documents can be re-indexed",
-        409,
-      );
-    }
+    assertDocumentRetryable(existing.status);
     const { count } = await db.knowledgeDocument.updateMany({
       where: { id, status: { in: ["FAILED", "UNINDEXED"] } },
       data: { status: "PENDING", error: null },

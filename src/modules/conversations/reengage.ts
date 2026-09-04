@@ -89,16 +89,23 @@ export interface ReengageResult {
   outcome: ReengageOutcome;
 }
 
-export async function reengageConversation(
-  ctx: TenantContext,
-  conversationDbId: bigint,
-  deps: RuntimeDeps = {},
-  base: PrismaClient = basePrisma,
-): Promise<ReengageResult> {
-  const tenantId = requireTenant(ctx);
+// Scoped read: resolve the conversation + its inbox's agent config (DB only; network is the turn).
+// Named, because the preview asks for it too — see `assertConversationReengageable`.
+type ResolvedReengage = Awaited<ReturnType<typeof resolveReengage>>;
 
-  // Scoped read: resolve the conversation + its inbox's agent config (DB only; network is the turn).
-  const resolved = await runScopedOn(base, sysCtx(tenantId), async (db) => {
+function resolveReengage(
+  base: PrismaClient,
+  tenantId: bigint,
+  conversationDbId: bigint,
+  // The PREVIEW's read, and this flag is the whole difference between the two callers. Resolving an
+  // A/B variant is not a read: `resolveVariantOverride` INSERTS the thread's assignment when there
+  // is none, and that row lands in the denominator of every result for the experiment. The apply
+  // wants it — it is about to run the tested prompt — and the preview must not have it, or a dry run
+  // enrols a conversation in an experiment it never took a turn in. Same reason memory compaction
+  // passes it (#510, review round 1).
+  opts: { skipExperiment?: boolean } = {},
+) {
+  return runScopedOn(base, sysCtx(tenantId), async (db) => {
     const conv = await db.conversation.findUnique({
       where: { id: conversationDbId },
       select: {
@@ -123,13 +130,17 @@ export async function reengageConversation(
       where: { id: inbox.agentId },
       select: { settings: true },
     });
-    const loaded = await loadAgentConfig(db, {
-      tenantId,
-      instanceId: conv.chatwootInstanceId,
-      conversationId: conv.chatwootConversationId,
-      agentId: inbox.agentId,
-      threadId: conv.threadId,
-    });
+    const loaded = await loadAgentConfig(
+      db,
+      {
+        tenantId,
+        instanceId: conv.chatwootInstanceId,
+        conversationId: conv.chatwootConversationId,
+        agentId: inbox.agentId,
+        threadId: conv.threadId,
+      },
+      { skipExperiment: opts.skipExperiment },
+    );
     if (!loaded) return "no-agent" as const;
     return {
       convDbId: conv.id,
@@ -144,7 +155,18 @@ export async function reengageConversation(
       settings: agentRow?.settings ?? {},
     };
   });
+}
 
+// The two ways this resolution refuses, in one place, because the MCP preview has to give the same
+// answer. Its fence row passes a conversation id that names no row, so it proved the not-found and
+// never the second one — and a preview answered "would re-engage" for an inbox with no agent bound,
+// which is a message that can never be sent (#510).
+//
+// An assertion function rather than a boolean, so the caller keeps the resolved value with the two
+// sentinels narrowed away.
+function assertResolved(
+  resolved: ResolvedReengage,
+): asserts resolved is Exclude<ResolvedReengage, "not-found" | "no-agent"> {
   if (resolved === "not-found") {
     throw new NotFoundError(
       "conversation not found",
@@ -158,6 +180,34 @@ export async function reengageConversation(
       "errors.reengageNoAgent",
     );
   }
+}
+
+// ADVISORY, like every other preview-side read on this surface: it runs outside the turn, so an
+// inbox unbound between the two answers still refuses there.
+export async function assertConversationReengageable(
+  ctx: TenantContext,
+  conversationDbId: bigint,
+  base: PrismaClient = basePrisma,
+): Promise<void> {
+  const tenantId = requireTenant(ctx);
+  assertResolved(
+    await resolveReengage(base, tenantId, conversationDbId, {
+      skipExperiment: true,
+    }),
+  );
+}
+
+export async function reengageConversation(
+  ctx: TenantContext,
+  conversationDbId: bigint,
+  deps: RuntimeDeps = {},
+  base: PrismaClient = basePrisma,
+): Promise<ReengageResult> {
+  const tenantId = requireTenant(ctx);
+
+  const resolved = await resolveReengage(base, tenantId, conversationDbId);
+
+  assertResolved(resolved);
 
   // Assignee gate: never re-fire over a conversation a human owns (they should "return to agent"
   // first). runLoadedTurn re-checks before posting too, but gating early avoids a wasted LLM call.

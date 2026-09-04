@@ -1732,13 +1732,22 @@ async function createMissingComponents(
       continue;
     }
     const badBody = unsupportedBodyShape(tdef.body);
-    const { shapes } = normalizeToolShapes({
+    const { shapes, warnings: shapeWarnings } = normalizeToolShapes({
       urlTemplate: tdef.urlTemplate,
       query: tdef.query ?? {},
       headers: tdef.headers,
       body: badBody ? canonicalBodyShape(tdef.body) : tdef.body,
       inputSchema: tdef.inputSchema,
     });
+    // Same rule as the code loop below: what the normalization had to change is the operator's to
+    // review, not something to discard on the way in.
+    for (const reason of shapeWarnings) {
+      warnings.push({
+        code: "toolSchemaAdjusted",
+        params: { name, reason },
+        target: { kind: "tool", name },
+      });
+    }
     // `createMany({ skipDuplicates })` rather than `create`, for the reason spelled out on the
     // document-template loop below: the pre-check above can answer "free" and a concurrent writer
     // commit before this insert, and a P2002 here does not cost one tool: the whole import runs
@@ -1862,7 +1871,19 @@ async function createMissingComponents(
     // NOTE: the import writes straight to the DB (not via the service), so the schema is
     // canonicalized here the way the service canonicalizes it: a hand-edited bundle may carry a
     // JSON-Schema-shaped one, and the runtime reads the compact field map.
-    const { shapes } = normalizeToolShapes({ inputSchema: tdef.inputSchema });
+    const { shapes, warnings: schemaWarnings } = normalizeToolShapes({
+      inputSchema: tdef.inputSchema,
+    });
+    // A schema that had to LOSE something to become the compact map (a nested shape, a union, an
+    // enum of non-strings) changes what the model may send, and the operator reviewing an import is
+    // exactly who has to hear it — the console shows these warnings next to the imported agent.
+    for (const reason of schemaWarnings) {
+      warnings.push({
+        code: "toolSchemaAdjusted",
+        params: { name, reason },
+        target: { kind: "codeTool", name },
+      });
+    }
     // `createMany({ skipDuplicates })` for the reason the HTTP loop gives: a lost race on
     // `@@unique([tenantId, name])` would abort the enclosing transaction and take the whole
     // import with it (issue #221).

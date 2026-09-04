@@ -1144,6 +1144,7 @@
       "mcpReused": "MCP server \"{{name}}\" already existed and was reused; check it is right.",
       "mcpUnsafeStdio": "MCP server \"{{name}}\" has an unsupported command and was skipped.",
       "nativeToolUnknown": "Built-in tool \"{{name}}\" is not one this version has, so it was left out of the agent.",
+      "toolSchemaAdjusted": "Tool \"{{name}}\": the imported input schema was adjusted — {{reason}}. Check the arguments the agent may send.",
       "unknownGrantSourceSkipped": "{{n}} tool grant(s) came from a newer version and were skipped."
     },
     "importWarningReview": "Review",

@@ -132,6 +132,29 @@ import {
   documentTemplateUpdate,
 } from "./write-documents";
 import { tenantCreate, tenantGet, tenantList } from "./write-fleet";
+
+// `input_schema`, with the one field name that cannot survive being parsed. `z.record` rebuilds the
+// map by assignment, so an own `__proto__` key hits the prototype setter and is GONE before any
+// handler runs — the write would then succeed while the argument the caller declared is missing,
+// and a body reading `input.__proto__` would find the prototype. The service refuses it by name
+// (code-tools/service.ts); this is the same refusal at the transport, which is the only place that
+// still holds the raw value.
+export const inputSchemaArg = z.preprocess((value, ctx) => {
+  if (
+    value !== null &&
+    typeof value === "object" &&
+    Object.hasOwn(value as object, "__proto__")
+  ) {
+    ctx.addIssue({
+      code: "custom",
+      message:
+        "input_schema field `__proto__` is reserved by JavaScript and cannot be a parameter name",
+    });
+    return z.NEVER;
+  }
+  return value;
+}, z.record(z.string(), z.unknown()).optional());
+
 import {
   knowledgeApprove,
   knowledgeCreate,
@@ -1607,7 +1630,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]).optional(),
           description: z.string().nullable().optional(),
           headers: z.record(z.string(), z.unknown()).optional(),
-          input_schema: z.record(z.string(), z.unknown()).optional(),
+          input_schema: inputSchemaArg,
           output_schema: z
             .record(z.string(), z.unknown())
             .optional()
@@ -1669,7 +1692,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]).optional(),
           description: z.string().nullable().optional(),
           headers: z.record(z.string(), z.unknown()).optional(),
-          input_schema: z.record(z.string(), z.unknown()).optional(),
+          input_schema: inputSchemaArg,
           output_schema: z
             .record(z.string(), z.unknown())
             .optional()
@@ -1740,7 +1763,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           name: z.string(),
           label: z.string().optional(),
           description: z.string(),
-          input_schema: z.record(z.string(), z.unknown()).optional(),
+          input_schema: inputSchemaArg,
           code: z.string(),
           enabled: z.boolean().optional(),
           dry_run: z.boolean().optional(),
@@ -1762,7 +1785,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           name: z.string().optional(),
           label: z.string().optional(),
           description: z.string().optional(),
-          input_schema: z.record(z.string(), z.unknown()).optional(),
+          input_schema: inputSchemaArg,
           code: z.string().optional(),
           enabled: z.boolean().optional(),
           dry_run: z.boolean().optional(),

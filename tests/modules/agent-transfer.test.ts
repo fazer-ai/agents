@@ -2470,6 +2470,48 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     });
   });
 
+  // What the normalization had to CHANGE is the operator's to review: an imported schema that loses
+  // something on the way into the compact map changes which arguments the model may send, and the
+  // import is presented for review precisely so nothing changes silently.
+  test("a schema the import had to adjust is reported, not swallowed", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const bundle = structuredClone(exp);
+    const code = bundle.components?.codeTools?.find(
+      (c) => c.name === "validar_cpf",
+    );
+    if (!code) throw new Error("bundle missing validar_cpf");
+    code.name = "schema_ajustado";
+    // Standard JSON Schema: accepted, and converted to the compact map — which is a change the
+    // operator has to know about, because it is the contract the model is offered.
+    code.inputSchema = {
+      type: "object",
+      properties: { cpf: { type: "string" } },
+      required: ["cpf"],
+    } as never;
+    const grant = bundle.agent.tools.find(
+      (g) => g?.source === "CODE" && g.tool === "validar_cpf",
+    );
+    if (grant?.source !== "CODE") throw new Error("bundle missing the grant");
+    grant.tool = "schema_ajustado";
+    const { warnings } = await importAgent(dstCtx(), bundle, appDb);
+    expect(
+      warnings.some(
+        (w) =>
+          w.code === "toolSchemaAdjusted" &&
+          w.params?.name === "schema_ajustado",
+      ),
+    ).toBe(true);
+    const row = await suDb.codeToolDefinition.findFirstOrThrow({
+      where: { tenantId: dstTenant, name: "schema_ajustado" },
+      select: { inputSchema: true },
+    });
+    expect(row.inputSchema).toEqual({
+      cpf: { type: "string", required: true },
+    });
+  });
+
   // A rename has to fit inside the ceiling it is renaming for. A 64-character name is legal, and
   // `<name>_2` is 66 — refused by the provider with the whole function list for a code tool, and
   // normalized back to the original by the HTTP builder, which silently undoes the rename.

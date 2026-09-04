@@ -1161,6 +1161,7 @@
       "mcpReused": "O servidor MCP \"{{name}}\" já existia e foi reaproveitado; confira se está certo.",
       "mcpUnsafeStdio": "O servidor MCP \"{{name}}\" tem um comando não suportado e foi ignorado.",
       "nativeToolUnknown": "A ferramenta nativa \"{{name}}\" não existe nesta versão, então ela foi deixada de fora do agente.",
+      "toolSchemaAdjusted": "Ferramenta \"{{name}}\": o schema de entrada importado foi ajustado: {{reason}}. Confira os argumentos que o agente pode enviar.",
       "unknownGrantSourceSkipped": "{{n}} concessão(ões) de ferramenta vieram de uma versão mais nova e foram ignoradas."
     },
     "importWarningReview": "Revisar",

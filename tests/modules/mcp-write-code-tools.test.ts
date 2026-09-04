@@ -3,6 +3,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import { codeToolGet, codeToolList } from "@/modules/mcp/read";
+import { inputSchemaArg } from "@/modules/mcp/server";
 import {
   buildCodeToolPatch,
   codeToolCreate,
@@ -391,6 +392,20 @@ describe.skipIf(!dbUp)("MCP code-tool tools (DB)", () => {
       (dryPatch.data.diff as Record<string, { after: unknown }>).label?.after,
     ).toBe("Outro");
     await suDb.codeToolDefinition.delete({ where: { id: row.id } });
+  });
+
+  test("the transport refuses a reserved field name, which is the only place that still sees it", () => {
+    // `z.record` rebuilds the map by assignment, so an own `__proto__` key is gone before any
+    // handler runs: the write would succeed with the declared argument missing, and a body reading
+    // `input.__proto__` would find the prototype. The service refuses it by name, and this is that
+    // refusal one layer up, at the only place that still holds the raw value.
+    const refused = inputSchemaArg.safeParse(
+      JSON.parse('{"__proto__":{"type":"string"},"cpf":{"type":"string"}}'),
+    );
+    expect(refused.success).toBe(false);
+    expect(JSON.stringify(refused.error?.issues)).toContain("__proto__");
+    const fine = inputSchemaArg.safeParse({ cpf: { type: "string" } });
+    expect(fine.success).toBe(true);
   });
 
   test("code_tool_list omits the body; code_tool_get returns it; both are tenant-fenced", async () => {

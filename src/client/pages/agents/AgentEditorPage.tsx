@@ -2285,6 +2285,12 @@ function AgentEditor() {
           'Document template "{{name}}" was not imported: this account already has a template with that name ({{existing}}). Names have to be unique, because the agent picks between documents by name.',
           p,
         );
+      case "toolSchemaAdjusted":
+        return t(
+          "editor.importWarning.toolSchemaAdjusted",
+          'Tool "{{name}}": the imported input schema was adjusted — {{reason}}. Check the arguments the agent may send.',
+          p,
+        );
       case "documentToolNameTaken":
         return t(
           "editor.importWarning.documentToolNameTaken",

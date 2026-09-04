@@ -39,4 +39,23 @@ describe("secret-types client mirror", () => {
       expect(!!meta?.needsParamName).toBe(!!type.needsParamName);
     }
   });
+
+  // NOTE: the base-URL pair, load-bearing since issue #504 for the same reason `needsParamName`
+  // became load-bearing with #488: the write now REFUSES a base URL on a kind that declares none,
+  // and the form is what keeps the console from ever sending one — it submits the field only when
+  // its own copy says the kind takes one. Drift here is a save the operator cannot fix, because the
+  // form renders no input for a kind it thinks takes no URL, and the refusal would name a field with
+  // nowhere to go.
+  //
+  // The client keeps the pair as two booleans because that is what the form asks (render the input /
+  // mark it required); the SERVER holds one field, so "required but not supported" cannot be
+  // written there. This test is what stops the client from writing it.
+  test("the client base-URL pair matches the server's single declaration", () => {
+    for (const type of SECRET_TYPES) {
+      const meta = SECRET_TYPE_META[type.id as keyof typeof SECRET_TYPE_META];
+      expect(!!meta?.supportsBaseUrl).toBe(type.baseUrl != null);
+      expect(!!meta?.requiresBaseUrl).toBe(type.baseUrl === "required");
+      if (meta?.requiresBaseUrl) expect(meta.supportsBaseUrl).toBe(true);
+    }
+  });
 });

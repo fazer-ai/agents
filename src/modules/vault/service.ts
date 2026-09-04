@@ -17,6 +17,7 @@ import {
   type SecretTestResult,
 } from "./secret-test";
 import {
+  BASE_URL_KIND_IDS,
   type CredentialUse,
   credentialServes,
   getSecretTypeFields,
@@ -27,6 +28,7 @@ import {
   secretTypeFits,
   secretTypeIsManagedBlob,
   secretTypeNeedsParamName,
+  secretTypeRefusesBaseUrl,
   secretTypeRefusesParamName,
   secretTypeRequiresBaseUrl,
   secretValueFitsKind,
@@ -862,7 +864,9 @@ export interface CreateVaultEntryInput {
 // Its RETURN is part of the verdict, not a convenience: `kind` defaults to "generic" and `baseUrl`
 // normalizes, and a caller that re-derives either from the raw input will disagree with what gets
 // stored.
-// The base URL a write would STORE, refusing when the kind requires one and this is not it.
+
+// The base URL a write would STORE, refusing both ways the kind can disagree with it: required and
+// absent, and present on a kind that has no use for one.
 //
 // It exists because the check has to sit after the normalization, and `updateVaultEntry` had it
 // before: it asked `secretTypeRequiresBaseUrl` only on the `null`/`""` branch, while the other
@@ -871,17 +875,43 @@ export interface CreateVaultEntryInput {
 // updated to `baseUrl: null` — a state its own create path rejects. Found by the MCP preview
 // answering the question the apply did not (#490), and it is the inverse of every other divergence
 // in that issue: the preview refused and the apply succeeded, leaving invalid configuration behind.
-function normalizeRequiredBaseUrl(
+//
+// The second half is issue #504, and it is the `paramName` story of #488 with a sharper ending. The
+// catalog declares which kinds carry a base URL; the console renders the input for exactly those
+// nine of the eighteen and for no other. The other nine STORED one anyway — every one of them,
+// measured — and the runtime then USED it: `prepare.ts` hands the model client `credentialBaseUrl ?? mc.baseURL`
+// straight off the resolved entry, and vision, STT, TTS, the HTTP-tool base and the MCP connection
+// URL do the same, none of them asking the kind. So an `openai` credential could carry a host the
+// console never shows, never lists and cannot edit, and the provider key went there on the next
+// turn. The kind that legitimately points an OpenAI API somewhere else is `openai_compatible`, and
+// naming it is the difference between a refusal and a dead end.
+//
+// Empty stays empty, for the reason `validateParamName` gives: the console submits the field on
+// every kind whose form has no input, and refusing that would refuse every save it makes.
+function normalizeBaseUrlForKind(
   raw: string | null | undefined,
   kind: string,
 ): string | null {
   const normalized =
     raw == null || raw === "" ? null : validateBaseUrl(raw) || null;
-  if (normalized === null && secretTypeRequiresBaseUrl(kind)) {
+  if (normalized === null) {
+    if (secretTypeRequiresBaseUrl(kind)) {
+      throw new AppError(
+        "baseUrl is required for this credential type",
+        400,
+        "errors.vaultBaseUrlRequired",
+      );
+    }
+    return null;
+  }
+  if (secretTypeRefusesBaseUrl(kind)) {
+    const kinds = BASE_URL_KIND_IDS.join(", ");
     throw new AppError(
-      "baseUrl is required for this credential type",
+      `the "${kind}" credential type does not use a base URL. The types that do are: ${kinds}.`,
       400,
-      "errors.vaultBaseUrlRequired",
+      "errors.vaultBaseUrlNotApplicable",
+      { kind, kinds },
+      "baseUrl",
     );
   }
   return normalized;
@@ -900,7 +930,7 @@ export function assertVaultEntryCreatable(input: CreateVaultEntryInput): {
   const kind = input.kind ?? "generic";
   validateVaultValue(kind, input.value);
 
-  const baseUrl = normalizeRequiredBaseUrl(input.baseUrl, kind);
+  const baseUrl = normalizeBaseUrlForKind(input.baseUrl, kind);
 
   const paramName =
     input.paramName != null
@@ -1158,17 +1188,13 @@ export function assertPendingVaultEntryCreatable(
     );
   }
 
-  let normalizedBaseUrl: string | null = null;
-  if (input.baseUrl != null && input.baseUrl !== "") {
-    normalizedBaseUrl = validateBaseUrl(input.baseUrl) || null;
-  }
-  if (secretTypeRequiresBaseUrl(normalizedKind) && !normalizedBaseUrl) {
-    throw new AppError(
-      "baseUrl is required for this credential type",
-      400,
-      "errors.vaultBaseUrlRequired",
-    );
-  }
+  // NOTE: the SAME helper the create path uses, not a second spelling of it. The two were written
+  // separately and the copy here already lagged once — it is where #490 found the required-baseUrl
+  // check sitting before the normalization instead of after.
+  const normalizedBaseUrl = normalizeBaseUrlForKind(
+    input.baseUrl,
+    normalizedKind,
+  );
   const normalizedParamName =
     input.paramName != null
       ? validateParamName(input.paramName, normalizedKind)
@@ -1329,7 +1355,7 @@ export async function updateVaultEntry(
     }
 
     if (patch.baseUrl !== undefined) {
-      data.baseUrl = normalizeRequiredBaseUrl(patch.baseUrl, entry.kind);
+      data.baseUrl = normalizeBaseUrlForKind(patch.baseUrl, entry.kind);
     }
 
     if (patch.paramName !== undefined) {

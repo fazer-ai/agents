@@ -194,6 +194,7 @@
     "unsupportedFileType": "Tipo de arquivo não suportado: {{type}}",
     "unsupportedImageType": "Tipo de imagem não suportado. Permitidos: {{allowed}}",
     "userNotFound": "Usuário não encontrado",
+    "vaultBaseUrlNotApplicable": "O tipo de credencial \"{{kind}}\" não usa URL base. Os tipos que usam são: {{kinds}}.",
     "vaultBaseUrlRequired": "Este tipo de credencial exige uma URL base.",
     "vaultFieldRequired": "O campo \"{{field}}\" não pode ficar vazio",
     "vaultFieldUnknown": "Este tipo de credencial não tem um campo chamado \"{{field}}\"",

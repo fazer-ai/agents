@@ -1,7 +1,8 @@
+import type { PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import { normalizeExpectedStatuses } from "@/graph/tools/http-status";
 import { AppError } from "@/lib/errors";
-import type { TenantContext } from "@/lib/tenancy";
+import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { configHealthAfterWrite } from "@/modules/agents/config-health-read";
 import type { AgentMode } from "@/modules/agents/mode";
 import {
@@ -34,7 +35,11 @@ import {
   updateMcpConnection,
 } from "@/modules/mcp-connections/service";
 import { unsupportedBodyShape } from "@/modules/tool-definitions/body-shape";
-import { normalizeToolShapes } from "@/modules/tool-definitions/normalize";
+import { unusedCredentialWarning } from "@/modules/tool-definitions/credential-wiring";
+import {
+  normalizeToolShapes,
+  type ToolShapePatch,
+} from "@/modules/tool-definitions/normalize";
 import {
   readResponseTemplateResult,
   storableResponseTemplate,
@@ -49,6 +54,7 @@ import {
   type ToolDefinitionUpdate,
   updateToolDefinition,
 } from "@/modules/tool-definitions/service";
+import { readVaultRefFacts } from "@/modules/vault/service";
 import type { VerifiedToken } from "./oauth/tokens";
 import {
   diffFields,
@@ -522,6 +528,51 @@ export async function buildToolPatch(
   return { patch };
 }
 
+// The five interpolation sites off a row or a patch, as one object. Spelled once because the two
+// writers assemble the same thing from three different shapes (the create input, the update patch,
+// the stored row) and a site dropped from one of those spellings is a warning that fires on a tool
+// that is wired.
+function toolShapesOf(src: {
+  urlTemplate?: string | null;
+  query?: unknown;
+  headers?: unknown;
+  body?: unknown;
+  inputSchema?: unknown;
+}): ToolShapePatch {
+  const out: ToolShapePatch = {};
+  // NOTE: an absent site is OMITTED, never set to `undefined`. These objects are spread over one
+  // another to build the effective row, and a spread key whose value is `undefined` overwrites: the
+  // patch would erase every template it does not mention, and the warning would then fire on the
+  // tool it was reading.
+  if (typeof src.urlTemplate === "string") out.urlTemplate = src.urlTemplate;
+  if (src.query !== undefined) out.query = src.query;
+  if (src.headers !== undefined) out.headers = src.headers;
+  if (src.body !== undefined) out.body = src.body;
+  if (src.inputSchema !== undefined) out.inputSchema = src.inputSchema;
+  return out;
+}
+
+// The unused-credential warning for one tool write, with the vault read it needs. Called once per
+// write and spread into BOTH halves of the answer, like `norm.warnings` beside it: a preview that
+// stays quiet about wiring the apply will not fix is the preview promising something away (#490).
+//
+// `shapes` must be the EFFECTIVE, NORMALIZED templates — what the row will hold — not the raw
+// arguments. A single-brace `{secret}` is rewritten to `{{secret}}` on the way in, so scanning the
+// arguments would warn about a tool that is wired correctly the moment it is stored.
+async function credentialWiringWarning(
+  ctx: TenantContext,
+  base: PrismaClient,
+  credentialRef: string | null | undefined,
+  shapes: ToolShapePatch,
+): Promise<string[]> {
+  if (!credentialRef) return [];
+  const facts = await runScopedOn(base, ctx, (db) =>
+    readVaultRefFacts(db, credentialRef),
+  );
+  const warning = unusedCredentialWarning(facts?.kind ?? null, shapes);
+  return warning ? [warning] : [];
+}
+
 export async function toolCreate(
   principal: VerifiedToken,
   args: ToolWriteArgs & { dry_run?: boolean },
@@ -552,7 +603,12 @@ export async function toolCreate(
     body: input.body,
     inputSchema: input.inputSchema,
   });
-  const warnings = norm.warnings.length > 0 ? { warnings: norm.warnings } : {};
+  const wiring = await credentialWiringWarning(ctx, base, input.credentialRef, {
+    ...toolShapesOf(input),
+    ...norm.shapes,
+  });
+  const all = [...norm.warnings, ...wiring];
+  const warnings = all.length > 0 ? { warnings: all } : {};
   try {
     if (args.dry_run !== false) {
       // NOTE: the core's own question, asked before the preview answers it. It sits INSIDE the
@@ -626,8 +682,24 @@ export async function toolUpdate(
       ...built.patch,
       ...norm.shapes,
     } as ToolDefinitionUpdate;
-    const warnings =
-      norm.warnings.length > 0 ? { warnings: norm.warnings } : {};
+    // NOTE: the EFFECTIVE row, patch over stored, because a patch that only attaches a credential
+    // says nothing about the templates and a patch that only rewrites a template says nothing about
+    // the credential. Judging either half alone is how this warning would fire on a tool that is
+    // wired and stay silent on one that is not.
+    const wiring = await credentialWiringWarning(
+      ctx,
+      base,
+      built.patch.credentialRef !== undefined
+        ? built.patch.credentialRef
+        : current.credentialRef,
+      {
+        ...toolShapesOf(current),
+        ...toolShapesOf(built.patch),
+        ...norm.shapes,
+      },
+    );
+    const all = [...norm.warnings, ...wiring];
+    const warnings = all.length > 0 ? { warnings: all } : {};
     const keys = Object.keys(built.patch) as (keyof ToolDefinitionUpdate)[];
     const beforeProj: Record<string, unknown> = {};
     const afterProj: Record<string, unknown> = {};

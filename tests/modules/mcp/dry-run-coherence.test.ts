@@ -1968,6 +1968,87 @@ describe.skipIf(!dbUp)(
       expect(r.applied).toBe("refused");
     });
 
+    // Round 1 of review, and it is the one thing a preview must never do: WRITE. Resolving an A/B
+    // variant is not a read — `resolveVariantOverride` INSERTS the thread's assignment when there is
+    // none, and that row lands in the denominator of every result for the experiment. So a preview
+    // that reached it would enrol a conversation in an experiment it never ran a turn for, quietly
+    // lowering the reported rate of the arm it was bucketed into.
+    //
+    // `loadAgentConfig` already carries `skipExperiment` for exactly this shape of caller (memory
+    // compaction), and the preview is the second one.
+    test("conversation_reengage: the preview enrols nobody in an experiment", async () => {
+      const ag = await suDb.agent.create({
+        data: {
+          tenantId,
+          name: "Experimented",
+          systemPrompt: "p",
+          modelConfig: {
+            provider: "openai",
+            model: "gpt-4o-mini",
+            credentialRef: `vault:${(await suDb.vaultEntry.create({ data: { tenantId, name: `exp-key-${process.pid}`, kind: "openai_compatible", secret: encryptJson("sk-x"), baseUrl: "https://api.example.com/v1" } })).id}`,
+          },
+          settings: {},
+        },
+      });
+      await suDb.experiment.create({
+        data: {
+          tenantId,
+          name: "live",
+          agentId: ag.id,
+          enabled: true,
+          variants: [
+            { key: "a", weight: 1, systemPrompt: "A" },
+            { key: "b", weight: 1, systemPrompt: "B" },
+          ],
+        },
+      });
+      const inst = await seedChatwootInstance(suDb, {
+        tenantId,
+        accountId: 7773,
+        baseUrl: "https://cw.pastown-exp.local",
+        adminToken: encryptJson("tok"),
+      });
+      const inbox = await suDb.inbox.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: inst.id,
+          chatwootInboxId: 9,
+          name: "bound",
+          channelType: "Channel::Api",
+          agentId: ag.id,
+        },
+      });
+      const threadId = `exp-thread-${process.pid}`;
+      const conv = await suDb.conversation.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: inst.id,
+          inboxId: inbox.id,
+          chatwootConversationId: 91,
+          threadId,
+          status: "open",
+        },
+      });
+      const before = await suDb.promptVariantAssignment.count({
+        where: { tenantId, threadId },
+      });
+      expect(before).toBe(0);
+      const previewed = await verdict(() =>
+        writeConversations.conversationReengage(
+          principal(),
+          { conversation_id: String(conv.id) } as never,
+          { base: appDb },
+        ),
+      );
+      // The preview answers — this agent IS bound, so the refusal above does not apply here.
+      expect(previewed).toBe("ok");
+      expect(
+        await suDb.promptVariantAssignment.count({
+          where: { tenantId, threadId },
+        }),
+      ).toBe(0);
+    });
+
     test("inbox_bind: an inbox on an account that is DISCONNECTED", async () => {
       const live = await suDb.chatwootInstance.findFirstOrThrow({
         where: { tenantId },

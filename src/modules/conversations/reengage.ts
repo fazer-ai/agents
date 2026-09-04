@@ -97,6 +97,13 @@ function resolveReengage(
   base: PrismaClient,
   tenantId: bigint,
   conversationDbId: bigint,
+  // The PREVIEW's read, and this flag is the whole difference between the two callers. Resolving an
+  // A/B variant is not a read: `resolveVariantOverride` INSERTS the thread's assignment when there
+  // is none, and that row lands in the denominator of every result for the experiment. The apply
+  // wants it — it is about to run the tested prompt — and the preview must not have it, or a dry run
+  // enrols a conversation in an experiment it never took a turn in. Same reason memory compaction
+  // passes it (#510, review round 1).
+  opts: { skipExperiment?: boolean } = {},
 ) {
   return runScopedOn(base, sysCtx(tenantId), async (db) => {
     const conv = await db.conversation.findUnique({
@@ -123,13 +130,17 @@ function resolveReengage(
       where: { id: inbox.agentId },
       select: { settings: true },
     });
-    const loaded = await loadAgentConfig(db, {
-      tenantId,
-      instanceId: conv.chatwootInstanceId,
-      conversationId: conv.chatwootConversationId,
-      agentId: inbox.agentId,
-      threadId: conv.threadId,
-    });
+    const loaded = await loadAgentConfig(
+      db,
+      {
+        tenantId,
+        instanceId: conv.chatwootInstanceId,
+        conversationId: conv.chatwootConversationId,
+        agentId: inbox.agentId,
+        threadId: conv.threadId,
+      },
+      { skipExperiment: opts.skipExperiment },
+    );
     if (!loaded) return "no-agent" as const;
     return {
       convDbId: conv.id,
@@ -179,7 +190,11 @@ export async function assertConversationReengageable(
   base: PrismaClient = basePrisma,
 ): Promise<void> {
   const tenantId = requireTenant(ctx);
-  assertResolved(await resolveReengage(base, tenantId, conversationDbId));
+  assertResolved(
+    await resolveReengage(base, tenantId, conversationDbId, {
+      skipExperiment: true,
+    }),
+  );
 }
 
 export async function reengageConversation(

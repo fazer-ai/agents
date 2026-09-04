@@ -96,6 +96,12 @@ function alwaysNonEmpty(
   if (template.replace(PLACEHOLDER, "") !== "") return true;
   if (!resolveFixed) return false;
   for (const name of namesIn(template)) {
+    // The prototype names are non-empty for a DIFFERENT reason than the fixed ones, and the two
+    // questions this file asks about them have opposite answers. WHICH key the URL ends up with is
+    // unknowable (it is not the operator's value — see `fixedSubstitution`); whether the value can
+    // come out EMPTY is not: `String(Object.prototype.toString)` and friends are long strings, so a
+    // query value of `{{toString}}` always takes its parameter and always blocks the injection.
+    if (name in {}) return true;
     const value = fixedSubstitution(name, fixed);
     if (value !== undefined && alwaysNonEmpty(value, fixed, false)) return true;
   }
@@ -241,7 +247,7 @@ interface AiFields {
 function aiFields(schema: unknown): AiFields {
   const names = new Set<string>();
   const optional = new Set<string>();
-  if (!isPlainObject(schema)) return { names, optional };
+  if (typeof schema !== "object" || schema === null) return { names, optional };
   for (const [name, spec] of Object.entries(schema)) {
     const s = isPlainObject(spec) ? spec : {};
     if (s.source === "fixed") continue;
@@ -302,7 +308,10 @@ function isLegacyFieldsBody(body: unknown): boolean {
 }
 
 function fixedFields(schema: unknown): { name: string; value: string }[] {
-  if (!isPlainObject(schema)) return [];
+  // ANY object, arrays included: `parseFields` guards on `typeof raw === "object"` like every other
+  // reader in the executor, so a legacy row whose schema is an array has fields named 0, 1, 2 —
+  // fixed values among them.
+  if (typeof schema !== "object" || schema === null) return [];
   const out: { name: string; value: string }[] = [];
   for (const [name, spec] of Object.entries(schema)) {
     // `source === "fixed"` is not a detail: `buildHttpTool` reads `s.source === "fixed" ? "fixed" :
@@ -339,6 +348,21 @@ export function effectiveUrlTemplate(
   // `null` here is what lets the caller stay quiet: a warning that the request goes out
   // unauthenticated diagnoses a failure that cannot happen, and points away from the one that does.
   return credentialBaseUrl ? `${credentialBaseUrl}${urlTemplate}` : null;
+}
+
+// Whether the runtime can build a request from this template at all. It parses the neutralized
+// template with NO base (`new URL(effectiveTemplate.replace(PLACEHOLDER, "_"))`) to pin the origin,
+// and throws `invalid urlTemplate` when that fails — so a stored `not-a-url`, which the definition
+// schema accepts, is a tool that never reaches a fetch. Same reasoning as the relative-with-no-base
+// case above: there is no unauthenticated request to warn about.
+function buildsARequest(urlTemplate: unknown): boolean {
+  if (typeof urlTemplate !== "string") return false;
+  try {
+    new URL(urlTemplate.replace(PLACEHOLDER, "_"));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function reachableTemplates(
@@ -509,7 +533,7 @@ export function unusedCredentialWarning(
   if (isNonInjectableSecret(facts.kind)) return null;
   const { shapes: normalized } = normalizeToolShapes(raw);
   const effective = effectiveUrlTemplate(normalized.urlTemplate, facts.baseUrl);
-  if (effective === null) return null;
+  if (effective === null || !buildsARequest(effective)) return null;
   const shapes: ToolShapePatch = {
     ...normalized,
     urlTemplate: effective as string | undefined,

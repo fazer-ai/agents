@@ -571,6 +571,26 @@ const CASES: Wiring[] = [
     },
   },
 
+  {
+    label:
+      "a query value naming an Object member is never empty, so it shadows",
+    reaches: false,
+    kind: "query",
+    paramName: "token",
+    query: { token: "{{toString}}" },
+    inputSchema: {
+      toString: { type: "string", source: "fixed", value: "abc" },
+    },
+  },
+  {
+    label: "a legacy inputSchema ARRAY, whose fields are named 0, 1, 2",
+    reaches: true,
+    method: "POST",
+    inputSchema: [
+      { type: "string", source: "fixed", value: "{{secret}}" },
+    ] as unknown as Record<string, unknown>,
+  },
+
   // ── spelling ──
   {
     label:
@@ -602,7 +622,7 @@ describe("the scanner answers what the runtime does", () => {
     });
   }
 
-  test("a relative template with no base builds no request, so it gets no warning", async () => {
+  test("a template that builds no request gets no warning", async () => {
     // NOTE: not a row of the table, because there is nothing to execute: `buildHttpTool` refuses the
     // pairing outright. A warning that the request goes out unauthenticated would diagnose a failure
     // that cannot happen and point away from the one that does.
@@ -626,6 +646,31 @@ describe("the scanner answers what the runtime does", () => {
           headers: {},
           inputSchema: {},
         },
+      ),
+    ).toBeNull();
+
+    // NOTE: the same reasoning, for the other template the executor refuses. The definition schema
+    // accepts `not-a-url`; the throw comes at CALL time, where the origin is pinned — which is still
+    // before any request, and is why this pairing gets no warning either.
+    const broken = buildHttpTool(
+      {
+        name: "t",
+        method: "GET",
+        urlTemplate: "not-a-url",
+        allowedHosts: ["x"],
+        headers: {},
+        inputSchema: {},
+        credentialRef: "vault:1",
+        credentialKind: "generic",
+      },
+      { resolveCredential: async () => SECRET, fetchImpl: stubFetch({}) },
+    );
+    await expect(broken.invoke({})).rejects.toThrow("invalid urlTemplate");
+    expect(
+      unusedCredentialWarning(
+        { kind: "generic", paramName: null, baseUrl: null },
+        "GET",
+        { urlTemplate: "not-a-url", headers: {}, inputSchema: {} },
       ),
     ).toBeNull();
 
@@ -675,8 +720,8 @@ describe("the scanner answers what the runtime does", () => {
     // NOTE: the floor. Every assertion above is `toBe(w.reaches)`, so a table that drifted to a
     // single verdict would still pass while proving nothing about the boundary between them.
     const reaching = CASES.filter((c) => c.reaches).length;
-    expect(reaching).toBeGreaterThan(21);
-    expect(CASES.length - reaching).toBeGreaterThan(17);
+    expect(reaching).toBeGreaterThan(22);
+    expect(CASES.length - reaching).toBeGreaterThan(18);
   });
 });
 

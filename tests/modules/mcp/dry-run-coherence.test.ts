@@ -1877,6 +1877,42 @@ describe.skipIf(!dbUp)(
       }
     });
 
+    // Round 3 of review. Every id list here comes off an UNCAPPED array on the published schema, and
+    // each id is a bind parameter: Postgres takes 32,767. Measured at 40,000 knowledge-base ids in
+    // ONE grant: both halves raised "The query parameter limit supported by your database is
+    // exceeded" — a CRASH on input the schema accepts, and on the call an operator makes first.
+    //
+    // The apply already had it; the preview would have doubled the surface. Both are chunked now,
+    // and the assertion is the SHAPE (a refusal, not a crash) rather than a number.
+    test("agent_tools_set: forty thousand ids refuse rather than crash", async () => {
+      const ag = await suDb.agent.create({
+        data: {
+          tenantId,
+          name: "G3",
+          systemPrompt: "p",
+          modelConfig: {},
+          settings: {},
+        },
+      });
+      const ids = Array.from({ length: 40_000 }, (_, i) => String(900_000 + i));
+      const r = await both(
+        (a) =>
+          writeAgents.agentToolsSet(principal(), a as never, { base: appDb }),
+        {
+          agent_id: String(ag.id),
+          grants: [
+            {
+              source: "RAG",
+              knowledgeBaseIds: ids,
+              enabledTools: ["search_knowledge"],
+            },
+          ],
+        },
+      );
+      expect(r.previewed).toBe("refused");
+      expect(r.applied).toBe("refused");
+    });
+
     test("agent_tools_set: a grant naming a tool that DOES exist is previewed ok", async () => {
       const ag = await suDb.agent.create({
         data: {

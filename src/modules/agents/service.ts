@@ -1735,6 +1735,26 @@ export async function getAgentToolSelections(
 
 // Replace-the-set: the editor sends the full desired grant set; we validate ownership + the
 // integration tool allowlist, then atomically delete-and-recreate the agent's grants.
+// Every id list here comes off an UNCAPPED array on the published schema (`grants`, and
+// `knowledgeBaseIds` inside each one), and each id is a BIND PARAMETER: Postgres takes at most
+// 32,767, so one grant carrying 40k knowledge-base ids raised "The query parameter limit supported
+// by your database is exceeded" rather than refusing. That was already true of the apply; making the
+// preview ask the same question would have doubled the surface, and the dry run is the call an
+// operator makes FIRST. Measured at 40,000 ids: a crash on both halves before this, a refusal on
+// both after. Same shape as `deployment_set_accounts` (#492), same chunk.
+const ID_CHUNK = 1000;
+
+async function countChunked(
+  ids: bigint[],
+  count: (chunk: bigint[]) => Promise<number>,
+): Promise<number> {
+  let total = 0;
+  for (let i = 0; i < ids.length; i += ID_CHUNK) {
+    total += await count(ids.slice(i, i + ID_CHUNK));
+  }
+  return total;
+}
+
 // Every id inside a grant array, checked against what the tenant actually has: an HTTP grant naming
 // no tool, an MCP grant naming no connection, and the same for document templates, knowledge bases
 // and integrations (plus the sub-tool allowlist an integration publishes). Split out of
@@ -1776,9 +1796,9 @@ async function assertGrantTargetsExist(
   const kbIds = [...new Set(grants.flatMap((g) => g.knowledgeBaseIds))];
 
   if (tdIds.length > 0) {
-    const found = await db.toolDefinition.count({
-      where: { id: { in: tdIds } },
-    });
+    const found = await countChunked(tdIds, (ids) =>
+      db.toolDefinition.count({ where: { id: { in: ids } } }),
+    );
     if (found !== tdIds.length) {
       throw new NotFoundError(
         "tool definition not found",
@@ -1787,9 +1807,9 @@ async function assertGrantTargetsExist(
     }
   }
   if (mcpIds.length > 0) {
-    const found = await db.mcpServerConnection.count({
-      where: { id: { in: mcpIds } },
-    });
+    const found = await countChunked(mcpIds, (ids) =>
+      db.mcpServerConnection.count({ where: { id: { in: ids } } }),
+    );
     if (found !== mcpIds.length) {
       throw new NotFoundError(
         "mcp connection not found",
@@ -1798,9 +1818,9 @@ async function assertGrantTargetsExist(
     }
   }
   if (docIds.length > 0) {
-    const found = await db.documentTemplate.count({
-      where: { id: { in: docIds } },
-    });
+    const found = await countChunked(docIds, (ids) =>
+      db.documentTemplate.count({ where: { id: { in: ids } } }),
+    );
     if (found !== docIds.length) {
       throw new NotFoundError(
         "document template not found",
@@ -1809,9 +1829,9 @@ async function assertGrantTargetsExist(
     }
   }
   if (kbIds.length > 0) {
-    const found = await db.knowledgeBase.count({
-      where: { id: { in: kbIds } },
-    });
+    const found = await countChunked(kbIds, (ids) =>
+      db.knowledgeBase.count({ where: { id: { in: ids } } }),
+    );
     if (found !== kbIds.length) {
       throw new NotFoundError(
         "knowledge base not found",
@@ -1820,10 +1840,15 @@ async function assertGrantTargetsExist(
     }
   }
   if (intIds.length > 0) {
-    const instances = await db.integrationInstance.findMany({
-      where: { id: { in: intIds } },
-      select: { id: true, catalogType: true },
-    });
+    const instances: Array<{ id: bigint; catalogType: string }> = [];
+    for (let i = 0; i < intIds.length; i += ID_CHUNK) {
+      instances.push(
+        ...(await db.integrationInstance.findMany({
+          where: { id: { in: intIds.slice(i, i + ID_CHUNK) } },
+          select: { id: true, catalogType: true },
+        })),
+      );
+    }
     if (instances.length !== intIds.length) {
       throw new NotFoundError(
         "integration instance not found",

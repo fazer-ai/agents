@@ -4,6 +4,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { AppError } from "@/lib/errors";
 import type { TenantContext } from "@/lib/tenancy";
 import { replaceAgentToolSelections } from "@/modules/agents/service";
+import { deleteCodeTool } from "@/modules/code-tools/service";
 
 // The gap between "this grant names a tool that exists" and the insert that points at it.
 //
@@ -28,6 +29,9 @@ const suUrl = process.env.MIGRATION_DATABASE_URL;
 let dbUp = false;
 let su: PrismaClient | undefined;
 let app: PrismaClient | undefined;
+// A SECOND app connection, because the deadlock below needs two transactions open at once and one
+// client's transaction is one connection.
+let app2: PrismaClient | undefined;
 if (appUrl && suUrl) {
   try {
     su = new PrismaClient({
@@ -38,12 +42,17 @@ if (appUrl && suUrl) {
       adapter: new PrismaPg({ connectionString: appUrl }),
     });
     await app.$queryRaw`SELECT 1`;
+    app2 = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: appUrl }),
+    });
+    await app2.$queryRaw`SELECT 1`;
     dbUp = true;
   } catch {
     dbUp = false;
   }
 }
 const appDb = app as PrismaClient;
+const appDb2 = app2 as PrismaClient;
 const suDb = su as PrismaClient;
 
 describe.skipIf(!dbUp)("a grant target deleted mid-save", () => {
@@ -63,6 +72,7 @@ describe.skipIf(!dbUp)("a grant target deleted mid-save", () => {
     await su.$executeRawUnsafe(`DELETE FROM tenants WHERE id = ${tenantId}`);
     await su.$disconnect();
     await app?.$disconnect();
+    await app2?.$disconnect();
   });
 
   const agent = () =>
@@ -145,6 +155,90 @@ describe.skipIf(!dbUp)("a grant target deleted mid-save", () => {
       "errors.toolDefinitionNotFound",
     );
   });
+
+  // The other half of the same window, and the one a not-found cannot answer. The delete takes the
+  // namespace lock, then the tool row FOR UPDATE, then cascades into the selection rows. This path
+  // used to take the agent row, delete the selection rows and only then ask the foreign key for the
+  // tool row -- so each transaction held what the other needed next, and PostgreSQL resolved it by
+  // killing one: `40P01 deadlock detected`, a 500 on whichever lost, and no P2003 for the mapping
+  // above to catch (round 34). Ordering both behind the namespace lock is what removes the cycle.
+  //
+  // The interleaving is forced, not waited for: the delete starts INSIDE the save's insert, and the
+  // pause is long enough for it to reach the lock it will wait on.
+  test("a delete racing a save deadlocks with neither", async () => {
+    const ag = await agent();
+    const doomed = await suDb.codeToolDefinition.create({
+      data: {
+        tenantId,
+        name: `deadlock-${process.pid}`,
+        label: "l",
+        description: "d",
+        code: "return 1",
+      },
+    });
+    const kept = await suDb.codeToolDefinition.create({
+      data: {
+        tenantId,
+        name: `deadlock-kept-${process.pid}`,
+        label: "l",
+        description: "d",
+        code: "return 1",
+      },
+    });
+    // The row the delete's cascade has to take out, and the reason the two transactions meet.
+    await suDb.agentToolSelection.create({
+      data: {
+        tenantId,
+        agentId: ag.id,
+        source: "CODE",
+        codeToolDefinitionId: doomed.id,
+        knowledgeBaseIds: [],
+        enabledTools: [],
+      },
+    });
+
+    let deleting: Promise<unknown> | undefined;
+    const interleaved = appDb.$extends({
+      query: {
+        agentToolSelection: {
+          async createMany({ args, query }) {
+            deleting = deleteCodeTool(ctx, doomed.id, appDb2).then(
+              () => undefined,
+              (e: unknown) => e,
+            );
+            await new Promise((r) => setTimeout(r, 400));
+            return query(args);
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+
+    const saved = await replaceAgentToolSelections(
+      ctx,
+      ag.id,
+      [
+        { source: "CODE", codeToolDefinitionId: String(kept.id) },
+        { source: "CODE", codeToolDefinitionId: String(doomed.id) },
+      ] as never,
+      interleaved,
+    ).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    const deleted = await deleting;
+    // 40P01 is the database's, and Prisma wraps it as P2039 with the code in the message, so the
+    // assertion reads the text rather than a code that would pass on any other failure.
+    const deadlocked = (e: unknown) =>
+      e instanceof Error && /40P01|deadlock/i.test(e.message);
+    expect([saved && String(saved), deadlocked(saved)]).toEqual([
+      saved && String(saved),
+      false,
+    ]);
+    expect([deleted && String(deleted), deadlocked(deleted)]).toEqual([
+      deleted && String(deleted),
+      false,
+    ]);
+  }, 30_000);
 
   // The control, and it is what keeps the catch from becoming "answer not-found whenever the write
   // fails": nothing was deleted, so the save applies and the grant is there to read.

@@ -48,4 +48,20 @@ describe("the namespace lock is taken before any row lock", () => {
       }
     });
   }
+
+  // The fourth path, and the one that takes NO row lock on a tool: it locks the AGENT row, deletes
+  // the selection rows, and only then asks the foreign key for the tool. That is enough to close
+  // the cycle against a delete holding the tool row, and the deadlock was measured on the real pair
+  // (round 34, `tests/modules/grant-target-vanishes.test.ts`). The lock has to come first here for
+  // the same reason it does above, so the fence reads the same property against the agent's lock.
+  test("src/modules/agents/service.ts (grant replacement)", () => {
+    const src = readFileSync("src/modules/agents/service.ts", "utf8");
+    const rowLock = src.indexOf("SELECT updated_at FROM agents WHERE id =");
+    expect(rowLock).toBeGreaterThan(-1);
+    const stmt = src.lastIndexOf("await db.$queryRaw", rowLock);
+    expect(stmt).toBeGreaterThan(-1);
+    const nsLock = src.lastIndexOf("await lockToolNames(db);", stmt);
+    expect(nsLock).toBeGreaterThan(-1);
+    expect(src.slice(nsLock, stmt)).not.toContain("await db.");
+  });
 });

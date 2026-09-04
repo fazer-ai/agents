@@ -34,6 +34,10 @@ describe("a code tool's body is scanned as source, not as a value", () => {
     // interpolation is the point: it is what makes the literal an expression again.
     "const api_key = `${input.chave}`;\nreturn api_key;",
     "return { authorization: `Bearer ${input.token}` };",
+    // A static half too short to be a secret, and a static half that is only a separator: the
+    // question asked of what is left is the quoted arm's own, so a run that BREAKS is not a value.
+    "const secret = `${input.a}-${input.b}`;",
+    "return { api_key: `${input.k ?? {a: 1}.a}` };",
     // biome-ignore-end lint/suspicious/noTemplateCurlyInString: back to ordinary strings.
   ];
   for (const code of allowed) {
@@ -52,6 +56,11 @@ describe("a code tool's body is scanned as source, not as a value", () => {
     // writes it as readily. It walked out untouched until round 31.
     "const apiKey = `abcdef123456`;",
     "const password = `hunter2hunter2`;",
+    // biome-ignore-start lint/suspicious/noTemplateCurlyInString: source again, and the whole point
+    // is that an interpolation does not launder the static half around it (round 34).
+    "const password = `hunter2secret-${input.id}`;",
+    "const api_key = `abcdef123456${x}`;",
+    // biome-ignore-end lint/suspicious/noTemplateCurlyInString: back to ordinary strings.
     // Shaped secrets are recognisable wherever they appear, quoted or not.
     "return fetchish(sk-0123456789abcdefghij);",
   ];

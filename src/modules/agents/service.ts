@@ -44,6 +44,7 @@ import {
   getToolpackToolNames,
   getToolpackToolViews,
 } from "@/modules/integrations/toolpacks";
+import { lockToolNames } from "@/modules/tool-definitions/namespace";
 import { requireVaultRefFor } from "@/modules/vault/service";
 import { AGENT_MODES, type AgentMode, normalizeAgentMode } from "./mode";
 
@@ -1977,6 +1978,15 @@ export async function replaceAgentToolSelections(
   const tenantId = requireTenant(ctx);
   const grants = normalizeGrants(input);
   const view = await runScopedOn(base, ctx, async (db) => {
+    // The NAMESPACE lock first, before the agent row, and the order is the whole point. Deleting a
+    // tool takes this lock, then the tool row FOR UPDATE, then cascades into the selection rows;
+    // this path took the agent row, deleted the selection rows and then asked the foreign key for
+    // the tool row. Two transactions, each holding what the other needs next, which PostgreSQL
+    // resolves by killing one: measured on the real pair, `40P01 deadlock detected`, surfacing as a
+    // 500 on whichever lost (round 34). Behind this lock the two are serialized and neither can be
+    // half-done when the other starts. Grant saves are an operator action, so the cost of holding
+    // one lock per tenant across them is not a cost anyone can feel.
+    await lockToolNames(db);
     // NOTE: the agent row is LOCKED before its version is read, and the grant snapshot below is
     // taken under that lock. The set lives in another table with no version of its own, so this row
     // is what serializes two replacements against each other: unlocked, one call can read set A,

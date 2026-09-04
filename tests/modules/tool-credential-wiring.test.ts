@@ -591,6 +591,20 @@ const CASES: Wiring[] = [
     ] as unknown as Record<string, unknown>,
   },
 
+  {
+    label:
+      "a header credential aimed at __proto__, which no assignment can create",
+    reaches: false,
+    kind: "header",
+    paramName: "__proto__",
+  },
+  {
+    label:
+      "…and {{secret}} written into a header of that name is lost the same way",
+    reaches: false,
+    headers: JSON.parse('{"__proto__":"{{secret}}"}'),
+  },
+
   // ── spelling ──
   {
     label:
@@ -721,7 +735,7 @@ describe("the scanner answers what the runtime does", () => {
     // single verdict would still pass while proving nothing about the boundary between them.
     const reaching = CASES.filter((c) => c.reaches).length;
     expect(reaching).toBeGreaterThan(22);
-    expect(CASES.length - reaching).toBeGreaterThan(18);
+    expect(CASES.length - reaching).toBeGreaterThan(20);
   });
 });
 
@@ -743,6 +757,25 @@ describe("which kinds the warning is about", () => {
     // That they can be attached to an HTTP tool at all is a separate defect, and a refusal rather
     // than a warning.
     expect(warned).toEqual(["generic"]);
+  });
+
+  test("a header name nothing can set gets a sentence of its own", () => {
+    // NOTE: neither of the other two fits. The credential DOES inject, and nothing shadows it — the
+    // assignment reaches an inherited setter and creates no header. Telling this operator to remove
+    // a conflicting header names one that does not exist.
+    const w =
+      unusedCredentialWarning(
+        { kind: "header", paramName: "__proto__", baseUrl: null },
+        "GET",
+        {
+          urlTemplate: `https://${PUBLIC}/v1/thing`,
+          headers: {},
+          inputSchema: {},
+        },
+      ) ?? "";
+    expect(w).toContain("cannot be set on a request");
+    expect(w).not.toContain("keeps the value you wrote");
+    expect(w).not.toContain("attach a credential whose type injects it");
   });
 
   test("a shadowed injection gets its OWN sentence, not the generic advice", () => {

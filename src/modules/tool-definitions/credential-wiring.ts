@@ -145,7 +145,9 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
 // as unwired.
 function headerEntries(v: unknown): [string, string][] {
   if (typeof v !== "object" || v === null) return [];
-  return Object.entries(v).map(([k, x]) => [k, String(x)]);
+  return Object.entries(v)
+    .filter(([k]) => k !== SWALLOWED_HEADER)
+    .map(([k, x]) => [k, String(x)]);
 }
 
 function headerTemplates(v: unknown): string[] {
@@ -417,12 +419,20 @@ function urlPlaceholderNames(urlTemplate: unknown): Set<string> {
 type InjectionVerdict =
   | { state: "none" }
   | { state: "reaches" }
+  | { state: "swallowed"; name: string }
   | {
       state: "shadowed";
       target: "header" | "query";
       name: string;
       by: "tool" | "runtime";
     };
+
+// A header name that CANNOT be set on the request, however it is written. `buildHttpTool` builds its
+// header map as a plain `{}`, so `headers["__proto__"] = v` reaches the inherited setter: the
+// assignment succeeds, no own property is created, and the header is silently absent. Exactly the
+// loss issue #150 fixed for the body payload with `Object.create(null)` — the headers map was not
+// given the same treatment, and mirroring that here is what agrees with the runtime as it is.
+const SWALLOWED_HEADER = "__proto__";
 
 function autoInjectionVerdict(
   kind: string | null | undefined,
@@ -441,6 +451,8 @@ function autoInjectionVerdict(
     by,
   });
   if (inj.target === "header") {
+    if (inj.name === SWALLOWED_HEADER)
+      return { state: "swallowed", name: inj.name };
     const names = headerEntries(shapes.headers).map(([name]) => name);
     // The one header the runtime writes ITSELF: a body method with no content-type of its own gets
     // `Content-Type: application/json` added before auto-injection, which occupies that target the
@@ -545,6 +557,9 @@ export function unusedCredentialWarning(
 
   const kind = facts.kind ?? "generic";
   const consequence = `it goes out unauthenticated, and the upstream's 401/403 will look like a bad credential rather than one that was never wired`;
+  if (verdict.state === "swallowed") {
+    return `the attached credential is never sent: a "${kind}" credential injects into the "${verdict.name}" header, and that name cannot be set on a request — the assignment reaches an inherited setter and creates no header at all, silently. Give the credential another param name; nothing about this tool can make that one arrive.`;
+  }
   if (verdict.state === "shadowed") {
     // NOTE: a DIFFERENT sentence, and the reason is that the other one's advice is wrong here. This
     // operator picked an injecting type and attached it correctly; what stops it is the value the

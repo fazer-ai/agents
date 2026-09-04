@@ -46,12 +46,23 @@ type Case = { args: Record<string, unknown>; why: string };
 // `also` carries the inputs a one-row-per-tool table cannot: a tool agrees on the row's input and
 // still diverges on another, and each of these was a real second divergence found after the row for
 // that tool was already green.
-type Row = (Case & { also?: Case[] }) | { skip: string };
+//
+// `pastOwnership` is the OTHER thing a row cannot say. Forty-two of these pass `NOPE` — an id that
+// names no row — so what they prove is the ownership check and nothing the core decides once it HAS
+// the row. That is not a defect of the row (a not-found is a real refusal and worth pinning); it is
+// a limit, and an invisible one, because the row reads as covering its tool. So every row shaped
+// that way carries what was measured on a row that EXISTS, and the test below refuses a new one
+// without it — which is the part that keeps this from happening again (#510).
+type Row =
+  | (Case & { also?: Case[]; pastOwnership?: string })
+  | { skip: string };
 
 const TABLE: Record<string, Row> = {
   agent_clone: {
     args: { agent_id: NOPE, name: "x" },
     why: "agent does not exist",
+    pastOwnership:
+      "measured on an agent that EXISTS: `cloneAgent` decides nothing past ownership. A name another agent already has is not a collision (agents are not unique by name) and the clone applies.",
   },
   agent_create: {
     args: { name: "" },
@@ -63,33 +74,55 @@ const TABLE: Record<string, Row> = {
       },
     ],
   },
-  agent_delete: { args: { agent_id: NOPE }, why: "agent does not exist" },
+  agent_delete: {
+    args: { agent_id: NOPE },
+    why: "agent does not exist",
+    pastOwnership:
+      "measured on an agent that EXISTS: a pure delete. Every grant, thread and session pointing at it cascades, so there is nothing left to refuse.",
+  },
   agent_import: { args: { export: {} }, why: "export bundle has no agent" },
   agent_settings_set: {
     args: { agent_id: NOPE, debounce: {} },
     why: "agent does not exist",
+    pastOwnership:
+      "measured on an agent that EXISTS: the four settings asserts run ABOVE the dry-run branch, so both halves already ask them — a precondition naming a tool the agent has no grant for is refused by both.",
   },
   agent_tools_set: {
     args: { agent_id: NOPE, grants: [] },
     why: "agent does not exist",
+    pastOwnership:
+      'measured, and it DIVERGED: the ids inside the grants array. Fixed and covered in "a preview asks what the core asks once it has the row".',
   },
   agent_update: {
     args: { agent_id: NOPE, name: "x" },
     why: "agent does not exist",
+    pastOwnership:
+      'measured, and it DIVERGED: three rules the not-found could not reach. Covered above, in "a preflight answers all of its core, not the easy half".',
   },
   alert_channel_create: {
     args: { name: "n", type: "webhook", url_ref: `vault:${NOPE}` },
     why: "url_ref names no credential",
+    pastOwnership:
+      'measured, and it DIVERGED twice: the stage list, and the URL behind `url_ref` rather than the ref. Fixed and covered in "a preview asks what the core asks once it has the row".',
   },
   alert_channel_delete: {
     args: { channel_id: NOPE },
     why: "channel does not exist",
+    pastOwnership:
+      "measured on a channel that EXISTS: a pure delete, deliveries cascade.",
   },
   alert_channel_update: {
     args: { channel_id: NOPE, name: "x" },
     why: "channel does not exist",
+    pastOwnership:
+      'measured, and it DIVERGED on the same two rules as the create. Fixed and covered in "a preview asks what the core asks once it has the row".',
   },
-  api_key_revoke: { args: { api_key_id: NOPE }, why: "key does not exist" },
+  api_key_revoke: {
+    args: { api_key_id: NOPE },
+    why: "key does not exist",
+    pastOwnership:
+      "measured on a key that EXISTS: `assertApiKeyRevocable` is called by both halves (#492), and a key already revoked is refused by both.",
+  },
   branding_asset_set: {
     args: {
       kind: "logo",
@@ -107,30 +140,44 @@ const TABLE: Record<string, Row> = {
   business_hours_delete: {
     args: { business_hours_id: NOPE },
     why: "schedule does not exist",
+    pastOwnership:
+      "measured on a schedule an AGENT POINTS AT: the column is nullable and the reference is cleared, so nothing refuses past ownership.",
   },
   business_hours_update: {
     args: { business_hours_id: NOPE, name: "x" },
     why: "schedule does not exist",
+    pastOwnership:
+      'measured, and it DIVERGED on all three of its core\'s rules. Fixed and covered in "a preview asks what the core asks once it has the row".',
   },
   conversation_handoff: {
     args: { conversation_id: NOPE },
     why: "conversation does not exist",
+    pastOwnership:
+      "read, not measurable here: past the existence check `handoffConversation` decides nothing locally — every remaining refusal is Chatwoot's, behind a network call neither half of this fence makes.",
   },
   conversation_reengage: {
     args: { conversation_id: NOPE },
     why: "conversation does not exist",
+    pastOwnership:
+      'measured, and it DIVERGED: an inbox with nothing bound to it. Fixed and covered in "a preview asks what the core asks once it has the row".',
   },
   conversation_reply: {
     args: { conversation_id: NOPE, content: "x" },
     why: "conversation does not exist",
+    pastOwnership:
+      "read, not measurable here: `replyToConversation` posts, and decides nothing locally past the existence check.",
   },
   conversation_return: {
     args: { conversation_id: NOPE },
     why: "conversation does not exist",
+    pastOwnership:
+      "read, not measurable here: past the existence check the refusals belong to Chatwoot, behind a network call.",
   },
   conversation_status: {
     args: { conversation_id: NOPE, status: "open" },
     why: "conversation does not exist",
+    pastOwnership:
+      "read, not measurable here: the status enum is the published schema's, and `setConversationStatus` decides nothing else locally.",
   },
   credential_create: {
     args: { name: "c", kind: "not_a_kind" },
@@ -147,15 +194,21 @@ const TABLE: Record<string, Row> = {
   deployment_set_accounts: {
     args: { account_ids: [999999999] },
     why: "no Chatwoot deployment is connected",
+    pastOwnership:
+      'measured, and it DIVERGED: an account another tenant owns, on a deployment that IS connected. Covered above, in "a preflight covers its core\'s whole judgement", with the cost of the answer pinned beside it.',
   },
   document_template_create: { args: { name: "" }, why: "empty name" },
   document_template_delete: {
     args: { document_template_id: NOPE },
     why: "template does not exist",
+    pastOwnership:
+      "measured on a template GRANTED to an agent: the grant cascades, and nothing else is decided past ownership.",
   },
   document_template_update: {
     args: { document_template_id: NOPE, name: "x" },
     why: "template does not exist",
+    pastOwnership:
+      "measured on a template that EXISTS: already coherent — `documentTemplateWriteProblem` asks the name AND the slug collision inside the preview, and the layout is rendered there too.",
   },
   experiment_create: {
     args: { name: "e", agent_id: "abc", variants: [] },
@@ -164,24 +217,46 @@ const TABLE: Record<string, Row> = {
   experiment_delete: {
     args: { experiment_id: NOPE },
     why: "experiment does not exist",
+    pastOwnership: "measured: a pure delete, assignments cascade.",
   },
   experiment_update: {
     args: { experiment_id: NOPE, name: "x" },
     why: "experiment does not exist",
+    pastOwnership:
+      "measured on an experiment that EXISTS: no divergence. An `agent_id` naming no agent is STORED by both halves (a defect of the core, not of the preview) and a malformed variant is refused by both, from the schema.",
   },
-  inbox_bind: { args: { inbox_id: NOPE }, why: "inbox does not exist" },
+  inbox_bind: {
+    args: { inbox_id: NOPE },
+    why: "inbox does not exist",
+    pastOwnership:
+      'measured, and it DIVERGED: a disconnected account, and an agent that does not exist. Fixed and covered in "a preview asks what the core asks once it has the row".',
+  },
   inbox_reconcile: {
     skip: "takes no arguments: every refusal it has is a property of the deployment, not of an input",
   },
-  inbox_reconnect: { args: { inbox_id: NOPE }, why: "inbox does not exist" },
-  inbox_remove: { args: { inbox_id: NOPE }, why: "inbox does not exist" },
+  inbox_reconnect: {
+    args: { inbox_id: NOPE },
+    why: "inbox does not exist",
+    pastOwnership:
+      "measured on an inbox that EXISTS: `assertInboxReconnectable` is already called by both halves (#492).",
+  },
+  inbox_remove: {
+    args: { inbox_id: NOPE },
+    why: "inbox does not exist",
+    pastOwnership:
+      "measured on an inbox that EXISTS: already coherent — the preview calls Chatwoot exactly as the apply does, so an inbox still live there is refused by both.",
+  },
   instance_disconnect: {
     args: { instance_id: NOPE },
     why: "instance does not exist",
+    pastOwnership:
+      "measured on an account ALREADY disconnected: the soft disconnect is idempotent and both halves accept it.",
   },
   instance_sync_inboxes: {
     args: { instance_id: NOPE },
     why: "instance does not exist",
+    pastOwnership:
+      "read, not measurable here: past the existence check the sync's refusals are Chatwoot's, behind a network call.",
   },
   integration_create: {
     args: { catalog_type: "not_a_provider", name: "n" },
@@ -190,10 +265,14 @@ const TABLE: Record<string, Row> = {
   integration_delete: {
     args: { integration_id: NOPE },
     why: "instance does not exist",
+    pastOwnership:
+      "measured on an integration GRANTED to an agent: the grant cascades.",
   },
   integration_update: {
     args: { integration_id: NOPE, name: "x" },
     why: "instance does not exist",
+    pastOwnership:
+      "measured on an integration that EXISTS: no divergence, and not because the apply is strict — a header name the runtime cannot send and a credential of an unusable kind are both ACCEPTED by it, so the preview has nothing to mirror.",
   },
   knowledge_approve: {
     args: { approval_id: "abc" },
@@ -208,18 +287,26 @@ const TABLE: Record<string, Row> = {
   knowledge_delete: {
     args: { knowledge_base_id: NOPE },
     why: "base does not exist",
+    pastOwnership:
+      "measured on a base that still has DOCUMENTS: documents and chunks cascade, and nothing refuses.",
   },
   knowledge_document_create: {
     args: { knowledge_base_id: NOPE, title: "t", text: "x" },
     why: "base does not exist",
+    pastOwnership:
+      "measured on a base that EXISTS: the preview already calls `getKnowledgeBase`, which is all `createDocument` decides past its own arguments.",
   },
   knowledge_document_delete: {
     args: { document_id: NOPE },
     why: "document does not exist",
+    pastOwnership:
+      "measured on a document that EXISTS: a pure delete, chunks cascade.",
   },
   knowledge_document_retry: {
     args: { document_id: NOPE },
     why: "document does not exist",
+    pastOwnership:
+      'measured, and it DIVERGED: the document\'s STATUS, which the preview was already reading and reporting without judging. Fixed and covered in "a preview asks what the core asks once it has the row".',
   },
   knowledge_edit: {
     args: { approval_id: "abc", title: "t" },
@@ -228,6 +315,8 @@ const TABLE: Record<string, Row> = {
   knowledge_reindex: {
     args: { knowledge_base_id: NOPE },
     why: "base does not exist",
+    pastOwnership:
+      "measured on a base that EXISTS: both halves go through `reindexKnowledgeBase` itself with `dryRun`, so there is no second spelling of the rule to diverge from.",
   },
   knowledge_reject: {
     args: { approval_id: "abc" },
@@ -236,6 +325,8 @@ const TABLE: Record<string, Row> = {
   knowledge_update: {
     args: { knowledge_base_id: NOPE, name: "x" },
     why: "base does not exist",
+    pastOwnership:
+      "measured on a base that EXISTS: `assertChunkingUpdatable` is already called in the preview (#524), and a name another base has is not a collision here.",
   },
   langfuse_connect: {
     args: { public_key: "pk", secret_key: "sk", base_url: "not-a-url" },
@@ -256,19 +347,27 @@ const TABLE: Record<string, Row> = {
   mcp_connection_delete: {
     args: { connection_id: NOPE },
     why: "connection does not exist",
+    pastOwnership:
+      "measured on a connection GRANTED to an agent: the grant cascades.",
   },
   mcp_connection_update: {
     args: { connection_id: NOPE, name: "x" },
     why: "connection does not exist",
+    pastOwnership:
+      'measured, and it DIVERGED: the rename collision. Covered above, in "a preflight answers all of its core, not the easy half", in both directions.',
   },
   prompt_set: {
     args: { agent_id: NOPE, system_prompt: "x" },
     why: "agent does not exist",
+    pastOwnership:
+      "measured on an agent that EXISTS: `updateAgent` is reached with only a prompt in the patch, and an empty one is stored by both halves.",
   },
   tenant_create: { args: { name: "n", slug: "" }, why: "empty slug" },
   tenant_settings_update: {
     args: { embedding: { credential_ref: `vault:${NOPE}` } },
     why: "credential_ref names no credential",
+    pastOwnership:
+      'measured, and it DIVERGED: the credential\'s KIND, which resolving the ref does not answer. Fixed and covered in "a preview asks what the core asks once it has the row".',
   },
   tenant_update: { args: { name: "" }, why: "empty name" },
   tool_create: {
@@ -282,10 +381,17 @@ const TABLE: Record<string, Row> = {
     },
     why: "name is not [A-Za-z0-9_-]{1,64}",
   },
-  tool_delete: { args: { tool_id: NOPE }, why: "tool does not exist" },
+  tool_delete: {
+    args: { tool_id: NOPE },
+    why: "tool does not exist",
+    pastOwnership:
+      "measured on a tool GRANTED to an agent: the grant cascades.",
+  },
   tool_update: {
     args: { tool_id: NOPE, name: "x" },
     why: "tool does not exist",
+    pastOwnership:
+      'measured, and it DIVERGED: renaming onto a name the tenant already used. Fixed and covered in "a preview asks what the core asks once it has the row".',
   },
   webhook_create: {
     args: { url: "not-a-url", events: ["message.created"] },
@@ -294,16 +400,22 @@ const TABLE: Record<string, Row> = {
   webhook_delete: {
     args: { webhook_id: NOPE },
     why: "subscription does not exist",
+    pastOwnership:
+      "measured on a subscription that EXISTS: a pure delete, deliveries cascade.",
   },
   webhook_delivery_requeue: {
     args: { delivery_id: NOPE },
     why: "delivery does not exist",
+    pastOwnership:
+      "measured on a delivery that EXISTS: already coherent — the preview reads the status and refuses one that is not DEAD.",
   },
   webhook_update: {
     // NOTE: a literal IP, not a hostname. The preview now vets this URL the way the write does, and
     // for a hostname that means a DNS lookup — which would make this row measure the resolver.
     args: { webhook_id: NOPE, url: "https://93.184.216.34/hook" },
     why: "subscription does not exist",
+    pastOwnership:
+      "measured, and it DIVERGED: `assertWebhookSubscriptionUpdatable` plus the empty-events case, both covered above (#492).",
   },
 };
 
@@ -558,6 +670,29 @@ describe.skipIf(!dbUp)(
       expect(all.filter((t) => !TABLE[t])).toEqual([]);
       expect(Object.keys(TABLE).filter((t) => !all.includes(t))).toEqual([]);
       expect(all.filter((t) => !fnFor(t))).toEqual([]);
+    });
+
+    // The row that names NOTHING has to say what was measured past the not-found. Mechanical on
+    // purpose: `NOPE` in the arguments IS the shape, so a row added later with a fresh id-that-does-
+    // not-exist cannot join without the measurement, and the failure names it.
+    //
+    // SURVIVING MUTANT, by construction: narrowing the filter (`&& false`) leaves this green, while
+    // widening it and deleting any single `pastOwnership` both turn it red. That is what a fence
+    // over a table can be — it detects a row that stops carrying the measurement, not a future
+    // author weakening the fence itself, which is a change a reviewer sees in the diff.
+    test("every row that names no row records what was measured on one that does", () => {
+      const missing = Object.entries(TABLE)
+        .filter(([, row]) => !("skip" in row))
+        .filter(([, row]) => {
+          const cases = [
+            row as Case,
+            ...((row as { also?: Case[] }).also ?? []),
+          ];
+          return cases.some((c) => JSON.stringify(c.args).includes(NOPE));
+        })
+        .filter(([, row]) => !(row as { pastOwnership?: string }).pastOwnership)
+        .map(([name]) => name);
+      expect(missing).toEqual([]);
     });
 
     test("every row's arguments are ones the registry would actually deliver", async () => {
@@ -1389,6 +1524,488 @@ describe.skipIf(!dbUp)(
         ),
       );
       expect(previewed).toBe("refused");
+    });
+  },
+);
+
+// ── The class the TABLE cannot reach at all: a row that passes an id NAMING NOTHING ──────────────
+//
+// Forty-two of the sixty-six rows above pass `NOPE` as their target's id. Those rows prove the
+// ownership check and stop there: every rule the core applies once it HAS the row goes unasked, and
+// the row stays green while the preview approves a write the apply refuses. Issue #510, and the
+// measurement is the deliverable — each tool was driven on a row that EXISTS, with an input its core
+// refuses, and the twelve below are the ones that diverged. What was measured and did NOT diverge is
+// written on the row itself (`pastOwnership`), so the next reader does not re-derive it.
+//
+// The controls matter as much as the divergences here. Every fix in this block makes a preview say
+// no more often, and "refuse everything" passes a coherence test — so each rule that has an
+// inverse (a document that IS retryable, a tool keeping its own name) is pinned in both directions.
+describe.skipIf(!dbUp)(
+  "a preview asks what the core asks once it has the row",
+  () => {
+    let tenantId = 0n;
+
+    const principal = () =>
+      ({
+        userId: 1n,
+        tenantId,
+        clientId: "c",
+        jti: "j",
+        role: "SUPER_ADMIN",
+        scopes: FLEET_SCOPES,
+      }) as VerifiedToken;
+
+    const both = async (
+      run: (args: Record<string, unknown>) => Promise<{ ok: boolean }>,
+      args: Record<string, unknown>,
+    ) => ({
+      previewed: await verdict(() => run({ ...args })),
+      applied: await verdict(() => run({ ...args, dry_run: false })),
+    });
+
+    beforeAll(async () => {
+      const t = await suDb.tenant.create({
+        data: { name: "PastOwnership", slug: `past-own-${process.pid}` },
+      });
+      tenantId = t.id;
+    });
+
+    afterAll(async () => {
+      if (!su || !tenantId) return;
+      await su.$executeRawUnsafe(`DELETE FROM tenants WHERE id = ${tenantId}`);
+    });
+
+    // ── alert channels: two rules, and NEITHER is about the arguments alone ──
+    // The stage list is a closed set the core checks; the URL is not even in the arguments — it
+    // arrives as a vault ref whose VALUE the apply resolves and vets. A preview that stops at "the
+    // ref resolves" approves a channel the write refuses to store.
+    test("alert_channel_create: a stage the core does not know", async () => {
+      const url = await suDb.vaultEntry.create({
+        data: {
+          tenantId,
+          name: `ch-url-${process.pid}`,
+          kind: "generic",
+          secret: encryptJson("https://example.com/alert"),
+        },
+      });
+      const r = await both(
+        (a) =>
+          writeWebhooks.alertChannelCreate(principal(), a as never, {
+            base: appDb,
+          }),
+        {
+          name: "c",
+          type: "webhook",
+          url_ref: `vault:${url.id}`,
+          stages: ["not_a_stage"],
+        },
+      );
+      expect(r.previewed).toBe("refused");
+      expect(r.applied).toBe("refused");
+    });
+
+    test("alert_channel_create: a url_ref whose VALUE is not a safe URL", async () => {
+      const junk = await suDb.vaultEntry.create({
+        data: {
+          tenantId,
+          name: `ch-junk-${process.pid}`,
+          kind: "generic",
+          secret: encryptJson("not-a-url"),
+        },
+      });
+      const r = await both(
+        (a) =>
+          writeWebhooks.alertChannelCreate(principal(), a as never, {
+            base: appDb,
+          }),
+        { name: "c2", type: "webhook", url_ref: `vault:${junk.id}` },
+      );
+      expect(r.previewed).toBe("refused");
+      expect(r.applied).toBe("refused");
+    });
+
+    test("alert_channel_update: the same two rules on the patch", async () => {
+      const ch = await suDb.alertChannel.create({
+        data: {
+          tenantId,
+          name: `upd-${process.pid}`,
+          type: "webhook",
+          url: encryptJson("https://example.com/alert"),
+        },
+      });
+      const junk = await suDb.vaultEntry.create({
+        data: {
+          tenantId,
+          name: `upd-junk-${process.pid}`,
+          kind: "generic",
+          secret: encryptJson("http://127.0.0.1:9/x"),
+        },
+      });
+      const stage = await both(
+        (a) =>
+          writeWebhooks.alertChannelUpdate(principal(), a as never, {
+            base: appDb,
+          }),
+        { channel_id: String(ch.id), stages: ["not_a_stage"] },
+      );
+      expect(stage.previewed).toBe("refused");
+      expect(stage.applied).toBe("refused");
+      const url = await both(
+        (a) =>
+          writeWebhooks.alertChannelUpdate(principal(), a as never, {
+            base: appDb,
+          }),
+        { channel_id: String(ch.id), url_ref: `vault:${junk.id}` },
+      );
+      expect(url.previewed).toBe("refused");
+      expect(url.applied).toBe("refused");
+    });
+
+    // The inverse, and it is what keeps the two above from being answered by refusing every patch.
+    test("alert_channel_update: a known stage and a safe url are not refused", async () => {
+      const ch = await suDb.alertChannel.create({
+        data: {
+          tenantId,
+          name: `ok-${process.pid}`,
+          type: "webhook",
+          url: encryptJson("https://example.com/alert"),
+        },
+      });
+      const good = await suDb.vaultEntry.create({
+        data: {
+          tenantId,
+          name: `ok-url-${process.pid}`,
+          kind: "generic",
+          secret: encryptJson("https://example.com/hook"),
+        },
+      });
+      const previewed = await verdict(() =>
+        writeWebhooks.alertChannelUpdate(
+          principal(),
+          {
+            channel_id: String(ch.id),
+            stages: ["generate"],
+            url_ref: `vault:${good.id}`,
+          } as never,
+          { base: appDb },
+        ),
+      );
+      expect(previewed).toBe("ok");
+    });
+
+    // ── business hours: the create side has had `assertBusinessHoursCreatable` since #490, and the
+    // update side went without its twin. Three rules, and the row's not-found could reach none.
+    test("business_hours_update: the three rules its core checks", async () => {
+      const b = await suDb.businessHours.create({
+        data: { tenantId, name: `bh-${process.pid}` },
+      });
+      const cases: Record<string, unknown>[] = [
+        { timezone: "Not/AZone" },
+        { windows: [{ day: 1, start: "18:00", end: "09:00" }] },
+        { exceptions: [{ date: "2026-02-30", closed: true }] },
+      ];
+      for (const c of cases) {
+        const r = await both(
+          (a) =>
+            writeSettings.businessHoursUpdate(principal(), a as never, {
+              base: appDb,
+            }),
+          { business_hours_id: String(b.id), ...c },
+        );
+        expect([JSON.stringify(c), r.previewed]).toEqual([
+          JSON.stringify(c),
+          "refused",
+        ]);
+        expect([JSON.stringify(c), r.applied]).toEqual([
+          JSON.stringify(c),
+          "refused",
+        ]);
+      }
+    });
+
+    test("business_hours_update: a valid patch is still previewed ok", async () => {
+      const b = await suDb.businessHours.create({
+        data: { tenantId, name: `bh-ok-${process.pid}` },
+      });
+      const previewed = await verdict(() =>
+        writeSettings.businessHoursUpdate(
+          principal(),
+          {
+            business_hours_id: String(b.id),
+            timezone: "America/Sao_Paulo",
+            windows: [{ day: 1, start: "09:00", end: "18:00" }],
+          } as never,
+          { base: appDb },
+        ),
+      );
+      expect(previewed).toBe("ok");
+    });
+
+    // ── knowledge: the status IS the rule, and the preview was already reading it — it just
+    // reported it instead of judging it, in a `note` that says "Re-queues a FAILED document".
+    test("knowledge_document_retry: a document that is not retryable", async () => {
+      const kb = await suDb.knowledgeBase.create({
+        data: { tenantId, name: `kb-${process.pid}` },
+      });
+      const doc = await suDb.knowledgeDocument.create({
+        data: {
+          tenantId,
+          knowledgeBaseId: kb.id,
+          title: "d",
+          sourceType: "text",
+          content: "x",
+          status: "INDEXED",
+        },
+      });
+      const r = await both(
+        (a) =>
+          writeKnowledge.knowledgeDocumentRetry(principal(), a as never, {
+            base: appDb,
+          }),
+        { document_id: String(doc.id) },
+      );
+      expect(r.previewed).toBe("refused");
+      expect(r.applied).toBe("refused");
+    });
+
+    test("knowledge_document_retry: a FAILED document still previews ok", async () => {
+      const kb = await suDb.knowledgeBase.create({
+        data: { tenantId, name: `kb2-${process.pid}` },
+      });
+      const doc = await suDb.knowledgeDocument.create({
+        data: {
+          tenantId,
+          knowledgeBaseId: kb.id,
+          title: "d",
+          sourceType: "text",
+          content: "x",
+          status: "FAILED",
+        },
+      });
+      const previewed = await verdict(() =>
+        writeKnowledge.knowledgeDocumentRetry(
+          principal(),
+          { document_id: String(doc.id) } as never,
+          { base: appDb },
+        ),
+      );
+      expect(previewed).toBe("ok");
+    });
+
+    // ── tools: the uniqueness class again, on the UPDATE side. #492 covered `tool_create` and
+    // `mcp_connection_update`; the tool's own rename went without it.
+    test("tool_update: renaming onto a name this tenant already used", async () => {
+      const taken = `taken-${process.pid}`;
+      await suDb.toolDefinition.create({
+        data: {
+          tenantId,
+          name: taken,
+          label: "l",
+          urlTemplate: "https://example.com/x",
+          allowedHosts: ["example.com"],
+        },
+      });
+      const mine = await suDb.toolDefinition.create({
+        data: {
+          tenantId,
+          name: `mine-${process.pid}`,
+          label: "l",
+          urlTemplate: "https://example.com/y",
+          allowedHosts: ["example.com"],
+        },
+      });
+      const r = await both(
+        (a) => writeAgents.toolUpdate(principal(), a as never, { base: appDb }),
+        { tool_id: String(mine.id), name: taken },
+      );
+      expect(r.previewed).toBe("refused");
+      expect(r.applied).toBe("refused");
+    });
+
+    test("tool_update: a tool keeping its own name is not a collision", async () => {
+      const own = `own-${process.pid}`;
+      const t = await suDb.toolDefinition.create({
+        data: {
+          tenantId,
+          name: own,
+          label: "l",
+          urlTemplate: "https://example.com/z",
+          allowedHosts: ["example.com"],
+        },
+      });
+      const previewed = await verdict(() =>
+        writeAgents.toolUpdate(
+          principal(),
+          { tool_id: String(t.id), name: own, label: "renamed" } as never,
+          { base: appDb },
+        ),
+      );
+      expect(previewed).toBe("ok");
+    });
+
+    // ── grants: the ids inside the ARRAY, which the row's single `agent_id` never reaches.
+    test("agent_tools_set: a grant naming a resource that does not exist", async () => {
+      const ag = await suDb.agent.create({
+        data: {
+          tenantId,
+          name: "G",
+          systemPrompt: "p",
+          modelConfig: {},
+          settings: {},
+        },
+      });
+      const cases: Record<string, unknown>[] = [
+        { source: "HTTP", toolDefinitionId: NOPE },
+        { source: "MCP", mcpServerConnectionId: NOPE },
+        { source: "INTEGRATION", integrationInstanceId: NOPE },
+        { source: "DOCUMENT", documentTemplateId: NOPE },
+      ];
+      for (const c of cases) {
+        const r = await both(
+          (a) =>
+            writeAgents.agentToolsSet(principal(), a as never, { base: appDb }),
+          { agent_id: String(ag.id), grants: [c] },
+        );
+        expect([JSON.stringify(c), r.previewed]).toEqual([
+          JSON.stringify(c),
+          "refused",
+        ]);
+        expect([JSON.stringify(c), r.applied]).toEqual([
+          JSON.stringify(c),
+          "refused",
+        ]);
+      }
+    });
+
+    test("agent_tools_set: a grant naming a tool that DOES exist is previewed ok", async () => {
+      const ag = await suDb.agent.create({
+        data: {
+          tenantId,
+          name: "G2",
+          systemPrompt: "p",
+          modelConfig: {},
+          settings: {},
+        },
+      });
+      const t = await suDb.toolDefinition.create({
+        data: {
+          tenantId,
+          name: `grantable-${process.pid}`,
+          label: "l",
+          urlTemplate: "https://example.com/g",
+          allowedHosts: ["example.com"],
+        },
+      });
+      const previewed = await verdict(() =>
+        writeAgents.agentToolsSet(
+          principal(),
+          {
+            agent_id: String(ag.id),
+            grants: [{ source: "HTTP", toolDefinitionId: String(t.id) }],
+          } as never,
+          { base: appDb },
+        ),
+      );
+      expect(previewed).toBe("ok");
+    });
+
+    // ── tenant settings: the kind rule, which `credential_ref` resolving does not answer.
+    test("tenant_settings_update: a langfuse ref whose KIND cannot serve it", async () => {
+      const v = await suDb.vaultEntry.create({
+        data: {
+          tenantId,
+          name: `lf-${process.pid}`,
+          kind: "generic",
+          secret: encryptJson("s"),
+        },
+      });
+      const r = await both(
+        (a) =>
+          writeSettings.tenantSettingsUpdate(principal(), a as never, {
+            base: appDb,
+          }),
+        { langfuse: { credential_ref: `vault:${v.id}` } },
+      );
+      expect(r.previewed).toBe("refused");
+      expect(r.applied).toBe("refused");
+    });
+
+    // ── the two Chatwoot-backed ones, both reading a row the preview already had in hand.
+    test("conversation_reengage: no agent is bound to the conversation's inbox", async () => {
+      const inst = await seedChatwootInstance(suDb, {
+        tenantId,
+        accountId: 7771,
+        baseUrl: "https://cw.pastown.local",
+        adminToken: encryptJson("tok"),
+      });
+      const inbox = await suDb.inbox.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: inst.id,
+          chatwootInboxId: 1,
+          name: "no-agent",
+          channelType: "Channel::Api",
+        },
+      });
+      const conv = await suDb.conversation.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: inst.id,
+          inboxId: inbox.id,
+          chatwootConversationId: 11,
+          threadId: `t-${process.pid}`,
+          status: "open",
+        },
+      });
+      const r = await both(
+        (a) =>
+          writeConversations.conversationReengage(principal(), a as never, {
+            base: appDb,
+          }),
+        { conversation_id: String(conv.id) },
+      );
+      expect(r.previewed).toBe("refused");
+      expect(r.applied).toBe("refused");
+    });
+
+    test("inbox_bind: an inbox on an account that is DISCONNECTED", async () => {
+      const live = await suDb.chatwootInstance.findFirstOrThrow({
+        where: { tenantId },
+      });
+      const off = await suDb.chatwootInstance.create({
+        data: {
+          tenantId,
+          deploymentId: live.deploymentId,
+          accountId: 7772,
+          serverKey: live.serverKey,
+          disconnectedAt: new Date(),
+        },
+      });
+      const inbox = await suDb.inbox.create({
+        data: {
+          tenantId,
+          chatwootInstanceId: off.id,
+          chatwootInboxId: 3,
+          name: "off",
+          channelType: "Channel::Api",
+        },
+      });
+      const ag = await suDb.agent.create({
+        data: {
+          tenantId,
+          name: "Bindable",
+          systemPrompt: "p",
+          modelConfig: {},
+          settings: {},
+        },
+      });
+      const r = await both(
+        (a) =>
+          writeChannels.inboxBind(principal(), a as never, { base: appDb }),
+        { inbox_id: String(inbox.id), agent_id: String(ag.id) },
+      );
+      expect(r.previewed).toBe("refused");
+      expect(r.applied).toBe("refused");
     });
   },
 );

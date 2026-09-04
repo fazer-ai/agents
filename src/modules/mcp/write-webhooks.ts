@@ -2,6 +2,7 @@ import type { InboundAuthStrategy } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import { AppError } from "@/lib/errors";
 import {
+  assertAlertChannelWritable,
   createAlertChannel,
   deleteAlertChannel,
   listAlertChannels,
@@ -343,6 +344,21 @@ export async function alertChannelCreate(
     secretRef = resolved.ref;
   }
   if (args.dry_run !== false) {
+    // NOTE: the core's own two questions, asked before the preview answers it. The URL is RESOLVED
+    // here — the same read the apply does two lines below — because the destination this channel
+    // would post to is not in the arguments, it is the value behind `url_ref`, and vetting the ref
+    // instead of the value is what let a preview approve `not-a-url` and a loopback address (#510).
+    // The value is never returned: only its verdict is.
+    const urlValue = await resolveSecretValue(ctx, args.url_ref, base);
+    if ("fail" in urlValue) return urlValue.fail;
+    try {
+      await assertAlertChannelWritable({
+        url: urlValue.value,
+        stages: args.stages ?? [],
+      });
+    } catch (e) {
+      return failOf(e);
+    }
     return ok({
       dryRun: true,
       action: "create",
@@ -450,6 +466,19 @@ export async function alertChannelUpdate(
       afterProj[k] = nonSecret[k];
     }
     if (args.dry_run !== false) {
+      // Same pair as on create, on the patch: the stage list, and the VALUE behind a rotated
+      // `url_ref` rather than the ref (#510). Resolved only when the patch rotates it, so an
+      // unrelated rename does not read a secret it has no question about.
+      let urlValue: string | undefined;
+      if (urlRotated && args.url_ref !== undefined) {
+        const resolved = await resolveSecretValue(ctx, args.url_ref, base);
+        if ("fail" in resolved) return resolved.fail;
+        urlValue = resolved.value;
+      }
+      await assertAlertChannelWritable({
+        url: urlValue,
+        stages: nonSecret.stages,
+      });
       return ok({
         dryRun: true,
         target,

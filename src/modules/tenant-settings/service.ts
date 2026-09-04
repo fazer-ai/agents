@@ -338,6 +338,36 @@ export interface LangfuseUpdateInput {
 
 // Updates the langfuse block. credentialRef, when provided non-null, is validated against the vault
 // (must exist and be kind "langfuse"). null clears it.
+// The ref rule and the KIND rule, in one place so the MCP preview can ask them (#490). Resolving the
+// ref is not asking the second one: `vault:<id>` names an entry of any kind, and `tenant_settings_update`
+// previewed "will wire" for a generic credential the apply refuses to store (#510).
+//
+// ADVISORY when the preview calls it, authoritative when the write does: it reads outside the write's
+// transaction, so a kind changed in between still answers there.
+export async function assertLangfuseCredentialUsable(
+  ctx: TenantContext,
+  ref: string,
+  base: PrismaClient = basePrisma,
+): Promise<string> {
+  return runScopedOn(base, ctx, async (db) => {
+    const canonical = await requireVaultRef(db, ref, "langfuse.credentialRef");
+    const entry = await db.vaultEntry.findFirst({
+      where: vaultRefWhere(canonical),
+      select: { kind: true },
+    });
+    if (entry?.kind !== "langfuse") {
+      throw new AppError(
+        "credential must be of kind 'langfuse'",
+        400,
+        "errors.invalidCredentialKind",
+        { kind: "langfuse" },
+        "langfuse.credentialRef",
+      );
+    }
+    return canonical;
+  });
+}
+
 export async function updateLangfuse(
   ctx: TenantContext,
   input: LangfuseUpdateInput,
@@ -360,28 +390,11 @@ export async function updateLangfuse(
       // and reports a working credential as unavailable; and an entry created empty on purpose
       // (credential_create) was refused for having no secret yet, which is the one case the write
       // boundary admits deliberately. Both are the ref rule, so both answer to the ref check (#254).
-      const ref = input.credentialRef;
-      credentialRef = await runScopedOn(base, ctx, async (db) => {
-        const canonical = await requireVaultRef(
-          db,
-          ref,
-          "langfuse.credentialRef",
-        );
-        const entry = await db.vaultEntry.findFirst({
-          where: vaultRefWhere(canonical),
-          select: { kind: true },
-        });
-        if (entry?.kind !== "langfuse") {
-          throw new AppError(
-            "credential must be of kind 'langfuse'",
-            400,
-            "errors.invalidCredentialKind",
-            { kind: "langfuse" },
-            "langfuse.credentialRef",
-          );
-        }
-        return canonical;
-      });
+      credentialRef = await assertLangfuseCredentialUsable(
+        ctx,
+        input.credentialRef,
+        base,
+      );
     }
   }
 

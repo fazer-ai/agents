@@ -409,17 +409,40 @@ describe.skipIf(!dbUp)("MCP channel tools (DB)", () => {
   });
 
   test("inbox_bind dry-run previews current vs new agent (no network)", async () => {
+    // A REAL agent, and it is not decoration: the preview now asks the two questions the write asks
+    // past existence — the account is connected, and the agent being bound exists (#510). A literal
+    // id that names nothing used to read back "would bind" here, which is the write the apply
+    // refuses.
+    const target = await suDb.agent.create({
+      data: {
+        tenantId: tenantA,
+        name: "Bindable",
+        systemPrompt: "p",
+        modelConfig: {},
+        settings: {},
+      },
+    });
     const r = await inboxBind(
       principal({ tenantId: tenantA }),
-      { inbox_id: String(inboxA), agent_id: "42" },
+      { inbox_id: String(inboxA), agent_id: String(target.id) },
       { base: appDb },
     );
     expect(r.ok).toBe(true);
     if (r.ok) {
       expect(r.data.dryRun).toBe(true);
       expect(r.data.currentAgentId).toBeNull();
-      expect(r.data.newAgentId).toBe("42");
+      expect(r.data.newAgentId).toBe(String(target.id));
     }
+  });
+
+  test("inbox_bind dry-run refuses an agent that does not exist", async () => {
+    const r = await inboxBind(
+      principal({ tenantId: tenantA }),
+      { inbox_id: String(inboxA), agent_id: "42" },
+      { base: appDb },
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toMatch(/agent not found/i);
   });
 
   test("binding an inbox of a disconnected account is refused", async () => {

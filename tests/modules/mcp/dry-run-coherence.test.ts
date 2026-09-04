@@ -1930,6 +1930,70 @@ describe.skipIf(!dbUp)(
       expect(r.applied).toBe("refused");
     });
 
+    // Round 2 of review, and the reason it was missed is worth writing down: the first measurement
+    // used a `generic` credential, which `secretTypeFits` ACCEPTS (an unknown or legacy kind is the
+    // escape hatch), so the probe read "no divergence" from a value the apply never refuses. The
+    // kinds that actually fail are one that does not yield a plain string and one that is
+    // `neverOutbound`, and both are the shapes an operator picks by accident from the same list.
+    test("tenant_settings_update: an embedding ref whose KIND cannot serve it", async () => {
+      const oauth = await suDb.vaultEntry.create({
+        data: {
+          tenantId,
+          name: `emb-oauth-${process.pid}`,
+          kind: "google_oauth",
+          secret: encryptJson({ clientId: "a", clientSecret: "b" }),
+        },
+      });
+      const env = await suDb.vaultEntry.create({
+        data: {
+          tenantId,
+          name: `emb-env-${process.pid}`,
+          kind: "mcp_env",
+          secret: encryptJson({ A: "b" }),
+        },
+      });
+      for (const entry of [oauth, env]) {
+        const r = await both(
+          (a) =>
+            writeSettings.tenantSettingsUpdate(principal(), a as never, {
+              base: appDb,
+            }),
+          { embedding: { credential_ref: `vault:${entry.id}` } },
+        );
+        expect([entry.kind, r.previewed]).toEqual([entry.kind, "refused"]);
+        expect([entry.kind, r.applied]).toEqual([entry.kind, "refused"]);
+      }
+    });
+
+    // The inverse: a kind that DOES serve the field is not refused, and neither is clearing it.
+    test("tenant_settings_update: an embedding ref that fits is still previewed ok", async () => {
+      const key = await suDb.vaultEntry.create({
+        data: {
+          tenantId,
+          name: `emb-ok-${process.pid}`,
+          kind: "openai_compatible",
+          secret: encryptJson("sk-x"),
+          baseUrl: "https://api.example.com/v1",
+        },
+      });
+      const previewed = await verdict(() =>
+        writeSettings.tenantSettingsUpdate(
+          principal(),
+          { embedding: { credential_ref: `vault:${key.id}` } } as never,
+          { base: appDb },
+        ),
+      );
+      expect(previewed).toBe("ok");
+      const cleared = await verdict(() =>
+        writeSettings.tenantSettingsUpdate(
+          principal(),
+          { embedding: { credential_ref: null } } as never,
+          { base: appDb },
+        ),
+      );
+      expect(cleared).toBe("ok");
+    });
+
     // ── the two Chatwoot-backed ones, both reading a row the preview already had in hand.
     test("conversation_reengage: no agent is bound to the conversation's inbox", async () => {
       const inst = await seedChatwootInstance(suDb, {

@@ -23,6 +23,7 @@ import {
   variantWriteSchema,
 } from "@/modules/experiments/service";
 import {
+  assertEmbeddingCredentialUsable,
   assertLangfuseCredentialUsable,
   getTenantSettings,
   updateEmbeddingSettings,
@@ -462,6 +463,9 @@ export async function tenantSettingsUpdate(
       // NOTE: the core's own KIND question, which resolving the ref above does not answer — a
       // `vault:<id>` names an entry of any kind, and this preview said "will wire" for one whose
       // kind `updateLangfuse` refuses (#510). Only when the patch actually sets a ref.
+      if (typeof embeddingRef === "string") {
+        await assertEmbeddingCredentialUsable(ctx, embeddingRef, base);
+      }
       if (typeof langfuseRef === "string") {
         await assertLangfuseCredentialUsable(ctx, langfuseRef, base);
       }

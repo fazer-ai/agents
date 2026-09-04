@@ -267,6 +267,24 @@ async function patchBlock<
   });
 }
 
+// The ref rule and the KIND rule for the embedding key, in one place so the MCP preview can ask them
+// (#490). Resolving the ref answers neither: `resolveSecretRef` only checks that the entry exists,
+// and `tenant_settings_update` previewed "will wire" for a `google_oauth` (which does not yield a
+// plain string) and an `mcp_env` (which is `neverOutbound`) that the apply refuses (#510, review
+// round 2).
+//
+// ADVISORY when the preview calls it, authoritative when the write does: it reads outside the
+// write's transaction, so a kind changed in between still answers there.
+export async function assertEmbeddingCredentialUsable(
+  ctx: TenantContext,
+  ref: string,
+  base: PrismaClient = basePrisma,
+): Promise<string> {
+  return runScopedOn(base, ctx, (db) =>
+    requireVaultRefFor(db, ref, "embedding.credentialRef", "embeddingKey"),
+  );
+}
+
 export async function updateEmbeddingSettings(
   ctx: TenantContext,
   patch: Partial<EmbeddingSettings>,
@@ -286,14 +304,7 @@ export async function updateEmbeddingSettings(
   const credentialRef =
     incoming == null
       ? incoming
-      : await runScopedOn(base, ctx, (db) =>
-          requireVaultRefFor(
-            db,
-            incoming,
-            "embedding.credentialRef",
-            "embeddingKey",
-          ),
-        );
+      : await assertEmbeddingCredentialUsable(ctx, incoming, base);
   return patchBlock(
     ctx,
     base,

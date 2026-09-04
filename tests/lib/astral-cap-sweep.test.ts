@@ -427,7 +427,11 @@ const BARE_SLICES: Record<
   // ISO string, which is ASCII by construction. The byte budget cuts BETWEEN rows and never inside
   // one, so the file cannot end on half a character either.
   "src/modules/audit/export.ts": [2, "array + ascii"],
-  "src/modules/audit/service.ts": [1, "array"],
+  // The page's overshoot row, dropped off an ARRAY -- plus the cursor codec's two, which cut an ISO
+  // instant and a run of digits apart at a separator this module wrote itself (#530). Neither can
+  // split a character: the left half is parsed by `new Date` and the right half by `parseDbId`,
+  // which refuses anything but digits, so an astral pair lands in neither.
+  "src/modules/audit/service.ts": [2, "array + ascii"],
   "src/modules/business-hours/announce.ts": [2, "fixed-format"],
   "src/modules/business-hours/hours.ts": [1, "fixed-format"],
   "src/modules/chatwoot/attributes.ts": [1, "array"],

@@ -12,7 +12,7 @@ import {
   getTimeseries,
 } from "@/modules/analytics/service";
 import { listApiKeys } from "@/modules/api-keys/service";
-import { listAudit } from "@/modules/audit/service";
+import { listAudit, parseAuditCursor } from "@/modules/audit/service";
 import { listBusinessHours } from "@/modules/business-hours/service";
 import {
   getChatwootDeployment,
@@ -917,9 +917,16 @@ export async function auditList(
     opts.actorId = v;
   }
   if (args.cursor !== undefined) {
-    const v = parseMcpId(args.cursor, "cursor");
-    if (typeof v !== "bigint") return v;
-    opts.cursor = v;
+    // TWO COLUMNS SINCE #530, so not `parseMcpId`. A cursor from before it is a bare id, refused
+    // rather than read as the new key: reinterpreting it would answer from another place in the
+    // trail while the caller believes it is continuing the same walk.
+    const c = parseAuditCursor(args.cursor);
+    if (c === null) {
+      return err(
+        "cursor must be the `nextCursor` from a previous audit_list response, passed back verbatim.",
+      );
+    }
+    opts.cursor = c;
   }
   try {
     const res = await listAudit(ctx, opts, base);

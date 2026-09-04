@@ -1794,9 +1794,13 @@ model AuditLog {
   @@index([tenantId, createdAt])
   // The tenant trail rides the composite above for both its `latestAt` and its keyset page, because
   // RLS supplies the leading column. The trails #520 added cannot, so they get their own: this one
-  // for `scope=all`'s `latestAt`, plus two PARTIAL indexes on `tenant_id IS NULL` -- one on
-  // `created_at` for the fleet `latestAt`, one on `id` for its first page -- hand-written in the
-  // migration, since Prisma cannot model a WHERE on an index.
+  // for `scope=all`'s `latestAt`, plus a PARTIAL index on `created_at WHERE tenant_id IS NULL` for
+  // the fleet `latestAt` -- hand-written in the migration, since Prisma cannot model a WHERE on an
+  // index.
+  //
+  // There was a fourth, partial on `id`, for the fleet trail's first page back when pages were
+  // ordered by `id`. #530 moved every read onto `(created_at, id)`, which these already serve, so
+  // nothing issued that query any more and the index was dropped.
   @@index([createdAt])
   @@map("audit_logs")
 }

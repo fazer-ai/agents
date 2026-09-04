@@ -229,6 +229,46 @@ describe.skipIf(!dbUp)("what a targetless audit_list actually reads", () => {
     expect(text).toContain(`${TAG}:mine`);
   });
 
+  // BOTH DOORS AGREE ON THE CURSOR TOO. The REST endpoint answers a pre-#530 cursor with a 400; this
+  // one has to refuse it as well, and for the same reason -- read as the new key it would continue
+  // the walk from somewhere else while the caller believes it is paging the same trail. An agent
+  // that stored a cursor is the likeliest holder of an old one.
+  test("a cursor from before the keyset change is refused here too", async () => {
+    for (const bad of ["115", "abc", "|", "2026-01-01T00:00:00.000Z|x"]) {
+      const r = await read(
+        principal({ tenantId: mine, role: "TENANT_ADMIN" }),
+        {
+          cursor: bad,
+        },
+      );
+      expect(JSON.stringify(r)).toContain("nextCursor` from a previous");
+    }
+  });
+
+  test("the cursor this tool handed out is accepted, and continues the walk", async () => {
+    // `all`, because it is the scope that reaches more than one row here and a cursor only exists
+    // when there is a next page.
+    const p = principal();
+    const first = (await auditList(
+      p,
+      { limit: 1, scope: "all" },
+      { base: appDb },
+    )) as {
+      ok: true;
+      data: { nextCursor: string | null };
+    };
+    const cursor = first.data.nextCursor ?? "";
+    expect(cursor).toContain("|");
+    const second = await auditList(
+      p,
+      { limit: 1, scope: "all", cursor },
+      { base: appDb },
+    );
+    expect(JSON.stringify(second)).not.toContain("nextCursor` from a previous");
+    // ...and it really moved: the second page is not the first one again.
+    expect(JSON.stringify(second)).not.toBe(JSON.stringify(first));
+  });
+
   test("a tenant token still reads its own trail and only that", async () => {
     const text = JSON.stringify(
       await read(principal({ tenantId: mine, role: "TENANT_ADMIN" }), {}),

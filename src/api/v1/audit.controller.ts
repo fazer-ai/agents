@@ -1,6 +1,7 @@
 import { Elysia, t } from "elysia";
 import { doc, errors } from "@/api/lib/openapi";
 import {
+  parseAuditCursorParam,
   parseQueryCount,
   parseQueryEnum,
   parseQueryId,
@@ -55,7 +56,7 @@ export const auditController = new Elysia({
         ...(await listAudit(ctxOrThrow(tenantContext, scope), {
           scope,
           limit: parseQueryCount(query.limit, "limit"),
-          cursor: parseQueryId(query.cursor, "cursor"),
+          cursor: parseAuditCursorParam(query.cursor),
           action: parseQueryText(query.action, "action"),
           actorType: parseQueryEnum(query.actorType, "actorType", ACTOR_TYPES),
           actorId: parseQueryId(query.actorId, "actorId"),
@@ -98,7 +99,7 @@ export const auditController = new Elysia({
         cursor: t.Optional(
           t.String({
             description:
-              "Keyset cursor (id of the last row from the previous page).",
+              "Keyset cursor: pass back `nextCursor` from the previous page, verbatim. Opaque -- do not build one, and a cursor from before #530 (a bare id) is refused rather than reinterpreted, because reading it as the new key would answer from a different place in the trail.",
           }),
         ),
         scope: t.Optional(

@@ -25634,7 +25634,7 @@
             "in": "query",
             "required": false,
             "schema": {
-              "description": "Keyset cursor (id of the last row from the previous page).",
+              "description": "Keyset cursor: pass back `nextCursor` from the previous page, verbatim. Opaque -- do not build one, and a cursor from before #530 (a bare id) is refused rather than reinterpreted, because reading it as the new key would answer from a different place in the trail.",
               "type": "string"
             }
           },

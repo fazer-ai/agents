@@ -197,8 +197,18 @@ describe.skipIf(!dbUp)("exporting the trail", () => {
 
   // THE ONE ASSERTION THIS FEATURE IS ABOUT. Not "the filter works" -- that the export and the page
   // answer the same question, compared against each other rather than against a hand-written list.
+  // A ROW WHOSE ID AND STAMP DISAGREE, seeded for the whole comparison below. Without it the two
+  // orders coincide on this trail -- rows are appended stamp-ascending -- so the assertion would
+  // hold against an export still walking by `id` alone, which is exactly what it must not do since
+  // #530. Measured: dropping this row lets the comparison pass with the two readers ordered
+  // differently.
   test("the rows are the rows the page shows, for the same filter", async () => {
     const { listAudit } = await import("@/modules/audit/service");
+    await seed(mine, "agent.update", `${TAG}:skew`, {
+      at: "2026-04-01T00:00:00Z",
+      actorType: "mcp",
+      actorId: OTHER,
+    });
     for (const filter of [
       {},
       { action: "agent.update" },
@@ -210,6 +220,16 @@ describe.skipIf(!dbUp)("exporting the trail", () => {
       const page = await listAudit(ctx(), { ...filter, limit: 500 }, appDb);
       const csv = parseCsv((await exportAudit(ctx(), filter, appDb)).content);
       expect(col(csv, "id")).toEqual(page.entries.map((e) => e.id));
+      // ...and the shared order really is the time's, not the id's. The skew row was written last
+      // and stamped earliest, so it carries the HIGHEST id and the OLDEST instant: ordered by id it
+      // would come first, ordered by time it comes last. Asserted wherever the filter admits it.
+      const targets = col(csv, "target");
+      const at = targets.indexOf(`${TAG}:skew`);
+      if (at >= 0) {
+        expect(at).toBe(targets.length - 1);
+        const ids = col(csv, "id").map(BigInt);
+        expect(ids[at]).toBe(ids.reduce((a, b) => (a > b ? a : b)));
+      }
     }
   });
 
@@ -557,6 +577,32 @@ describe.skipIf(!dbUp)("exporting the trail", () => {
     } finally {
       await suDb.$executeRawUnsafe(
         `DELETE FROM audit_logs WHERE target LIKE '${TAG}:json-%'`,
+      );
+    }
+  });
+
+  // A TIE THAT CROSSES A TRIP BOUNDARY. The export walks in trips, and the first is deliberately
+  // small, so a run of rows sharing one instant is split across two round trips as a matter of
+  // course. The keyset carries the id for exactly this: on the time alone, `created_at < t` would
+  // drop the rest of the tied run and `<=` would repeat the whole of it. Twelve rows on one stamp,
+  // which is more than the probe trip holds.
+  test("a run of rows sharing one instant is neither repeated nor dropped", async () => {
+    try {
+      for (let i = 0; i < 12; i++) {
+        await seed(mine, "agent.update", `${TAG}:tie${i}`, {
+          at: "2026-06-01T09:00:00Z",
+        });
+      }
+      const r = await exportAudit(ctx(), {}, appDb);
+      const targets = parseCsv(r.content)
+        .slice(1)
+        .map((row) => row[5] ?? "")
+        .filter((t) => t.startsWith(`${TAG}:tie`));
+      expect(targets).toHaveLength(12);
+      expect(new Set(targets).size).toBe(12);
+    } finally {
+      await suDb.$executeRawUnsafe(
+        `DELETE FROM audit_logs WHERE target LIKE '${TAG}:tie%'`,
       );
     }
   });

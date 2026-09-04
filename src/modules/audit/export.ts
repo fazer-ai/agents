@@ -213,9 +213,13 @@ export async function exportAudit(
   // is nothing.
   let bytes = Buffer.byteLength(header, "utf8");
   let truncatedBy: "rows" | "bytes" | null = null;
-  // NOTE: newest first, walked by the same keyset the page uses, so "the newest `count` win" is the same
-  // sentence for both readers.
-  let cursor: bigint | null = null;
+  // NOTE: newest first, walked by the same keyset the page uses, so "the newest `count` win" is the
+  // same sentence for both readers. Since #530 that keyset is `(created_at, id)` -- and it has to
+  // move here in the same commit, because the promise this module exists to keep is that the file
+  // holds the rows the screen holds, in the screen's order. A walk still ordered by `id` would keep
+  // returning the same SET for most trails and a different ORDER for any trail whose stamps and ids
+  // disagree, which is the quietest way for the two readers to drift apart.
+  let cursor: { createdAt: Date; id: bigint } | null = null;
   // NOTE: the widest row of the last trip, which is what sizes the next one (see BATCH_PROBE above).
   let widest = 0;
   let batch = BATCH_PROBE;
@@ -228,9 +232,16 @@ export async function exportAudit(
         where: {
           ...trail,
           ...where,
-          ...(cursor !== null ? { id: { lt: cursor } } : {}),
+          ...(cursor !== null
+            ? {
+                OR: [
+                  { createdAt: { lt: cursor.createdAt } },
+                  { createdAt: cursor.createdAt, id: { lt: cursor.id } },
+                ],
+              }
+            : {}),
         },
-        orderBy: { id: "desc" },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
         take: want + 1,
         select: SELECT,
       }),
@@ -262,8 +273,9 @@ export async function exportAudit(
       break;
     }
     if (!more) break;
-    cursor = rows[want - 1]?.id ?? null;
-    if (cursor === null) break;
+    const last = rows[want - 1];
+    if (!last) break;
+    cursor = { createdAt: last.createdAt, id: last.id };
   }
 
   return {

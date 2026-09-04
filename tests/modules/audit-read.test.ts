@@ -2,7 +2,11 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
-import { listAudit, recordAudit } from "@/modules/audit/service";
+import {
+  listAudit,
+  parseAuditCursor,
+  recordAudit,
+} from "@/modules/audit/service";
 import { syntheticAction } from "../utils/audit-action";
 
 // THE READ HALF (issue #401). The trail is append-only and the console page is the only door most
@@ -111,7 +115,11 @@ describe.skipIf(!dbUp)("reading the trail", () => {
   test("the newest row comes first, and the page says there is more", async () => {
     const page = await listAudit(ctx(), { limit: 2 }, appDb);
     expect(page.entries.map((e) => e.action)).toEqual(["c.six", "b.five"]);
-    expect(page.nextCursor).toBe(page.entries[1]?.id ?? "");
+    // The cursor names the row it stopped on, in both of the columns the page is ordered by.
+    expect(parseAuditCursor(page.nextCursor ?? "")).toEqual({
+      createdAt: new Date(page.entries[1]?.createdAt ?? ""),
+      id: BigInt(page.entries[1]?.id ?? "0"),
+    });
   });
 
   // The whole point of a cursor: every row exactly once, over a walk that outlives one page.
@@ -121,7 +129,10 @@ describe.skipIf(!dbUp)("reading the trail", () => {
     for (let i = 0; i < 10; i++) {
       const page: Awaited<ReturnType<typeof listAudit>> = await listAudit(
         ctx(),
-        { limit: 2, ...(cursor ? { cursor: BigInt(cursor) } : {}) },
+        {
+          limit: 2,
+          ...(cursor ? { cursor: parseAuditCursor(cursor) ?? undefined } : {}),
+        },
         appDb,
       );
       seen.push(...page.entries.map((e) => e.action));
@@ -138,6 +149,31 @@ describe.skipIf(!dbUp)("reading the trail", () => {
     ]);
     expect(new Set(seen).size).toBe(seen.length);
     expect(cursor).toBeNull();
+  });
+
+  // THE CURSOR FROM BEFORE #530 IS REFUSED, NOT REINTERPRETED. It is a bare id, and it still looks
+  // like a perfectly good string: read as the new key it would answer from a different place in the
+  // trail while the pager goes on saying "Page 2", which is the one failure a cursor has. Refused,
+  // the operator gets an error they can recover from by starting the walk again.
+  test("a cursor that is not one of ours is refused rather than read", () => {
+    for (const raw of [
+      "115",
+      "",
+      "|",
+      "abc|1",
+      "2026-02-01T12:00:00.000Z|",
+      "2026-02-01T12:00:00.000Z|0",
+      "2026-02-01T12:00:00.000Z|-1",
+      "2026-02-01T12:00:00.000Z|1x",
+      "not-a-date|7",
+    ]) {
+      expect(parseAuditCursor(raw)).toBeNull();
+    }
+    // ...and a real one still reads back to the pair it names.
+    expect(parseAuditCursor("2026-02-01T12:00:00.000Z|7")).toEqual({
+      createdAt: new Date("2026-02-01T12:00:00.000Z"),
+      id: 7n,
+    });
   });
 
   // Two rows the clock cannot tell apart, which is the case a cursor has to survive and the reason
@@ -158,12 +194,17 @@ describe.skipIf(!dbUp)("reading the trail", () => {
         "tie.two",
       ]);
       expect(new Set(first.entries.map((e) => e.createdAt)).size).toBe(1);
-      // The cursor is the ID of the last row shown, and the three stamps are identical, so nothing
-      // but the id can place the boundary.
-      expect(first.nextCursor).toBe(first.entries[1]?.id ?? "");
+      // The three stamps are identical, so nothing but the id can place the boundary -- which is
+      // exactly why the id stayed in the key when #530 put `created_at` in front of it.
+      expect(parseAuditCursor(first.nextCursor ?? "")?.id).toBe(
+        BigInt(first.entries[1]?.id ?? "0"),
+      );
       const second = await listAudit(
         ctx(),
-        { limit: 2, cursor: BigInt(first.nextCursor ?? "0") },
+        {
+          limit: 2,
+          cursor: parseAuditCursor(first.nextCursor ?? "") ?? undefined,
+        },
         appDb,
       );
       expect(second.entries[0]?.action).toBe("tie.one");
@@ -237,8 +278,13 @@ describe.skipIf(!dbUp)("reading the trail", () => {
       // Written last, stamped earliest: the highest id is not the latest row.
       await seed("skew.older", "2026-01-04T00:00:00Z");
       const page = await listAudit(ctx(), { limit: 1 }, appDb);
-      expect(page.entries[0]?.action).toBe("skew.older");
+      // AND THE PAGE AGREES WITH IT SINCE #530. Ordered by id this row came first, because it was
+      // written last -- so the trail's own first line disagreed with the `latestAt` printed beside
+      // it. Ordered by `(created_at, id)` the two answer the same question, which is the one the
+      // operator is asking: what happened most recently.
+      expect(page.entries[0]?.action).toBe("c.six");
       expect(page.latestAt).toBe("2026-01-06T00:00:00.000Z");
+      expect(page.entries[0]?.createdAt).toBe(page.latestAt ?? "");
     } finally {
       await suDb.$executeRawUnsafe(
         `DELETE FROM audit_logs WHERE tenant_id = ${tenantId} AND action LIKE 'skew.%'`,

@@ -1,0 +1,26 @@
+-- THE INDEX THE OLD KEYSET NEEDED, AND NOTHING ELSE DID (#530).
+--
+-- `audit_logs_fleet_id_idx` was added by #520 for exactly one query: the fleet trail's first page,
+-- ordered by `id`, which no `created_at` index could serve. #530 moves every audit read onto
+-- `(created_at, id)` -- the list, its keyset, and the export that shares its predicate -- so nothing
+-- issues `ORDER BY id` on this table any more and the index is dead weight: pure write cost on a
+-- table that only ever grows, paid once per audited mutation.
+--
+-- Nothing is created here. That is the finding this migration records: once the ORDER BY matches the
+-- window the rows are cut on, the indexes the table already has serve it. Measured on a 500k-row
+-- probe with this table's own indexes, a 30-day window 80 days back, page of 51:
+--
+--                       ORDER BY id (before)        ORDER BY created_at, id (after)
+--   scope=tenant    9,277 buffers  24.3 ms          39 buffers  0.15 ms
+--   scope=fleet     6,857 buffers   4.4 ms          32 buffers  0.04 ms
+--   scope=all       9,237 buffers  38.6 ms           5 buffers  0.02 ms
+--
+-- The old plan discarded 448,000 rows to collect 51, and its cost grew with how far back the window
+-- reached, without bound. Adding `id` to the tail of the existing composites was measured too and
+-- changes nothing (45 buffers against 39), so no index is added for it.
+--
+-- CONCURRENTLY, and therefore OUTSIDE a transaction -- which Prisma gives us, since it runs a
+-- migration file unwrapped (measured in both `migrate deploy` and `migrate dev`'s shadow replay).
+-- A DROP of an index is quick, but CONCURRENTLY keeps it off the write path of a table every audited
+-- mutation writes to.
+DROP INDEX CONCURRENTLY IF EXISTS "audit_logs_fleet_id_idx";

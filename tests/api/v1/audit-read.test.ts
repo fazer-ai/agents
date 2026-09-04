@@ -180,7 +180,11 @@ describe.skipIf(!dbUp)("the trail has a door the console can use", () => {
     expect(body.entries.map((e) => e.action)).toEqual(["three.c", "two.b"]);
     // Without this the caller has no way to reach row three, and no way to tell a full page from
     // the end of the trail.
-    expect(body.nextCursor).toBe(body.entries[1]?.id ?? "");
+    // The cursor names the row the page stopped on, in BOTH columns the walk is ordered by (#530).
+    // Opaque by contract, so this reads it apart rather than rebuilding it.
+    expect(body.nextCursor).toBe(
+      `${body.entries[1]?.createdAt}|${body.entries[1]?.id}`,
+    );
     expect(body.latestAt).toBe(body.entries[0]?.createdAt ?? "");
   });
 
@@ -256,6 +260,29 @@ describe.skipIf(!dbUp)("the trail has a door the console can use", () => {
         expect(res.status).toBe(403);
       });
     }
+
+    // THE CURSOR FROM BEFORE #530 IS A BARE ID, and it is refused with the same 400 as any other
+    // malformed parameter. Read as the new key it would silently answer from another place in the
+    // trail, under a pager that goes on saying "Page 2" -- so a stored bookmark fails loudly and its
+    // holder starts the walk again, instead of quietly reading the wrong page.
+    test("a cursor from before the keyset change is refused, not reinterpreted", async () => {
+      role = "TENANT_ADMIN";
+      for (const bad of ["115", "abc", "|", "2026-01-01T00:00:00.000Z|x"]) {
+        const res = await get(
+          `?cursor=${encodeURIComponent(bad)}`,
+          await sign("TENANT_ADMIN"),
+        );
+        expect(res.status).toBe(400);
+      }
+      // ...and the cursor the endpoint itself just handed out is accepted.
+      const first = await get("?limit=1", await sign("TENANT_ADMIN"));
+      const { nextCursor } = (await first.json()) as { nextCursor: string };
+      const next = await get(
+        `?limit=1&cursor=${encodeURIComponent(nextCursor)}`,
+        await sign("TENANT_ADMIN"),
+      );
+      expect(next.status).toBe(200);
+    });
 
     test("a scope that is not one of the three is refused at the door", async () => {
       role = "TENANT_ADMIN";

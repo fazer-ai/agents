@@ -2,6 +2,7 @@ import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import type { AuditAction } from "@/lib/audit/actions";
 import type { AuditScope } from "@/lib/audit/scope";
+import { parseDbId } from "@/lib/db-id";
 import { ForbiddenError } from "@/lib/errors";
 import { assertUsableCount } from "@/lib/query-param";
 import {
@@ -153,13 +154,9 @@ export interface AuditFilterOpts {
 
 export interface ListAuditOpts extends AuditFilterOpts {
   limit?: number;
-  // Keyset: rows with id < cursor. On the ID and never on the time, because `created_at` here is
-  // written by the CLIENT and not by the database (measured: rows appended inside one transaction
-  // come back with stamps LATER than that transaction's own `now()`, and differing from each
-  // other). At millisecond resolution a tie between two rows of one burst is ordinary, and nothing
-  // makes the column agree with insertion order in the first place. So a time cursor over it can
-  // repeat one of a tied pair or skip it; the id is the only monotonic key this table has.
-  cursor?: bigint;
+  // Keyset on `(created_at, id)`, which is also the order the page is read in. See `AuditCursor`
+  // below for why it is both columns and not either one alone.
+  cursor?: AuditCursor;
   // WHICH TRAIL, and it is a question rather than a filter.
   //
   // `tenant` is the RLS read every caller has always had. `fleet` and `all` are a DIFFERENT QUERY:
@@ -173,7 +170,8 @@ export interface ListAuditOpts extends AuditFilterOpts {
 
 export interface AuditPage {
   entries: AuditLogItem[];
-  // Pass back as `cursor` for the next (older) page; null when there are no more rows.
+  // Pass back as `cursor` for the next (older) page; null when there are no more rows. Opaque:
+  // `<ISO instant>|<id>`, and callers are not to build one (see `parseAuditCursor`).
   nextCursor: string | null;
   // The newest row IN THE WHOLE TRAIL, past any filter, and null when the trail is empty.
   //
@@ -271,14 +269,28 @@ export async function listAudit(
   const take = Math.min(opts.limit ?? 100, 500);
   const where: Prisma.AuditLogWhereInput = {
     ...buildAuditWhere(opts),
-    ...(opts.cursor !== undefined ? { id: { lt: opts.cursor } } : {}),
+    // NOTE: the row-comparison `(created_at, id) < (t, i)`, spelled the way Prisma can express it.
+    // Measured against the tuple form on the same probe: identical plans, 45 buffers against 39 for
+    // a tenant and 5 against 5 for `all` -- so this costs nothing, and it keeps the predicate inside
+    // the same `where` the list and the export already share.
+    ...(opts.cursor !== undefined
+      ? {
+          OR: [
+            { createdAt: { lt: opts.cursor.createdAt } },
+            {
+              createdAt: opts.cursor.createdAt,
+              id: { lt: opts.cursor.id },
+            },
+          ],
+        }
+      : {}),
   };
   const scope = opts.scope ?? "tenant";
   const trail = auditTrailFor(ctx, scope);
   const read = async (db: ScopedDb) => ({
     rows: await db.auditLog.findMany({
       where: { ...trail, ...where },
-      orderBy: { id: "desc" },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
       // NOTE: One extra row is what tells the caller a next page exists, without a second count over
       // a table that only grows.
       take: take + 1,
@@ -304,7 +316,58 @@ export async function listAudit(
       after: r.after,
       createdAt: r.createdAt.toISOString(),
     })),
-    nextCursor: hasMore ? String(page[page.length - 1]?.id) : null,
+    nextCursor: hasMore ? nextAuditCursor(page[page.length - 1]) : null,
     latestAt: latest._max.createdAt?.toISOString() ?? null,
   };
+}
+
+// THE PAGE'S POSITION, AS THE TWO COLUMNS IT IS ORDERED BY (issue #530).
+//
+// It used to be the id alone, and that was cheap to say and expensive to run: `created_at` was a
+// plain predicate over a walk ordered by `id`, so a window that is not the newest one made Postgres
+// walk the primary key backwards discarding everything outside it. Measured on a 500k-row probe with
+// this table's own indexes, a 30-day window 80 days back: 9,277 buffers and 24.3 ms for a tenant,
+// 9,237 and 38.6 ms for `all`, throwing away 448,000 rows to collect 51. Ordering by the column the
+// window is cut on turns the same question into a range scan of an index that is already sorted the
+// way the page is read: 39 buffers and 0.15 ms, 5 and 0.02 ms. No new index -- the ones the table
+// already has serve it once the ORDER BY matches them.
+//
+// The id STAYS, as the tie-break, because `created_at` is not unique and is not the database's:
+// Prisma sends the value from the Node process on every insert (measured -- the column's
+// `DEFAULT CURRENT_TIMESTAMP` never runs), so a burst can share a millisecond and two processes can
+// disagree about the order. A keyset on the time alone would repeat a row of a tied pair or skip it.
+export interface AuditCursor {
+  createdAt: Date;
+  id: bigint;
+}
+
+// `<ISO instant>|<id>`. Opaque to callers by contract, readable on purpose when a support question
+// is "which page was it on": a cursor nobody can read is one nobody can check.
+const CURSOR_SEP = "|";
+
+export function encodeAuditCursor(c: AuditCursor): string {
+  return `${c.createdAt.toISOString()}${CURSOR_SEP}${c.id}`;
+}
+
+// Returns null for anything that is not one of ours. THE OLD CURSOR IS REFUSED, NOT REINTERPRETED:
+// a bare id is still a valid-looking string, and reading it as the new key would silently answer
+// from a different place in the trail under a pager that goes on saying "Page 2". The caller turns
+// this into the same 400 every other malformed parameter gets, which is a page an operator can
+// recover from by starting the walk again.
+export function parseAuditCursor(raw: string): AuditCursor | null {
+  const at = raw.indexOf(CURSOR_SEP);
+  if (at < 0) return null;
+  const when = new Date(raw.slice(0, at));
+  if (Number.isNaN(when.getTime())) return null;
+  // `parseDbId` and not a `BigInt` cast: it is the one bounded parse in the tree, so the id half of
+  // a cursor is held to the same range as an id arriving anywhere else. A cast would take a
+  // 40-digit string and hand Postgres a value it answers with a 500 at bind time.
+  const id = parseDbId(raw.slice(at + 1));
+  return id !== null && id > 0n ? { createdAt: when, id } : null;
+}
+
+function nextAuditCursor(
+  last: { createdAt: Date; id: bigint } | undefined,
+): string | null {
+  return last ? encodeAuditCursor(last) : null;
 }

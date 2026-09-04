@@ -8,6 +8,7 @@ import {
   AUDIT_EXPORT_MAX_ROWS,
   clampAuditExportCeilings,
   exportAudit,
+  highWaterFrom,
 } from "@/modules/audit/export";
 import { recordAudit } from "@/modules/audit/service";
 import { syntheticAction } from "../utils/audit-action";
@@ -666,6 +667,40 @@ describe.skipIf(!dbUp)("exporting the trail", () => {
     expect(r.truncated).toBe(false);
     expect(r.content.split("\r\n")).toHaveLength(1);
     expect(r.content).toContain("created_at");
+  });
+
+  // THE UNCALLED SEQUENCE, which is a fresh deployment's first export. Postgres reports
+  // `last_value = 1` both for a sequence that has never run and for one that has handed out exactly
+  // one id; only `is_called` tells them apart (measured against a real sequence, below). Reading the
+  // value alone would bound an EMPTY trail at 1, so the very first audit row ever written -- landing
+  // between the bound being taken and the first trip -- would appear in a file that started before
+  // it existed.
+  test("an uncalled sequence bounds below its start, a called one at its value", () => {
+    expect(highWaterFrom({ last_value: 1n, is_called: false })).toBe(0n);
+    expect(highWaterFrom({ last_value: 1n, is_called: true })).toBe(1n);
+    expect(highWaterFrom({ last_value: 4096n, is_called: true })).toBe(4096n);
+  });
+
+  test("and Postgres really does report both states that way", async () => {
+    await suDb.$executeRawUnsafe(`DROP SEQUENCE IF EXISTS probe_seq_x530`);
+    await suDb.$executeRawUnsafe(`CREATE SEQUENCE probe_seq_x530`);
+    try {
+      const read = async () =>
+        (
+          (await suDb.$queryRawUnsafe(
+            `SELECT last_value, is_called FROM probe_seq_x530`,
+          )) as { last_value: bigint; is_called: boolean }[]
+        )[0] as { last_value: bigint; is_called: boolean };
+      const fresh = await read();
+      expect(fresh).toEqual({ last_value: 1n, is_called: false });
+      await suDb.$queryRawUnsafe(`SELECT nextval('probe_seq_x530')`);
+      const used = await read();
+      // The same number, and only the flag moved -- which is the whole reason it is read.
+      expect(used).toEqual({ last_value: 1n, is_called: true });
+      expect(highWaterFrom(fresh)).toBeLessThan(highWaterFrom(used));
+    } finally {
+      await suDb.$executeRawUnsafe(`DROP SEQUENCE IF EXISTS probe_seq_x530`);
+    }
   });
 
   // A CUT IS ALWAYS ANNOUNCED, including the one that happens between two trips. When a trip ends

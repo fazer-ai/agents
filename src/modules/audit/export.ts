@@ -184,6 +184,23 @@ function timestampSlug(d: Date): string {
   return d.toISOString().slice(0, 19).replace(/:/g, "-");
 }
 
+// THE BOUND A SEQUENCE ROW MEANS, and `is_called` is half of it rather than a detail. A sequence
+// never called reports `last_value = 1` -- the value it WILL hand out -- and one that has handed out
+// exactly one row reports 1 as well; only this flag separates them (measured). Taking 1 in the first
+// case puts the bound one id ABOVE an empty trail, so the very first row ever written, landing
+// between the read and the first trip, would arrive inside a file that started before it existed.
+// Uncalled means the bound sits below the sequence's start.
+//
+// Split out because it is the one part of the bound a test can reach: the sequence behind a real
+// trail has always been called, so the branch that matters is not reproducible through `exportAudit`
+// without resetting shared state under every other suite.
+export function highWaterFrom(row: {
+  last_value: bigint;
+  is_called: boolean;
+}): bigint {
+  return row.is_called ? row.last_value : row.last_value - 1n;
+}
+
 export async function exportAudit(
   ctx: TenantContext,
   opts: ExportAuditOpts = {},
@@ -258,15 +275,14 @@ export async function exportAudit(
     scope,
     (db) =>
       db.$queryRaw<
-        { last_value: bigint }[]
-      >`SELECT last_value FROM audit_logs_id_seq`,
+        { last_value: bigint; is_called: boolean }[]
+      >`SELECT last_value, is_called FROM audit_logs_id_seq`,
   );
-  // The sequence always answers, empty table included (`last_value` is 1 with `is_called` false),
-  // so there is no "no bound" case to branch on: an empty trail simply walks nothing.
-  const highWater = seq[0]?.last_value;
-  if (highWater === undefined) {
+  const row = seq[0];
+  if (row === undefined) {
     throw new Error("audit export: the id sequence returned no row");
   }
+  const highWater = highWaterFrom(row);
   while (truncatedBy === null) {
     const want = Math.min(batch, maxRows - lines.length);
     // NOTE: one extra row per trip answers "is there more?" without a second count over a growing table.

@@ -233,10 +233,14 @@ describe.skipIf(!dbUp)("latestAt reaches its index on every scope", () => {
     for (const r of ordering) {
       expect(r.indexdef).toMatch(/created_at DESC, id DESC/);
     }
-    // ...and the one that existed only for the old `ORDER BY id` is gone.
-    expect(rows.map((r) => r.indexname)).not.toContain(
-      "audit_logs_fleet_id_idx",
-    );
+    // ...and `audit_logs_fleet_id_idx` IS STILL HERE, on purpose. It serves only the old
+    // `ORDER BY id` fleet page, which this release stops issuing -- but `docs/deploy.md` describes
+    // rolling deploys, so for the length of one overlap a container from the previous release is
+    // still asking that question, and without the index it walks the primary key past every tenant
+    // row: measured, 8,687 buffers and 21.5 ms against 2. It comes out in a later release, once no
+    // old process can be serving (docs/roadmap.md). The other three old indexes went now because
+    // the new ones answer their queries too, verified on the same probe.
+    expect(rows.map((r) => r.indexname)).toContain("audit_logs_fleet_id_idx");
   });
 
   // The partial predicate is the whole point of the fleet indexes: without it an index would hold

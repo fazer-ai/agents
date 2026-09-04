@@ -461,6 +461,16 @@ function buildsARequest(
   // "interpolation altered the origin" when the real one differs, so a placeholder anywhere in the
   // scheme, host or port is a tool that never fetches. The two sentinels answer where it sits — the
   // origins differ only if a placeholder is inside one.
+  // The protocol the SSRF guard will accept. It runs on the FINAL URL, immediately before the fetch,
+  // and refuses anything that is not https — http only where the deployment allows it, which this
+  // boundary cannot know and therefore does not claim. An `ftp://` template parses, stores, and never
+  // leaves.
+  const scheme = parseUrlTemplate(
+    urlTemplate,
+    new Map(),
+    UNRESOLVED_A,
+  )?.protocol;
+  if (scheme !== "https:") return false;
   const a = parseUrlTemplate(urlTemplate, new Map(), UNRESOLVED_A);
   const b = parseUrlTemplate(urlTemplate, new Map(), UNRESOLVED_B);
   if (!a || !b || a.origin !== b.origin) return false;

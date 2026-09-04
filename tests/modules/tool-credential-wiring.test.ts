@@ -4,6 +4,7 @@ import type { AddressInfo } from "node:net";
 import type { ToolMessage } from "@langchain/core/messages";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
+import { encryptJson } from "@/api/lib/crypto";
 import { buildHttpTool, type HttpToolDef } from "@/graph/tools/http";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import { toolCreate, toolUpdate } from "@/modules/mcp/write-agents";
@@ -1059,6 +1060,31 @@ describe("the scanner answers what the runtime does", () => {
       ),
     ).not.toBeNull();
 
+    // NOTE: and the seventh: a protocol the SSRF guard refuses. `ftp://` parses, the schema stores
+    // it, and the guard runs on the final URL immediately before the fetch.
+    const wrongScheme = buildHttpTool(
+      {
+        name: "t",
+        method: "GET",
+        urlTemplate: "ftp://example.com/x",
+        allowedHosts: ["example.com"],
+        headers: {},
+        inputSchema: {},
+        credentialRef: "vault:1",
+        credentialKind: "generic",
+      },
+      { resolveCredential: async () => SECRET, fetchImpl: stubFetch({}) },
+    );
+    await expect(wrongScheme.invoke({})).rejects.toThrow("protocol ftp:");
+    expect(
+      unusedCredentialWarning(
+        { kind: "generic", paramName: null, baseUrl: null },
+        "GET",
+        { urlTemplate: "ftp://example.com/x", headers: {}, inputSchema: {} },
+        { allowedHosts: ["example.com"] },
+      ),
+    ).toBeNull();
+
     // NOTE: the control — with a base, the same tool is judged normally.
     expect(
       unusedCredentialWarning(
@@ -1635,6 +1661,33 @@ describe.skipIf(!dbUp)("tool_create / tool_update say so", () => {
       { tool_id: id as string, ack_message: null },
       { base: appDb },
     );
+    expect(r.ok).toBe(true);
+    expect(wiringWarning(r)).toHaveLength(0);
+  });
+
+  test("a legacy base URL is not prepended, so the relative tool it fed is not judged", async () => {
+    // NOTE: the write can no longer create this row, and an upgraded database has them. The gate
+    // makes the resolve answer `null`, so a RELATIVE tool wired to one builds no request at all —
+    // and a warning about an unauthenticated request would describe something that cannot happen.
+    // Reading the STORED value here instead put the old host back and judged the tool against it.
+    const legacy = await suDb.vaultEntry.create({
+      data: {
+        tenantId,
+        name: "wiring-legacy-base",
+        secret: encryptJson("abc123TOKEN"),
+        kind: "openai",
+        baseUrl: `https://${PUBLIC}/api`,
+      },
+      select: { id: true },
+    });
+    // NOTE: the tool sets its own `Authorization`, which is what makes an `openai` credential
+    // reportable at all — it injects a bearer, and the operator's own header wins. Without that the
+    // credential is wired whatever the base is, and the row proves nothing.
+    const r = await create({
+      credential_ref: `vault:${legacy.id}`,
+      url_template: "/v1/thing",
+      headers: { Authorization: "constant" },
+    });
     expect(r.ok).toBe(true);
     expect(wiringWarning(r)).toHaveLength(0);
   });

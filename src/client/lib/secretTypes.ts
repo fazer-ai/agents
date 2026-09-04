@@ -122,6 +122,31 @@ export function secretTypeSupportsBaseUrl(
   return !!(id && SECRET_TYPE_META[id as SecretTypeId]?.supportsBaseUrl);
 }
 
+// The client half of the server's gate (#504). A base URL stored on a kind that has no use for one is
+// no longer prepended to anything, so the console must not decide with it either: the tool editor
+// accepts a RELATIVE url_template only when a credential supplies a base, and reading the stray value
+// there would let an operator save a tool the runtime refuses to build.
+//
+// The carve-out is the server's, to the letter: a kind this build does not KNOW refuses nothing, so a
+// row written by a newer build keeps whatever it has. `Object.hasOwn` and not `in`, because `in`
+// walks the prototype and would call `toString` a known credential type.
+export function secretTypeRefusesBaseUrl(
+  id: string | null | undefined,
+): boolean {
+  return (
+    !!id &&
+    Object.hasOwn(SECRET_TYPE_META, id) &&
+    !SECRET_TYPE_META[id as SecretTypeId].supportsBaseUrl
+  );
+}
+
+export function dialableBaseUrl(
+  kind: string | null | undefined,
+  baseUrl: string | null | undefined,
+): string | null {
+  return secretTypeRefusesBaseUrl(kind) ? null : (baseUrl ?? null);
+}
+
 export function secretTypeRequiresBaseUrl(
   id: string | null | undefined,
 ): boolean {

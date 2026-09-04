@@ -54,7 +54,7 @@ import {
   type ToolDefinitionUpdate,
   updateToolDefinition,
 } from "@/modules/tool-definitions/service";
-import { readVaultRefFacts } from "@/modules/vault/service";
+import { dialableBaseUrl, readVaultRefFacts } from "@/modules/vault/service";
 import type { VerifiedToken } from "./oauth/tokens";
 import {
   diffFields,
@@ -610,7 +610,14 @@ async function credentialWiringWarning(
   // dangling ref is reported; this stays quiet about it.
   if (!facts) return [];
   const warning = unusedCredentialWarning(
-    { kind: facts.kind, paramName: facts.paramName, baseUrl: facts.baseUrl },
+    // NOTE: the DIALABLE base, like every other reader — the facts carry the row as it is, and a
+    // stray base URL on a kind that has no use for one is not prepended to anything any more. Judging
+    // the stored value would read a relative tool as pointing somewhere it does not.
+    {
+      kind: facts.kind,
+      paramName: facts.paramName,
+      baseUrl: dialableBaseUrl(facts.kind, facts.baseUrl),
+    },
     method,
     shapes,
     { ackMessage, allowedHosts },

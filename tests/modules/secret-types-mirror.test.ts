@@ -1,12 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import {
   SECRET_TYPE_IDS as CLIENT_SECRET_TYPE_IDS,
+  dialableBaseUrl as clientDialable,
   SECRET_TYPE_META,
 } from "@/client/lib/secretTypes";
 import {
   SECRET_TYPES,
   SECRET_TYPE_IDS as SERVER_SECRET_TYPE_IDS,
 } from "@/modules/vault/secret-types";
+import { dialableBaseUrl as serverDialable } from "@/modules/vault/service";
 
 // The client mirror (src/client/lib/secretTypes.ts) must stay in lockstep with the server catalog
 // (src/modules/vault/secret-types.ts) — otherwise a new credential kind is usable server-side but
@@ -50,6 +52,33 @@ describe("secret-types client mirror", () => {
   // The client keeps the pair as two booleans because that is what the form asks (render the input /
   // mark it required); the SERVER holds one field, so "required but not supported" cannot be
   // written there. This test is what stops the client from writing it.
+  // NOTE: the two GATES, not just the two declarations. The console decides with this — the tool
+  // editor accepts a relative url_template only when a credential supplies a base — and the runtime
+  // dials with it, so the day they disagree an operator saves a tool the runtime refuses to build.
+  // The unknown kind is in here on purpose: both sides refuse nothing for a kind they do not know,
+  // and a client that gated it would blank a base URL a newer build wrote.
+  test("the two dialableBaseUrl agree, kind by kind and past the catalog", () => {
+    const BASE = "https://elsewhere.invalid";
+    for (const id of SERVER_SECRET_TYPE_IDS) {
+      expect([id, clientDialable(id, BASE)]).toEqual([
+        id,
+        serverDialable(id, BASE),
+      ]);
+    }
+    for (const unknown of [null, "kind_from_a_future_build", "toString"]) {
+      expect([unknown, clientDialable(unknown, BASE)]).toEqual([
+        unknown,
+        serverDialable(unknown, BASE),
+      ]);
+    }
+    // NOTE: a floor — an assertion that both sides answered `null` for everything would pass while
+    // proving nothing about the kinds that DO carry one.
+    expect(
+      SERVER_SECRET_TYPE_IDS.filter((id) => clientDialable(id, BASE) === BASE)
+        .length,
+    ).toBe(9);
+  });
+
   test("the client base-URL pair matches the server's single declaration", () => {
     for (const type of SECRET_TYPES) {
       const meta = SECRET_TYPE_META[type.id as keyof typeof SECRET_TYPE_META];

@@ -249,6 +249,10 @@ export function CodeToolEditModal({
   // the server runs on save, so the warning the operator sees while typing is the one that will be
   // stored.
   useEffect(() => {
+    // Only while the dialog is OPEN. This component stays mounted on the Tools page and the agent
+    // editor, and the empty form starts with the starter body — so without this, merely visiting
+    // either page downloads the parser chunk and parses a body nobody is editing.
+    if (!modal.isOpen) return;
     const code = form.code;
     if (!code.trim()) {
       setSyntaxWarnings([]);
@@ -264,7 +268,7 @@ export function CodeToolEditModal({
       cancelled = true;
       clearTimeout(id);
     };
-  }, [form.code]);
+  }, [form.code, modal.isOpen]);
 
   async function save() {
     // The opening this save belongs to. A slow save can still be dismissed (Esc, outside, X — only

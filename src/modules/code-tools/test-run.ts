@@ -20,7 +20,10 @@ import {
   checkCodeToolSyntax,
 } from "@/lib/code-tool-syntax";
 import { AppError } from "@/lib/errors";
-import { CONTEXT_VAR_NAMES } from "@/modules/tool-definitions/normalize";
+import {
+  CONTEXT_VAR_NAMES,
+  hasReservedFieldName,
+} from "@/modules/tool-definitions/normalize";
 
 export interface CodeToolTestInput {
   definition: {
@@ -58,6 +61,18 @@ export async function runCodeToolTest(
       "errors.invalidRequestValue",
       { field: "code" },
       "code",
+    );
+  }
+  // Refused BEFORE the schema is parsed, exactly as a save is: `parseToolInputSchema` normalizes
+  // and drops a `__proto__` field, so testing a definition create/update would refuse would answer
+  // "fine" about a tool whose declared argument the model can never send.
+  if (hasReservedFieldName(def.inputSchema)) {
+    throw new AppError(
+      "input schema field `__proto__` is reserved by JavaScript and cannot be a parameter name",
+      422,
+      "errors.invalidRequestValue",
+      { field: "inputSchema" },
+      "inputSchema",
     );
   }
   const schema = parseToolInputSchema(def.inputSchema ?? {});

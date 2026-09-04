@@ -1,6 +1,7 @@
 /// <reference lib="dom" />
 
 import { afterEach, describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import {
   cleanup,
   fireEvent,
@@ -509,4 +510,21 @@ test("a save that FAILS after the dialog was dismissed does not mark the next on
   } finally {
     globalThis.fetch = realFetch;
   }
+});
+
+test("the parser only runs while the dialog is open", () => {
+  // This component stays mounted on the Tools page and the agent editor, and the empty form starts
+  // with the starter body — so an ungated effect downloads the parser chunk and parses a body
+  // nobody is editing, on every visit to either page. A source fence rather than a module mock:
+  // `mock.module` is process-global here and tears down mocks other files installed (the note in
+  // document-starters-race.test.tsx), and what is being asserted is one guard's presence.
+  const src = readFileSync(
+    "src/client/pages/resources/CodeToolEditModal.tsx",
+    "utf8",
+  );
+  const effect = src.slice(
+    src.indexOf("const code = form.code;") - 400,
+    src.indexOf("const code = form.code;"),
+  );
+  expect(effect.includes("if (!modal.isOpen) return;")).toBe(true);
 });

@@ -15,6 +15,7 @@ import {
   type CompanySettings,
   readCompanySettings,
 } from "@/modules/tenant-settings/service";
+import { toolHoldingName } from "@/modules/tool-definitions/namespace";
 import {
   type DocumentBlock,
   type DocumentField,
@@ -304,6 +305,14 @@ export async function documentTemplateWriteProblem(
   // index, which breaks the one promise a dry run makes. Nothing to ask only when NEITHER is in play
   // (a patch that touches only the description, say).
   if (slug === undefined && name === undefined) return null;
+  if (slug !== undefined) {
+    const heldByTool = await runScopedOn(base, ctx, (db) =>
+      toolHoldingName(db, slug),
+    );
+    if (heldByTool) {
+      return `slug: the tool name ${documentToolName(slug)} is already used by the tool "${heldByTool.name}".`;
+    }
+  }
   const clash = await existingClash(ctx, base, slug, name, excludeId);
   // Reported in terms of the NAME whenever that index is the one in the way, which is also the only
   // clash reachable without a slug. `name !== undefined` narrows for the compiler; `existingClash`
@@ -668,6 +677,23 @@ export async function createDocumentTemplate(
   // index is still the authority — it is what catches two creates racing — but all it can say is
   // that the slug is taken, and the operator needs to know WHICH of their templates already has this
   // name. One extra read on a path that already does several.
+  // The other half of the namespace: the slug becomes `send_<slug>`, and an HTTP or code tool may
+  // already hold that name. The assembly builds documents FIRST, so the tool would be the one
+  // dropped — silently, with a flow-log line as the only trace (namespace.ts).
+  const heldByTool = await runScopedOn(base, ctx, (db) =>
+    toolHoldingName(db, slug),
+  );
+  if (heldByTool) {
+    refuse(
+      {
+        message: `slug: the tool name ${documentToolName(slug)} is already used by the tool "${heldByTool.name}".`,
+        key: "errors.documentToolNameTaken",
+        params: { tool: documentToolName(slug), holder: heldByTool.name },
+        field: "slug",
+      },
+      409,
+    );
+  }
   const clash = await existingClash(ctx, base, slug, name);
   const holder = clash.byName ?? clash.bySlug;
   if (holder) {

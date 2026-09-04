@@ -108,6 +108,9 @@ export async function codeToolCreate(
     if (args.dry_run !== false) {
       // NOTE: the core's own questions, asked before the preview answers them. They sit INSIDE the
       // branch because the apply reaches the core, which asks them again (#490).
+      // PARSED, and the preview shows what it returned: the parser trims the label and the
+      // description, so echoing the raw input would promise the caller a row the apply then stores
+      // with different values (#490 is about exactly that gap).
       const parsed = assertCodeToolCreatable(input);
       // ADVISORY, unlike the line above it: this one READS, outside the transaction the apply will
       // write in, so a free name here can be taken before the apply arrives. The unique index
@@ -117,7 +120,7 @@ export async function codeToolCreate(
         dryRun: true,
         action: "create",
         resource: "code_tool",
-        preview: input,
+        preview: parsed,
         warnings: await checkCodeToolSyntax(input.code),
         ...schemaWarnings,
       });
@@ -166,7 +169,7 @@ export async function codeToolUpdate(
       // The patch the apply would parse, parsed here: a rename the pattern refuses stops reading as
       // a diff the apply would take (#490). It judges the INPUT, so its verdict cannot change in
       // the gap; the name's availability is asked by the apply, inside its transaction.
-      assertCodeToolPatchValid(built.patch);
+      const parsed = assertCodeToolPatchValid(built.patch);
       // A rename is the one field of a patch whose verdict is not in the payload: `updateCodeTool`
       // asks whether the name is free, and a preview that skipped the question answered a confident
       // diff for a write that always fails. ADVISORY, like the create's, and excluding this row so
@@ -181,10 +184,14 @@ export async function codeToolUpdate(
         built.patch.code !== undefined
           ? await checkCodeToolSyntax(built.patch.code)
           : [];
+      // The diff carries what the apply would STORE, which is the parser's output: the same reason
+      // the create's preview echoes `parsed` above.
+      const parsedProj: Record<string, unknown> = {};
+      for (const k of keys) parsedProj[k] = parsed[k];
       return ok({
         dryRun: true,
         target,
-        diff: diffFields(beforeProj, afterProj),
+        diff: diffFields(beforeProj, parsedProj),
         warnings,
         ...schemaWarnings,
       });

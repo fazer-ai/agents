@@ -13,7 +13,9 @@ import {
   listCodeTools,
   updateCodeTool,
 } from "@/modules/code-tools/service";
-import { lockToolNames } from "@/modules/tool-definitions/name-lock";
+import { documentStarter } from "@/modules/documents/starters";
+import { createDocumentTemplate } from "@/modules/documents/templates";
+import { lockToolNames } from "@/modules/tool-definitions/namespace";
 import { createToolDefinition } from "@/modules/tool-definitions/service";
 
 // The operator-authored code tool's service (issue #363): the row is the operator's, invalid code
@@ -150,6 +152,69 @@ describe.skipIf(!dbUp)("code tools service", () => {
     await deleteCodeTool(ctx(), BigInt(tool.id), appDb);
   });
 
+  test("the namespace is four kinds: RAG's names and a document's send_<slug> are taken too, both ways", async () => {
+    // `dropDuplicateToolNames` decides by ASSEMBLY ORDER, and both of these are built before either
+    // tool table — so the tool under the shared name exists in the console, is granted, and never
+    // reaches the model. Knowable when it is written, so refused there.
+    const rag = await refusal(
+      createCodeTool(ctx(), { ...VALID, name: "search_knowledge" }, appDb),
+    );
+    expect(rag?.translationKey).toBe("errors.toolNameReserved");
+    const ragHttp = await refusal(
+      createToolDefinition(
+        ctx(),
+        {
+          name: "suggest_kb_entry",
+          label: "Sugerir",
+          urlTemplate: "https://example.com/x",
+          allowedHosts: ["example.com"],
+        } as never,
+        appDb,
+      ),
+    );
+    expect(ragHttp?.translationKey).toBe("errors.toolNameReserved");
+
+    await suDb.documentTemplate.create({
+      data: {
+        tenantId,
+        name: "Orçamento",
+        slug: "orcamento",
+        blocks: [],
+        fields: [],
+        style: {},
+      },
+    });
+    const onDocument = await refusal(
+      createCodeTool(ctx(), { ...VALID, name: "send_orcamento" }, appDb),
+    );
+    expect(onDocument?.translationKey).toBe("errors.codeToolNameTaken");
+    await suDb.documentTemplate.deleteMany({ where: { tenantId } });
+
+    // ...and the reverse: a template whose slug would produce a name a code tool holds.
+    const { tool } = await createCodeTool(
+      ctx(),
+      { ...VALID, name: "send_recibo" },
+      appDb,
+    );
+    const starter = documentStarter("quote", "pt-BR");
+    if (!starter) throw new Error("no starter");
+    const reverse = await refusal(
+      createDocumentTemplate(
+        ctx(),
+        {
+          name: "Recibo",
+          slug: "recibo",
+          blocks: starter.blocks,
+          fields: starter.fields,
+          style: starter.style,
+        } as never,
+        appDb,
+      ),
+    );
+    expect(reverse?.translationKey).toBe("errors.documentToolNameTaken");
+    await deleteCodeTool(ctx(), BigInt(tool.id), appDb);
+  });
+
   test("one namespace: a native name, an HTTP tool's name, and the reverse, are refused on the name", async () => {
     const native = await refusal(
       createCodeTool(ctx(), { ...VALID, name: "calculator" }, appDb),
@@ -211,7 +276,7 @@ describe.skipIf(!dbUp)("code tools service", () => {
     // The namespace spans two tables, so no unique index covers it: under READ COMMITTED both
     // writes can read a free name and insert, and `dropDuplicateToolNames` then decides at assembly
     // which tool the agent gets, with a flow-log line as the only trace. What makes that impossible
-    // is that both `assertNameFree`s take the same transaction lock first (name-lock.ts).
+    // is that both `assertNameFree`s take the same transaction lock first (namespace.ts).
     //
     // Measured rather than raced: two concurrent creates usually serialize on the pool and would
     // pass with no lock at all. Here the first transaction takes the lock for the SAME name and

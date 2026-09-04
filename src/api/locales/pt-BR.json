@@ -48,6 +48,7 @@
     "documentTemplateSlugTakenBy": "O identificador \"{{slug}}\" já está em uso pelo modelo \"{{name}}\"",
     "documentTemplateUnreadable": "Este modelo contém conteúdo escrito por uma versão mais nova, então não pode ser salvo por aqui: {{reason}}",
     "documentTooLarge": "O documento é muito grande para processar",
+    "documentToolNameTaken": "O nome de ferramenta {{tool}} já é usado pela ferramenta \"{{holder}}\"",
     "documentWouldBeBlank": "Este documento sairia em branco: com os valores informados, nenhum bloco imprime nada.",
     "documentWouldBeBlankNoLetterhead": "Este documento sairia em branco: o timbre da empresa que ele imprimia não está mais configurado.",
     "emailDomainNotAllowed": "Domínio de email não permitido",

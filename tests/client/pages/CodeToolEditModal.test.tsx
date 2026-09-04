@@ -109,6 +109,36 @@ describe("payloadOfCodeTool", () => {
     expect(schema.qty).toEqual({ type: "string", description: "second" });
   });
 
+  test("a field the operator named `__proto__` reaches the server, which is what refuses it", () => {
+    // On an ordinary object the assignment hits the prototype setter and the field vanishes from
+    // the payload: the tool would then SAVE, with the editor still showing an argument the model is
+    // never offered. Kept as an own key, the server answers 422 on `inputSchema` and the operator
+    // reads why.
+    const form = {
+      ...formFromCodeTool(codeTool()),
+      aiFields: [
+        {
+          _id: "a",
+          name: "__proto__",
+          type: "string" as const,
+          required: false,
+          description: "",
+          enumValues: [] as string[],
+          itemType: "string" as const,
+        },
+      ],
+    };
+    const schema = payloadOfCodeTool(form).inputSchema as Record<
+      string,
+      unknown
+    >;
+    expect(Object.getOwnPropertyNames(schema)).toEqual(["__proto__"]);
+    // ...and it survives the trip to the wire, which is where the refusal happens.
+    expect(
+      Object.getOwnPropertyNames(JSON.parse(JSON.stringify(schema))),
+    ).toEqual(["__proto__"]);
+  });
+
   test("round-trips a stored tool back to a payload the create accepts", () => {
     const payload = payloadOfCodeTool(formFromCodeTool(codeTool()));
     expect(payload.name).toBe("look_up_cpf");

@@ -89,7 +89,11 @@ export function aiFieldsFromSchema(
 export function schemaFromAiFields(
   rows: AiFieldRow[],
 ): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
+  // Null-prototype, so a field an operator named `__proto__` becomes an own key like any other and
+  // reaches the server, which refuses it by name. On an ordinary object it would hit the prototype
+  // setter and vanish from the payload — and the tool would save with the UI still showing an
+  // argument the model is never offered.
+  const out: Record<string, unknown> = Object.create(null);
   for (const r of rows) {
     const name = r.name.trim();
     if (!name) continue;

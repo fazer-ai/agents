@@ -20,7 +20,11 @@ import {
 } from "@/modules/tool-definitions/response-template";
 import { readableVaultRef, requireVaultRef } from "@/modules/vault/service";
 import { unsupportedBodyShape } from "./body-shape";
-import { lockToolNames } from "./name-lock";
+import {
+  documentHoldingToolName,
+  isRagToolName,
+  lockToolNames,
+} from "./namespace";
 import { normalizeToolShapes } from "./normalize";
 
 // Custom HTTP tool definitions (per-tenant). A definition is the LLM-facing parameter schema +
@@ -357,11 +361,21 @@ async function assertNameFree(
   }
   // One namespace reaches the model, so a code tool's name is taken here too (code-tools/service.ts
   // asks this table the same question).
-  const [existing, code] = await Promise.all([
+  // RAG publishes its own built-ins, assembled before either tool table (namespace.ts).
+  if (isRagToolName(name)) {
+    throw new ConflictError(
+      "tool name belongs to a built-in tool",
+      "errors.toolNameReserved",
+      "name",
+    );
+  }
+  const [existing, code, document] = await Promise.all([
     db.toolDefinition.findFirst({ where: { name }, select: { id: true } }),
     db.codeToolDefinition.findFirst({ where: { name }, select: { id: true } }),
+    // A document template publishes `send_<slug>`, assembled before this table too.
+    documentHoldingToolName(db, name),
   ]);
-  if ((existing && existing.id !== exceptId) || code) {
+  if ((existing && existing.id !== exceptId) || code || document) {
     throw new ConflictError(
       "tool name already in use",
       "errors.toolNameTaken",

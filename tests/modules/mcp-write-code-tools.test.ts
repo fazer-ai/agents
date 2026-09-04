@@ -348,6 +348,51 @@ describe.skipIf(!dbUp)("MCP code-tool tools (DB)", () => {
     await suDb.codeToolDefinition.delete({ where: { id: other.id } });
   });
 
+  test("a preview shows the values the apply would store, not the ones that were typed", async () => {
+    // The parser trims the label and the description, so a preview echoing the raw arguments
+    // promises a row the apply then writes differently — the divergence #490 is about, one field
+    // over.
+    const p = principal({ tenantId: tenantA });
+    const padded = {
+      ...VALID,
+      name: "com_espacos",
+      label: "  Com espaços  ",
+      description: "  uma descrição  ",
+    };
+    const dry = await codeToolCreate(p, padded, { base: appDb });
+    expect(dry.ok).toBe(true);
+    if (!dry.ok) return;
+    expect(dry.data.preview).toMatchObject({
+      label: "Com espaços",
+      description: "uma descrição",
+    });
+    const applied = await codeToolCreate(
+      p,
+      { ...padded, dry_run: false },
+      { base: appDb },
+    );
+    expect(applied.ok).toBe(true);
+    if (!applied.ok) return;
+    expect(applied.data.tool).toMatchObject({
+      label: "Com espaços",
+      description: "uma descrição",
+    });
+    const row = await suDb.codeToolDefinition.findFirstOrThrow({
+      where: { tenantId: tenantA, name: "com_espacos" },
+    });
+    const dryPatch = await codeToolUpdate(
+      p,
+      { code_tool_id: String(row.id), label: "  Outro  " },
+      { base: appDb },
+    );
+    expect(dryPatch.ok).toBe(true);
+    if (!dryPatch.ok) return;
+    expect(
+      (dryPatch.data.diff as Record<string, { after: unknown }>).label?.after,
+    ).toBe("Outro");
+    await suDb.codeToolDefinition.delete({ where: { id: row.id } });
+  });
+
   test("code_tool_list omits the body; code_tool_get returns it; both are tenant-fenced", async () => {
     const list = await codeToolList(principal({ tenantId: tenantA }), {
       base: appDb,

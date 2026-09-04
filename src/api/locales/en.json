@@ -48,6 +48,7 @@
     "documentTemplateSlugTakenBy": "The identifier \"{{slug}}\" is already taken by the template \"{{name}}\"",
     "documentTemplateUnreadable": "This template contains content a newer version wrote, so it cannot be saved from here: {{reason}}",
     "documentTooLarge": "Document is too large to process",
+    "documentToolNameTaken": "The tool name {{tool}} is already used by the tool \"{{holder}}\"",
     "documentWouldBeBlank": "This document would be blank: with the values given, no block prints anything.",
     "documentWouldBeBlankNoLetterhead": "This document would be blank: the company letterhead it printed is no longer configured.",
     "emailDomainNotAllowed": "Email domain is not allowed",

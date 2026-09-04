@@ -64,7 +64,7 @@ import {
   canonicalBodyShape,
   unsupportedBodyShape,
 } from "@/modules/tool-definitions/body-shape";
-import { lockToolNames } from "@/modules/tool-definitions/name-lock";
+import { lockToolNames } from "@/modules/tool-definitions/namespace";
 import { normalizeToolShapes } from "@/modules/tool-definitions/normalize";
 import { storableResponseTemplate } from "@/modules/tool-definitions/response-template";
 import {
@@ -1594,7 +1594,7 @@ async function createMissingComponents(
   // The import writes past both services, so it takes their lock itself, once and before either
   // tool loop: the pre-checks below ask the other table whether a name is free, and without this a
   // concurrent tool create could commit into that table between the question and the insert
-  // (name-lock.ts). One acquisition covers every name this import claims.
+  // (namespace.ts). One acquisition covers every name this import claims.
   await lockToolNames(db);
   // Bundle name → stored name, for the HTTP tools this loop could not store under their own.
   const renamedHttpTools = new Map<string, string>();

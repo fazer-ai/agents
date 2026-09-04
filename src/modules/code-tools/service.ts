@@ -12,7 +12,11 @@ import { parseInput } from "@/lib/parse-input";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { markUndisclosed, undisclosedMoved } from "@/modules/audit/projection";
 import { auditMutation, projectionMoved } from "@/modules/audit/service";
-import { lockToolNames } from "@/modules/tool-definitions/name-lock";
+import {
+  documentHoldingToolName,
+  isRagToolName,
+  lockToolNames,
+} from "@/modules/tool-definitions/namespace";
 import {
   hasReservedFieldName,
   normalizeToolShapes,
@@ -200,11 +204,22 @@ async function assertNameFree(
       "name",
     );
   }
-  const [own, http] = await Promise.all([
+  // RAG's names are built-ins of another kind: the tool exists whenever a knowledge base is granted
+  // and it is assembled first, so a code tool under one of those names never reaches the model.
+  if (isRagToolName(name)) {
+    throw new ConflictError(
+      "tool name belongs to a built-in tool",
+      "errors.toolNameReserved",
+      "name",
+    );
+  }
+  const [own, http, document] = await Promise.all([
     db.codeToolDefinition.findFirst({ where: { name }, select: { id: true } }),
     db.toolDefinition.findFirst({ where: { name }, select: { id: true } }),
+    // A document template publishes `send_<slug>`, and it is assembled before either tool table.
+    documentHoldingToolName(db, name),
   ]);
-  if ((own && own.id !== exceptId) || http) {
+  if ((own && own.id !== exceptId) || http || document) {
     throw new ConflictError(
       "tool name already in use",
       "errors.codeToolNameTaken",

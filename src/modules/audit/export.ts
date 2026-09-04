@@ -47,6 +47,16 @@ export const AUDIT_EXPORT_MAX_BYTES = 8 * 1024 * 1024;
 // averaged away by the thin ones around it. Doubling caps how fast it may grow, which is what keeps
 // the estimate honest: reaching a wide trip costs several trips that already fit inside the budget.
 //
+// THE WIDEST ROW OF THE LAST TRIP, and not of the walk. A running maximum never comes back down, so
+// one 400 KB `agent.settings` write in a trail of 161-byte logins would pin every later trip to what
+// that row cost -- about 19 rows against the default budget, turning a 10,000-row export into five
+// hundred sequential transactions. Forgetting it after one trip is safe here because the doubling
+// cap, not the estimate, is what bounds the recovery: a trip may only ever ask for twice the last
+// one, so an estimate that turns optimistic buys a single doubling and not a jump to the cap.
+// (Measured as a mutation: halving the remembered maximum each trip instead of dropping it produces
+// the identical sequence of trips, because whenever the two disagree the doubling cap is already the
+// smaller bound. The half-life was dead code.)
+//
 // What this does NOT promise: a trail whose first rows are thin and whose next ones are enormous can
 // still overshoot one trip, because no row count can bound bytes that are not known until they are
 // read. Bounding it exactly would mean asking the database for the sizes first, in SQL, which means
@@ -189,7 +199,7 @@ export async function exportAudit(
   // Newest first, walked by the same keyset the page uses, so "the newest `count` win" is the same
   // sentence for both readers.
   let cursor: bigint | null = null;
-  // The widest row written so far, which is what sizes the next trip (see BATCH_PROBE above).
+  // The widest row of the last trip, which is what sizes the next one (see BATCH_PROBE above).
   let widest = 0;
   let batch = BATCH_PROBE;
 
@@ -209,6 +219,7 @@ export async function exportAudit(
       }),
     );
     const more = rows.length > want;
+    widest = 0;
     for (const r of rows.slice(0, want)) {
       const line = toLine(r);
       // +2 for the CRLF this line will be joined with. Checked BEFORE appending, so the file never

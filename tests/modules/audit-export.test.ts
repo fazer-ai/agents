@@ -479,6 +479,48 @@ describe.skipIf(!dbUp)("exporting the trail", () => {
     }
   });
 
+  // AND THE ESTIMATE RECOVERS. The widest row is a fact, but it is a fact about rows already behind
+  // us, and one 400 KB `agent.settings` write sits in a trail of logins that are 161 bytes each. Kept
+  // as a running maximum it would pin every later trip to what that one row cost -- roughly 19 rows
+  // against the default budget -- and turn a 10,000-row export into five hundred sequential
+  // transactions. So it decays by half per trip while the batch is allowed to double per trip: the
+  // two move at the same rate, which keeps the product (what a trip may materialize) near the budget
+  // the whole way instead of only at the moment the fat row was read.
+  test("a single fat row does not pin every later trip to its size", async () => {
+    try {
+      const huge: Record<string, string> = {};
+      for (let i = 0; i < 100; i++) huge[`c${i}`] = "x".repeat(3900);
+      for (let i = 0; i < 55; i++) {
+        await seed(mine, "agent.update", `${TAG}:rec${i}`);
+      }
+      // Newest, so it lands inside the very first trip.
+      await seed(mine, "agent.create", `${TAG}:recfat`, { after: huge });
+
+      const takes: number[] = [];
+      const spy = appDb.$extends({
+        query: {
+          auditLog: {
+            findMany({ args, query }) {
+              takes.push(Number(args.take ?? 0));
+              return query(args);
+            },
+          },
+        },
+      }) as unknown as PrismaClient;
+
+      await exportAudit(ctx(), {}, spy);
+      expect(takes.length).toBeGreaterThan(2);
+      // Two thin trips after the fat row, the batch is governed by the doubling cap again and not by
+      // what that row cost -- it is exactly twice the trip before it. Pinned to the running maximum
+      // instead, the third trip stays at the ~19 rows the 400 KB row bought and never moves.
+      expect((takes[2] ?? 0) - 1).toBe(2 * ((takes[1] ?? 0) - 1));
+    } finally {
+      await suDb.$executeRawUnsafe(
+        `DELETE FROM audit_logs WHERE target LIKE '${TAG}:rec%'`,
+      );
+    }
+  });
+
   // A CUT IS ALWAYS ANNOUNCED, including the one that happens between two trips. When a trip ends
   // with the budget spent to the last row and more rows still match, the next trip is sized down to
   // its floor of one row -- which then does not fit, and truncates. Sizing it down to ZERO instead

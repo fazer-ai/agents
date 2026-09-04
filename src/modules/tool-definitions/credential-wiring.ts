@@ -368,7 +368,11 @@ export function effectiveUrlTemplate(
 // and throws `invalid urlTemplate` when that fails — so a stored `not-a-url`, which the definition
 // schema accepts, is a tool that never reaches a fetch. Same reasoning as the relative-with-no-base
 // case above: there is no unauthenticated request to warn about.
-function buildsARequest(urlTemplate: unknown, shapes: ToolShapePatch): boolean {
+function buildsARequest(
+  urlTemplate: unknown,
+  shapes: ToolShapePatch,
+  ackArg: boolean,
+): boolean {
   if (typeof urlTemplate !== "string") return false;
   // The ORIGIN is pinned: `buildHttpTool` takes it from the neutralized template and throws
   // "interpolation altered the origin" when the real one differs, so a placeholder anywhere in the
@@ -390,6 +394,9 @@ function buildsARequest(urlTemplate: unknown, shapes: ToolShapePatch): boolean {
   const fixed = fixedValuesByName(shapes.inputSchema);
   for (const name of namesIn(urlTemplate)) {
     if (name === "secret") continue;
+    // The ack argument is declared by the RUNTIME, not by the schema, so it is not an orphan on a
+    // tool that has an ack — and is one on a tool that does not.
+    if (ackArg && name === WAIT_MESSAGE_ARG) continue;
     // A prototype name resolves for the same reason it resolves everywhere else here: `valueLookup`
     // asks `n in input` and finds Object.prototype's member. Undeclared, and still not an orphan.
     if (name in {}) continue;
@@ -607,7 +614,10 @@ export function unusedCredentialWarning(
   if (isNonInjectableSecret(facts.kind)) return null;
   const { shapes: normalized } = normalizeToolShapes(raw);
   const effective = effectiveUrlTemplate(normalized.urlTemplate, facts.baseUrl);
-  if (effective === null || !buildsARequest(effective, normalized)) return null;
+  const ackArg = !!opts.ackMessage;
+  if (effective === null || !buildsARequest(effective, normalized, ackArg)) {
+    return null;
+  }
   const shapes: ToolShapePatch = {
     ...normalized,
     urlTemplate: effective as string | undefined,
@@ -619,7 +629,7 @@ export function unusedCredentialWarning(
     facts.paramName,
     m,
     shapes,
-    !!opts.ackMessage,
+    ackArg,
   );
   if (verdict.state === "reaches") return null;
 

@@ -700,6 +700,16 @@ const CASES: Wiring[] = [
     query: { token: "{{__wait_message}}" },
   },
 
+  {
+    label:
+      "the ack argument in the URL is declared by the runtime, so the tool runs",
+    reaches: false,
+    kind: "query",
+    paramName: "token",
+    urlTemplate: `https://${PUBLIC}/v1/thing?token={{__wait_message}}`,
+    ackMessage: "one moment",
+  },
+
   // ── spelling ──
   {
     label:
@@ -870,6 +880,31 @@ describe("the scanner answers what the runtime does", () => {
       ),
     ).toBeNull();
 
+    // NOTE: and the ack argument is the runtime's ONLY when the tool has an ack. Without one it is
+    // a name nothing declares, and the call throws like any other orphan.
+    const noAck = buildHttpTool(
+      asDef({
+        label: "",
+        reaches: false,
+        urlTemplate: `https://${PUBLIC}/v1/thing?token={{__wait_message}}`,
+      }),
+      { resolveCredential: async () => SECRET, fetchImpl: stubFetch({}) },
+    );
+    await expect(noAck.invoke({})).rejects.toThrow(
+      "no value available for URL placeholder",
+    );
+    expect(
+      unusedCredentialWarning(
+        { kind: "query", paramName: "token", baseUrl: null },
+        "GET",
+        {
+          urlTemplate: `https://${PUBLIC}/v1/thing?token={{__wait_message}}`,
+          headers: {},
+          inputSchema: {},
+        },
+      ),
+    ).toBeNull();
+
     // NOTE: the control — with a base, the same tool is judged normally.
     expect(
       unusedCredentialWarning(
@@ -917,7 +952,7 @@ describe("the scanner answers what the runtime does", () => {
     // single verdict would still pass while proving nothing about the boundary between them.
     const reaching = CASES.filter((c) => c.reaches).length;
     expect(reaching).toBeGreaterThan(24);
-    expect(CASES.length - reaching).toBeGreaterThan(26);
+    expect(CASES.length - reaching).toBeGreaterThan(27);
   });
 });
 
@@ -1050,6 +1085,7 @@ describe.skipIf(!dbUp)("tool_create / tool_update say so", () => {
   let bearerRef = "";
   let headerRef = "";
   let basedRef = "";
+  let queryRef = "";
   let n = 0;
 
   const principal = (): VerifiedToken =>
@@ -1114,6 +1150,20 @@ describe.skipIf(!dbUp)("tool_create / tool_update say so", () => {
           value: "abc123TOKEN",
           kind: "generic",
           baseUrl: `https://${PUBLIC}/{{secret}}`,
+        },
+        undefined,
+        undefined,
+        appDb,
+      )
+    ).ref;
+    queryRef = (
+      await createVaultEntry(
+        ctx,
+        {
+          name: "wiring-query",
+          value: "abc123TOKEN",
+          kind: "query",
+          paramName: "token",
         },
         undefined,
         undefined,
@@ -1407,6 +1457,32 @@ describe.skipIf(!dbUp)("tool_create / tool_update say so", () => {
     expect(await suDb.toolDefinition.count({ where: { tenantId, name } })).toBe(
       1,
     );
+  });
+
+  test("clearing the ack message is not the same as leaving it alone", async () => {
+    // NOTE: `ack_message: null` CLEARS it, and the applied row then declares no `__wait_message` at
+    // all. Reading the cleared field as "unchanged" restored an ack the write is removing, and the
+    // preview reported a credential shadowed by an argument that will not exist.
+    const created = await create({
+      credential_ref: queryRef,
+      query: { token: "{{__wait_message}}" },
+      ack_enabled: true,
+      ack_message: "one moment",
+      dry_run: false,
+    });
+    expect(created.ok).toBe(true);
+    expect(wiringWarning(created)).toHaveLength(1);
+    const id = created.ok
+      ? (created.data as { target: string }).target.split(":")[1]
+      : "";
+
+    const r = await toolUpdate(
+      principal(),
+      { tool_id: id as string, ack_message: null },
+      { base: appDb },
+    );
+    expect(r.ok).toBe(true);
+    expect(wiringWarning(r)).toHaveLength(0);
   });
 
   test("no credential attached, no warning", async () => {

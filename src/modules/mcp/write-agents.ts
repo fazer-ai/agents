@@ -766,8 +766,12 @@ export async function toolUpdate(
           : current.credentialRef,
         built.patch.method ?? current.method,
         { ...toolShapesOf(current), ...toolShapesOf(built.patch) },
+        // NOTE: `!== undefined` and not `??`: `ack_message: null` CLEARS the message, and reading a
+        // cleared field as "unchanged" restored the ack the applied row will not have.
         (built.patch.ackEnabled ?? current.ackEnabled)
-          ? (built.patch.ackMessage ?? current.ackMessage)
+          ? built.patch.ackMessage !== undefined
+            ? built.patch.ackMessage
+            : current.ackMessage
           : null,
       );
       const all = [...norm.warnings, ...wiring];

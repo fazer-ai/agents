@@ -53,6 +53,13 @@ const PLACEHOLDER = /\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g;
 // graph/tools/http.ts): a lone AI field the model OMITS makes the runtime skip that row entirely.
 const LONE_PLACEHOLDER = /^\{\{\s*([a-zA-Z0-9_]+)\s*\}\}$/;
 
+// What an UNRESOLVED placeholder becomes while the URL is parsed, and the one thing that matters
+// about it is that NO param name can be this string: `validateParamName` holds those to
+// `[A-Za-z0-9!#$%&'*+.^_`|~-]`, and parentheses are outside it. A key this file could not resolve is
+// UNKNOWN, so a sentinel a real name could equal answers "that parameter is already taken" for a
+// tool where it is not — and it did: `_` was the sentinel, and `paramName: "_"` is legal.
+const UNRESOLVED_KEY = "((unresolved))";
+
 function namesIn(template: string): Set<string> {
   return new Set(
     [...template.matchAll(PLACEHOLDER)].map((m) => m[1] as string),
@@ -142,7 +149,7 @@ function parseUrlTemplate(
     // credential's own parameter as already taken and warn about a tool that injects it.
     return value !== undefined && namesIn(value).size === 0
       ? encodeURIComponent(value)
-      : "_";
+      : UNRESOLVED_KEY;
   });
   try {
     return new URL(resolved, "https://placeholder.invalid");

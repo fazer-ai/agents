@@ -479,6 +479,15 @@ const CASES: Wiring[] = [
     inputSchema: { override: { type: "string", required: true } },
   },
 
+  {
+    label: "a query key nothing here can resolve is unknown, not a literal `_`",
+    reaches: true,
+    kind: "query",
+    paramName: "_",
+    urlTemplate: `https://${PUBLIC}/v1/thing?{{field}}=constant`,
+    inputSchema: { field: { type: "string", required: true } },
+  },
+
   // ── spelling ──
   {
     label:
@@ -546,7 +555,7 @@ describe("the scanner answers what the runtime does", () => {
     // NOTE: the floor. Every assertion above is `toBe(w.reaches)`, so a table that drifted to a
     // single verdict would still pass while proving nothing about the boundary between them.
     const reaching = CASES.filter((c) => c.reaches).length;
-    expect(reaching).toBeGreaterThan(14);
+    expect(reaching).toBeGreaterThan(15);
     expect(CASES.length - reaching).toBeGreaterThan(14);
   });
 });

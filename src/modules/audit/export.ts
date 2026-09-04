@@ -140,26 +140,43 @@ type Row = Prisma.AuditLogGetPayload<{ select: typeof SELECT }>;
 // quotes -- which for this table is EVERY row with a projection, since a JSON cell always carries `"`
 // (measured: 72 of 72 on a dev trail). So this is the ordinary path here, not the edge case it is in
 // a log export, and the tests round-trip a value carrying all three characters through a real parser.
+//
+// Split in two, because the columns are not one kind: seven of them are text and two of them are
+// JSON, and only the JSON pair may be re-parsed by whoever opens the file.
+function quote(s: string): string {
+  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+// The scalar columns, which are text and are written as text.
 function cell(value: unknown): string {
   if (value === null || value === undefined) return "";
-  const s = typeof value === "object" ? JSON.stringify(value) : String(value);
-  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  return quote(String(value));
+}
+
+// The two JSON columns, WHICH ALSO HOLD PRIMITIVES. `before`/`after` are `unknown` on the way in and
+// jsonb on the way out, and jsonb holds strings, numbers and booleans as happily as objects. Writing
+// those as text is lossy in a way that is invisible: a stored `"abc"` becomes the cell `abc`, `""`
+// becomes indistinguishable from SQL NULL, and `42`/`true` collide with the strings spelled the same
+// way. So the value is serialized as a JSON literal whatever its shape -- an empty cell then means
+// the column held nothing, and only that.
+function jsonCell(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  return quote(JSON.stringify(value));
 }
 
 function toLine(r: Row): string {
   return [
-    r.id,
-    r.createdAt.toISOString(),
-    r.action,
-    r.actorType,
-    r.actorId,
-    r.target,
-    r.tenantId,
-    r.before,
-    r.after,
-  ]
-    .map(cell)
-    .join(",");
+    ...[
+      r.id,
+      r.createdAt.toISOString(),
+      r.action,
+      r.actorType,
+      r.actorId,
+      r.target,
+      r.tenantId,
+    ].map(cell),
+    ...[r.before, r.after].map(jsonCell),
+  ].join(",");
 }
 
 // Filename-safe ISO instant (colons dropped): agents-audit-2026-05-09T13-45-09.csv.

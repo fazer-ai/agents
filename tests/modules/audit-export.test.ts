@@ -521,6 +521,46 @@ describe.skipIf(!dbUp)("exporting the trail", () => {
     }
   });
 
+  // THE TWO JSON COLUMNS CARRY JSON, INCLUDING WHEN THE JSON IS NOT AN OBJECT. `before`/`after` are
+  // `unknown` on the way in and jsonb on the way out, and jsonb holds primitives: a stored `"abc"`
+  // comes back as a JS string, and stringifying it as text drops the quotes -- so `"abc"` and `abc`
+  // become the same cell, `""` becomes indistinguishable from SQL NULL, and `42`/`true` collide with
+  // the strings spelled the same way. The promise this file makes about those two columns is that
+  // whatever parses them gets the value back, so they are serialized as JSON literals, always.
+  test("a JSON column round-trips a primitive, not just an object", async () => {
+    try {
+      const cases: [string, unknown][] = [
+        ["str", "abc"],
+        ["empty", ""],
+        ["num", 42],
+        ["bool", true],
+        ["arr", [1, "dois"]],
+      ];
+      for (const [name, value] of cases) {
+        await seed(mine, "agent.update", `${TAG}:json-${name}`, {
+          after: value,
+        });
+      }
+      const r = await exportAudit(ctx(), {}, appDb);
+      const rows = parseCsv(r.content);
+      const targets = col(rows, "target");
+      const afters = col(rows, "after");
+      const befores = col(rows, "before");
+      for (const [name, value] of cases) {
+        const i = targets.indexOf(`${TAG}:json-${name}`);
+        expect(i).toBeGreaterThanOrEqual(0);
+        expect(JSON.parse(afters[i] as string)).toEqual(value);
+        // ...and the column that holds no JSON at all stays empty, so the empty string above is
+        // still readable as a value rather than as an absence.
+        expect(befores[i]).toBe("");
+      }
+    } finally {
+      await suDb.$executeRawUnsafe(
+        `DELETE FROM audit_logs WHERE target LIKE '${TAG}:json-%'`,
+      );
+    }
+  });
+
   // A CUT IS ALWAYS ANNOUNCED, including the one that happens between two trips. When a trip ends
   // with the budget spent to the last row and more rows still match, the next trip is sized down to
   // its floor of one row -- which then does not fit, and truncates. Sizing it down to ZERO instead

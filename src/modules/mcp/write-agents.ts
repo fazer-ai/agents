@@ -560,12 +560,42 @@ function toolShapesOf(src: {
 // normalization itself, because `buildHttpTool` runs it too and a legacy single-brace `{secret}`
 // sitting in a stored template is therefore sent. Normalizing only the patch, as the preview does
 // for its own purposes, would leave the stored half raw and report a working tool as unwired.
+// The same read AFTER the write has committed, and it can never take the write down with it. The
+// rule is docs/mcp.md's, for config-health: "the write had already committed, so a rejection is
+// reported rather than raised". A pool timeout on this advisory lookup would otherwise answer
+// `ok: false` for a tool that exists, and the caller's retry would meet a name conflict.
+//
+// Spelled out rather than forwarded with `...args`: the #502 fence reads these call sites for the
+// client they hand on, and a spread names none — it caught this one.
+async function appliedWiringWarning(
+  ctx: TenantContext,
+  base: PrismaClient,
+  credentialRef: string | null | undefined,
+  method: string | null | undefined,
+  shapes: ToolShapePatch,
+  ackMessage: string | null | undefined,
+): Promise<string[]> {
+  try {
+    return await credentialWiringWarning(
+      ctx,
+      base,
+      credentialRef,
+      method,
+      shapes,
+      ackMessage,
+    );
+  } catch {
+    return [];
+  }
+}
+
 async function credentialWiringWarning(
   ctx: TenantContext,
   base: PrismaClient,
   credentialRef: string | null | undefined,
   method: string | null | undefined,
   shapes: ToolShapePatch,
+  ackMessage: string | null | undefined,
 ): Promise<string[]> {
   if (!credentialRef) return [];
   const facts = await runScopedOn(base, ctx, (db) =>
@@ -580,6 +610,7 @@ async function credentialWiringWarning(
     { kind: facts.kind, paramName: facts.paramName, baseUrl: facts.baseUrl },
     method,
     shapes,
+    { ackMessage },
   );
   return warning ? [warning] : [];
 }
@@ -635,6 +666,7 @@ export async function toolCreate(
         input.credentialRef,
         input.method,
         toolShapesOf(input),
+        input.ackEnabled ? input.ackMessage : null,
       );
       const all = [...norm.warnings, ...wiring];
       return ok({
@@ -650,12 +682,13 @@ export async function toolCreate(
     // NOTE: recomputed from the row that was CREATED, for the reason the update path gives: the
     // preview's vault read happens before the write, and a credential's param name or base URL can
     // change in between — the response would then describe wiring that is already not the wiring.
-    const appliedWiring = await credentialWiringWarning(
+    const appliedWiring = await appliedWiringWarning(
       ctx,
       base,
       created.credentialRef,
       created.method,
       toolShapesOf(created),
+      created.ackEnabled ? created.ackMessage : null,
     );
     const applied = [...norm.warnings, ...appliedWiring];
     return ok({
@@ -733,6 +766,9 @@ export async function toolUpdate(
           : current.credentialRef,
         built.patch.method ?? current.method,
         { ...toolShapesOf(current), ...toolShapesOf(built.patch) },
+        (built.patch.ackEnabled ?? current.ackEnabled)
+          ? (built.patch.ackMessage ?? current.ackMessage)
+          : null,
       );
       const all = [...norm.warnings, ...wiring];
       return ok({
@@ -752,12 +788,13 @@ export async function toolUpdate(
     // then report a diff of the row that was written next to a warning about the row that was read.
     // No test distinguishes the two: the divergence needs a write landing inside that window, and
     // the consistency with the line above is the argument.
-    const appliedWiring = await credentialWiringWarning(
+    const appliedWiring = await appliedWiringWarning(
       ctx,
       base,
       updated.credentialRef,
       updated.method,
       toolShapesOf(updated),
+      updated.ackEnabled ? updated.ackMessage : null,
     );
     const applied = [...norm.warnings, ...appliedWiring];
     return ok({

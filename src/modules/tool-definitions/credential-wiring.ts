@@ -96,8 +96,10 @@ function alwaysNonEmpty(
   template: string,
   fixed: Map<string, string>,
   resolveFixed = true,
+  ackArg = false,
 ): boolean {
   if (template.replace(PLACEHOLDER, "") !== "") return true;
+  if (ackArg && namesIn(template).has(WAIT_MESSAGE_ARG)) return true;
   if (!resolveFixed) return false;
   for (const name of namesIn(template)) {
     // The prototype names are non-empty for a DIFFERENT reason than the fixed ones, and the two
@@ -368,6 +370,13 @@ export function effectiveUrlTemplate(
 // case above: there is no unauthenticated request to warn about.
 function buildsARequest(urlTemplate: unknown, shapes: ToolShapePatch): boolean {
   if (typeof urlTemplate !== "string") return false;
+  // The ORIGIN is pinned: `buildHttpTool` takes it from the neutralized template and throws
+  // "interpolation altered the origin" when the real one differs, so a placeholder anywhere in the
+  // scheme, host or port is a tool that never fetches. The two sentinels answer where it sits — the
+  // origins differ only if a placeholder is inside one.
+  const a = parseUrlTemplate(urlTemplate, new Map(), UNRESOLVED_A);
+  const b = parseUrlTemplate(urlTemplate, new Map(), UNRESOLVED_B);
+  if (!a || !b || a.origin !== b.origin) return false;
   try {
     new URL(urlTemplate.replace(PLACEHOLDER, "_"));
   } catch {
@@ -477,11 +486,16 @@ type InjectionVerdict =
 // given the same treatment, and mirroring that here is what agrees with the runtime as it is.
 const SWALLOWED_HEADER = "__proto__";
 
+// The argument `buildHttpTool` adds for itself when the tool has an ack: required, and rejected by
+// zod when empty, so it is present and non-empty on every call that runs.
+const WAIT_MESSAGE_ARG = "__wait_message";
+
 function autoInjectionVerdict(
   kind: string | null | undefined,
   paramName: string | null | undefined,
   method: string,
   shapes: ToolShapePatch,
+  ackArg = false,
 ): InjectionVerdict {
   // The value is a probe, never a secret: `resolveSecretInjection` only needs a non-empty string to
   // answer WHERE the credential would go.
@@ -541,7 +555,8 @@ function autoInjectionVerdict(
     return shadowed("tool");
   }
   const explicit = reachingQuery(shapes)[inj.name];
-  const alwaysSet = explicit !== undefined && alwaysNonEmpty(explicit, fixed);
+  const alwaysSet =
+    explicit !== undefined && alwaysNonEmpty(explicit, fixed, true, ackArg);
   return alwaysSet ? shadowed("tool") : { state: "reaches" };
 }
 
@@ -584,6 +599,10 @@ export function unusedCredentialWarning(
   },
   method: string | null | undefined,
   raw: ToolShapePatch,
+  // The tool's own ack, when it has one. `buildHttpTool` then DECLARES a required, non-empty
+  // `__wait_message` argument of its own, so a query value of `{{__wait_message}}` is set on every
+  // executable call and takes its parameter — a field that is in no input schema anywhere.
+  opts: { ackMessage?: string | null } = {},
 ): string | null {
   if (isNonInjectableSecret(facts.kind)) return null;
   const { shapes: normalized } = normalizeToolShapes(raw);
@@ -595,7 +614,13 @@ export function unusedCredentialWarning(
   };
   const m = (method ?? DEFAULT_HTTP_METHOD).toUpperCase();
   if (mentions(reachableTemplates(method, shapes), "secret")) return null;
-  const verdict = autoInjectionVerdict(facts.kind, facts.paramName, m, shapes);
+  const verdict = autoInjectionVerdict(
+    facts.kind,
+    facts.paramName,
+    m,
+    shapes,
+    !!opts.ackMessage,
+  );
   if (verdict.state === "reaches") return null;
 
   const kind = facts.kind ?? "generic";

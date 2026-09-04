@@ -58,6 +58,7 @@ interface Wiring {
   kind?: string;
   paramName?: string | null;
   credentialBaseUrl?: string;
+  ackMessage?: string;
   urlTemplate?: string;
   headers?: Record<string, unknown>;
   query?: Record<string, unknown>;
@@ -78,6 +79,7 @@ const asDef = (w: Wiring): HttpToolDef => ({
   credentialKind: w.kind ?? "generic",
   credentialParamName: w.paramName ?? null,
   credentialBaseUrl: w.credentialBaseUrl ?? null,
+  ackMessage: w.ackMessage ?? null,
 });
 
 const asShapes = (w: Wiring): ToolShapePatch => ({
@@ -107,6 +109,9 @@ async function secretLeft(w: Wiring): Promise<boolean> {
     // TRUTHY, like `parseFields`' own `!!s.required` — a spec may carry anything there.
     if (spec?.required) input[name] = "model-value";
   }
+  // NOTE: the runtime declares this one for itself when the tool has an ack, and zod rejects the
+  // call without it — so a row with an ack has to supply it, exactly like a required field.
+  if (w.ackMessage) input.__wait_message = "one moment";
   (await tool.invoke(input)) as unknown as ToolMessage;
   const headers = captured.init?.headers as Record<string, string> | undefined;
   return [
@@ -130,6 +135,7 @@ const scannerSaysReaches = (w: Wiring): boolean =>
     },
     w.method ?? "GET",
     asShapes(w),
+    { ackMessage: w.ackMessage ?? null },
   ) === null;
 
 const CASES: Wiring[] = [
@@ -678,6 +684,22 @@ const CASES: Wiring[] = [
     urlTemplate: `https://${PUBLIC}/v1/{{toString}}`,
   },
 
+  {
+    label: "a query kind shadowed by the ack argument the runtime declares",
+    reaches: false,
+    kind: "query",
+    paramName: "token",
+    query: { token: "{{__wait_message}}" },
+    ackMessage: "one moment",
+  },
+  {
+    label: "…and not shadowed by it when the tool has no ack",
+    reaches: true,
+    kind: "query",
+    paramName: "token",
+    query: { token: "{{__wait_message}}" },
+  },
+
   // ── spelling ──
   {
     label:
@@ -817,6 +839,37 @@ describe("the scanner answers what the runtime does", () => {
       ),
     ).toBeNull();
 
+    // NOTE: and the fifth: a placeholder inside the ORIGIN. The runtime pins the origin from the
+    // neutralized template and throws when the real one differs, so this template never fetches
+    // however the field resolves.
+    const moving = buildHttpTool(
+      {
+        name: "t",
+        method: "GET",
+        urlTemplate: "https://{{region}}.example.com/x",
+        allowedHosts: ["us.example.com"],
+        headers: {},
+        inputSchema: { region: { type: "string", required: true } },
+        credentialRef: "vault:1",
+        credentialKind: "generic",
+      },
+      { resolveCredential: async () => SECRET, fetchImpl: stubFetch({}) },
+    );
+    await expect(moving.invoke({ region: "us" })).rejects.toThrow(
+      "interpolation altered the origin",
+    );
+    expect(
+      unusedCredentialWarning(
+        { kind: "generic", paramName: null, baseUrl: null },
+        "GET",
+        {
+          urlTemplate: "https://{{region}}.example.com/x",
+          headers: {},
+          inputSchema: { region: { type: "string", required: true } },
+        },
+      ),
+    ).toBeNull();
+
     // NOTE: the control — with a base, the same tool is judged normally.
     expect(
       unusedCredentialWarning(
@@ -864,7 +917,7 @@ describe("the scanner answers what the runtime does", () => {
     // single verdict would still pass while proving nothing about the boundary between them.
     const reaching = CASES.filter((c) => c.reaches).length;
     expect(reaching).toBeGreaterThan(24);
-    expect(CASES.length - reaching).toBeGreaterThan(25);
+    expect(CASES.length - reaching).toBeGreaterThan(26);
   });
 });
 
@@ -1308,6 +1361,52 @@ describe.skipIf(!dbUp)("tool_create / tool_update say so", () => {
     );
     expect(r.ok).toBe(true);
     expect(wiringWarning(r)).toHaveLength(0);
+  });
+
+  test("a post-commit read that fails does not undo the write", async () => {
+    // NOTE: the warning is recomputed AFTER `createToolDefinition` commits, and that read is a
+    // scoped vault transaction like any other — a pool timeout or a transient error there would
+    // otherwise answer `ok: false` for a tool that exists, and the caller's retry would meet a name
+    // conflict. docs/mcp.md states the rule for config-health, and it is the same rule.
+    let created = false;
+    const failing = appDb.$extends({
+      query: {
+        toolDefinition: {
+          async create({ args, query }) {
+            const r = await query(args);
+            created = true;
+            return r;
+          },
+        },
+        vaultEntry: {
+          async findFirst({ args, query }) {
+            if (created) throw new Error("pool timeout");
+            return query(args);
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+
+    n += 1;
+    const name = `wiring_postcommit_${n}`;
+    const r = await toolCreate(
+      principal(),
+      {
+        name,
+        url_template: `https://${PUBLIC}/v1/thing`,
+        allowed_hosts: [PUBLIC],
+        credential_ref: genericRef,
+        dry_run: false,
+      } as Parameters<typeof toolCreate>[1],
+      { base: failing },
+    );
+    expect(created).toBe(true);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect((r.data as { applied?: boolean }).applied).toBe(true);
+    // NOTE: and the row is really there — which is the whole point of not raising.
+    expect(await suDb.toolDefinition.count({ where: { tenantId, name } })).toBe(
+      1,
+    );
   });
 
   test("no credential attached, no warning", async () => {

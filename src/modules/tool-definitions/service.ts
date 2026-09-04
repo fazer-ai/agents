@@ -424,8 +424,24 @@ export async function assertToolNameAvailable(
   ctx: TenantContext,
   name: string,
   base: PrismaClient = basePrisma,
+  // The row being renamed, and the name it carries now: a tool keeping its own name is not
+  // colliding with itself, and a save that does not MOVE the name is not asking the newer rules
+  // (`assertNameFree`).
+  exceptId?: bigint,
+  currentName?: string,
 ): Promise<void> {
-  await runScopedOn(base, ctx, (db) => assertNameFree(db, name));
+  await runScopedOn(base, ctx, (db) =>
+    assertNameFree(db, name, exceptId, currentName),
+  );
+}
+
+// The patch an update would apply, judged before any database is involved — the twin of
+// `assertToolDefinitionCreatable`, and the reason the MCP preview can show the name the apply will
+// store rather than the spelling the caller typed.
+export function assertToolDefinitionPatchValid(
+  patch: ToolDefinitionUpdate,
+): ToolDefinitionUpdate {
+  return parseInput(toolDefinitionUpdateSchema, patch);
 }
 
 export async function createToolDefinition(

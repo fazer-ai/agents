@@ -41,6 +41,7 @@ import {
 } from "@/modules/tool-definitions/response-template";
 import {
   assertToolDefinitionCreatable,
+  assertToolDefinitionPatchValid,
   assertToolNameAvailable,
   createToolDefinition,
   deleteToolDefinition,
@@ -573,7 +574,9 @@ export async function toolCreate(
         dryRun: true,
         action: "create",
         resource: "tool",
-        preview: { ...input, ...norm.shapes },
+        // `parsed` first: the name is canonicalized on the way in, so echoing the spelling the
+        // caller typed would promise a row stored under a different one.
+        preview: { ...input, ...parsed, ...norm.shapes },
         ...warnings,
       });
     }
@@ -641,6 +644,15 @@ export async function toolUpdate(
     }
     const target = `tool:${id}`;
     if (args.dry_run !== false) {
+      // The core's own questions about a PATCH, asked before the preview answers: the shape (which
+      // canonicalizes the name, so the diff shows what would be stored), and — for a rename — the
+      // availability of that name, excluding this row. Without them a dry run described a rename
+      // the apply refuses, or one to a spelling it would not store (#490).
+      const parsed = assertToolDefinitionPatchValid(built.patch);
+      if (parsed.name !== undefined) {
+        await assertToolNameAvailable(ctx, parsed.name, base, id, current.name);
+        afterProj.name = parsed.name;
+      }
       return ok({
         dryRun: true,
         target,

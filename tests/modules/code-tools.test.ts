@@ -412,6 +412,35 @@ describe.skipIf(!dbUp)("code tools service", () => {
     await deleteCodeTool(ctx(), BigInt(tool.id), appDb);
   });
 
+  test("a name that was legal before the newer rules can still be saved, as long as it does not move", async () => {
+    // The console sends the whole row on every save, and these rules arrived after rows existed:
+    // refusing an unchanged name would lock an operator out of editing a tool that was legal when
+    // they created it. Only a name that MOVES is asked the question.
+    const legacy = await suDb.codeToolDefinition.create({
+      data: {
+        tenantId,
+        name: "search_knowledge",
+        label: "Busca antiga",
+        description: "d",
+        inputSchema: {},
+        code: "return 1",
+      },
+    });
+    const patched = await updateCodeTool(
+      ctx(),
+      legacy.id,
+      { name: "search_knowledge", description: "outra descrição" },
+      appDb,
+    );
+    expect(patched.tool.description).toBe("outra descrição");
+    // Moving it onto another reserved name is still refused.
+    const moved = await refusal(
+      updateCodeTool(ctx(), legacy.id, { name: "suggest_kb_entry" }, appDb),
+    );
+    expect(moved?.translationKey).toBe("errors.toolNameReserved");
+    await suDb.codeToolDefinition.delete({ where: { id: legacy.id } });
+  });
+
   test("a JSON-Schema-shaped input schema is stored as the compact map the runtime reads", async () => {
     const { tool } = await createCodeTool(
       ctx(),

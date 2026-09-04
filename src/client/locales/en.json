@@ -1111,6 +1111,7 @@
     "identitySectionHint": "Name, system prompt and whether the agent is active.",
     "importWarning": {
       "codeGrantNotFound": "Code tool \"{{name}}\" was not found, so its grant was skipped.",
+      "codeToolBodyWarning": "Code tool \"{{name}}\": the imported body has a problem — {{reason}}. It was saved as written and will fail when the agent calls it.",
       "codeToolRenamed": "Code tool \"{{name}}\" carries the name of a built-in tool, so it was imported as \"{{renamed}}\"; a prompt that names it must follow.",
       "codeToolReused": "Code tool \"{{name}}\" already existed and was reused; check it is right.",
       "credentialAmbiguous": "Credential \"{{name}}\" appears with more than one type in the export, so it was left unset.",

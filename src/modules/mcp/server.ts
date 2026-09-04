@@ -21,6 +21,7 @@ import {
   runPlaygroundFileTurn,
   runPlaygroundTurn,
 } from "@/modules/playground/service";
+import { hasReservedFieldName } from "@/modules/tool-definitions/normalize";
 import { OUTBOUND_DELIVERY_STATUSES } from "@/modules/webhooks/outbound/deliveries";
 import { hasScope, type VerifiedToken } from "./oauth/tokens";
 import {
@@ -140,11 +141,10 @@ import { tenantCreate, tenantGet, tenantList } from "./write-fleet";
 // (code-tools/service.ts); this is the same refusal at the transport, which is the only place that
 // still holds the raw value.
 export const inputSchemaArg = z.preprocess((value, ctx) => {
-  if (
-    value !== null &&
-    typeof value === "object" &&
-    Object.hasOwn(value as object, "__proto__")
-  ) {
+  // Both spellings, because the guard downstream knows both: the compact map with the key at the
+  // root, and the standard JSON Schema with it under `properties` (namespace's caller,
+  // tool-definitions/normalize.ts).
+  if (hasReservedFieldName(value)) {
     ctx.addIssue({
       code: "custom",
       message:

@@ -2495,12 +2495,23 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     );
     if (grant?.source !== "CODE") throw new Error("bundle missing the grant");
     grant.tool = "schema_ajustado";
+    // ...and a body that does not parse is stored on purpose, so the RECIPIENT has to hear it here
+    // rather than from a failed call in production.
+    code.code = "return input.cpf.";
     const { warnings } = await importAgent(dstCtx(), bundle, appDb);
     expect(
       warnings.some(
         (w) =>
           w.code === "toolSchemaAdjusted" &&
           w.params?.name === "schema_ajustado",
+      ),
+    ).toBe(true);
+    expect(
+      warnings.some(
+        (w) =>
+          w.code === "codeToolBodyWarning" &&
+          w.params?.name === "schema_ajustado" &&
+          String(w.params?.reason).includes("line 1"),
       ),
     ).toBe(true);
     const row = await suDb.codeToolDefinition.findFirstOrThrow({

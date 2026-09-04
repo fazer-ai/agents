@@ -2285,6 +2285,12 @@ function AgentEditor() {
           'Document template "{{name}}" was not imported: this account already has a template with that name ({{existing}}). Names have to be unique, because the agent picks between documents by name.',
           p,
         );
+      case "codeToolBodyWarning":
+        return t(
+          "editor.importWarning.codeToolBodyWarning",
+          'Code tool "{{name}}": the imported body has a problem — {{reason}}. It was saved as written and will fail when the agent calls it.',
+          p,
+        );
       case "toolSchemaAdjusted":
         return t(
           "editor.importWarning.toolSchemaAdjusted",

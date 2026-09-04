@@ -21,6 +21,7 @@ import { isNativeToolName, NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
 import { SANDBOX_CODE_MAX_CHARS } from "@/graph/tools/code-sandbox-limits";
 import { normalizeExpectedStatuses } from "@/graph/tools/http-status";
 import { normalizeToolName } from "@/graph/tools/toolName";
+import { checkCodeToolSyntax } from "@/lib/code-tool-syntax";
 import { parseDbId } from "@/lib/db-id";
 import { AppError, NotFoundError } from "@/lib/errors";
 import {
@@ -172,6 +173,14 @@ const importedGrantSchema = z.union([
 // and the value is arbitrary because no build in any supported version acts on it.
 const RETIRED_RISK_TIER = "medium";
 
+// A field map as the bundle wrote it, kept KEY FOR KEY. `z.record` would rebuild it, and the one
+// name that cannot survive that (`__proto__`, which hits the prototype setter) is exactly the one
+// the normalizer is supposed to drop with a warning further down.
+const rawFieldMap = z.custom<Record<string, unknown>>(
+  (v) => typeof v === "object" && v !== null && !Array.isArray(v),
+  { message: "expected an object" },
+);
+
 const exportedHttpToolSchema = z.object({
   name: z.string(),
   label: z.string().nullable().optional(),
@@ -180,7 +189,8 @@ const exportedHttpToolSchema = z.object({
   urlTemplate: z.string(),
   allowedHosts: z.array(z.string()),
   headers: z.record(z.string(), z.unknown()),
-  inputSchema: z.record(z.string(), z.unknown()),
+  // Passed through raw, for the reason the code tool's carries.
+  inputSchema: rawFieldMap,
   outputSchema: z.record(z.string(), z.unknown()),
   // Optional so exports produced before query existed still import (defaults to {}).
   query: z.record(z.string(), z.unknown()).optional(),
@@ -216,7 +226,10 @@ const exportedCodeToolSchema = z.object({
   // service refuses an empty one. Tolerated here and filled from the label, because refusing a
   // whole bundle over it is the trade this file already rejects for prose.
   description: z.string().nullable().optional(),
-  inputSchema: z.record(z.string(), z.unknown()),
+  // NOT `z.record`: that rebuilds the map by assignment, and an own `__proto__` key would be gone
+  // before `normalizeToolShapes` could drop it with the warning this import promises. Passed
+  // through as it arrived, shape-checked only.
+  inputSchema: rawFieldMap,
   // Bounded as the service bounds it, and REFUSED rather than warned, the way the system prompt's
   // cap is: the body is handed to a thread as source, and past the cap it is a pasted library,
   // not a tool. There is no clamped body that is still the same tool.
@@ -1881,6 +1894,22 @@ async function createMissingComponents(
       warnings.push({
         code: "toolSchemaAdjusted",
         params: { name, reason },
+        target: { kind: "codeTool", name },
+      });
+    }
+    // The same advisory check the console and the service run on a save. A body that does not parse
+    // is stored on purpose — it is the operator's to fix, and refusing a whole bundle over it would
+    // be worse — but the recipient has to LEARN of it here, not from a failed call in production.
+    for (const w of await checkCodeToolSyntax(tdef.code)) {
+      warnings.push({
+        code: "codeToolBodyWarning",
+        params: {
+          name,
+          reason:
+            w.kind === "syntax"
+              ? `line ${w.line}, column ${w.column}: ${w.message}`
+              : "the code never returns a value",
+        },
         target: { kind: "codeTool", name },
       });
     }

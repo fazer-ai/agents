@@ -1128,6 +1128,7 @@
     "identitySectionHint": "Nome, prompt do sistema e se o agente está ativo.",
     "importWarning": {
       "codeGrantNotFound": "A ferramenta de código \"{{name}}\" não foi encontrada, então a concessão foi ignorada.",
+      "codeToolBodyWarning": "Ferramenta de código \"{{name}}\": o corpo importado tem um problema: {{reason}}. Ele foi salvo como veio e vai falhar quando o agente chamar.",
       "codeToolRenamed": "A ferramenta de código \"{{name}}\" tem o nome de uma ferramenta nativa, então foi importada como \"{{renamed}}\"; um prompt que a cite pelo nome precisa acompanhar.",
       "codeToolReused": "A ferramenta de código \"{{name}}\" já existia e foi reaproveitada; confira se está certa.",
       "credentialAmbiguous": "A credencial \"{{name}}\" aparece com mais de um tipo no export, então ficou em branco.",

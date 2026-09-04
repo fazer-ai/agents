@@ -345,7 +345,13 @@ async function assertNameFree(
   db: ScopedDb,
   name: string,
   exceptId?: bigint,
+  // The name the row carries now. A save that does not MOVE the name is not asking the namespace
+  // question, and the console sends the whole row on every save — so the rules added later must not
+  // refuse an unrelated edit to a tool that was legal when it was created (code-tools/service.ts
+  // carries the same note).
+  currentName?: string,
 ): Promise<void> {
+  const moving = name !== currentName;
   await lockToolNames(db);
   // A native's name is reserved at assembly (#457): a tool written under one would exist in the
   // console, be granted, and never reach the model, with a flow-log line as the only trace. Refused
@@ -362,7 +368,7 @@ async function assertNameFree(
   // One namespace reaches the model, so a code tool's name is taken here too (code-tools/service.ts
   // asks this table the same question).
   // RAG publishes its own built-ins, assembled before either tool table (namespace.ts).
-  if (isRagToolName(name)) {
+  if (moving && isRagToolName(name)) {
     throw new ConflictError(
       "tool name belongs to a built-in tool",
       "errors.toolNameReserved",
@@ -373,7 +379,7 @@ async function assertNameFree(
     db.toolDefinition.findFirst({ where: { name }, select: { id: true } }),
     db.codeToolDefinition.findFirst({ where: { name }, select: { id: true } }),
     // A document template publishes `send_<slug>`, assembled before this table too.
-    documentHoldingToolName(db, name),
+    moving ? documentHoldingToolName(db, name) : null,
   ]);
   if ((existing && existing.id !== exceptId) || code || document) {
     throw new ConflictError(
@@ -501,7 +507,7 @@ export async function updateToolDefinition(
         "errors.toolDefinitionNotFound",
       );
     }
-    if (data.name) await assertNameFree(db, data.name, id);
+    if (data.name) await assertNameFree(db, data.name, id, current.name);
     // NOTE: canonicalize the patched shapes; the current row supplies the rest so the placeholder
     // allowlist sees the effective field set on partial updates.
     const { shapes } = normalizeToolShapes(

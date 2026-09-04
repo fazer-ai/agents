@@ -195,7 +195,14 @@ async function assertNameFree(
   db: ScopedDb,
   name: string,
   exceptId?: bigint,
+  // The name the row already carries, on an update. A save that does not MOVE the name is not
+  // asking the namespace question — and the console's editor sends the whole row on every save, so
+  // enforcing the newer rules against an unchanged name would refuse an unrelated edit to a tool
+  // that was legal when it was created (there is no migration moving those rows, unlike the
+  // native-name one).
+  currentName?: string,
 ): Promise<void> {
+  const moving = name !== currentName;
   await lockToolNames(db);
   if (isNativeToolName(name)) {
     throw new ConflictError(
@@ -206,7 +213,7 @@ async function assertNameFree(
   }
   // RAG's names are built-ins of another kind: the tool exists whenever a knowledge base is granted
   // and it is assembled first, so a code tool under one of those names never reaches the model.
-  if (isRagToolName(name)) {
+  if (moving && isRagToolName(name)) {
     throw new ConflictError(
       "tool name belongs to a built-in tool",
       "errors.toolNameReserved",
@@ -217,7 +224,7 @@ async function assertNameFree(
     db.codeToolDefinition.findFirst({ where: { name }, select: { id: true } }),
     db.toolDefinition.findFirst({ where: { name }, select: { id: true } }),
     // A document template publishes `send_<slug>`, and it is assembled before either tool table.
-    documentHoldingToolName(db, name),
+    moving ? documentHoldingToolName(db, name) : null,
   ]);
   if ((own && own.id !== exceptId) || http || document) {
     throw new ConflictError(
@@ -282,8 +289,13 @@ export async function assertCodeToolNameAvailable(
   base: PrismaClient = basePrisma,
   // The row being renamed, for an update: a tool keeping its own name is not colliding with itself.
   exceptId?: bigint,
+  // ...and the name it carries now, so a preview of a save that does not move the name asks what
+  // the apply asks (see `assertNameFree`).
+  currentName?: string,
 ): Promise<void> {
-  await runScopedOn(base, ctx, (db) => assertNameFree(db, name, exceptId));
+  await runScopedOn(base, ctx, (db) =>
+    assertNameFree(db, name, exceptId, currentName),
+  );
 }
 
 export async function createCodeTool(
@@ -341,7 +353,7 @@ export async function updateCodeTool(
     if (!current) {
       throw new NotFoundError("code tool not found", "errors.codeToolNotFound");
     }
-    if (data.name) await assertNameFree(db, data.name, id);
+    if (data.name) await assertNameFree(db, data.name, id, current.name);
     const patchData: Prisma.CodeToolDefinitionUpdateInput = {};
     if (data.name !== undefined) patchData.name = data.name;
     if (data.label !== undefined) patchData.label = data.label;

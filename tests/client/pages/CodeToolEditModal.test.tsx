@@ -536,3 +536,26 @@ test("the parser only runs while the dialog is open", () => {
   );
   expect(effect.includes("if (!modal.isOpen) return;")).toBe(true);
 });
+
+test("a save in flight cannot be dismissed, and its finally belongs to its own opening", () => {
+  // Round 25. Two guards over one hole: a save dismissed with Esc/X and reopened before it answers.
+  // The dialog now refuses the dismissal, the rule the test modal beside it already follows
+  // (docs/modals.md) and the rule that makes the second guard unreachable from the UI, which is
+  // exactly why it is asserted here rather than driven: an unscoped `setSaving(false)` would leave
+  // the reopened form disabled with nothing running, for as long as the first request takes.
+  // A source fence for the reason the fence above gives.
+  const src = readFileSync(
+    "src/client/pages/resources/CodeToolEditModal.tsx",
+    "utf8",
+  );
+  expect(src.includes("onCloseRequest={saving ? () => {} : undefined}")).toBe(
+    true,
+  );
+  const saveFn = src.slice(src.indexOf("async function save()"));
+  const tail = saveFn.slice(saveFn.indexOf("} finally {"));
+  expect(
+    tail.startsWith(
+      "} finally {\n      if (sessionRef.current === session) setSaving(false);",
+    ),
+  ).toBe(true);
+});

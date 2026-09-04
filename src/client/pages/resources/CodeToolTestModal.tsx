@@ -15,6 +15,7 @@ import {
 } from "@/client/components";
 import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
+import { CONTEXT_VAR_NAMES } from "@/modules/tool-definitions/normalize";
 import {
   type ArgProblem,
   argProblem,
@@ -31,6 +32,51 @@ import { fieldTypeLabels } from "./toolFieldTypes";
 // declared type cannot take is refused before the button, so the operator reads it here instead of
 // out of a failed call) but reports a code tool's answer — the text the agent would receive, whether
 // it failed, and the console output — not an HTTP status and a body.
+
+// Which of the runtime's context variables this body actually reads, in the runtime's own order.
+//
+// The same question the HTTP tool's dialog asks of a template (`contextNamesReferencedBy`), and
+// asked for the same reason: the operator can only supply a value for a name they are shown, and
+// showing all ten when the body reads one is a form nobody fills. TEXT, not a parse: a body that
+// does not compile is savable and testable by design, so a parser that refuses it would take the
+// dialog down with it, and the cost of reading one name too many is one empty field.
+//
+// Only the ten the runtime exposes as strings. `conversationAttributes` and `contactAttributes` are
+// objects a turn loads from the database, and no text field can stand for them.
+export function contextNamesUsedBy(code: string): string[] {
+  const used = new Set<string>();
+  for (const m of code.matchAll(
+    /\bcontext\s*(?:\.\s*([A-Za-z_$][\w$]*)|\[\s*(?:"([^"]*)"|'([^']*)')\s*\])/g,
+  )) {
+    const name = m[1] ?? m[2] ?? m[3];
+    if (name) used.add(name);
+  }
+  return CONTEXT_VAR_NAMES.filter((n) => used.has(n));
+}
+
+// The operator's own zone, and UTC when the browser will not say (a locked-down runtime answers
+// with an empty string). Never thrown: a dialog that cannot open is worse than one that opens on
+// UTC and says so in the field.
+function browserZone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  } catch {
+    return "UTC";
+  }
+}
+
+// Every IANA zone the browser knows, so the operator picks the agent's instead of typing it. Older
+// runtimes have no `supportedValuesOf`; there the list is the two zones that are always meaningful.
+function zoneOptions(current: string): string[] {
+  let all: string[] = [];
+  try {
+    all = Intl.supportedValuesOf?.("timeZone") ?? [];
+  } catch {
+    all = [];
+  }
+  const out = all.length > 0 ? all : ["UTC", browserZone()];
+  return out.includes(current) ? out : [current, ...out];
+}
 
 export interface CodeToolTestTarget {
   // The definition the dialog will run: the unsaved name/schema/code as the editor holds them.
@@ -62,6 +108,14 @@ export function CodeToolTestModal({
   // Which blank boxes are an empty STRING rather than a field left out — the same distinction the
   // HTTP dialog draws, because the model omits an optional argument it has nothing to say about.
   const [sendEmpty, setSendEmpty] = useState<Record<string, boolean>>({});
+  // The conversation variables, which no model supplies and no dialog can guess. Collected the way
+  // the HTTP tool's dialog collects the `{{names}}` its template mentions.
+  const [context, setContext] = useState<Record<string, string>>({});
+  // The zone `Date`, TIMEZONE and NOW_LOCAL run in. It is the AGENT's at run time and the dialog has
+  // no agent, so it is asked rather than assumed: silently using the browser's made a body that
+  // reads a date pass here and behave differently in production, with the two zones never named on
+  // screen. The browser's is the first guess because it is the one the operator can sanity-check.
+  const [timezone, setTimezone] = useState("UTC");
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<CodeTestResult | null>(null);
@@ -71,6 +125,8 @@ export function CodeToolTestModal({
   // "Drop stale responses with a session token").
   const sessionRef = useRef(0);
   const target = modal.payload;
+  // Asked of the BODY, so the dialog shows the variables this code reads and no others.
+  const contextNames = contextNamesUsedBy(target?.definition.code ?? "");
   const typeLabels = fieldTypeLabels(t);
   const typeText = (bad: { reason: string; itemType?: string }) =>
     bad.itemType
@@ -88,6 +144,8 @@ export function CodeToolTestModal({
     sessionRef.current += 1;
     setValues({});
     setSendEmpty({});
+    setContext({});
+    setTimezone(browserZone());
     setError(null);
     setResult(null);
     setRunning(false);
@@ -121,11 +179,19 @@ export function CodeToolTestModal({
         if (!coerced.ok) return;
         args[f.name] = coerced.value;
       }
+      // Only what the operator actually filled in: a blank box is a variable the turn did not have
+      // either, which is a real case the body has to survive, and sending "" for it would test a
+      // different one.
+      const ctx: Record<string, string> = {};
+      for (const name of contextNames) {
+        const v = context[name] ?? "";
+        if (v !== "") ctx[name] = v;
+      }
       const { data, error: err } = await api.api.v1["code-tools"].test.post({
         definition: target.definition,
         args,
-        // The agent runs in the operator's browser zone here; Date/TIMEZONE/NOW_LOCAL follow it.
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        context: ctx,
+        timezone,
       });
       // Everything past the await belongs to the opening that started it, or to nobody.
       if (sessionRef.current !== session) return;
@@ -189,7 +255,7 @@ export function CodeToolTestModal({
         <p className="text-text-secondary text-xs">
           {t(
             "codeTools.testIntro",
-            "This runs the code once in the sandbox, exactly as the agent would. Fill in the arguments the agent would provide.",
+            "This runs the code once in the sandbox, through the same path a turn uses. What the agent would supply is yours to fill in here: the arguments, the conversation variables the body reads, and the zone the agent runs in.",
           )}
         </p>
         {!target || target.aiFields.length === 0 ? (
@@ -284,6 +350,54 @@ export function CodeToolTestModal({
             );
           })
         )}
+
+        {contextNames.length > 0 && (
+          <FormField
+            label={t("codeTools.testContext", "Conversation variables")}
+            group
+            description={t(
+              "codeTools.testContextHint",
+              "The values a turn would carry, for the variables this body reads. Leave one blank to test what the body does when the turn did not have it.",
+            )}
+          >
+            <div className="flex flex-col gap-2">
+              {contextNames.map((name) => (
+                <div key={name} className="flex items-center gap-2 text-xs">
+                  <code className="w-40 shrink-0 truncate rounded bg-bg-tertiary px-1 py-0.5 font-mono">
+                    {name}
+                  </code>
+                  <Input
+                    aria-label={name}
+                    value={context[name] ?? ""}
+                    onChange={(e) =>
+                      setContext((c) => ({ ...c, [name]: e.target.value }))
+                    }
+                  />
+                </div>
+              ))}
+            </div>
+          </FormField>
+        )}
+
+        <FormField
+          label={t("codeTools.testTimezone", "Agent timezone")}
+          description={t(
+            "codeTools.testTimezoneHint",
+            "Date, TIMEZONE and NOW_LOCAL run in this zone, as they will in a turn. Your browser's is the starting guess, not the agent's.",
+          )}
+        >
+          <Select
+            value={timezone}
+            onChange={(e) => setTimezone(e.target.value)}
+          >
+            {zoneOptions(timezone).map((z) => (
+              <option key={z} value={z}>
+                {z}
+              </option>
+            ))}
+          </Select>
+        </FormField>
+
         {result && (
           <div className="flex flex-col gap-2 rounded-md border border-border p-3">
             <div className="flex items-center gap-2 text-xs">

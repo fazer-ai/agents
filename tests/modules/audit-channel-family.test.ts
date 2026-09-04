@@ -83,10 +83,16 @@ const ctx = (over: Partial<TenantContext> = {}): TenantContext => ({
 });
 
 // A Chatwoot whose /profile answers with two accounts, which is what connect and rotate probe.
+// NOTE: every id these tests connect, because `setConnectedAccounts` now measures its input against
+// the accounts the deployment reports and a stub that omits them describes a server that cannot
+// exist: measured against a real Chatwoot 4.17.0, a token gets 401 on an account absent from its own
+// `GET /api/v1/profile` (#503).
 const fetchProfile = async () => ({
   accounts: [
     { id: 1, name: "Conta A" },
     { id: 2, name: "Conta B" },
+    { id: 3, name: "Conta C" },
+    { id: 7311, name: "Conta 7311" },
   ],
 });
 
@@ -368,7 +374,7 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
     expect(row?.after).toEqual({
       id: result.deployment.id,
       baseUrl: "https://203.0.113.95/…",
-      reachableAccounts: 2,
+      reachableAccounts: 4,
     });
     await collect();
   });

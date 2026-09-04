@@ -2,6 +2,7 @@ import basePrisma from "@/api/lib/prisma";
 import { AppError } from "@/lib/errors";
 import {
   assertAccountsClaimable,
+  assertAccountsSelectable,
   assertDeploymentConnectable,
   assertDeploymentNotSwitching,
   assertInboxReconnectable,
@@ -167,6 +168,23 @@ export async function deploymentSetAccounts(
       // and several of these read a row or resolve DNS, so above the branch is a second lookup
       // that can even disagree with the first (#490).
       await assertAccountsClaimable(ctx, args.account_ids, base);
+      // NOTE: ADVISORY, like the claim check above it: the list lives on the operator's Chatwoot and
+      // can move between the preview and the apply, which asks again inside its own sequence. What
+      // it buys is that an id this deployment cannot operate is refused here instead of being
+      // previewed as a connection the apply then declines (#490, #503).
+      let reported: number[] | null = null;
+      try {
+        reported = (
+          await listDeploymentAccounts(
+            ctx,
+            { fetchProfile: deps.fetchProfile },
+            base,
+          )
+        ).map((a) => a.id);
+      } catch {
+        // probe failed — the core applies the same fallback cap for itself
+      }
+      assertAccountsSelectable([...new Set(args.account_ids)], reported);
       return ok({
         dryRun: true,
         action: "set_accounts",
@@ -178,7 +196,7 @@ export async function deploymentSetAccounts(
     const accounts = await setConnectedAccounts(
       ctx,
       args.account_ids,
-      {},
+      { fetchProfile: deps.fetchProfile, makeClient: deps.makeClient },
       base,
     );
     return ok({ dryRun: false, applied: true, accounts });

@@ -45,6 +45,7 @@ import {
 import { BEHAVIOR_PATCH_SHAPE } from "@/modules/agents/settings-schema";
 import { type AuditEntry, recordAudit } from "@/modules/audit/service";
 import type { LoadChatwootClientDeps } from "@/modules/chatwoot/instance";
+import type { ListAccountsDeps } from "@/modules/chatwoot/management";
 import { readDebugModes } from "@/modules/flowlog/debug-mode";
 import { getTenantSettings } from "@/modules/tenant-settings/service";
 import {
@@ -85,6 +86,12 @@ export interface WriteDeps {
   // than answering from its arguments (`inbox_remove`: the write refuses a live inbox, so a preview
   // that cannot ask would approve what the apply rejects). Defaults to the real SSRF-validated one.
   makeClient?: LoadChatwootClientDeps["makeClient"];
+  // NOTE: injectable account-list probe, for the same reason as `makeClient` one line up and with
+  // the same lesson behind it. `deployment_set_accounts` measures its input against the accounts the
+  // deployment reports, so a preview that cannot reach that list falls through to the fallback cap
+  // and approves ids the apply refuses — the #490 divergence, reintroduced by a dep the transport
+  // could not thread (#503).
+  fetchProfile?: ListAccountsDeps["fetchProfile"];
 }
 
 // The one id parser for every MCP surface, read and write alike.

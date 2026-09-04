@@ -3,6 +3,7 @@ import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import { isNativeToolName } from "@/graph/tools/catalog";
 import { normalizeExpectedStatuses } from "@/graph/tools/http-status";
+import { normalizeToolName } from "@/graph/tools/toolName";
 import { AppError, ConflictError, NotFoundError } from "@/lib/errors";
 import { parseInput } from "@/lib/parse-input";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
@@ -20,6 +21,12 @@ import {
 } from "@/modules/tool-definitions/response-template";
 import { readableVaultRef, requireVaultRef } from "@/modules/vault/service";
 import { unsupportedBodyShape } from "./body-shape";
+import {
+  documentHoldingToolName,
+  isRagToolName,
+  lockToolNames,
+  toolsUnderModelName,
+} from "./namespace";
 import { normalizeToolShapes } from "./normalize";
 
 // Custom HTTP tool definitions (per-tenant). A definition is the LLM-facing parameter schema +
@@ -246,7 +253,13 @@ const UNDISCLOSED = [
 
 export const toolDefinitionCreateSchema = z
   .object({
-    name: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
+    // Canonicalized on the way in, for the reason code-tools/service.ts gives: `buildHttpTool`
+    // offers the model `sanitizeToolName(name)`, so any other spelling is a row whose name is not
+    // the name that reaches the model — and two spellings of one name collide there, not here.
+    name: z
+      .string()
+      .regex(/^[a-zA-Z0-9_-]{1,64}$/)
+      .transform(normalizeToolName),
     label: z.string().min(1).max(TOOL_LABEL_MAX),
     description: z.string().max(2000).nullish(),
     method: z.enum(HTTP_METHODS).optional(),
@@ -340,7 +353,23 @@ async function assertNameFree(
   db: ScopedDb,
   name: string,
   exceptId?: bigint,
+  // The name the row carries now. A save that does not MOVE the name is not asking the namespace
+  // question, and the console sends the whole row on every save — so the rules added later must not
+  // refuse an unrelated edit to a tool that was legal when it was created (code-tools/service.ts
+  // carries the same note).
+  currentName?: string,
 ): Promise<void> {
+  // Compared through the DERIVATION, not as text. The row may predate canonicalization on write
+  // (`Search_Knowledge`), the console submits `normalizeToolName(label)` on every save, and the two
+  // spellings are ONE identity to the model. Read as text, that save reads as a rename and meets
+  // the namespace rules added later, which refuse an edit that moved nothing (round 29).
+  // `undefined` is a CREATE, which always asks the namespace question. Not folded into the
+  // comparison: `normalizeToolName("")` answers `"tool"`, so an absent current name would read as
+  // unchanged for a tool actually named `tool`.
+  const moving =
+    currentName === undefined ||
+    normalizeToolName(name) !== normalizeToolName(currentName);
+  await lockToolNames(db);
   // A native's name is reserved at assembly (#457): a tool written under one would exist in the
   // console, be granted, and never reach the model, with a flow-log line as the only trace. Refused
   // where it is typed, the way a document slug is (documents/slug.ts). The import path does not
@@ -353,11 +382,25 @@ async function assertNameFree(
       "name",
     );
   }
-  const existing = await db.toolDefinition.findFirst({
-    where: { name },
-    select: { id: true },
-  });
-  if (existing && existing.id !== exceptId) {
+  // One namespace reaches the model, so a code tool's name is taken here too (code-tools/service.ts
+  // asks this table the same question).
+  // RAG publishes its own built-ins, assembled before either tool table (namespace.ts).
+  if (moving && isRagToolName(name)) {
+    throw new ConflictError(
+      "tool name belongs to a built-in tool",
+      "errors.toolNameReserved",
+      "name",
+    );
+  }
+  const [under, document] = await Promise.all([
+    // By the name the MODEL sees (namespace.ts): `buildHttpTool` sanitizes, so a row spelled `Foo`
+    // and one spelled `foo` are one tool there.
+    toolsUnderModelName(db, name),
+    // A document template publishes `send_<slug>`, assembled before this table too.
+    moving ? documentHoldingToolName(db, name) : null,
+  ]);
+  const existing = under.httpIds.filter((id) => id !== exceptId);
+  if (existing.length > 0 || under.codeIds.length > 0 || document) {
     throw new ConflictError(
       "tool name already in use",
       "errors.toolNameTaken",
@@ -393,9 +436,24 @@ export async function assertToolNameAvailable(
   ctx: TenantContext,
   name: string,
   base: PrismaClient = basePrisma,
+  // The row being renamed, and the name it carries now: a tool keeping its own name is not
+  // colliding with itself, and a save that does not MOVE the name is not asking the newer rules
+  // (`assertNameFree`).
   exceptId?: bigint,
+  currentName?: string,
 ): Promise<void> {
-  await runScopedOn(base, ctx, (db) => assertNameFree(db, name, exceptId));
+  await runScopedOn(base, ctx, (db) =>
+    assertNameFree(db, name, exceptId, currentName),
+  );
+}
+
+// The patch an update would apply, judged before any database is involved — the twin of
+// `assertToolDefinitionCreatable`, and the reason the MCP preview can show the name the apply will
+// store rather than the spelling the caller typed.
+export function assertToolDefinitionPatchValid(
+  patch: ToolDefinitionUpdate,
+): ToolDefinitionUpdate {
+  return parseInput(toolDefinitionUpdateSchema, patch);
 }
 
 export async function createToolDefinition(
@@ -476,6 +534,15 @@ export async function updateToolDefinition(
     // the two the #397 round wrote). At READ COMMITTED two concurrent PATCHes both read state A;
     // the first commits B; the second's `update` blocks, wakes and writes C — and files a row
     // saying A became C, attributing B's change to whoever wrote C.
+    // The NAMESPACE lock first, and it is an ordering rule rather than a need of this statement.
+    // An agent import takes it once, before it touches any tool row (agents/transfer.ts), and reads
+    // and writes rows under it. Taking the row lock first here inverts that order and the two
+    // deadlock: this transaction holds the row and waits for the namespace, the import holds the
+    // namespace and waits for the row (round 29). Unconditional, because a patch that carries no
+    // name still locks the row and an order that depends on the payload is not an order.
+    // Re-acquiring it inside the name check below costs nothing: `pg_advisory_xact_lock` is
+    // re-entrant within a transaction, and every copy is released at commit.
+    await lockToolNames(db);
     await db.$queryRaw`SELECT 1 FROM "tool_definitions" WHERE "id" = ${id} FOR UPDATE`;
     const current = await db.toolDefinition.findUnique({
       where: { id },
@@ -487,7 +554,7 @@ export async function updateToolDefinition(
         "errors.toolDefinitionNotFound",
       );
     }
-    if (data.name) await assertNameFree(db, data.name, id);
+    if (data.name) await assertNameFree(db, data.name, id, current.name);
     // NOTE: canonicalize the patched shapes; the current row supplies the rest so the placeholder
     // allowlist sees the effective field set on partial updates.
     const { shapes } = normalizeToolShapes(
@@ -575,6 +642,11 @@ export async function deleteToolDefinition(
     // Locked, then read before the delete: after `deleteMany` there is nothing left to name what
     // was removed, and the same lock keeps a concurrent update from making the row describe a
     // definition that never looked like that.
+    // The namespace lock on the DELETE too, for the reason `deleteCodeTool` in
+    // modules/code-tools/service.ts spells out: an import resolves a grant and inserts the
+    // selection rows under this lock, and a delete committing in that window fails a foreign key
+    // that has already been read, taking the whole import down with it.
+    await lockToolNames(db);
     await db.$queryRaw`SELECT 1 FROM "tool_definitions" WHERE "id" = ${id} FOR UPDATE`;
     const current = await db.toolDefinition.findUnique({
       where: { id },

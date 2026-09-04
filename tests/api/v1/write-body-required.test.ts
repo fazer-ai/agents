@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { Elysia } from "elysia";
 import { authPlugin } from "@/api/lib/auth";
 import { businessHoursCreateSchema } from "@/modules/business-hours/service";
+import { codeToolCreateSchema } from "@/modules/code-tools/service";
 import { mcpConnectionCreateSchema } from "@/modules/mcp-connections/service";
 import { toolDefinitionCreateSchema } from "@/modules/tool-definitions/service";
 import {
@@ -97,6 +98,13 @@ const CONTROLLERS: Array<{
     routePath: "/api/v1/tools/",
     patchPath: "/api/v1/tools/:id",
     schema: toolDefinitionCreateSchema,
+  },
+  {
+    name: "code-tools",
+    path: "/v1/code-tools",
+    routePath: "/api/v1/code-tools/",
+    patchPath: "/api/v1/code-tools/:id",
+    schema: codeToolCreateSchema,
   },
   {
     name: "business-hours",

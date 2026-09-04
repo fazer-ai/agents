@@ -44,6 +44,67 @@ function scanString(value: string, where: string): void {
   if (SECRET_KV_PATTERN.test(value)) throw new SecretLeakError(where);
 }
 
+// The same question asked of SOURCE CODE, where the key/value matcher above cannot be used as it
+// stands. In a JSON value, `password: <anything concrete>` is a leak. In a program it is usually a
+// variable: `const password = input.password` and `return { authorization: input.authorization }`
+// are what a body that FORWARDS a credential looks like, and refusing them makes the agent that
+// owns such a tool unexportable, with the scanner blocking the backup it exists to protect (round
+// 30, measured: four ordinary bodies refused).
+//
+// So the pair still has to be concrete, and in code "concrete" means a STRING LITERAL. An
+// expression is a reference to a value that lives elsewhere; a quoted run of characters is the
+// value itself. Everything else the scanner knows (the shaped patterns: `sk-`, `AKIA`, a JWT) is
+// applied unchanged, since those are recognisable wherever they appear, quoted or not.
+//
+// THREE delimiters, not two. JavaScript writes a literal with `'`, `"` or a backtick, and a backtick
+// one is exactly as concrete as the other two (round 31: `const apiKey = \`abcdef123456\`` walked
+// out of the scanner untouched).
+const SECRET_KV_IN_CODE_PATTERN =
+  /(?:access[_-]?token|api[_-]?key|client[_-]?secret|password|authorization|secret)["'`]?\s*[:=]\s*(["'])(?!\s*\{\{)[^"'\s&]{6,}\1/i;
+
+// The backtick is asked separately, because it is the only delimiter whose literal can stop being a
+// literal halfway through. An interpolation is an expression, so
+// `const api_key = \`${input.chave}\`` forwards a credential the way the paragraph above exists to
+// allow -- but exempting the WHOLE template the moment a `${` appears anywhere exempts
+// `const password = \`hunter2secret-${input.id}\`` too, where the secret is the static half and the
+// interpolation is a suffix (round 34).
+//
+// So the interpolations are REMOVED and what is left is asked the same question the quoted arm
+// asks: is the value one unbroken run of 6 or more characters that a secret could be. That is the
+// quoted arm's own shape, not a new rule -- `"Bearer {{token}}"` does not match there either,
+// because the run breaks at the space -- and it lands where it should on the three cases that
+// matter: `Bearer ${input.token}` leaves "Bearer " and breaks, `${input.chave}` leaves nothing, and
+// `hunter2secret-${input.id}` leaves fourteen unbroken characters.
+const SECRET_KV_TEMPLATE_PATTERN =
+  /(?:access[_-]?token|api[_-]?key|client[_-]?secret|password|authorization|secret)["'`]?\s*[:=]\s*`([^`]*)`/gi;
+// One level of nesting inside the interpolation, which is what a body writes (`${a.b ?? "x"}`);
+// deeper than that the leftover carries a brace, which is not in the value class below, so the
+// literal reads as un-secret-like rather than as a secret. Conservative in the direction a scanner
+// should be conservative in: it can only fail to flag something the shaped patterns still see.
+const INTERPOLATION = /\$\{(?:[^{}]|\{[^{}]*\})*\}/g;
+const CONCRETE_RUN = /^[^"'`\s&]{6,}$/;
+
+function templateHoldsSecret(code: string): boolean {
+  SECRET_KV_TEMPLATE_PATTERN.lastIndex = 0;
+  for (const m of code.matchAll(SECRET_KV_TEMPLATE_PATTERN)) {
+    const inner = m[1];
+    if (inner === undefined) continue;
+    const stat = inner.replace(INTERPOLATION, "");
+    if (stat.startsWith("{{")) continue;
+    if (CONCRETE_RUN.test(stat)) return true;
+  }
+  return false;
+}
+
+export function assertNoSecretsInCode(code: string, where: string): void {
+  if (isPlaceholder(code)) return;
+  for (const re of SECRET_VALUE_PATTERNS) {
+    if (re.test(code)) throw new SecretLeakError(where);
+  }
+  if (SECRET_KV_IN_CODE_PATTERN.test(code)) throw new SecretLeakError(where);
+  if (templateHoldsSecret(code)) throw new SecretLeakError(where);
+}
+
 // Recursively asserts that no string VALUE anywhere in the object looks like a secret.
 export function assertNoSecrets(node: unknown, path = "$"): void {
   if (typeof node === "string") {

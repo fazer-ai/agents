@@ -47,6 +47,7 @@ import {
 } from "@/modules/tool-definitions/response-template";
 import {
   assertToolDefinitionCreatable,
+  assertToolDefinitionPatchValid,
   assertToolNameAvailable,
   createToolDefinition,
   deleteToolDefinition,
@@ -338,6 +339,7 @@ export async function agentImport(
         integrations: comps?.integrations.length ?? 0,
         knowledgeBases: comps?.knowledgeBases.length ?? 0,
         documentTemplates: comps?.documentTemplates?.length ?? 0,
+        codeTools: comps?.codeTools?.length ?? 0,
         businessHours: comps?.businessHours?.length ?? 0,
       },
     });
@@ -398,6 +400,8 @@ export interface AgentToolsSetArgs {
     // template over MCP and then had no way to grant it to an agent — the operator ended one step
     // short of a working document tool, in the transport the whole feature is authored from.
     documentTemplateId?: string | null;
+    // The code tool a CODE grant points at (code_tool_list), for the same reason.
+    codeToolDefinitionId?: string | null;
     knowledgeBaseIds?: string[];
     enabledTools?: string[];
   }>;
@@ -420,6 +424,7 @@ export async function agentToolsSet(
     mcpServerConnectionId: g.mcpServerConnectionId ?? null,
     integrationInstanceId: g.integrationInstanceId ?? null,
     documentTemplateId: g.documentTemplateId ?? null,
+    codeToolDefinitionId: g.codeToolDefinitionId ?? null,
     knowledgeBaseIds: g.knowledgeBaseIds ?? [],
     enabledTools: g.enabledTools ?? [],
   }));
@@ -689,7 +694,9 @@ export async function toolCreate(
         dryRun: true,
         action: "create",
         resource: "tool",
-        preview: { ...input, ...norm.shapes },
+        // `parsed` first: the name is canonicalized on the way in, so echoing the spelling the
+        // caller typed would promise a row stored under a different one.
+        preview: { ...input, ...parsed, ...norm.shapes },
         ...(all.length > 0 ? { warnings: all } : {}),
       });
     }
@@ -768,12 +775,20 @@ export async function toolUpdate(
     }
     const target = `tool:${id}`;
     if (args.dry_run !== false) {
-      // ADVISORY, and the same one `tool_create` has asked since #490 — asked here at last because
-      // this tool's fence row passes an id that names no tool, so it proved the ownership check and
-      // never the rename. An operator reusing a name they already used read "will update" and got a
-      // 409 from the apply (#510). `id` is excluded: keeping your own name is not a collision.
-      if (built.patch.name !== undefined) {
-        await assertToolNameAvailable(ctx, built.patch.name, base, id);
+      // The core's own questions about a PATCH, asked before the preview answers: the shape,
+      // which canonicalizes the name so the diff shows what would be STORED, and, for a rename, the
+      // availability of that name. Both are advisory here and authoritative inside the apply's
+      // transaction; what they buy is that a dry run stops describing a rename the apply refuses,
+      // or one to a spelling it would not store (#490, #510: this tool's fence row passed an id
+      // that names no tool, so it proved the ownership check and never the rename, and an operator
+      // reusing a name they already used read "will update" and got a 409).
+      //
+      // `id` is excluded because keeping your own name is not a collision, and `current.name` goes
+      // with it because a save that does not MOVE the name is not asking the question at all.
+      const parsed = assertToolDefinitionPatchValid(built.patch);
+      if (parsed.name !== undefined) {
+        await assertToolNameAvailable(ctx, parsed.name, base, id, current.name);
+        afterProj.name = parsed.name;
       }
       // NOTE: the EFFECTIVE row, patch over stored, because a patch that only attaches a credential
       // says nothing about the templates and a patch that only rewrites a template says nothing

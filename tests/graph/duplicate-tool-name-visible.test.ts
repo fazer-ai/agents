@@ -77,6 +77,7 @@ function config(): AgentConfig {
     contactAuth: CONTACT_AUTH_DEFAULTS,
     sendImageConfig: SEND_IMAGE_DEFAULTS,
     httpToolContext: {},
+    codeToolDefs: [],
     // The second claimant. `buildNativeTools` below is the first, and native goes first in the
     // assembly, so this is the one that loses.
     httpToolDefs: [

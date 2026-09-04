@@ -1337,6 +1337,11 @@ const FENCED: {
     exempt: {},
   },
   {
+    model: "CodeToolDefinition",
+    file: "src/modules/code-tools/service.ts",
+    exempt: {},
+  },
+  {
     model: "McpServerConnection",
     file: "src/modules/mcp-connections/service.ts",
     exempt: {},

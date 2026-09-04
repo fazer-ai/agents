@@ -55,104 +55,6 @@ describe("runSandboxedCode", () => {
     });
   });
 
-  // Measured live (PR #485, round 4): `…; { day, days }` at the end is a block to the parser, and
-  // 2 of 3 date answers went wrong through it — one returned the last name's value and the model
-  // narrated a date that was never computed, the other cost three SyntaxError round trips.
-  test("an object literal at the end is the result, not a block", async () => {
-    const cases: Array<[string, string]> = [
-      ["const d = 8; { day: d, ok: true }", '{"day":8,"ok":true}'],
-      ["const a = 1, b = 2; { a, b }", '{"a":1,"b":2}'],
-      [
-        "const a = 1;\n{ a, nested: { b: [1, 2] } };",
-        '{"a":1,"nested":{"b":[1,2]}}',
-      ],
-      ["({ a: 1 })", '{"a":1}'],
-      // After a block: the shape measured live once the model guards a month roll-over first.
-      ["let y = 0; if (true) { y = 1 } { y, ok: true }", '{"y":1,"ok":true}'],
-      // No semicolons at all (round 6): with only the parenthesis added, the object read on as a
-      // call of the previous line — `compute()({…})` — and failed at run time, past the fallback.
-      [
-        "function compute() { return { valid: true } }\nconst result = compute()\n{ valid: result.valid }",
-        '{"valid":true}',
-      ],
-      ["const a = { b: 1 }\n{ a }", '{"a":{"b":1}}'],
-      // Round 7: what is not syntax must not move the cut — a comment after the object, a "}" in
-      // a string or a regex, a template with a hole — and a block keyword before it is a block.
-      [
-        'const valid = true; { valid, reason: "ok" } // verdict',
-        '{"valid":true,"reason":"ok"}',
-      ],
-      ['({ reason: "a } b" })', '{"reason":"a } b"}'],
-      ['const r = /}/; { ok: r.test("}") }', '{"ok":true}'],
-      ['const p = /{/; { ok: p.test("{") }', '{"ok":true}'],
-      ["const s = '{'; { s }", '{"s":"{"}'],
-      // Split so the lint does not read the snippet's template hole as this file's.
-      [`const t = \`}$${"{'}'}"}\`; { t }`, '{"t":"}}"}'],
-      ["/* c */ { a: 1 } /* d */", '{"a":1}'],
-      ["let z = 2; if (false) {} else { z = 3 }", "3"],
-      // A block after `else`, even across a line break, even when it would parse as an object.
-      ["let q = 0; if (false) {} else\n{ q: 1 }", "1"],
-      // Allman style (round 9): the `)` of a control header is not a boundary across a line break
-      // either, while the `)` of a call still is (the semicolon-less case above).
-      ["if (false)\n{ valid: true }", "undefined"],
-      ["let seen = []; for (const i of [1, 2])\n{ x: seen.push(i) }", "2"],
-      ["try { throw 1 } catch (e)\n{ caught: e }", "1"],
-      ["const u = 'x'; { u }; // done", '{"u":"x"}'],
-      // Round 16: after the `)` of a control header a `/` starts a regex, not a division, so the
-      // brace inside it is not a source brace; after the `)` of a call or a group it is a division.
-      ['if (true) /{/.test("{"); { ok: true }', '{"ok":true}'],
-      ["let w = 0; while (w < 1) /{/.test('{') ? w++ : 0; { w }", '{"w":1}'],
-      ["const n = (4) / 2; { n }", '{"n":2}'],
-      // Round 17: a template hole is code, so a regex, a comment and a division inside it read as
-      // in the outer pass; the brace inside the regex or the comment is not a hole brace. Split
-      // like the hole above, so the lint does not read the snippet's hole as this file's.
-      [
-        `const s = \`$${"{"}/{/.test("{")}\`; const valid = true; { valid }`,
-        '{"valid":true}',
-      ],
-      [`const s = \`$${"{"}1 /* } */}\`; { s }`, '{"s":"1"}'],
-      [`const s = \`$${"{"}(4) / 2}\`; { s }`, '{"s":"2"}'],
-      // Not an object: a real block, and braces that belong to a statement, run as written.
-      ["{ let x = 1; x + 1 }", "2"],
-      ["if (true) { 5 }", "5"],
-      ["function f() { return 3 }\nf()", "3"],
-      ["let n = 0; for (const i of [1, 2]) { n += i }", "3"],
-    ];
-    for (const [code, want] of cases) {
-      const out = await runSandboxedCode(code);
-      expect(out, code).toMatchObject({ kind: "value", value: want });
-    }
-    // Round 12: a SyntaxError thrown by the RUN (JSON.parse) is not a parse failure. The wrapped
-    // form is compiled first and only a form that compiles runs, so nothing runs twice: no
-    // "redeclaration", no doubled console line.
-    const runtimeSyntax = await runSandboxedCode(
-      'console.log("once"); const data = JSON.parse("{bad"); { valid: true, data }',
-    );
-    expect(runtimeSyntax).toMatchObject({
-      kind: "error",
-      name: "SyntaxError",
-      logs: ["once"],
-    });
-    expect((runtimeSyntax as { message: string }).message).not.toContain(
-      "redeclaration",
-    );
-    // A runtime error with the parentheses on is the snippet's error once, not twice.
-    const thrown = await runSandboxedCode(
-      "let calls = 0; function g() { calls++; throw new Error('boom ' + calls) }\n{ v: g() }",
-    );
-    expect(thrown).toMatchObject({
-      kind: "error",
-      message: expect.stringContaining("boom 1"),
-    });
-  });
-
-  test("a top-level `return` is accepted as a function body", async () => {
-    const out = await runSandboxedCode(
-      `const v = 2 * 21;\nreturn { answer: v };`,
-    );
-    expect(out).toMatchObject({ kind: "value", value: '{"answer":42}' });
-  });
-
   test("renders what JSON cannot say instead of lying about it", async () => {
     const cases: Array<[string, string]> = [
       ["10n ** 20n", "100000000000000000000"],
@@ -192,51 +94,60 @@ describe("runSandboxedCode", () => {
     });
   });
 
-  // The two helpers, against published vectors: the issue's CPF, the classic numeric CNPJ, and the
-  // alphanumeric CNPJ example from the Receita Federal technical note (check digits 35).
-  test("validateCpf and validateCnpj are there, and answer the published vectors", async () => {
+  // The sandbox ships NO domain logic, and this is the fence. `validateCpf`/`validateCnpj` came
+  // from PR #485, where the MODEL wrote the snippet and its arithmetic could not be trusted; with
+  // the operator writing the body that reason is gone, and a runtime that ships CPF is asked for
+  // CEP, phone and inscricao estadual next. The rule is written once, in the body, by whoever owns
+  // it. Asserted by name rather than left to the global sweep below, which would go green on a
+  // helper added under a name it happens not to list.
+  test("no domain helper is installed: the body brings its own rules", async () => {
+    const out = await runSandboxedCode(
+      `[typeof validateCpf, typeof validateCnpj, typeof checkDigit]`,
+    );
+    expect(out).toMatchObject({
+      kind: "value",
+      value: JSON.stringify(["undefined", "undefined", "undefined"]),
+    });
+  });
+
+  // ...and the rule the operator writes instead answers the issue's own number, unpunctuated,
+  // which is where the model's comparison broke. The algorithm is the body's, not the runtime's.
+  test("a body that carries the CPF rule itself answers the issue's number", async () => {
     const cases: Array<[string, string]> = [
-      ['validateCpf("12351612850")', '{"valid":true}'],
-      ['validateCpf("123.516.128-50")', '{"valid":true}'],
-      ['validateCpf("12351612851")', '{"valid":false}'],
-      ['validateCpf("11111111111")', '{"valid":false}'],
-      ['validateCpf("1235161285")', '{"valid":false}'],
-      ["validateCpf(12351612850)", '{"valid":true}'],
-      ["validateCpf(null)", '{"valid":false}'],
-      ['validateCnpj("11.222.333/0001-81")', '{"valid":true}'],
-      ['validateCnpj("11222333000181")', '{"valid":true}'],
-      ['validateCnpj("11222333000182")', '{"valid":false}'],
-      ['validateCnpj("12.ABC.345/01DE-35")', '{"valid":true}'],
-      ['validateCnpj("12.abc.345/01de-35")', '{"valid":true}'],
-      ['validateCnpj("12.ABC.345/01DE-36")', '{"valid":false}'],
-      ['validateCnpj("12.ABC.345/01DE-3A")', '{"valid":false}'],
-      ['validateCnpj("00000000000000")', '{"valid":false}'],
+      ["12351612850", '{"valid":true}'],
+      ["123.516.128-50", '{"valid":true}'],
+      ["12351612851", '{"valid":false}'],
+      ["11111111111", '{"valid":false}'],
     ];
-    for (const [code, want] of cases) {
-      expect(await runSandboxedCode(code), code).toMatchObject({
+    for (const [input, want] of cases) {
+      expect(await runSandboxedCode(CPF_SNIPPET(input)), input).toMatchObject({
         kind: "value",
         value: want,
       });
     }
   });
 
-  test("a SyntaxError names the line and shows it", async () => {
-    const out = await runSandboxedCode(`const a = 1;\nconst b = ;\na + b`);
+  // The NUMBER and not the text: this message reaches the model, the flow log and the alert
+  // channels, and the line is the operator's own source (a literal pasted into a body would travel
+  // with it). The operator reads the number against the body in their editor.
+  test("a SyntaxError names the line, and never quotes it", async () => {
+    const secret = "const b = ; // sk-not-a-real-key";
+    const out = await runSandboxedCode(`const a = 1;\n${secret}\na + b`);
     expect(out).toMatchObject({ kind: "error", name: "SyntaxError" });
-    expect((out as { message: string }).message).toContain(
-      "(line 2: const b = ;)",
-    );
-    // Through the function-body retry the line is still the snippet's own.
-    const wrapped = await runSandboxedCode(`return 1;\nconst c = ;`);
-    expect((wrapped as { message: string }).message).toContain(
-      "(line 2: const c = ;)",
-    );
+    const message = (out as { message: string }).message;
+    expect(message).toContain("(line 2)");
+    expect(message).not.toContain("sk-not-a-real-key");
+    // In function-body mode the line is still the body's own, not the wrapper's.
+    const wrapped = await runSandboxedCode(`return 1;\nconst c = ;`, {
+      call: { input: {}, context: {} },
+    });
+    expect((wrapped as { message: string }).message).toContain("(line 2)");
   });
 
   test("a runtime error names its line too", async () => {
     const out = await runSandboxedCode(`const a = 1;\nconst b = null;\nb.x`);
     expect(out).toMatchObject({ kind: "error", name: "TypeError" });
-    expect((out as { message: string }).message).toContain("(line 3: b.x)");
+    expect((out as { message: string }).message).toContain("(line 3)");
   });
 
   // The CVE-2026-0863 shape: reading the thrown value runs the snippet's own code. Both reads
@@ -263,19 +174,69 @@ describe("runSandboxedCode", () => {
     });
   });
 
-  // The value path is the one that DOES get a fresh deadline: rendering runs interpreter code, and
-  // a snippet that spends its budget building a large value would otherwise have the render
-  // interrupted and come back as "[object Object]". Sized from a measurement: 60k objects build in
-  // ~20 ms and render in ~80 ms, so 250 ms of the 300 ms spent first leaves the render no room.
+  // The value path is the one that DOES get a fresh deadline: rendering runs interpreter code, and a
+  // value the body finished building with the deadline nearly spent would otherwise have its render
+  // interrupted and come back as "[object Object]".
+  //
+  // The budget is MEASURED here, not written down. The first version spent 250 ms of a fixed 300 ms
+  // and then built 60k objects, which is an assertion about how fast the machine is: it passed on a
+  // developer laptop and failed on every CI runner for four consecutive commits (#518). What the
+  // renewal is for does not depend on the machine — so the build is timed on THIS machine first,
+  // and the deadline is then set just past it. The body finishes with a sliver left, far less than
+  // its own render needs (rendering the array costs several times building it), so without the
+  // renewal the render is interrupted and with it the value comes back whole.
   test("a value built with the last of the budget is still rendered whole", async () => {
-    const out = await runSandboxedCode(
-      `const t = Date.now(); while (Date.now() - t < 250) {}\nArray.from({ length: 60000 }, (_, i) => ({ i }))`,
-      { timeoutMs: 300, maxChars: 2_000_000 },
-    );
+    const BUILD = "Array.from({ length: 20000 }, (_, i) => ({ i }))";
+    const t0 = performance.now();
+    const baseline = await runSandboxedCode(BUILD, {
+      timeoutMs: 30_000,
+      maxChars: 2_000_000,
+    });
+    const wall = performance.now() - t0;
+    expect(baseline.kind).toBe("value");
+    // `ms` is measured through the evaluation and BEFORE the render, so it is the span the deadline
+    // covers: opening the context, the prelude and the build. What is left of `wall` is the render
+    // (plus the reply hop), the part that runs on the renewed deadline.
+    const evalMs = (baseline as { ms: number }).ms;
+    const renderMs = wall - evalMs;
+    // Half the measured span again, so a second run slower than the baseline still FINISHES its
+    // build — the interruption this test is about is the render's, not the body's.
+    const slack = Math.ceil(evalMs * 0.5) + 5;
+    // The premise, asserted instead of assumed: rendering has to cost more than the slack, or this
+    // test would pass with the renewal gone and guard nothing. It held by ~3x when written.
+    expect(renderMs).toBeGreaterThan(slack);
+    const out = await runSandboxedCode(BUILD, {
+      timeoutMs: evalMs + slack,
+      maxChars: 2_000_000,
+    });
     expect(out.kind).toBe("value");
     const v = (out as { value: string }).value;
     expect(v.startsWith('[{"i":0},{"i":1}')).toBe(true);
-    expect(v.endsWith('{"i":59999}]')).toBe(true);
+    expect(v.endsWith('{"i":19999}]')).toBe(true);
+  });
+
+  // A value can still run the body's code AFTER the body returned: a getter, a proxy trap. The
+  // renderer used to swallow that and answer "[object Object]" as a successful value, so the agent
+  // read a verdict nobody produced and the operator was never alerted — the failure contract says a
+  // throw from the body is a failure, and this is one, one step later.
+  test("a throw while the value is being read is an error, not a value", async () => {
+    for (const code of [
+      'return { get x() { throw new Error("boom") } }',
+      'return new Proxy({}, { ownKeys() { throw new Error("boom") } })',
+    ]) {
+      const out = await runSandboxedCode(code, {
+        call: { input: {}, context: {} },
+      });
+      expect([code, out.kind]).toEqual([code, "error"]);
+      expect((out as { message: string }).message).toContain("boom");
+    }
+    // A console LINE that cannot be rendered is not a failed call: the fallback stays there.
+    const logged = await runSandboxedCode(
+      'console.log({ get y() { throw new Error("log") } }); return { ok: true }',
+      { call: { input: {}, context: {} } },
+    );
+    expect(logged).toMatchObject({ kind: "value", value: '{"ok":true}' });
+    expect((logged as { logs: string[] }).logs).toEqual(["[object Object]"]);
   });
 
   test("the agent's clock is inside: TIMEZONE and NOW_LOCAL, not the interpreter's UTC", async () => {
@@ -514,14 +475,13 @@ describe("runSandboxedCode", () => {
     }
   }, 30_000);
 
-  // Round 11: the helpers and the Date shim resolved `String`, `Number`, `Math`, `isNaN`, `Object`
-  // when called — after the snippet, whose own top-level `const` had shadowed them. Bound when
-  // each prelude is installed, like the renderer's and the error reader's.
-  test("a snippet that shadows a global still gets the helpers and the zone", async () => {
+  // Round 11: the Date shim resolved `String`, `Number`, `Math`, `isNaN`, `Object` when called —
+  // after the snippet, whose own top-level `const` had shadowed them. Bound when the shim is
+  // installed, like the renderer's and the error reader's.
+  test("a snippet that shadows a global still gets the zone", async () => {
     const out = await runSandboxedCode(
       `const String = 0, Number = 0, Math = 0, isNaN = 0, Object = 0;
-       [validateCpf("123.516.128-50").valid, validateCnpj("12.ABC.345/01DE-35").valid,
-        new Date(2026, 0, 15, 7, 30).toISOString(), new Date("2026-01-15T07:30").getDate(),
+       [new Date(2026, 0, 15, 7, 30).toISOString(), new Date("2026-01-15T07:30").getDate(),
         new Date(NOW_LOCAL).getHours(), new Date(NOW_LOCAL).toString(),
         typeof Date(), /^[A-Z][a-z]{2} [A-Z][a-z]{2} \\d{2} \\d{4} \\d{2}:\\d{2}:\\d{2} GMT\\+0900$/.test(Date())]`,
       {
@@ -534,8 +494,6 @@ describe("runSandboxedCode", () => {
     expect(out).toMatchObject({
       kind: "value",
       value: JSON.stringify([
-        true,
-        true,
         "2026-01-14T22:30:00.000Z",
         15,
         7,
@@ -778,7 +736,7 @@ describe("runSandboxedCode", () => {
     // where it has to be argued for.
     expect((globals as { value: string }).value).toBe(
       JSON.stringify(
-        "console,decodeURI,decodeURIComponent,encodeURI,encodeURIComponent,escape,eval,globalThis,isFinite,isNaN,parseFloat,parseInt,undefined,unescape,validateCnpj,validateCpf",
+        "console,decodeURI,decodeURIComponent,encodeURI,encodeURIComponent,escape,eval,globalThis,isFinite,isNaN,parseFloat,parseInt,undefined,unescape",
       ),
     );
   });
@@ -849,7 +807,7 @@ describe("runSandboxedCode", () => {
     expect(shadowed).toMatchObject({
       kind: "error",
       name: "TypeError",
-      message: expect.stringMatching(/^kept \(line 1:/),
+      message: "kept (line 1)",
     });
     const plain = await runSandboxedCode("throw { a: 1 }");
     expect(plain).toMatchObject({
@@ -1094,11 +1052,21 @@ describe("SandboxQueue", () => {
     expect(queue.queued).toBe(0);
   });
 
+  // What the gate has to do with fifty callers is answer all fifty — none dropped, none refused for
+  // want of a slot. The DEFAULT deadline is not part of that question, and leaving it in made this
+  // an assertion about how fast fifty workers start on the machine at hand: green locally, red on
+  // every CI runner for four consecutive commits (#518). A deadline no honest machine can miss
+  // keeps the queue as the only thing measured.
   test("a burst of fifty cheap calls all come back as values under the default gate", async () => {
     const outs = await Promise.all(
-      Array.from({ length: 50 }, (_, i) => runSandboxedCode(`${i} * 2`)),
+      Array.from({ length: 50 }, (_, i) =>
+        runSandboxedCode(`${i} * 2`, { timeoutMs: 30_000 }),
+      ),
     );
     expect(outs.map((o) => o.kind)).toEqual(Array(50).fill("value"));
+    expect(outs.map((o) => (o as { value: string }).value)).toEqual(
+      Array.from({ length: 50 }, (_, i) => String(i * 2)),
+    );
     expect(SANDBOX_MAX_CONCURRENCY).toBe(8);
   });
 
@@ -1130,24 +1098,26 @@ describe("formatSandboxResult", () => {
     ],
     [
       { kind: "error", name: "TypeError", message: "boom", logs: [], ms: 1 },
-      [/^Error: TypeError: boom/, /call run_code again/],
+      [/^Error: TypeError: boom$/],
     ],
     [
       { kind: "limit", limit: "time", logs: [] },
-      [
-        new RegExp(`stopped after ${SANDBOX_TIMEOUT_MS} ms`),
-        /call run_code again/,
-      ],
+      [new RegExp(`^Execution stopped after ${SANDBOX_TIMEOUT_MS} ms`)],
     ],
     [
       { kind: "limit", limit: "memory", logs: ["partial"] },
       [
-        /^Output:\npartial/,
-        new RegExp(`${SANDBOX_MEMORY_BYTES / (1024 * 1024)} MB`),
+        new RegExp(
+          `^Execution exceeded the ${SANDBOX_MEMORY_BYTES / (1024 * 1024)} MB`,
+        ),
+        /\n\nOutput:\npartial$/,
       ],
     ],
-    [{ kind: "limit", limit: "stack", logs: [] }, [/recursion/, /iteratively/]],
-    [{ kind: "limit", limit: "aborted", logs: [] }, [/aborted/, /Simplify/]],
+    [
+      { kind: "limit", limit: "stack", logs: [] },
+      [/^Execution overflowed/, /recursion/],
+    ],
+    [{ kind: "limit", limit: "aborted", logs: [] }, [/^Execution was aborted/]],
   ];
   for (const [outcome, expectations] of rows) {
     test(`${outcome.kind}${"limit" in outcome ? `/${outcome.limit}` : ""}`, () => {
@@ -1182,9 +1152,9 @@ describe("formatSandboxResult", () => {
       { kind: "error", name: "TypeError", message: "boom", logs, ms: 1 },
       { maxChars: 500 },
     );
-    expect(err).toMatch(
-      /Error: TypeError: boom\nThe code did not finish\. Fix it and call run_code again\.$/,
-    );
+    // A failure leads with its reason: the flow log keeps the first line as the cause.
+    expect(err.startsWith("Error: TypeError: boom\n\nOutput:\n")).toBe(true);
+    expect(err).toContain("…[output truncated]");
     expect(err.length).toBeLessThanOrEqual(500);
 
     // Output that FITS is shown whole, and a tail that leaves no room drops the output rather than
@@ -1199,5 +1169,163 @@ describe("formatSandboxResult", () => {
       { maxChars: 500 },
     );
     expect(noRoom).toBe(`Result: ${"v".repeat(480)}`);
+  });
+});
+
+// The production mode: a code tool's body runs as `function (input, context)` and answers with
+// `return`. `input` is what the model passed (validated by the tool's schema), `context` what the
+// turn knows; both cross as JSON text and are parsed inside before the body runs.
+describe("function-body mode (a code tool's call)", () => {
+  const call = (input: unknown, context: unknown = {}) => ({
+    call: { input, context },
+  });
+
+  test("the return value is the result, and input is the parsed argument object", async () => {
+    const out = await runSandboxedCode(
+      "return input.a + input.b",
+      call({ a: 40, b: 2 }),
+    );
+    expect(out).toMatchObject({ kind: "value", value: "42" });
+  });
+
+  test("input and context arrive whole: nested, unicode, null, a __proto__ key", async () => {
+    const input = {
+      cpf: "123.516.128-50",
+      list: [1, "dois", null, { deep: true }],
+      nome: "José 🙂",
+      __proto__: { polluted: 1 },
+    };
+    const context = {
+      contact_name: "Maria",
+      conversationAttributes: { vip: true },
+    };
+    const out = await runSandboxedCode(
+      "return [JSON.stringify(input), JSON.stringify(context), Object.getPrototypeOf(input) === Object.prototype]",
+      call(input, context),
+    );
+    expect(out).toMatchObject({
+      kind: "value",
+      value: JSON.stringify([
+        JSON.stringify(input),
+        JSON.stringify(context),
+        true,
+      ]),
+    });
+  });
+
+  test("the helpers, the clock and the zone are there for the body", async () => {
+    const out = await runSandboxedCode(
+      "const d = String(input.cpf).replace(/\\D/g, ''); return { cpf: d.length === 11, tz: TIMEZONE, offset: new Date(NOW_LOCAL).getTimezoneOffset() }",
+      {
+        ...call({ cpf: "12351612850" }),
+        clock: { timezone: "America/Sao_Paulo" },
+      },
+    );
+    expect(out).toMatchObject({
+      kind: "value",
+      value: '{"cpf":true,"tz":"America/Sao_Paulo","offset":180}',
+    });
+  });
+
+  test("a body runs ONCE (no re-evaluation), and one without return answers undefined", async () => {
+    const once = await runSandboxedCode(
+      'console.log("once"); const x = { a: 1 }; { x }',
+      call({}),
+    );
+    expect(once).toMatchObject({
+      kind: "value",
+      value: "undefined",
+      logs: ["once"],
+    });
+  });
+
+  test("an error names the body's own line, not the wrapper's", async () => {
+    const syntax = await runSandboxedCode(
+      "const ok = 1;\nconst x = ;",
+      call({}),
+    );
+    expect(syntax).toMatchObject({ kind: "error", name: "SyntaxError" });
+    expect((syntax as { message: string }).message).toMatch(/\(line 2\)$/);
+    const thrown = await runSandboxedCode(
+      '\n\nthrow new Error("boom")',
+      call({}),
+    );
+    expect(thrown).toMatchObject({ kind: "error", name: "Error" });
+    expect((thrown as { message: string }).message).toBe("boom (line 3)");
+  });
+
+  test("the body sees input and context as parameters and nothing new on the global object", async () => {
+    const out = await runSandboxedCode(
+      "return [typeof __INPUT_JSON, typeof __CONTEXT_JSON, typeof __takeArgs, Object.getOwnPropertyNames(globalThis).filter((n) => !/^[A-Z]/.test(n)).sort().join(',')]",
+      call({ a: 1 }),
+    );
+    expect(out).toMatchObject({
+      kind: "value",
+      value: JSON.stringify([
+        "undefined",
+        "undefined",
+        "undefined",
+        "console,decodeURI,decodeURIComponent,encodeURI,encodeURIComponent,escape,eval,globalThis,isFinite,isNaN,parseFloat,parseInt,undefined,unescape",
+      ]),
+    });
+  });
+
+  test("the limits classify the same way in this mode", async () => {
+    const loop = await runSandboxedCode("while (true) {}", {
+      ...call({}),
+      timeoutMs: 200,
+    });
+    expect(loop).toMatchObject({ kind: "limit", limit: "time" });
+    const deep = await runSandboxedCode(
+      "function f() { return f() } return f()",
+      call({}),
+    );
+    expect(deep).toMatchObject({ kind: "limit", limit: "stack" });
+  });
+
+  test("an undefined argument crosses as null rather than as the text 'undefined'", async () => {
+    const out = await runSandboxedCode("return [input, context]", {
+      call: { input: undefined, context: undefined },
+    });
+    expect(out).toMatchObject({ kind: "value", value: "[null,null]" });
+  });
+
+  // A body that returns a promise did not finish, and there is no event loop here to finish it. The
+  // renderer walks the object, finds no own keys, and answers `Result: {}` with `failed: false`, so
+  // the agent reads an empty object as the operator's verdict and nobody is alerted -- including
+  // when the async body THREW, which came back the same way (round 31, measured on all four).
+  test("a returned promise is an error, not an empty object", async () => {
+    const bodies = [
+      "return Promise.resolve(42);",
+      "return (async () => 42)();",
+      "return (async () => { throw new Error('boom'); })();",
+      // A thenable is what an `await` would have unwrapped, so it is the same mistake wearing a
+      // different shape.
+      "return { then(r) { r(7); } };",
+    ];
+    for (const body of bodies) {
+      const out = await runSandboxedCode(body, call({}));
+      expect([body, (out as { kind: string }).kind]).toEqual([body, "error"]);
+      expect([body, (out as { name: string }).name]).toEqual([
+        body,
+        "TypeError",
+      ]);
+      expect((out as { message: string }).message).toContain(
+        "returned a promise",
+      );
+    }
+  });
+
+  // The control, and it is the one that matters: an ordinary object has to keep rendering. A check
+  // that reads `.then` off every result would be answered by refusing every object.
+  test("an object that merely HAS keys is still a value", async () => {
+    const out = await runSandboxedCode(
+      "return { then: 1, valid: true, name: 'Maria' };",
+      call({}),
+    );
+    expect(out).toMatchObject({
+      kind: "value",
+      value: '{"then":1,"valid":true,"name":"Maria"}',
+    });
   });
 });

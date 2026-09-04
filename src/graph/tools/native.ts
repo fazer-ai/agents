@@ -56,18 +56,7 @@ import {
   roundDownToMinutes,
 } from "../time";
 import { CalculatorError, evaluateExpression } from "./calculator";
-import {
-  NATIVE_TOOL_CATEGORY,
-  type NativeToolName,
-  UTILITY_NATIVE_TOOL_NAMES,
-} from "./catalog";
-import {
-  formatSandboxResult,
-  runSandboxedCode,
-  SANDBOX_CODE_MAX_CHARS,
-  SANDBOX_MEMORY_BYTES,
-  SANDBOX_TIMEOUT_MS,
-} from "./code-sandbox";
+import { NATIVE_TOOL_CATEGORY, type NativeToolName } from "./catalog";
 
 // Native Chatwoot tools the agent can call mid-turn, all over the bot token. Each is bound to a
 // ToolCtx (the conversation + a ready client); the runtime resolves the per-agent allowlist
@@ -235,9 +224,6 @@ export interface ToolCtx {
   // convention as ToolpackCtx: the SSRF assertion resolves DNS, so a hermetic test has to stub it.
   fetchImpl?: typeof fetch;
   assertSafe?: ImageFetchDeps["assertSafe"];
-  // Injectable for tests (the sandbox behind run_code): the one way to stage "the sandbox could not
-  // start" without breaking the install.
-  runCode?: typeof runSandboxedCode;
   // Per-agent, per-tool operator guidance (keyed by native tool name), appended to that tool's
   // model-facing description so transfer/funnel logic lives WITH the tool instead of buried in the
   // prompt. Populated at turn prep from agent.settings (handoff.instructions / kanban.instructions).
@@ -1367,55 +1353,9 @@ function getCurrentTimeTool(ctx: ToolCtx) {
 }
 
 // allowed = undefined → all native tools; otherwise only the named subset (fail-closed).
-// Utility tool: a JavaScript snippet the model writes, run in the isolated sandbox of
-// ./code-sandbox.ts, with the result handed back as text (issue #363). The description is the
-// half of the fix that lives in the model's context: it asks for code that PRODUCES the verdict,
-// because the failure the issue measured was a model holding two correct check digits and still
-// answering "does not match" — the comparison is what has to leave the model, not the arithmetic.
-//
-// A snippet that throws or hits a limit is reported to the model as a normal result, not as a
-// ToolFailure: it is the model's own code, and the sentence tells it what to change. The one
-// failure that IS ours — the sandbox thread could not start — is marked, so the flow log carries it
-// to the operator (tools/failure.ts).
-const RUN_CODE_DESCRIPTION = [
-  "Run a JavaScript snippet in an isolated sandbox and get its result back. Use it whenever an answer depends on exact computation or on a verdict derived from computed values: check digits (CPF, CNPJ), date arithmetic, parsing, rounding, sorting, comparisons.",
-  "Write the code so that it produces the FINAL VERDICT itself (for example, end with an object like { valid: true }) and relay that result to the customer. Never redo the comparison or the arithmetic yourself after the tool answered.",
-  "The value of the last expression is the result (REPL style); console.log output is returned with it. Plain JavaScript only: no network, no files, no imports, no async/await.",
-  "Built-in helpers, to be used instead of writing the algorithm: validateCpf(text) and validateCnpj(text) return { valid: boolean } and ignore punctuation.",
-  "For dates, the sandbox runs on the agent's clock: the globals TIMEZONE (IANA zone) and NOW_LOCAL (the current instant as an ISO string with the agent's UTC offset, e.g. 2026-09-02T19:05:33.412-03:00), and Date's local methods (getDate, getHours, setDate, new Date(y, m, d), toString) follow TIMEZONE; getTime and toISOString are UTC as always. Months are 0-based (January = 0) and there is no Intl, so weekday and month names come from your own arrays.",
-  `Limits: ${SANDBOX_TIMEOUT_MS} ms of CPU, ${Math.round(SANDBOX_MEMORY_BYTES / (1024 * 1024))} MB of memory.`,
-].join(" ");
-
-function runCodeTool(ctx: ToolCtx) {
-  const run = ctx.runCode ?? runSandboxedCode;
-  return failableTool(
-    async ({ code }: { code: string }) => {
-      const out = await run(code, {
-        clock: { timezone: ctx.timezone || DEFAULT_TIMEZONE },
-      });
-      if (out.kind === "unavailable") {
-        return toolFailure(
-          `The code sandbox could not start (${out.reason}). Answer without it, and do not tell the customer their data is invalid on that basis.`,
-        );
-      }
-      return formatSandboxResult(out);
-    },
-    {
-      name: "run_code",
-      description: withOperatorNote(RUN_CODE_DESCRIPTION, ctx, "run_code"),
-      schema: z.object({
-        code: z
-          .string()
-          .min(1)
-          .max(SANDBOX_CODE_MAX_CHARS)
-          .describe(
-            "JavaScript to run. The value of its last expression is the result; console.log output is returned too.",
-          ),
-      }),
-    },
-  );
-}
-
+// No native tool takes CODE from the model: computation the model must not redo (check digits,
+// date arithmetic, parsing) is an operator-authored code tool (tools/code.ts), whose body the
+// operator wrote once and whose arguments are the only thing the model supplies.
 export function buildNativeTools(
   ctx: ToolCtx,
   allowed?: Iterable<string>,
@@ -1434,20 +1374,10 @@ export function buildNativeTools(
     skipReplyTool(ctx),
     calculatorTool(ctx),
     getCurrentTimeTool(ctx),
-    runCodeTool(ctx),
   ];
   if (!allowed) return all;
   const allow = new Set(allowed);
   return all.filter((t) => allow.has(t.name));
-}
-
-// Restricts a native allowlist to the UTILITY family (calculator/clock). The playground injects
-// this so context-free tools work there while conversation tools (which need a live client) stay
-// out. `allowed` undefined ⇒ all utility tools; otherwise the intersection with the agent's set.
-export function utilityNativeAllow(allowed?: Iterable<string>): string[] {
-  if (!allowed) return [...UTILITY_NATIVE_TOOL_NAMES];
-  const set = new Set(allowed);
-  return UTILITY_NATIVE_TOOL_NAMES.filter((n) => set.has(n));
 }
 
 // Replaces a tool's execution with a no-op that returns a synthetic success — keeps the model-facing

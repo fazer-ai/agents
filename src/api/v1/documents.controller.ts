@@ -38,6 +38,7 @@ import {
 // translate('errors.invalidCompanyField', 'This company profile field is not valid: {{reason}}')
 // translate('errors.invalidDocumentValues', 'The values do not match what this template declares: {{reason}}')
 // translate('errors.invalidDocumentSlug', 'This identifier is not valid: {{reason}}')
+// translate('errors.documentToolNameTaken', 'The tool name {{tool}} is already used by the tool "{{holder}}"')
 // translate('errors.invalidDocumentTemplateName', 'This document template name is not valid: {{reason}}')
 // translate('errors.documentRevoked', 'This document was revoked and cannot be issued again')
 // translate('errors.documentNotNumbered', 'This document could not be numbered because its template no longer exists')

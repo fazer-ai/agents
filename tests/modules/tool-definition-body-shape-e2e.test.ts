@@ -228,6 +228,48 @@ describe.skipIf(!dbUp)(
       if (!dry.ok) expect(dry.error).toContain('"mode":"raw"');
     });
 
+    // The preview has to describe what the APPLY would do, and two things about a name make that
+    // false unless the preview asks the core: the name is canonicalized on write, and a rename onto
+    // a name another kind holds is refused there. Both are the code tool's rules too (#490, #363).
+    test("MCP tool previews show the canonical name, and refuse a rename the apply would refuse", async () => {
+      const dry = await toolCreate(
+        principal(),
+        {
+          name: "Lookup_CPF",
+          url_template: "https://example.com/lookup",
+          allowed_hosts: ["example.com"],
+        } as never,
+        { base: appDb },
+      );
+      expect(dry.ok).toBe(true);
+      if (!dry.ok) return;
+      expect((dry.data.preview as { name: string }).name).toBe("lookup_cpf");
+
+      const created = await createToolDefinition(
+        ctx(),
+        toolInput("mcp_rename_source") as never,
+        appDb,
+      );
+      // A name a built-in of another kind holds: refused by the apply, so the preview says so too.
+      const renamed = await toolUpdate(
+        principal(),
+        { tool_id: String(created.id), name: "search_knowledge" } as never,
+        { base: appDb },
+      );
+      expect(renamed.ok).toBe(false);
+      // ...and a rename that IS free previews the canonical spelling.
+      const fine = await toolUpdate(
+        principal(),
+        { tool_id: String(created.id), name: "Outro_Nome" } as never,
+        { base: appDb },
+      );
+      expect(fine.ok).toBe(true);
+      if (!fine.ok) return;
+      expect(
+        (fine.data.diff as Record<string, { after: unknown }>).name?.after,
+      ).toBe("outro_nome");
+    });
+
     test("MCP tool_update refuses it in the dry-run preview too", async () => {
       const created = await createToolDefinition(
         ctx(),

@@ -94,6 +94,7 @@ enum AgentToolSource {
   MCP
   INTEGRATION
   DOCUMENT
+  CODE
 }
 
 // ──────────────────────────────────────────────────────── identity ──
@@ -130,6 +131,7 @@ model Tenant {
   approvalQueueItems            ApprovalQueueItem[]
   vaultEntries                  VaultEntry[]
   toolDefinitions               ToolDefinition[]
+  codeToolDefinitions           CodeToolDefinition[]
   mcpServerConnections          McpServerConnection[]
   integrationInstances          IntegrationInstance[]
   agentToolSelections           AgentToolSelection[]
@@ -1193,6 +1195,32 @@ model ToolDefinition {
   @@map("tool_definitions")
 }
 
+// An operator-authored code tool (issue #363): a JavaScript function body the agent calls with
+// typed arguments. `name` is the identifier the model calls, derived from `label` by the console the
+// way an HTTP tool's is, and unique with HTTP tool names too (checked in the service: one namespace
+// reaches the model). `inputSchema` is the same compact AI-field map as an HTTP tool's
+// (graph/tools/http.ts parseToolInputSchema). `code` is the body of `function (input, context)`,
+// run in the sandbox (graph/tools/code.ts). Invalid code is stored as written — the console and the
+// service WARN, never refuse — and fails at call time, as the operator's failure.
+model CodeToolDefinition {
+  id          BigInt   @id @default(autoincrement())
+  tenantId    BigInt   @map("tenant_id")
+  name        String
+  label       String
+  description String
+  inputSchema Json     @default("{}") @map("input_schema")
+  code        String
+  enabled     Boolean  @default(true)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  tenant         Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  toolSelections AgentToolSelection[]
+
+  @@unique([tenantId, name])
+  @@map("code_tool_definitions")
+}
+
 model McpServerConnection {
   id            BigInt   @id @default(autoincrement())
   tenantId      BigInt   @map("tenant_id")
@@ -1261,6 +1289,7 @@ model AgentToolSelection {
   mcpServerConnectionId BigInt?         @map("mcp_server_connection_id")
   integrationInstanceId BigInt?         @map("integration_instance_id")
   documentTemplateId    BigInt?         @map("document_template_id")
+  codeToolDefinitionId  BigInt?         @map("code_tool_definition_id")
   knowledgeBaseIds      BigInt[]        @map("knowledge_base_ids")
   enabledTools          String[]        @map("enabled_tools")
   createdAt             DateTime        @default(now()) @map("created_at")
@@ -1272,6 +1301,7 @@ model AgentToolSelection {
   mcpServerConnection McpServerConnection? @relation(fields: [mcpServerConnectionId], references: [id], onDelete: Cascade)
   integrationInstance IntegrationInstance? @relation(fields: [integrationInstanceId], references: [id], onDelete: Cascade)
   documentTemplate    DocumentTemplate?    @relation(fields: [documentTemplateId], references: [id], onDelete: Cascade)
+  codeToolDefinition  CodeToolDefinition?  @relation(fields: [codeToolDefinitionId], references: [id], onDelete: Cascade)
 
   @@index([tenantId])
   @@index([agentId])

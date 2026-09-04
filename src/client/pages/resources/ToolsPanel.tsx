@@ -1,5 +1,5 @@
-import { Link2, Plus, Trash2, Wrench } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { Code2, Link2, Trash2, Webhook, Wrench } from "lucide-react";
+import { type ReactNode, useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   type AgentRef,
@@ -17,18 +17,37 @@ import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
 import { nativeToolMeta } from "@/client/lib/nativeTools";
 import { NATIVE_TOOL_CATEGORY, NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
+import { CodeToolEditModal, type CodeToolListed } from "./CodeToolEditModal";
 import { type Tool, ToolEditModal } from "./ToolEditModal";
+
+// One kind of tool, in the merged list. Both are the operator's own; the badge and the subtitle are
+// what tell them apart at a glance (an HTTP tool by its method and URL, a code tool by the arguments
+// it declares).
+type ToolKind = "http" | "code";
+type MergedTool = {
+  kind: ToolKind;
+  id: string;
+  label: string;
+  enabled: boolean;
+  subtitle: ReactNode;
+};
 
 export function ToolsPanel() {
   const { t } = useTranslation();
   const { showToast } = useToast();
-  const [tools, setTools] = useState<Tool[]>([]);
+  const [httpTools, setHttpTools] = useState<Tool[]>([]);
+  const [codeTools, setCodeTools] = useState<CodeToolListed[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
 
   const editModal = useModalController<{ id?: string }>();
+  const codeEditModal = useModalController<{ id?: string }>();
   const refsModal = useModalController<{ id: string; name: string }>();
-  const deleteModal = useModalController<{ id: string; name: string }>();
+  const deleteModal = useModalController<{
+    kind: ToolKind;
+    id: string;
+    name: string;
+  }>();
   const [refs, setRefs] = useState<AgentRef[] | null>(null);
   const [deleteRefs, setDeleteRefs] = useState<AgentRef[] | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -37,12 +56,16 @@ export function ToolsPanel() {
     setLoading(true);
     setError(false);
     try {
-      const toolsRes = await api.api.v1.tools.get();
-      if (toolsRes.error || !toolsRes.data) {
+      const [httpRes, codeRes] = await Promise.all([
+        api.api.v1.tools.get(),
+        api.api.v1["code-tools"].get(),
+      ]);
+      if (httpRes.error || !httpRes.data || codeRes.error || !codeRes.data) {
         setError(true);
         return;
       }
-      setTools(toolsRes.data.tools);
+      setHttpTools(httpRes.data.tools);
+      setCodeTools(codeRes.data.tools);
     } catch {
       setError(true);
     } finally {
@@ -54,31 +77,45 @@ export function ToolsPanel() {
     void load();
   }, [load]);
 
-  // Reverse refs (which agents granted this tool): same async pattern as the vault Usage flow — open
-  // the modal first (loading state), then fill it.
-  async function loadRefs(id: string): Promise<AgentRef[] | null> {
-    const { data } = await api.api.v1.tools({ id }).references.get();
+  // Reverse refs (which agents granted this tool) come from the endpoint of the tool's own kind. The
+  // shape is the same either way, so the modal renders one component.
+  async function loadRefs(
+    kind: ToolKind,
+    id: string,
+  ): Promise<AgentRef[] | null> {
+    const { data } =
+      kind === "http"
+        ? await api.api.v1.tools({ id }).references.get()
+        : await api.api.v1["code-tools"]({ id }).references.get();
     return data ? [...data.references.agents] : null;
   }
 
-  async function openRefs(tool: Tool) {
+  async function openRefs(tool: MergedTool) {
     setRefs(null);
     refsModal.open({ id: tool.id, name: tool.label });
-    setRefs(await loadRefs(tool.id));
+    setRefs(await loadRefs(tool.kind, tool.id));
   }
 
-  async function askDelete(tool: Tool) {
+  function openEdit(tool: MergedTool) {
+    if (tool.kind === "http") editModal.open({ id: tool.id });
+    else codeEditModal.open({ id: tool.id });
+  }
+
+  async function askDelete(tool: MergedTool) {
     setDeleteRefs(null);
-    deleteModal.open({ id: tool.id, name: tool.label });
-    setDeleteRefs(await loadRefs(tool.id));
+    deleteModal.open({ kind: tool.kind, id: tool.id, name: tool.label });
+    setDeleteRefs(await loadRefs(tool.kind, tool.id));
   }
 
   async function confirmDelete() {
-    const id = deleteModal.payload?.id;
-    if (!id) return;
+    const target = deleteModal.payload;
+    if (!target) return;
     setDeleting(true);
     try {
-      const { error: err } = await api.api.v1.tools({ id }).delete();
+      const { error: err } =
+        target.kind === "http"
+          ? await api.api.v1.tools({ id: target.id }).delete()
+          : await api.api.v1["code-tools"]({ id: target.id }).delete();
       if (err) {
         showToast(
           apiErrorMessage(err) || t("tools.deleteError", "Could not delete."),
@@ -94,27 +131,75 @@ export function ToolsPanel() {
     }
   }
 
+  // The declared argument names of a code tool, for its row subtitle: the schema keys, or a note
+  // when it takes none. The catalog stores the compact field map, so the keys ARE the argument
+  // names the agent fills in.
+  function codeSubtitle(tool: CodeToolListed): ReactNode {
+    const names = Object.keys(
+      (tool.inputSchema ?? {}) as Record<string, unknown>,
+    );
+    return names.length > 0
+      ? names.join(", ")
+      : t("codeTools.noArguments", "No arguments");
+  }
+
+  const merged: MergedTool[] = [
+    ...httpTools.map(
+      (tool): MergedTool => ({
+        kind: "http",
+        id: tool.id,
+        label: tool.label,
+        enabled: tool.enabled,
+        subtitle: (
+          <>
+            <span className="font-medium">{tool.method}</span>{" "}
+            {tool.urlTemplate}
+          </>
+        ),
+      }),
+    ),
+    ...codeTools.map(
+      (tool): MergedTool => ({
+        kind: "code",
+        id: tool.id,
+        label: tool.label,
+        enabled: tool.enabled,
+        subtitle: codeSubtitle(tool),
+      }),
+    ),
+  ].sort((a, b) => a.label.localeCompare(b.label));
+
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between gap-3">
         <p className="text-sm text-text-muted">
-          {t("tools.subtitle", "HTTP tools your agents can call.")}
+          {t("tools.subtitle", "HTTP and code tools your agents can call.")}
         </p>
-        <Button size="sm" onClick={() => editModal.open({})}>
-          <Plus className="h-4 w-4" aria-hidden="true" />
-          {t("tools.add", "New tool")}
-        </Button>
+        <div className="flex shrink-0 gap-2">
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => editModal.open({})}
+          >
+            <Webhook className="h-4 w-4" aria-hidden="true" />
+            {t("tools.addHttp", "New HTTP tool")}
+          </Button>
+          <Button size="sm" onClick={() => codeEditModal.open({})}>
+            <Code2 className="h-4 w-4" aria-hidden="true" />
+            {t("tools.addCode", "New code tool")}
+          </Button>
+        </div>
       </div>
 
       <DataBoundary
         loading={loading}
         error={error}
-        isEmpty={tools.length === 0}
+        isEmpty={merged.length === 0}
         onRetry={load}
         empty={
           <EmptyState
             icon={Wrench}
-            title={t("tools.emptyTitle", "No HTTP tools yet")}
+            title={t("tools.emptyTitle", "No tools yet")}
             description={t(
               "tools.emptyDesc",
               "Define a tool once, then grant it to the agents that need it.",
@@ -123,9 +208,9 @@ export function ToolsPanel() {
         }
       >
         <div className="flex flex-col gap-3">
-          {tools.map((tool) => (
+          {merged.map((tool) => (
             <Card
-              key={tool.id}
+              key={`${tool.kind}:${tool.id}`}
               className="flex items-center justify-between gap-4"
             >
               <div className="min-w-0">
@@ -133,6 +218,11 @@ export function ToolsPanel() {
                   <span className="truncate font-medium text-sm text-text-primary">
                     {tool.label}
                   </span>
+                  <Badge variant={tool.kind === "code" ? "info" : "secondary"}>
+                    {tool.kind === "code"
+                      ? t("tools.kindCode", "Code")
+                      : "HTTP"}
+                  </Badge>
                   {!tool.enabled && (
                     <Badge variant="secondary">
                       {t("common.disabled", "Disabled")}
@@ -140,8 +230,7 @@ export function ToolsPanel() {
                   )}
                 </div>
                 <p className="mt-0.5 truncate text-text-muted text-xs">
-                  <span className="font-medium">{tool.method}</span>{" "}
-                  {tool.urlTemplate}
+                  {tool.subtitle}
                 </p>
               </div>
               <div className="flex shrink-0 gap-1">
@@ -156,7 +245,7 @@ export function ToolsPanel() {
                 <Button
                   variant="secondary"
                   size="sm"
-                  onClick={() => editModal.open({ id: tool.id })}
+                  onClick={() => openEdit(tool)}
                 >
                   {t("common.edit", "Edit")}
                 </Button>
@@ -226,6 +315,7 @@ export function ToolsPanel() {
       </section>
 
       <ToolEditModal modal={editModal} onSaved={() => load()} />
+      <CodeToolEditModal modal={codeEditModal} onSaved={() => load()} />
 
       <Modal
         modal={refsModal}

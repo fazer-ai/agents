@@ -1394,10 +1394,11 @@ export const agentsController = new Elysia({
                 t.Literal("MCP"),
                 t.Literal("INTEGRATION"),
                 t.Literal("DOCUMENT"),
+                t.Literal("CODE"),
               ],
               {
                 description:
-                  "Grant source: NATIVE (built-in tools), RAG (knowledge bases), HTTP (custom tool), MCP (MCP server connection), INTEGRATION (integration instance), or DOCUMENT (document template).",
+                  "Grant source: NATIVE (built-in tools), RAG (knowledge bases), HTTP (custom tool), MCP (MCP server connection), INTEGRATION (integration instance), DOCUMENT (document template), or CODE (operator-authored code tool).",
               },
             ),
             toolDefinitionId: t.Optional(
@@ -1422,6 +1423,12 @@ export const agentsController = new Elysia({
               t.Union([t.String(), t.Null()], {
                 description:
                   "Document template id (BigInt string) for DOCUMENT grants, or null.",
+              }),
+            ),
+            codeToolDefinitionId: t.Optional(
+              t.Union([t.String(), t.Null()], {
+                description:
+                  "Code tool id (BigInt string) for CODE grants, or null.",
               }),
             ),
             knowledgeBaseIds: t.Optional(

@@ -1,11 +1,18 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { ToolMessage } from "@langchain/core/messages";
 import { tool } from "@langchain/core/tools";
+import { PrismaPg } from "@prisma/adapter-pg";
 import { z } from "zod";
+import { PrismaClient } from "@/../generated/prisma/client";
+import { encryptJson } from "@/api/lib/crypto";
 import { SKIP_REPLY_TOOL, skipReplyRan } from "@/graph/silence";
 import { buildSimulatedNativeTools } from "@/graph/tools/native";
+import type { TenantContext } from "@/lib/tenancy";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
-import { applyToolMocks } from "@/modules/playground/service";
+import {
+  applyToolMocks,
+  listPlaygroundTools,
+} from "@/modules/playground/service";
 
 // A client whose every method throws if called — proves the simulated tools never touch Chatwoot.
 const explodingClient = new Proxy(
@@ -158,19 +165,121 @@ describe("applyToolMocks (P4)", () => {
   });
 });
 
-// `run_code` is a utility tool: it runs for REAL in the playground, like calculator and the clock,
-// because it touches nothing outside its own thread. A simulated "[simulated]" line here would make
-// the playground show a verdict the production agent never computes.
-describe("run_code in the playground", () => {
-  test("runs for real, and is not simulated", async () => {
-    const tools = buildSimulatedNativeTools(
-      { client: explodingClient, conversationId: 0 },
-      ["run_code", "handoff_to_human"],
-    );
-    const run = tools.find((t) => t.name === "run_code");
-    const handoff = tools.find((t) => t.name === "handoff_to_human");
-    expect(String(await run?.invoke({ code: "6 * 7" }))).toBe("Result: 42");
-    // Positive control: the sibling conversation tool IS simulated by the same builder.
-    expect(String(await handoff?.invoke({}))).toContain("[simulated]");
+const appUrl = process.env.TEST_APP_DATABASE_URL;
+const suUrl = process.env.MIGRATION_DATABASE_URL;
+let dbUp = false;
+let su: PrismaClient | undefined;
+let app: PrismaClient | undefined;
+if (appUrl && suUrl) {
+  try {
+    su = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: suUrl }),
+    });
+    await su.$queryRaw`SELECT 1`;
+    app = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: appUrl }),
+    });
+    await app.$queryRaw`SELECT 1`;
+    dbUp = true;
+  } catch {
+    dbUp = false;
+  }
+}
+const appDb = app as PrismaClient;
+const suDb = su as PrismaClient;
+
+// Issue #363. A code tool runs for REAL in the playground: the sandbox reaches nothing outside the
+// thread, so there is no side effect to simulate, and the operator is there to see what their
+// function returns. The catalog says so, under a category of its own, or the panel would badge it
+// as an external tool and offer to mock what needs no mocking.
+describe.skipIf(!dbUp)("listPlaygroundTools with a code tool", () => {
+  let tenantId = 0n;
+  let agentId = 0n;
+  const ctx = (): TenantContext => ({
+    tenantId,
+    userId: null,
+    role: "TENANT_ADMIN",
+  });
+
+  beforeAll(async () => {
+    const t = await suDb.tenant.create({
+      data: { name: "PG code", slug: `pg-code-${process.pid}` },
+    });
+    tenantId = t.id;
+    const key = await suDb.vaultEntry.create({
+      data: { tenantId, name: "llm-key", secret: encryptJson("sk-test") },
+      select: { id: true },
+    });
+    agentId = (
+      await suDb.agent.create({
+        data: {
+          tenantId,
+          name: "Code",
+          systemPrompt: "x",
+          modelConfig: {
+            provider: "openai",
+            model: "gpt-4o-mini",
+            credentialRef: `vault:${key.id}`,
+          },
+        },
+      })
+    ).id;
+    const code = await suDb.codeToolDefinition.create({
+      data: {
+        tenantId,
+        name: "somar",
+        label: "Somar",
+        description: "Soma dois números.",
+        inputSchema: {
+          a: { type: "number", description: "a" },
+          b: { type: "number", description: "b" },
+        },
+        code: "return input.a + input.b;",
+      },
+    });
+    await suDb.agentToolSelection.create({
+      data: {
+        tenantId,
+        agentId,
+        source: "CODE",
+        codeToolDefinitionId: code.id,
+        enabledTools: [],
+        knowledgeBaseIds: [],
+      },
+    });
+  });
+
+  afterAll(async () => {
+    if (tenantId) {
+      for (const table of [
+        "agent_tool_selections",
+        "code_tool_definitions",
+        "agents",
+        "vault_entries",
+      ]) {
+        await suDb.$executeRawUnsafe(
+          `DELETE FROM ${table} WHERE tenant_id = ${tenantId}`,
+        );
+      }
+      await suDb.$executeRawUnsafe(
+        `DELETE FROM tenants WHERE id = ${tenantId}`,
+      );
+    }
+    await su?.$disconnect();
+    await app?.$disconnect();
+  });
+
+  test("a granted code tool is listed under its own category and runs for real", async () => {
+    const tools = await listPlaygroundTools({
+      ctx: ctx(),
+      agentId,
+      base: appDb,
+    });
+    const somar = tools.find((tl) => tl.name === "somar");
+    expect(somar).toMatchObject({
+      description: "Soma dois números.",
+      category: "code",
+      simulated: false,
+    });
   });
 });

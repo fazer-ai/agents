@@ -205,6 +205,23 @@ function fieldNames(schema: unknown): string[] {
 // {{name}} ONLY when the name is a declared input field, a context variable or "secret" — an
 // unmatched {token} stays literal (it may be legitimate content, e.g. raw JSON) and is reported in
 // `warnings` as a probable typo.
+// `__proto__` cannot be a parameter name, and it has to be refused BEFORE a zod parse: `z.record`
+// builds its result by assignment, so the key hits the prototype setter and is gone by the time
+// `normalizeToolShapes` below could drop it with a warning — the field would simply vanish, and a
+// body reading `input.__proto__` would find the prototype. Only a JSON body can carry it (an object
+// literal sets the prototype instead), so this reads the RAW value a request parsed.
+export function hasReservedFieldName(rawInputSchema: unknown): boolean {
+  if (!isPlainObject(rawInputSchema)) return false;
+  if (Object.hasOwn(rawInputSchema, "__proto__")) return true;
+  // The other spelling of the same schema. A standard JSON Schema keeps the fields one level down,
+  // under `properties`, and the compact map is what this repo stores — so the name has to be caught
+  // in the form it ARRIVED in, or the two spellings of one request answer differently: refused at
+  // the top level, converted underneath into a map without the field.
+  if (!isJsonSchemaShape(rawInputSchema)) return false;
+  const props = (rawInputSchema as { properties?: unknown }).properties;
+  return isPlainObject(props) && Object.hasOwn(props, "__proto__");
+}
+
 export function normalizeToolShapes(
   patch: ToolShapePatch,
   current: ToolShapePatch = {},
@@ -230,6 +247,28 @@ export function normalizeToolShapes(
     }
   }
   if (patch.inputSchema !== undefined) {
+    // `__proto__` cannot be a parameter name, and the point of dropping it HERE is that it is
+    // dropped VISIBLY. A field under that name is stored and shown in the console like any other,
+    // and then disappears one layer down: `parseToolInputSchema` builds the zod shape by assigning
+    // into an object, so the name hits the prototype setter and the tool advertises no such
+    // parameter — and even a null-prototype shape would not save it, because zod's own result
+    // object drops the key on parse (measured, both). Silent for an HTTP tool since #457; a code
+    // tool would read `input.__proto__` and find the prototype.
+    // `Object.hasOwn`, not `in`: every plain object inherits `__proto__` from Object.prototype, and
+    // `in` would warn about a schema that never named it.
+    if (
+      isPlainObject(effectiveSchema) &&
+      Object.hasOwn(effectiveSchema, "__proto__")
+    ) {
+      const kept: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(effectiveSchema)) {
+        if (k !== "__proto__") kept[k] = v;
+      }
+      effectiveSchema = kept;
+      warnings.push(
+        "input_schema field `__proto__` was dropped: the name is reserved by JavaScript and cannot reach the model",
+      );
+    }
     shapes.inputSchema = effectiveSchema;
   }
 

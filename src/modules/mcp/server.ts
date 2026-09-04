@@ -22,6 +22,7 @@ import {
   runPlaygroundFileTurn,
   runPlaygroundTurn,
 } from "@/modules/playground/service";
+import { hasReservedFieldName } from "@/modules/tool-definitions/normalize";
 import { OUTBOUND_DELIVERY_STATUSES } from "@/modules/webhooks/outbound/deliveries";
 import { hasScope, type VerifiedToken } from "./oauth/tokens";
 import {
@@ -33,6 +34,8 @@ import {
   apiKeyList,
   auditList,
   businessHoursList,
+  codeToolGet,
+  codeToolList,
   conversationGet,
   conversationMessages,
   documentStarterList,
@@ -112,6 +115,12 @@ import {
   instanceSyncInboxes,
 } from "./write-channels";
 import {
+  type CodeToolWriteArgs,
+  codeToolCreate,
+  codeToolDelete,
+  codeToolUpdate,
+} from "./write-code-tools";
+import {
   conversationHandoff,
   conversationReengage,
   conversationReply,
@@ -125,6 +134,28 @@ import {
   documentTemplateUpdate,
 } from "./write-documents";
 import { tenantCreate, tenantGet, tenantList } from "./write-fleet";
+
+// `input_schema`, with the one field name that cannot survive being parsed. `z.record` rebuilds the
+// map by assignment, so an own `__proto__` key hits the prototype setter and is GONE before any
+// handler runs — the write would then succeed while the argument the caller declared is missing,
+// and a body reading `input.__proto__` would find the prototype. The service refuses it by name
+// (code-tools/service.ts); this is the same refusal at the transport, which is the only place that
+// still holds the raw value.
+export const inputSchemaArg = z.preprocess((value, ctx) => {
+  // Both spellings, because the guard downstream knows both: the compact map with the key at the
+  // root, and the standard JSON Schema with it under `properties` (namespace's caller,
+  // tool-definitions/normalize.ts).
+  if (hasReservedFieldName(value)) {
+    ctx.addIssue({
+      code: "custom",
+      message:
+        "input_schema field `__proto__` is reserved by JavaScript and cannot be a parameter name",
+    });
+    return z.NEVER;
+  }
+  return value;
+}, z.record(z.string(), z.unknown()).optional());
+
 import {
   knowledgeApprove,
   knowledgeCreate,
@@ -674,7 +705,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "agent_tools_get",
       {
         description:
-          "Get an agent's tool GRANTS (the selected set) plus the full tenant CATALOG of selectable tools (native, RAG knowledge bases, HTTP tool definitions, MCP connections, integration instances). Use this to discover ids before agent_tools_set.",
+          "Get an agent's tool GRANTS (the selected set) plus the full tenant CATALOG of selectable tools (native, RAG knowledge bases, HTTP tool definitions, code tools, MCP connections, integration instances, document templates). Use this to discover ids before agent_tools_set.",
         inputSchema: { agent_id: z.string() },
       },
       async (args: { agent_id: string }, eff) =>
@@ -704,6 +735,31 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       },
       async (args: { tool_id: string }, eff) =>
         writeContent(await toolGet(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "code_tool_list",
+      {
+        description:
+          "List the tenant's operator-authored code tools (id, name, label, description, inputSchema, enabled). The body is omitted; code_tool_get returns it.",
+        inputSchema: {},
+      },
+      async (_args, eff) => writeContent(await codeToolList(eff)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "code_tool_get",
+      {
+        description:
+          "Get one code tool in full: the input schema and the body (the function the sandbox runs).",
+        inputSchema: { code_tool_id: z.string() },
+      },
+      async (args: { code_tool_id: string }, eff) =>
+        writeContent(await codeToolGet(eff, args)),
     );
 
     registerTenantTool(
@@ -1547,7 +1603,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "agent_tools_set",
       {
         description:
-          "REPLACE an agent's entire set of tool grants (it is not additive — pass the full desired set). Discover ids via agent_tools_get. Each grant has a source (NATIVE/RAG/HTTP/MCP/INTEGRATION/DOCUMENT) and the matching id(s): toolDefinitionId (HTTP), mcpServerConnectionId (MCP), integrationInstanceId (INTEGRATION), documentTemplateId (DOCUMENT), knowledgeBaseIds (RAG), enabledTools (names to enable within the source). For a RAG grant, omitting enabledTools defaults to search_knowledge (the knowledge base would otherwise be granted but unreachable). Previews current vs next and applies NOTHING unless dry_run is false.",
+          "REPLACE an agent's entire set of tool grants (it is not additive — pass the full desired set). Discover ids via agent_tools_get. Each grant has a source (NATIVE/RAG/HTTP/MCP/INTEGRATION/DOCUMENT/CODE) and the matching id(s): toolDefinitionId (HTTP), mcpServerConnectionId (MCP), integrationInstanceId (INTEGRATION), documentTemplateId (DOCUMENT), codeToolDefinitionId (CODE, from code_tool_list), knowledgeBaseIds (RAG), enabledTools (names to enable within the source). For a RAG grant, omitting enabledTools defaults to search_knowledge (the knowledge base would otherwise be granted but unreachable). Previews current vs next and applies NOTHING unless dry_run is false.",
         inputSchema: {
           agent_id: z.string(),
           grants: z.array(
@@ -1559,11 +1615,13 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
                 "MCP",
                 "INTEGRATION",
                 "DOCUMENT",
+                "CODE",
               ]),
               toolDefinitionId: z.string().nullable().optional(),
               mcpServerConnectionId: z.string().nullable().optional(),
               integrationInstanceId: z.string().nullable().optional(),
               documentTemplateId: z.string().nullable().optional(),
+              codeToolDefinitionId: z.string().nullable().optional(),
               knowledgeBaseIds: z.array(z.string()).optional(),
               enabledTools: z.array(z.string()).optional(),
             }),
@@ -1580,6 +1638,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
             mcpServerConnectionId?: string | null;
             integrationInstanceId?: string | null;
             documentTemplateId?: string | null;
+            codeToolDefinitionId?: string | null;
             knowledgeBaseIds?: string[];
             enabledTools?: string[];
           }>;
@@ -1604,7 +1663,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]).optional(),
           description: z.string().nullable().optional(),
           headers: z.record(z.string(), z.unknown()).optional(),
-          input_schema: z.record(z.string(), z.unknown()).optional(),
+          input_schema: inputSchemaArg,
           output_schema: z
             .record(z.string(), z.unknown())
             .optional()
@@ -1666,7 +1725,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]).optional(),
           description: z.string().nullable().optional(),
           headers: z.record(z.string(), z.unknown()).optional(),
-          input_schema: z.record(z.string(), z.unknown()).optional(),
+          input_schema: inputSchemaArg,
           output_schema: z
             .record(z.string(), z.unknown())
             .optional()
@@ -1724,6 +1783,67 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       },
       async (args: { tool_id: string; dry_run?: boolean }, eff) =>
         writeContent(await toolDelete(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "code_tool_create",
+      {
+        description:
+          "Create a code tool: a JavaScript function the operator writes, which an agent calls with typed arguments and whose return value it reads. Previews the normalized input plus the body's static warnings and creates NOTHING unless dry_run is false. code is the body of `function (input, context) { … }` and answers with `return` (the value reaches the agent as JSON). input is the arguments declared in input_schema, the compact field map tool_create takes (standard JSON Schema is accepted and converted). context carries conversation_id, message_id, contact_id, contact_name, contact_email, contact_phone, inbox_id, inbox_name, company_name, agent_name, conversationAttributes, contactAttributes. Available inside: TIMEZONE, NOW_LOCAL, and Date in the agent's zone. No network, no imports, no async. Limits: 1000 ms of CPU, 32 MB. A `throw` or a limit is an integration failure (alerted); a business outcome is a returned value. Code that does not parse is SAVED and reported in `warnings`; it fails at call time. name shares one namespace with HTTP tools and the built-in tools. Grant it with agent_tools_set: source \"CODE\", codeToolDefinitionId.",
+        inputSchema: {
+          name: z.string(),
+          label: z.string().optional(),
+          description: z.string(),
+          input_schema: inputSchemaArg,
+          code: z.string(),
+          enabled: z.boolean().optional(),
+          dry_run: z.boolean().optional(),
+        },
+      },
+      async (args: CodeToolWriteArgs & { dry_run?: boolean }, eff) =>
+        writeContent(await codeToolCreate(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "code_tool_update",
+      {
+        description:
+          "Update a code tool. Previews a diff and applies NOTHING unless dry_run is false. Same authoring contract as code_tool_create: code is the body of `function (input, context) { … }`, input_schema is the compact field map (standard JSON Schema is accepted and converted, and the diff shows the canonical form). A new body that does not parse is SAVED and reported in `warnings`; it fails at call time.",
+        inputSchema: {
+          code_tool_id: z.string(),
+          name: z.string().optional(),
+          label: z.string().optional(),
+          description: z.string().optional(),
+          input_schema: inputSchemaArg,
+          code: z.string().optional(),
+          enabled: z.boolean().optional(),
+          dry_run: z.boolean().optional(),
+        },
+      },
+      async (
+        args: CodeToolWriteArgs & { code_tool_id: string; dry_run?: boolean },
+        eff,
+      ) => writeContent(await codeToolUpdate(eff, args)),
+    );
+
+    registerTenantTool(
+      server,
+      principal,
+      "code_tool_delete",
+      {
+        description:
+          "Delete a code tool. Previews the target and deletes NOTHING unless dry_run is false; an agent that had it granted loses the grant.",
+        inputSchema: {
+          code_tool_id: z.string(),
+          dry_run: z.boolean().optional(),
+        },
+      },
+      async (args: { code_tool_id: string; dry_run?: boolean }, eff) =>
+        writeContent(await codeToolDelete(eff, args)),
     );
 
     registerTenantTool(

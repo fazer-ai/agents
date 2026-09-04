@@ -73,6 +73,7 @@ const CATALOG = {
   mcpConnections: [],
   integrationInstances: [],
   knowledgeBases: [],
+  codeTools: [],
   documentTemplates: [
     {
       id: "3",

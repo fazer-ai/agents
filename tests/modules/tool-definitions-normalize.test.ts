@@ -310,3 +310,29 @@ describe("normalizeInputSchemaShape / CONTEXT_VAR_NAMES", () => {
     }
   });
 });
+
+describe("a field named __proto__", () => {
+  // It reaches here only from JSON (an object literal would set the prototype instead), and it is
+  // dropped with a warning because it cannot survive the layer below: `parseToolInputSchema`
+  // assigns into an object to build the zod shape, and zod's own parse result drops the key too.
+  // Stored silently, it would show in the console as a parameter the model is never offered.
+  const withProto = () =>
+    JSON.parse('{"__proto__":{"type":"string"},"cpf":{"type":"string"}}');
+
+  test("is dropped from the stored schema, and said so in warnings", () => {
+    const { shapes, warnings } = normalizeToolShapes({
+      inputSchema: withProto(),
+    });
+    expect(Object.getOwnPropertyNames(shapes.inputSchema ?? {})).toEqual([
+      "cpf",
+    ]);
+    expect(warnings.some((w) => w.includes("__proto__"))).toBe(true);
+  });
+
+  test("a schema without it is untouched and warns about nothing", () => {
+    const plain = { cpf: { type: "string" } };
+    const { shapes, warnings } = normalizeToolShapes({ inputSchema: plain });
+    expect(shapes.inputSchema).toEqual(plain);
+    expect(warnings).toEqual([]);
+  });
+});

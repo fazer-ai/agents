@@ -211,7 +211,7 @@ describe("makeStorableDeep", () => {
     const out = makeStorableDeep({
       [`k${NUL}1`]: "clean",
       k2: `v\ud800`,
-      nested: { [`k\ud800`]: [`a${NUL}b`, { deep: `c\udc00` }] },
+      nested: { "k\ud800": [`a${NUL}b`, { deep: `c\udc00` }] },
     }) as Record<string, unknown>;
     expect(Object.keys(out)).toEqual(["k1", "k2", "nested"]);
     expect(out.k2).toBe("v�");

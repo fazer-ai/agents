@@ -3,8 +3,8 @@
 //
 // The export is a self-contained JSON that references everything BY NAME (never by id and never the
 // secret value): the system prompt, the model config, the behavior settings (debounce/stt/tts/split/
-// serviceWindow/grounding), and the tool grants (HTTP tool name, MCP server name, integration
-// catalogType+name, KB names). Credential refs are stored internally as `vault:<id>` (tenant-local),
+// serviceWindow/grounding), and the tool grants (HTTP tool name, code tool name, MCP server name,
+// integration catalogType+name, KB names). Credential refs are stored internally as `vault:<id>` (tenant-local),
 // so export translates them id→NAME and import translates NAME→`vault:<id>` in the target tenant
 // (collectCredRefs/remapCredRefs). `assertNoSecrets` (the n8n-export value scanner) is the backstop: the
 // export REFUSES if any concrete secret-shaped value slipped in. Import recreates the agent DISABLED,
@@ -17,9 +17,11 @@ import { z } from "zod";
 import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
-import { isNativeToolName } from "@/graph/tools/catalog";
+import { isNativeToolName, NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
+import { SANDBOX_CODE_MAX_CHARS } from "@/graph/tools/code-sandbox-limits";
 import { normalizeExpectedStatuses } from "@/graph/tools/http-status";
 import { normalizeToolName } from "@/graph/tools/toolName";
+import { checkCodeToolSyntax } from "@/lib/code-tool-syntax";
 import { parseDbId } from "@/lib/db-id";
 import { AppError, NotFoundError } from "@/lib/errors";
 import {
@@ -28,6 +30,7 @@ import {
   stdioCommandLauncher,
 } from "@/lib/mcp-launchers";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
+import { clipText } from "@/lib/text";
 import { auditSafe } from "@/modules/agents/audit-projection";
 import {
   type CredentialFieldTab,
@@ -47,6 +50,7 @@ import {
   type WindowSpec,
 } from "@/modules/business-hours/hours";
 import { parseDocumentStyle } from "@/modules/documents/blocks";
+import { documentToolName } from "@/modules/documents/slug";
 import {
   slugProblem,
   templateMetadataProblem,
@@ -56,12 +60,23 @@ import { parseAuthoredTemplate } from "@/modules/documents/validate";
 import { disarmFullDetail } from "@/modules/flowlog/settings";
 import { normalizeSettingsForStorage } from "@/modules/images/settings";
 import { isKnownCatalogType } from "@/modules/integrations/catalog";
-import { assertNoSecrets } from "@/modules/n8n-export/n8n";
+import {
+  assertNoSecrets,
+  assertNoSecretsInCode,
+} from "@/modules/n8n-export/n8n";
 import { readAppointmentDeclaration } from "@/modules/tool-definitions/appointment";
 import {
   canonicalBodyShape,
   unsupportedBodyShape,
 } from "@/modules/tool-definitions/body-shape";
+import {
+  documentHoldingToolName,
+  isRagToolName,
+  lockToolNames,
+  toolHoldingName,
+  toolsUnderModelName,
+  toolUnderModelName,
+} from "@/modules/tool-definitions/namespace";
 import { normalizeToolShapes } from "@/modules/tool-definitions/normalize";
 import { storableResponseTemplate } from "@/modules/tool-definitions/response-template";
 import {
@@ -103,6 +118,9 @@ const exportedGrantSchema = z.discriminatedUnion("source", [
     tool: z.string(),
     enabledTools: z.array(z.string()),
   }),
+  // By NAME, like an HTTP tool's. No enabledTools: a code tool grant exposes exactly one tool, the
+  // way a document template's does (issue #363).
+  z.object({ source: z.literal("CODE"), tool: z.string() }),
   z.object({
     source: z.literal("MCP"),
     server: z.string(),
@@ -160,6 +178,14 @@ const importedGrantSchema = z.union([
 // and the value is arbitrary because no build in any supported version acts on it.
 const RETIRED_RISK_TIER = "medium";
 
+// A field map as the bundle wrote it, kept KEY FOR KEY. `z.record` would rebuild it, and the one
+// name that cannot survive that (`__proto__`, which hits the prototype setter) is exactly the one
+// the normalizer is supposed to drop with a warning further down.
+const rawFieldMap = z.custom<Record<string, unknown>>(
+  (v) => typeof v === "object" && v !== null && !Array.isArray(v),
+  { message: "expected an object" },
+);
+
 const exportedHttpToolSchema = z.object({
   name: z.string(),
   label: z.string().nullable().optional(),
@@ -168,7 +194,8 @@ const exportedHttpToolSchema = z.object({
   urlTemplate: z.string(),
   allowedHosts: z.array(z.string()),
   headers: z.record(z.string(), z.unknown()),
-  inputSchema: z.record(z.string(), z.unknown()),
+  // Passed through raw, for the reason the code tool's carries.
+  inputSchema: rawFieldMap,
   outputSchema: z.record(z.string(), z.unknown()),
   // Optional so exports produced before query existed still import (defaults to {}).
   query: z.record(z.string(), z.unknown()).optional(),
@@ -193,6 +220,26 @@ const exportedHttpToolSchema = z.object({
   // Optional for the same reason, one issue later (#352): a bundle exported before the column
   // existed carries nothing here, which is what every tool declared then.
   appointment: z.record(z.string(), z.unknown()).nullable().optional(),
+});
+// An operator-authored code tool (issue #363). The body is the "wiring", the way an HTTP tool's
+// request is, and it travels for the same reason: without it the grant points at nothing. No
+// credential: the sandbox reaches nothing outside the thread, so there is none to name.
+const exportedCodeToolSchema = z.object({
+  name: z.string(),
+  label: z.string().nullable().optional(),
+  // The column is required (it is the only thing that tells the model when to call), and the
+  // service refuses an empty one. Tolerated here and filled from the label, because refusing a
+  // whole bundle over it is the trade this file already rejects for prose.
+  description: z.string().nullable().optional(),
+  // NOT `z.record`: that rebuilds the map by assignment, and an own `__proto__` key would be gone
+  // before `normalizeToolShapes` could drop it with the warning this import promises. Passed
+  // through as it arrived, shape-checked only.
+  inputSchema: rawFieldMap,
+  // Bounded as the service bounds it, and REFUSED rather than warned, the way the system prompt's
+  // cap is: the body is handed to a thread as source, and past the cap it is a pasted library,
+  // not a tool. There is no clamped body that is still the same tool.
+  code: z.string().min(1).max(SANDBOX_CODE_MAX_CHARS),
+  enabled: z.boolean().optional(),
 });
 const exportedMcpServerSchema = z.object({
   name: z.string(),
@@ -254,6 +301,8 @@ const exportedBusinessHoursSchema = z.object({
 });
 const exportedComponentsSchema = z.object({
   httpTools: z.array(exportedHttpToolSchema),
+  // Optional for back-compat: a bundle written before code tools existed simply has none.
+  codeTools: z.array(exportedCodeToolSchema).optional(),
   mcpServers: z.array(exportedMcpServerSchema),
   integrations: z.array(exportedIntegrationSchema),
   // Optional for back-compat: an export written before document templates existed simply has none.
@@ -321,6 +370,7 @@ export type ImportWarningTarget =
   | { kind: "agentField"; tab: CredentialFieldTab; sectionId: string }
   | { kind: "businessHours"; name: string }
   | { kind: "tool"; name: string }
+  | { kind: "codeTool"; name: string }
   | { kind: "mcp"; name: string }
   | { kind: "integration"; catalogType: string; name: string }
   | { kind: "document"; name: string }
@@ -459,6 +509,15 @@ function blankDocumentContent(data: AgentExport): AgentExport {
       for (const d of kb.documents) d.content = "";
     }
   }
+  // NOTE: a code tool's BODY is not exempt, it is scanned by a DIFFERENT reader
+  // (assertNoSecretsInCode, called on the real bodies below) and blanked here so the structured
+  // matcher does not see it twice. The reason is that a body is neither prose nor a JSON value: in
+  // a program `password: input.password` is a reference, and refusing it makes the agent that owns
+  // such a tool unexportable, while a quoted literal in the same position is the leak the scanner
+  // exists to catch. The sandbox has no credential slot, so a secret in the body is the only way
+  // one reaches a code tool, and an export carrying it would hand it to every instance the bundle
+  // lands on.
+  for (const ct of clone.components?.codeTools ?? []) ct.code = "";
   // A document template's blocks and style are TENANT PROSE, exactly like a knowledge-base
   // document's text, and the scanner cannot tell an operator writing "api_key=abcdef" in a quote's
   // terms from a leaked credential. Left in, that quote makes its own agent unexportable — the
@@ -533,7 +592,9 @@ export async function exportAgent(
         mcpServerConnectionId: true,
         integrationInstanceId: true,
         documentTemplateId: true,
+        codeToolDefinitionId: true,
         toolDefinition: { select: { name: true } },
+        codeToolDefinition: { select: { name: true } },
         mcpServerConnection: { select: { name: true } },
         integrationInstance: { select: { catalogType: true, name: true } },
         documentTemplate: { select: { slug: true } },
@@ -582,6 +643,11 @@ export async function exportAgent(
               tool: g.toolDefinition.name,
               enabledTools: g.enabledTools,
             });
+          }
+          break;
+        case "CODE":
+          if (g.codeToolDefinition) {
+            tools.push({ source: "CODE", tool: g.codeToolDefinition.name });
           }
           break;
         case "MCP":
@@ -644,8 +710,21 @@ export async function exportAgent(
             .filter((x): x is bigint => x != null),
         ),
       ];
+      const codeIds = [
+        ...new Set(
+          grants
+            .filter((g) => g.source === "CODE")
+            .map((g) => g.codeToolDefinitionId)
+            .filter((x): x is bigint => x != null),
+        ),
+      ];
       const httpRows = httpIds.length
         ? await db.toolDefinition.findMany({ where: { id: { in: httpIds } } })
+        : [];
+      const codeRows = codeIds.length
+        ? await db.codeToolDefinition.findMany({
+            where: { id: { in: codeIds } },
+          })
         : [];
       const mcpRows = mcpIds.length
         ? await db.mcpServerConnection.findMany({
@@ -758,6 +837,16 @@ export async function exportAgent(
             unknown
           > | null,
         })),
+        codeTools: codeRows.map((r) => ({
+          name: r.name,
+          label: r.label,
+          description: r.description,
+          inputSchema: (r.inputSchema ?? {}) as Record<string, unknown>,
+          code: r.code,
+          // Carried for the reason a document template's is: a tool the operator turned OFF is
+          // off for a reason, and the column default would turn it back on at the destination.
+          enabled: r.enabled,
+        })),
         mcpServers: mcpRows.map((r) => ({
           name: r.name,
           transport: r.transport,
@@ -863,6 +952,7 @@ export async function exportAgent(
           // than spread, so a component the rebuild forgets is exported as a grant pointing at
           // nothing and the import can only drop it with a warning.
           documentTemplates: componentsRaw.documentTemplates,
+          codeTools: componentsRaw.codeTools,
           businessHours: componentsRaw.businessHours,
         }
       : undefined;
@@ -918,6 +1008,10 @@ export async function exportAgent(
   // blankDocumentContent); the real `data` (with content) is what we return.
   const scanTarget = blankDocumentContent(data);
   assertNoSecrets(scanTarget);
+  // The bodies themselves, through the reader written for source rather than for values.
+  for (const ct of data.components?.codeTools ?? []) {
+    assertNoSecretsInCode(ct.code, `$.components.codeTools.${ct.name}.code`);
+  }
   // Defense-in-depth: the id→name translation covers the known credential paths, but a `vault:<id>`
   // stored under any OTHER key would be a tenant-local id leak that assertNoSecrets cannot see (an
   // id has no secret shape). Refuse to emit rather than leak the boundary this refactor protects.
@@ -1151,19 +1245,22 @@ export async function importAgent(
     // Create any bundled components that don't already exist on the target tenant, BEFORE resolving
     // the grants (so buildGrantRows finds them by name). Components of the same name are reused, never
     // overwritten. Credentials are re-linked by name where resolved; otherwise left unset.
-    let renamedHttpTools = new Map<string, string>();
+    let renamed: RenamedComponents = {
+      httpTools: new Map(),
+      codeTools: new Map(),
+    };
     if (components) {
       const resolveCredName = (
         name: string | null | undefined,
       ): string | null =>
         name && !isVaultIdRef(name) ? (refByName.get(name) ?? null) : null;
-      ({ renamedHttpTools } = await createMissingComponents(
+      renamed = await createMissingComponents(
         db,
         tenantId,
         components,
         resolveCredName,
         warnings,
-      ));
+      );
     }
 
     // Grants of a source this build does not know arrive as null (see importedGrantSchema) and are
@@ -1185,7 +1282,7 @@ export async function importAgent(
       created.id,
       knownGrants,
       warnings,
-      renamedHttpTools,
+      renamed,
     );
     if (grantRows.length > 0) {
       await db.agentToolSelection.createMany({ data: grantRows });
@@ -1421,18 +1518,178 @@ async function createMissingBusinessHours(
 
 // The name a bundled tool that carries a native's name is stored under: the first `<base>_N`
 // (N from 2) not in `taken`, which is what the bundle itself carries and what the import has
-// already chosen — a bundle holding `run_code` and `run_code_2` gave the first one `_2`, then
+// already chosen — a bundle holding `calculator` and `calculator_2` gave the first one `_2`, then
 // "reused" the genuine `_2` onto it, and two grants for one row broke the unique index and
 // aborted the import (round 16). Decided by the BUNDLE alone, never by what is stored: a row
 // already under that name is then reused, warned, the way every same-name component is, so the
 // same bundle imported twice binds both agents to one row instead of storing a copy per import
 // (round 17). The migration `rename_http_tools_named_after_natives` walks past stored rows
 // instead, because both of its rows are real and both must survive.
-function renamedHttpToolName(base: string, taken: ReadonlySet<string>): string {
+// The provider's own ceiling on a tool name, and `normalizeToolName`'s: a name past it is refused
+// with the WHOLE function list.
+const TOOL_NAME_MAX = 64;
+function renamedToolName(base: string, taken: ReadonlySet<string>): string {
   for (let n = 2; ; n++) {
-    const candidate = `${base}_${n}`;
+    const suffix = `_${n}`;
+    // The suffix has to fit INSIDE the ceiling, not past it: a 64-character name already at the
+    // limit would otherwise be renamed to 66 characters — refused by the provider for a code tool,
+    // and normalized back to the original by the HTTP builder, which undoes the rename and leaves
+    // the stored name disagreeing with the callable one.
+    const stem =
+      base.length + suffix.length > TOOL_NAME_MAX
+        ? base.slice(0, TOOL_NAME_MAX - suffix.length)
+        : base;
+    const candidate = `${stem}${suffix}`;
     if (!taken.has(candidate)) return candidate;
   }
+}
+
+// The services bound what they store, and this path writes past them: a bundle carrying a longer
+// label or description would create a row the console and the REST update can no longer save, and
+// the operator would meet that only when they next edited the tool. Clipped rather than refused,
+// the trade this file makes for prose everywhere else. `clipText` and never a bare slice, because
+// these bound TEXT an operator wrote: a cut between the halves of an astral character leaves an
+// orphan surrogate that Postgres refuses inside a jsonb write (src/lib/text.ts).
+const TOOL_DESCRIPTION_MAX = 2000;
+// A bundle can carry an EMPTY label or description — hand-edited, or written by a build whose rules
+// differ — and `??` only answers for `null`/`undefined`. The services refuse a blank one in both
+// fields (they are trimmed before the minimum), so a row created here with one could never be saved
+// from the console again, and the label is what the whole console shows.
+function blankFallback(
+  value: string | null | undefined,
+  fallback: string,
+): string {
+  return value?.trim() ? value.trim() : fallback;
+}
+
+function clipLabel(label: string): string {
+  return clipText(label, TOOL_LABEL_MAX);
+}
+function clipDescription(text: string): string {
+  return clipText(text, TOOL_DESCRIPTION_MAX);
+}
+
+// The label a renamed tool is stored with. It follows the name where the console would derive
+// the old one from it: the console submits `normalizeToolName(label)` as the name on every save,
+// so a renamed row whose label still derived the reserved name could not be saved again from
+// there (round 20). A label that never derived it is the operator's own. Same rule as the
+// migration's. A label the suffix would push past the authoring limit becomes the name itself,
+// which derives to itself (round 22). Shared by the HTTP and the code loop: both kinds are
+// authored in the same console, under the same derivation.
+function renamedLabel(
+  bundledName: string,
+  storedName: string,
+  bundledLabel: string,
+): string {
+  if (storedName === bundledName) return bundledLabel;
+  if (normalizeToolName(bundledLabel) !== bundledName) return bundledLabel;
+  // The suffix comes off the STORED name, not from the bundled one's length: a name at the 64
+  // ceiling has its stem trimmed before `_N` is appended (renamedToolName), so counting from the
+  // bundled name starts past the end.
+  const suffixed = `${bundledLabel} ${storedName.slice(storedName.lastIndexOf("_") + 1)}`;
+  // And then the only question that matters is asked of the RESULT, because the length rule this
+  // replaces answered a different one (round 26). A bundled name at the 64 ceiling has a label at
+  // the ceiling too, and ` 2` on the end of it normalizes back to 64 characters with the suffix
+  // CUT: the label derives the name the row could not take, the console submits that name on every
+  // save, and the tool cannot be saved again without renaming it by hand. Clipped first, since a
+  // label past TOOL_LABEL_MAX is trimmed on the way to the column and the trim can break the
+  // derivation the same way. The stored name always derives itself, so it is the fallback.
+  const clipped = clipLabel(suffixed);
+  return normalizeToolName(clipped) === storedName ? clipped : storedName;
+}
+
+// The name a bundled HTTP or code tool is stored under. A native's name moves first, decided by
+// the bundle alone (above). Then a rule the two kinds share: ONE namespace reaches the model, and
+// each service refuses a name the OTHER kind holds where it is typed (tool-definitions/service.ts
+// and code-tools/service.ts ask each other's table), so a stored row of the other kind under the
+// name cannot be REUSED the way a same-kind row is, and the tool moves to the first `<name>_N`
+// the other kind does not hold. A same-kind row under THAT name is then reused like any other
+// same-name component, which is what lands a second import of the same bundle on the same row
+// instead of the next suffix. The walk asks the table because it has to: what the bundle carries
+// says nothing about what the destination stored under the other kind.
+async function storedToolName(
+  bundled: string,
+  taken: Set<string>,
+  claimed: Set<string>,
+  heldByOtherKind: (name: string) => Promise<boolean>,
+): Promise<string> {
+  // The bundle's own spelling is not necessarily a name the model can be offered. A provider
+  // refuses the WHOLE function list over one that is empty, spaced or past 64 characters, so an
+  // agent granted such a tool answers nothing at all — and the bundle is a file, hand-editable and
+  // written by other versions, while this path writes past the service that would refuse it.
+  // Normalized to the identifier the console derives from a label, which is also what makes it
+  // reportable: a name that moves here moves through the same rename machinery as any other.
+  const base = normalizeToolName(bundled);
+  // ONE loop over every kind that owns a name, because they are the same question: a name the model
+  // would answer with someone else's tool. Natives and RAG are built-ins (RAG's exist whenever a
+  // knowledge base is granted, and both services refuse them where a name is typed);
+  // `heldByOtherKind` is the caller's — the other tool table, plus the document templates, stored
+  // and bundled.
+  let name = base;
+  while (
+    isNativeToolName(name) ||
+    isRagToolName(name) ||
+    // A name a component of THIS import already landed on. The same-kind row under a name is
+    // normally REUSED (a second occurrence of one bundle entry finds the row the first wrote), and
+    // that is decided below, outside this walk — but two DISTINCT entries whose names normalize
+    // alike ("a b" and "a_b") are not one entry twice, and reading the second as a reuse discarded
+    // its definition and collapsed both grants onto one row (round 21). `claimed` carries only
+    // names a row actually exists under, so an entry the loop skipped frees the name again.
+    claimed.has(name) ||
+    (await heldByOtherKind(name))
+  ) {
+    taken.add(name);
+    name = renamedToolName(base, taken);
+  }
+  return name;
+}
+
+// The part of a bundled template's validity that asks nothing of the database. Extracted because
+// TWO passes need the same answer and a second copy of the rules would drift from the first: the
+// name reservation below runs before the tool loops, and the insert loop runs after them.
+//
+// Re-validated on the way IN, never trusted as exported: a template written by a newer build can
+// carry a block this one does not know how to render, and a warning that names the reason is a
+// better import than a document that renders wrong in front of a customer. The SLUG goes through
+// the same gate as a hand-written one, because it becomes a tool name: one reading `image` produces
+// `send_image`, which the assembly then drops as a duplicate of the built-in. A bundle is
+// hand-editable and this path writes to the table directly rather than through
+// createDocumentTemplate, so every rule that write applies has to be applied here too. The
+// description is the one that bites: it is appended verbatim to the agent's tool description on
+// every turn, and an oversized one arriving in a bundle would do that on the destination.
+function readBundledTemplate(
+  tpl: z.infer<typeof exportedDocumentTemplateSchema>,
+):
+  | {
+      ok: true;
+      name: string;
+      content: Extract<
+        ReturnType<typeof parseAuthoredTemplate>,
+        { ok: true }
+      >["content"];
+    }
+  | { ok: false; reason: string } {
+  const metaFault =
+    templateMetadataProblem({
+      name: tpl.name,
+      description: tpl.description ?? null,
+      numberPrefix: tpl.numberPrefix ?? null,
+    }) ?? (slugProblem(tpl.slug) ? `slug: ${slugProblem(tpl.slug)}.` : null);
+  if (metaFault) return { ok: false, reason: metaFault };
+  const content = parseAuthoredTemplate(tpl.blocks, tpl.fields, tpl.style);
+  if (!content.ok) return { ok: false, reason: content.reason };
+  // Safe only past `templateMetadataProblem`, which is the same schema: the value the gate
+  // APPROVED, not the one it was handed — it trims before it measures, so a name padded with
+  // whitespace passes a bound the raw string fails.
+  // not-caller-input: a name read off the template being imported, not a value from this request
+  const name = templateNameSchema.parse(tpl.name);
+  return { ok: true, name, content: content.content };
+}
+
+// Bundle name → stored name, per kind, for the tools the import could not store under their own.
+interface RenamedComponents {
+  httpTools: Map<string, string>;
+  codeTools: Map<string, string>;
 }
 
 // Creates the bundled components missing on the target tenant. Existing same-name components are
@@ -1447,10 +1704,77 @@ async function createMissingComponents(
   components: ExportedComponents,
   resolveCredName: (name: string | null | undefined) => string | null,
   warnings: ImportWarning[],
-): Promise<{ renamedHttpTools: Map<string, string> }> {
+): Promise<RenamedComponents> {
+  // The import writes past both services, so it takes their lock itself, once and before either
+  // tool loop: the pre-checks below ask the other table whether a name is free, and without this a
+  // concurrent tool create could commit into that table between the question and the insert
+  // (namespace.ts). One acquisition covers every name this import claims.
+  await lockToolNames(db);
+  // The `send_<slug>` tools the bundle's own templates will publish. They do not exist in the
+  // database yet — the templates are inserted after the tool loops — so the loops carry them.
+  //
+  // Only the templates that will actually CLAIM one, which is not the same as the templates the
+  // bundle carries (round 21). A template the loop below skips — unreadable, named like one the
+  // destination already has, or blocked by a tool that was already there — publishes nothing, and
+  // a bundled tool renamed off its name was renamed for nothing: the grant follows the rename, but
+  // a prompt naming the tool stops finding it while no document tool ever took the name.
+  //
+  // The questions are that loop's own, asked here against the tree BEFORE the tool loops write,
+  // and that order is the only one that terminates: reserving the name is precisely what keeps a
+  // bundled tool off it, so asking `toolHoldingName` afterwards would answer a question this
+  // answer decides.
+  const bundledDocumentNames = new Set<string>();
+  const bundledTemplateTitles = new Set<string>();
+  for (const tpl of components.documentTemplates ?? []) {
+    const toolName = documentToolName(tpl.slug);
+    // A slug the destination already has is REUSED, not inserted — and the template that is
+    // already there publishes the name, so it stays reserved.
+    if (
+      await db.documentTemplate.findFirst({
+        where: { slug: tpl.slug },
+        select: { id: true },
+      })
+    ) {
+      bundledDocumentNames.add(toolName);
+      continue;
+    }
+    const read = readBundledTemplate(tpl);
+    if (!read.ok) continue;
+    // A tool STORED on the destination under `send_<slug>` blocks the template instead of moving,
+    // which is the one direction this reservation does not decide: it was there first.
+    if (await toolHoldingName(db, tpl.slug)) continue;
+    if (
+      bundledTemplateTitles.has(read.name) ||
+      (await db.documentTemplate.findFirst({
+        where: { name: read.name },
+        select: { slug: true },
+      }))
+    ) {
+      continue;
+    }
+    bundledTemplateTitles.add(read.name);
+    bundledDocumentNames.add(toolName);
+  }
   // Bundle name → stored name, for the HTTP tools this loop could not store under their own.
   const renamedHttpTools = new Map<string, string>();
-  const taken = new Set(components.httpTools.map((t) => t.name));
+  // Both kinds share the model's namespace, so a name either loop chooses is taken from the
+  // other: without the code names here, an HTTP tool renamed off a native could land on the
+  // name a code tool of the SAME bundle carries, and the pair would then be one tool to the model.
+  const taken = new Set([
+    // Normalized, because that is what the loops will actually store (storedToolName): a bundle
+    // carrying "a b" and "a_b" claims one name twice, and the raw spellings would hide it.
+    ...components.httpTools.map((t) => normalizeToolName(t.name)),
+    ...(components.codeTools ?? []).map((t) => normalizeToolName(t.name)),
+    // ...and the templates THIS bundle carries: their `send_<slug>` tools are assembled before
+    // either tool table, so a tool landing on one of those names is the one that disappears. The
+    // STORED templates are asked per name below; these do not exist yet to be asked about.
+    ...bundledDocumentNames,
+  ]);
+  // The names a component of THIS import has actually landed on, shared by both tool loops because
+  // the model reads one namespace. Added by `landed` below rather than at the moment a name is
+  // chosen: a component the loop then skips (an unsupported method) writes no row, and holding its
+  // name would push the next one off it for nothing.
+  const claimed = new Set<string>();
   // One stored name per bundle name: a bundle carrying the same native-named component twice (a
   // hand-edited file) chose a new suffix per occurrence and the last one overwrote the grant
   // mapping (round 18); the second occurrence now finds the first one's row and is reused.
@@ -1460,30 +1784,39 @@ async function createMissingComponents(
     // every native name (#457), so a tool stored under one would exist in the console and never
     // reach the model; the service refuses the name where it is typed, and this path writes past
     // the service. Stored under `<name>_N`, warned, so the operator learns the name a prompt may
-    // still use; a row already under it is reused like any other same-name component.
-    const name = isNativeToolName(tdef.name)
-      ? (chosen.get(tdef.name) ?? renamedHttpToolName(tdef.name, taken))
-      : tdef.name;
+    // still use; a row already under it is reused like any other same-name component. A name a
+    // stored CODE tool holds moves the same way (`storedToolName`), since the two kinds share
+    // the namespace and the assembly would otherwise drop one of the pair.
+    const name =
+      chosen.get(tdef.name) ??
+      (await storedToolName(
+        tdef.name,
+        taken,
+        claimed,
+        async (n) =>
+          // By the MODEL-FACING name (namespace.ts): a row stored `Foo` before names were
+          // canonicalized answers to `foo`, which is the name being claimed here.
+          (await toolsUnderModelName(db, n)).codeIds.length > 0 ||
+          // A document template publishes `send_<slug>` and is assembled BEFORE either tool table,
+          // so a tool landing on that name is the one the assembly drops (namespace.ts). The
+          // bundle's own templates count too: they are inserted after this loop, so the database
+          // cannot be asked about them yet.
+          bundledDocumentNames.has(n) ||
+          (await documentHoldingToolName(db, n)) !== null,
+      ));
     chosen.set(tdef.name, name);
     taken.add(name);
-    // The label follows the name where the console would derive the old one from it: the console
-    // submits `normalizeToolName(label)` as the name on every save, so a renamed row whose label
-    // still derived the reserved name could not be saved again from there (round 20). A label
-    // that never derived it is the operator's own. Same rule as the migration's.
-    // A label the suffix would push past the authoring limit becomes the name itself, which
-    // derives to itself (round 22).
-    const bundledLabel = tdef.label ?? tdef.name;
-    const suffixed = `${bundledLabel} ${name.slice(tdef.name.length + 1)}`;
-    const label =
-      name === tdef.name || normalizeToolName(bundledLabel) !== tdef.name
-        ? bundledLabel
-        : suffixed.length > TOOL_LABEL_MAX
-          ? name
-          : suffixed;
+    const label = clipLabel(
+      renamedLabel(tdef.name, name, blankFallback(tdef.label, name)),
+    );
     // Recorded once a row under the new name EXISTS — written below, or found by the pre-check
     // or the race — and not before: a component the checks below skip was otherwise announced
     // as imported under a name no row carries, next to the warning that it was not (round 16).
     const landed = (): void => {
+      // Before the early return: a component stored under its OWN name occupies it just as much as
+      // a renamed one, and the next component whose name normalizes to it must not read that row
+      // as a reuse of itself.
+      claimed.add(name);
       if (name === tdef.name) return;
       renamedHttpTools.set(tdef.name, name);
       warnings.push({
@@ -1492,10 +1825,26 @@ async function createMissingComponents(
         target: { kind: "tool", name },
       });
     };
-    const existing = await db.toolDefinition.findFirst({
-      where: { name },
-      select: { id: true },
-    });
+    // Reuse is decided by the MODEL-FACING name, not the stored spelling: a row written as `Foo`
+    // before names were canonicalized answers to `foo`, and an exact lookup would miss it and
+    // insert a SECOND row under the same name the model sees (namespace.ts).
+    // Same resolution the grant uses, and for the same reason: with `Foo` and `foo` both stored,
+    // "reuse" has to name ONE row. Ambiguous reads as taken and is left alone rather than reused,
+    // because a third row under that name would only deepen it (round 29).
+    const reuse = await toolUnderModelName(db, name, "http");
+    // Ambiguous is TAKEN, not free. Two rows already answer to this name here; writing a third
+    // would deepen the collision, and reusing one would pick an endpoint on the destination's row
+    // order. The component is skipped and said out loud, and the grant below reports it too, which
+    // is the honest pair: neither the tool nor its grant landed.
+    if (reuse.kind === "ambiguous") {
+      warnings.push({
+        code: "httpToolAmbiguous",
+        params: { name, n: reuse.ids.length },
+        target: { kind: "tool", name },
+      });
+      continue;
+    }
+    const existing = reuse.kind === "one" ? reuse.id : null;
     if (existing) {
       landed();
       warnings.push({
@@ -1532,13 +1881,22 @@ async function createMissingComponents(
       continue;
     }
     const badBody = unsupportedBodyShape(tdef.body);
-    const { shapes } = normalizeToolShapes({
+    const { shapes, warnings: shapeWarnings } = normalizeToolShapes({
       urlTemplate: tdef.urlTemplate,
       query: tdef.query ?? {},
       headers: tdef.headers,
       body: badBody ? canonicalBodyShape(tdef.body) : tdef.body,
       inputSchema: tdef.inputSchema,
     });
+    // Same rule as the code loop below: what the normalization had to change is the operator's to
+    // review, not something to discard on the way in.
+    for (const reason of shapeWarnings) {
+      warnings.push({
+        code: "toolSchemaAdjusted",
+        params: { name, reason },
+        target: { kind: "tool", name },
+      });
+    }
     // `createMany({ skipDuplicates })` rather than `create`, for the reason spelled out on the
     // document-template loop below: the pre-check above can answer "free" and a concurrent writer
     // commit before this insert, and a P2002 here does not cost one tool: the whole import runs
@@ -1551,7 +1909,9 @@ async function createMissingComponents(
           name,
           // label is required now; legacy exports without one fall back to the identifier.
           label,
-          description: tdef.description ?? null,
+          description: tdef.description
+            ? clipDescription(tdef.description)
+            : null,
           method,
           urlTemplate: (shapes.urlTemplate ?? tdef.urlTemplate) as string,
           allowedHosts: tdef.allowedHosts,
@@ -1608,6 +1968,127 @@ async function createMissingComponents(
         target: { kind: "tool", name },
       });
     }
+  }
+
+  // Bundle name → stored name, for the code tools this loop could not store under their own.
+  const renamedCodeTools = new Map<string, string>();
+  // One stored name per bundle name, for the reason the HTTP loop keeps one (round 18).
+  const chosenCode = new Map<string, string>();
+  for (const tdef of components.codeTools ?? []) {
+    const name =
+      chosenCode.get(tdef.name) ??
+      (await storedToolName(
+        tdef.name,
+        taken,
+        claimed,
+        async (n) =>
+          (await toolsUnderModelName(db, n)).httpIds.length > 0 ||
+          bundledDocumentNames.has(n) ||
+          (await documentHoldingToolName(db, n)) !== null,
+      ));
+    chosenCode.set(tdef.name, name);
+    taken.add(name);
+    const label = clipLabel(
+      renamedLabel(tdef.name, name, blankFallback(tdef.label, name)),
+    );
+    // Recorded once a row under the new name EXISTS, and not before, for the reason the HTTP
+    // loop's `landed` gives.
+    const landed = (): void => {
+      // Before the early return, for the reason the HTTP loop's `landed` gives.
+      claimed.add(name);
+      if (name === tdef.name) return;
+      renamedCodeTools.set(tdef.name, name);
+      warnings.push({
+        code: "codeToolRenamed",
+        params: { name: tdef.name, renamed: name },
+        target: { kind: "codeTool", name },
+      });
+    };
+    // By the model-facing name, for the reason the HTTP loop gives.
+    // Same resolution the HTTP loop uses, for the reason it gives.
+    const reuseCode = await toolUnderModelName(db, name, "code");
+    // Taken, not free, for the reason the HTTP loop gives.
+    if (reuseCode.kind === "ambiguous") {
+      warnings.push({
+        code: "codeToolAmbiguous",
+        params: { name, n: reuseCode.ids.length },
+        target: { kind: "codeTool", name },
+      });
+      continue;
+    }
+    const existing = reuseCode.kind === "one" ? reuseCode.id : null;
+    if (existing) {
+      landed();
+      warnings.push({
+        code: "codeToolReused",
+        params: { name },
+        target: { kind: "codeTool", name },
+      });
+      continue;
+    }
+    // NOTE: the import writes straight to the DB (not via the service), so the schema is
+    // canonicalized here the way the service canonicalizes it: a hand-edited bundle may carry a
+    // JSON-Schema-shaped one, and the runtime reads the compact field map.
+    const { shapes, warnings: schemaWarnings } = normalizeToolShapes({
+      inputSchema: tdef.inputSchema,
+    });
+    // A schema that had to LOSE something to become the compact map (a nested shape, a union, an
+    // enum of non-strings) changes what the model may send, and the operator reviewing an import is
+    // exactly who has to hear it — the console shows these warnings next to the imported agent.
+    for (const reason of schemaWarnings) {
+      warnings.push({
+        code: "toolSchemaAdjusted",
+        params: { name, reason },
+        target: { kind: "codeTool", name },
+      });
+    }
+    // The same advisory check the console and the service run on a save. A body that does not parse
+    // is stored on purpose — it is the operator's to fix, and refusing a whole bundle over it would
+    // be worse — but the recipient has to LEARN of it here, not from a failed call in production.
+    for (const w of await checkCodeToolSyntax(tdef.code)) {
+      warnings.push({
+        code: "codeToolBodyWarning",
+        params: {
+          name,
+          reason:
+            w.kind === "syntax"
+              ? `line ${w.line}, column ${w.column}: ${w.message}`
+              : "the code never returns a value",
+        },
+        target: { kind: "codeTool", name },
+      });
+    }
+    // `createMany({ skipDuplicates })` for the reason the HTTP loop gives: a lost race on
+    // `@@unique([tenantId, name])` would abort the enclosing transaction and take the whole
+    // import with it (issue #221).
+    const { count } = await db.codeToolDefinition.createMany({
+      data: [
+        {
+          tenantId,
+          name,
+          label,
+          // The column is required and the model reads it to decide when to call; a bundle that
+          // carries none gets the label, which is the next best statement of what the tool is.
+          description: clipDescription(blankFallback(tdef.description, label)),
+          inputSchema: (shapes.inputSchema ?? {}) as Prisma.InputJsonValue,
+          code: tdef.code,
+          enabled: tdef.enabled ?? true,
+        },
+      ],
+      skipDuplicates: true,
+    });
+    if (count === 0) {
+      // NOTE: lost the race. The name is taken now, which is exactly the reuse the pre-check
+      // reports.
+      landed();
+      warnings.push({
+        code: "codeToolReused",
+        params: { name },
+        target: { kind: "codeTool", name },
+      });
+      continue;
+    }
+    landed();
   }
 
   for (const m of components.mcpServers) {
@@ -1752,31 +2233,15 @@ async function createMissingComponents(
       });
       continue;
     }
-    // Re-validated on the way IN, never trusted as exported: a template written by a newer build can
-    // carry a block this one does not know how to render, and a warning that names the reason is a
-    // better import than a document that renders wrong in front of a customer.
-    //
-    // The SLUG goes through the same gate as a hand-written one. A bundle is user-supplied, and the
-    // slug becomes a tool name: one reading `image` produces `send_image`, which the assembly then
-    // drops as a duplicate of the built-in — the operator would see a granted template whose tool
-    // never appears, with nothing anywhere saying why.
-    // A bundle is hand-editable, and this path writes to the table directly rather than through
-    // createDocumentTemplate — so every rule that write applies has to be applied here too. The
-    // description is the one that bites: it is appended verbatim to the agent's tool description on
-    // every turn, and an oversized one arriving in a bundle would do that on the destination.
-    const metaFault =
-      templateMetadataProblem({
-        name: tpl.name,
-        description: tpl.description ?? null,
-        numberPrefix: tpl.numberPrefix ?? null,
-      }) ?? (slugProblem(tpl.slug) ? `slug: ${slugProblem(tpl.slug)}.` : null);
-    const content = metaFault
-      ? ({ ok: false, reason: metaFault } as const)
-      : parseAuthoredTemplate(tpl.blocks, tpl.fields, tpl.style);
-    if (!content.ok) {
+    // Through the same reader the name reservation above used, so the two passes cannot disagree
+    // about which templates are importable: the reservation decided whether a bundled tool had to
+    // move off `send_<slug>`, and a second copy of these rules answering differently here would
+    // move a tool for a template this loop then skips (round 21).
+    const read = readBundledTemplate(tpl);
+    if (!read.ok) {
       warnings.push({
         code: "documentTemplateInvalid",
-        params: { name: tpl.name, reason: content.reason },
+        params: { name: tpl.name, reason: read.reason },
       });
       continue;
     }
@@ -1788,8 +2253,25 @@ async function createMissingComponents(
     //
     // Asked AFTER the validity gate, and the order is the message: a bundle carrying a template that
     // is both unreadable and named like an existing one is more usefully told about the first.
-    // not-caller-input: a name read off the template being imported, not a value from this request
-    const approvedName = templateNameSchema.parse(tpl.name);
+    const approvedName = read.name;
+    // The destination may already have a TOOL under the name this template would publish. The
+    // template is assembled first, so importing it would silently take that tool off the agents
+    // that hold it — and the tool could no longer be saved under its own name either. Skipped with
+    // a warning, the way a name another template holds is: a slug moved instead would change the
+    // name prompts use to ask for this document (namespace.ts).
+    const toolHolder = await toolHoldingName(db, tpl.slug);
+    if (toolHolder) {
+      warnings.push({
+        code: "documentToolNameTaken",
+        params: {
+          name: tpl.name,
+          tool: documentToolName(tpl.slug),
+          holder: toolHolder.name,
+        },
+        target: { kind: "document", name: tpl.slug },
+      });
+      continue;
+    }
     const nameHolder = await db.documentTemplate.findFirst({
       where: { name: approvedName },
       select: { slug: true },
@@ -1823,8 +2305,8 @@ async function createMissingComponents(
           name: approvedName,
           slug: tpl.slug,
           description: tpl.description ?? null,
-          blocks: content.content.blocks as unknown as Prisma.InputJsonValue,
-          fields: content.content.fields as unknown as Prisma.InputJsonValue,
+          blocks: read.content.blocks as unknown as Prisma.InputJsonValue,
+          fields: read.content.fields as unknown as Prisma.InputJsonValue,
           style: parseDocumentStyle(
             tpl.style,
           ) as unknown as Prisma.InputJsonValue,
@@ -1911,7 +2393,7 @@ async function createMissingComponents(
     // A freshly created KB is silent (only reused ones warn). Imported-but-unindexed documents surface
     // through the editor's live "needs indexing" alert (config-health), not a one-shot import warning.
   }
-  return { renamedHttpTools };
+  return { httpTools: renamedHttpTools, codeTools: renamedCodeTools };
 }
 
 async function buildGrantRows(
@@ -1920,21 +2402,34 @@ async function buildGrantRows(
   agentId: bigint,
   tools: ExportedGrant[],
   warnings: ImportWarning[],
-  // Bundle name → stored name, for an HTTP tool the import could not store under its own name.
-  renamedHttpTools: ReadonlyMap<string, string>,
+  // Bundle name → stored name, for a tool the import could not store under its own name.
+  renamed: RenamedComponents,
 ): Promise<Prisma.AgentToolSelectionCreateManyInput[]> {
   const rows: Prisma.AgentToolSelectionCreateManyInput[] = [];
   for (const g of tools) {
     switch (g.source) {
-      case "NATIVE":
+      case "NATIVE": {
+        // A name this build's catalog does not carry is dropped, and said. `run_code` was a
+        // native between PR #485 and issue #363, so a bundle exported in that window names it
+        // here, and the write boundary (`normalizeGrants`) refuses an unknown native where it is
+        // typed; failing the whole bundle over it would be the trade this file already rejects.
+        // The row lands even when nothing survives the filter: an explicit empty allowlist means
+        // NO natives, and no row at all would mean ALL of them.
+        const known = new Set<string>(NATIVE_TOOL_NAMES);
+        for (const n of g.enabledTools) {
+          if (!known.has(n)) {
+            warnings.push({ code: "nativeToolUnknown", params: { name: n } });
+          }
+        }
         rows.push({
           tenantId,
           agentId,
           source: "NATIVE",
-          enabledTools: g.enabledTools,
+          enabledTools: g.enabledTools.filter((n) => known.has(n)),
           knowledgeBaseIds: [],
         });
         break;
+      }
       case "RAG": {
         const kbs = await db.knowledgeBase.findMany({
           where: { name: { in: g.knowledgeBases } },
@@ -1983,10 +2478,25 @@ async function buildGrantRows(
         break;
       }
       case "HTTP": {
-        const td = await db.toolDefinition.findFirst({
-          where: { name: renamedHttpTools.get(g.tool) ?? g.tool },
-          select: { id: true },
-        });
+        // Resolved by the MODEL-FACING name, like every other question about a tool name: the row
+        // the loops just reused may be stored under an older spelling (`Foo` answering to `foo`),
+        // and an exact lookup would drop the grant with `httpGrantNotFound` for a tool that is
+        // right there (namespace.ts).
+        const wanted = renamed.httpTools.get(g.tool) ?? g.tool;
+        // WHICH row, not "is the name taken": a destination can hold `Foo` and `foo` from before
+        // the unique index was case-insensitive, and binding the grant to the wrong one hands the
+        // agent another endpoint with another credential (round 29). Ambiguity is reported, never
+        // resolved by picking.
+        const match = await toolUnderModelName(db, wanted, "http");
+        if (match.kind === "ambiguous") {
+          warnings.push({
+            code: "httpGrantAmbiguous",
+            params: { name: g.tool, n: match.ids.length },
+            target: { kind: "tool", name: g.tool },
+          });
+          break;
+        }
+        const td = match.kind === "one" ? { id: match.id } : null;
         if (!td) {
           warnings.push({
             code: "httpGrantNotFound",
@@ -2008,6 +2518,46 @@ async function buildGrantRows(
           source: "HTTP",
           toolDefinitionId: td.id,
           enabledTools: g.enabledTools,
+          knowledgeBaseIds: [],
+        });
+        break;
+      }
+      case "CODE": {
+        // By the model-facing name, for the reason the HTTP arm gives.
+        const wantedCode = renamed.codeTools.get(g.tool) ?? g.tool;
+        const codeMatch = await toolUnderModelName(db, wantedCode, "code");
+        if (codeMatch.kind === "ambiguous") {
+          warnings.push({
+            code: "codeGrantAmbiguous",
+            params: { name: g.tool, n: codeMatch.ids.length },
+            target: { kind: "codeTool", name: g.tool },
+          });
+          break;
+        }
+        const cd = codeMatch.kind === "one" ? { id: codeMatch.id } : null;
+        if (!cd) {
+          warnings.push({
+            code: "codeGrantNotFound",
+            params: { name: g.tool },
+            target: { kind: "codeTool", name: g.tool },
+          });
+          break;
+        }
+        // NOTE: two grants on one row are one grant, for the reason the HTTP arm gives:
+        // `ats_code_uq` would abort the whole import over the pair.
+        if (
+          rows.some(
+            (r) => r.source === "CODE" && r.codeToolDefinitionId === cd.id,
+          )
+        ) {
+          break;
+        }
+        rows.push({
+          tenantId,
+          agentId,
+          source: "CODE",
+          codeToolDefinitionId: cd.id,
+          enabledTools: [],
           knowledgeBaseIds: [],
         });
         break;

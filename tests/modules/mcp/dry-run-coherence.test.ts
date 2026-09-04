@@ -10,6 +10,7 @@ import { buildMcpServer } from "@/modules/mcp/server";
 import * as writeRoot from "@/modules/mcp/write";
 import * as writeAgents from "@/modules/mcp/write-agents";
 import * as writeChannels from "@/modules/mcp/write-channels";
+import * as writeCodeTools from "@/modules/mcp/write-code-tools";
 import * as writeConversations from "@/modules/mcp/write-conversations";
 import * as writeDocuments from "@/modules/mcp/write-documents";
 import * as writeFleet from "@/modules/mcp/write-fleet";
@@ -196,6 +197,35 @@ const TABLE: Record<string, Row> = {
     why: "no Chatwoot deployment is connected",
     pastOwnership:
       'measured, and it DIVERGED: an account another tenant owns, on a deployment that IS connected. Covered above, in "a preflight covers its core\'s whole judgement", with the cost of the answer pinned beside it.',
+  },
+  code_tool_create: {
+    // NOTE: the NAME, like tool_create's row: `code` is never PARSED to decide the write (an
+    // invalid body is saved on purpose and reported in `warnings`), so a body that does not
+    // compile is a row both halves would answer ok.
+    args: {
+      name: "not a valid name!",
+      description: "d",
+      code: "return 1",
+    },
+    why: "name is not [A-Za-z0-9_-]{1,64}",
+    also: [
+      {
+        args: { name: "calculator", description: "d", code: "return 1" },
+        why: "calculator is a native tool's name",
+      },
+    ],
+  },
+  code_tool_delete: {
+    args: { code_tool_id: NOPE },
+    why: "code tool does not exist",
+    pastOwnership:
+      "measured on a tool GRANTED to an agent: the selection row cascades and the delete applies, so nothing is decided past ownership.",
+  },
+  code_tool_update: {
+    args: { code_tool_id: NOPE, label: "x" },
+    why: "code tool does not exist",
+    pastOwnership:
+      "measured, and it DIVERGED: a rename onto a name the tenant already used, an HTTP tool's included, and onto a native's. Covered below, in \"a preview asks what the core asks once it has the row\", with both inverses pinned.",
   },
   document_template_create: { args: { name: "" }, why: "empty name" },
   document_template_delete: {
@@ -460,6 +490,7 @@ type WriteFn = (
 const FNS = {
   ...writeAgents,
   ...writeChannels,
+  ...writeCodeTools,
   ...writeConversations,
   ...writeDocuments,
   ...writeFleet,
@@ -1843,6 +1874,118 @@ describe.skipIf(!dbUp)(
       expect(previewed).toBe("ok");
     });
 
+    // ── code tools: the same uniqueness class, and the namespace they SHARE with the HTTP tools
+    // above. A code tool renaming onto an HTTP tool's name is the collision a table row can never
+    // reach, because one table row only ever holds one kind (#363).
+    test("code_tool_update: renaming onto a name this tenant already used", async () => {
+      const takenHttp = `ct-http-${process.pid}`;
+      await suDb.toolDefinition.create({
+        data: {
+          tenantId,
+          name: takenHttp,
+          label: "l",
+          urlTemplate: "https://example.com/ct",
+          allowedHosts: ["example.com"],
+        },
+      });
+      const mine = await suDb.codeToolDefinition.create({
+        data: {
+          tenantId,
+          name: `ct-mine-${process.pid}`,
+          label: "l",
+          description: "d",
+          code: "return 1",
+        },
+      });
+      for (const name of [takenHttp, "calculator"]) {
+        const r = await both(
+          (a) =>
+            writeCodeTools.codeToolUpdate(principal(), a as never, {
+              base: appDb,
+            }),
+          { code_tool_id: String(mine.id), name },
+        );
+        expect([name, r.previewed]).toEqual([name, "refused"]);
+        expect([name, r.applied]).toEqual([name, "refused"]);
+      }
+    });
+
+    // The inverse, twice over: keeping the name is not a collision, and neither is a patch that
+    // never names the tool. Without these, refusing every code_tool_update would pass the case
+    // above.
+    test("code_tool_update: keeping its own name, and a patch that renames nothing", async () => {
+      const own = `ct-own-${process.pid}`;
+      const t = await suDb.codeToolDefinition.create({
+        data: {
+          tenantId,
+          name: own,
+          label: "l",
+          description: "d",
+          code: "return 1",
+        },
+      });
+      for (const args of [
+        { code_tool_id: String(t.id), name: own, label: "renamed" },
+        { code_tool_id: String(t.id), label: "renamed twice" },
+      ]) {
+        const previewed = await verdict(() =>
+          writeCodeTools.codeToolUpdate(principal(), args as never, {
+            base: appDb,
+          }),
+        );
+        expect([JSON.stringify(args), previewed]).toEqual([
+          JSON.stringify(args),
+          "ok",
+        ]);
+      }
+    });
+
+    // What the DELETE decides once it has the row, which is nothing: the grant cascades. Measured
+    // rather than assumed, because "a tool an agent is using cannot be deleted" is the rule this
+    // surface would plausibly have and does not.
+    test("code_tool_delete: a tool GRANTED to an agent still deletes", async () => {
+      const t = await suDb.codeToolDefinition.create({
+        data: {
+          tenantId,
+          name: `ct-del-${process.pid}`,
+          label: "l",
+          description: "d",
+          code: "return 1",
+        },
+      });
+      const ag = await suDb.agent.create({
+        data: {
+          tenantId,
+          name: "D",
+          systemPrompt: "p",
+          modelConfig: {},
+          settings: {},
+        },
+      });
+      await suDb.agentToolSelection.create({
+        data: {
+          tenantId,
+          agentId: ag.id,
+          source: "CODE",
+          codeToolDefinitionId: t.id,
+          knowledgeBaseIds: [],
+          enabledTools: [],
+        },
+      });
+      const r = await both(
+        (a) =>
+          writeCodeTools.codeToolDelete(principal(), a as never, {
+            base: appDb,
+          }),
+        { code_tool_id: String(t.id) },
+      );
+      expect(r.previewed).toBe("ok");
+      expect(r.applied).toBe("ok");
+      expect(
+        await suDb.agentToolSelection.count({ where: { agentId: ag.id } }),
+      ).toBe(0);
+    });
+
     // ── grants: the ids inside the ARRAY, which the row's single `agent_id` never reaches.
     test("agent_tools_set: a grant naming a resource that does not exist", async () => {
       const ag = await suDb.agent.create({
@@ -1859,6 +2002,7 @@ describe.skipIf(!dbUp)(
         { source: "MCP", mcpServerConnectionId: NOPE },
         { source: "INTEGRATION", integrationInstanceId: NOPE },
         { source: "DOCUMENT", documentTemplateId: NOPE },
+        { source: "CODE", codeToolDefinitionId: NOPE },
       ];
       for (const c of cases) {
         const r = await both(

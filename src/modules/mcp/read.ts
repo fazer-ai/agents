@@ -1,5 +1,6 @@
 import basePrisma from "@/api/lib/prisma";
 import { AUDIT_SCOPES, isAuditScope } from "@/lib/audit/scope";
+import { checkCodeToolSyntax } from "@/lib/code-tool-syntax";
 import { AppError } from "@/lib/errors";
 import { ACTOR_TYPES, type ActorType } from "@/lib/tenancy/actor";
 import { readAgentConfigHealth } from "@/modules/agents/config-health-read";
@@ -18,6 +19,7 @@ import {
   getChatwootInstance,
   listInboxes,
 } from "@/modules/chatwoot/management";
+import { getCodeTool, listCodeTools } from "@/modules/code-tools/service";
 import {
   getConversationDetail,
   getConversationMessages,
@@ -194,6 +196,49 @@ export async function toolGet(
   if (typeof id !== "bigint") return id;
   try {
     return ok({ tool: await getToolDefinition(ctx, id, base) });
+  } catch (e) {
+    return failOf(e);
+  }
+}
+
+// ── code tools (operator-authored, issue #363) ──
+
+export async function codeToolList(
+  principal: VerifiedToken,
+  deps: WriteDeps = {},
+): Promise<WriteResult> {
+  const base = deps.base ?? basePrisma;
+  const ctx = readGate(principal);
+  if ("ok" in ctx) return ctx;
+  try {
+    // The body is not in the list at all — `listCodeTools` does not read the column, for the reason
+    // the document list does not read its blocks: it is the bulk of the row (20k characters at
+    // most, each) and nobody browsing the list reads it. code_tool_get returns the whole thing.
+    return ok({ tools: await listCodeTools(ctx, base) });
+  } catch (e) {
+    return failOf(e);
+  }
+}
+
+export async function codeToolGet(
+  principal: VerifiedToken,
+  args: { code_tool_id: string },
+  deps: WriteDeps = {},
+): Promise<WriteResult> {
+  const base = deps.base ?? basePrisma;
+  const ctx = readGate(principal);
+  if ("ok" in ctx) return ctx;
+  const id = parseMcpId(args.code_tool_id, "code_tool_id");
+  if (typeof id !== "bigint") return id;
+  try {
+    const tool = await getCodeTool(ctx, id, base);
+    // The static check on the STORED body, and this is the only place it is offered after the save.
+    // An invalid body is saved on purpose and answered with a warning once, at the write; a caller
+    // reading the tool later would otherwise have to run the agent to discover the tool is
+    // known-broken. It is also what the update preview promises: a patch that leaves the body alone
+    // reports `[]` and defers to this (write-code-tools.ts). Always present, `[]` when the body
+    // parses, so "no warnings" and "not checked" are not the same answer.
+    return ok({ tool, warnings: await checkCodeToolSyntax(tool.code) });
   } catch (e) {
     return failOf(e);
   }

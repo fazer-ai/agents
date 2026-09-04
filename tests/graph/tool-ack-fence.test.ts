@@ -45,6 +45,7 @@ function config(): AgentConfig {
     contactAuth: CONTACT_AUTH_DEFAULTS,
     sendImageConfig: SEND_IMAGE_DEFAULTS,
     httpToolContext: {},
+    codeToolDefs: [],
     httpToolDefs: [
       {
         name: "consulta_lenta",

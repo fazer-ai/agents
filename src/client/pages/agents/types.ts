@@ -11,11 +11,19 @@ export type ToolCatalog = ToolSelectionView["catalog"];
 // Mutable working copy of a grant (the GET view returns readonly arrays). Shape
 // matches the PUT body (ToolGrantInput); omitted fields default server-side.
 export interface GrantState {
-  source: "NATIVE" | "RAG" | "HTTP" | "MCP" | "INTEGRATION" | "DOCUMENT";
+  source:
+    | "NATIVE"
+    | "RAG"
+    | "HTTP"
+    | "MCP"
+    | "INTEGRATION"
+    | "DOCUMENT"
+    | "CODE";
   toolDefinitionId?: string | null;
   mcpServerConnectionId?: string | null;
   integrationInstanceId?: string | null;
   documentTemplateId?: string | null;
+  codeToolDefinitionId?: string | null;
   knowledgeBaseIds?: string[];
   enabledTools?: string[];
 }

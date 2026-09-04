@@ -440,6 +440,24 @@ describe("MCP tool descriptions", () => {
   // ("fleet/all need SUPER_ADMIN"), which is where the budget for it had to come from: descriptions
   // stand at 27,990 of 28,000, ten characters short of anywhere to move it. The schema ceiling goes
   // to 54,100.
+  //
+  // The five `code_tool_*` tools (#363) take the description total from 27,990 to 29,986 and the
+  // schema total from 54,024 to 54,899, remeasured against this base after the rebase over #520
+  // rather than carried over from the earlier one. The five tools are 1,909 of the description and
+  // 1,192 of the schema; the rest is the tree around them, measured per tool: `agent_tools_get`
+  // +32 and `agent_tools_set` +55/+76 for the fourth source, against `agent_settings_set` -393 on
+  // the schema, which is the native tool #363 retired leaving the two native-keyed settings maps.
+  // Five tools is where the cost is, and it is the cost `tool_*` paid: a list, a get and a
+  // create/update/delete, each with the dry-run line. `code_tool_create` is 1,145 of the 1,909 and
+  // carries what a caller cannot learn by trying, because the sandbox never answers a question a
+  // body does not ask: the twelve `context` keys, the CPU and memory limits, that a `throw` is an
+  // integration failure and a returned value a business outcome, and that a body which does not
+  // parse is SAVED and fails at call time. Trimmed first against a draft of 1,426: the example use
+  // cases, the `console.log` echo, the ES level, the spelling of the two warning kinds and the
+  // reason `description` is required (the schema already marks it) came out. The sentence naming
+  // the two CPF/CNPJ helpers came out with the helpers themselves, which is the 54 characters that
+  // pay for #520's `scope` and let the description ceiling stay where it was: 30,000, with the
+  // same 14-character margin #520 left itself. The schema ceiling goes to 54,900.
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;
@@ -448,8 +466,8 @@ describe("MCP tool descriptions", () => {
       desc += t.description.length;
       schema += t.schema.length;
     }
-    expect(desc).toBeLessThanOrEqual(28_000);
-    expect(schema).toBeLessThanOrEqual(54_100);
+    expect(desc).toBeLessThanOrEqual(30_000);
+    expect(schema).toBeLessThanOrEqual(54_900);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

@@ -402,11 +402,6 @@ const BARE_SLICES: Record<
   "src/graph/tools/mcp.ts": [5, "ascii"],
   // The spend ceiling's project key is the head of a hex digest (#426).
   "src/modules/spend-ceiling/poll.ts": [1, "ascii"],
-  // `withTrailingObjectWrapped`: the one line that splits the snippet at the brace indexes its own
-  // lexer found, to put parentheses around a trailing object literal. `{` and `}` are ASCII, so
-  // neither side of a cut can be half of a surrogate pair; nothing is dropped, the three pieces
-  // are joined back whole.
-  "src/graph/tools/code-sandbox.worker.ts": [1, "index"],
   "src/graph/tools/native.ts": [4, "array"],
   "src/graph/tools/toolName.ts": [1, "ascii"],
   "src/graph/trace.ts": [2, "array + index"],
@@ -415,9 +410,13 @@ const BARE_SLICES: Record<
   "src/lib/text.ts": [3, "the-cut"],
   "src/modules/agents/credential-paths.ts": [2, "array"],
   "src/modules/agents/text-caps.ts": [1, "array"],
-  // `countNotStoredAsWritten`: the bundled entries a schedule cap lets through, so the ones past it
-  // count as loss rather than being tested. An array of JSON entries, never a string.
-  "src/modules/agents/transfer.ts": [1, "array"],
+  // Two, both counted here because neither bounds prose. `countNotStoredAsWritten` cuts the bundled
+  // entries a schedule cap lets through, so the ones past it count as loss rather than being tested
+  // — an array of JSON entries, never a string. And `renamedToolName` trims the STEM of a tool name
+  // so the `_2` suffix fits inside the 64 the provider allows: the value went through
+  // `normalizeToolName` first, so it is `[a-z0-9_-]` and has nothing to split. (The label and the
+  // description that loop clips are text, and go through `clipText` like every other.)
+  "src/modules/agents/transfer.ts": [2, "array"],
   "src/modules/analytics/langfuse-costs.ts": [2, "fixed-format"],
   "src/modules/api-keys/verify.ts": [1, "ascii"],
   "src/modules/appointments/settings.ts": [1, "array"],

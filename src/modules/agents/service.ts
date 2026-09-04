@@ -44,6 +44,7 @@ import {
   getToolpackToolNames,
   getToolpackToolViews,
 } from "@/modules/integrations/toolpacks";
+import { lockToolNames } from "@/modules/tool-definitions/namespace";
 import { requireVaultRefFor } from "@/modules/vault/service";
 import { AGENT_MODES, type AgentMode, normalizeAgentMode } from "./mode";
 
@@ -1118,6 +1119,14 @@ export async function cloneAgent(
 ): Promise<AgentDto> {
   const tenantId = requireTenant(ctx);
   return runScopedOn(base, ctx, async (db) => {
+    // The namespace lock BEFORE the grants are read, for the reason `replaceAgentToolSelections`
+    // gives and one step earlier: a clone copies target ids out of one agent and writes them under
+    // another, so a tool deleted between the read and the insert leaves the copy pointing at a row
+    // that is gone. The foreign key then refuses it, and because the whole clone is one transaction
+    // the operator loses the agent, not the grant (round 35). Behind the lock the delete either
+    // goes first, and its cascade takes the source grant with it so there is nothing to copy, or it
+    // waits and takes both rows afterwards.
+    await lockToolNames(db);
     const src = await db.agent.findUnique({
       where: { id },
       select: {
@@ -1143,6 +1152,7 @@ export async function cloneAgent(
         mcpServerConnectionId: true,
         integrationInstanceId: true,
         documentTemplateId: true,
+        codeToolDefinitionId: true,
         knowledgeBaseIds: true,
         enabledTools: true,
       },
@@ -1172,6 +1182,7 @@ export async function cloneAgent(
           mcpServerConnectionId: g.mcpServerConnectionId,
           integrationInstanceId: g.integrationInstanceId,
           documentTemplateId: g.documentTemplateId,
+          codeToolDefinitionId: g.codeToolDefinitionId,
           knowledgeBaseIds: g.knowledgeBaseIds,
           enabledTools: g.enabledTools,
         })),
@@ -1200,6 +1211,7 @@ const AGENT_TOOL_SOURCES = [
   "MCP",
   "INTEGRATION",
   "DOCUMENT",
+  "CODE",
 ] as const;
 type AgentToolSourceLit = (typeof AGENT_TOOL_SOURCES)[number];
 
@@ -1209,6 +1221,7 @@ export interface ToolGrantInput {
   mcpServerConnectionId?: string | null;
   integrationInstanceId?: string | null;
   documentTemplateId?: string | null;
+  codeToolDefinitionId?: string | null;
   knowledgeBaseIds?: string[];
   enabledTools?: string[];
 }
@@ -1219,6 +1232,7 @@ export interface ToolGrantDto {
   mcpServerConnectionId: string | null;
   integrationInstanceId: string | null;
   documentTemplateId: string | null;
+  codeToolDefinitionId: string | null;
   knowledgeBaseIds: string[];
   enabledTools: string[];
 }
@@ -1246,6 +1260,8 @@ export interface ToolSelectionView {
         args: { name: string; description?: string; required: boolean }[];
       }[];
     }[];
+    // Operator-authored code tools (issue #363); `name` is what the agent calls.
+    codeTools: { id: string; name: string; label: string; enabled: boolean }[];
     documentTemplates: {
       id: string;
       name: string;
@@ -1283,6 +1299,7 @@ interface NormalizedGrant {
   mcpServerConnectionId: bigint | null;
   integrationInstanceId: bigint | null;
   documentTemplateId: bigint | null;
+  codeToolDefinitionId: bigint | null;
   knowledgeBaseIds: bigint[];
   enabledTools: string[];
 }
@@ -1322,6 +1339,7 @@ function normalizeGrants(input: ToolGrantInput[]): NormalizedGrant[] {
   let sawNative = false;
   let sawRag = false;
   const httpSeen = new Set<string>();
+  const codeSeen = new Set<string>();
   const mcpSeen = new Set<string>();
   const intSeen = new Set<string>();
   const docSeen = new Set<string>();
@@ -1357,6 +1375,7 @@ function normalizeGrants(input: ToolGrantInput[]): NormalizedGrant[] {
           mcpServerConnectionId: null,
           integrationInstanceId: null,
           documentTemplateId: null,
+          codeToolDefinitionId: null,
           knowledgeBaseIds: [],
           enabledTools,
         });
@@ -1398,6 +1417,7 @@ function normalizeGrants(input: ToolGrantInput[]): NormalizedGrant[] {
           mcpServerConnectionId: null,
           integrationInstanceId: null,
           documentTemplateId: null,
+          codeToolDefinitionId: null,
           knowledgeBaseIds,
           enabledTools: ragTools,
         });
@@ -1420,6 +1440,7 @@ function normalizeGrants(input: ToolGrantInput[]): NormalizedGrant[] {
           mcpServerConnectionId: null,
           integrationInstanceId: null,
           documentTemplateId: null,
+          codeToolDefinitionId: null,
           knowledgeBaseIds: [],
           enabledTools: [],
         });
@@ -1442,6 +1463,7 @@ function normalizeGrants(input: ToolGrantInput[]): NormalizedGrant[] {
           mcpServerConnectionId: id,
           integrationInstanceId: null,
           documentTemplateId: null,
+          codeToolDefinitionId: null,
           knowledgeBaseIds: [],
           enabledTools,
         });
@@ -1464,6 +1486,7 @@ function normalizeGrants(input: ToolGrantInput[]): NormalizedGrant[] {
           mcpServerConnectionId: null,
           integrationInstanceId: id,
           documentTemplateId: null,
+          codeToolDefinitionId: null,
           knowledgeBaseIds: [],
           enabledTools,
         });
@@ -1486,9 +1509,34 @@ function normalizeGrants(input: ToolGrantInput[]): NormalizedGrant[] {
           mcpServerConnectionId: null,
           integrationInstanceId: null,
           documentTemplateId: id,
+          codeToolDefinitionId: null,
           // NOTE: no enabledTools. A template grant exposes exactly one tool — the one derived from
           // that template — so there is nothing to narrow, and an allowlist here would be a second
           // switch for the grant itself.
+          knowledgeBaseIds: [],
+          enabledTools: [],
+        });
+        break;
+      }
+      case "CODE": {
+        const id = bigOrThrow(g.codeToolDefinitionId, "codeToolDefinitionId");
+        if (codeSeen.has(String(id))) {
+          throw new AppError(
+            "duplicate CODE grant",
+            400,
+            "errors.toolGrantDuplicate",
+            { source: "CODE" },
+          );
+        }
+        codeSeen.add(String(id));
+        out.push({
+          source: "CODE",
+          toolDefinitionId: null,
+          mcpServerConnectionId: null,
+          integrationInstanceId: null,
+          documentTemplateId: null,
+          codeToolDefinitionId: id,
+          // NOTE: one tool per grant, like a document template: nothing to narrow.
           knowledgeBaseIds: [],
           enabledTools: [],
         });
@@ -1512,6 +1560,7 @@ function toGrantDto(g: {
   mcpServerConnectionId: bigint | null;
   integrationInstanceId: bigint | null;
   documentTemplateId: bigint | null;
+  codeToolDefinitionId: bigint | null;
   knowledgeBaseIds: bigint[];
   enabledTools: string[];
 }): ToolGrantDto {
@@ -1525,6 +1574,8 @@ function toGrantDto(g: {
       g.integrationInstanceId === null ? null : String(g.integrationInstanceId),
     documentTemplateId:
       g.documentTemplateId === null ? null : String(g.documentTemplateId),
+    codeToolDefinitionId:
+      g.codeToolDefinitionId === null ? null : String(g.codeToolDefinitionId),
     knowledgeBaseIds: g.knowledgeBaseIds.map((k) => String(k)),
     enabledTools: g.enabledTools,
   };
@@ -1546,6 +1597,7 @@ async function readGrantSet(
       mcpServerConnectionId: true,
       integrationInstanceId: true,
       documentTemplateId: true,
+      codeToolDefinitionId: true,
       knowledgeBaseIds: true,
       enabledTools: true,
     },
@@ -1566,6 +1618,7 @@ async function buildToolSelectionView(
       mcpServerConnectionId: true,
       integrationInstanceId: true,
       documentTemplateId: true,
+      codeToolDefinitionId: true,
       knowledgeBaseIds: true,
       enabledTools: true,
     },
@@ -1590,6 +1643,10 @@ async function buildToolSelectionView(
   });
   const knowledgeBases = await db.knowledgeBase.findMany({
     select: { id: true, name: true, description: true },
+    orderBy: { name: "asc" },
+  });
+  const codeTools = await db.codeToolDefinition.findMany({
+    select: { id: true, name: true, label: true, enabled: true },
     orderBy: { name: "asc" },
   });
   const documentTemplates = await db.documentTemplate.findMany({
@@ -1653,6 +1710,12 @@ async function buildToolSelectionView(
         name: k.name,
         description: k.description,
         unindexedCount: unindexedByKb.get(k.id) ?? 0,
+      })),
+      codeTools: codeTools.map((c) => ({
+        id: String(c.id),
+        name: c.name,
+        label: c.label,
+        enabled: c.enabled,
       })),
       documentTemplates: documentTemplates.map((d) => ({
         id: String(d.id),
@@ -1765,8 +1828,8 @@ async function assertAllPresent(
 }
 
 // Every id inside a grant array, checked against what the tenant actually has: an HTTP grant naming
-// no tool, an MCP grant naming no connection, and the same for document templates, knowledge bases
-// and integrations (plus the sub-tool allowlist an integration publishes). Split out of
+// no tool, an MCP grant naming no connection, and the same for document templates, code tools,
+// knowledge bases and integrations (plus the sub-tool allowlist an integration publishes). Split out of
 // `replaceAgentToolSelections` so the preview can ask it (#490): the fence row for `agent_tools_set`
 // passes `grants: []` behind an agent id that names no agent, so it proved the ownership check and
 // none of this — and a preview echoed back `nextGrants` for a set the apply refuses (#510).
@@ -1802,6 +1865,13 @@ async function assertGrantTargetsExist(
         .map((g) => g.documentTemplateId as bigint),
     ),
   ];
+  const codeIds = [
+    ...new Set(
+      grants
+        .filter((g) => g.source === "CODE")
+        .map((g) => g.codeToolDefinitionId as bigint),
+    ),
+  ];
   const kbIds = [...new Set(grants.flatMap((g) => g.knowledgeBaseIds))];
 
   await assertAllPresent(
@@ -1832,6 +1902,13 @@ async function assertGrantTargetsExist(
         "document template not found",
         "errors.documentTemplateNotFound",
       );
+    },
+  );
+  await assertAllPresent(
+    codeIds,
+    (ids) => db.codeToolDefinition.count({ where: { id: { in: ids } } }),
+    () => {
+      throw new NotFoundError("code tool not found", "errors.codeToolNotFound");
     },
   );
   await assertAllPresent(
@@ -1909,6 +1986,15 @@ export async function replaceAgentToolSelections(
   const tenantId = requireTenant(ctx);
   const grants = normalizeGrants(input);
   const view = await runScopedOn(base, ctx, async (db) => {
+    // The NAMESPACE lock first, before the agent row, and the order is the whole point. Deleting a
+    // tool takes this lock, then the tool row FOR UPDATE, then cascades into the selection rows;
+    // this path took the agent row, deleted the selection rows and then asked the foreign key for
+    // the tool row. Two transactions, each holding what the other needs next, which PostgreSQL
+    // resolves by killing one: measured on the real pair, `40P01 deadlock detected`, surfacing as a
+    // 500 on whichever lost (round 34). Behind this lock the two are serialized and neither can be
+    // half-done when the other starts. Grant saves are an operator action, so the cost of holding
+    // one lock per tenant across them is not a cost anyone can feel.
+    await lockToolNames(db);
     // NOTE: the agent row is LOCKED before its version is read, and the grant snapshot below is
     // taken under that lock. The set lives in another table with no version of its own, so this row
     // is what serializes two replacements against each other: unlocked, one call can read set A,
@@ -1948,6 +2034,7 @@ export async function replaceAgentToolSelections(
           mcpServerConnectionId: g.mcpServerConnectionId,
           integrationInstanceId: g.integrationInstanceId,
           documentTemplateId: g.documentTemplateId,
+          codeToolDefinitionId: g.codeToolDefinitionId,
           knowledgeBaseIds: g.knowledgeBaseIds,
           enabledTools: g.enabledTools,
         })),
@@ -1972,6 +2059,24 @@ export async function replaceAgentToolSelections(
       });
     }
     return next;
+  }).catch(async (err: unknown) => {
+    // A target can be DELETED between `assertGrantTargetsExist` above and the insert: the check
+    // reads the row, a delete commits in the gap, and the foreign key refuses the selection. That
+    // is the same event as "no such tool", which the check itself would have reported a moment
+    // earlier, so it gets the same terminal answer instead of a 500 for the console and a bare
+    // P2003 in the log (round 31). The precedent, and the reasoning, is `issueDocument`'s in
+    // documents/issue.ts.
+    //
+    // WHICH target vanished is asked afterwards, in a fresh scoped read, rather than parsed out of
+    // the driver's constraint name: the aborted transaction can answer nothing,
+    // `assertGrantTargetsExist` already knows how to name every source, and re-asking it costs one
+    // round trip on a path that is already losing a race. If it now finds everything (the row came
+    // back, or the key that failed was the agent's own), the original error stands rather than
+    // being dressed up as a not-found.
+    if (err instanceof Error && (err as { code?: string }).code === "P2003") {
+      await runScopedOn(base, ctx, (db) => assertGrantTargetsExist(db, grants));
+    }
+    throw err;
   });
   // Heads-up for any open editor (other tab / another operator) — best-effort, metadata-only.
   if (ctx.tenantId !== null && view.agentUpdatedAt) {

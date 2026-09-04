@@ -6,6 +6,8 @@ import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import {
   agentGet,
   apiKeyList,
+  codeToolGet,
+  codeToolList,
   instanceList,
   toolList,
   vaultList,
@@ -114,6 +116,9 @@ describe.skipIf(!dbUp)("MCP read tools (DB)", () => {
         `DELETE FROM chatwoot_instances WHERE tenant_id = ${tid}`,
       );
       await suDb.$executeRawUnsafe(
+        `DELETE FROM code_tool_definitions WHERE tenant_id = ${tid}`,
+      );
+      await suDb.$executeRawUnsafe(
         `DELETE FROM vault_entries WHERE tenant_id = ${tid}`,
       );
       await suDb.$executeRawUnsafe(
@@ -184,6 +189,96 @@ describe.skipIf(!dbUp)("MCP read tools (DB)", () => {
     const r = await toolList(principal({ tenantId: tenantB }), { base: appDb });
     expect(r.ok).toBe(true);
     if (r.ok) expect((r.data.tools as unknown[]).length).toBe(0);
+  });
+
+  test("code_tool_list / code_tool_get answer an mcp:read principal, tenant-fenced", async () => {
+    const created = await suDb.codeToolDefinition.create({
+      data: {
+        tenantId: tenantA,
+        name: "validar_cpf",
+        label: "Validar CPF",
+        description: "Valida um CPF.",
+        inputSchema: { cpf: { type: "string", required: true } },
+        code: "return { valid: input.cpf.length === 11 };",
+      },
+      select: { id: true },
+    });
+    const readOnly = { tenantId: tenantA, scopes: ["mcp:read"] };
+    const list = await codeToolList(principal(readOnly), { base: appDb });
+    expect(list.ok).toBe(true);
+    if (list.ok) {
+      const tools = list.data.tools as Record<string, unknown>[];
+      expect(tools.map((t) => t.name)).toEqual(["validar_cpf"]);
+      // The body is code_tool_get's to return.
+      expect("code" in (tools[0] ?? {})).toBe(false);
+    }
+    const got = await codeToolGet(
+      principal(readOnly),
+      { code_tool_id: String(created.id) },
+      { base: appDb },
+    );
+    expect(got.ok).toBe(true);
+    if (got.ok) {
+      const tool = got.data.tool as { id: string; code: string };
+      expect(tool.id).toBe(String(created.id));
+      expect(tool.code).toBe("return { valid: input.cpf.length === 11 };");
+    }
+    const fenced = await codeToolGet(
+      principal({ tenantId: tenantB, scopes: ["mcp:read"] }),
+      { code_tool_id: String(created.id) },
+      { base: appDb },
+    );
+    expect(fenced.ok).toBe(false);
+    if (!fenced.ok) expect(fenced.error).toContain("not found");
+  });
+
+  // Round 24. An invalid body is SAVED on purpose and answered with a warning, so the warning is
+  // the only record that the tool is known-broken — and it is written once, at the save. An MCP
+  // operator reading the tool afterwards had no way to that fact: `code_tool_get` returned the
+  // source and ran no check, so the problem surfaced when an agent called it. The update preview
+  // makes it worse by pointing here: it reports `[]` for a patch that leaves the body alone,
+  // "the stored body's own warnings are code_tool_get's to show" (write-code-tools.ts).
+  test("code_tool_get reports the stored body's own warnings", async () => {
+    const broken = await suDb.codeToolDefinition.create({
+      data: {
+        tenantId: tenantA,
+        name: "quebrada",
+        label: "Quebrada",
+        description: "Um corpo que nao compila.",
+        inputSchema: {},
+        code: "const x = ;",
+      },
+      select: { id: true },
+    });
+    const got = await codeToolGet(
+      principal({ tenantId: tenantA, scopes: ["mcp:read"] }),
+      { code_tool_id: String(broken.id) },
+      { base: appDb },
+    );
+    expect(got.ok).toBe(true);
+    if (got.ok) {
+      expect(got.data.warnings).toMatchObject([{ kind: "syntax", line: 1 }]);
+    }
+    // ...and a body that parses answers with none, rather than an absent key the caller has to
+    // tell apart from "not checked".
+    const clean = await suDb.codeToolDefinition.create({
+      data: {
+        tenantId: tenantA,
+        name: "inteira",
+        label: "Inteira",
+        description: "Um corpo que compila.",
+        inputSchema: {},
+        code: "return 1;",
+      },
+      select: { id: true },
+    });
+    const fine = await codeToolGet(
+      principal({ tenantId: tenantA, scopes: ["mcp:read"] }),
+      { code_tool_id: String(clean.id) },
+      { base: appDb },
+    );
+    expect(fine.ok).toBe(true);
+    if (fine.ok) expect(fine.data.warnings).toEqual([]);
   });
 
   test("api_key_list returns no secrets for a fresh tenant", async () => {

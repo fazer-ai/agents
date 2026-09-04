@@ -30,6 +30,11 @@ const FORBIDDEN_PACKAGES = [
   "langchain",
   "@prisma/client",
   "node:async_hooks",
+  // The code-tool sandbox interpreter (QuickJS over WebAssembly) cannot load under the console's
+  // CSP and must never reach the browser bundle: the client reads only the import-free limits module
+  // and the isomorphic acorn check, never `graph/tools/code-sandbox` or its worker.
+  "quickjs-emscripten-core",
+  "@jitl/quickjs",
 ];
 
 const EXTENSIONS = [".ts", ".tsx", ".js", ".jsx"];

@@ -54,11 +54,18 @@ import {
   unusableTemplateTokens,
 } from "@/modules/tool-definitions/response-template";
 import {
-  type ToolTestField,
-  ToolTestModal,
-  type ToolTestTarget,
-} from "./ToolTestModal";
-import { fieldTypeLabels } from "./toolFieldTypes";
+  type AiFieldRow,
+  AiFieldsPanel,
+  aiFieldsFromSchema,
+  rid,
+  schemaFromAiFields,
+  testFieldsFrom,
+} from "./AiFieldsPanel";
+import { ToolTestModal, type ToolTestTarget } from "./ToolTestModal";
+
+// Kept on this module's surface: the test dialog's boxes are built through it, and
+// tests/client/pages/ToolEditModal.test.tsx reads it from here.
+export { testFieldsFrom };
 
 type ToolsData = Awaited<ReturnType<typeof api.api.v1.tools.get>>["data"];
 export type Tool = NonNullable<ToolsData>["tools"][number];
@@ -70,46 +77,13 @@ type VaultEntry = NonNullable<
 
 const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
 
-// The types the AI can fill. Scalars serialize cleanly anywhere (query/header/path); enum/array/object
-// are body-only (array/object flatten to a string outside JSON). Mirrors the runtime in graph/tools/http.ts.
-const SCALAR_FIELD_TYPES = ["string", "integer", "number", "boolean"] as const;
-const AI_FIELD_TYPES = [
-  "string",
-  "integer",
-  "number",
-  "boolean",
-  "enum",
-  "array",
-  "object",
-] as const;
-type ScalarFieldType = (typeof SCALAR_FIELD_TYPES)[number];
-type AiFieldType = (typeof AI_FIELD_TYPES)[number];
-
 function parseJsonOr(value: string, fallback: Record<string, unknown>) {
   const trimmed = value.trim();
   if (!trimmed) return fallback;
   return JSON.parse(trimmed) as Record<string, unknown>;
 }
 
-// One declared input the AI fills in (the LLM-facing contract). The placement (URL/query/headers/body)
-// references it as {{name}}; the metadata lives here and is edited in the "AI fields" panel.
-type AiFieldRow = {
-  _id: string;
-  name: string;
-  type: AiFieldType;
-  required: boolean;
-  description: string;
-  enumValues: string[];
-  itemType: ScalarFieldType;
-};
 type KvRow = { _id: string; key: string; value: string };
-
-// Stable row keys for the editable lists (React key + no remount glitch on remove). Not serialized.
-let rowSeq = 0;
-function rid(): string {
-  rowSeq += 1;
-  return `r${rowSeq}`;
-}
 
 // A value that is EXACTLY one {{token}} (no surrounding text). When the token names a declared AI field,
 // the runtime keeps the AI value's original type; the editor uses it to badge the row as AI-filled.
@@ -294,17 +268,6 @@ function isKnownToolToken(
   );
 }
 
-function coerceFieldType(t: unknown): AiFieldType {
-  return (AI_FIELD_TYPES as readonly string[]).includes(t as string)
-    ? (t as AiFieldType)
-    : "string";
-}
-function coerceScalarType(t: unknown): ScalarFieldType {
-  return (SCALAR_FIELD_TYPES as readonly string[]).includes(t as string)
-    ? (t as ScalarFieldType)
-    : "string";
-}
-
 function objToKv(obj: Record<string, unknown>): KvRow[] {
   return Object.entries(obj ?? {}).map(([key, value]) => ({
     _id: rid(),
@@ -317,86 +280,6 @@ function kvToObj(rows: KvRow[]): Record<string, unknown> {
   for (const r of rows) {
     const key = r.key.trim();
     if (key) out[key] = r.value;
-  }
-  return out;
-}
-
-// inputSchema entries that are AI-filled (source !== "fixed") become AiFieldRows; legacy fixed entries
-// (source: "fixed" + value) become literal placement rows instead.
-function aiFieldsFromSchema(schema: Record<string, unknown>): AiFieldRow[] {
-  const out: AiFieldRow[] = [];
-  for (const [name, raw] of Object.entries(schema ?? {})) {
-    const s = (raw ?? {}) as Record<string, unknown>;
-    if (s.source === "fixed") continue;
-    out.push({
-      _id: rid(),
-      name,
-      type: coerceFieldType(s.type),
-      required: s.required === true,
-      description: typeof s.description === "string" ? s.description : "",
-      enumValues: Array.isArray(s.enumValues)
-        ? s.enumValues.filter((v): v is string => typeof v === "string")
-        : [],
-      itemType: coerceScalarType(s.itemType),
-    });
-  }
-  return out;
-}
-
-// The model-facing contract (inputSchema), derived from the AI fields panel only. Fixed values never
-// live here — they are literal rows in query/headers/body.
-function schemaFromAiFields(rows: AiFieldRow[]): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const r of rows) {
-    const name = r.name.trim();
-    if (!name) continue;
-    const spec: Record<string, unknown> = { type: r.type };
-    if (r.required) spec.required = true;
-    if (r.description.trim()) spec.description = r.description.trim();
-    if (r.type === "enum") {
-      const values = r.enumValues.map((v) => v.trim()).filter(Boolean);
-      if (values.length > 0) spec.enumValues = values;
-    }
-    if (r.type === "array") spec.itemType = r.itemType;
-    out[name] = spec;
-  }
-  return out;
-}
-
-// The boxes the test dialog collects, read back off the definition it is about to run. Not built
-// from the form rows: `schemaFromAiFields` above writes an OBJECT, so two rows that trim to one name
-// collapse to the last, and the dialog rendered both — two controls on one slot, with the losing
-// row's `required` or type judging a value the saved definition never declares. Reading the payload
-// is what makes "this dialog tests what Save would send" true of the fields too, not only the URL.
-export function testFieldsFrom(schema: unknown): ToolTestField[] {
-  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return [];
-  const out: ToolTestField[] = [];
-  for (const [name, raw] of Object.entries(schema as Record<string, unknown>)) {
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
-    const spec = raw as Record<string, unknown>;
-    // A fixed field is not the model's to supply, and `parseToolInputSchema` leaves it out of the
-    // schema the runtime validates against, so it gets no box either.
-    if (spec.source === "fixed") continue;
-    const type = typeof spec.type === "string" ? spec.type : "string";
-    out.push({
-      name,
-      description: typeof spec.description === "string" ? spec.description : "",
-      required: spec.required === true,
-      // The declared type travels with the field: the runtime validates the argument against it
-      // before the request goes out, so a dialog that only collected text would fail every
-      // non-string field on the schema instead of reaching the API.
-      type,
-      ...(type === "enum" && Array.isArray(spec.enumValues)
-        ? {
-            enumValues: spec.enumValues.filter(
-              (v): v is string => typeof v === "string",
-            ),
-          }
-        : {}),
-      ...(type === "array" && typeof spec.itemType === "string"
-        ? { itemType: spec.itemType }
-        : {}),
-    });
   }
   return out;
 }
@@ -1201,6 +1084,8 @@ export function ToolEditModal({
   const [selectedCredential, setSelectedCredential] =
     useState<VaultEntry | null>(null);
   const baselineRef = useRef<string | null>(null);
+  // Identity of the current opening (see the open handler).
+  const sessionRef = useRef<object | null>(null);
   // Targets for the variable picker (cursor insertion into the free-text template fields). Union type
   // because the highlighted field forwards its ref to either an <input> or a <textarea>.
   const urlRef = useRef<HTMLInputElement | HTMLTextAreaElement>(null);
@@ -1248,6 +1133,12 @@ export function ToolEditModal({
     setApptPicker(null);
     setTemplatePickerOpen(false);
     const payloadId = modal.payload?.id;
+    // This opening, told apart from the next one: the GET below outlives the dialog it was started
+    // for, so an answer that arrives after a close-and-reopen would fill the NEW session's form
+    // with the old tool and let Save patch the new id with it. Same guard in CodeToolEditModal.
+    const session = {};
+    sessionRef.current = session;
+    const mine = () => sessionRef.current === session;
     if (payloadId) {
       // Edit: fetch the full tool by id (the agent editor only carries the id). Baseline is captured
       // once the loaded tool populates the form, so isDirty stays false until the operator edits.
@@ -1258,6 +1149,7 @@ export function ToolEditModal({
           const { data, error } = await api.api.v1
             .tools({ id: payloadId })
             .get();
+          if (!mine()) return;
           if (error || !data) {
             setLoadError(true);
             return;
@@ -1266,12 +1158,16 @@ export function ToolEditModal({
           setForm(initial);
           baselineRef.current = JSON.stringify(initial);
         } catch {
-          setLoadError(true);
+          if (mine()) setLoadError(true);
         } finally {
-          setLoadingForm(false);
+          if (mine()) setLoadingForm(false);
         }
       })();
     } else {
+      // Reset here too: the session token now drops the previous opening's answer, and that answer
+      // is what used to clear this flag on its way out — leaving the create form skeletonized
+      // forever if it never arrived. Every state this handler sets belongs to THIS opening.
+      setLoadingForm(false);
       const initial = emptyForm();
       setForm(initial);
       baselineRef.current = JSON.stringify(initial);
@@ -1284,7 +1180,10 @@ export function ToolEditModal({
     // The test dialog belongs to the tool session that opened it, so closing the editor takes it
     // with it — otherwise it lingers describing a definition that is no longer on screen
     // (`docs/modals.md`, "parent close invalidates nested state").
-    return () => testModal.close();
+    return () => {
+      sessionRef.current = null;
+      testModal.close();
+    };
   });
 
   // NAMED rather than inline, and the reason is a fence: the toast scanner
@@ -1317,6 +1216,10 @@ export function ToolEditModal({
   }
 
   async function save() {
+    // The opening this save belongs to. A slow save can still be dismissed (Esc, outside, X — only
+    // Cancel is disabled while saving), and the continuation below would then close the dialog the
+    // operator reopened and write this tool's state into it (docs/modals.md).
+    const session = sessionRef.current;
     setFormError(null);
     const payload = payloadOf(form);
     if (payload === null) {
@@ -1332,7 +1235,13 @@ export function ToolEditModal({
         ? await api.api.v1.tools({ id: editId }).patch(payload)
         : await api.api.v1.tools.post(payload);
       if (err || !data) {
-        setFormError(held(err));
+        if (sessionRef.current === session) setFormError(held(err));
+        return;
+      }
+      // Dismissed and reopened while this was out: the row was written, and it is the CALLER's list
+      // that has to hear about it, not the dialog now on screen.
+      if (sessionRef.current !== session) {
+        onSaved?.({ id: data.tool.id, name: data.tool.name }, !editId);
         return;
       }
       refusal.clear();
@@ -1340,7 +1249,9 @@ export function ToolEditModal({
       modal.close();
       onSaved?.({ id: data.tool.id, name: data.tool.name }, !editId);
     } catch (e) {
-      setFormError(held(e));
+      // Same rule as the branch above: a transport failure of a save whose dialog is gone has
+      // nowhere to land, and would mark the form the operator has open now.
+      if (sessionRef.current === session) setFormError(held(e));
     } finally {
       setSaving(false);
     }
@@ -2468,187 +2379,6 @@ export function ToolEditModal({
         }}
       />
     </>
-  );
-}
-
-// Editor for an enum field's allowed values (chips). Empty list ⇒ the runtime treats it as a free
-// string (z.enum requires at least one value).
-function EnumValuesEditor({
-  values,
-  onChange,
-}: {
-  values: string[];
-  onChange: (values: string[]) => void;
-}) {
-  const { t } = useTranslation();
-  const [draft, setDraft] = useState("");
-  const add = () => {
-    const v = draft.trim();
-    if (v && !values.includes(v)) onChange([...values, v]);
-    setDraft("");
-  };
-  return (
-    <div className="flex flex-col gap-1.5">
-      <div className="flex flex-wrap gap-1.5">
-        {values.map((v) => (
-          <span
-            key={v}
-            className="inline-flex items-center gap-1 rounded-md bg-bg-tertiary px-2 py-0.5 text-text-secondary text-xs"
-          >
-            <code className="font-mono">{v}</code>
-            <button
-              type="button"
-              onClick={() => onChange(values.filter((x) => x !== v))}
-              aria-label={t("common.remove", "Remove")}
-              className="text-text-muted hover:text-error"
-            >
-              <Trash2 className="h-3 w-3" aria-hidden="true" />
-            </button>
-          </span>
-        ))}
-      </div>
-      <div className="flex items-center gap-1.5">
-        <Input
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              add();
-            }
-          }}
-          placeholder={t("tools.enumValuePlaceholder", "value")}
-          className="min-w-0 flex-1"
-        />
-        <Button type="button" variant="secondary" size="sm" onClick={add}>
-          {t("tools.addEnumValue", "Add value")}
-        </Button>
-      </div>
-    </div>
-  );
-}
-
-// The consolidated "AI fields" panel: one row per declared input the model fills in. Name + type
-// (+ enum values / array item type) + description + required. This is the single editing surface for
-// the model-facing contract; placement (URL/query/headers/body) only references {{name}}.
-function AiFieldsPanel({
-  value,
-  onChange,
-}: {
-  value: AiFieldRow[];
-  onChange: (rows: AiFieldRow[]) => void;
-}) {
-  const { t } = useTranslation();
-  const update = (i: number, patch: Partial<AiFieldRow>) =>
-    onChange(value.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
-  const typeLabels = fieldTypeLabels(t);
-  return (
-    <div className="flex flex-col gap-2">
-      {value.length === 0 && (
-        <p className="text-text-muted text-xs">
-          {t("tools.noAiFields", "No AI fields yet.")}
-        </p>
-      )}
-      {value.map((row, i) => (
-        <div
-          key={row._id}
-          className="flex flex-col gap-2 rounded-md border border-border p-2"
-        >
-          <div className="flex items-center gap-2">
-            <Input
-              value={row.name}
-              onChange={(e) => update(i, { name: e.target.value })}
-              placeholder={t("tools.aiFieldName", "field_name")}
-              className="min-w-0 flex-1"
-            />
-            <Select
-              value={row.type}
-              onChange={(e) =>
-                update(i, { type: e.target.value as AiFieldType })
-              }
-              className="w-36 shrink-0"
-            >
-              {AI_FIELD_TYPES.map((ty) => (
-                <option key={ty} value={ty}>
-                  {typeLabels[ty]}
-                </option>
-              ))}
-            </Select>
-            <button
-              type="button"
-              onClick={() => onChange(value.filter((_, idx) => idx !== i))}
-              aria-label={t("common.remove", "Remove")}
-              className="shrink-0 rounded p-1.5 text-text-muted hover:text-error"
-            >
-              <Trash2 className="h-4 w-4" aria-hidden="true" />
-            </button>
-          </div>
-          {row.type === "enum" && (
-            <EnumValuesEditor
-              values={row.enumValues}
-              onChange={(enumValues) => update(i, { enumValues })}
-            />
-          )}
-          {row.type === "array" && (
-            <div className="flex items-center gap-2 text-text-secondary text-xs">
-              <span>{t("tools.arrayItemType", "Item type")}</span>
-              <Select
-                aria-label={t("tools.arrayItemType", "Item type")}
-                value={row.itemType}
-                onChange={(e) =>
-                  update(i, { itemType: e.target.value as ScalarFieldType })
-                }
-                className="w-36"
-              >
-                {SCALAR_FIELD_TYPES.map((ty) => (
-                  <option key={ty} value={ty}>
-                    {typeLabels[ty]}
-                  </option>
-                ))}
-              </Select>
-            </div>
-          )}
-          <Input
-            value={row.description}
-            onChange={(e) => update(i, { description: e.target.value })}
-            placeholder={t(
-              "tools.aiFieldDesc",
-              "What the AI should put here, e.g. 'the order number the customer gave'",
-            )}
-          />
-          <label className="flex w-fit items-center gap-2 text-text-secondary text-xs">
-            <input
-              type="checkbox"
-              checked={row.required}
-              onChange={(e) => update(i, { required: e.target.checked })}
-            />
-            {t("tools.aiFieldRequired", "Required")}
-          </label>
-        </div>
-      ))}
-      <Button
-        type="button"
-        variant="secondary"
-        size="sm"
-        onClick={() =>
-          onChange([
-            ...value,
-            {
-              _id: rid(),
-              name: "",
-              type: "string",
-              required: false,
-              description: "",
-              enumValues: [],
-              itemType: "string",
-            },
-          ])
-        }
-      >
-        <Plus className="h-4 w-4" aria-hidden="true" />
-        {t("tools.addAiField", "Add field")}
-      </Button>
-    </div>
   );
 }
 

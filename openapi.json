@@ -8303,7 +8303,8 @@
                             "HTTP",
                             "MCP",
                             "INTEGRATION",
-                            "DOCUMENT"
+                            "DOCUMENT",
+                            "CODE"
                           ]
                         },
                         "toolDefinitionId": {
@@ -8341,6 +8342,17 @@
                         },
                         "documentTemplateId": {
                           "description": "Document template id (BigInt string) for DOCUMENT grants, or null.",
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "codeToolDefinitionId": {
+                          "description": "Code tool id (BigInt string) for CODE grants, or null.",
                           "anyOf": [
                             {
                               "type": "string"
@@ -8397,7 +8409,8 @@
                             "HTTP",
                             "MCP",
                             "INTEGRATION",
-                            "DOCUMENT"
+                            "DOCUMENT",
+                            "CODE"
                           ]
                         },
                         "toolDefinitionId": {
@@ -8435,6 +8448,17 @@
                         },
                         "documentTemplateId": {
                           "description": "Document template id (BigInt string) for DOCUMENT grants, or null.",
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "codeToolDefinitionId": {
+                          "description": "Code tool id (BigInt string) for CODE grants, or null.",
                           "anyOf": [
                             {
                               "type": "string"
@@ -8491,7 +8515,8 @@
                             "HTTP",
                             "MCP",
                             "INTEGRATION",
-                            "DOCUMENT"
+                            "DOCUMENT",
+                            "CODE"
                           ]
                         },
                         "toolDefinitionId": {
@@ -8529,6 +8554,17 @@
                         },
                         "documentTemplateId": {
                           "description": "Document template id (BigInt string) for DOCUMENT grants, or null.",
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "codeToolDefinitionId": {
+                          "description": "Code tool id (BigInt string) for CODE grants, or null.",
                           "anyOf": [
                             {
                               "type": "string"
@@ -12330,11 +12366,7 @@
                     }
                   },
                   "inputSchema": {
-                    "description": "Input fields the agent supplies, as a compact map: {\"field\": {\"type\": \"string\"|\"integer\"|\"number\"|\"boolean\"|\"enum\"|\"array\"|\"object\", \"required\"?, \"description\"?, \"enumValues\"?, \"itemType\"?}}. Standard JSON Schema ({\"properties\", \"required\"}) is accepted and converted to this shape on write.",
-                    "type": "object",
-                    "patternProperties": {
-                      "^(.*)$": {}
-                    }
+                    "description": "Input fields the agent supplies, as a compact map: {\"field\": {\"type\": \"string\"|\"integer\"|\"number\"|\"boolean\"|\"enum\"|\"array\"|\"object\", \"required\"?, \"description\"?, \"enumValues\"?, \"itemType\"?}}. Standard JSON Schema ({\"properties\", \"required\"}) is accepted and converted to this shape on write."
                   },
                   "outputSchema": {
                     "description": "How this tool's response should read by the time it reaches the model: {\"mode\": \"template\", \"template\": \"**{{razao_social}}** — {{municipio}}\nStatus: {{situacao}}\"}. A token is a dot-separated path into the response body, with a number for a list position (data.items.0.name); a path that does not resolve renders \"(not returned)\" and is reported on the tool stage. A list of unknown length renders through a block: {{#each items}}- {{name}}\n{{/each}} repeats its content per item, paths inside it are relative to the item, {{.}} is the item itself, blocks do not nest, and at most 50 items render, fewer when they would not fit the clip, with the rest counted. Rendered before the response is clipped, so a field past the clip is reachable. Omitted (or any other shape) hands the model the raw body, clipped, which is the old behaviour.",
@@ -12478,11 +12510,7 @@
                     }
                   },
                   "inputSchema": {
-                    "description": "Input fields the agent supplies, as a compact map: {\"field\": {\"type\": \"string\"|\"integer\"|\"number\"|\"boolean\"|\"enum\"|\"array\"|\"object\", \"required\"?, \"description\"?, \"enumValues\"?, \"itemType\"?}}. Standard JSON Schema ({\"properties\", \"required\"}) is accepted and converted to this shape on write.",
-                    "type": "object",
-                    "patternProperties": {
-                      "^(.*)$": {}
-                    }
+                    "description": "Input fields the agent supplies, as a compact map: {\"field\": {\"type\": \"string\"|\"integer\"|\"number\"|\"boolean\"|\"enum\"|\"array\"|\"object\", \"required\"?, \"description\"?, \"enumValues\"?, \"itemType\"?}}. Standard JSON Schema ({\"properties\", \"required\"}) is accepted and converted to this shape on write."
                   },
                   "outputSchema": {
                     "description": "How this tool's response should read by the time it reaches the model: {\"mode\": \"template\", \"template\": \"**{{razao_social}}** — {{municipio}}\nStatus: {{situacao}}\"}. A token is a dot-separated path into the response body, with a number for a list position (data.items.0.name); a path that does not resolve renders \"(not returned)\" and is reported on the tool stage. A list of unknown length renders through a block: {{#each items}}- {{name}}\n{{/each}} repeats its content per item, paths inside it are relative to the item, {{.}} is the item itself, blocks do not nest, and at most 50 items render, fewer when they would not fit the clip, with the rest counted. Rendered before the response is clipped, so a field past the clip is reachable. Omitted (or any other shape) hands the model the raw body, clipped, which is the old behaviour.",
@@ -12626,11 +12654,7 @@
                     }
                   },
                   "inputSchema": {
-                    "description": "Input fields the agent supplies, as a compact map: {\"field\": {\"type\": \"string\"|\"integer\"|\"number\"|\"boolean\"|\"enum\"|\"array\"|\"object\", \"required\"?, \"description\"?, \"enumValues\"?, \"itemType\"?}}. Standard JSON Schema ({\"properties\", \"required\"}) is accepted and converted to this shape on write.",
-                    "type": "object",
-                    "patternProperties": {
-                      "^(.*)$": {}
-                    }
+                    "description": "Input fields the agent supplies, as a compact map: {\"field\": {\"type\": \"string\"|\"integer\"|\"number\"|\"boolean\"|\"enum\"|\"array\"|\"object\", \"required\"?, \"description\"?, \"enumValues\"?, \"itemType\"?}}. Standard JSON Schema ({\"properties\", \"required\"}) is accepted and converted to this shape on write."
                   },
                   "outputSchema": {
                     "description": "How this tool's response should read by the time it reaches the model: {\"mode\": \"template\", \"template\": \"**{{razao_social}}** — {{municipio}}\nStatus: {{situacao}}\"}. A token is a dot-separated path into the response body, with a number for a list position (data.items.0.name); a path that does not resolve renders \"(not returned)\" and is reported on the tool stage. A list of unknown length renders through a block: {{#each items}}- {{name}}\n{{/each}} repeats its content per item, paths inside it are relative to the item, {{.}} is the item itself, blocks do not nest, and at most 50 items render, fewer when they would not fit the clip, with the rest counted. Rendered before the response is clipped, so a field past the clip is reachable. Omitted (or any other shape) hands the model the raw body, clipped, which is the old behaviour.",
@@ -13091,11 +13115,7 @@
                     }
                   },
                   "inputSchema": {
-                    "description": "Input fields the agent supplies, as a compact map: {\"field\": {\"type\": \"string\"|\"integer\"|\"number\"|\"boolean\"|\"enum\"|\"array\"|\"object\", \"required\"?, \"description\"?, \"enumValues\"?, \"itemType\"?}}. Standard JSON Schema ({\"properties\", \"required\"}) is accepted and converted to this shape on write.",
-                    "type": "object",
-                    "patternProperties": {
-                      "^(.*)$": {}
-                    }
+                    "description": "Input fields the agent supplies, as a compact map: {\"field\": {\"type\": \"string\"|\"integer\"|\"number\"|\"boolean\"|\"enum\"|\"array\"|\"object\", \"required\"?, \"description\"?, \"enumValues\"?, \"itemType\"?}}. Standard JSON Schema ({\"properties\", \"required\"}) is accepted and converted to this shape on write."
                   },
                   "outputSchema": {
                     "description": "How this tool's response should read by the time it reaches the model: {\"mode\": \"template\", \"template\": \"**{{razao_social}}** — {{municipio}}\nStatus: {{situacao}}\"}. A token is a dot-separated path into the response body, with a number for a list position (data.items.0.name); a path that does not resolve renders \"(not returned)\" and is reported on the tool stage. A list of unknown length renders through a block: {{#each items}}- {{name}}\n{{/each}} repeats its content per item, paths inside it are relative to the item, {{.}} is the item itself, blocks do not nest, and at most 50 items render, fewer when they would not fit the clip, with the rest counted. Rendered before the response is clipped, so a field past the clip is reachable. Omitted (or any other shape) hands the model the raw body, clipped, which is the old behaviour.",
@@ -13233,11 +13253,7 @@
                     }
                   },
                   "inputSchema": {
-                    "description": "Input fields the agent supplies, as a compact map: {\"field\": {\"type\": \"string\"|\"integer\"|\"number\"|\"boolean\"|\"enum\"|\"array\"|\"object\", \"required\"?, \"description\"?, \"enumValues\"?, \"itemType\"?}}. Standard JSON Schema ({\"properties\", \"required\"}) is accepted and converted to this shape on write.",
-                    "type": "object",
-                    "patternProperties": {
-                      "^(.*)$": {}
-                    }
+                    "description": "Input fields the agent supplies, as a compact map: {\"field\": {\"type\": \"string\"|\"integer\"|\"number\"|\"boolean\"|\"enum\"|\"array\"|\"object\", \"required\"?, \"description\"?, \"enumValues\"?, \"itemType\"?}}. Standard JSON Schema ({\"properties\", \"required\"}) is accepted and converted to this shape on write."
                   },
                   "outputSchema": {
                     "description": "How this tool's response should read by the time it reaches the model: {\"mode\": \"template\", \"template\": \"**{{razao_social}}** — {{municipio}}\nStatus: {{situacao}}\"}. A token is a dot-separated path into the response body, with a number for a list position (data.items.0.name); a path that does not resolve renders \"(not returned)\" and is reported on the tool stage. A list of unknown length renders through a block: {{#each items}}- {{name}}\n{{/each}} repeats its content per item, paths inside it are relative to the item, {{.}} is the item itself, blocks do not nest, and at most 50 items render, fewer when they would not fit the clip, with the rest counted. Rendered before the response is clipped, so a field past the clip is reachable. Omitted (or any other shape) hands the model the raw body, clipped, which is the old behaviour.",
@@ -13375,11 +13391,7 @@
                     }
                   },
                   "inputSchema": {
-                    "description": "Input fields the agent supplies, as a compact map: {\"field\": {\"type\": \"string\"|\"integer\"|\"number\"|\"boolean\"|\"enum\"|\"array\"|\"object\", \"required\"?, \"description\"?, \"enumValues\"?, \"itemType\"?}}. Standard JSON Schema ({\"properties\", \"required\"}) is accepted and converted to this shape on write.",
-                    "type": "object",
-                    "patternProperties": {
-                      "^(.*)$": {}
-                    }
+                    "description": "Input fields the agent supplies, as a compact map: {\"field\": {\"type\": \"string\"|\"integer\"|\"number\"|\"boolean\"|\"enum\"|\"array\"|\"object\", \"required\"?, \"description\"?, \"enumValues\"?, \"itemType\"?}}. Standard JSON Schema ({\"properties\", \"required\"}) is accepted and converted to this shape on write."
                   },
                   "outputSchema": {
                     "description": "How this tool's response should read by the time it reaches the model: {\"mode\": \"template\", \"template\": \"**{{razao_social}}** — {{municipio}}\nStatus: {{situacao}}\"}. A token is a dot-separated path into the response body, with a number for a list position (data.items.0.name); a path that does not resolve renders \"(not returned)\" and is reported on the tool stage. A list of unknown length renders through a block: {{#each items}}- {{name}}\n{{/each}} repeats its content per item, paths inside it are relative to the item, {{.}} is the item itself, blocks do not nest, and at most 50 items render, fewer when they would not fit the clip, with the rest counted. Rendered before the response is clipped, so a field past the clip is reachable. Omitted (or any other shape) hands the model the raw body, clipped, which is the old behaviour.",
@@ -13891,12 +13903,7 @@
                           "^(.*)$": {}
                         }
                       },
-                      "inputSchema": {
-                        "type": "object",
-                        "patternProperties": {
-                          "^(.*)$": {}
-                        }
-                      },
+                      "inputSchema": {},
                       "query": {
                         "type": "object",
                         "patternProperties": {
@@ -13987,12 +13994,7 @@
                           "^(.*)$": {}
                         }
                       },
-                      "inputSchema": {
-                        "type": "object",
-                        "patternProperties": {
-                          "^(.*)$": {}
-                        }
-                      },
+                      "inputSchema": {},
                       "query": {
                         "type": "object",
                         "patternProperties": {
@@ -14083,12 +14085,7 @@
                           "^(.*)$": {}
                         }
                       },
-                      "inputSchema": {
-                        "type": "object",
-                        "patternProperties": {
-                          "^(.*)$": {}
-                        }
-                      },
+                      "inputSchema": {},
                       "query": {
                         "type": "object",
                         "patternProperties": {
@@ -14303,6 +14300,1266 @@
           }
         },
         "operationId": "postV1ToolsTest",
+        "parameters": [
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ]
+      }
+    },
+    "/v1/code-tools": {
+      "get": {
+        "tags": [
+          "Resources"
+        ],
+        "summary": "List code tools",
+        "description": "List all operator-authored code tools for the current tenant.",
+        "responses": {
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getV1Code-tools",
+        "parameters": [
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "Resources"
+        ],
+        "summary": "Create code tool",
+        "description": "Create an operator-authored code tool for the current tenant. The response carries `warnings`: Static syntax warnings for the saved body (a syntax error with its line and column, or a body with no `return`). Advisory: the tool is saved either way and fails at call time if the body does not parse.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "name",
+                  "label",
+                  "description",
+                  "code"
+                ],
+                "properties": {
+                  "inputSchema": {
+                    "description": "The arguments the agent supplies, as the compact map an HTTP tool uses: {\"field\": {\"type\": \"string\"|\"integer\"|\"number\"|\"boolean\"|\"enum\"|\"array\"|\"object\", \"required\"?, \"description\"?, \"enumValues\"?, \"itemType\"?}}. Standard JSON Schema ({\"properties\", \"required\"}) is accepted and converted to this shape on write. The body receives them as `input`."
+                  },
+                  "enabled": {
+                    "description": "Whether the tool is available to agents.",
+                    "type": "boolean"
+                  },
+                  "name": {
+                    "description": "Identifier the agent calls; the console derives it from the label. Shares one namespace with HTTP tools and the built-in tools.",
+                    "type": "string"
+                  },
+                  "label": {
+                    "description": "Human-friendly display name; the identifier (name) is derived from it.",
+                    "type": "string"
+                  },
+                  "description": {
+                    "description": "What the tool answers and when to call it, read by the agent to decide. Required on create.",
+                    "type": "string"
+                  },
+                  "code": {
+                    "description": "The body of `function (input, context) { … }`, plain JavaScript (ES2023): `input` holds the arguments, `context` the conversation variables (conversation_id, message_id, contact_id, contact_name, contact_email, contact_phone, inbox_id, inbox_name, company_name, agent_name, conversationAttributes, contactAttributes), and the result is what the body `return`s (rendered as JSON for the agent; console.log output is returned with it). Available inside: TIMEZONE, NOW_LOCAL, and Date in the agent's zone. No network, no imports, no async. Limits: 1000 ms of CPU, 32 MB. A `throw` or a limit is an integration failure (alerted); a business outcome is a returned value. Code that does not parse is saved and reported in `warnings`; it fails at call time.",
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "name",
+                  "label",
+                  "description",
+                  "code"
+                ],
+                "properties": {
+                  "inputSchema": {
+                    "description": "The arguments the agent supplies, as the compact map an HTTP tool uses: {\"field\": {\"type\": \"string\"|\"integer\"|\"number\"|\"boolean\"|\"enum\"|\"array\"|\"object\", \"required\"?, \"description\"?, \"enumValues\"?, \"itemType\"?}}. Standard JSON Schema ({\"properties\", \"required\"}) is accepted and converted to this shape on write. The body receives them as `input`."
+                  },
+                  "enabled": {
+                    "description": "Whether the tool is available to agents.",
+                    "type": "boolean"
+                  },
+                  "name": {
+                    "description": "Identifier the agent calls; the console derives it from the label. Shares one namespace with HTTP tools and the built-in tools.",
+                    "type": "string"
+                  },
+                  "label": {
+                    "description": "Human-friendly display name; the identifier (name) is derived from it.",
+                    "type": "string"
+                  },
+                  "description": {
+                    "description": "What the tool answers and when to call it, read by the agent to decide. Required on create.",
+                    "type": "string"
+                  },
+                  "code": {
+                    "description": "The body of `function (input, context) { … }`, plain JavaScript (ES2023): `input` holds the arguments, `context` the conversation variables (conversation_id, message_id, contact_id, contact_name, contact_email, contact_phone, inbox_id, inbox_name, company_name, agent_name, conversationAttributes, contactAttributes), and the result is what the body `return`s (rendered as JSON for the agent; console.log output is returned with it). Available inside: TIMEZONE, NOW_LOCAL, and Date in the agent's zone. No network, no imports, no async. Limits: 1000 ms of CPU, 32 MB. A `throw` or a limit is an integration failure (alerted); a business outcome is a returned value. Code that does not parse is saved and reported in `warnings`; it fails at call time.",
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "name",
+                  "label",
+                  "description",
+                  "code"
+                ],
+                "properties": {
+                  "inputSchema": {
+                    "description": "The arguments the agent supplies, as the compact map an HTTP tool uses: {\"field\": {\"type\": \"string\"|\"integer\"|\"number\"|\"boolean\"|\"enum\"|\"array\"|\"object\", \"required\"?, \"description\"?, \"enumValues\"?, \"itemType\"?}}. Standard JSON Schema ({\"properties\", \"required\"}) is accepted and converted to this shape on write. The body receives them as `input`."
+                  },
+                  "enabled": {
+                    "description": "Whether the tool is available to agents.",
+                    "type": "boolean"
+                  },
+                  "name": {
+                    "description": "Identifier the agent calls; the console derives it from the label. Shares one namespace with HTTP tools and the built-in tools.",
+                    "type": "string"
+                  },
+                  "label": {
+                    "description": "Human-friendly display name; the identifier (name) is derived from it.",
+                    "type": "string"
+                  },
+                  "description": {
+                    "description": "What the tool answers and when to call it, read by the agent to decide. Required on create.",
+                    "type": "string"
+                  },
+                  "code": {
+                    "description": "The body of `function (input, context) { … }`, plain JavaScript (ES2023): `input` holds the arguments, `context` the conversation variables (conversation_id, message_id, contact_id, contact_name, contact_email, contact_phone, inbox_id, inbox_name, company_name, agent_name, conversationAttributes, contactAttributes), and the result is what the body `return`s (rendered as JSON for the agent; console.log output is returned with it). Available inside: TIMEZONE, NOW_LOCAL, and Date in the agent's zone. No network, no imports, no async. Limits: 1000 ms of CPU, 32 MB. A `throw` or a limit is an integration failure (alerted); a business outcome is a returned value. Code that does not parse is saved and reported in `warnings`; it fails at call time.",
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict — a duplicate or a state conflict.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Conflict — a duplicate or a state conflict.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postV1Code-tools",
+        "parameters": [
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ]
+      }
+    },
+    "/v1/code-tools/{id}": {
+      "get": {
+        "tags": [
+          "Resources"
+        ],
+        "summary": "Get code tool",
+        "description": "Fetch a single code tool by id.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "description": "Code tool id (BigInt as a string).",
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getV1Code-toolsById"
+      },
+      "patch": {
+        "tags": [
+          "Resources"
+        ],
+        "summary": "Update code tool",
+        "description": "Update fields of a code tool. When `code` is in the patch the response carries `warnings`: Static syntax warnings for the saved body (a syntax error with its line and column, or a body with no `return`). Advisory: the tool is saved either way and fails at call time if the body does not parse.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "description": "Code tool id (BigInt as a string).",
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "description": "Identifier the agent calls; the console derives it from the label. Shares one namespace with HTTP tools and the built-in tools.",
+                    "type": "string"
+                  },
+                  "label": {
+                    "description": "Human-friendly display name; the identifier (name) is derived from it.",
+                    "type": "string"
+                  },
+                  "description": {
+                    "description": "What the tool answers and when to call it, read by the agent to decide. Required on create.",
+                    "type": "string"
+                  },
+                  "inputSchema": {
+                    "description": "The arguments the agent supplies, as the compact map an HTTP tool uses: {\"field\": {\"type\": \"string\"|\"integer\"|\"number\"|\"boolean\"|\"enum\"|\"array\"|\"object\", \"required\"?, \"description\"?, \"enumValues\"?, \"itemType\"?}}. Standard JSON Schema ({\"properties\", \"required\"}) is accepted and converted to this shape on write. The body receives them as `input`."
+                  },
+                  "code": {
+                    "description": "The body of `function (input, context) { … }`, plain JavaScript (ES2023): `input` holds the arguments, `context` the conversation variables (conversation_id, message_id, contact_id, contact_name, contact_email, contact_phone, inbox_id, inbox_name, company_name, agent_name, conversationAttributes, contactAttributes), and the result is what the body `return`s (rendered as JSON for the agent; console.log output is returned with it). Available inside: TIMEZONE, NOW_LOCAL, and Date in the agent's zone. No network, no imports, no async. Limits: 1000 ms of CPU, 32 MB. A `throw` or a limit is an integration failure (alerted); a business outcome is a returned value. Code that does not parse is saved and reported in `warnings`; it fails at call time.",
+                    "type": "string"
+                  },
+                  "enabled": {
+                    "description": "Whether the tool is available to agents.",
+                    "type": "boolean"
+                  }
+                }
+              }
+            },
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "description": "Identifier the agent calls; the console derives it from the label. Shares one namespace with HTTP tools and the built-in tools.",
+                    "type": "string"
+                  },
+                  "label": {
+                    "description": "Human-friendly display name; the identifier (name) is derived from it.",
+                    "type": "string"
+                  },
+                  "description": {
+                    "description": "What the tool answers and when to call it, read by the agent to decide. Required on create.",
+                    "type": "string"
+                  },
+                  "inputSchema": {
+                    "description": "The arguments the agent supplies, as the compact map an HTTP tool uses: {\"field\": {\"type\": \"string\"|\"integer\"|\"number\"|\"boolean\"|\"enum\"|\"array\"|\"object\", \"required\"?, \"description\"?, \"enumValues\"?, \"itemType\"?}}. Standard JSON Schema ({\"properties\", \"required\"}) is accepted and converted to this shape on write. The body receives them as `input`."
+                  },
+                  "code": {
+                    "description": "The body of `function (input, context) { … }`, plain JavaScript (ES2023): `input` holds the arguments, `context` the conversation variables (conversation_id, message_id, contact_id, contact_name, contact_email, contact_phone, inbox_id, inbox_name, company_name, agent_name, conversationAttributes, contactAttributes), and the result is what the body `return`s (rendered as JSON for the agent; console.log output is returned with it). Available inside: TIMEZONE, NOW_LOCAL, and Date in the agent's zone. No network, no imports, no async. Limits: 1000 ms of CPU, 32 MB. A `throw` or a limit is an integration failure (alerted); a business outcome is a returned value. Code that does not parse is saved and reported in `warnings`; it fails at call time.",
+                    "type": "string"
+                  },
+                  "enabled": {
+                    "description": "Whether the tool is available to agents.",
+                    "type": "boolean"
+                  }
+                }
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "description": "Identifier the agent calls; the console derives it from the label. Shares one namespace with HTTP tools and the built-in tools.",
+                    "type": "string"
+                  },
+                  "label": {
+                    "description": "Human-friendly display name; the identifier (name) is derived from it.",
+                    "type": "string"
+                  },
+                  "description": {
+                    "description": "What the tool answers and when to call it, read by the agent to decide. Required on create.",
+                    "type": "string"
+                  },
+                  "inputSchema": {
+                    "description": "The arguments the agent supplies, as the compact map an HTTP tool uses: {\"field\": {\"type\": \"string\"|\"integer\"|\"number\"|\"boolean\"|\"enum\"|\"array\"|\"object\", \"required\"?, \"description\"?, \"enumValues\"?, \"itemType\"?}}. Standard JSON Schema ({\"properties\", \"required\"}) is accepted and converted to this shape on write. The body receives them as `input`."
+                  },
+                  "code": {
+                    "description": "The body of `function (input, context) { … }`, plain JavaScript (ES2023): `input` holds the arguments, `context` the conversation variables (conversation_id, message_id, contact_id, contact_name, contact_email, contact_phone, inbox_id, inbox_name, company_name, agent_name, conversationAttributes, contactAttributes), and the result is what the body `return`s (rendered as JSON for the agent; console.log output is returned with it). Available inside: TIMEZONE, NOW_LOCAL, and Date in the agent's zone. No network, no imports, no async. Limits: 1000 ms of CPU, 32 MB. A `throw` or a limit is an integration failure (alerted); a business outcome is a returned value. Code that does not parse is saved and reported in `warnings`; it fails at call time.",
+                    "type": "string"
+                  },
+                  "enabled": {
+                    "description": "Whether the tool is available to agents.",
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict — a duplicate or a state conflict.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Conflict — a duplicate or a state conflict.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "operationId": "patchV1Code-toolsById"
+      },
+      "delete": {
+        "tags": [
+          "Resources"
+        ],
+        "summary": "Delete code tool",
+        "description": "Delete a code tool.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "description": "Code tool id (BigInt as a string).",
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "operationId": "deleteV1Code-toolsById"
+      }
+    },
+    "/v1/code-tools/{id}/references": {
+      "get": {
+        "tags": [
+          "Resources"
+        ],
+        "summary": "List code tool references",
+        "description": "Returns which agents have granted this code tool, so the UI can warn before deletion.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "description": "Code tool id (BigInt as a string).",
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-tenant-id",
+            "in": "header",
+            "required": true,
+            "description": "SUPER_ADMIN tenant selector (tenant id as a string). Picks the target tenant for this request; ignored for non-super-admin principals, who are pinned to their own tenant. Not truly required — prefilled and marked required here only so Scalar sends it by default.",
+            "schema": {
+              "type": "string",
+              "default": "1"
+            },
+            "example": "1"
+          }
+        ],
+        "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getV1Code-toolsByIdReferences"
+      }
+    },
+    "/v1/code-tools/test": {
+      "post": {
+        "tags": [
+          "Resources"
+        ],
+        "summary": "Test a code tool",
+        "description": "Runs the supplied (unsaved) body once in the sandbox with the given arguments and returns the exact text the agent would receive, whether it failed, the raw outcome (value, error, limit) and the static syntax warnings. Adds no capability over saving the tool and calling it: the same sandbox, limits and clock apply.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "definition"
+                ],
+                "properties": {
+                  "definition": {
+                    "type": "object",
+                    "required": [
+                      "code"
+                    ],
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "inputSchema": {},
+                      "code": {
+                        "description": "The body of `function (input, context) { … }`.",
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "args": {
+                    "description": "Values for the declared fields, as the agent would have supplied them; validated by the same schema.",
+                    "type": "object",
+                    "patternProperties": {
+                      "^(.*)$": {}
+                    }
+                  },
+                  "context": {
+                    "description": "Values for the conversation/contact variables. Names outside the runtime's own list are ignored; the attribute bags are empty in a test.",
+                    "type": "object",
+                    "patternProperties": {
+                      "^(.*)$": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "timezone": {
+                    "description": "IANA zone for Date, TIMEZONE and NOW_LOCAL inside the body; an unknown one falls back to UTC.",
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "definition"
+                ],
+                "properties": {
+                  "definition": {
+                    "type": "object",
+                    "required": [
+                      "code"
+                    ],
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "inputSchema": {},
+                      "code": {
+                        "description": "The body of `function (input, context) { … }`.",
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "args": {
+                    "description": "Values for the declared fields, as the agent would have supplied them; validated by the same schema.",
+                    "type": "object",
+                    "patternProperties": {
+                      "^(.*)$": {}
+                    }
+                  },
+                  "context": {
+                    "description": "Values for the conversation/contact variables. Names outside the runtime's own list are ignored; the attribute bags are empty in a test.",
+                    "type": "object",
+                    "patternProperties": {
+                      "^(.*)$": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "timezone": {
+                    "description": "IANA zone for Date, TIMEZONE and NOW_LOCAL inside the body; an unknown one falls back to UTC.",
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "definition"
+                ],
+                "properties": {
+                  "definition": {
+                    "type": "object",
+                    "required": [
+                      "code"
+                    ],
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "inputSchema": {},
+                      "code": {
+                        "description": "The body of `function (input, context) { … }`.",
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "args": {
+                    "description": "Values for the declared fields, as the agent would have supplied them; validated by the same schema.",
+                    "type": "object",
+                    "patternProperties": {
+                      "^(.*)$": {}
+                    }
+                  },
+                  "context": {
+                    "description": "Values for the conversation/contact variables. Names outside the runtime's own list are ignored; the attribute bags are empty in a test.",
+                    "type": "object",
+                    "patternProperties": {
+                      "^(.*)$": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "timezone": {
+                    "description": "IANA zone for Date, TIMEZONE and NOW_LOCAL inside the body; an unknown one falls back to UTC.",
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "400": {
+            "description": "Bad request — validation failed or the input was malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Forbidden — authenticated but not allowed (role or tenant gate).",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postV1Code-toolsTest",
         "parameters": [
           {
             "name": "x-tenant-id",

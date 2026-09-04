@@ -955,7 +955,12 @@ async function patched(
     // The tool-name half of the namespace, asked on the way in and inside this transaction: a
     // rename onto a slug whose `send_<slug>` a tool already holds is the same collision a create is
     // refused for, and the update reached the row through a different door.
-    await assertToolNameFreeForSlug(db, patch.slug, undefined, true);
+    // Only when the slug MOVES: rows that already collide were legal before this rule and nothing
+    // migrates them, and a PATCH carries the unchanged slug — refusing it would lock an operator
+    // out of editing the template (the tool services carry the same note).
+    if (patch.slug !== current.slug) {
+      await assertToolNameFreeForSlug(db, patch.slug, undefined, true);
+    }
     data.slug = patch.slug;
   }
   if (patch.description !== undefined) {

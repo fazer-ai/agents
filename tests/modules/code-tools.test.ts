@@ -433,6 +433,35 @@ describe.skipIf(!dbUp)("code tools service", () => {
       appDb,
     );
     expect(patched.tool.description).toBe("outra descrição");
+    // The document side asks the same question the same way: a legacy HTTP row spelled `Send_Nota`
+    // answers to `send_nota`, which is the name a template with slug `nota` would publish.
+    const legacyHttp = await suDb.toolDefinition.create({
+      data: {
+        tenantId,
+        name: "Send_Nota",
+        label: "Send nota",
+        urlTemplate: "https://example.com/x",
+        allowedHosts: ["example.com"],
+      },
+    });
+    const starterDoc = documentStarter("quote", "pt-BR");
+    if (!starterDoc) throw new Error("no starter");
+    const onLegacy = await refusal(
+      createDocumentTemplate(
+        ctx(),
+        {
+          name: "Nota",
+          slug: "nota",
+          blocks: starterDoc.blocks,
+          fields: starterDoc.fields,
+          style: starterDoc.style,
+        } as never,
+        appDb,
+      ),
+    );
+    expect(onLegacy?.translationKey).toBe("errors.documentToolNameTaken");
+    await suDb.toolDefinition.delete({ where: { id: legacyHttp.id } });
+
     // Moving it onto another reserved name is still refused.
     const moved = await refusal(
       updateCodeTool(ctx(), legacy.id, { name: "suggest_kb_entry" }, appDb),

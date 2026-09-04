@@ -71,6 +71,7 @@ import {
   isRagToolName,
   lockToolNames,
   toolHoldingName,
+  toolsUnderModelName,
 } from "@/modules/tool-definitions/namespace";
 import { normalizeToolShapes } from "@/modules/tool-definitions/normalize";
 import { storableResponseTemplate } from "@/modules/tool-definitions/response-template";
@@ -1677,10 +1678,9 @@ async function createMissingComponents(
         tdef.name,
         taken,
         async (n) =>
-          (await db.codeToolDefinition.findFirst({
-            where: { name: n },
-            select: { id: true },
-          })) !== null ||
+          // By the MODEL-FACING name (namespace.ts): a row stored `Foo` before names were
+          // canonicalized answers to `foo`, which is the name being claimed here.
+          (await toolsUnderModelName(db, n)).codeIds.length > 0 ||
           // A document template publishes `send_<slug>` and is assembled BEFORE either tool table,
           // so a tool landing on that name is the one the assembly drops (namespace.ts). The
           // bundle's own templates count too: they are inserted after this loop, so the database
@@ -1845,10 +1845,7 @@ async function createMissingComponents(
         tdef.name,
         taken,
         async (n) =>
-          (await db.toolDefinition.findFirst({
-            where: { name: n },
-            select: { id: true },
-          })) !== null ||
+          (await toolsUnderModelName(db, n)).httpIds.length > 0 ||
           bundledDocumentNames.has(n) ||
           (await documentHoldingToolName(db, n)) !== null,
       ));

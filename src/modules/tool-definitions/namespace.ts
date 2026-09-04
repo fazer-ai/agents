@@ -42,12 +42,14 @@ export async function documentHoldingToolName(
   db: ScopedDb,
   name: string,
 ): Promise<{ name: string } | null> {
-  const slug = name.startsWith("send_") ? name.slice("send_".length) : null;
-  if (!slug) return null;
-  return db.documentTemplate.findFirst({
-    where: { slug },
-    select: { name: true },
+  const wanted = normalizeToolName(name);
+  if (!wanted.startsWith("send_")) return null;
+  // By the MODEL-FACING name on both sides: a slug is already `[a-z0-9_]`, but the tool name being
+  // checked may be any spelling a row holds, and `send_Foo` and `send_foo` are one name there.
+  const templates = await db.documentTemplate.findMany({
+    select: { name: true, slug: true },
   });
+  return templates.find((t) => documentToolName(t.slug) === wanted) ?? null;
 }
 
 // The mirror, for the write that creates a document template: an HTTP or code tool already holding
@@ -56,15 +58,16 @@ export async function toolHoldingName(
   db: ScopedDb,
   slug: string,
 ): Promise<{ name: string } | null> {
-  const name = documentToolName(slug);
+  const wanted = documentToolName(slug);
+  // Read and normalized, for the reason `toolsUnderModelName` gives: a row stored as `Send_Foo`
+  // reaches the model as `send_foo`, which is the name this slug would publish.
   const [http, code] = await Promise.all([
-    db.toolDefinition.findFirst({ where: { name }, select: { label: true } }),
-    db.codeToolDefinition.findFirst({
-      where: { name },
-      select: { label: true },
-    }),
+    db.toolDefinition.findMany({ select: { label: true, name: true } }),
+    db.codeToolDefinition.findMany({ select: { label: true, name: true } }),
   ]);
-  const holder = http ?? code;
+  const holder = [...http, ...code].find(
+    (r) => normalizeToolName(r.name) === wanted,
+  );
   return holder ? { name: holder.label } : null;
 }
 

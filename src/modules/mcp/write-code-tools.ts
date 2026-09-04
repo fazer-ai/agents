@@ -174,8 +174,17 @@ export async function codeToolUpdate(
       // asks whether the name is free, and a preview that skipped the question answered a confident
       // diff for a write that always fails. ADVISORY, like the create's, and excluding this row so
       // a tool keeping its own name is not refused for colliding with itself (#490).
-      if (built.patch.name !== undefined) {
-        await assertCodeToolNameAvailable(ctx, built.patch.name, base, id);
+      if (parsed.name !== undefined) {
+        // `parsed`, not the raw patch: the name is canonicalized on the way in, so `Calculator`
+        // becomes `calculator` — asking about the spelling the caller typed approves a write the
+        // apply then refuses as a built-in's name.
+        await assertCodeToolNameAvailable(
+          ctx,
+          parsed.name,
+          base,
+          id,
+          current.name,
+        );
       }
       // NOTE: checked only when the patch carries a body, which is when the apply checks it: a patch
       // that leaves the body alone reports `[]` from both, and the stored body's own warnings are

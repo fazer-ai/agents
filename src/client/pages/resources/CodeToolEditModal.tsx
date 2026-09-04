@@ -48,11 +48,20 @@ import {
 // the row as a WARNING, and a body that does not parse fails at call time as the operator's failure.
 // So the syntax warning never disables Save, and a half-typed body can always be saved and reopened.
 
+// The row this modal edits comes from the GET-BY-ID, not from the list: the list does not carry the
+// body (it is up to 20k characters per row and nothing browsing a list reads it), and the body is
+// exactly what this form is for. Derived from the treaty either way; never hand-mirrored
+// (docs/eden-treaty.md).
+type CodeToolData = Awaited<
+  ReturnType<ReturnType<(typeof api.api.v1)["code-tools"]>["get"]>
+>["data"];
+export type CodeTool = NonNullable<CodeToolData>["tool"];
+
+// The list's row, which is the same thing without the body: what a merged Tools list renders.
 type CodeToolsData = Awaited<
   ReturnType<(typeof api.api.v1)["code-tools"]["get"]>
 >["data"];
-// Derived from the treaty; never hand-mirrored (docs/eden-treaty.md).
-export type CodeTool = NonNullable<CodeToolsData>["tools"][number];
+export type CodeToolListed = NonNullable<CodeToolsData>["tools"][number];
 
 // A starter body that shows the contract at a glance; the operator replaces it. Empty would do (Save
 // gates on non-empty code), but the shape is the thing a first-time author most needs to see.

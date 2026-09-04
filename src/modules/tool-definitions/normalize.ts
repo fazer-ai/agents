@@ -205,6 +205,17 @@ function fieldNames(schema: unknown): string[] {
 // {{name}} ONLY when the name is a declared input field, a context variable or "secret" — an
 // unmatched {token} stays literal (it may be legitimate content, e.g. raw JSON) and is reported in
 // `warnings` as a probable typo.
+// `__proto__` cannot be a parameter name, and it has to be refused BEFORE a zod parse: `z.record`
+// builds its result by assignment, so the key hits the prototype setter and is gone by the time
+// `normalizeToolShapes` below could drop it with a warning — the field would simply vanish, and a
+// body reading `input.__proto__` would find the prototype. Only a JSON body can carry it (an object
+// literal sets the prototype instead), so this reads the RAW value a request parsed.
+export function hasReservedFieldName(rawInputSchema: unknown): boolean {
+  return (
+    isPlainObject(rawInputSchema) && Object.hasOwn(rawInputSchema, "__proto__")
+  );
+}
+
 export function normalizeToolShapes(
   patch: ToolShapePatch,
   current: ToolShapePatch = {},

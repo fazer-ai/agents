@@ -679,12 +679,17 @@ export function ToolGrantsEditor({
     emit([...nonRag, { source: "HTTP", toolDefinitionId: id }]);
   }
 
+  // The grant goes on BEFORE the refetch is awaited, and the order is the point: `selectHttp` reads
+  // the `nonRag` of the render that created this callback, so anything the operator changed while
+  // the catalog was in flight would be overwritten by that older list. Nothing here needs the
+  // refreshed catalog — the id is in hand — unlike the integration above, whose grant carries the
+  // instance's tool names and therefore waits for it.
   async function onToolSaved(
     saved: { id: string; name: string },
     isNew: boolean,
   ) {
-    await onCatalogChange();
     if (isNew) selectHttp(saved.id);
+    await onCatalogChange();
   }
 
   function toggleCode(id: string) {
@@ -713,8 +718,9 @@ export function ToolGrantsEditor({
     saved: { id: string; name: string },
     isNew: boolean,
   ) {
-    await onCatalogChange();
+    // Granted first, then refreshed — the reason is on `onToolSaved` above.
     if (isNew) selectCode(saved.id);
+    await onCatalogChange();
   }
 
   // Idempotent grant-on for a just-created MCP server (empty tool subset; the operator then discovers
@@ -734,8 +740,9 @@ export function ToolGrantsEditor({
     saved: { id: string; name: string },
     isNew: boolean,
   ) {
-    await onCatalogChange();
+    // Granted first, then refreshed — the reason is on `onToolSaved` above.
     if (isNew) selectMcp(saved.id);
+    await onCatalogChange();
   }
 
   async function onIntegrationSaved(

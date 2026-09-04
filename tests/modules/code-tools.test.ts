@@ -9,6 +9,7 @@ import {
   createCodeTool,
   deleteCodeTool,
   getCodeTool,
+  LIST_SELECT,
   listCodeTools,
   updateCodeTool,
 } from "@/modules/code-tools/service";
@@ -253,6 +254,57 @@ describe.skipIf(!dbUp)("code tools service", () => {
     );
     expect(taken?.translationKey).toBe("errors.toolNameTaken");
     await suDb.codeToolDefinition.deleteMany({ where: { tenantId } });
+  });
+
+  test("blank metadata and a reserved field name are refused where they are typed", async () => {
+    // `min(1)` counts characters, so a label of spaces used to store a row with no visible name and
+    // a description of spaces a tool with no instruction — and the description is the only thing
+    // that tells the model when to call it.
+    for (const [field, patch] of [
+      ["label", { label: "   " }],
+      ["description", { description: "  " }],
+    ] as const) {
+      const blank = await refusal(
+        createCodeTool(ctx(), { ...VALID, name: "em_branco", ...patch }, appDb),
+      );
+      expect([field, blank?.statusCode]).toEqual([field, 422]);
+    }
+    // `__proto__` has to be refused BEFORE zod: `z.record` builds its result by assignment, so the
+    // key is gone by the time anything downstream could report it, and the tool would be saved
+    // offering a parameter it never declares.
+    const reserved = await refusal(
+      createCodeTool(
+        ctx(),
+        {
+          ...VALID,
+          name: "reservado",
+          inputSchema: JSON.parse(
+            '{"__proto__":{"type":"string"},"cpf":{"type":"string"}}',
+          ),
+        },
+        appDb,
+      ),
+    );
+    expect(reserved?.statusCode).toBe(422);
+    expect(reserved?.field).toBe("inputSchema");
+    expect(await listCodeTools(ctx(), appDb)).toEqual([]);
+  });
+
+  test("the list carries every column but the body, which get returns", async () => {
+    // A body is up to 20k characters and a tenant's tools are not counted: a list that read them
+    // would be most of a megabyte of source that neither consumer uses.
+    const { tool } = await createCodeTool(ctx(), VALID, appDb);
+    // The COLUMN, not just the DTO: a projection that drops `code` on the way out would still have
+    // loaded every body from Postgres, which is the cost this is about — and the DTO cannot see the
+    // difference, so the select the query carries is asserted directly.
+    expect(LIST_SELECT.code).toBe(false);
+    const [listed] = await listCodeTools(ctx(), appDb);
+    expect(listed).toMatchObject({ name: "validar_cpf", label: "Validar CPF" });
+    expect("code" in (listed as object)).toBe(false);
+    expect((await getCodeTool(ctx(), BigInt(tool.id), appDb)).code).toBe(
+      VALID.code,
+    );
+    await deleteCodeTool(ctx(), BigInt(tool.id), appDb);
   });
 
   test("a JSON-Schema-shaped input schema is stored as the compact map the runtime reads", async () => {

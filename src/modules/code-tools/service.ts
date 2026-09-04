@@ -13,7 +13,10 @@ import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { markUndisclosed, undisclosedMoved } from "@/modules/audit/projection";
 import { auditMutation, projectionMoved } from "@/modules/audit/service";
 import { lockToolNames } from "@/modules/tool-definitions/name-lock";
-import { normalizeToolShapes } from "@/modules/tool-definitions/normalize";
+import {
+  hasReservedFieldName,
+  normalizeToolShapes,
+} from "@/modules/tool-definitions/normalize";
 import {
   type ResourceReferences,
   TOOL_LABEL_MAX,
@@ -42,6 +45,9 @@ export interface CodeToolDto {
   updatedAt: Date;
 }
 
+// The list's row: the same thing without the body (see LIST_SELECT).
+export type CodeToolListDto = Omit<CodeToolDto, "code">;
+
 export interface CodeToolWriteResult {
   tool: CodeToolDto;
   warnings: CodeSyntaxWarning[];
@@ -59,6 +65,12 @@ const SELECT = {
   updatedAt: true,
 } as const;
 
+// The list never carries the bodies. Each is up to SANDBOX_CODE_MAX_CHARS and a tenant's tools are
+// not counted, so a list of forty is most of a megabyte of source that both consumers throw away:
+// the console's list shows a name and a badge, and `code_tool_list` deletes the field after loading
+// it. Whoever wants a body asks for the row (`getCodeTool`, `code_tool_get`).
+export const LIST_SELECT = { ...SELECT, code: false } as const;
+
 interface Row {
   id: bigint;
   name: string;
@@ -69,6 +81,19 @@ interface Row {
   enabled: boolean;
   createdAt: Date;
   updatedAt: Date;
+}
+
+function toListDto(r: Omit<Row, "code">): CodeToolListDto {
+  return {
+    id: String(r.id),
+    name: r.name,
+    label: r.label,
+    description: r.description,
+    inputSchema: (r.inputSchema ?? {}) as Record<string, unknown>,
+    enabled: r.enabled,
+    createdAt: r.createdAt,
+    updatedAt: r.updatedAt,
+  };
 }
 
 function toDto(r: Row): CodeToolDto {
@@ -114,10 +139,15 @@ const UNDISCLOSED = ["description", "inputSchema", "code"] as const;
 export const codeToolCreateSchema = z
   .object({
     name: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
-    label: z.string().min(1).max(TOOL_LABEL_MAX),
+    // `.trim()` before the minimum, on both: `min(1)` counts characters, and a label of spaces is a
+    // row whose name in the console is blank while a description of spaces is worse — it is the
+    // only thing that tells the model when to call the tool, and it would be REQUIRED and empty.
+    label: z.string().trim().min(1).max(TOOL_LABEL_MAX),
     // Required, unlike an HTTP tool's: it is the only thing that tells the model when to call.
-    description: z.string().min(1).max(2000),
+    description: z.string().trim().min(1).max(2000),
     inputSchema: z.record(z.string(), z.unknown()).optional(),
+    // NOT trimmed: leading whitespace is a body's own indentation, and the check is only that
+    // something is there.
     code: z.string().min(1).max(SANDBOX_CODE_MAX_CHARS),
     enabled: z.boolean().optional(),
   })
@@ -130,14 +160,14 @@ export type CodeToolUpdate = z.infer<typeof codeToolUpdateSchema>;
 export async function listCodeTools(
   ctx: TenantContext,
   base: PrismaClient = basePrisma,
-): Promise<CodeToolDto[]> {
+): Promise<CodeToolListDto[]> {
   const rows = await runScopedOn(base, ctx, (db) =>
     db.codeToolDefinition.findMany({
-      select: SELECT,
+      select: LIST_SELECT,
       orderBy: { name: "asc" },
     }),
   );
-  return rows.map(toDto);
+  return rows.map(toListDto);
 }
 
 export async function getCodeTool(
@@ -194,6 +224,7 @@ function canonicalSchema(raw: unknown): Prisma.InputJsonValue {
 // the body's size — before any database is involved. Split out so the MCP preview can ask the same
 // question the apply asks (#490).
 export function assertCodeToolCreatable(input: CodeToolCreate): CodeToolCreate {
+  assertNoReservedField(input?.inputSchema);
   return parseInput(codeToolCreateSchema, input);
 }
 
@@ -202,7 +233,26 @@ export function assertCodeToolCreatable(input: CodeToolCreate): CodeToolCreate {
 export function assertCodeToolPatchValid(
   patch: CodeToolUpdate,
 ): CodeToolUpdate {
+  assertNoReservedField(patch?.inputSchema);
   return parseInput(codeToolUpdateSchema, patch);
+}
+
+// Refused where it is typed, and refused rather than dropped: the operator asked for a parameter,
+// and a schema stored without it would offer the model a tool whose declared argument is missing.
+// The import path, which cannot refuse a whole bundle over one field, drops it with a warning
+// instead (normalizeToolShapes).
+function assertNoReservedField(rawInputSchema: unknown): void {
+  if (!hasReservedFieldName(rawInputSchema)) return;
+  // BOTH arguments: the bag fills `{{field}}` in the sentence, the last one is what the console keys
+  // on to mark the input (parse-input.ts does the same). The bag has to FOLLOW the key with nothing
+  // in between, or the sweep in tests/api/error-catalog.test.ts cannot read it.
+  throw new AppError(
+    "input schema field `__proto__` is reserved by JavaScript and cannot be a parameter name",
+    422,
+    "errors.invalidRequestValue",
+    { field: "inputSchema" },
+    "inputSchema",
+  );
 }
 
 // The half of the verdict that has to READ, so the preview can give it too. ADVISORY, and the word

@@ -17,7 +17,7 @@ import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
 import { nativeToolMeta } from "@/client/lib/nativeTools";
 import { NATIVE_TOOL_CATEGORY, NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
-import { type CodeTool, CodeToolEditModal } from "./CodeToolEditModal";
+import { CodeToolEditModal, type CodeToolListed } from "./CodeToolEditModal";
 import { type Tool, ToolEditModal } from "./ToolEditModal";
 
 // One kind of tool, in the merged list. Both are the operator's own; the badge and the subtitle are
@@ -36,7 +36,7 @@ export function ToolsPanel() {
   const { t } = useTranslation();
   const { showToast } = useToast();
   const [httpTools, setHttpTools] = useState<Tool[]>([]);
-  const [codeTools, setCodeTools] = useState<CodeTool[]>([]);
+  const [codeTools, setCodeTools] = useState<CodeToolListed[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
 
@@ -134,7 +134,7 @@ export function ToolsPanel() {
   // The declared argument names of a code tool, for its row subtitle: the schema keys, or a note
   // when it takes none. The catalog stores the compact field map, so the keys ARE the argument
   // names the agent fills in.
-  function codeSubtitle(tool: CodeTool): ReactNode {
+  function codeSubtitle(tool: CodeToolListed): ReactNode {
     const names = Object.keys(
       (tool.inputSchema ?? {}) as Record<string, unknown>,
     );

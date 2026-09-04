@@ -57,6 +57,7 @@ export async function runCodeToolTest(
       422,
       "errors.invalidRequestValue",
       { field: "code" },
+      "code",
     );
   }
   const schema = parseToolInputSchema(def.inputSchema ?? {});
@@ -65,9 +66,13 @@ export async function runCodeToolTest(
     // The same refusal the model gets, in the same words, so the operator's test reads like the
     // agent's call would.
     const e = new ToolInputParsingException(parsed.error.message);
-    throw new AppError(e.message, 422, "errors.invalidRequestValue", {
-      field: "args",
-    });
+    throw new AppError(
+      e.message,
+      422,
+      "errors.invalidRequestValue",
+      { field: "args" },
+      "args",
+    );
   }
   const context: Record<string, string> = {};
   for (const name of CONTEXT_VAR_NAMES) {

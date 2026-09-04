@@ -209,13 +209,10 @@ export async function codeToolList(
   const ctx = readGate(principal);
   if ("ok" in ctx) return ctx;
   try {
-    const tools = await listCodeTools(ctx, base);
-    // The body is dropped from the LIST for the reason the document list drops its blocks: it is
-    // the bulk of the row (20k characters at most, each) and nobody browsing the list reads it.
-    // code_tool_get returns the whole thing.
-    return ok({
-      tools: tools.map(({ code: _code, ...rest }) => rest),
-    });
+    // The body is not in the list at all — `listCodeTools` does not read the column, for the reason
+    // the document list does not read its blocks: it is the bulk of the row (20k characters at
+    // most, each) and nobody browsing the list reads it. code_tool_get returns the whole thing.
+    return ok({ tools: await listCodeTools(ctx, base) });
   } catch (e) {
     return failOf(e);
   }

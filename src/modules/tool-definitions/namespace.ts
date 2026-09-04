@@ -1,4 +1,5 @@
 import { RAG_TOOL_NAMES } from "@/graph/tools/catalog";
+import { normalizeToolName } from "@/graph/tools/toolName";
 import type { ScopedDb } from "@/lib/tenancy";
 import { documentToolName } from "@/modules/documents/slug";
 
@@ -65,4 +66,27 @@ export async function toolHoldingName(
   ]);
   const holder = http ?? code;
   return holder ? { name: holder.label } : null;
+}
+
+// A row written before names were canonicalized (or by a path that wrote past the service) can hold
+// a spelling the model never sees: `Foo` reaches it as `foo`. So the namespace is compared on the
+// MODEL-FACING name, which means reading the tenant's names and normalizing them here rather than
+// asking the index for an exact match. A tenant has tens of tools, and this runs on a write.
+export async function toolsUnderModelName(
+  db: ScopedDb,
+  name: string,
+): Promise<{ httpIds: bigint[]; codeIds: bigint[] }> {
+  const wanted = normalizeToolName(name);
+  const [http, code] = await Promise.all([
+    db.toolDefinition.findMany({ select: { id: true, name: true } }),
+    db.codeToolDefinition.findMany({ select: { id: true, name: true } }),
+  ]);
+  return {
+    httpIds: http
+      .filter((r) => normalizeToolName(r.name) === wanted)
+      .map((r) => r.id),
+    codeIds: code
+      .filter((r) => normalizeToolName(r.name) === wanted)
+      .map((r) => r.id),
+  };
 }

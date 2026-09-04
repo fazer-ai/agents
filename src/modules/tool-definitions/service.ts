@@ -3,6 +3,7 @@ import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import { isNativeToolName } from "@/graph/tools/catalog";
 import { normalizeExpectedStatuses } from "@/graph/tools/http-status";
+import { normalizeToolName } from "@/graph/tools/toolName";
 import { AppError, ConflictError, NotFoundError } from "@/lib/errors";
 import { parseInput } from "@/lib/parse-input";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
@@ -24,6 +25,7 @@ import {
   documentHoldingToolName,
   isRagToolName,
   lockToolNames,
+  toolsUnderModelName,
 } from "./namespace";
 import { normalizeToolShapes } from "./normalize";
 
@@ -251,7 +253,13 @@ const UNDISCLOSED = [
 
 export const toolDefinitionCreateSchema = z
   .object({
-    name: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
+    // Canonicalized on the way in, for the reason code-tools/service.ts gives: `buildHttpTool`
+    // offers the model `sanitizeToolName(name)`, so any other spelling is a row whose name is not
+    // the name that reaches the model — and two spellings of one name collide there, not here.
+    name: z
+      .string()
+      .regex(/^[a-zA-Z0-9_-]{1,64}$/)
+      .transform(normalizeToolName),
     label: z.string().min(1).max(TOOL_LABEL_MAX),
     description: z.string().max(2000).nullish(),
     method: z.enum(HTTP_METHODS).optional(),
@@ -375,13 +383,15 @@ async function assertNameFree(
       "name",
     );
   }
-  const [existing, code, document] = await Promise.all([
-    db.toolDefinition.findFirst({ where: { name }, select: { id: true } }),
-    db.codeToolDefinition.findFirst({ where: { name }, select: { id: true } }),
+  const [under, document] = await Promise.all([
+    // By the name the MODEL sees (namespace.ts): `buildHttpTool` sanitizes, so a row spelled `Foo`
+    // and one spelled `foo` are one tool there.
+    toolsUnderModelName(db, name),
     // A document template publishes `send_<slug>`, assembled before this table too.
     moving ? documentHoldingToolName(db, name) : null,
   ]);
-  if ((existing && existing.id !== exceptId) || code || document) {
+  const existing = under.httpIds.filter((id) => id !== exceptId);
+  if (existing.length > 0 || under.codeIds.length > 0 || document) {
     throw new ConflictError(
       "tool name already in use",
       "errors.toolNameTaken",

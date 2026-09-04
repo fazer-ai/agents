@@ -10,7 +10,7 @@ import {
   type SandboxOutcome,
 } from "./code-sandbox";
 import { failableTool, toolFailure } from "./failure";
-import { parseToolInputSchema } from "./http";
+import { parseToolInputSchema, sanitizeToolName } from "./http";
 
 // Operator-authored code tools (issue #363): a JavaScript function body the operator wrote once in
 // the console, with a name, a description and a typed input schema, that the agent calls with
@@ -164,7 +164,10 @@ export function buildCodeTool(
       return r.failed ? toolFailure(r.text) : r.text;
     },
     {
-      name: def.name,
+      // `sanitizeToolName`, exactly as buildHttpTool does: the row is canonicalized on write, and
+      // this keeps a row written before that (or by a path that wrote past the service) from
+      // reaching the model under a name the namespace checks never saw.
+      name: sanitizeToolName(def.name),
       description: def.description,
       schema: parseToolInputSchema(def.inputSchema),
     },

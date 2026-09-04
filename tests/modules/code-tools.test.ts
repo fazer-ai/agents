@@ -441,6 +441,37 @@ describe.skipIf(!dbUp)("code tools service", () => {
     await suDb.codeToolDefinition.delete({ where: { id: legacy.id } });
   });
 
+  test("the name is the one the model sees: canonicalized on write, and compared that way", async () => {
+    // `buildHttpTool` offers `sanitizeToolName(name)` and the console derives names the same way,
+    // so a row spelled otherwise is a row whose name is not the name the agent calls. Stored
+    // canonical, and the namespace compared on that spelling — otherwise `Foo` (HTTP) and `foo`
+    // (code) pass every check here and arrive at the model as ONE tool, the second one dropped.
+    const { tool } = await createCodeTool(
+      ctx(),
+      { ...VALID, name: "Checar_CPF" },
+      appDb,
+    );
+    expect(tool.name).toBe("checar_cpf");
+
+    // A row written before that rule (or past the service) still counts, by the name it reaches
+    // the model under.
+    await suDb.toolDefinition.create({
+      data: {
+        tenantId,
+        name: "Consulta_Legada",
+        label: "Consulta legada",
+        urlTemplate: "https://example.com/x",
+        allowedHosts: ["example.com"],
+      },
+    });
+    const shadowed = await refusal(
+      createCodeTool(ctx(), { ...VALID, name: "consulta_legada" }, appDb),
+    );
+    expect(shadowed?.translationKey).toBe("errors.codeToolNameTaken");
+    await suDb.toolDefinition.deleteMany({ where: { tenantId } });
+    await deleteCodeTool(ctx(), BigInt(tool.id), appDb);
+  });
+
   test("a JSON-Schema-shaped input schema is stored as the compact map the runtime reads", async () => {
     const { tool } = await createCodeTool(
       ctx(),

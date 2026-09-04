@@ -3,6 +3,7 @@ import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import { isNativeToolName } from "@/graph/tools/catalog";
 import { SANDBOX_CODE_MAX_CHARS } from "@/graph/tools/code-sandbox-limits";
+import { normalizeToolName } from "@/graph/tools/toolName";
 import {
   type CodeSyntaxWarning,
   checkCodeToolSyntax,
@@ -16,6 +17,7 @@ import {
   documentHoldingToolName,
   isRagToolName,
   lockToolNames,
+  toolsUnderModelName,
 } from "@/modules/tool-definitions/namespace";
 import {
   hasReservedFieldName,
@@ -142,7 +144,14 @@ const UNDISCLOSED = ["description", "inputSchema", "code"] as const;
 
 export const codeToolCreateSchema = z
   .object({
-    name: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/),
+    // Canonicalized on the way in: the name the model is offered is `normalizeToolName(name)` (the
+    // console derives it that way, and an HTTP tool's is sanitized at build), so storing another
+    // spelling means the row and the model disagree — and two rows that differ only in case would
+    // reach the model as ONE name, with the assembly dropping whichever came second.
+    name: z
+      .string()
+      .regex(/^[a-zA-Z0-9_-]{1,64}$/)
+      .transform(normalizeToolName),
     // `.trim()` before the minimum, on both: `min(1)` counts characters, and a label of spaces is a
     // row whose name in the console is blank while a description of spaces is worse — it is the
     // only thing that tells the model when to call the tool, and it would be REQUIRED and empty.
@@ -220,13 +229,15 @@ async function assertNameFree(
       "name",
     );
   }
-  const [own, http, document] = await Promise.all([
-    db.codeToolDefinition.findFirst({ where: { name }, select: { id: true } }),
-    db.toolDefinition.findFirst({ where: { name }, select: { id: true } }),
+  const [under, document] = await Promise.all([
+    // By the name the MODEL sees, not by the stored spelling: a row written before names were
+    // canonicalized reaches the model normalized, and two spellings would then be one name there.
+    toolsUnderModelName(db, name),
     // A document template publishes `send_<slug>`, and it is assembled before either tool table.
     moving ? documentHoldingToolName(db, name) : null,
   ]);
-  if ((own && own.id !== exceptId) || http || document) {
+  const own = under.codeIds.filter((id) => id !== exceptId);
+  if (own.length > 0 || under.httpIds.length > 0 || document) {
     throw new ConflictError(
       "tool name already in use",
       "errors.codeToolNameTaken",

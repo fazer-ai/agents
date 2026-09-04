@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { contextNamesUsedBy } from "@/client/pages/resources/CodeToolTestModal";
+import { CONTEXT_VAR_NAMES } from "@/modules/tool-definitions/normalize";
 
 // Round 25. The test dialog said it ran the body "exactly as the agent would" and then sent no
 // `context` at all, so every advertised variable arrived `undefined`: a body reading
@@ -55,4 +57,33 @@ describe("contextNamesUsedBy", () => {
       expect(contextNamesUsedBy(code)).toEqual(want);
     });
   }
+});
+
+// Round 27: the scan is a shortcut over arbitrary JavaScript, and these two spellings are ordinary
+// rather than exotic. What the dialog owes is not seeing them, which no property scan can promise,
+// but never being the reason a value cannot be supplied: the full list is one click away, and the
+// scan only decides what the dialog OPENS with.
+describe("what the scan cannot see", () => {
+  const invisible = [
+    "const { contact_email } = context;\nreturn contact_email;",
+    "const c = context;\nreturn c.contact_email;",
+  ];
+  test("destructuring and aliases are missed, which is why the full list exists", () => {
+    for (const code of invisible) {
+      expect(contextNamesUsedBy(code)).toEqual([]);
+    }
+    // The escape hatch is the constant itself, so the dialog can always offer every name.
+    expect(CONTEXT_VAR_NAMES).toContain("contact_email");
+  });
+
+  test("the dialog always offers the way out, whether or not the scan saw anything", () => {
+    // A source fence, for the reason the fences in CodeToolEditModal.test.tsx give: what is being
+    // asserted is that the button is not gated on the scan having found something.
+    const src = readFileSync(
+      "src/client/pages/resources/CodeToolTestModal.tsx",
+      "utf8",
+    );
+    expect(src.includes("{!allContext && (")).toBe(true);
+    expect(src.includes("? [...CONTEXT_VAR_NAMES]")).toBe(true);
+  });
 });

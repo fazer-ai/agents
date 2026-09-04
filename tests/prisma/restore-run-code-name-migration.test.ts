@@ -173,6 +173,44 @@ describe.skipIf(!dbUp)("migration: restore tools renamed off run_code", () => {
     ]);
   });
 
+  // Round 27: "the name is free" is a question about the name the MODEL sees. Names were only
+  // canonicalized on write by this PR, so a database reaching this migration can hold `Run_Code`
+  // from before, which `sanitizeToolName` derives `run_code` from at assembly. Compared exactly,
+  // that row reads as free and the restore lands a SECOND tool answering to one name: the assembly
+  // drops whichever comes second and neither can be saved from the console again.
+  test("a legacy spelling that normalizes to run_code blocks the restore", async () => {
+    const t2 = await suDb.query(
+      `INSERT INTO "tenants" (name, slug, created_at, updated_at)
+       VALUES ('rc-legacy', 'rc-legacy-' || floor(random() * 1e9)::text, NOW(), NOW()) RETURNING id`,
+    );
+    const legacyTenant = BigInt(t2.rows[0].id);
+    const moved = await tool("run_code_2", "Run code 2", legacyTenant);
+    await movedBy(
+      moved,
+      ["run_code", "Run code"],
+      ["run_code_2", "Run code 2"],
+      legacyTenant,
+    );
+    // Legal before this PR, and the model sees `run_code` for it.
+    await tool("Run_Code", "Run Code", legacyTenant);
+
+    await suDb.query(sql);
+
+    expect(await rowOf(moved)).toEqual({
+      name: "run_code_2",
+      label: "Run code 2",
+    });
+    await suDb.query('DELETE FROM "audit_logs" WHERE tenant_id = $1', [
+      String(legacyTenant),
+    ]);
+    await suDb.query('DELETE FROM "tool_definitions" WHERE tenant_id = $1', [
+      String(legacyTenant),
+    ]);
+    await suDb.query('DELETE FROM "tenants" WHERE id = $1', [
+      String(legacyTenant),
+    ]);
+  });
+
   test("a re-run rewrites nothing, and FORCE is back on every table it touched", async () => {
     const before = await suDb.query(
       'SELECT id, name, label, updated_at FROM "tool_definitions" WHERE tenant_id = $1 ORDER BY id',

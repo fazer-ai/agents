@@ -33,7 +33,13 @@ import { fieldTypeLabels } from "./toolFieldTypes";
 // out of a failed call) but reports a code tool's answer — the text the agent would receive, whether
 // it failed, and the console output — not an HTTP status and a body.
 
-// Which of the runtime's context variables this body actually reads, in the runtime's own order.
+// Which of the runtime's context variables this body is SEEN to read, in the runtime's own order.
+//
+// A shortcut, and it has to be read as one: this is arbitrary JavaScript, so `const { contact_email
+// } = context` and `const c = context; c.contact_email` are ordinary spellings no property scan can
+// see (round 27). Missing one silently is the failure this dialog exists to avoid, so the operator
+// can always ask for the full list; what the scan buys is that the ordinary body opens with the two
+// fields it uses instead of ten.
 //
 // The same question the HTTP tool's dialog asks of a template (`contextNamesReferencedBy`), and
 // asked for the same reason: the operator can only supply a value for a name they are shown, and
@@ -120,6 +126,8 @@ export function CodeToolTestModal({
   // reads a date pass here and behave differently in production, with the two zones never named on
   // screen. The browser's is the first guess because it is the one the operator can sanity-check.
   const [timezone, setTimezone] = useState("UTC");
+  // The scan below cannot see a destructured or aliased read, so the full list is one click away.
+  const [allContext, setAllContext] = useState(false);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<CodeTestResult | null>(null);
@@ -129,8 +137,10 @@ export function CodeToolTestModal({
   // "Drop stale responses with a session token").
   const sessionRef = useRef(0);
   const target = modal.payload;
-  // Asked of the BODY, so the dialog shows the variables this code reads and no others.
-  const contextNames = contextNamesUsedBy(target?.definition.code ?? "");
+  // Asked of the BODY, so the ordinary tool opens with the variables its code names. `allContext`
+  // is the way out when the scan cannot see the read (destructuring, an alias).
+  const seenContextNames = contextNamesUsedBy(target?.definition.code ?? "");
+  const contextNames = allContext ? [...CONTEXT_VAR_NAMES] : seenContextNames;
   const typeLabels = fieldTypeLabels(t);
   const typeText = (bad: { reason: string; itemType?: string }) =>
     bad.itemType
@@ -149,6 +159,7 @@ export function CodeToolTestModal({
     setValues({});
     setSendEmpty({});
     setContext({});
+    setAllContext(false);
     setTimezone(browserZone());
     setError(null);
     setResult(null);
@@ -355,33 +366,54 @@ export function CodeToolTestModal({
           })
         )}
 
-        {contextNames.length > 0 && (
-          <FormField
-            label={t("codeTools.testContext", "Conversation variables")}
-            group
-            description={t(
-              "codeTools.testContextHint",
-              "The values a turn would carry, for the variables this body reads. Leave one blank to test what the body does when the turn did not have it.",
+        <FormField
+          label={t("codeTools.testContext", "Conversation variables")}
+          group
+          description={t(
+            "codeTools.testContextHint",
+            "The values a turn would carry, for the variables this body reads. Leave one blank to test what the body does when the turn did not have it.",
+          )}
+        >
+          <div className="flex flex-col gap-2">
+            {contextNames.map((name) => (
+              <div key={name} className="flex items-center gap-2 text-xs">
+                <code className="w-40 shrink-0 truncate rounded bg-bg-tertiary px-1 py-0.5 font-mono">
+                  {name}
+                </code>
+                <Input
+                  aria-label={name}
+                  value={context[name] ?? ""}
+                  onChange={(e) =>
+                    setContext((c) => ({ ...c, [name]: e.target.value }))
+                  }
+                />
+              </div>
+            ))}
+            {!allContext && (
+              <Button
+                variant="secondary"
+                size="sm"
+                className="self-start"
+                onClick={() => setAllContext(true)}
+              >
+                {seenContextNames.length === 0
+                  ? t("codeTools.testContextShowAll", "Show all variables")
+                  : t(
+                      "codeTools.testContextShowRest",
+                      "Show the other variables",
+                    )}
+              </Button>
             )}
-          >
-            <div className="flex flex-col gap-2">
-              {contextNames.map((name) => (
-                <div key={name} className="flex items-center gap-2 text-xs">
-                  <code className="w-40 shrink-0 truncate rounded bg-bg-tertiary px-1 py-0.5 font-mono">
-                    {name}
-                  </code>
-                  <Input
-                    aria-label={name}
-                    value={context[name] ?? ""}
-                    onChange={(e) =>
-                      setContext((c) => ({ ...c, [name]: e.target.value }))
-                    }
-                  />
-                </div>
-              ))}
-            </div>
-          </FormField>
-        )}
+            {!allContext && (
+              <span className="text-text-muted text-xs">
+                {t(
+                  "codeTools.testContextScanHint",
+                  "Only the variables named directly in the code are listed. One read through a destructured or renamed variable is not seen here.",
+                )}
+              </span>
+            )}
+          </div>
+        </FormField>
 
         <FormField
           label={t("codeTools.testTimezone", "Agent timezone")}

@@ -652,6 +652,22 @@ describe.skipIf(!dbUp)("exporting the trail", () => {
     }
   });
 
+  // A FILTER THAT MATCHES NOTHING still produces a file, and the bound does not get in the way. Worth
+  // its own case because the bound moved from `max(id)` over the trail -- which is null on an empty
+  // one -- to the sequence, which always answers; the branch that used to handle "no bound" is gone,
+  // so this is what stands in for it.
+  test("a filter that matches nothing exports a header and says so", async () => {
+    const r = await exportAudit(
+      ctx(),
+      { action: syntheticAction("nothing.matches.this") },
+      appDb,
+    );
+    expect(r.count).toBe(0);
+    expect(r.truncated).toBe(false);
+    expect(r.content.split("\r\n")).toHaveLength(1);
+    expect(r.content).toContain("created_at");
+  });
+
   // A CUT IS ALWAYS ANNOUNCED, including the one that happens between two trips. When a trip ends
   // with the budget spent to the last row and more rows still match, the next trip is sized down to
   // its floor of one row -- which then does not fit, and truncates. Sizing it down to ZERO instead

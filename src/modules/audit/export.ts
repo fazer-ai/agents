@@ -240,29 +240,33 @@ export async function exportAudit(
   // mean holding one REPEATABLE READ transaction across every trip, which is `readInScope`'s shape
   // for the list as well; deliberately not done here (issue #530, review round 5).
   //
-  // THE TRAIL AND NOT THE FILTER. The bound is about WHEN the export started, so narrowing it to the
-  // operator's window buys nothing and costs everything: `max(id)` under a date range cannot stop
-  // early on an index ordered by `(created_at, id)`, so it reads the window out -- measured, 7,947
-  // buffers and 23.0 ms for a 30-day window 80 days back, which is the very cost this change exists
-  // to remove, paid once before the walk even starts. Over the trail alone the same aggregate is a
-  // one-row index read: 4 buffers, 0.03 ms.
-  const highWater = await readInScope(base, ctx, scope, (db) =>
-    db.auditLog.aggregate({ _max: { id: true }, where: trail }),
-  ).then((r) => r._max.id);
-  // An empty TRAIL, which is not an empty filter result: with no rows at all there is no bound to
-  // take, and the walk below would have nothing to do either way.
-  if (highWater === null) {
-    return {
-      format: AUDIT_EXPORT_FORMAT,
-      filename: `agents-audit-${timestampSlug(now)}.csv`,
-      contentType: "text/csv;charset=utf-8",
-      content: header,
-      count: 0,
-      truncated: false,
-      truncatedBy: null,
-    };
+  // TAKEN FROM THE SEQUENCE, not from a `max(id)` over anything. A `max` needs an index led by `id`
+  // to answer in one row, and after this change no audit index is: over the operator's window it
+  // reads the window out (7,947 buffers, 23.0 ms for 30 days, 80 days back), and over the trail
+  // alone it degrades on an INACTIVE one -- a tenant whose rows are all old makes the planner walk
+  // the primary key backwards past every newer row belonging to somebody else (8,900 buffers,
+  // 21.6 ms measured on a trail of 500 old rows inside 500k). The sequence answers in 0.05 ms
+  // whatever the trail looks like, needs no index, and is readable by the runtime role.
+  //
+  // It is a LOOSER bound than `max(id)` -- it counts ids already handed out to transactions that
+  // have not committed -- which widens the gap named above rather than opening a new one: those are
+  // exactly the writes an id bound cannot separate either way. What it buys is that no export pays
+  // for the shape of the trail it is reading.
+  const seq = await readInScope(
+    base,
+    ctx,
+    scope,
+    (db) =>
+      db.$queryRaw<
+        { last_value: bigint }[]
+      >`SELECT last_value FROM audit_logs_id_seq`,
+  );
+  // The sequence always answers, empty table included (`last_value` is 1 with `is_called` false),
+  // so there is no "no bound" case to branch on: an empty trail simply walks nothing.
+  const highWater = seq[0]?.last_value;
+  if (highWater === undefined) {
+    throw new Error("audit export: the id sequence returned no row");
   }
-
   while (truncatedBy === null) {
     const want = Math.min(batch, maxRows - lines.length);
     // NOTE: one extra row per trip answers "is there more?" without a second count over a growing table.

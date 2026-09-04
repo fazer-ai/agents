@@ -29,12 +29,26 @@
 -- audited mutation writes to.
 --
 -- CONCURRENTLY, and therefore OUTSIDE a transaction, which Prisma gives us: it runs a migration file
--- unwrapped (measured in both `migrate deploy` and `migrate dev`'s shadow replay). The DROP-then-
--- CREATE pairs make an interrupted run recoverable: a CONCURRENTLY build that dies leaves an
--- `indisvalid=false` index that Postgres silently ignores, and re-running drops it first.
-DROP INDEX IF EXISTS "audit_logs_tenant_id_created_at_id_idx";
-DROP INDEX IF EXISTS "audit_logs_created_at_id_idx";
-DROP INDEX IF EXISTS "audit_logs_fleet_created_at_id_idx";
+-- unwrapped (measured in both `migrate deploy` and `migrate dev`'s shadow replay). Three builds share
+-- this file because `CREATE INDEX CONCURRENTLY` tolerates that; the DROP form does not.
+--
+-- IF A BUILD IS INTERRUPTED, this migration fails LOUDLY on the retry and that is deliberate. A dead
+-- `CREATE INDEX CONCURRENTLY` leaves an `indisvalid=false` index that Postgres ignores for planning,
+-- and re-running raises `42P07 relation already exists` (measured) -- which is the right outcome,
+-- because the three ways to clean it up automatically are all worse:
+--
+--   * `IF NOT EXISTS` skips past the dead index, so it is never built and nothing says so;
+--   * a plain `DROP INDEX` first takes ACCESS EXCLUSIVE on the TABLE, queueing every audit read and
+--     every audited mutation behind the recovery;
+--   * `DROP INDEX CONCURRENTLY` cannot share this file, and putting it in an EARLIER migration does
+--     not help: Prisma re-runs only the migration that failed, never the ones already applied
+--     (measured -- the dead index survived the retry untouched).
+--
+-- So recovery is one command, run by hand, off the write path:
+--
+--   DROP INDEX CONCURRENTLY IF EXISTS "<the name in the error>";
+--
+-- then re-run the deploy.
 
 CREATE INDEX CONCURRENTLY "audit_logs_tenant_id_created_at_id_idx"
   ON "audit_logs" ("tenant_id", "created_at" DESC, "id" DESC);

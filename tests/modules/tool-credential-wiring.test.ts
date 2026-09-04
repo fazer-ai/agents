@@ -528,6 +528,37 @@ const CASES: Wiring[] = [
     headers: ["{{secret}}"] as unknown as Record<string, unknown>,
   },
 
+  {
+    label:
+      "a query kind shadowed by a REQUIRED ai field in the legacy derivation",
+    reaches: false,
+    method: "GET",
+    kind: "query",
+    paramName: "token",
+    inputSchema: { token: { type: "string", required: true } },
+  },
+  {
+    label: "…and not by an optional one, which the model may omit",
+    reaches: true,
+    method: "GET",
+    kind: "query",
+    paramName: "token",
+    inputSchema: { token: { type: "string" } },
+  },
+  {
+    label: "a legacy query ARRAY, which the runtime still walks",
+    reaches: true,
+    query: ["{{secret}}"] as unknown as Record<string, unknown>,
+  },
+  {
+    label:
+      "an explicit query key that happens to look like the unresolved marker",
+    reaches: true,
+    urlTemplate: `https://${PUBLIC}/v1/thing?{{field}}=x`,
+    query: { "((unresolved-a))": "{{secret}}" },
+    inputSchema: { field: { type: "string", required: true } },
+  },
+
   // ── spelling ──
   {
     label:
@@ -595,8 +626,8 @@ describe("the scanner answers what the runtime does", () => {
     // NOTE: the floor. Every assertion above is `toBe(w.reaches)`, so a table that drifted to a
     // single verdict would still pass while proving nothing about the boundary between them.
     const reaching = CASES.filter((c) => c.reaches).length;
-    expect(reaching).toBeGreaterThan(18);
-    expect(CASES.length - reaching).toBeGreaterThan(16);
+    expect(reaching).toBeGreaterThan(20);
+    expect(CASES.length - reaching).toBeGreaterThan(17);
   });
 });
 
@@ -618,6 +649,42 @@ describe("which kinds the warning is about", () => {
     // That they can be attached to an HTTP tool at all is a separate defect, and a refusal rather
     // than a warning.
     expect(warned).toEqual(["generic"]);
+  });
+
+  test("a shadowed injection gets its OWN sentence, not the generic advice", () => {
+    // NOTE: the operator already did what the other sentence advises — picked an injecting type and
+    // attached it. What stops the credential is the value the request carries at the target, and a
+    // warning that names the credential instead of the header sends them to fix the wrong thing.
+    const w =
+      unusedCredentialWarning(
+        { kind: "bearer_token", paramName: null, baseUrl: null },
+        "GET",
+        {
+          urlTemplate: `https://${PUBLIC}/v1/thing`,
+          headers: { Authorization: "constant" },
+          inputSchema: {},
+        },
+      ) ?? "";
+    expect(w).toContain("Authorization");
+    expect(w).toContain("keeps the value you wrote");
+    // NOTE: and it must NOT recommend attaching an injecting type, which is the other sentence.
+    expect(w).not.toContain("attach a credential whose type injects it");
+  });
+
+  test("the Content-Type a body method always carries is named as the runtime's, not the tool's", () => {
+    const w =
+      unusedCredentialWarning(
+        { kind: "header", paramName: "Content-Type", baseUrl: null },
+        "POST",
+        {
+          urlTemplate: `https://${PUBLIC}/v1/thing`,
+          headers: {},
+          body: { mode: "kv", rows: [{ key: "a", value: "1" }] },
+          inputSchema: {},
+        },
+      ) ?? "";
+    expect(w).toContain("a request with a body always carries that header");
+    expect(w).not.toContain("this tool sets");
   });
 
   test("a kind this build does not know is the legacy generic, and is warned about", () => {

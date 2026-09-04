@@ -53,12 +53,18 @@ const PLACEHOLDER = /\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g;
 // graph/tools/http.ts): a lone AI field the model OMITS makes the runtime skip that row entirely.
 const LONE_PLACEHOLDER = /^\{\{\s*([a-zA-Z0-9_]+)\s*\}\}$/;
 
-// What an UNRESOLVED placeholder becomes while the URL is parsed, and the one thing that matters
-// about it is that NO param name can be this string: `validateParamName` holds those to
-// `[A-Za-z0-9!#$%&'*+.^_`|~-]`, and parentheses are outside it. A key this file could not resolve is
-// UNKNOWN, so a sentinel a real name could equal answers "that parameter is already taken" for a
-// tool where it is not — and it did: `_` was the sentinel, and `paramName: "_"` is legal.
-const UNRESOLVED_KEY = "((unresolved))";
+// TWO sentinels for an unresolved placeholder, and the pair is the mechanism. A query KEY may be a
+// placeholder, and the key it becomes at runtime is unknowable here; a single sentinel puts a made-up
+// key into a space where a real one could equal it, and then answers "that parameter is taken" for a
+// tool where it is not. Both spellings have already cost a round: `_` collided with a legal param
+// name, `((unresolved))` with a legal query-map key.
+//
+// Parsing the same template under both and INTERSECTING the key sets needs no such assumption. A
+// literal key parses identically twice and survives; a placeholder-derived one differs and drops out
+// — including a literal key that happens to equal one of the sentinels, which still parses the same
+// both times.
+const UNRESOLVED_A = "((unresolved-a))";
+const UNRESOLVED_B = "((unresolved-b))";
 
 function namesIn(template: string): Set<string> {
   return new Set(
@@ -131,7 +137,9 @@ function headerTemplates(v: unknown): string[] {
 // parameter the operator has already taken.
 function queryMap(raw: unknown): Record<string, string> {
   const out: Record<string, string> = {};
-  if (!isPlainObject(raw)) return out;
+  // ANY object, arrays included — `parseQuery` guards on `typeof raw === "object"` and nothing else,
+  // so a stored `query: ["{{secret}}"]` is the parameter `0`, exactly as a headers array is.
+  if (typeof raw !== "object" || raw === null) return out;
   for (const [k, v] of Object.entries(raw)) {
     if (v == null) continue;
     out[k] = typeof v === "string" ? v : String(v);
@@ -147,6 +155,7 @@ function queryMap(raw: unknown): Record<string, string> {
 function parseUrlTemplate(
   urlTemplate: unknown,
   fixed: Map<string, string> = new Map(),
+  unresolved: string = UNRESOLVED_A,
 ): URL | null {
   if (typeof urlTemplate !== "string") return null;
   const resolved = urlTemplate.replace(PLACEHOLDER, (_whole, name: string) => {
@@ -159,7 +168,7 @@ function parseUrlTemplate(
     // credential's own parameter as already taken and warn about a tool that injects it.
     return value !== undefined && namesIn(value).size === 0
       ? encodeURIComponent(value)
-      : UNRESOLVED_KEY;
+      : unresolved;
   });
   try {
     return new URL(resolved, "https://placeholder.invalid");
@@ -179,8 +188,11 @@ function urlQueryKeys(
   urlTemplate: unknown,
   fixed: Map<string, string> = new Map(),
 ): Set<string> {
-  const url = parseUrlTemplate(urlTemplate, fixed);
-  return url ? new Set([...url.searchParams.keys()]) : new Set();
+  const a = parseUrlTemplate(urlTemplate, fixed, UNRESOLVED_A);
+  const b = parseUrlTemplate(urlTemplate, fixed, UNRESOLVED_B);
+  if (!a || !b) return new Set();
+  const other = new Set(b.searchParams.keys());
+  return new Set([...a.searchParams.keys()].filter((k) => other.has(k)));
 }
 
 // The URL as far as it is TRANSMITTED. A fragment is not sent to the upstream — measured on a real
@@ -356,16 +368,37 @@ function urlPlaceholderNames(urlTemplate: unknown): Set<string> {
   return typeof urlTemplate === "string" ? namesIn(urlTemplate) : new Set();
 }
 
-function autoInjectionReaches(
+// WHY the credential's own injection does or does not put it on the request, not just whether. The
+// three answers are three different things to tell an operator, and collapsing them to a boolean is
+// how the warning came to advise someone who had already done what it was advising: a `bearer_token`
+// whose `Authorization` header the tool sets itself IS an injecting type, correctly attached, and
+// the fix is the header, not the credential.
+type InjectionVerdict =
+  | { state: "none" }
+  | { state: "reaches" }
+  | {
+      state: "shadowed";
+      target: "header" | "query";
+      name: string;
+      by: "tool" | "runtime";
+    };
+
+function autoInjectionVerdict(
   kind: string | null | undefined,
   paramName: string | null | undefined,
   method: string,
   shapes: ToolShapePatch,
-): boolean {
+): InjectionVerdict {
   // The value is a probe, never a secret: `resolveSecretInjection` only needs a non-empty string to
   // answer WHERE the credential would go.
   const inj = resolveSecretInjection(kind, "probe", paramName);
-  if (!inj) return false;
+  if (!inj) return { state: "none" };
+  const shadowed = (by: "tool" | "runtime"): InjectionVerdict => ({
+    state: "shadowed",
+    target: inj.target,
+    name: inj.name,
+    by,
+  });
   if (inj.target === "header") {
     const names = headerEntries(shapes.headers).map(([name]) => name);
     // The one header the runtime writes ITSELF: a body method with no content-type of its own gets
@@ -376,9 +409,11 @@ function autoInjectionReaches(
       inj.name.toLowerCase() === "content-type" &&
       !names.some((h) => h.toLowerCase() === "content-type")
     ) {
-      return false;
+      return shadowed("runtime");
     }
-    return !names.some((h) => h.toLowerCase() === inj.name.toLowerCase());
+    return names.some((h) => h.toLowerCase() === inj.name.toLowerCase())
+      ? shadowed("tool")
+      : { state: "reaches" };
   }
   // Query: the runtime injects unless the param is already on the URL — spelled in the template, or
   // set from the explicit query map, which it applies first and only for a value that resolves
@@ -387,23 +422,31 @@ function autoInjectionReaches(
   // take the parameter. Guessing that a placeholder always resolves would warn about a tool that is
   // wired.
   const fixed = fixedValuesByName(shapes.inputSchema);
-  if (urlQueryKeys(shapes.urlTemplate, fixed).has(inj.name)) return false;
+  if (urlQueryKeys(shapes.urlTemplate, fixed).has(inj.name)) {
+    return shadowed("tool");
+  }
   // The legacy derivation: a NON-body method whose body is the legacy `fields` shape and which has no
   // explicit query copies its non-path input fields into the URL — before auto-injection, and with
-  // `v != null` rather than `v !== ""`, so a fixed field of that name takes the parameter whatever it
-  // holds. An AI field of that name is not counted: the model may omit it, and that is unknowable.
+  // `v != null` rather than `v !== ""`, so a field of that name takes the parameter whatever it holds.
+  //
+  // A fixed field always, and a REQUIRED ai field too: zod refuses the call without it, so it is on
+  // the URL of every invocation that runs. An OPTIONAL ai field is the one that stays unknowable.
+  const ai = aiFields(shapes.inputSchema);
+  const occupies =
+    fixed.has(inj.name) ||
+    (ai.names.has(inj.name) && !ai.optional.has(inj.name));
   if (
     !BODY_METHODS.has(method) &&
     isLegacyFieldsBody(shapes.body) &&
     Object.keys(queryMap(shapes.query)).length === 0 &&
-    fixed.has(inj.name) &&
+    occupies &&
     !urlPlaceholderNames(shapes.urlTemplate).has(inj.name)
   ) {
-    return false;
+    return shadowed("tool");
   }
   const explicit = reachingQuery(shapes)[inj.name];
   const alwaysSet = explicit !== undefined && alwaysNonEmpty(explicit, fixed);
-  return !alwaysSet;
+  return alwaysSet ? shadowed("tool") : { state: "reaches" };
 }
 
 export function credentialReachesRequest(
@@ -413,11 +456,13 @@ export function credentialReachesRequest(
   shapes: ToolShapePatch,
 ): boolean {
   if (mentions(reachableTemplates(method, shapes), "secret")) return true;
-  return autoInjectionReaches(
-    kind,
-    paramName,
-    (method ?? DEFAULT_HTTP_METHOD).toUpperCase(),
-    shapes,
+  return (
+    autoInjectionVerdict(
+      kind,
+      paramName,
+      (method ?? DEFAULT_HTTP_METHOD).toUpperCase(),
+      shapes,
+    ).state === "reaches"
   );
 }
 
@@ -452,9 +497,27 @@ export function unusedCredentialWarning(
       | string
       | undefined,
   };
-  if (credentialReachesRequest(facts.kind, facts.paramName, method, shapes)) {
-    return null;
-  }
+  const m = (method ?? DEFAULT_HTTP_METHOD).toUpperCase();
+  if (mentions(reachableTemplates(method, shapes), "secret")) return null;
+  const verdict = autoInjectionVerdict(facts.kind, facts.paramName, m, shapes);
+  if (verdict.state === "reaches") return null;
+
   const kind = facts.kind ?? "generic";
-  return `the attached credential is never sent: a "${kind}" credential puts nothing on this request by itself, and {{secret}} appears in none of the templates this ${(method ?? DEFAULT_HTTP_METHOD).toUpperCase()} actually emits — it goes out unauthenticated, and the upstream's 401/403 will look like a bad credential rather than one that was never wired. Write {{secret}} where the API expects it, or attach a credential whose type injects it (${INJECTING_MECHANISM_KIND_IDS.join(", ")}) into a header or query parameter the templates do not already set.`;
+  const consequence = `it goes out unauthenticated, and the upstream's 401/403 will look like a bad credential rather than one that was never wired`;
+  if (verdict.state === "shadowed") {
+    // NOTE: a DIFFERENT sentence, and the reason is that the other one's advice is wrong here. This
+    // operator picked an injecting type and attached it correctly; what stops it is the value the
+    // request already carries at the target, which the runtime deliberately leaves alone. Telling
+    // them to "attach a credential whose type injects it" names something they already did.
+    const where =
+      verdict.target === "header"
+        ? `the "${verdict.name}" header`
+        : `the "${verdict.name}" query parameter`;
+    const who =
+      verdict.by === "runtime"
+        ? `a request with a body always carries that header, so the credential can never take it`
+        : `this tool sets ${where} itself, and the runtime keeps the value you wrote rather than replacing it with the credential`;
+    return `the attached credential is never sent: a "${kind}" credential injects into ${where}, and ${who} — ${consequence}. Write {{secret}} into that value, point the credential at another ${verdict.target === "header" ? "header" : "parameter"}, or remove the one the tool sets.`;
+  }
+  return `the attached credential is never sent: a "${kind}" credential puts nothing on this request by itself, and {{secret}} appears in none of the templates this ${m} actually emits — ${consequence}. Write {{secret}} where the API expects it, or attach a credential whose type injects it (${INJECTING_MECHANISM_KIND_IDS.join(", ")}) into a header or query parameter the templates do not already set.`;
 }

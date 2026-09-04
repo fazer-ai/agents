@@ -1762,6 +1762,10 @@ model AuditLog {
   tenant Tenant? @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@index([tenantId, createdAt])
+  // The tenant trail's `latestAt` rides the composite above; these two are the same one-row walk for
+  // the trails #520 added, whose leading column that index cannot supply. The partial twin for
+  // `tenant_id IS NULL` is hand-written in the migration -- Prisma cannot model a WHERE on an index.
+  @@index([createdAt])
   @@map("audit_logs")
 }
 

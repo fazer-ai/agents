@@ -171,13 +171,20 @@ export function adminGate(
 
 // Read gate: mcp:read scope present AND a tenant target. Tenant-scoped reads need the same fence as
 // writes (a tenant-less SUPER_ADMIN token must target a tenant), but only the read scope.
+//
+// `requireTenant: false` is for the read that names its OWN trail instead of a tenant's: `audit_list`
+// with `scope=fleet|all` reads the rows keyed to no tenant, so a target is not merely unnecessary
+// there, it is a value the read has nowhere to put -- and on a deployment with no tenants at all,
+// demanding one would make those rows unreadable from MCP. The default is unchanged, so every other
+// caller keeps the fence; the role check that actually guards the wider trails is `listAudit`'s own.
 export function readGate(
   principal: VerifiedToken,
+  opts: { requireTenant?: boolean } = {},
 ): TenantContext | WriteResult {
   if (!hasScope(principal, "mcp:read")) {
     return err("insufficient_scope: this tool requires the mcp:read scope");
   }
-  if (principal.tenantId === null) {
+  if (opts.requireTenant !== false && principal.tenantId === null) {
     return err(
       "no tenant target: the token must be scoped to a tenant (a SUPER_ADMIN must target one)",
     );

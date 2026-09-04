@@ -18,7 +18,13 @@ import {
   test,
 } from "bun:test";
 import { TooltipProvider } from "@radix-ui/react-tooltip";
-import { cleanup, render, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  waitFor,
+} from "@testing-library/react";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router";
 
@@ -164,4 +170,80 @@ test("and not on the tenant's own trail, where every row is its own", async () =
   const text = view.container.textContent ?? "";
   expect(text).not.toContain("#7");
   expect(text).not.toContain("#9");
+});
+
+// THE CURSOR BELONGS TO ONE TRAIL, and the scope is what chooses the trail. Every other filter
+// already resets the walk for exactly this reason: a keyset cursor is an id from the page before,
+// and it only means "continue" against the same rows it was cut from. Handed to another scope it
+// still means `id < N`, which silently drops every newer row of the new trail and labels what
+// survives "Page 2" — an operator switching to the fleet from page two would be told the fleet trail
+// starts where a tenant's page happened to end.
+test("switching scope restarts the walk instead of carrying the cursor over", async () => {
+  mockUser.role = "SUPER_ADMIN";
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    sent.push(String(input));
+    return new Response(
+      JSON.stringify({ entries: ROWS, nextCursor: "42", latestAt: null }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  }) as unknown as typeof fetch;
+
+  const view = mount("/audit");
+  await waitFor(() => expect(sent.length).toBeGreaterThan(0));
+
+  const next = view.getByRole("button", { name: /next/i });
+  act(() => {
+    fireEvent.click(next);
+  });
+  await waitFor(() => expect(asked()).toContain("cursor=42"));
+  expect(view.container.textContent).toContain("Page 2");
+
+  const scopeSelect = view.selects()[0] as HTMLSelectElement;
+  act(() => {
+    fireEvent.change(scopeSelect, { target: { value: "fleet" } });
+  });
+  await waitFor(() => expect(asked()).toContain("scope=fleet"));
+  expect(asked()).not.toContain("cursor=");
+  expect(view.container.textContent).toContain("Page 1");
+});
+
+// THE EMPTY STATE HAS TO SAY WHAT WAS SEARCHED. On a tenant's trail a fleet-level action can only
+// come back empty, because those rows are keyed to no tenant and that read cannot reach them — so
+// the page says the emptiness proves nothing. On `fleet` or `all` it just searched exactly those
+// rows, and repeating "an empty list here does not mean it never happened" would turn a real answer
+// into a disclaimer about a read the page did not perform.
+test("on a wider scope, an empty fleet-level action is a real answer", async () => {
+  mockUser.role = "SUPER_ADMIN";
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    sent.push(String(input));
+    return new Response(
+      JSON.stringify({ entries: [], nextCursor: null, latestAt: null }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  }) as unknown as typeof fetch;
+
+  const view = mount("/audit?scope=fleet&action=mcp_client.create");
+  await waitFor(() => expect(asked()).toContain("scope=fleet"));
+  const text = view.container.textContent ?? "";
+  expect(text).not.toContain("not recorded on a tenant's trail");
+  expect(text).toContain("No entries match these filters");
+});
+
+// The tenant scope keeps it, and this is the assertion that stops the fix above from being "delete
+// the branch".
+test("on the tenant's own trail it still says the emptiness proves nothing", async () => {
+  mockUser.role = "SUPER_ADMIN";
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    sent.push(String(input));
+    return new Response(
+      JSON.stringify({ entries: [], nextCursor: null, latestAt: null }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  }) as unknown as typeof fetch;
+
+  const view = mount("/audit?action=mcp_client.create");
+  await waitFor(() => expect(sent.length).toBeGreaterThan(0));
+  expect(view.container.textContent).toContain(
+    "not recorded on a tenant's trail",
+  );
 });

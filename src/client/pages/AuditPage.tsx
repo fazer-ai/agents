@@ -496,10 +496,14 @@ export function AuditPage() {
   // that does not match the URL on screen — and pagination would then walk from the wrong place.
   const reqRef = useRef(0);
 
+  // NOTE: THE SCOPE IS ON THIS LIST BECAUSE IT CHOOSES THE TRAIL, not because it is another filter.
+  // A keyset cursor is an id cut from the page before, and it only means "continue" against the rows
+  // it was cut from; handed to a different trail it still means `id < N` and silently drops
+  // everything newer, under a pager that goes on saying "Page 2".
   // biome-ignore lint/correctness/useExhaustiveDependencies: reset on filter change only
   useEffect(() => {
     setCursorStack([null]);
-  }, [action, actorType, from, to]);
+  }, [action, actorType, from, to, scope]);
 
   const setFilter = (key: string, value: string) => {
     setSearchParams(
@@ -681,9 +685,11 @@ export function AuditPage() {
   const pageIdx = cursorStack.length - 1;
   const scoped = action || actorType || from || to || scope !== "tenant";
   // NOTE: An empty page has two very different reasons, and only one of them is "nothing happened".
-  // These actions write rows keyed to no tenant, which this read cannot reach at all, so answering
-  // the ordinary "no entries match" would be the page asserting something it did not check.
-  const fleetOnly = isFleetLevelAction(action);
+  // These actions write rows keyed to no tenant, which a TENANT read cannot reach at all, so
+  // answering the ordinary "no entries match" would be the page asserting something it did not
+  // check. On `fleet` or `all` it DID check — those are the very rows it just read — and repeating
+  // the disclaimer would turn a real answer into a warning about a read that did happen.
+  const fleetOnly = scope === "tenant" && isFleetLevelAction(action);
 
   return (
     <PageContainer size="wide" className="space-y-6">

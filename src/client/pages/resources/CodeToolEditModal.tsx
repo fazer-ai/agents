@@ -75,7 +75,6 @@ function emptyForm() {
     description: "",
     aiFields: [] as AiFieldRow[],
     code: STARTER_CODE,
-    enabled: true,
   };
 }
 
@@ -90,7 +89,6 @@ export function formFromCodeTool(tool: CodeTool): CodeToolForm {
       (tool.inputSchema ?? {}) as Record<string, unknown>,
     ),
     code: tool.code,
-    enabled: tool.enabled,
   };
 }
 
@@ -105,14 +103,14 @@ export function payloadOfCodeTool(form: CodeToolForm) {
     description: form.description.trim(),
     inputSchema: schemaFromAiFields(form.aiFields),
     code: form.code,
-    // Carried, never edited here: the form has no switch for it. Which agents may call the tool is
-    // decided by the GRANT, on the agent, and that is the whole control the console offers for the
-    // HTTP tool this kind is the sibling of. A second, tool-wide switch beside it would be a second
-    // answer to one question, and the two disagree the moment an operator uses only one of them.
-    // The column stays (the assembly skips a disabled row, a bundle carries the flag, the list
-    // badges it, MCP can write it) — what it does not get is a door in this modal that its sibling
-    // does not have.
-    enabled: form.enabled,
+    // No `enabled` here, and its absence is the point. Which agents may call the tool is decided by
+    // the GRANT, on the agent, which is the whole control the console offers for the HTTP tool this
+    // kind is the sibling of (`payloadOf` in ToolEditModal sends no `enabled` either). Sending the
+    // value this form READ would be worse than not offering the switch: a save that never touched
+    // the field would revert an `enabled: false` written over MCP while the modal sat open. The
+    // column stays and everything that reads it stays with it — the assembly skips a disabled row,
+    // a bundle carries the flag, the list badges it, MCP writes it. What it does not get is a door
+    // in this modal that its sibling does not have.
   };
 }
 

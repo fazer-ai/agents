@@ -45,7 +45,6 @@ describe("formFromCodeTool", () => {
     expect(form.label).toBe("Look up CPF");
     expect(form.description).toBe("Check whether a CPF is valid.");
     expect(form.code).toBe("return { ok: true };");
-    expect(form.enabled).toBe(true);
     expect(form.aiFields.map((f) => f.name)).toEqual(["cpf"]);
     expect(form.aiFields[0]?.type).toBe("string");
     expect(form.aiFields[0]?.required).toBe(true);
@@ -144,7 +143,16 @@ describe("payloadOfCodeTool", () => {
     const payload = payloadOfCodeTool(formFromCodeTool(codeTool()));
     expect(payload.name).toBe("look_up_cpf");
     expect(payload.code).toBe("return { ok: true };");
-    expect(payload.enabled).toBe(true);
+  });
+
+  // `enabled` is absent from BOTH, and that is asserted rather than left implicit: this form has no
+  // switch for it (the grant is the control, as on the HTTP tool), so carrying the value it read
+  // would let a save that never touched the field revert an `enabled: false` written over MCP while
+  // the modal sat open. A future hand adding the field back to either one is the bug this catches.
+  test("neither the form nor the payload carries `enabled`", () => {
+    const form = formFromCodeTool(codeTool({ enabled: false }));
+    expect(Object.hasOwn(form, "enabled")).toBe(false);
+    expect(Object.hasOwn(payloadOfCodeTool(form), "enabled")).toBe(false);
   });
 });
 

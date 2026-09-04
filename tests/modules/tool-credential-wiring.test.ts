@@ -348,6 +348,43 @@ const CASES: Wiring[] = [
     },
   },
 
+  {
+    label:
+      "a query kind shadowed by the legacy query derivation, on a non-body method",
+    reaches: false,
+    method: "GET",
+    kind: "query",
+    paramName: "token",
+    inputSchema: { token: { type: "string", source: "fixed", value: "xyz" } },
+  },
+  {
+    label: "…not when that field is spent on the path instead",
+    reaches: true,
+    method: "GET",
+    kind: "query",
+    paramName: "token",
+    urlTemplate: `https://${PUBLIC}/v1/{{token}}`,
+    inputSchema: { token: { type: "string", source: "fixed", value: "xyz" } },
+  },
+  {
+    label: "…and not on a POST, which assembles a body instead of a query",
+    reaches: true,
+    method: "POST",
+    kind: "query",
+    paramName: "token",
+    inputSchema: { token: { type: "string", source: "fixed", value: "xyz" } },
+  },
+  {
+    label:
+      "a URL query KEY that is a fixed placeholder still takes the parameter",
+    reaches: false,
+    urlTemplate: `https://${PUBLIC}/v1/thing?{{auth_param}}=constant`,
+    query: { token: "{{secret}}" },
+    inputSchema: {
+      auth_param: { type: "string", source: "fixed", value: "token" },
+    },
+  },
+
   // ── spelling ──
   {
     label:
@@ -415,8 +452,8 @@ describe("the scanner answers what the runtime does", () => {
     // NOTE: the floor. Every assertion above is `toBe(w.reaches)`, so a table that drifted to a
     // single verdict would still pass while proving nothing about the boundary between them.
     const reaching = CASES.filter((c) => c.reaches).length;
-    expect(reaching).toBeGreaterThan(10);
-    expect(CASES.length - reaching).toBeGreaterThan(10);
+    expect(reaching).toBeGreaterThan(12);
+    expect(CASES.length - reaching).toBeGreaterThan(12);
   });
 });
 

@@ -113,15 +113,24 @@ function queryMap(raw: unknown): Record<string, string> {
   return out;
 }
 
-// The URL the runtime will parse, with the placeholders neutralized the way `buildHttpTool` does for
-// its own origin probe. The base is only there so a relative template parses; nothing reads the host.
-function parseUrlTemplate(urlTemplate: unknown): URL | null {
+// The URL the runtime will parse. A placeholder naming a FIXED field is substituted first, because
+// a query KEY can be one — `?{{auth_param}}=constant` over a fixed `auth_param: "token"` is the
+// parameter `token`, and neutralizing it to `_` loses the key the runtime will find there. What is
+// left is neutralized the way `buildHttpTool` does for its own origin probe. The base is only there
+// so a relative template parses; nothing reads the host.
+function parseUrlTemplate(
+  urlTemplate: unknown,
+  fixed: Map<string, string> = new Map(),
+): URL | null {
   if (typeof urlTemplate !== "string") return null;
+  const resolved = urlTemplate.replace(PLACEHOLDER, (_whole, name: string) => {
+    const value = fixed.get(name);
+    // One level, like everywhere else here: a fixed value that is itself a template resolves from
+    // context, which is unknowable, so it stays neutral.
+    return value !== undefined && namesIn(value).size === 0 ? value : "_";
+  });
   try {
-    return new URL(
-      urlTemplate.replace(PLACEHOLDER, "_"),
-      "https://placeholder.invalid",
-    );
+    return new URL(resolved, "https://placeholder.invalid");
   } catch {
     return null;
   }
@@ -134,8 +143,11 @@ function parseUrlTemplate(urlTemplate: unknown): URL | null {
 // Parsed as a URL rather than split on "?", because a query VALUE may hold one of its own — a
 // `redirect=https://a.test/?x=1&token=fixed` keeps everything after the second question mark, which
 // `split("?")[1]` throws away and `searchParams` does not.
-function urlQueryKeys(urlTemplate: unknown): Set<string> {
-  const url = parseUrlTemplate(urlTemplate);
+function urlQueryKeys(
+  urlTemplate: unknown,
+  fixed: Map<string, string> = new Map(),
+): Set<string> {
+  const url = parseUrlTemplate(urlTemplate, fixed);
   return url ? new Set([...url.searchParams.keys()]) : new Set();
 }
 
@@ -150,7 +162,10 @@ function transmittedUrl(urlTemplate: unknown): string[] {
 // The explicit query entries that survive to the request: everything the URL template does not
 // already spell.
 function reachingQuery(shapes: ToolShapePatch): Record<string, string> {
-  const taken = urlQueryKeys(shapes.urlTemplate);
+  const taken = urlQueryKeys(
+    shapes.urlTemplate,
+    fixedValuesByName(shapes.inputSchema),
+  );
   return Object.fromEntries(
     Object.entries(queryMap(shapes.query)).filter(([k]) => !taken.has(k)),
   );
@@ -236,9 +251,16 @@ export function reachableTemplates(
 // the target query param, letting their explicit value win — so a `bearer_token` attached to a tool
 // that sets its own `Authorization` is never sent, which is exactly the shape this file exists to
 // report.
+// The names the URL template interpolates — `pathFields` in the runtime, which excludes them from
+// the legacy query derivation because they are already spent on the path.
+function urlPlaceholderNames(urlTemplate: unknown): Set<string> {
+  return typeof urlTemplate === "string" ? namesIn(urlTemplate) : new Set();
+}
+
 function autoInjectionReaches(
   kind: string | null | undefined,
   paramName: string | null | undefined,
+  method: string,
   shapes: ToolShapePatch,
 ): boolean {
   // The value is a probe, never a secret: `resolveSecretInjection` only needs a non-empty string to
@@ -257,11 +279,23 @@ function autoInjectionReaches(
   // cannot come out empty whatever `id` is, while a bare `{{id}}` can, and only the first is sure to
   // take the parameter. Guessing that a placeholder always resolves would warn about a tool that is
   // wired.
-  if (urlQueryKeys(shapes.urlTemplate).has(inj.name)) return false;
+  const fixed = fixedValuesByName(shapes.inputSchema);
+  if (urlQueryKeys(shapes.urlTemplate, fixed).has(inj.name)) return false;
+  // The legacy derivation: a NON-body method whose body is the legacy `fields` shape and which has no
+  // explicit query copies its non-path input fields into the URL — before auto-injection, and with
+  // `v != null` rather than `v !== ""`, so a fixed field of that name takes the parameter whatever it
+  // holds. An AI field of that name is not counted: the model may omit it, and that is unknowable.
+  if (
+    !BODY_METHODS.has(method) &&
+    isLegacyFieldsBody(shapes.body) &&
+    Object.keys(queryMap(shapes.query)).length === 0 &&
+    fixed.has(inj.name) &&
+    !urlPlaceholderNames(shapes.urlTemplate).has(inj.name)
+  ) {
+    return false;
+  }
   const explicit = reachingQuery(shapes)[inj.name];
-  const alwaysSet =
-    explicit !== undefined &&
-    alwaysNonEmpty(explicit, fixedValuesByName(shapes.inputSchema));
+  const alwaysSet = explicit !== undefined && alwaysNonEmpty(explicit, fixed);
   return !alwaysSet;
 }
 
@@ -272,7 +306,12 @@ export function credentialReachesRequest(
   shapes: ToolShapePatch,
 ): boolean {
   if (mentions(reachableTemplates(method, shapes), "secret")) return true;
-  return autoInjectionReaches(kind, paramName, shapes);
+  return autoInjectionReaches(
+    kind,
+    paramName,
+    (method ?? DEFAULT_HTTP_METHOD).toUpperCase(),
+    shapes,
+  );
 }
 
 // The warning, or null when the wiring is fine. `kind` is the ATTACHED credential's kind, read off

@@ -81,14 +81,15 @@ describe("a concurrent index drop is alone in its migration", () => {
     for (const name of readdirSync(dir)) {
       const file = `${dir}/${name}/migration.sql`;
       if (!existsSync(file)) continue;
-      const sql = readFileSync(file, "utf8");
-      // Comments carry semicolons of their own, and a comment is not a statement.
-      const statements = sql
+      // Comments carry semicolons of their own, and a comment is not a statement -- and it is not a
+      // DROP either, which is the half this used to get wrong: the file was SELECTED by matching the
+      // raw text, so a migration whose header merely EXPLAINS the rule was swept in and then counted
+      // as a violation of it. Strip once, and use the stripped text for both questions.
+      const sql = readFileSync(file, "utf8")
         .split("\n")
         .filter((l) => !l.trimStart().startsWith("--"))
-        .join("\n")
-        .split(";")
-        .filter((s) => s.trim().length > 0);
+        .join("\n");
+      const statements = sql.split(";").filter((s) => s.trim().length > 0);
       if (!/DROP\s+INDEX\s+CONCURRENTLY/i.test(sql)) continue;
       concurrent += 1;
       if (statements.length !== 1)

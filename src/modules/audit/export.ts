@@ -231,12 +231,26 @@ export async function exportAudit(
   // behind lands BELOW the cursor and gets picked up by a later trip, while one stamped ahead of it
   // does not -- a file mixing two snapshots, under a filename claiming one. The id is the only
   // monotonic thing here, so it is what bounds the walk.
+  //
+  // AND IT IS A BOUND, NOT AN MVCC SNAPSHOT, which is a narrower promise and the one this makes. A
+  // sequence hands out ids at INSERT time and the row becomes visible at COMMIT, so a transaction
+  // that had already taken an id below this bound can commit after the aggregate ran and be read by
+  // a later trip. What closed is the wide case -- any write during the whole export -- and what is
+  // left is the width of a transaction already open when the walk started. Closing that too would
+  // mean holding one REPEATABLE READ transaction across every trip, which is `readInScope`'s shape
+  // for the list as well; deliberately not done here (issue #530, review round 5).
+  //
+  // THE TRAIL AND NOT THE FILTER. The bound is about WHEN the export started, so narrowing it to the
+  // operator's window buys nothing and costs everything: `max(id)` under a date range cannot stop
+  // early on an index ordered by `(created_at, id)`, so it reads the window out -- measured, 7,947
+  // buffers and 23.0 ms for a 30-day window 80 days back, which is the very cost this change exists
+  // to remove, paid once before the walk even starts. Over the trail alone the same aggregate is a
+  // one-row index read: 4 buffers, 0.03 ms.
   const highWater = await readInScope(base, ctx, scope, (db) =>
-    db.auditLog.aggregate({
-      _max: { id: true },
-      where: { ...trail, ...where },
-    }),
+    db.auditLog.aggregate({ _max: { id: true }, where: trail }),
   ).then((r) => r._max.id);
+  // An empty TRAIL, which is not an empty filter result: with no rows at all there is no bound to
+  // take, and the walk below would have nothing to do either way.
   if (highWater === null) {
     return {
       format: AUDIT_EXPORT_FORMAT,

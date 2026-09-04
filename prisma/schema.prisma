@@ -232,7 +232,7 @@ model Invitation {
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@unique([tenantId, email])
-  @@index([tenantId, createdAt, id])
+  @@index([tenantId, createdAt])
   @@map("invitations")
 }
 
@@ -1791,7 +1791,7 @@ model AuditLog {
 
   tenant Tenant? @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
-  @@index([tenantId, createdAt])
+  @@index([tenantId, createdAt(sort: Desc), id(sort: Desc)], map: "audit_logs_tenant_id_created_at_id_idx")
   // The tenant trail rides the composite above for both its `latestAt` and its keyset page, because
   // RLS supplies the leading column. The trails #520 added cannot, so they get their own: this one
   // for `scope=all`'s `latestAt`, plus a PARTIAL index on `(created_at, id) WHERE tenant_id IS NULL`
@@ -1804,7 +1804,7 @@ model AuditLog {
   //
   // There was a fourth, partial on `id`, for the fleet trail's first page back when pages were
   // ordered by `id`. Nothing issues that query any more, so it was dropped.
-  @@index([createdAt, id])
+  @@index([createdAt(sort: Desc), id(sort: Desc)], map: "audit_logs_created_at_id_idx")
   @@map("audit_logs")
 }
 

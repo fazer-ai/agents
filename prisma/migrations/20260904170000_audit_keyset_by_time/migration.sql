@@ -43,12 +43,14 @@ CREATE INDEX CONCURRENTLY "audit_logs_created_at_id_idx"
 CREATE INDEX CONCURRENTLY "audit_logs_fleet_created_at_id_idx"
   ON "audit_logs" ("created_at" DESC, "id" DESC) WHERE "tenant_id" IS NULL;
 
--- The ones they replace: same leading columns, one column short of the ordering. Plain DROP and not
--- CONCURRENTLY -- mixing the two in one file puts Postgres in an implicit transaction and then
--- refuses the CREATEs above with `cannot run inside a transaction block` (measured here). A DROP
--- takes ACCESS EXCLUSIVE for the moment it runs, which on an index is quick; the builds are the part
--- that had to stay off the write path.
-DROP INDEX IF EXISTS "audit_logs_tenant_id_created_at_idx";
-DROP INDEX IF EXISTS "audit_logs_created_at_idx";
-DROP INDEX IF EXISTS "audit_logs_fleet_created_at_idx";
-DROP INDEX IF EXISTS "audit_logs_fleet_id_idx";
+-- The indexes these replace are dropped by the migration that FOLLOWS this one, not here. Two
+-- reasons, and the second is the one that matters on a live deployment:
+--
+--   * mixing `DROP INDEX CONCURRENTLY` with `CREATE INDEX CONCURRENTLY` in one file puts Postgres in
+--     an implicit transaction and the CREATEs fail with `cannot run inside a transaction block`
+--     (measured here); and
+--   * a plain `DROP INDEX` takes ACCESS EXCLUSIVE on the TABLE, not on the index -- so it waits
+--     behind any audit read in flight, and every mutation writing a trail row queues behind it. That
+--     is the exact blocking the concurrent builds above exist to avoid.
+--
+-- One file per concurrent statement is what keeps both off the write path.

@@ -1,0 +1,12 @@
+-- Superseded by `20260904170000_audit_keyset_by_time`. ONE DROP PER FILE, and that is measured, not
+-- style: two `DROP INDEX CONCURRENTLY` statements in one migration are sent as a multi-command
+-- message, which Postgres runs as an implicit transaction, and the command refuses one --
+-- `DROP INDEX CONCURRENTLY cannot run inside a transaction block`. (Several `CREATE INDEX
+-- CONCURRENTLY` in one file do NOT hit this, which is why the migration before this one holds three.)
+--
+-- CONCURRENTLY at all because a plain `DROP INDEX` takes ACCESS EXCLUSIVE on the TABLE rather than on
+-- the index: it waits behind any audit read in flight, and every audited mutation queues behind it --
+-- the exact blocking the concurrent builds exist to avoid.
+--
+-- Replaced by `audit_logs_created_at_id_idx`.
+DROP INDEX CONCURRENTLY IF EXISTS "audit_logs_created_at_idx";

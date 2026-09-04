@@ -186,18 +186,28 @@ function reachingQuery(shapes: ToolShapePatch): Record<string, string> {
   );
 }
 
-// The declared fields the MODEL fills, which is the half of the schema the runtime may not get a
-// value for. `source` absent means "ai" there (`s.source === "fixed" ? "fixed" : "ai"`).
-function aiFieldNames(schema: unknown): Set<string> {
-  if (!isPlainObject(schema)) return new Set();
-  return new Set(
-    Object.entries(schema)
-      .filter(([, spec]) => !isPlainObject(spec) || spec.source !== "fixed")
-      .map(([name]) => name),
-  );
+// The declared fields the MODEL fills, and which of those it may leave out. `source` absent means
+// "ai" (`s.source === "fixed" ? "fixed" : "ai"`), and a REQUIRED one is not optional in any executed
+// call: zod rejects the invocation without it, so its row always overwrites.
+interface AiFields {
+  names: Set<string>;
+  optional: Set<string>;
 }
 
-function bodyTemplates(body: unknown, aiNames: Set<string>): string[] {
+function aiFields(schema: unknown): AiFields {
+  const names = new Set<string>();
+  const optional = new Set<string>();
+  if (!isPlainObject(schema)) return { names, optional };
+  for (const [name, spec] of Object.entries(schema)) {
+    const s = isPlainObject(spec) ? spec : {};
+    if (s.source === "fixed") continue;
+    names.add(name);
+    if (s.required !== true) optional.add(name);
+  }
+  return { names, optional };
+}
+
+function bodyTemplates(body: unknown, ai: AiFields): string[] {
   if (!isPlainObject(body)) return [];
   if (body.mode === "raw" && typeof body.raw === "string") return [body.raw];
   if (body.mode === "kv" && Array.isArray(body.rows)) {
@@ -215,9 +225,24 @@ function bodyTemplates(body: unknown, aiNames: Set<string>): string[] {
       if (!isPlainObject(r) || typeof r.value !== "string") continue;
       const k = typeof r.key === "string" ? r.key.trim() : "";
       if (!k) continue;
+      // Two independent questions about one row, and conflating them is how the last two rounds went
+      // wrong in both directions.
+      //
+      // WHAT IT SENDS: a lone placeholder naming a declared AI field is filled by the MODEL, never
+      // from the vault — `buildHttpTool` takes that branch before any credential interpolation. So a
+      // row of `{{secret}}` on a tool that DECLARES an ai field called `secret` carries the model's
+      // argument, not the credential, and counting it as usage would suppress the warning.
+      //
+      // WHETHER IT OVERWRITES: only an OPTIONAL one may be omitted, and only then does the earlier
+      // row's value survive. A required field is on every executed call, so its row always wins.
       const lone = r.value.match(LONE_PLACEHOLDER)?.[1];
-      const skippable = lone !== undefined && aiNames.has(lone);
-      byKey.set(k, skippable ? [...(byKey.get(k) ?? []), r.value] : [r.value]);
+      const loneAi = lone !== undefined && ai.names.has(lone);
+      const mayBeOmitted = lone !== undefined && ai.optional.has(lone);
+      const carried = loneAi ? "" : r.value;
+      byKey.set(
+        k,
+        mayBeOmitted ? [...(byKey.get(k) ?? []), carried] : [carried],
+      );
     }
     return [...byKey.values()].flat();
   }
@@ -249,6 +274,21 @@ function fixedFields(schema: unknown): { name: string; value: string }[] {
 // Every string the runtime interpolates AND SENDS, for this method and this row. The second half is
 // what a site list alone gets wrong: a template that is assembled and then discarded carries nothing,
 // so counting it as usage silences the warning for a tool whose credential never leaves.
+// The template the runtime actually requests. A urlTemplate starting with "/" is RELATIVE and gets
+// the credential's own base URL prepended before anything is interpolated, so a `{{secret}}` stored
+// in that base is sent — the row alone cannot say whether the credential leaves.
+export function effectiveUrlTemplate(
+  urlTemplate: unknown,
+  credentialBaseUrl: string | null | undefined,
+): unknown {
+  if (typeof urlTemplate !== "string" || !urlTemplate.startsWith("/")) {
+    return urlTemplate;
+  }
+  // No base and a relative template is a tool `buildHttpTool` refuses to build at all; there is no
+  // request to say anything about.
+  return credentialBaseUrl ? `${credentialBaseUrl}${urlTemplate}` : urlTemplate;
+}
+
 export function reachableTemplates(
   method: string | null | undefined,
   shapes: ToolShapePatch,
@@ -260,9 +300,7 @@ export function reachableTemplates(
   );
   const m = (method ?? DEFAULT_HTTP_METHOD).toUpperCase();
   if (BODY_METHODS.has(m)) {
-    emitted.push(
-      ...bodyTemplates(shapes.body, aiFieldNames(shapes.inputSchema)),
-    );
+    emitted.push(...bodyTemplates(shapes.body, aiFields(shapes.inputSchema)));
   }
 
   const out = [...emitted];
@@ -367,12 +405,22 @@ export function credentialReachesRequest(
 // the raw row would report a working tool as unwired on any update that did not happen to touch that
 // template.
 export function unusedCredentialWarning(
-  facts: { kind: string | null; paramName: string | null },
+  facts: {
+    kind: string | null;
+    paramName: string | null;
+    baseUrl: string | null;
+  },
   method: string | null | undefined,
   raw: ToolShapePatch,
 ): string | null {
   if (isNonInjectableSecret(facts.kind)) return null;
-  const { shapes } = normalizeToolShapes(raw);
+  const { shapes: normalized } = normalizeToolShapes(raw);
+  const shapes: ToolShapePatch = {
+    ...normalized,
+    urlTemplate: effectiveUrlTemplate(normalized.urlTemplate, facts.baseUrl) as
+      | string
+      | undefined,
+  };
   if (credentialReachesRequest(facts.kind, facts.paramName, method, shapes)) {
     return null;
   }

@@ -572,7 +572,11 @@ async function credentialWiringWarning(
     readVaultRefFacts(db, credentialRef),
   );
   const warning = unusedCredentialWarning(
-    { kind: facts?.kind ?? null, paramName: facts?.paramName ?? null },
+    {
+      kind: facts?.kind ?? null,
+      paramName: facts?.paramName ?? null,
+      baseUrl: facts?.baseUrl ?? null,
+    },
     method,
     shapes,
   );

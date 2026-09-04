@@ -53,6 +53,7 @@ interface Wiring {
   method?: string;
   kind?: string;
   paramName?: string | null;
+  credentialBaseUrl?: string;
   urlTemplate?: string;
   headers?: Record<string, string>;
   query?: Record<string, unknown>;
@@ -72,6 +73,7 @@ const asDef = (w: Wiring): HttpToolDef => ({
   credentialRef: "vault:1",
   credentialKind: w.kind ?? "generic",
   credentialParamName: w.paramName ?? null,
+  credentialBaseUrl: w.credentialBaseUrl ?? null,
 });
 
 const asShapes = (w: Wiring): ToolShapePatch => ({
@@ -91,7 +93,16 @@ async function secretLeft(w: Wiring): Promise<boolean> {
     resolveCredential: async () => SECRET,
     fetchImpl: stubFetch(captured),
   });
-  (await tool.invoke({})) as unknown as ToolMessage;
+  // NOTE: a REQUIRED ai field is supplied, because zod refuses the call without it — which is the
+  // very reason its row always overwrites. Everything optional is left out, so the runtime takes the
+  // omission branch the table is reading.
+  const input: Record<string, unknown> = {};
+  for (const [name, spec] of Object.entries(
+    (w.inputSchema ?? {}) as Record<string, { required?: boolean }>,
+  )) {
+    if (spec?.required === true) input[name] = "model-value";
+  }
+  (await tool.invoke(input)) as unknown as ToolMessage;
   const headers = captured.init?.headers as Record<string, string> | undefined;
   return [
     // The URL as far as it is TRANSMITTED. A stub fetch is handed the whole string, fragment and
@@ -107,7 +118,11 @@ async function secretLeft(w: Wiring): Promise<boolean> {
 
 const scannerSaysReaches = (w: Wiring): boolean =>
   unusedCredentialWarning(
-    { kind: w.kind ?? "generic", paramName: w.paramName ?? null },
+    {
+      kind: w.kind ?? "generic",
+      paramName: w.paramName ?? null,
+      baseUrl: w.credentialBaseUrl ?? null,
+    },
     w.method ?? "GET",
     asShapes(w),
   ) === null;
@@ -429,6 +444,41 @@ const CASES: Wiring[] = [
     },
   },
 
+  {
+    label:
+      "{{secret}} stored in the credential's own base, under a relative template",
+    reaches: true,
+    urlTemplate: "/v1/thing",
+    credentialBaseUrl: `https://${PUBLIC}/{{secret}}`,
+  },
+  {
+    label: "…and an absolute template ignores that base entirely",
+    reaches: false,
+    urlTemplate: `https://${PUBLIC}/v1/thing`,
+    credentialBaseUrl: `https://${PUBLIC}/{{secret}}`,
+  },
+  {
+    label:
+      "a lone {{secret}} row on a tool that DECLARES an ai field called secret",
+    reaches: false,
+    method: "POST",
+    body: { mode: "kv", rows: [{ key: "auth", value: "{{secret}}" }] },
+    inputSchema: { secret: { type: "string" } },
+  },
+  {
+    label: "a later lone AI row that is REQUIRED always overwrites",
+    reaches: false,
+    method: "POST",
+    body: {
+      mode: "kv",
+      rows: [
+        { key: "auth", value: "{{secret}}" },
+        { key: "auth", value: "{{override}}" },
+      ],
+    },
+    inputSchema: { override: { type: "string", required: true } },
+  },
+
   // ── spelling ──
   {
     label:
@@ -496,15 +546,19 @@ describe("the scanner answers what the runtime does", () => {
     // NOTE: the floor. Every assertion above is `toBe(w.reaches)`, so a table that drifted to a
     // single verdict would still pass while proving nothing about the boundary between them.
     const reaching = CASES.filter((c) => c.reaches).length;
-    expect(reaching).toBeGreaterThan(13);
-    expect(CASES.length - reaching).toBeGreaterThan(13);
+    expect(reaching).toBeGreaterThan(14);
+    expect(CASES.length - reaching).toBeGreaterThan(14);
   });
 });
 
 describe("which kinds the warning is about", () => {
   const bare: ToolShapePatch = { urlTemplate: `https://${PUBLIC}/v1/thing` };
   const warn = (kind: string | null) =>
-    unusedCredentialWarning({ kind, paramName: "X-Probe" }, "GET", bare);
+    unusedCredentialWarning(
+      { kind, paramName: "X-Probe", baseUrl: null },
+      "GET",
+      bare,
+    );
 
   test("only the kinds that put nothing on the request by themselves", () => {
     const warned = SECRET_TYPE_IDS.filter((id) => warn(id) !== null);
@@ -570,6 +624,7 @@ describe.skipIf(!dbUp)("tool_create / tool_update say so", () => {
   let genericRef = "";
   let bearerRef = "";
   let headerRef = "";
+  let basedRef = "";
   let n = 0;
 
   const principal = (): VerifiedToken =>
@@ -620,6 +675,20 @@ describe.skipIf(!dbUp)("tool_create / tool_update say so", () => {
           value: "abc123TOKEN",
           kind: "header",
           paramName: "X-Api-Key",
+        },
+        undefined,
+        undefined,
+        appDb,
+      )
+    ).ref;
+    basedRef = (
+      await createVaultEntry(
+        ctx,
+        {
+          name: "wiring-based",
+          value: "abc123TOKEN",
+          kind: "generic",
+          baseUrl: `https://${PUBLIC}/{{secret}}`,
         },
         undefined,
         undefined,
@@ -712,6 +781,25 @@ describe.skipIf(!dbUp)("tool_create / tool_update say so", () => {
     });
     expect(shadowed.ok).toBe(true);
     expect(wiringWarning(shadowed)).toHaveLength(1);
+  });
+
+  test("the credential's own base URL is part of the request, and is read off the entry", async () => {
+    // NOTE: a RELATIVE template gets that base prepended before anything is interpolated, so a
+    // {{secret}} stored in the base is sent — and the tool row alone cannot say so. Without the base
+    // in the facts the writer reports a working tool as unwired, which a mutation of exactly that
+    // line survived until this test existed.
+    const relative = await create({
+      credential_ref: basedRef,
+      url_template: "/v1/thing",
+    });
+    expect(relative.ok).toBe(true);
+    expect(wiringWarning(relative)).toHaveLength(0);
+
+    // NOTE: the control — an ABSOLUTE template ignores the base entirely, so the same credential is
+    // dead on this tool.
+    const absolute = await create({ credential_ref: basedRef });
+    expect(absolute.ok).toBe(true);
+    expect(wiringWarning(absolute)).toHaveLength(1);
   });
 
   test("no credential attached, no warning", async () => {

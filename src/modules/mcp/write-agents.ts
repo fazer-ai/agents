@@ -730,12 +730,26 @@ export async function toolUpdate(
     const appliedProj: Record<string, unknown> = {};
     for (const k of keys)
       appliedProj[k] = (updated as unknown as Record<string, unknown>)[k];
+    // NOTE: recomputed from the row the write RETURNED, like `appliedProj` beside it, rather than
+    // reused from the preview. The preview reads outside the write's transaction, so a second
+    // administrator can change the credential or a template in between — and the response would
+    // then report a diff of the row that was written next to a warning about the row that was read.
+    // No test distinguishes the two: the divergence needs a write landing inside that window, and
+    // the consistency with the line above is the argument.
+    const appliedWiring = await credentialWiringWarning(
+      ctx,
+      base,
+      updated.credentialRef,
+      updated.method,
+      toolShapesOf(updated),
+    );
+    const applied = [...norm.warnings, ...appliedWiring];
     return ok({
       dryRun: false,
       applied: true,
       target,
       diff: diffFields(beforeProj, appliedProj),
-      ...warnings,
+      ...(applied.length > 0 ? { warnings: applied } : {}),
     });
   } catch (e) {
     return failOf(e);

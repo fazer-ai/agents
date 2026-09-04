@@ -272,8 +272,14 @@ function fixedFields(schema: unknown): { name: string; value: string }[] {
     // `source === "fixed"` is not a detail: `buildHttpTool` reads `s.source === "fixed" ? "fixed" :
     // "ai"` and precomputes only the fixed values with the secret in scope, so a `{{secret}}` written
     // into an AI field's `value` is never interpolated.
+    // A fixed field whose `value` is absent or not a string is still a fixed field — `parseFields`
+    // gives it `""` — and its NAME is what the legacy query derivation puts on the URL, blocking a
+    // query credential of the same name. Dropping it here lost the name, not just the value.
     if (isPlainObject(spec) && spec.source === "fixed") {
-      if (typeof spec.value === "string") out.push({ name, value: spec.value });
+      out.push({
+        name,
+        value: typeof spec.value === "string" ? spec.value : "",
+      });
     }
   }
   return out;
@@ -355,6 +361,16 @@ function autoInjectionReaches(
     const names = isPlainObject(shapes.headers)
       ? Object.keys(shapes.headers)
       : [];
+    // The one header the runtime writes ITSELF: a body method with no content-type of its own gets
+    // `Content-Type: application/json` added before auto-injection, which occupies that target the
+    // same way an operator's own header does.
+    if (
+      BODY_METHODS.has(method) &&
+      inj.name.toLowerCase() === "content-type" &&
+      !names.some((h) => h.toLowerCase() === "content-type")
+    ) {
+      return false;
+    }
     return !names.some((h) => h.toLowerCase() === inj.name.toLowerCase());
   }
   // Query: the runtime injects unless the param is already on the URL — spelled in the template, or

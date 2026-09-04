@@ -494,6 +494,30 @@ const CASES: Wiring[] = [
     headers: { "X-Auth": ["Bearer {{secret}}"] },
   },
 
+  {
+    label: "a header kind aimed at the Content-Type the runtime writes itself",
+    reaches: false,
+    method: "POST",
+    kind: "header",
+    paramName: "Content-Type",
+    body: { mode: "kv", rows: [{ key: "a", value: "1" }] },
+  },
+  {
+    label: "…which a GET does not write, so there it injects",
+    reaches: true,
+    method: "GET",
+    kind: "header",
+    paramName: "Content-Type",
+  },
+  {
+    label: "a fixed field with no value still takes its query parameter",
+    reaches: false,
+    method: "GET",
+    kind: "query",
+    paramName: "token",
+    inputSchema: { token: { type: "string", source: "fixed" } },
+  },
+
   // ── spelling ──
   {
     label:
@@ -561,8 +585,8 @@ describe("the scanner answers what the runtime does", () => {
     // NOTE: the floor. Every assertion above is `toBe(w.reaches)`, so a table that drifted to a
     // single verdict would still pass while proving nothing about the boundary between them.
     const reaching = CASES.filter((c) => c.reaches).length;
-    expect(reaching).toBeGreaterThan(16);
-    expect(CASES.length - reaching).toBeGreaterThan(14);
+    expect(reaching).toBeGreaterThan(17);
+    expect(CASES.length - reaching).toBeGreaterThan(16);
   });
 });
 
@@ -815,6 +839,58 @@ describe.skipIf(!dbUp)("tool_create / tool_update say so", () => {
     const absolute = await create({ credential_ref: basedRef });
     expect(absolute.ok).toBe(true);
     expect(wiringWarning(absolute)).toHaveLength(1);
+  });
+
+  test("the apply's warning describes the row it WROTE, not the row it read", async () => {
+    // NOTE: the preview reads outside the write's transaction. A second administrator landing in
+    // that window changes what the write lands on, and the response would otherwise report a diff of
+    // the row that was written next to a warning about the row that was read.
+    //
+    // The window is opened deliberately: a Prisma extension fires ONCE, after `getToolDefinition`s
+    // read returns and before `updateToolDefinition` runs, and unwires the tool from another
+    // connection. The label-only update then has to come back warning.
+    const created = await create({
+      credential_ref: genericRef,
+      headers: { "X-Auth": "{{secret}}" },
+      dry_run: false,
+    });
+    const id = created.ok
+      ? (created.data as { target: string }).target.split(":")[1]
+      : "";
+    expect(wiringWarning(created)).toHaveLength(0);
+
+    let fired = false;
+    const racing = appDb.$extends({
+      query: {
+        toolDefinition: {
+          async findUnique({ args, query }) {
+            const result = await query(args);
+            if (!fired) {
+              fired = true;
+              await toolUpdate(
+                principal(),
+                {
+                  tool_id: id as string,
+                  headers: { "X-Other": "constant" },
+                  dry_run: false,
+                },
+                { base: appDb },
+              );
+            }
+            return result;
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+
+    const r = await toolUpdate(
+      principal(),
+      { tool_id: id as string, label: "Renamed", dry_run: false },
+      { base: racing },
+    );
+    expect(fired).toBe(true);
+    expect(r.ok).toBe(true);
+    expect(wiringWarning(r)).toHaveLength(1);
   });
 
   test("no credential attached, no warning", async () => {

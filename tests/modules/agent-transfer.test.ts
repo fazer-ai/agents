@@ -2393,6 +2393,83 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     });
   });
 
+  // The import writes past the services in BOTH directions, so the namespace question is asked in
+  // both: a bundled template whose `send_<slug>` a destination tool already holds is skipped, the
+  // way one whose name another template holds is. And a bundle can carry blank metadata — hand
+  // edited, or written by a build with other rules — which the services refuse and which would
+  // leave a row nothing can save again.
+  test("a bundled template whose tool name is taken is skipped, and blank metadata falls back to the name", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const bundle = structuredClone(exp);
+    const code = bundle.components?.codeTools?.find(
+      (c) => c.name === "validar_cpf",
+    );
+    if (!code) throw new Error("bundle missing validar_cpf");
+    code.name = "sem_rotulo";
+    code.label = "   ";
+    code.description = "  ";
+    const grant = bundle.agent.tools.find(
+      (g) => g?.source === "CODE" && g.tool === "validar_cpf",
+    );
+    if (grant?.source !== "CODE") throw new Error("bundle missing the grant");
+    grant.tool = "sem_rotulo";
+    const starter = documentStarter("quote", "pt-BR");
+    if (!starter) throw new Error("no starter");
+    bundle.components = {
+      ...(bundle.components as NonNullable<typeof bundle.components>),
+      documentTemplates: [
+        {
+          name: "Nota fiscal",
+          slug: "nota_fiscal",
+          description: null,
+          blocks: starter.blocks,
+          fields: starter.fields,
+          style: starter.style,
+          numberPrefix: null,
+          enabled: true,
+        } as never,
+      ],
+    };
+    // The destination already publishes that name, as a code tool.
+    await suDb.codeToolDefinition.create({
+      data: {
+        tenantId: dstTenant,
+        name: "send_nota_fiscal",
+        label: "Send nota fiscal",
+        description: "d",
+        inputSchema: {},
+        code: "return 1",
+      },
+    });
+
+    const { warnings } = await importAgent(dstCtx(), bundle, appDb);
+    expect(
+      await suDb.documentTemplate.count({
+        where: { tenantId: dstTenant, slug: "nota_fiscal" },
+      }),
+    ).toBe(0);
+    expect(
+      warnings.some(
+        (w) =>
+          w.code === "documentToolNameTaken" &&
+          w.params?.name === "Nota fiscal",
+      ),
+    ).toBe(true);
+    const stored = await suDb.codeToolDefinition.findFirstOrThrow({
+      where: { tenantId: dstTenant, name: "sem_rotulo" },
+      select: { label: true, description: true },
+    });
+    expect(stored).toEqual({
+      label: "sem_rotulo",
+      description: "sem_rotulo",
+    });
+    await suDb.codeToolDefinition.deleteMany({
+      where: { tenantId: dstTenant, name: "send_nota_fiscal" },
+    });
+  });
+
   // A rename has to fit inside the ceiling it is renaming for. A 64-character name is legal, and
   // `<name>_2` is 66 — refused by the provider with the whole function list for a code tool, and
   // normalized back to the original by the HTTP builder, which silently undoes the rename.

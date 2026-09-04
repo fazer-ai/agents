@@ -2285,6 +2285,12 @@ function AgentEditor() {
           'Document template "{{name}}" was not imported: this account already has a template with that name ({{existing}}). Names have to be unique, because the agent picks between documents by name.',
           p,
         );
+      case "documentToolNameTaken":
+        return t(
+          "editor.importWarning.documentToolNameTaken",
+          'Document template "{{name}}" was not imported: the tool name {{tool}} it would publish is already used by the tool "{{holder}}". One name reaches the model, so one of the two would stop being callable.',
+          p,
+        );
       case "documentTemplateInvalid":
         return t(
           "editor.importWarning.documentTemplateInvalid",

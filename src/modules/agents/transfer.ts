@@ -69,6 +69,7 @@ import {
   documentHoldingToolName,
   isRagToolName,
   lockToolNames,
+  toolHoldingName,
 } from "@/modules/tool-definitions/namespace";
 import { normalizeToolShapes } from "@/modules/tool-definitions/normalize";
 import { storableResponseTemplate } from "@/modules/tool-definitions/response-template";
@@ -1523,6 +1524,17 @@ function renamedToolName(base: string, taken: ReadonlySet<string>): string {
 // these bound TEXT an operator wrote: a cut between the halves of an astral character leaves an
 // orphan surrogate that Postgres refuses inside a jsonb write (src/lib/text.ts).
 const TOOL_DESCRIPTION_MAX = 2000;
+// A bundle can carry an EMPTY label or description — hand-edited, or written by a build whose rules
+// differ — and `??` only answers for `null`/`undefined`. The services refuse a blank one in both
+// fields (they are trimmed before the minimum), so a row created here with one could never be saved
+// from the console again, and the label is what the whole console shows.
+function blankFallback(
+  value: string | null | undefined,
+  fallback: string,
+): string {
+  return value?.trim() ? value.trim() : fallback;
+}
+
 function clipLabel(label: string): string {
   return clipText(label, TOOL_LABEL_MAX);
 }
@@ -1666,7 +1678,7 @@ async function createMissingComponents(
     chosen.set(tdef.name, name);
     taken.add(name);
     const label = clipLabel(
-      renamedLabel(tdef.name, name, tdef.label ?? tdef.name),
+      renamedLabel(tdef.name, name, blankFallback(tdef.label, name)),
     );
     // Recorded once a row under the new name EXISTS — written below, or found by the pre-check
     // or the race — and not before: a component the checks below skip was otherwise announced
@@ -1821,7 +1833,7 @@ async function createMissingComponents(
     chosenCode.set(tdef.name, name);
     taken.add(name);
     const label = clipLabel(
-      renamedLabel(tdef.name, name, tdef.label ?? tdef.name),
+      renamedLabel(tdef.name, name, blankFallback(tdef.label, name)),
     );
     // Recorded once a row under the new name EXISTS, and not before, for the reason the HTTP
     // loop's `landed` gives.
@@ -1862,9 +1874,7 @@ async function createMissingComponents(
           label,
           // The column is required and the model reads it to decide when to call; a bundle that
           // carries none gets the label, which is the next best statement of what the tool is.
-          description: clipDescription(
-            tdef.description?.trim() ? tdef.description : label,
-          ),
+          description: clipDescription(blankFallback(tdef.description, label)),
           inputSchema: (shapes.inputSchema ?? {}) as Prisma.InputJsonValue,
           code: tdef.code,
           enabled: tdef.enabled ?? true,
@@ -2066,6 +2076,24 @@ async function createMissingComponents(
     // is both unreadable and named like an existing one is more usefully told about the first.
     // not-caller-input: a name read off the template being imported, not a value from this request
     const approvedName = templateNameSchema.parse(tpl.name);
+    // The destination may already have a TOOL under the name this template would publish. The
+    // template is assembled first, so importing it would silently take that tool off the agents
+    // that hold it — and the tool could no longer be saved under its own name either. Skipped with
+    // a warning, the way a name another template holds is: a slug moved instead would change the
+    // name prompts use to ask for this document (namespace.ts).
+    const toolHolder = await toolHoldingName(db, tpl.slug);
+    if (toolHolder) {
+      warnings.push({
+        code: "documentToolNameTaken",
+        params: {
+          name: tpl.name,
+          tool: documentToolName(tpl.slug),
+          holder: toolHolder.name,
+        },
+        target: { kind: "document", name: tpl.slug },
+      });
+      continue;
+    }
     const nameHolder = await db.documentTemplate.findFirst({
       where: { name: approvedName },
       select: { slug: true },

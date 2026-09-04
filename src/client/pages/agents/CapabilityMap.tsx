@@ -85,7 +85,9 @@ export function buildGroups(
     .filter((g) => g.source === "CODE")
     .map((g) => {
       const ct = catalog.codeTools.find((x) => x.id === g.codeToolDefinitionId);
-      return ct ? ct.label : undefined;
+      // Disabled is the same as absent here: the assembly skips a disabled definition, so the model
+      // is never offered it, and a map that draws it claims a capability the agent does not have.
+      return ct?.enabled ? ct.label : undefined;
     })
     .filter((n): n is string => !!n);
   if (codeNames.length > 0) {

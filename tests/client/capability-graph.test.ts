@@ -164,6 +164,19 @@ describe("buildGroups — every grant source is drawn", () => {
     expect(code?.items).toEqual(["Look up CPF"]);
   });
 
+  test("a code grant whose tool the operator disabled draws nothing", () => {
+    // The assembly skips a disabled definition, so the model is never offered it: a map that draws
+    // it claims a capability the agent does not have. Same rule as the disabled document above.
+    const disabled = {
+      ...catalog,
+      codeTools: [
+        { id: "8", name: "lookup_cpf", label: "Look up CPF", enabled: false },
+      ],
+    };
+    const groups = buildGroups(disabled, [grantFor.CODE as GrantState], t);
+    expect(groups.find((g) => g.key === "code")).toBeUndefined();
+  });
+
   test("a code grant whose tool no longer exists draws nothing", () => {
     const groups = buildGroups(
       catalog,

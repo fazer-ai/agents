@@ -67,6 +67,7 @@ import {
 } from "@/modules/tool-definitions/body-shape";
 import {
   documentHoldingToolName,
+  isRagToolName,
   lockToolNames,
 } from "@/modules/tool-definitions/namespace";
 import { normalizeToolShapes } from "@/modules/tool-definitions/normalize";
@@ -1572,8 +1573,17 @@ async function storedToolName(
   // Normalized to the identifier the console derives from a label, which is also what makes it
   // reportable: a name that moves here moves through the same rename machinery as any other.
   const base = normalizeToolName(bundled);
-  let name = isNativeToolName(base) ? renamedToolName(base, taken) : base;
-  while (await heldByOtherKind(name)) {
+  // ONE loop over every kind that owns a name, because they are the same question: a name the model
+  // would answer with someone else's tool. Natives and RAG are built-ins (RAG's exist whenever a
+  // knowledge base is granted, and both services refuse them where a name is typed);
+  // `heldByOtherKind` is the caller's — the other tool table, plus the document templates, stored
+  // and bundled.
+  let name = base;
+  while (
+    isNativeToolName(name) ||
+    isRagToolName(name) ||
+    (await heldByOtherKind(name))
+  ) {
     taken.add(name);
     name = renamedToolName(base, taken);
   }
@@ -1604,6 +1614,11 @@ async function createMissingComponents(
   // concurrent tool create could commit into that table between the question and the insert
   // (namespace.ts). One acquisition covers every name this import claims.
   await lockToolNames(db);
+  // The `send_<slug>` tools the bundle's own templates will publish. They do not exist in the
+  // database yet — the templates are inserted after the tool loops — so the loops carry them.
+  const bundledDocumentNames = new Set(
+    (components.documentTemplates ?? []).map((d) => documentToolName(d.slug)),
+  );
   // Bundle name → stored name, for the HTTP tools this loop could not store under their own.
   const renamedHttpTools = new Map<string, string>();
   // Both kinds share the model's namespace, so a name either loop chooses is taken from the
@@ -1617,9 +1632,7 @@ async function createMissingComponents(
     // ...and the templates THIS bundle carries: their `send_<slug>` tools are assembled before
     // either tool table, so a tool landing on one of those names is the one that disappears. The
     // STORED templates are asked per name below; these do not exist yet to be asked about.
-    ...(components.documentTemplates ?? []).map((d) =>
-      documentToolName(d.slug),
-    ),
+    ...bundledDocumentNames,
   ]);
   // One stored name per bundle name: a bundle carrying the same native-named component twice (a
   // hand-edited file) chose a new suffix per occurrence and the last one overwrote the grant
@@ -1644,7 +1657,10 @@ async function createMissingComponents(
             select: { id: true },
           })) !== null ||
           // A document template publishes `send_<slug>` and is assembled BEFORE either tool table,
-          // so a tool landing on that name is the one the assembly drops (namespace.ts).
+          // so a tool landing on that name is the one the assembly drops (namespace.ts). The
+          // bundle's own templates count too: they are inserted after this loop, so the database
+          // cannot be asked about them yet.
+          bundledDocumentNames.has(n) ||
           (await documentHoldingToolName(db, n)) !== null,
       ));
     chosen.set(tdef.name, name);
@@ -1798,7 +1814,9 @@ async function createMissingComponents(
           (await db.toolDefinition.findFirst({
             where: { name: n },
             select: { id: true },
-          })) !== null || (await documentHoldingToolName(db, n)) !== null,
+          })) !== null ||
+          bundledDocumentNames.has(n) ||
+          (await documentHoldingToolName(db, n)) !== null,
       ));
     chosenCode.set(tdef.name, name);
     taken.add(name);

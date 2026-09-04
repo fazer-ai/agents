@@ -2327,6 +2327,72 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     });
   });
 
+  // Two more names the bundle can carry that the model already answers with something else: a RAG
+  // built-in (which exists whenever a knowledge base is granted, and which the assembly builds
+  // first), and a template of the SAME bundle, whose `send_<slug>` tool does not exist in the
+  // database yet when the tool loops choose their names.
+  test("an imported code tool named after a RAG tool, or after this bundle's own template, moves", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const bundle = structuredClone(exp);
+    const code = bundle.components?.codeTools?.find(
+      (c) => c.name === "validar_cpf",
+    );
+    if (!code || !bundle.components?.codeTools) {
+      throw new Error("bundle missing validar_cpf");
+    }
+    code.name = "search_knowledge";
+    code.label = "Search knowledge";
+    bundle.components.codeTools.push({
+      ...structuredClone(code),
+      name: "send_contrato_bundle",
+      label: "Send contrato bundle",
+    });
+    bundle.components.documentTemplates = [
+      ...(bundle.components.documentTemplates ?? []),
+      {
+        name: "Contrato bundle",
+        slug: "contrato_bundle",
+        description: null,
+        blocks: [],
+        fields: [],
+        style: {},
+        numberPrefix: null,
+        enabled: true,
+      } as never,
+    ];
+    const grant = bundle.agent.tools.find(
+      (g) => g?.source === "CODE" && g.tool === "validar_cpf",
+    );
+    if (grant?.source !== "CODE") throw new Error("bundle missing the grant");
+    grant.tool = "search_knowledge";
+    bundle.agent.tools.push({ source: "CODE", tool: "send_contrato_bundle" });
+
+    const { warnings } = await importAgent(dstCtx(), bundle, appDb);
+    const rows = await suDb.codeToolDefinition.findMany({
+      where: {
+        tenantId: dstTenant,
+        OR: [
+          { name: { startsWith: "search_knowledge" } },
+          { name: { startsWith: "send_contrato_bundle" } },
+        ],
+      },
+      select: { name: true },
+      orderBy: { name: "asc" },
+    });
+    expect(rows.map((r) => r.name)).toEqual([
+      "search_knowledge_2",
+      "send_contrato_bundle_2",
+    ]);
+    expect(
+      warnings.filter((w) => w.code === "codeToolRenamed").length,
+    ).toBeGreaterThanOrEqual(2);
+    await suDb.documentTemplate.deleteMany({
+      where: { tenantId: dstTenant, slug: "contrato_bundle" },
+    });
+  });
+
   // A rename has to fit inside the ceiling it is renaming for. A 64-character name is legal, and
   // `<name>_2` is 66 — refused by the provider with the whole function list for a code tool, and
   // normalized back to the original by the HTTP builder, which silently undoes the rename.

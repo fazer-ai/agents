@@ -33,3 +33,23 @@ describe("a just-created component is granted before the catalog is awaited", ()
     });
   }
 });
+
+// The other half of the same problem: WHICH grants the auto-grant adds to. The callback is held by
+// a dialog, so it carries the closure of the render that opened it — and a save answering after the
+// operator changed another grant would emit that older list, silently reverting the change. So the
+// selectors read a ref that is rewritten on every render, never the render's own `nonRag`.
+describe("the auto-grants add to the grants as they stand now", () => {
+  test("each selector reads the ref, and adds through it", () => {
+    for (const select of ["selectHttp", "selectCode", "selectMcp"]) {
+      const start = SRC.indexOf(`function ${select}(id: string) {`);
+      expect([select, start > 0]).toEqual([select, true]);
+      const body = SRC.slice(start, SRC.indexOf("\n  }\n", start));
+      expect([select, body.includes("hasGrant(")]).toEqual([select, true]);
+      expect([select, body.includes("addGrant(")]).toEqual([select, true]);
+      // The render's own list is exactly what must NOT be read here.
+      expect([select, body.includes("nonRag")]).toEqual([select, false]);
+    }
+    // And the ref is refreshed on every render, or it is a snapshot with extra steps.
+    expect(SRC.includes("grantsRef.current = grants;")).toBe(true);
+  });
+});

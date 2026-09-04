@@ -511,6 +511,16 @@ export function ToolGrantsEditor({
   const rag = grants.filter((g) => g.source === "RAG");
   const emit = (nonRag: GrantState[]) => onChange([...rag, ...nonRag]);
   const nonRag = grants.filter((g) => g.source !== "RAG");
+  // The grants as they stand NOW, for the auto-grants below. They are called from a dialog's
+  // callback, which holds the closure of the render that opened it: a save that answers after the
+  // operator changed another grant would otherwise emit the older list and revert that change.
+  const grantsRef = useRef(grants);
+  grantsRef.current = grants;
+  // Adds one grant to the CURRENT list, dropping nothing the operator did in the meantime.
+  const addGrant = (grant: GrantState) =>
+    onChange([...grantsRef.current, grant]);
+  const hasGrant = (match: (g: GrantState) => boolean) =>
+    grantsRef.current.some(match);
 
   const nativeGrant = grants.find((g) => g.source === "NATIVE");
   const allNativeNames = catalog.native.map((n) => n.name);
@@ -674,9 +684,9 @@ export function ToolGrantsEditor({
 
   // Idempotent grant-on (used to auto-select a just-created tool, vs the toggle above).
   function selectHttp(id: string) {
-    if (nonRag.some((g) => g.source === "HTTP" && g.toolDefinitionId === id))
+    if (hasGrant((g) => g.source === "HTTP" && g.toolDefinitionId === id))
       return;
-    emit([...nonRag, { source: "HTTP", toolDefinitionId: id }]);
+    addGrant({ source: "HTTP", toolDefinitionId: id });
   }
 
   // The grant goes on BEFORE the refetch is awaited, and the order is the point: `selectHttp` reads
@@ -707,11 +717,9 @@ export function ToolGrantsEditor({
 
   // Idempotent grant-on (used to auto-select a just-created code tool, vs the toggle above).
   function selectCode(id: string) {
-    if (
-      nonRag.some((g) => g.source === "CODE" && g.codeToolDefinitionId === id)
-    )
+    if (hasGrant((g) => g.source === "CODE" && g.codeToolDefinitionId === id))
       return;
-    emit([...nonRag, { source: "CODE", codeToolDefinitionId: id }]);
+    addGrant({ source: "CODE", codeToolDefinitionId: id });
   }
 
   async function onCodeToolSaved(
@@ -726,14 +734,9 @@ export function ToolGrantsEditor({
   // Idempotent grant-on for a just-created MCP server (empty tool subset; the operator then discovers
   // + picks tools, same as toggling one on).
   function selectMcp(id: string) {
-    if (
-      nonRag.some((g) => g.source === "MCP" && g.mcpServerConnectionId === id)
-    )
+    if (hasGrant((g) => g.source === "MCP" && g.mcpServerConnectionId === id))
       return;
-    emit([
-      ...nonRag,
-      { source: "MCP", mcpServerConnectionId: id, enabledTools: [] },
-    ]);
+    addGrant({ source: "MCP", mcpServerConnectionId: id, enabledTools: [] });
   }
 
   async function onMcpSaved(

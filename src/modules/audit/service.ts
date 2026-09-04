@@ -345,13 +345,19 @@ export interface AuditCursor {
 // is "which page was it on": a cursor nobody can read is one nobody can check.
 const CURSOR_SEP = "|";
 
-// The instant half, as `toISOString` spells it for any year of four digits. The bound is the point:
-// beyond four digits that method switches to the EXPANDED form (`-100000-…`, `+275760-…`), which is
-// canonical JavaScript and outside what a Postgres `timestamptz` holds -- the negative one is
-// refused at bind time, turning a malformed cursor into a 500 where this endpoint promises a 400.
-// Matching the shape excludes both ends at once, without this module having to carry the database's
-// exact range as a pair of magic instants.
-const CURSOR_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+// The instant half, as `toISOString` spells it for a four-digit year that is not `0000`.
+//
+// THE SHAPE IS THE RANGE CHECK, and it is exhaustive rather than a list of bad spellings. Beyond
+// four digits that method switches to the EXPANDED form (`-100000-…`, `+275760-…`), which is
+// canonical JavaScript and reaches years no `timestamptz` holds; `0000` is a four-digit year the
+// calendar Postgres uses does not have at all. Both are refused at bind time, which turns a
+// malformed cursor into a 500 where this endpoint promises a 400.
+//
+// Swept rather than guessed: every one of the 10,000 four-digit years was built, round-tripped and
+// bound against Postgres, and `0000` is the only one it refuses. So four digits minus that year IS
+// the set the column accepts, and the canonical round trip below already rules out dates that do not
+// exist inside it -- there is no third case for a later reader to discover.
+const CURSOR_INSTANT = /^(?!0000)\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
 export function encodeAuditCursor(c: AuditCursor): string {
   return `${c.createdAt.toISOString()}${CURSOR_SEP}${c.id}`;

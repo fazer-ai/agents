@@ -206,6 +206,36 @@ describe.skipIf(!dbUp)("reading the trail", () => {
     });
   });
 
+  // THE WHOLE SET, SWEPT, and this is what three review rounds of one-more-bad-spelling argue for.
+  // The instant a cursor may carry is exactly: a four-digit year that is not `0000`, spelled the way
+  // `toISOString` spells it, naming a date that exists. This walks every one of the 10,000
+  // four-digit years and asserts the codec agrees with the database about each -- so a spelling
+  // nobody thought of is a failing test rather than a later finding.
+  test("the codec accepts exactly the instants the column can hold", async () => {
+    const refusedByCodec: string[] = [];
+    for (let y = 0; y <= 9999; y++) {
+      const iso = `${String(y).padStart(4, "0")}-01-01T00:00:00.000Z`;
+      if (parseAuditCursor(`${iso}|1`) === null) refusedByCodec.push(iso);
+    }
+    // Only year zero, and the reason is the calendar rather than a range: Postgres has no year 0.
+    expect(refusedByCodec).toEqual(["0000-01-01T00:00:00.000Z"]);
+
+    // ...and the database agrees, asked directly. Sampled at the two ends plus the refused year,
+    // because binding ten thousand values is the sweep that produced this list, not a unit test.
+    for (const iso of [
+      "0000-01-01T00:00:00.000Z",
+      "0001-01-01T00:00:00.000Z",
+      "9999-12-31T23:59:59.999Z",
+    ]) {
+      const bound = await suDb
+        .$queryRawUnsafe("SELECT $1::timestamptz AS t", new Date(iso))
+        .then(() => true)
+        .catch(() => false);
+      expect(bound).toBe(parseAuditCursor(`${iso}|1`) !== null);
+      if (iso.startsWith("0000")) expect(bound).toBe(false);
+    }
+  });
+
   // Two rows the clock cannot tell apart, which is the case a cursor has to survive and the reason
   // it is keyed on the id. `created_at` here is written by the CLIENT and not by the database —
   // three rows appended inside one transaction come back with stamps later than that transaction's

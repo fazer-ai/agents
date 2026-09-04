@@ -109,10 +109,11 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
-function stringValues(v: unknown): string[] {
-  return isPlainObject(v)
-    ? Object.values(v).filter((x): x is string => typeof x === "string")
-    : [];
+// Header values as the runtime reads them: `interpolate(String(v), …)` on every entry, whatever its
+// JSON type. Filtering to strings dropped an `Authorization: ["Bearer {{secret}}"]` that the
+// executor sends verbatim, and warned about the credential it was carrying.
+function headerTemplates(v: unknown): string[] {
+  return isPlainObject(v) ? Object.values(v).map((x) => String(x)) : [];
 }
 
 // The query map as the runtime reads it (`parseQuery`): a null/undefined value is dropped and
@@ -302,7 +303,7 @@ export function reachableTemplates(
 ): string[] {
   const emitted: string[] = [...transmittedUrl(shapes.urlTemplate)];
   emitted.push(
-    ...stringValues(shapes.headers),
+    ...headerTemplates(shapes.headers),
     ...Object.values(reachingQuery(shapes)),
   );
   const m = (method ?? DEFAULT_HTTP_METHOD).toUpperCase();

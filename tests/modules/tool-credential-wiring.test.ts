@@ -55,7 +55,7 @@ interface Wiring {
   paramName?: string | null;
   credentialBaseUrl?: string;
   urlTemplate?: string;
-  headers?: Record<string, string>;
+  headers?: Record<string, unknown>;
   query?: Record<string, unknown>;
   body?: unknown;
   inputSchema?: unknown;
@@ -66,7 +66,7 @@ const asDef = (w: Wiring): HttpToolDef => ({
   method: w.method ?? "GET",
   urlTemplate: w.urlTemplate ?? `https://${PUBLIC}/v1/thing`,
   allowedHosts: [PUBLIC],
-  headers: w.headers ?? {},
+  headers: (w.headers ?? {}) as Record<string, string>,
   query: w.query,
   body: w.body,
   inputSchema: w.inputSchema ?? {},
@@ -488,6 +488,12 @@ const CASES: Wiring[] = [
     inputSchema: { field: { type: "string", required: true } },
   },
 
+  {
+    label: "a header value the runtime String()s before interpolating",
+    reaches: true,
+    headers: { "X-Auth": ["Bearer {{secret}}"] },
+  },
+
   // ── spelling ──
   {
     label:
@@ -555,7 +561,7 @@ describe("the scanner answers what the runtime does", () => {
     // NOTE: the floor. Every assertion above is `toBe(w.reaches)`, so a table that drifted to a
     // single verdict would still pass while proving nothing about the boundary between them.
     const reaching = CASES.filter((c) => c.reaches).length;
-    expect(reaching).toBeGreaterThan(15);
+    expect(reaching).toBeGreaterThan(16);
     expect(CASES.length - reaching).toBeGreaterThan(14);
   });
 });

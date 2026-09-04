@@ -8,9 +8,25 @@
 // handler reads, and when the draft is allowed to disagree with the committed window. All three
 // were found by review after the pure suite was green.
 
-import { afterEach, beforeEach, expect, setSystemTime, test } from "bun:test";
+import {
+  afterEach,
+  beforeEach,
+  expect,
+  mock,
+  setSystemTime,
+  test,
+} from "bun:test";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
+import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router";
+
+// The page reads the principal's role to decide whether to offer the scope selector (#520). These
+// files are not about that, so the mock hands it the ordinary operator: a TENANT_ADMIN, which is
+// the role every assertion below was written against.
+mock.module("@/client/contexts/AuthContext", () => ({
+  useAuth: () => ({ user: { role: "TENANT_ADMIN" } }),
+  AuthProvider: ({ children }: { children: ReactNode }) => children,
+}));
 
 const { AuditPage } = await import("@/client/pages/AuditPage");
 

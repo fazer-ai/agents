@@ -4,6 +4,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { getGlobalBranding } from "@/api/features/branding/branding.service";
 import config from "@/config";
+import { AUDIT_SCOPES, isAuditScope } from "@/lib/audit/scope";
 import { AppError } from "@/lib/errors";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import type { TenantContext } from "@/lib/tenancy";
@@ -194,11 +195,22 @@ function principalCtx(principal: VerifiedToken): TenantContext {
 // unchanged). A missing/unknown `tenant` (SUPER_ADMIN only) short-circuits with an isError result,
 // never a thrown 500. See ./tenant-target.ts. Fleet/global tools (whoami, branding_*, tenant_*) are
 // NOT registered through this — they have no tenant target and stay on server.registerTool.
+// `targetless` is for the tool whose OWN arguments can name a trail that belongs to no tenant --
+// today only `audit_list` with `scope=fleet|all` (#520). It changes two things for a fleet-level
+// token, and both are needed: the selector becomes optional in the advertised schema (a required one
+// is refused by the SDK before any handler of ours runs), and a call the predicate accepts skips
+// tenant resolution entirely, reaching the handler with the tenant-less principal it was issued as.
+// Everything else on this list keeps the fence unchanged, and the tool itself still decides what a
+// targetless call may do.
 function registerTenantTool(
   server: McpServer,
   principal: VerifiedToken,
   name: string,
-  def: { description: string; inputSchema: z.ZodRawShape },
+  def: {
+    description: string;
+    inputSchema: z.ZodRawShape;
+    targetless?: (args: Record<string, unknown>) => boolean;
+  },
   handler: (
     // biome-ignore lint/suspicious/noExplicitAny: each call site narrows `args` to its own tool shape; `any` lets those narrower handler signatures bind without a per-tool generic.
     args: any,
@@ -207,12 +219,20 @@ function registerTenantTool(
 ): void {
   const inputSchema =
     principal.role === "SUPER_ADMIN"
-      ? { ...def.inputSchema, tenant: tenantSelectorField }
+      ? {
+          ...def.inputSchema,
+          tenant: def.targetless
+            ? tenantSelectorField.optional()
+            : tenantSelectorField,
+        }
       : def.inputSchema;
   server.registerTool(
     name,
     { description: def.description, inputSchema },
     async (args: Record<string, unknown>) => {
+      if (principal.role === "SUPER_ADMIN" && def.targetless?.(args)) {
+        return handler(args, principal);
+      }
       const resolved = await resolveEffectivePrincipal(principal, args);
       if (!resolved.ok) {
         return {
@@ -1033,7 +1053,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "audit_list",
       {
         description:
-          "Tenant audit log, newest first. before/after are sanitized at write time, never secrets. Keyset cursor; limit 100 (max 500). `latestAt` is the trail's newest row, past any filter.",
+          "Audit log, newest first. before/after are sanitized at write time, never secrets. Keyset cursor; limit 100 (max 500). `scope`: tenant (default), fleet (rows keyed to no tenant) or all; fleet/all need SUPER_ADMIN. `latestAt` is that trail's newest row, past any filter.",
         inputSchema: {
           action: z.string().optional(),
           // NOTE: derived from the vocabulary and never hand-listed, for the reason `logs_query`
@@ -1045,7 +1065,19 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           until: z.string().optional(),
           limit: z.number().int().optional(),
           cursor: z.string().optional(),
+          // Derived, for the same reason `actor_type` above is: a hand-listed copy drifts, and the
+          // server then refuses a value it had just advertised.
+          scope: z.enum(AUDIT_SCOPES).optional(),
         },
+        // The only tool on this list that can name its own trail. `fleet` and `all` read the rows
+        // keyed to no tenant, so a fleet-level token reaches them WITHOUT selecting one -- which is
+        // the shape a fleet-scoped API key has, and the only shape a deployment with no tenants at
+        // all can offer. A value that is not a scope falls through to the ordinary path and is
+        // rejected by `auditList`, which owns that message.
+        targetless: (args) =>
+          typeof args.scope === "string" &&
+          isAuditScope(args.scope) &&
+          args.scope !== "tenant",
       },
       async (
         args: {
@@ -1056,6 +1088,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           until?: string;
           limit?: number;
           cursor?: string;
+          scope?: string;
         },
         eff,
       ) => writeContent(await auditList(eff, args)),

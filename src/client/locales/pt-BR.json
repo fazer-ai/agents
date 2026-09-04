@@ -248,7 +248,9 @@
     "filterByAction": "Mostrar só {{action}}",
     "filterFrom": "De",
     "filterPeriod": "Período",
+    "filterScope": "Trilha",
     "filterTo": "Até",
+    "fleetRow": "frota",
     "noProjection": "Esta ação não registrou valores de campo.",
     "page": "Página {{n}}",
     "period": {
@@ -262,6 +264,11 @@
       "this-year": "Este ano",
       "today": "Hoje",
       "yesterday": "Ontem"
+    },
+    "scope": {
+      "all": "Toda a frota",
+      "fleet": "Frota (sem tenant)",
+      "tenant": "Este tenant"
     },
     "showAll_zero": "Mostrar os {{count}} caracteres",
     "showAll_one": "Mostrar o {{count}} caractere",

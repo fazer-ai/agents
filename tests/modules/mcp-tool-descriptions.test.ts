@@ -430,6 +430,16 @@ describe("MCP tool descriptions", () => {
   // what a caller cannot learn by trying, because a mode it does not know is a refused write. No
   // tool was added. The description ceiling goes to 28,000. The schema side grows by the third
   // value of the two `mode` enums, to 53,966; the schema ceiling holds at 54,000.
+  //
+  // `audit_list`'s `scope` (#520) takes the schema total from 53,966 to 54,024: 58 characters for a
+  // three-value optional enum, DERIVED from `AUDIT_SCOPES` rather than hand-listed, for the reason
+  // `actor_type` carries at its own site. It is the parameter that makes the rows keyed to no tenant
+  // reachable from this transport at all -- they are not filtered out of a tenant read, they are
+  // unreachable from it -- so a caller without it cannot ask the question, and a refusal it never
+  // sent teaches nothing. The description side pays for the semantics in nine words
+  // ("fleet/all need SUPER_ADMIN"), which is where the budget for it had to come from: descriptions
+  // stand at 27,990 of 28,000, ten characters short of anywhere to move it. The schema ceiling goes
+  // to 54,100.
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;
@@ -439,7 +449,7 @@ describe("MCP tool descriptions", () => {
       schema += t.schema.length;
     }
     expect(desc).toBeLessThanOrEqual(28_000);
-    expect(schema).toBeLessThanOrEqual(54_000);
+    expect(schema).toBeLessThanOrEqual(54_100);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

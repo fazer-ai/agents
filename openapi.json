@@ -24316,7 +24316,7 @@
           "Audit"
         ],
         "summary": "List audit entries",
-        "description": "Lists tenant-scoped audit log entries with keyset pagination.",
+        "description": "Lists audit log entries with keyset pagination. Tenant-scoped by default; `scope=fleet|all` widens to the rows keyed to no tenant and requires SUPER_ADMIN.",
         "parameters": [
           {
             "name": "limit",
@@ -24378,6 +24378,15 @@
             "required": false,
             "schema": {
               "description": "Keyset cursor (id of the last row from the previous page).",
+              "type": "string"
+            }
+          },
+          {
+            "name": "scope",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Which trail to read: tenant | fleet | all (default tenant). `fleet` reads only the rows keyed to no tenant, `all` reads every tenant plus those; both require SUPER_ADMIN and are refused with 403 otherwise, never narrowed.",
               "type": "string"
             }
           },

@@ -757,6 +757,66 @@ export async function assertDeploymentConnected(
 //   - de-selected active account ⇒ soft-disconnect (unbinds agents, keeps history).
 // Account names come from the deployment's /profile probe so the caller never has to trust the client.
 // All network (probe, sync, unbind) runs outside the scoped writes.
+// The bound on `account_ids`, which is the deployment's own account list rather than a number.
+//
+// `setConnectedAccounts` iterates this array: every id not already active gets a row plus a
+// best-effort `syncInboxes`, two HTTP calls to the operator's Chatwoot, sequentially. Measured
+// before this existed (issue #503): one call carrying 40,000 ids created 16,774
+// `chatwoot_instances` rows in about two minutes and was still climbing.
+//
+// The list is authoritative because Chatwoot says so, and that was MEASURED rather than reasoned —
+// against a real 4.17.0, with a user access token whose profile reported account 1 of the server's
+// two: `GET /api/v1/accounts/1/inboxes` answered 200 and `/accounts/2/inboxes` answered 401
+// "You are not authorized to access this account". So an id outside `GET /api/v1/profile` is not a
+// large fleet, it is an account this token cannot operate at all — `connectAccount` would file an
+// instance for it and `syncInboxes` would then ask Chatwoot about it, twice, and be refused.
+//
+// This check was almost NOT written this way. Five existing tests connect ids their profile stub
+// does not report, and `docs/chatwoot.md` records a manual-id fallback for when the probe answers
+// 502, which together read as evidence that membership is not the rule. Both dissolve against the
+// measurement: those stubs describe a server that cannot exist, and the fallback is for a probe that
+// FAILED rather than for an account outside a working profile.
+//
+// `reported === null` IS that failed probe, and it stays fail-open on purpose: an outage on the
+// operator's Chatwoot should not refuse a write whose ids the operator picked deliberately. The
+// numeric cap covers exactly and only that window, which is why it is not on the published schema,
+// where it would become the contract instead of the net.
+const UNREPORTED_ACCOUNTS_FALLBACK_MAX = 500;
+
+export function assertAccountsSelectable(
+  wanted: number[],
+  reported: number[] | null,
+): void {
+  if (reported === null) {
+    if (wanted.length > UNREPORTED_ACCOUNTS_FALLBACK_MAX) {
+      throw new AppError(
+        `too many account_ids (${wanted.length}); this deployment's account list could not be read, so the request is capped at ${UNREPORTED_ACCOUNTS_FALLBACK_MAX}`,
+        400,
+        "errors.chatwootTooManyAccounts",
+        {
+          count: String(wanted.length),
+          max: String(UNREPORTED_ACCOUNTS_FALLBACK_MAX),
+        },
+      );
+    }
+    return;
+  }
+  const known = new Set(reported);
+  const unknown = wanted.filter((id) => !known.has(id));
+  if (unknown.length > 0) {
+    // NOTE: the first few, not all of them. The message is read by a person, and a caller that sent
+    // forty thousand ids does not need forty thousand back to learn what went wrong.
+    const shown = unknown.slice(0, 5).join(", ");
+    const rest = unknown.length > 5 ? ` (and ${unknown.length - 5} more)` : "";
+    throw new AppError(
+      `this deployment does not report account(s) ${shown}${rest}`,
+      400,
+      "errors.chatwootAccountNotOnDeployment",
+      { accounts: `${shown}${rest}` },
+    );
+  }
+}
+
 export async function setConnectedAccounts(
   ctx: TenantContext,
   accountIds: number[],
@@ -767,14 +827,19 @@ export async function setConnectedAccounts(
   const wanted = [...new Set(accountIds)];
   const dep = await assertAccountsClaimable(ctx, wanted, base);
   const serverKey = normalizeChatwootBaseUrl(dep.baseUrl);
-  // Names for the wanted accounts (best-effort; falls back to null → the #id badge still identifies).
+  // NOTE: one probe, not one per account, and its answer is the bound as well as the source of
+  // display names. A failure still falls through to null names, and `assertAccountsSelectable` reads
+  // that same null as "no list available" and applies the fallback cap instead.
   let nameById = new Map<number, string>();
+  let reported: number[] | null = null;
   try {
     const summaries = await listDeploymentAccounts(ctx, deps, base);
     nameById = new Map(summaries.map((s) => [s.id, s.name]));
+    reported = summaries.map((s) => s.id);
   } catch {
     // probe failed — proceed with null names (the operator picked these ids deliberately)
   }
+  assertAccountsSelectable(wanted, reported);
   const current = await runScopedOn(base, ctx, (db) =>
     db.chatwootInstance.findMany({
       select: { id: true, accountId: true, disconnectedAt: true },

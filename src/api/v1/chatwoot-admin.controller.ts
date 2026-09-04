@@ -51,6 +51,11 @@ import {
 // translate('errors.chatwootDeploymentNotFound', 'No Chatwoot deployment is connected.')
 // translate('errors.chatwootDifferentDeployment', 'This tenant is already connected to a different Chatwoot deployment. Disconnect it first to switch servers.')
 // translate('errors.chatwootInstanceNotFound', 'Chatwoot instance not found.')
+// NOTE: the account bound and the cap are two answers to one question -- which accounts this
+// deployment can be asked for -- and they are separate keys because they send the operator to
+// different places: one to the account list, the other to a retry once Chatwoot answers again.
+// translate('errors.chatwootAccountNotOnDeployment', 'This Chatwoot deployment does not report account(s) {{accounts}}. Pick from the accounts its token can reach.')
+// translate('errors.chatwootTooManyAccounts', 'Too many accounts in one request ({{count}}); at most {{max}} accounts can be set at once.')
 // translate('errors.chatwootProfileFailed', 'Chatwoot could not be reached with the URL and token provided.')
 // translate('errors.inboxNotBound', 'This inbox has no agent to reconnect.')
 // translate('errors.inboxNotFound', 'Inbox not found.')

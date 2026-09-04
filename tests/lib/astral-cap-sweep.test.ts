@@ -427,6 +427,9 @@ const BARE_SLICES: Record<
   "src/modules/business-hours/announce.ts": [2, "fixed-format"],
   "src/modules/business-hours/hours.ts": [1, "fixed-format"],
   "src/modules/chatwoot/attributes.ts": [1, "array"],
+  // NOTE: the first few offending account ids for the refusal message. A slice over an array of
+  // NUMBERS cannot land inside a surrogate pair; the join that renders it happens after the cut.
+  "src/modules/chatwoot/management.ts": [1, "array"],
   "src/modules/conversations/service.ts": [1, "array"],
   "src/modules/debounce/handler.ts": [2, "array"],
   // The logo's one-shot download token is hex from randomUUID.

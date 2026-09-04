@@ -571,12 +571,13 @@ async function credentialWiringWarning(
   const facts = await runScopedOn(base, ctx, (db) =>
     readVaultRefFacts(db, credentialRef),
   );
+  // NOTE: a ref that names no row is a DIFFERENT problem — the credential was deleted, and the fix is
+  // to attach one, not to wire the one that is there. Reading the miss as a legacy `generic` handed
+  // that operator remediation for a tool whose credential does not exist. config-health is where the
+  // dangling ref is reported; this stays quiet about it.
+  if (!facts) return [];
   const warning = unusedCredentialWarning(
-    {
-      kind: facts?.kind ?? null,
-      paramName: facts?.paramName ?? null,
-      baseUrl: facts?.baseUrl ?? null,
-    },
+    { kind: facts.kind, paramName: facts.paramName, baseUrl: facts.baseUrl },
     method,
     shapes,
   );
@@ -613,15 +614,6 @@ export async function toolCreate(
     body: input.body,
     inputSchema: input.inputSchema,
   });
-  const wiring = await credentialWiringWarning(
-    ctx,
-    base,
-    input.credentialRef,
-    input.method,
-    toolShapesOf(input),
-  );
-  const all = [...norm.warnings, ...wiring];
-  const warnings = all.length > 0 ? { warnings: all } : {};
   try {
     if (args.dry_run !== false) {
       // NOTE: the core's own question, asked before the preview answers it. It sits INSIDE the
@@ -634,12 +626,23 @@ export async function toolCreate(
       // collision that actually happens (a name the operator already used), and the unique index
       // inside the write remains what guarantees one name to one row (#490).
       await assertToolNameAvailable(ctx, parsed.name, base);
+      // NOTE: INSIDE the branch, like the two checks above it and for a plainer reason: the apply
+      // recomputes this from the row it wrote, so reading the vault out here was a scoped
+      // transaction whose answer that path throws away.
+      const wiring = await credentialWiringWarning(
+        ctx,
+        base,
+        input.credentialRef,
+        input.method,
+        toolShapesOf(input),
+      );
+      const all = [...norm.warnings, ...wiring];
       return ok({
         dryRun: true,
         action: "create",
         resource: "tool",
         preview: { ...input, ...norm.shapes },
-        ...warnings,
+        ...(all.length > 0 ? { warnings: all } : {}),
       });
     }
     const created = await createToolDefinition(ctx, input, base);
@@ -706,21 +709,6 @@ export async function toolUpdate(
       ...built.patch,
       ...norm.shapes,
     } as ToolDefinitionUpdate;
-    // NOTE: the EFFECTIVE row, patch over stored, because a patch that only attaches a credential
-    // says nothing about the templates and a patch that only rewrites a template says nothing about
-    // the credential. Judging either half alone is how this warning would fire on a tool that is
-    // wired and stay silent on one that is not.
-    const wiring = await credentialWiringWarning(
-      ctx,
-      base,
-      built.patch.credentialRef !== undefined
-        ? built.patch.credentialRef
-        : current.credentialRef,
-      built.patch.method ?? current.method,
-      { ...toolShapesOf(current), ...toolShapesOf(built.patch) },
-    );
-    const all = [...norm.warnings, ...wiring];
-    const warnings = all.length > 0 ? { warnings: all } : {};
     const keys = Object.keys(built.patch) as (keyof ToolDefinitionUpdate)[];
     const beforeProj: Record<string, unknown> = {};
     const afterProj: Record<string, unknown> = {};
@@ -730,11 +718,28 @@ export async function toolUpdate(
     }
     const target = `tool:${id}`;
     if (args.dry_run !== false) {
+      // NOTE: the EFFECTIVE row, patch over stored, because a patch that only attaches a credential
+      // says nothing about the templates and a patch that only rewrites a template says nothing
+      // about the credential. Judging either half alone is how this warning would fire on a tool
+      // that is wired and stay silent on one that is not.
+      //
+      // And INSIDE the branch: the apply recomputes it from the row it wrote, so out here it was a
+      // scoped vault transaction whose answer that path throws away.
+      const wiring = await credentialWiringWarning(
+        ctx,
+        base,
+        built.patch.credentialRef !== undefined
+          ? built.patch.credentialRef
+          : current.credentialRef,
+        built.patch.method ?? current.method,
+        { ...toolShapesOf(current), ...toolShapesOf(built.patch) },
+      );
+      const all = [...norm.warnings, ...wiring];
       return ok({
         dryRun: true,
         target,
         diff: diffFields(beforeProj, afterProj),
-        ...warnings,
+        ...(all.length > 0 ? { warnings: all } : {}),
       });
     }
     const updated = await updateToolDefinition(ctx, id, built.patch, base);

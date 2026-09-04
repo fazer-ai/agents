@@ -672,6 +672,12 @@ const CASES: Wiring[] = [
     inputSchema: { order_id: { type: "string", required: true } },
   },
 
+  {
+    label: "an undeclared URL placeholder that IS a prototype name still runs",
+    reaches: false,
+    urlTemplate: `https://${PUBLIC}/v1/{{toString}}`,
+  },
+
   // ── spelling ──
   {
     label:
@@ -780,6 +786,37 @@ describe("the scanner answers what the runtime does", () => {
       ),
     ).toBeNull();
 
+    // NOTE: and the fourth: a URL that names a FIXED field whose own value depends on something
+    // unavailable. The field exists, so it looks resolvable, and the runtime still throws — it
+    // records the dependency and refuses to fetch an incomplete segment.
+    const orphanDep = buildHttpTool(
+      asDef({
+        label: "",
+        reaches: false,
+        urlTemplate: `https://${PUBLIC}/v1/{{path}}`,
+        inputSchema: {
+          path: { type: "string", source: "fixed", value: "{{missing}}" },
+        },
+      }),
+      { resolveCredential: async () => SECRET, fetchImpl: stubFetch({}) },
+    );
+    await expect(orphanDep.invoke({})).rejects.toThrow(
+      "no value available for URL placeholder",
+    );
+    expect(
+      unusedCredentialWarning(
+        { kind: "generic", paramName: null, baseUrl: null },
+        "GET",
+        {
+          urlTemplate: `https://${PUBLIC}/v1/{{path}}`,
+          headers: {},
+          inputSchema: {
+            path: { type: "string", source: "fixed", value: "{{missing}}" },
+          },
+        },
+      ),
+    ).toBeNull();
+
     // NOTE: the control — with a base, the same tool is judged normally.
     expect(
       unusedCredentialWarning(
@@ -827,7 +864,7 @@ describe("the scanner answers what the runtime does", () => {
     // single verdict would still pass while proving nothing about the boundary between them.
     const reaching = CASES.filter((c) => c.reaches).length;
     expect(reaching).toBeGreaterThan(24);
-    expect(CASES.length - reaching).toBeGreaterThan(24);
+    expect(CASES.length - reaching).toBeGreaterThan(25);
   });
 });
 
@@ -1239,6 +1276,38 @@ describe.skipIf(!dbUp)("tool_create / tool_update say so", () => {
       { paramName: "X-Api-Key" },
       appDb,
     );
+  });
+
+  test("a credential ref that names no row gets no wiring advice", async () => {
+    // NOTE: the entry was deleted after the tool was wired to it. Reading the miss as a legacy
+    // `generic` handed the operator remediation for the wrong problem — the credential is not
+    // unwired, it is gone, and config-health is what reports that.
+    const gone = (
+      await createVaultEntry(
+        { tenantId, userId: null, role: "TENANT_ADMIN" },
+        { name: "wiring-gone", value: "abc123TOKEN", kind: "generic" },
+        undefined,
+        undefined,
+        appDb,
+      )
+    ).ref;
+    const created = await create({ credential_ref: gone, dry_run: false });
+    expect(created.ok).toBe(true);
+    const id = created.ok
+      ? (created.data as { target: string }).target.split(":")[1]
+      : "";
+    expect(wiringWarning(created)).toHaveLength(1);
+
+    await suDb.$executeRawUnsafe(
+      `DELETE FROM vault_entries WHERE id = ${readVaultRefId(gone)}`,
+    );
+    const r = await toolUpdate(
+      principal(),
+      { tool_id: id as string, label: "Renamed" },
+      { base: appDb },
+    );
+    expect(r.ok).toBe(true);
+    expect(wiringWarning(r)).toHaveLength(0);
   });
 
   test("no credential attached, no warning", async () => {

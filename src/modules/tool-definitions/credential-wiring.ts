@@ -381,9 +381,23 @@ function buildsARequest(urlTemplate: unknown, shapes: ToolShapePatch): boolean {
   const fixed = fixedValuesByName(shapes.inputSchema);
   for (const name of namesIn(urlTemplate)) {
     if (name === "secret") continue;
-    if (ai.names.has(name) || fixed.has(name)) continue;
+    // A prototype name resolves for the same reason it resolves everywhere else here: `valueLookup`
+    // asks `n in input` and finds Object.prototype's member. Undeclared, and still not an orphan.
+    if (name in {}) continue;
+    if (ai.names.has(name)) continue;
     if ((CONTEXT_VAR_NAMES as readonly string[]).includes(name)) continue;
-    return false;
+    const value = fixed.get(name);
+    if (value === undefined) return false;
+    // A FIXED field brings its own dependencies, and the runtime tracks them: a `path` whose value is
+    // `{{missing}}` resolves to "" with `missing` recorded, and the URL guard then throws for the
+    // dependency rather than fetching an incomplete segment. So the field existing is not enough —
+    // what it needs has to be available too.
+    for (const dep of namesIn(value)) {
+      if (dep === "secret") continue;
+      if (dep in {}) continue;
+      if ((CONTEXT_VAR_NAMES as readonly string[]).includes(dep)) continue;
+      return false;
+    }
   }
   return true;
 }

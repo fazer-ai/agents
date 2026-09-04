@@ -36,7 +36,11 @@ import {
   isNonInjectableSecret,
   resolveSecretInjection,
 } from "@/modules/vault/secret-types";
-import { normalizeToolShapes, type ToolShapePatch } from "./normalize";
+import {
+  CONTEXT_VAR_NAMES,
+  normalizeToolShapes,
+  type ToolShapePatch,
+} from "./normalize";
 import { DEFAULT_HTTP_METHOD } from "./service";
 
 // The SAME grammar the runtime interpolates with (`PLACEHOLDER` in graph/tools/http.ts): the braces
@@ -254,7 +258,9 @@ function aiFields(schema: unknown): AiFields {
     const s = isPlainObject(spec) ? spec : {};
     if (s.source === "fixed") continue;
     names.add(name);
-    if (s.required !== true) optional.add(name);
+    // TRUTHY, like `parseFields`' own `!!s.required`: the definition schema lets a field spec carry
+    // anything, and `required: "yes"` is required there.
+    if (!s.required) optional.add(name);
   }
   return { names, optional };
 }
@@ -274,9 +280,12 @@ function bodyTemplates(body: unknown, ai: AiFields): string[] {
     // is the one direction this file must not get wrong.
     const byKey = new Map<string, string[]>();
     for (const r of body.rows) {
-      if (!isPlainObject(r) || typeof r.value !== "string") continue;
+      if (!isPlainObject(r)) continue;
       const k = typeof r.key === "string" ? r.key.trim() : "";
       if (!k) continue;
+      // COERCED, not skipped: `parseBody` turns a non-string value into `""`, and that row still
+      // overwrites the one before it. Skipping it kept a `{{secret}}` the request no longer carries.
+      const rowValue = typeof r.value === "string" ? r.value : "";
       // Two independent questions about one row, and conflating them is how the last two rounds went
       // wrong in both directions.
       //
@@ -287,10 +296,10 @@ function bodyTemplates(body: unknown, ai: AiFields): string[] {
       //
       // WHETHER IT OVERWRITES: only an OPTIONAL one may be omitted, and only then does the earlier
       // row's value survive. A required field is on every executed call, so its row always wins.
-      const lone = r.value.match(LONE_PLACEHOLDER)?.[1];
+      const lone = rowValue.match(LONE_PLACEHOLDER)?.[1];
       const loneAi = lone !== undefined && ai.names.has(lone);
       const mayBeOmitted = lone !== undefined && ai.optional.has(lone);
-      const carried = loneAi ? "" : r.value;
+      const carried = loneAi ? "" : rowValue;
       byKey.set(
         k,
         mayBeOmitted ? [...(byKey.get(k) ?? []), carried] : [carried],
@@ -357,14 +366,26 @@ export function effectiveUrlTemplate(
 // and throws `invalid urlTemplate` when that fails — so a stored `not-a-url`, which the definition
 // schema accepts, is a tool that never reaches a fetch. Same reasoning as the relative-with-no-base
 // case above: there is no unauthenticated request to warn about.
-function buildsARequest(urlTemplate: unknown): boolean {
+function buildsARequest(urlTemplate: unknown, shapes: ToolShapePatch): boolean {
   if (typeof urlTemplate !== "string") return false;
   try {
     new URL(urlTemplate.replace(PLACEHOLDER, "_"));
-    return true;
   } catch {
     return false;
   }
+  // And every URL placeholder has to have SOMEWHERE to come from. `buildHttpTool` collects the ones
+  // it could not resolve and throws for any that the model cannot supply — a `{{order_id}}` naming
+  // no field at all is one of those, on every call. A declared field or a context variable may still
+  // be missing at call time, and that is per-invocation rather than always, so it stays runnable.
+  const ai = aiFields(shapes.inputSchema);
+  const fixed = fixedValuesByName(shapes.inputSchema);
+  for (const name of namesIn(urlTemplate)) {
+    if (name === "secret") continue;
+    if (ai.names.has(name) || fixed.has(name)) continue;
+    if ((CONTEXT_VAR_NAMES as readonly string[]).includes(name)) continue;
+    return false;
+  }
+  return true;
 }
 
 export function reachableTemplates(
@@ -383,6 +404,7 @@ export function reachableTemplates(
 
   const out = [...emitted];
   const legacy = isLegacyFieldsBody(shapes.body);
+  const fixedByName = fixedValuesByName(shapes.inputSchema);
   for (const { name, value } of fixedFields(shapes.inputSchema)) {
     // A fixed value resolves from CONTEXT and the secret only, never from another fixed field, so
     // one level is the whole reach: it leaves if something emitted names it, or if the legacy body
@@ -393,8 +415,15 @@ export function reachableTemplates(
     // the runtime's assembly rules for a case that costs a MISSED warning either way. Over-counting
     // here can only make this file too quiet; under-counting would make it warn about a tool that
     // works.
-    if (legacy || mentions(emitted, name)) {
+    // `fixedSubstitution` and not `value`, for the reason it gives: an emitted `{{toString}}`
+    // resolves off `input`'s prototype, never off this field, so the `{{secret}}` an operator wrote
+    // into a field of that name never leaves. The legacy body is the exception — it reads
+    // `fixedValues[f.name]` directly, with no `in` check, so there the value does arrive.
+    if (legacy) {
       out.push(value);
+    } else if (mentions(emitted, name)) {
+      const substituted = fixedSubstitution(name, fixedByName);
+      if (substituted !== undefined) out.push(substituted);
     }
   }
   return out;
@@ -545,7 +574,7 @@ export function unusedCredentialWarning(
   if (isNonInjectableSecret(facts.kind)) return null;
   const { shapes: normalized } = normalizeToolShapes(raw);
   const effective = effectiveUrlTemplate(normalized.urlTemplate, facts.baseUrl);
-  if (effective === null || !buildsARequest(effective)) return null;
+  if (effective === null || !buildsARequest(effective, normalized)) return null;
   const shapes: ToolShapePatch = {
     ...normalized,
     urlTemplate: effective as string | undefined,

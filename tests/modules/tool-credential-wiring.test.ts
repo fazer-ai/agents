@@ -102,9 +102,10 @@ async function secretLeft(w: Wiring): Promise<boolean> {
   // omission branch the table is reading.
   const input: Record<string, unknown> = {};
   for (const [name, spec] of Object.entries(
-    (w.inputSchema ?? {}) as Record<string, { required?: boolean }>,
+    (w.inputSchema ?? {}) as Record<string, { required?: unknown }>,
   )) {
-    if (spec?.required === true) input[name] = "model-value";
+    // TRUTHY, like `parseFields`' own `!!s.required` — a spec may carry anything there.
+    if (spec?.required) input[name] = "model-value";
   }
   (await tool.invoke(input)) as unknown as ToolMessage;
   const headers = captured.init?.headers as Record<string, string> | undefined;
@@ -605,6 +606,72 @@ const CASES: Wiring[] = [
     headers: JSON.parse('{"__proto__":"{{secret}}"}'),
   },
 
+  {
+    label:
+      "a fixed field named toString does not carry its value into a header",
+    reaches: false,
+    method: "POST",
+    body: { mode: "kv", rows: [{ key: "a", value: "1" }] },
+    headers: { "X-Auth": "{{toString}}" },
+    inputSchema: {
+      toString: { type: "string", source: "fixed", value: "{{secret}}" },
+    },
+  },
+  {
+    label: "…though the legacy body assembles it directly, with no `in` check",
+    reaches: true,
+    method: "POST",
+    headers: { "X-Auth": "{{toString}}" },
+    inputSchema: {
+      toString: { type: "string", source: "fixed", value: "{{secret}}" },
+    },
+  },
+  {
+    label: "…and an ordinary field name carries it either way",
+    reaches: true,
+    method: "POST",
+    body: { mode: "kv", rows: [{ key: "a", value: "1" }] },
+    headers: { "X-Auth": "{{tok}}" },
+    inputSchema: {
+      tok: { type: "string", source: "fixed", value: "{{secret}}" },
+    },
+  },
+  {
+    label:
+      "a lone AI row whose `required` is merely truthy still always overwrites",
+    reaches: false,
+    method: "POST",
+    body: {
+      mode: "kv",
+      rows: [
+        { key: "auth", value: "{{secret}}" },
+        { key: "auth", value: "{{ov}}" },
+      ],
+    },
+    inputSchema: { ov: { type: "string", required: "yes" } },
+  },
+  {
+    label:
+      "a kv row whose value is not a string is coerced to empty, and overwrites",
+    reaches: false,
+    method: "POST",
+    body: {
+      mode: "kv",
+      rows: [
+        { key: "auth", value: "{{secret}}" },
+        { key: "auth", value: 42 },
+      ],
+    },
+  },
+
+  {
+    label:
+      "a URL placeholder naming a declared field still runs, and is judged",
+    reaches: false,
+    urlTemplate: `https://${PUBLIC}/v1/{{order_id}}`,
+    inputSchema: { order_id: { type: "string", required: true } },
+  },
+
   // ── spelling ──
   {
     label:
@@ -688,6 +755,31 @@ describe("the scanner answers what the runtime does", () => {
       ),
     ).toBeNull();
 
+    // NOTE: and the third shape the executor refuses: a URL placeholder naming no field, no fixed
+    // value and no context variable. It throws on every call, for every model input.
+    const orphan = buildHttpTool(
+      asDef({
+        label: "",
+        reaches: false,
+        urlTemplate: `https://${PUBLIC}/v1/{{order_id}}`,
+      }),
+      { resolveCredential: async () => SECRET, fetchImpl: stubFetch({}) },
+    );
+    await expect(orphan.invoke({})).rejects.toThrow(
+      "no value available for URL placeholder",
+    );
+    expect(
+      unusedCredentialWarning(
+        { kind: "generic", paramName: null, baseUrl: null },
+        "GET",
+        {
+          urlTemplate: `https://${PUBLIC}/v1/{{order_id}}`,
+          headers: {},
+          inputSchema: {},
+        },
+      ),
+    ).toBeNull();
+
     // NOTE: the control — with a base, the same tool is judged normally.
     expect(
       unusedCredentialWarning(
@@ -734,8 +826,8 @@ describe("the scanner answers what the runtime does", () => {
     // NOTE: the floor. Every assertion above is `toBe(w.reaches)`, so a table that drifted to a
     // single verdict would still pass while proving nothing about the boundary between them.
     const reaching = CASES.filter((c) => c.reaches).length;
-    expect(reaching).toBeGreaterThan(22);
-    expect(CASES.length - reaching).toBeGreaterThan(20);
+    expect(reaching).toBeGreaterThan(24);
+    expect(CASES.length - reaching).toBeGreaterThan(24);
   });
 });
 

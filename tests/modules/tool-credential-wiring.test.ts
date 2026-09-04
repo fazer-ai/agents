@@ -104,10 +104,19 @@ async function secretLeft(w: Wiring): Promise<boolean> {
   // omission branch the table is reading.
   const input: Record<string, unknown> = {};
   for (const [name, spec] of Object.entries(
-    (w.inputSchema ?? {}) as Record<string, { required?: unknown }>,
+    (w.inputSchema ?? {}) as Record<
+      string,
+      { required?: unknown; enumValues?: unknown }
+    >,
   )) {
-    // TRUTHY, like `parseFields`' own `!!s.required` — a spec may carry anything there.
-    if (spec?.required) input[name] = "model-value";
+    // TRUTHY, like `parseFields`' own `!!s.required` — a spec may carry anything there. An enum
+    // takes one of its own values, since zod refuses anything else.
+    if (!spec?.required) continue;
+    const values = spec.enumValues;
+    input[name] =
+      Array.isArray(values) && typeof values[0] === "string"
+        ? values[0]
+        : "model-value";
   }
   // NOTE: the runtime declares this one for itself when the tool has an ack, and zod rejects the
   // call without it — so a row with an ack has to supply it, exactly like a required field.
@@ -710,6 +719,63 @@ const CASES: Wiring[] = [
     ackMessage: "one moment",
   },
 
+  {
+    label:
+      "an ack tool's fixed __wait_message loses to the model's own argument",
+    reaches: false,
+    method: "POST",
+    body: { mode: "kv", rows: [{ key: "a", value: "1" }] },
+    headers: { "X-Auth": "{{__wait_message}}" },
+    inputSchema: {
+      __wait_message: { type: "string", source: "fixed", value: "{{secret}}" },
+    },
+    ackMessage: "hold on",
+  },
+  {
+    label:
+      "…though the legacy body still assembles that fixed value into the query",
+    reaches: true,
+    headers: { "X-Auth": "{{__wait_message}}" },
+    inputSchema: {
+      __wait_message: { type: "string", source: "fixed", value: "{{secret}}" },
+    },
+    ackMessage: "hold on",
+  },
+  {
+    label:
+      "…and with no ack, that same fixed field is the only source there is",
+    reaches: true,
+    method: "POST",
+    body: { mode: "kv", rows: [{ key: "a", value: "1" }] },
+    headers: { "X-Auth": "{{__wait_message}}" },
+    inputSchema: {
+      __wait_message: { type: "string", source: "fixed", value: "{{secret}}" },
+    },
+  },
+  {
+    label:
+      "a required singleton-enum field resolves its query key on every call",
+    reaches: false,
+    kind: "query",
+    paramName: "token",
+    urlTemplate: `https://${PUBLIC}/v1/thing?{{authParam}}=fixed`,
+    query: { token: "{{secret}}" },
+    inputSchema: {
+      authParam: { type: "enum", required: true, enumValues: ["token"] },
+    },
+  },
+  {
+    label:
+      "a fixed value that is itself a prototype name is never empty either",
+    reaches: false,
+    kind: "query",
+    paramName: "token",
+    query: { token: "{{f}}" },
+    inputSchema: {
+      f: { type: "string", source: "fixed", value: "{{toString}}" },
+    },
+  },
+
   // ── spelling ──
   {
     label:
@@ -951,8 +1017,8 @@ describe("the scanner answers what the runtime does", () => {
     // NOTE: the floor. Every assertion above is `toBe(w.reaches)`, so a table that drifted to a
     // single verdict would still pass while proving nothing about the boundary between them.
     const reaching = CASES.filter((c) => c.reaches).length;
-    expect(reaching).toBeGreaterThan(24);
-    expect(CASES.length - reaching).toBeGreaterThan(27);
+    expect(reaching).toBeGreaterThan(26);
+    expect(CASES.length - reaching).toBeGreaterThan(29);
   });
 });
 

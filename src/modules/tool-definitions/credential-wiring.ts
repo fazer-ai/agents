@@ -100,6 +100,10 @@ function alwaysNonEmpty(
 ): boolean {
   if (template.replace(PLACEHOLDER, "") !== "") return true;
   if (ackArg && namesIn(template).has(WAIT_MESSAGE_ARG)) return true;
+  // ABOVE the recursion guard, not inside the loop below it: a prototype name resolves to a
+  // stringified Object member at ANY depth, so a fixed value of `{{toString}}` is non-empty when it
+  // is followed as well as when it is read directly.
+  for (const name of namesIn(template)) if (name in {}) return true;
   if (!resolveFixed) return false;
   for (const name of namesIn(template)) {
     // The prototype names are non-empty for a DIFFERENT reason than the fixed ones, and the two
@@ -118,6 +122,30 @@ function fixedValuesByName(schema: unknown): Map<string, string> {
   return new Map(fixedFields(schema).map((f) => [f.name, f.value]));
 }
 
+// The values that are KNOWN whatever the model does: the operator's fixed fields, plus a required ai
+// field whose enum holds exactly one value — zod accepts nothing else, so every executable call
+// carries it. Used where the substituted text is what matters (which query key the URL ends up with),
+// never where the question is only whether something is non-empty.
+//
+// EXACTLY ONE, and the mutation that widens it to any enum is one the fence cannot judge: with two
+// or more values the key depends on what the model picked, so the executor's answer differs between
+// invocations and no single row can assert it. Unknowable falls to the quiet side, like every other
+// unknown here.
+function knownValuesByName(schema: unknown): Map<string, string> {
+  const out = fixedValuesByName(schema);
+  if (typeof schema !== "object" || schema === null) return out;
+  for (const [name, spec] of Object.entries(schema)) {
+    if (!isPlainObject(spec) || spec.source === "fixed") continue;
+    if (!spec.required) continue;
+    const values = spec.enumValues;
+    if (Array.isArray(values) && values.length === 1) {
+      const only = values[0];
+      if (typeof only === "string") out.set(name, only);
+    }
+  }
+  return out;
+}
+
 // The fixed value the runtime would substitute for this placeholder, or undefined when it would not
 // substitute one. `valueLookup` asks `n in input` FIRST, and `in` walks the prototype: a field named
 // `toString` (or `constructor`, or `valueOf`) resolves to Object.prototype's member, not to the
@@ -129,7 +157,12 @@ function fixedValuesByName(schema: unknown): Map<string, string> {
 function fixedSubstitution(
   name: string,
   fixed: Map<string, string>,
+  ackArg = false,
 ): string | undefined {
+  // The ack argument shadows a fixed field of the same name for the same reason a prototype member
+  // does: `valueLookup` reads `input` first, and on an ack-enabled tool the model always supplies
+  // `__wait_message`. A `{{secret}}` an operator put in a fixed field of that name never leaves.
+  if (ackArg && name === WAIT_MESSAGE_ARG) return undefined;
   return name in {} ? undefined : fixed.get(name);
 }
 
@@ -237,7 +270,7 @@ function transmittedUrl(urlTemplate: unknown): string[] {
 function reachingQuery(shapes: ToolShapePatch): Record<string, string> {
   const taken = urlQueryKeys(
     shapes.urlTemplate,
-    fixedValuesByName(shapes.inputSchema),
+    knownValuesByName(shapes.inputSchema),
   );
   return Object.fromEntries(
     Object.entries(queryMap(shapes.query)).filter(([k]) => !taken.has(k)),
@@ -421,6 +454,7 @@ function buildsARequest(
 export function reachableTemplates(
   method: string | null | undefined,
   shapes: ToolShapePatch,
+  ackArg = false,
 ): string[] {
   const emitted: string[] = [...transmittedUrl(shapes.urlTemplate)];
   emitted.push(
@@ -452,7 +486,7 @@ export function reachableTemplates(
     if (legacy) {
       out.push(value);
     } else if (mentions(emitted, name)) {
-      const substituted = fixedSubstitution(name, fixedByName);
+      const substituted = fixedSubstitution(name, fixedByName, ackArg);
       if (substituted !== undefined) out.push(substituted);
     }
   }
@@ -539,7 +573,11 @@ function autoInjectionVerdict(
   // take the parameter. Guessing that a placeholder always resolves would warn about a tool that is
   // wired.
   const fixed = fixedValuesByName(shapes.inputSchema);
-  if (urlQueryKeys(shapes.urlTemplate, fixed).has(inj.name)) {
+  if (
+    urlQueryKeys(shapes.urlTemplate, knownValuesByName(shapes.inputSchema)).has(
+      inj.name,
+    )
+  ) {
     return shadowed("tool");
   }
   // The legacy derivation: a NON-body method whose body is the legacy `fields` shape and which has no
@@ -623,7 +661,9 @@ export function unusedCredentialWarning(
     urlTemplate: effective as string | undefined,
   };
   const m = (method ?? DEFAULT_HTTP_METHOD).toUpperCase();
-  if (mentions(reachableTemplates(method, shapes), "secret")) return null;
+  if (mentions(reachableTemplates(method, shapes, ackArg), "secret")) {
+    return null;
+  }
   const verdict = autoInjectionVerdict(
     facts.kind,
     facts.paramName,

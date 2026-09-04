@@ -40,6 +40,12 @@ function namesIn(template: string): Set<string> {
 const mentions = (templates: string[], name: string): boolean =>
   templates.some((t) => namesIn(t).has(name));
 
+// What is left of a template once every placeholder is gone. Non-empty means the interpolation can
+// never produce the empty string, whatever the placeholders resolve to — which is the difference
+// between a query value the runtime is sure to set and one it may skip.
+const literalPartOf = (template: string): string =>
+  template.replace(PLACEHOLDER, "");
+
 // Mirrors `isBodyMethod` in graph/tools/http.ts. DELETE is deliberately absent there — a DELETE tool
 // carrying a raw body sends none of it — and a copy of that list which quietly included DELETE would
 // call such a tool wired.
@@ -69,13 +75,38 @@ function queryMap(raw: unknown): Record<string, string> {
   return out;
 }
 
+// The URL the runtime will parse, with the placeholders neutralized the way `buildHttpTool` does for
+// its own origin probe. The base is only there so a relative template parses; nothing reads the host.
+function parseUrlTemplate(urlTemplate: unknown): URL | null {
+  if (typeof urlTemplate !== "string") return null;
+  try {
+    return new URL(
+      urlTemplate.replace(PLACEHOLDER, "_"),
+      "https://placeholder.invalid",
+    );
+  } catch {
+    return null;
+  }
+}
+
 // The query keys the URL template already carries. The runtime applies the explicit query map with
 // `if (v !== "" && !url.searchParams.has(k))`, so a key the template spells wins and the map's value
 // for it is DISCARDED — never interpolated into anything that leaves.
+//
+// Parsed as a URL rather than split on "?", because a query VALUE may hold one of its own — a
+// `redirect=https://a.test/?x=1&token=fixed` keeps everything after the second question mark, which
+// `split("?")[1]` throws away and `searchParams` does not.
 function urlQueryKeys(urlTemplate: unknown): Set<string> {
-  if (typeof urlTemplate !== "string") return new Set();
-  const q = urlTemplate.split("?")[1];
-  return q ? new Set([...new URLSearchParams(q).keys()]) : new Set();
+  const url = parseUrlTemplate(urlTemplate);
+  return url ? new Set([...url.searchParams.keys()]) : new Set();
+}
+
+// The URL as far as it is TRANSMITTED. A fragment is not sent to the upstream — measured on a real
+// socket, the server reads `/x?a=1` for a request to `/x?a=1#token=…` — so a credential written only
+// there authenticates nothing and produces exactly the 401 this warning exists to explain.
+function transmittedUrl(urlTemplate: unknown): string[] {
+  if (typeof urlTemplate !== "string") return [];
+  return [urlTemplate.split("#")[0] ?? ""];
 }
 
 // The explicit query entries that survive to the request: everything the URL template does not
@@ -128,8 +159,7 @@ export function reachableTemplates(
   method: string | null | undefined,
   shapes: ToolShapePatch,
 ): string[] {
-  const emitted: string[] = [];
-  if (typeof shapes.urlTemplate === "string") emitted.push(shapes.urlTemplate);
+  const emitted: string[] = [...transmittedUrl(shapes.urlTemplate)];
   emitted.push(
     ...stringValues(shapes.headers),
     ...Object.values(reachingQuery(shapes)),
@@ -178,14 +208,14 @@ function autoInjectionReaches(
   }
   // Query: the runtime injects unless the param is already on the URL — spelled in the template, or
   // set from the explicit query map, which it applies first and only for a value that resolves
-  // NON-EMPTY. A value carrying a placeholder may resolve to nothing, and that is unknowable here,
-  // so only a literal counts as shadowing. Guessing the other way would warn about a tool that is
+  // NON-EMPTY. Whether a value resolves empty is knowable from its literal part alone: `prefix-{{id}}`
+  // cannot come out empty whatever `id` is, while a bare `{{id}}` can, and only the first is sure to
+  // take the parameter. Guessing that a placeholder always resolves would warn about a tool that is
   // wired.
   if (urlQueryKeys(shapes.urlTemplate).has(inj.name)) return false;
   const explicit = reachingQuery(shapes)[inj.name];
-  const literalNonEmpty =
-    explicit !== undefined && explicit !== "" && namesIn(explicit).size === 0;
-  return !literalNonEmpty;
+  const alwaysSet = explicit !== undefined && literalPartOf(explicit) !== "";
+  return !alwaysSet;
 }
 
 export function credentialReachesRequest(

@@ -1,4 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { createServer, request } from "node:http";
+import type { AddressInfo } from "node:net";
 import type { ToolMessage } from "@langchain/core/messages";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
@@ -89,7 +91,10 @@ async function secretLeft(w: Wiring): Promise<boolean> {
   (await tool.invoke({})) as unknown as ToolMessage;
   const headers = captured.init?.headers as Record<string, string> | undefined;
   return [
-    captured.url ?? "",
+    // The URL as far as it is TRANSMITTED. A stub fetch is handed the whole string, fragment and
+    // all, and the wire is not — the test below measures that against a real socket, and without
+    // this cut a credential written into a fragment would read here as sent.
+    (captured.url ?? "").split("#")[0] ?? "",
     ...Object.values(headers ?? {}),
     String(captured.init?.body ?? ""),
   ]
@@ -262,6 +267,32 @@ const CASES: Wiring[] = [
     },
   },
 
+  {
+    label: "a query key the URL spells past a value that carries its own '?'",
+    reaches: false,
+    urlTemplate: `https://${PUBLIC}/v1/thing?redirect=https://a.test/?x=1&token=fixed`,
+    query: { token: "{{secret}}" },
+  },
+  {
+    label: "a query kind shadowed by a value that cannot interpolate empty",
+    reaches: false,
+    kind: "query",
+    paramName: "token",
+    query: { token: "prefix-{{contact_name}}" },
+  },
+  {
+    label: "…and not shadowed by one that can",
+    reaches: true,
+    kind: "query",
+    paramName: "token",
+    query: { token: "{{contact_name}}" },
+  },
+  {
+    label: "{{secret}} in a URL fragment is written and never transmitted",
+    reaches: false,
+    urlTemplate: `https://${PUBLIC}/v1/thing#token={{secret}}`,
+  },
+
   // ── spelling ──
   {
     label:
@@ -293,12 +324,44 @@ describe("the scanner answers what the runtime does", () => {
     });
   }
 
+  test("a fragment does not reach the upstream, which is why the table cuts it", async () => {
+    // NOTE: the PREMISE behind the row above, measured rather than assumed, because the stub fetch
+    // the table runs on cannot show it: `fetchImpl` is handed the whole URL string. A real socket is
+    // what says whether the bytes leave, and `req.url` on the server side is the request TARGET the
+    // client put on the wire.
+    //
+    // node:http on both ends, not `fetch`/`Bun.serve`: this suite preloads happy-dom, and under it
+    // that pair answers `Parse Error: Duplicate Content-Length`. The client still builds its own
+    // request line from a real URL, which is the thing under measurement.
+    let seen = "";
+    const srv = createServer((req, res) => {
+      seen = req.url ?? "";
+      res.end("ok");
+    });
+    await new Promise<void>((r) => srv.listen(0, "127.0.0.1", r));
+    const { port } = srv.address() as AddressInfo;
+    await new Promise<void>((resolve, reject) => {
+      const req = request(
+        `http://127.0.0.1:${port}/x?a=1#token=${SECRET}`,
+        (res) => {
+          res.resume();
+          res.on("end", () => resolve());
+        },
+      );
+      req.on("error", reject);
+      req.end();
+    });
+    await new Promise<void>((r) => srv.close(() => r()));
+    expect(seen).toBe("/x?a=1");
+    expect(seen).not.toContain(SECRET);
+  });
+
   test("the table is not all one answer", () => {
     // NOTE: the floor. Every assertion above is `toBe(w.reaches)`, so a table that drifted to a
     // single verdict would still pass while proving nothing about the boundary between them.
     const reaching = CASES.filter((c) => c.reaches).length;
-    expect(reaching).toBeGreaterThan(5);
-    expect(CASES.length - reaching).toBeGreaterThan(5);
+    expect(reaching).toBeGreaterThan(8);
+    expect(CASES.length - reaching).toBeGreaterThan(8);
   });
 });
 

@@ -10,7 +10,11 @@ import { toolCreate, toolUpdate } from "@/modules/mcp/write-agents";
 import { unusedCredentialWarning } from "@/modules/tool-definitions/credential-wiring";
 import type { ToolShapePatch } from "@/modules/tool-definitions/normalize";
 import { SECRET_TYPE_IDS } from "@/modules/vault/secret-types";
-import { createVaultEntry } from "@/modules/vault/service";
+import {
+  createVaultEntry,
+  readVaultRefId,
+  updateVaultEntry,
+} from "@/modules/vault/service";
 
 // Issue #504, second half: an HTTP tool can reference a `generic` credential while nothing in its
 // templates interpolates {{secret}}. Nothing refuses it and nothing should — a tool may hold a
@@ -518,6 +522,12 @@ const CASES: Wiring[] = [
     inputSchema: { token: { type: "string", source: "fixed" } },
   },
 
+  {
+    label: "a legacy headers ARRAY, which the runtime still walks",
+    reaches: true,
+    headers: ["{{secret}}"] as unknown as Record<string, unknown>,
+  },
+
   // ── spelling ──
   {
     label:
@@ -585,7 +595,7 @@ describe("the scanner answers what the runtime does", () => {
     // NOTE: the floor. Every assertion above is `toBe(w.reaches)`, so a table that drifted to a
     // single verdict would still pass while proving nothing about the boundary between them.
     const reaching = CASES.filter((c) => c.reaches).length;
-    expect(reaching).toBeGreaterThan(17);
+    expect(reaching).toBeGreaterThan(18);
     expect(CASES.length - reaching).toBeGreaterThan(16);
   });
 });
@@ -891,6 +901,58 @@ describe.skipIf(!dbUp)("tool_create / tool_update say so", () => {
     expect(fired).toBe(true);
     expect(r.ok).toBe(true);
     expect(wiringWarning(r)).toHaveLength(1);
+  });
+
+  test("the create's warning describes the credential as it was WRITTEN against", async () => {
+    // NOTE: the same window as the update above, on the other write. The preview resolves the
+    // credential's facts before `createToolDefinition` runs, and a second administrator can rename
+    // the param that decides whether this tool's own header shadows the injection. Opened
+    // deliberately: the extension fires on the create itself, after the vault has been read.
+    let fired = false;
+    n += 1;
+    const racing = appDb.$extends({
+      query: {
+        toolDefinition: {
+          async create({ args, query }) {
+            if (!fired) {
+              fired = true;
+              await updateVaultEntry(
+                { tenantId, userId: null, role: "TENANT_ADMIN" },
+                readVaultRefId(headerRef) as bigint,
+                { paramName: "X-Other" },
+                appDb,
+              );
+            }
+            return query(args);
+          },
+        },
+      },
+    }) as unknown as PrismaClient;
+
+    // Shadowed while the param name is `X-Api-Key`; not shadowed once it is `X-Other`.
+    const r = await toolCreate(
+      principal(),
+      {
+        name: `wiring_race_${n}`,
+        url_template: `https://${PUBLIC}/v1/thing`,
+        allowed_hosts: [PUBLIC],
+        credential_ref: headerRef,
+        headers: { "x-api-key": "constant" },
+        dry_run: false,
+      } as Parameters<typeof toolCreate>[1],
+      { base: racing },
+    );
+    expect(fired).toBe(true);
+    expect(r.ok).toBe(true);
+    expect(wiringWarning(r)).toHaveLength(0);
+
+    // NOTE: put back, because the header credential is shared with the tests above.
+    await updateVaultEntry(
+      { tenantId, userId: null, role: "TENANT_ADMIN" },
+      readVaultRefId(headerRef) as bigint,
+      { paramName: "X-Api-Key" },
+      appDb,
+    );
   });
 
   test("no credential attached, no warning", async () => {

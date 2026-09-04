@@ -112,8 +112,17 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
 // Header values as the runtime reads them: `interpolate(String(v), …)` on every entry, whatever its
 // JSON type. Filtering to strings dropped an `Authorization: ["Bearer {{secret}}"]` that the
 // executor sends verbatim, and warned about the credential it was carrying.
+// The header entries as the runtime walks them: `Object.entries(headerTemplates)` over whatever is
+// in the column, ARRAY included — a stored `headers: ["{{secret}}"]` sends the credential under the
+// header named `0`. `isPlainObject` excludes arrays, so reading them through it reported that tool
+// as unwired.
+function headerEntries(v: unknown): [string, string][] {
+  if (typeof v !== "object" || v === null) return [];
+  return Object.entries(v).map(([k, x]) => [k, String(x)]);
+}
+
 function headerTemplates(v: unknown): string[] {
-  return isPlainObject(v) ? Object.values(v).map((x) => String(x)) : [];
+  return headerEntries(v).map(([, value]) => value);
 }
 
 // The query map as the runtime reads it (`parseQuery`): a null/undefined value is dropped and
@@ -358,9 +367,7 @@ function autoInjectionReaches(
   const inj = resolveSecretInjection(kind, "probe", paramName);
   if (!inj) return false;
   if (inj.target === "header") {
-    const names = isPlainObject(shapes.headers)
-      ? Object.keys(shapes.headers)
-      : [];
+    const names = headerEntries(shapes.headers).map(([name]) => name);
     // The one header the runtime writes ITSELF: a body method with no content-type of its own gets
     // `Content-Type: application/json` added before auto-injection, which occupies that target the
     // same way an operator's own header does.

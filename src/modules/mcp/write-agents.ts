@@ -644,12 +644,23 @@ export async function toolCreate(
     }
     const created = await createToolDefinition(ctx, input, base);
     const target = `tool:${created.id}`;
+    // NOTE: recomputed from the row that was CREATED, for the reason the update path gives: the
+    // preview's vault read happens before the write, and a credential's param name or base URL can
+    // change in between — the response would then describe wiring that is already not the wiring.
+    const appliedWiring = await credentialWiringWarning(
+      ctx,
+      base,
+      created.credentialRef,
+      created.method,
+      toolShapesOf(created),
+    );
+    const applied = [...norm.warnings, ...appliedWiring];
     return ok({
       dryRun: false,
       applied: true,
       target,
       tool: created,
-      ...warnings,
+      ...(applied.length > 0 ? { warnings: applied } : {}),
     });
   } catch (e) {
     return failOf(e);

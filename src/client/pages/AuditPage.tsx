@@ -21,7 +21,6 @@ import {
   Card,
   ComboBox,
   EmptyState,
-  HelpPopover,
   PageContainer,
   Skeleton,
   Tooltip,
@@ -45,12 +44,28 @@ import { clipText } from "@/lib/text";
 // The audit trail viewer (TENANT_ADMIN). Rows newest first, filters in the URL, keyset pagination
 // over a cursor stack — the same shape the Logs page uses, because it is the same kind of read.
 //
-// Two things this page does that a list of rows does not. It shows the newest row of the WHOLE
-// trail on its own, because comparing that against a record's own updatedAt is how an operator
-// learns a change happened that the trail cannot describe. And it renders `before`/`after` as a
-// FIELD-LEVEL diff: half the rows on a real tenant carry two full system prompts of ~11k characters
-// each (measured on a self-hosted deployment, issue #401), and two JSON blobs there are not
-// inconvenient, they are unreadable.
+// What it does that a list of rows does not: it renders `before`/`after` as a FIELD-LEVEL diff. Half
+// the rows on a real tenant carry two full system prompts of ~11k characters each (measured on a
+// self-hosted deployment, issue #401), and two JSON blobs there are not inconvenient, they are
+// unreadable.
+//
+// IT DOES NOT RENDER `latestAt`, and that is a decision rather than an omission. The response still
+// carries the trail-wide newest row for the REST and MCP transports, and this page used to print it
+// above the filters as "Trail recorded up to", with help telling the operator to subtract a record's
+// own `updatedAt` from it: a record newer than the line meant a change the trail had missed.
+//
+// Unfiltered, the line was a duplicate of the first card. Filtered, it was worse than useless for
+// the one job it claimed, and the reason is that it is a MAXIMUM OVER THE WHOLE TRAIL. A row that
+// fails to write is invisible to a global maximum unless it would have been the newest AND nothing
+// has been recorded since — any later row from any other family carries the line past the gap, and
+// the operator's subtraction then reads as "covered". It does not merely miss the case, it answers
+// it wrongly.
+//
+// That case is REAL, and it is why this comment is not the shorter "audit writes are transactional".
+// They are on every path this console can reach, but not on the MCP consent decision: `upsertApproval`
+// commits, and `auditConsentDecision` then writes in its own transaction and swallows a failure with
+// a warn (#528). The detector for that is the log line and the invariant, not a header that would
+// have said "covered".
 
 type AuditResponse = Awaited<ReturnType<typeof api.api.v1.audit.get>>["data"];
 type AuditItem = NonNullable<AuditResponse>["entries"][number];
@@ -409,66 +424,6 @@ function AuditRowCard({
   );
 }
 
-// The newest row of the trail, on its own. Not decoration and not a duplicate of the first row: it
-// stays put while the list below is filtered, and it is the number an operator subtracts a record's
-// own updatedAt from to find a change nothing here can describe.
-function TrailFreshness({
-  latestAt,
-  state,
-}: {
-  latestAt: string | null;
-  state: "loading" | "ready" | "unavailable";
-}) {
-  const { t, i18n } = useTranslation();
-  return (
-    <Card className="flex flex-col gap-1">
-      <div className="flex flex-wrap items-baseline gap-2">
-        {/* THE LABEL NAMES THE COVERAGE, not the datum, and that rewrite is the whole fix here. It
-            read "Newest entry in the trail", which is true and answers a question nobody asked: an
-            operator does not want to know which row is newest, they want to know HOW FAR the trail
-            reaches. Said that way the number needs no paragraph to be useful, and the paragraph —
-            what it is worth comparing against — moves into the `?` where a reader who wants it can
-            find it and everyone else is not paying for it. */}
-        <span className="text-sm text-text-secondary">
-          {t("audit.coverage", "Trail recorded up to")}
-        </span>
-        {/* `null` means two different things and only one of them is a fact: "the trail is empty"
-            and "we have not asked yet, or the ask failed". Rendering the sentence before a response
-            landed states the stronger one on no evidence — and on a failed load it stays there. */}
-        {state === "ready" && (
-          <span className="font-medium text-sm text-text-primary tabular-nums">
-            {latestAt
-              ? formatDateTime(latestAt, i18n.language)
-              : t("audit.latestNone", "no entries yet")}
-          </span>
-        )}
-        {/* A failed load is not a slow load: leaving the skeleton up would keep announcing "Loading…"
-            for as long as the page stays in its error state, on an element that is telling a screen
-            reader something is on its way. */}
-        {state === "unavailable" && (
-          <span className="text-sm text-text-muted">
-            {t("audit.latestUnavailable", "could not be read")}
-          </span>
-        )}
-        {state === "loading" && (
-          <span role="status">
-            <span className="sr-only">{t("common.loading", "Loading…")}</span>
-            <Skeleton className="h-4 w-40" />
-          </span>
-        )}
-        <HelpPopover
-          className="ml-auto"
-          label={t("audit.coverage", "Trail recorded up to")}
-          content={t(
-            "audit.latestHelp",
-            "It does not change when you filter the list. Compare it with the last-updated time of a record you know was changed: if the record is newer, that change is not on the trail.",
-          )}
-        />
-      </div>
-    </Card>
-  );
-}
-
 export function AuditPage() {
   const { t } = useTranslation();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -506,10 +461,6 @@ export function AuditPage() {
     [t],
   );
   const [entries, setEntries] = useState<AuditItem[]>([]);
-  const [latestAt, setLatestAt] = useState<string | null>(null);
-  const [freshness, setFreshness] = useState<
-    "loading" | "ready" | "unavailable"
-  >("loading");
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [cursorStack, setCursorStack] = useState<(string | null)[]>([null]);
   const [loading, setLoading] = useState(true);
@@ -674,18 +625,12 @@ export function AuditPage() {
       if (!current()) return;
       if (err || !data) {
         setError(true);
-        setFreshness("unavailable");
         return;
       }
       setEntries(data.entries);
       setNextCursor(data.nextCursor);
-      setLatestAt(data.latestAt);
-      setFreshness("ready");
     } catch {
-      if (current()) {
-        setError(true);
-        setFreshness("unavailable");
-      }
+      if (current()) setError(true);
     } finally {
       // NOTE: Only the newest load owns the spinner: an older one finishing later would clear it while the
       // page it is not showing is still on its way.
@@ -720,8 +665,6 @@ export function AuditPage() {
           </p>
         </div>
       </header>
-
-      <TrailFreshness latestAt={latestAt} state={freshness} />
 
       <div className="flex flex-wrap items-center gap-2">
         <div className="min-w-56 flex-1">

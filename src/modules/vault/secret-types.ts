@@ -58,8 +58,16 @@ export interface SecretType {
   service?: string;
   // Optional connectivity test (test-on-save). Absent ⇒ the type is not testable.
   test?: SecretTestSpec;
-  // When true, a non-empty baseUrl is required to create or update this credential kind.
-  requiresBaseUrl?: boolean;
+  // Whether this kind carries a persistent base URL (VaultEntry.baseUrl), and whether it can be
+  // created without one. ONE declaration rather than a supports/requires pair, because "required
+  // but not supported" is not a state any kind can be in and a pair lets it be written: the
+  // console's own mirror kept the two as separate booleans and the server declared only half of
+  // them, which is how every kind ended up storing a base URL nine of them never show (#504).
+  // Absent ⇒ the kind has no use for one, and a non-empty baseUrl on it is REFUSED at the write
+  // boundary — the field is read straight off the entry by the model, vision, STT, TTS and MCP
+  // paths (`credentialBaseUrl ?? cfg.baseURL`), so a value stored on a kind whose form never shows
+  // it silently redirects where the credential is sent.
+  baseUrl?: "required" | "optional";
   // When true, the VALUE is a server-managed JSON blob (created empty, populated by a connect flow
   // like OAuth DCR + consent). Exempt from validateVaultValue's field/string shape check — only
   // "must be an object" is enforced. The operator never types the secret value directly.
@@ -69,13 +77,23 @@ export interface SecretType {
 // Order is the UI display order. Keep `generic` first (the default); generic mechanisms, then the
 // service-specific types (which carry a logo + a connectivity test).
 export const SECRET_TYPES: SecretType[] = [
-  { id: "generic", injection: "none" },
-  { id: "bearer_token", injection: "bearer" },
+  { id: "generic", injection: "none", baseUrl: "optional" },
+  { id: "bearer_token", injection: "bearer", baseUrl: "optional" },
   // Generic header injection — the operator names the header in VaultEntry.paramName.
-  { id: "header", injection: "header", needsParamName: true },
-  { id: "basic_auth", injection: "basic" },
+  {
+    id: "header",
+    injection: "header",
+    needsParamName: true,
+    baseUrl: "optional",
+  },
+  { id: "basic_auth", injection: "basic", baseUrl: "optional" },
   // Generic query injection — the operator names the query parameter in VaultEntry.paramName.
-  { id: "query", injection: "query", needsParamName: true },
+  {
+    id: "query",
+    injection: "query",
+    needsParamName: true,
+    baseUrl: "optional",
+  },
   {
     id: "openai",
     injection: "bearer",
@@ -119,7 +137,7 @@ export const SECRET_TYPES: SecretType[] = [
     id: "openai_compatible",
     injection: "bearer",
     service: "openai_compatible",
-    requiresBaseUrl: true,
+    baseUrl: "required",
     // Base is the operator's API root (typically ending in /v1); the probe hits {base}/models.
     test: { needsBase: true, path: "/models" },
   },
@@ -158,7 +176,7 @@ export const SECRET_TYPES: SecretType[] = [
     // with the SAME header; hyphenated to survive proxies that drop underscores (chatwoot/constants.ts).
     name: CHATWOOT_AUTH_HEADER,
     service: "chatwoot",
-    requiresBaseUrl: true,
+    baseUrl: "required",
     // Self-hosted: the operator's Chatwoot base. Probes the user-scoped profile endpoint.
     test: { needsBase: true, path: "/api/v1/profile" },
   },
@@ -183,7 +201,7 @@ export const SECRET_TYPES: SecretType[] = [
     id: "mcp_oauth",
     injection: "bearer",
     service: "mcp",
-    requiresBaseUrl: true,
+    baseUrl: "required",
     managedBlob: true,
   },
   // Environment variable for a stdio MCP server (many stdio servers read their token from an env var,
@@ -206,7 +224,7 @@ export const SECRET_TYPES: SecretType[] = [
     injection: "none",
     neverOutbound: true,
     service: "langfuse",
-    requiresBaseUrl: true,
+    baseUrl: "required",
     fields: [{ key: "publicKey" }, { key: "secretKey", masked: true }],
   },
 ];
@@ -260,10 +278,58 @@ export function secretTypeRefusesParamName(
   return type != null && !type.needsParamName;
 }
 
+// Whether the kind puts the credential on the outbound request BY ITSELF. False for `generic` — the
+// escape hatch whose whole contract is that the operator writes `{{secret}}` where the API wants it —
+// and for a kind this build does not know, which is treated as `generic` everywhere else.
+export function secretTypeAutoInjects(id: string | null | undefined): boolean {
+  const type = getSecretType(id);
+  return type != null && type.injection !== "none";
+}
+
+// The kinds that inject a credential without naming a service: bearer/header/basic/query. Derived
+// rather than listed, and the two conditions are both load-bearing — a kind that injects but names a
+// service (`openai`, `asaas`, …) is not an alternative for an arbitrary HTTP tool, it is a different
+// API. This is what the unused-credential warning offers instead of only saying the credential is dead.
+export const INJECTING_MECHANISM_KIND_IDS: string[] = SECRET_TYPES.filter(
+  (s) => s.injection !== "none" && !s.service,
+).map((s) => s.id);
+
 export function secretTypeRequiresBaseUrl(
   id: string | null | undefined,
 ): boolean {
-  return !!getSecretType(id)?.requiresBaseUrl;
+  return getSecretType(id)?.baseUrl === "required";
+}
+
+// Whether the kind has any use for a base URL at all. Required implies supported by construction —
+// that is the whole reason the catalog declares one field and not two.
+export function secretTypeSupportsBaseUrl(
+  id: string | null | undefined,
+): boolean {
+  return getSecretType(id)?.baseUrl != null;
+}
+
+// The kinds that carry a base URL, in catalog order — the same shape `PARAM_NAME_KIND_IDS` has, and
+// for the same reason: the refusal below can NAME the alternatives instead of only saying no.
+export const BASE_URL_KIND_IDS: string[] = SECRET_TYPES.filter(
+  (s) => s.baseUrl != null,
+).map((s) => s.id);
+
+// Whether a non-empty `baseUrl` on this kind must be REFUSED at the write boundary. Not the negation
+// of `secretTypeSupportsBaseUrl`, and the difference is the same carve-out `secretTypeRefusesParamName`
+// makes: a kind this build does not know answers false, so an entry written by a build whose catalog
+// had a kind this one dropped stays editable.
+//
+// The field is read straight off the resolved entry by the model path (`credentialBaseUrl ?? mc.baseURL`
+// in prepare.ts), vision, STT, TTS, the HTTP-tool base and the MCP connection URL — none of them
+// asking the kind. So a base URL stored on a kind whose console form never renders the input is a
+// redirect nobody can see: the operator's provider key goes to that host on the next turn, and the
+// only surface that already asks the question is the embedding path, which honours the entry's
+// baseUrl for `openai_compatible` and nothing else (rag/documents.ts, and it says why).
+export function secretTypeRefusesBaseUrl(
+  id: string | null | undefined,
+): boolean {
+  const type = getSecretType(id);
+  return type != null && type.baseUrl == null;
 }
 
 // True for kinds whose VALUE is a server-managed JSON blob (created empty; see SecretType.managedBlob).

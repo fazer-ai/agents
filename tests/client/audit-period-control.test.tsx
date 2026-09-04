@@ -19,6 +19,7 @@ import {
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router";
+import { ToastProvider } from "@/client/components";
 
 // The page reads the principal's role to decide whether to offer the scope selector (#520). These
 // files are not about that, so the mock hands it the ordinary operator: a TENANT_ADMIN, which is
@@ -58,10 +59,12 @@ function Probe() {
 // copy edit. The page renders exactly two `<select>`s — the door, then the period.
 function mount(url: string) {
   const view = render(
-    <MemoryRouter initialEntries={[url]}>
-      <AuditPage />
-      <Probe />
-    </MemoryRouter>,
+    <ToastProvider>
+      <MemoryRouter initialEntries={[url]}>
+        <AuditPage />
+        <Probe />
+      </MemoryRouter>
+    </ToastProvider>,
   );
   const selects = view.container.querySelectorAll("select");
   expect(selects).toHaveLength(2);

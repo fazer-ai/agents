@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { getActiveTenantId } from "@/client/lib/activeTenant";
 import { api } from "@/client/lib/api";
 import { canonicalVaultRef, formatVaultRef } from "@/client/lib/credentialRef";
+import { dialableBaseUrl } from "@/client/lib/secretTypes";
 import type { VaultRefFacts } from "@/modules/agents/config-health";
 
 // Derived from the treaty response, never hand-mirrored (see docs/eden-treaty.md).
@@ -139,11 +140,15 @@ export function useVaultBaseUrls(): (ref: string) => string | null {
     return () => window.removeEventListener(VAULT_CHANGED_EVENT, onChanged);
   }, [load]);
   return useCallback(
-    (ref: string) =>
-      (ref
-        ? entries.find((e) => formatVaultRef(e.id) === canonicalVaultRef(ref))
-            ?.baseUrl
-        : null) ?? null,
+    (ref: string) => {
+      if (!ref) return null;
+      // NOTE: the DIALABLE one. The listing reports the row as it is, so a stray base URL stays
+      // visible; what a page DECIDES with has to be what the runtime will use (#504).
+      const entry = entries.find(
+        (e) => formatVaultRef(e.id) === canonicalVaultRef(ref),
+      );
+      return entry ? dialableBaseUrl(entry.kind, entry.baseUrl) : null;
+    },
     [entries],
   );
 }

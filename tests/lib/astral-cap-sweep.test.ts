@@ -422,6 +422,11 @@ const BARE_SLICES: Record<
   "src/modules/appointments/settings.ts": [1, "array"],
   // The page's own overshoot row, dropped: the list takes `limit + 1` to learn whether a next page
   // exists, and it cuts an array of rows, never a string.
+  // The export's two, and neither touches a string: the page's overshoot row is dropped off an ARRAY
+  // of rows (`limit + 1`, to learn whether more matched), and the filename's instant is sliced off an
+  // ISO string, which is ASCII by construction. The byte budget cuts BETWEEN rows and never inside
+  // one, so the file cannot end on half a character either.
+  "src/modules/audit/export.ts": [2, "array + ascii"],
   "src/modules/audit/service.ts": [1, "array"],
   "src/modules/business-hours/announce.ts": [2, "fixed-format"],
   "src/modules/business-hours/hours.ts": [1, "fixed-format"],

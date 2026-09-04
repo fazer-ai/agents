@@ -40,7 +40,11 @@ import {
 } from "@/lib/outbound";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { resolveInjectableCredential } from "@/modules/vault/injectable";
-import { formatVaultRef, readVaultRefId } from "@/modules/vault/service";
+import {
+  dialableBaseUrl,
+  formatVaultRef,
+  readVaultRefId,
+} from "@/modules/vault/service";
 import { unsupportedBodyShape } from "./body-shape";
 import { CONTEXT_VAR_NAMES } from "./normalize";
 import { readResponseTemplateResult } from "./response-template";
@@ -366,7 +370,7 @@ async function readCredentialMeta(
     return {
       kind: entry.kind,
       paramName: entry.paramName,
-      baseUrl: entry.baseUrl,
+      baseUrl: dialableBaseUrl(entry.kind, entry.baseUrl),
     };
   });
 }

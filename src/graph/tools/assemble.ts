@@ -6,6 +6,7 @@ import { parseTemplateContent } from "@/modules/documents/validate";
 import type { IntegrationSelection } from "@/modules/integrations/toolpacks";
 import { isManagedOAuthKind } from "@/modules/vault/secret-types";
 import {
+  dialableBaseUrl,
   formatVaultRef,
   readVaultRefId,
   tryResolveVaultEntry,
@@ -450,7 +451,9 @@ export async function loadToolSelections(
         : null;
       d.credentialKind = meta?.kind ?? null;
       d.credentialParamName = meta?.paramName ?? null;
-      d.credentialBaseUrl = meta?.baseUrl ?? null;
+      d.credentialBaseUrl = meta
+        ? dialableBaseUrl(meta.kind, meta.baseUrl)
+        : null;
     }
   }
   return result;

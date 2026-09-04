@@ -27,6 +27,7 @@ import {
 } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router";
+import { ToastProvider } from "@/client/components";
 
 const mockUser = { role: "TENANT_ADMIN" as string };
 
@@ -86,12 +87,14 @@ afterEach(() => {
 
 function mount(url: string) {
   const view = render(
-    <TooltipProvider>
-      <MemoryRouter initialEntries={[url]}>
-        <AuditPage />
-        <Probe />
-      </MemoryRouter>
-    </TooltipProvider>,
+    <ToastProvider>
+      <TooltipProvider>
+        <MemoryRouter initialEntries={[url]}>
+          <AuditPage />
+          <Probe />
+        </MemoryRouter>
+      </TooltipProvider>
+    </ToastProvider>,
   );
   return {
     ...view,

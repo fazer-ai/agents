@@ -43,8 +43,12 @@ describe.skipIf(!dbUp)("tts: vault entry baseUrl precedence", () => {
     const e1 = await suDb.vaultEntry.create({
       data: {
         tenantId,
+        // NOTE: `openai_compatible` and not `openai`, since #504: a base URL is only DIALLED for a
+        // kind whose catalog entry declares one, so a row with `kind: "openai"` and a base URL is a
+        // stray value the resolve now answers `null` for. What this file is about — the entry's base
+        // winning over the config's — is unchanged, and this is the kind that can carry one.
         name: "tts-with-base",
-        kind: "openai",
+        kind: "openai_compatible",
         secret: encryptJson("sk-tts"),
         baseUrl: "https://custom.tts-proxy.com/v1",
       },

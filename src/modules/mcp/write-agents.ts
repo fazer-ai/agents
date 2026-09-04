@@ -1,7 +1,8 @@
+import type { PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import { normalizeExpectedStatuses } from "@/graph/tools/http-status";
 import { AppError } from "@/lib/errors";
-import type { TenantContext } from "@/lib/tenancy";
+import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { configHealthAfterWrite } from "@/modules/agents/config-health-read";
 import type { AgentMode } from "@/modules/agents/mode";
 import {
@@ -34,7 +35,11 @@ import {
   updateMcpConnection,
 } from "@/modules/mcp-connections/service";
 import { unsupportedBodyShape } from "@/modules/tool-definitions/body-shape";
-import { normalizeToolShapes } from "@/modules/tool-definitions/normalize";
+import { unusedCredentialWarning } from "@/modules/tool-definitions/credential-wiring";
+import {
+  normalizeToolShapes,
+  type ToolShapePatch,
+} from "@/modules/tool-definitions/normalize";
 import {
   readResponseTemplateResult,
   storableResponseTemplate,
@@ -50,6 +55,7 @@ import {
   type ToolDefinitionUpdate,
   updateToolDefinition,
 } from "@/modules/tool-definitions/service";
+import { dialableBaseUrl, readVaultRefFacts } from "@/modules/vault/service";
 import type { VerifiedToken } from "./oauth/tokens";
 import {
   diffFields,
@@ -527,6 +533,103 @@ export async function buildToolPatch(
   return { patch };
 }
 
+// The five interpolation sites off a row or a patch, as one object. Spelled once because the two
+// writers assemble the same thing from three different shapes (the create input, the update patch,
+// the stored row) and a site dropped from one of those spellings is a warning that fires on a tool
+// that is wired.
+function toolShapesOf(src: {
+  urlTemplate?: string | null;
+  query?: unknown;
+  headers?: unknown;
+  body?: unknown;
+  inputSchema?: unknown;
+}): ToolShapePatch {
+  const out: ToolShapePatch = {};
+  // NOTE: an absent site is OMITTED, never set to `undefined`. These objects are spread over one
+  // another to build the effective row, and a spread key whose value is `undefined` overwrites: the
+  // patch would erase every template it does not mention, and the warning would then fire on the
+  // tool it was reading.
+  if (typeof src.urlTemplate === "string") out.urlTemplate = src.urlTemplate;
+  if (src.query !== undefined) out.query = src.query;
+  if (src.headers !== undefined) out.headers = src.headers;
+  if (src.body !== undefined) out.body = src.body;
+  if (src.inputSchema !== undefined) out.inputSchema = src.inputSchema;
+  return out;
+}
+
+// The unused-credential warning for one tool write, with the vault read it needs. Called once per
+// write and spread into BOTH halves of the answer, like `norm.warnings` beside it: a preview that
+// stays quiet about wiring the apply will not fix is the preview promising something away (#490).
+//
+// `shapes` is the EFFECTIVE row — patch over stored — and RAW: `unusedCredentialWarning` runs the
+// normalization itself, because `buildHttpTool` runs it too and a legacy single-brace `{secret}`
+// sitting in a stored template is therefore sent. Normalizing only the patch, as the preview does
+// for its own purposes, would leave the stored half raw and report a working tool as unwired.
+// The same read AFTER the write has committed, and it can never take the write down with it. The
+// rule is docs/mcp.md's, for config-health: "the write had already committed, so a rejection is
+// reported rather than raised". A pool timeout on this advisory lookup would otherwise answer
+// `ok: false` for a tool that exists, and the caller's retry would meet a name conflict.
+//
+// Spelled out rather than forwarded with `...args`: the #502 fence reads these call sites for the
+// client they hand on, and a spread names none — it caught this one.
+async function appliedWiringWarning(
+  ctx: TenantContext,
+  base: PrismaClient,
+  credentialRef: string | null | undefined,
+  method: string | null | undefined,
+  shapes: ToolShapePatch,
+  ackMessage: string | null | undefined,
+  allowedHosts: string[] | null | undefined,
+): Promise<string[]> {
+  try {
+    return await credentialWiringWarning(
+      ctx,
+      base,
+      credentialRef,
+      method,
+      shapes,
+      ackMessage,
+      allowedHosts,
+    );
+  } catch {
+    return [];
+  }
+}
+
+async function credentialWiringWarning(
+  ctx: TenantContext,
+  base: PrismaClient,
+  credentialRef: string | null | undefined,
+  method: string | null | undefined,
+  shapes: ToolShapePatch,
+  ackMessage: string | null | undefined,
+  allowedHosts: string[] | null | undefined,
+): Promise<string[]> {
+  if (!credentialRef) return [];
+  const facts = await runScopedOn(base, ctx, (db) =>
+    readVaultRefFacts(db, credentialRef),
+  );
+  // NOTE: a ref that names no row is a DIFFERENT problem — the credential was deleted, and the fix is
+  // to attach one, not to wire the one that is there. Reading the miss as a legacy `generic` handed
+  // that operator remediation for a tool whose credential does not exist. config-health is where the
+  // dangling ref is reported; this stays quiet about it.
+  if (!facts) return [];
+  const warning = unusedCredentialWarning(
+    // NOTE: the DIALABLE base, like every other reader — the facts carry the row as it is, and a
+    // stray base URL on a kind that has no use for one is not prepended to anything any more. Judging
+    // the stored value would read a relative tool as pointing somewhere it does not.
+    {
+      kind: facts.kind,
+      paramName: facts.paramName,
+      baseUrl: dialableBaseUrl(facts.kind, facts.baseUrl),
+    },
+    method,
+    shapes,
+    { ackMessage, allowedHosts },
+  );
+  return warning ? [warning] : [];
+}
+
 export async function toolCreate(
   principal: VerifiedToken,
   args: ToolWriteArgs & { dry_run?: boolean },
@@ -557,7 +660,6 @@ export async function toolCreate(
     body: input.body,
     inputSchema: input.inputSchema,
   });
-  const warnings = norm.warnings.length > 0 ? { warnings: norm.warnings } : {};
   try {
     if (args.dry_run !== false) {
       // NOTE: the core's own question, asked before the preview answers it. It sits INSIDE the
@@ -570,6 +672,19 @@ export async function toolCreate(
       // collision that actually happens (a name the operator already used), and the unique index
       // inside the write remains what guarantees one name to one row (#490).
       await assertToolNameAvailable(ctx, parsed.name, base);
+      // NOTE: INSIDE the branch, like the two checks above it and for a plainer reason: the apply
+      // recomputes this from the row it wrote, so reading the vault out here was a scoped
+      // transaction whose answer that path throws away.
+      const wiring = await credentialWiringWarning(
+        ctx,
+        base,
+        input.credentialRef,
+        input.method,
+        toolShapesOf(input),
+        input.ackEnabled ? input.ackMessage : null,
+        input.allowedHosts,
+      );
+      const all = [...norm.warnings, ...wiring];
       return ok({
         dryRun: true,
         action: "create",
@@ -577,17 +692,30 @@ export async function toolCreate(
         // `parsed` first: the name is canonicalized on the way in, so echoing the spelling the
         // caller typed would promise a row stored under a different one.
         preview: { ...input, ...parsed, ...norm.shapes },
-        ...warnings,
+        ...(all.length > 0 ? { warnings: all } : {}),
       });
     }
     const created = await createToolDefinition(ctx, input, base);
     const target = `tool:${created.id}`;
+    // NOTE: recomputed from the row that was CREATED, for the reason the update path gives: the
+    // preview's vault read happens before the write, and a credential's param name or base URL can
+    // change in between — the response would then describe wiring that is already not the wiring.
+    const appliedWiring = await appliedWiringWarning(
+      ctx,
+      base,
+      created.credentialRef,
+      created.method,
+      toolShapesOf(created),
+      created.ackEnabled ? created.ackMessage : null,
+      created.allowedHosts,
+    );
+    const applied = [...norm.warnings, ...appliedWiring];
     return ok({
       dryRun: false,
       applied: true,
       target,
       tool: created,
-      ...warnings,
+      ...(applied.length > 0 ? { warnings: applied } : {}),
     });
   } catch (e) {
     return failOf(e);
@@ -633,8 +761,6 @@ export async function toolUpdate(
       ...built.patch,
       ...norm.shapes,
     } as ToolDefinitionUpdate;
-    const warnings =
-      norm.warnings.length > 0 ? { warnings: norm.warnings } : {};
     const keys = Object.keys(built.patch) as (keyof ToolDefinitionUpdate)[];
     const beforeProj: Record<string, unknown> = {};
     const afterProj: Record<string, unknown> = {};
@@ -653,23 +779,64 @@ export async function toolUpdate(
         await assertToolNameAvailable(ctx, parsed.name, base, id, current.name);
         afterProj.name = parsed.name;
       }
+      // NOTE: the EFFECTIVE row, patch over stored, because a patch that only attaches a credential
+      // says nothing about the templates and a patch that only rewrites a template says nothing
+      // about the credential. Judging either half alone is how this warning would fire on a tool
+      // that is wired and stay silent on one that is not.
+      //
+      // And INSIDE the branch: the apply recomputes it from the row it wrote, so out here it was a
+      // scoped vault transaction whose answer that path throws away.
+      const wiring = await credentialWiringWarning(
+        ctx,
+        base,
+        built.patch.credentialRef !== undefined
+          ? built.patch.credentialRef
+          : current.credentialRef,
+        built.patch.method ?? current.method,
+        { ...toolShapesOf(current), ...toolShapesOf(built.patch) },
+        // NOTE: `!== undefined` and not `??`: `ack_message: null` CLEARS the message, and reading a
+        // cleared field as "unchanged" restored the ack the applied row will not have.
+        (built.patch.ackEnabled ?? current.ackEnabled)
+          ? built.patch.ackMessage !== undefined
+            ? built.patch.ackMessage
+            : current.ackMessage
+          : null,
+        built.patch.allowedHosts ?? current.allowedHosts,
+      );
+      const all = [...norm.warnings, ...wiring];
       return ok({
         dryRun: true,
         target,
         diff: diffFields(beforeProj, afterProj),
-        ...warnings,
+        ...(all.length > 0 ? { warnings: all } : {}),
       });
     }
     const updated = await updateToolDefinition(ctx, id, built.patch, base);
     const appliedProj: Record<string, unknown> = {};
     for (const k of keys)
       appliedProj[k] = (updated as unknown as Record<string, unknown>)[k];
+    // NOTE: recomputed from the row the write RETURNED, like `appliedProj` beside it, rather than
+    // reused from the preview. The preview reads outside the write's transaction, so a second
+    // administrator can change the credential or a template in between — and the response would
+    // then report a diff of the row that was written next to a warning about the row that was read.
+    // No test distinguishes the two: the divergence needs a write landing inside that window, and
+    // the consistency with the line above is the argument.
+    const appliedWiring = await appliedWiringWarning(
+      ctx,
+      base,
+      updated.credentialRef,
+      updated.method,
+      toolShapesOf(updated),
+      updated.ackEnabled ? updated.ackMessage : null,
+      updated.allowedHosts,
+    );
+    const applied = [...norm.warnings, ...appliedWiring];
     return ok({
       dryRun: false,
       applied: true,
       target,
       diff: diffFields(beforeProj, appliedProj),
-      ...warnings,
+      ...(applied.length > 0 ? { warnings: applied } : {}),
     });
   } catch (e) {
     return failOf(e);

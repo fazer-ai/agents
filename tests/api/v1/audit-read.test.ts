@@ -56,12 +56,23 @@ mock.module("@/modules/audit/service", () => ({
   ) => realAudit.listAudit(ctx, opts, app),
 }));
 
+const auditExport = await import("@/modules/audit/export");
+const realExport = { ...auditExport };
+mock.module("@/modules/audit/export", () => ({
+  ...realExport,
+  exportAudit: (
+    ctx: TenantContext,
+    opts: Parameters<typeof auditExport.exportAudit>[1],
+  ) => realExport.exportAudit(ctx, opts, app),
+}));
+
 const server = (await import("@/app")).default;
 
 // TOP-LEVEL, outside the describe: an `afterAll` inside a `describe.skipIf(...)` that skips does not
 // run, while the mock was installed for the whole worker before `dbUp` was decided.
 afterAll(() => {
   mock.module("@/modules/audit/service", () => realAudit);
+  mock.module("@/modules/audit/export", () => realExport);
 });
 
 const ADMIN_ID = 9403n;
@@ -277,6 +288,83 @@ describe.skipIf(!dbUp)("the trail has a door the console can use", () => {
       expect(res.status).toBe(200);
       const body = (await res.json()) as Page;
       expect(body.entries.length).toBeGreaterThan(0);
+    });
+  });
+  // THE DOOR THE EXPORT BUTTON USES (#521). The console cannot serialize this itself -- the Logs
+  // page's own button downloads through its REST endpoint and turns the body into a Blob -- so the
+  // route is not an extra surface, it is the button's transport.
+  describe("the export door", () => {
+    interface Dump {
+      filename: string;
+      contentType: string;
+      content: string;
+      count: number;
+      truncated: boolean;
+      truncatedBy: "rows" | "bytes" | null;
+    }
+    const dump = async (qs: string, jar = cookie) => {
+      const res = await server.handle(
+        new BunRequest(`http://localhost/api/v1/audit/export${qs}`, {
+          headers: { cookie: jar },
+        }),
+      );
+      return { res, body: (await res.json()) as Dump };
+    };
+
+    test("it hands back a named CSV of the tenant's own rows", async () => {
+      role = "TENANT_ADMIN";
+      const { res, body } = await dump("", await sign("TENANT_ADMIN"));
+      expect(res.status).toBe(200);
+      expect(body.filename).toMatch(/^agents-audit-.+\.csv$/);
+      expect(body.contentType).toBe("text/csv;charset=utf-8");
+      expect(body.content.split("\r\n")[0]).toBe(
+        "id,created_at,action,actor_type,actor_id,target,tenant_id,before,after",
+      );
+      expect(body.count).toBeGreaterThan(0);
+    });
+
+    // The filter is the point: the export is quoted, so it has to be the screen's answer.
+    test("it carries the same filter the list does", async () => {
+      role = "TENANT_ADMIN";
+      const jar = await sign("TENANT_ADMIN");
+      const listed = (await (await get("?action=two.b", jar)).json()) as Page;
+      const { body } = await dump("?action=two.b", jar);
+      expect(body.count).toBe(listed.entries.length);
+      expect(body.content).toContain("two.b");
+      expect(body.content).not.toContain("one.a");
+    });
+
+    test("a bad instant is refused here too, rather than exported as no filter", async () => {
+      role = "TENANT_ADMIN";
+      const { res } = await dump(
+        "?since=2026-01-01",
+        await sign("TENANT_ADMIN"),
+      );
+      expect(res.status).toBe(400);
+    });
+
+    test("the cap is reported, not applied in silence", async () => {
+      role = "TENANT_ADMIN";
+      const { body } = await dump("?maxRows=1", await sign("TENANT_ADMIN"));
+      expect(body.count).toBe(1);
+      expect(body.truncated).toBe(true);
+      expect(body.truncatedBy).toBe("rows");
+    });
+
+    test("a tenant admin exporting the fleet trail is refused, not narrowed", async () => {
+      role = "TENANT_ADMIN";
+      const { res, body } = await dump(
+        "?scope=fleet",
+        await sign("TENANT_ADMIN"),
+      );
+      expect(res.status).toBe(403);
+      expect(body.content).toBeUndefined();
+    });
+
+    test("and an agent has no door here at all", async () => {
+      role = "AGENT";
+      const { res } = await dump("", await sign("AGENT"));
+      expect(res.status).toBe(403);
     });
   });
 });

@@ -4,6 +4,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { getGlobalBranding } from "@/api/features/branding/branding.service";
 import config from "@/config";
+import { AUDIT_SCOPES } from "@/lib/audit/scope";
 import { AppError } from "@/lib/errors";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import type { TenantContext } from "@/lib/tenancy";
@@ -1033,7 +1034,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "audit_list",
       {
         description:
-          "Tenant audit log, newest first. before/after are sanitized at write time, never secrets. Keyset cursor; limit 100 (max 500). `latestAt` is the trail's newest row, past any filter.",
+          "Audit log, newest first. before/after are sanitized at write time, never secrets. Keyset cursor; limit 100 (max 500). `scope`: tenant (default), fleet (rows keyed to no tenant) or all; fleet/all need SUPER_ADMIN. `latestAt` is that trail's newest row, past any filter.",
         inputSchema: {
           action: z.string().optional(),
           // NOTE: derived from the vocabulary and never hand-listed, for the reason `logs_query`
@@ -1045,6 +1046,9 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           until: z.string().optional(),
           limit: z.number().int().optional(),
           cursor: z.string().optional(),
+          // Derived, for the same reason `actor_type` above is: a hand-listed copy drifts, and the
+          // server then refuses a value it had just advertised.
+          scope: z.enum(AUDIT_SCOPES).optional(),
         },
       },
       async (
@@ -1056,6 +1060,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
           until?: string;
           limit?: number;
           cursor?: string;
+          scope?: string;
         },
         eff,
       ) => writeContent(await auditList(eff, args)),

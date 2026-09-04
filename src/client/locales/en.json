@@ -244,7 +244,9 @@
     "filterByAction": "Show only {{action}}",
     "filterFrom": "From",
     "filterPeriod": "Period",
+    "filterScope": "Trail",
     "filterTo": "To",
+    "fleetRow": "fleet",
     "noProjection": "This action recorded no field values.",
     "page": "Page {{n}}",
     "period": {
@@ -258,6 +260,11 @@
       "this-year": "This year",
       "today": "Today",
       "yesterday": "Yesterday"
+    },
+    "scope": {
+      "all": "Whole fleet",
+      "fleet": "Fleet (no tenant)",
+      "tenant": "This tenant"
     },
     "showAll_one": "Show {{count}} character",
     "showAll_other": "Show all {{count}} characters",

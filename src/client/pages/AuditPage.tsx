@@ -25,6 +25,7 @@ import {
   Skeleton,
   Tooltip,
 } from "@/client/components";
+import { useAuth } from "@/client/contexts/AuthContext";
 import { api } from "@/client/lib/api";
 import {
   AUDIT_PERIOD_PRESETS,
@@ -38,6 +39,7 @@ import {
 import { cn, formatDateTime } from "@/client/lib/utils";
 import { AUDIT_ACTIONS, isFleetLevelAction } from "@/lib/audit/actions";
 import { AUDIT_MARKER_KEYS, carriesAuditMarker } from "@/lib/audit/markers";
+import { AUDIT_SCOPES, type AuditScope, isAuditScope } from "@/lib/audit/scope";
 import { ACTOR_TYPES } from "@/lib/tenancy/actor";
 import { clipText } from "@/lib/text";
 
@@ -334,9 +336,11 @@ function FieldDiff({ diff }: { diff: ProjectionDiff }) {
 
 function AuditRowCard({
   row,
+  showTenant,
   onFilterAction,
 }: {
   row: AuditItem;
+  showTenant: boolean;
   onFilterAction: (action: string) => void;
 }) {
   const { t, i18n } = useTranslation();
@@ -372,6 +376,16 @@ function AuditRowCard({
           <span className="font-medium font-mono text-sm text-text-primary">
             {row.action}
           </span>
+          {/* WHICH TENANT, and only where the answer is not already the page's. On a tenant trail
+              every row is that tenant's and the chip would be noise on every line; on a fleet or
+              cross-tenant read it is the column that stops two rows of the same action from reading
+              as the same event. `null` is not "missing": it is the fleet, and those are the rows
+              that outlive the tenant. */}
+          {showTenant && (
+            <span className="whitespace-nowrap rounded-md bg-bg-tertiary px-1.5 py-0.5 font-mono text-text-secondary text-xs">
+              {row.tenantId ? `#${row.tenantId}` : t("audit.fleetRow", "fleet")}
+            </span>
+          )}
           <ActorPill kind={row.actorType} />
           {row.actorId && (
             <span className="text-text-muted text-xs">{`#${row.actorId}`}</span>
@@ -426,6 +440,7 @@ function AuditRowCard({
 
 export function AuditPage() {
   const { t } = useTranslation();
+  const { user } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
 
   const action = searchParams.get("action") ?? "";
@@ -444,6 +459,16 @@ export function AuditPage() {
   // sender was looking at, which is what the rest of this page's filters already promise. A pasted
   // link with only dates still resolves: `auditPresetOf` names the preset, or says custom.
   const periodParam = searchParams.get("period") ?? "";
+  // Only a SUPER_ADMIN can read past their own tenant, and the service refuses the wider scopes to
+  // anyone else with a 403 rather than narrowing them. So the page must not ASK for one it cannot
+  // have: a scope in the URL that this operator may not use is dropped from the URL as well as from
+  // the query, the same way an unparseable date is below — left there, the address bar would claim a
+  // trail the page is not showing.
+  const isSuperAdmin = user?.role === "SUPER_ADMIN";
+  const scopeParam = searchParams.get("scope") ?? "";
+  const scope: AuditScope =
+    isSuperAdmin && isAuditScope(scopeParam) ? scopeParam : "tenant";
+  const showTenant = scope !== "tenant";
 
   // THE DEBOUNCE IS GONE WITH THE TEXT BOX. It existed because every keystroke of a typed action
   // name was a URL change and therefore another scoped transaction against a table that only grows;
@@ -556,6 +581,11 @@ export function AuditPage() {
   // The preset labels, declared where `i18next-parser` reads them: the key is computed at the call
   // site, so these lines are its only sight of it. They must be `//` comments in code — the parser
   // does not read a magic comment written inside JSX braces, and the keys silently never appear.
+  // The scope labels, declared here for the same reason the period ones are: the key is computed at
+  // the call site, and `i18next-parser` does not read a magic comment written inside JSX braces.
+  // t('audit.scope.tenant', 'This tenant')
+  // t('audit.scope.fleet', 'Fleet (no tenant)')
+  // t('audit.scope.all', 'Whole fleet')
   // t('audit.period.today', 'Today')
   // t('audit.period.yesterday', 'Yesterday')
   // t('audit.period.this-week', 'This week')
@@ -601,6 +631,7 @@ export function AuditPage() {
     setError(false);
     try {
       const query: Record<string, string> = {};
+      if (scope !== "tenant") query.scope = scope;
       if (action) query.action = action;
       if (actorType) query.actorType = actorType;
       const since = from ? localDayBounds(from) : null;
@@ -609,12 +640,17 @@ export function AuditPage() {
       if (until) query.until = until.until;
       // NOTE: A date in the URL that is not a date is dropped from the URL too, not just from the query:
       // left there the page would say it is filtered by a day it is not filtering by.
-      if ((from && !since) || (to && !until)) {
+      const staleScope = scopeParam !== "" && scopeParam !== scope;
+      if ((from && !since) || (to && !until) || staleScope) {
         setSearchParams(
           (prev) => {
             const next = new URLSearchParams(prev);
             if (from && !since) next.delete("from");
             if (to && !until) next.delete("to");
+            // NOTE: a scope this operator cannot use, or that is not a scope at all, leaves the URL
+            // as well as the query. Left there the address bar would name a trail the page is not
+            // reading, which is the reading a shared link then carries to the next person.
+            if (staleScope) next.delete("scope");
             return next;
           },
           { replace: true },
@@ -636,14 +672,14 @@ export function AuditPage() {
       // page it is not showing is still on its way.
       if (current()) setLoading(false);
     }
-  }, [action, actorType, from, to, cursor, setSearchParams]);
+  }, [action, actorType, from, to, cursor, scope, scopeParam, setSearchParams]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
   const pageIdx = cursorStack.length - 1;
-  const scoped = action || actorType || from || to;
+  const scoped = action || actorType || from || to || scope !== "tenant";
   // NOTE: An empty page has two very different reasons, and only one of them is "nothing happened".
   // These actions write rows keyed to no tenant, which this read cannot reach at all, so answering
   // the ordinary "no entries match" would be the page asserting something it did not check.
@@ -677,6 +713,26 @@ export function AuditPage() {
             aria-label={t("audit.filterAction", "Action")}
           />
         </div>
+        {/* THE SELECTOR IS SUPER_ADMIN'S, and it is not merely hidden from everyone else: the service
+            refuses `fleet` and `all` with a 403 rather than answering them narrowed, because a scope
+            that quietly returned the caller's own rows would report an empty fleet trail — the exact
+            misreading this exists to end. Hidden here, refused there, and the URL kept honest in
+            between. */}
+        {isSuperAdmin && (
+          <select
+            className={selectCls}
+            value={scope}
+            onChange={(e) => setFilter("scope", e.target.value)}
+            aria-label={t("audit.filterScope", "Trail")}
+          >
+            {AUDIT_SCOPES.map((key) => (
+              <option key={key} value={key}>
+                {/* biome-ignore lint/plugin/no-dynamic-i18n-key: every key is listed above */}
+                {t(`audit.scope.${key}`)}
+              </option>
+            ))}
+          </select>
+        )}
         <select
           className={selectCls}
           value={actorType}
@@ -806,6 +862,7 @@ export function AuditPage() {
             <AuditRowCard
               key={row.id}
               row={row}
+              showTenant={showTenant}
               onFilterAction={(next) => setFilter("action", next)}
             />
           ))}

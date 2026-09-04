@@ -8,6 +8,7 @@
     "apiKeyNotFound": "API key not found",
     "apiKeyRequiresSession": "This is done from a signed-in session, not with an API key",
     "audioTooLarge": "Audio file is too large",
+    "auditScopeForbidden": "Reading the fleet trail requires SUPER_ADMIN",
     "baseUrlRequired": "A base URL is required for this provider.",
     "businessHoursNotFound": "Business hours not found.",
     "cannotDeleteSelf": "You cannot delete yourself",

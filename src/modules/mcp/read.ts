@@ -1,4 +1,5 @@
 import basePrisma from "@/api/lib/prisma";
+import { AUDIT_SCOPES, isAuditScope } from "@/lib/audit/scope";
 import { AppError } from "@/lib/errors";
 import { ACTOR_TYPES, type ActorType } from "@/lib/tenancy/actor";
 import { readAgentConfigHealth } from "@/modules/agents/config-health-read";
@@ -792,6 +793,7 @@ export interface AuditQueryArgs {
   until?: string;
   limit?: number;
   cursor?: string;
+  scope?: string;
 }
 
 export async function auditList(
@@ -841,6 +843,17 @@ export async function auditList(
     const v = parseMcpId(args.cursor, "cursor");
     if (typeof v !== "bigint") return v;
     opts.cursor = v;
+  }
+  // The same three trails the console offers (#520), for the same reason: the rows keyed to no
+  // tenant are unreachable from a tenant read rather than filtered out of it, so an agent asking
+  // "was this MCP client ever created" against the tenant trail gets an empty answer that reads as
+  // "no". `listAudit` refuses the wider two to anyone but a SUPER_ADMIN, so the door is the same one
+  // the REST surface uses; this only forwards the ask.
+  if (args.scope !== undefined) {
+    if (typeof args.scope !== "string" || !isAuditScope(args.scope)) {
+      return err(`scope must be one of: ${AUDIT_SCOPES.join(", ")}`);
+    }
+    opts.scope = args.scope;
   }
   try {
     const res = await listAudit(ctx, opts, base);

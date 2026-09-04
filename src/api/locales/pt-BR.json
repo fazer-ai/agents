@@ -8,6 +8,7 @@
     "apiKeyNotFound": "Chave de API não encontrada",
     "apiKeyRequiresSession": "Isto é feito a partir de uma sessão autenticada, não com uma API key",
     "audioTooLarge": "O arquivo de áudio é muito grande",
+    "auditScopeForbidden": "Ler a trilha da frota exige SUPER_ADMIN",
     "baseUrlRequired": "Uma URL base é obrigatória para este provedor.",
     "businessHoursNotFound": "Horário de atendimento não encontrado.",
     "cannotDeleteSelf": "Não é possível excluir a si mesmo",

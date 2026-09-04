@@ -51,8 +51,8 @@ const AGGREGATES = {
 } as const;
 
 const INDEX_FOR = {
-  all: "audit_logs_created_at_idx",
-  fleet: "audit_logs_fleet_created_at_idx",
+  all: "audit_logs_created_at_id_idx",
+  fleet: "audit_logs_fleet_created_at_id_idx",
 } as const;
 
 // The FIRST PAGE of the fleet trail, which is the request an operator makes by opening it. Ordered
@@ -214,6 +214,30 @@ describe.skipIf(!dbUp)("latestAt reaches its index on every scope", () => {
       ).rejects.toThrow("rollback");
     });
   }
+
+  // THE `id` AT THE END OF EACH INDEX, and the case that argues for it. A transaction stamps every
+  // row it writes with one `NOW()` -- `20260903120000_rename_http_tools_named_after_natives` writes
+  // an audit row per renamed tool that way -- so a large TIED GROUP is something this table really
+  // holds. An index that stops at `created_at` cannot supply the `id DESC` inside such a group, so
+  // a page landing in it reads the whole group and sorts: measured on 200,000 rows sharing one
+  // instant, 4,277 buffers and 22.1 ms against 2 buffers and 0.07 ms. The cost is bounded by the
+  // tie, not by the page — which is the same unbounded shape this whole change removes, one level
+  // down. A first measurement on a probe with all-distinct stamps said the id changed nothing; it
+  // was the probe that was missing the case.
+  test("every audit index carries the page's full ordering key", async () => {
+    const rows = (await suDb.$queryRawUnsafe(
+      `SELECT indexname, indexdef FROM pg_indexes WHERE tablename = 'audit_logs'`,
+    )) as Array<{ indexname: string; indexdef: string }>;
+    const ordering = rows.filter((r) => r.indexdef.includes("created_at"));
+    expect(ordering.length).toBeGreaterThan(0);
+    for (const r of ordering) {
+      expect(r.indexdef).toMatch(/created_at DESC, id DESC/);
+    }
+    // ...and the one that existed only for the old `ORDER BY id` is gone.
+    expect(rows.map((r) => r.indexname)).not.toContain(
+      "audit_logs_fleet_id_idx",
+    );
+  });
 
   // The partial predicate is the whole point of the fleet indexes: without it an index would hold
   // every row of the trail and `tenant_id IS NULL` would be a filter over the full history again.

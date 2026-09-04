@@ -607,6 +607,51 @@ describe.skipIf(!dbUp)("exporting the trail", () => {
     }
   });
 
+  // ONE SNAPSHOT, ACROSS EVERY TRIP. The walk takes several round trips and rows keep arriving
+  // between them. Ordered by `id` that was free -- a new row carries a higher id than the descending
+  // walk will ever reach again -- but `(created_at, id)` reads a clock the writer owns, so a row
+  // appended by a replica running behind lands BELOW the cursor and a later trip picks it up, while
+  // one stamped ahead does not. The file would then mix two snapshots under a filename claiming one.
+  //
+  // Simulated by writing a back-stamped row from inside the walk, on the trip boundary, which is
+  // exactly where a concurrent write lands.
+  test("a row written mid-walk with an older stamp does not enter the file", async () => {
+    try {
+      for (let i = 0; i < 14; i++) {
+        await seed(mine, "agent.update", `${TAG}:snap${i}`);
+      }
+      let trips = 0;
+      const spy = appDb.$extends({
+        query: {
+          auditLog: {
+            async findMany({ args, query }) {
+              const rows = await query(args);
+              // After the first trip and only once: the interloper is stamped a year back, so the
+              // time keyset cannot exclude it -- only the id bound can.
+              if (++trips === 1) {
+                await seed(mine, "agent.update", `${TAG}:snapLATE`, {
+                  at: "2025-01-01T00:00:00Z",
+                });
+              }
+              return rows;
+            },
+          },
+        },
+      }) as unknown as PrismaClient;
+
+      const r = await exportAudit(ctx(), {}, spy);
+      expect(trips).toBeGreaterThan(1);
+      expect(r.content).not.toContain(`${TAG}:snapLATE`);
+      // ...and it is genuinely in the table, so the absence is the bound and not a failed insert.
+      const after = await exportAudit(ctx(), {}, appDb);
+      expect(after.content).toContain(`${TAG}:snapLATE`);
+    } finally {
+      await suDb.$executeRawUnsafe(
+        `DELETE FROM audit_logs WHERE target LIKE '${TAG}:snap%'`,
+      );
+    }
+  });
+
   // A CUT IS ALWAYS ANNOUNCED, including the one that happens between two trips. When a trip ends
   // with the budget spent to the last row and more rows still match, the next trip is sized down to
   // its floor of one row -- which then does not fit, and truncates. Sizing it down to ZERO instead

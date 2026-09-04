@@ -232,7 +232,7 @@ model Invitation {
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@unique([tenantId, email])
-  @@index([tenantId, createdAt])
+  @@index([tenantId, createdAt, id])
   @@map("invitations")
 }
 
@@ -1794,14 +1794,17 @@ model AuditLog {
   @@index([tenantId, createdAt])
   // The tenant trail rides the composite above for both its `latestAt` and its keyset page, because
   // RLS supplies the leading column. The trails #520 added cannot, so they get their own: this one
-  // for `scope=all`'s `latestAt`, plus a PARTIAL index on `created_at WHERE tenant_id IS NULL` for
-  // the fleet `latestAt` -- hand-written in the migration, since Prisma cannot model a WHERE on an
-  // index.
+  // for `scope=all`'s `latestAt`, plus a PARTIAL index on `(created_at, id) WHERE tenant_id IS NULL`
+  // for the fleet -- hand-written in the migration, since Prisma cannot model a WHERE on an index.
+  //
+  // ALL THREE CARRY `id` AFTER `created_at` because that is the page's full ordering key (#530). A
+  // transaction stamps every row it writes with one `NOW()`, so a large tied group is real here, and
+  // an index stopping at `created_at` makes the page read that whole group and sort it: measured at
+  // 200,000 rows on one instant, 4,277 buffers against 2.
   //
   // There was a fourth, partial on `id`, for the fleet trail's first page back when pages were
-  // ordered by `id`. #530 moved every read onto `(created_at, id)`, which these already serve, so
-  // nothing issued that query any more and the index was dropped.
-  @@index([createdAt])
+  // ordered by `id`. Nothing issues that query any more, so it was dropped.
+  @@index([createdAt, id])
   @@map("audit_logs")
 }
 

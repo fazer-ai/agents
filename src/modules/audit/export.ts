@@ -223,6 +223,31 @@ export async function exportAudit(
   // NOTE: the widest row of the last trip, which is what sizes the next one (see BATCH_PROBE above).
   let widest = 0;
   let batch = BATCH_PROBE;
+  // WHERE THE TRAIL ENDED WHEN THE EXPORT STARTED, held across every trip so the file is ONE
+  // snapshot. The walk takes several round trips and rows keep arriving between them; the old
+  // id-ordered walk excluded them for free, because a new row carries a higher id than any the
+  // descending walk will ever reach again. Ordered by `(created_at, id)` that stops being true:
+  // `created_at` comes from the writing process's clock, so a row appended by a replica running
+  // behind lands BELOW the cursor and gets picked up by a later trip, while one stamped ahead of it
+  // does not -- a file mixing two snapshots, under a filename claiming one. The id is the only
+  // monotonic thing here, so it is what bounds the walk.
+  const highWater = await readInScope(base, ctx, scope, (db) =>
+    db.auditLog.aggregate({
+      _max: { id: true },
+      where: { ...trail, ...where },
+    }),
+  ).then((r) => r._max.id);
+  if (highWater === null) {
+    return {
+      format: AUDIT_EXPORT_FORMAT,
+      filename: `agents-audit-${timestampSlug(now)}.csv`,
+      contentType: "text/csv;charset=utf-8",
+      content: header,
+      count: 0,
+      truncated: false,
+      truncatedBy: null,
+    };
+  }
 
   while (truncatedBy === null) {
     const want = Math.min(batch, maxRows - lines.length);
@@ -232,6 +257,7 @@ export async function exportAudit(
         where: {
           ...trail,
           ...where,
+          id: { lte: highWater },
           ...(cursor !== null
             ? {
                 OR: [

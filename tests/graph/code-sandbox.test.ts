@@ -94,28 +94,33 @@ describe("runSandboxedCode", () => {
     });
   });
 
-  // The two helpers, against published vectors: the issue's CPF, the classic numeric CNPJ, and the
-  // alphanumeric CNPJ example from the Receita Federal technical note (check digits 35).
-  test("validateCpf and validateCnpj are there, and answer the published vectors", async () => {
+  // The sandbox ships NO domain logic, and this is the fence. `validateCpf`/`validateCnpj` came
+  // from PR #485, where the MODEL wrote the snippet and its arithmetic could not be trusted; with
+  // the operator writing the body that reason is gone, and a runtime that ships CPF is asked for
+  // CEP, phone and inscricao estadual next. The rule is written once, in the body, by whoever owns
+  // it. Asserted by name rather than left to the global sweep below, which would go green on a
+  // helper added under a name it happens not to list.
+  test("no domain helper is installed: the body brings its own rules", async () => {
+    const out = await runSandboxedCode(
+      `[typeof validateCpf, typeof validateCnpj, typeof checkDigit]`,
+    );
+    expect(out).toMatchObject({
+      kind: "value",
+      value: JSON.stringify(["undefined", "undefined", "undefined"]),
+    });
+  });
+
+  // ...and the rule the operator writes instead answers the issue's own number, unpunctuated,
+  // which is where the model's comparison broke. The algorithm is the body's, not the runtime's.
+  test("a body that carries the CPF rule itself answers the issue's number", async () => {
     const cases: Array<[string, string]> = [
-      ['validateCpf("12351612850")', '{"valid":true}'],
-      ['validateCpf("123.516.128-50")', '{"valid":true}'],
-      ['validateCpf("12351612851")', '{"valid":false}'],
-      ['validateCpf("11111111111")', '{"valid":false}'],
-      ['validateCpf("1235161285")', '{"valid":false}'],
-      ["validateCpf(12351612850)", '{"valid":true}'],
-      ["validateCpf(null)", '{"valid":false}'],
-      ['validateCnpj("11.222.333/0001-81")', '{"valid":true}'],
-      ['validateCnpj("11222333000181")', '{"valid":true}'],
-      ['validateCnpj("11222333000182")', '{"valid":false}'],
-      ['validateCnpj("12.ABC.345/01DE-35")', '{"valid":true}'],
-      ['validateCnpj("12.abc.345/01de-35")', '{"valid":true}'],
-      ['validateCnpj("12.ABC.345/01DE-36")', '{"valid":false}'],
-      ['validateCnpj("12.ABC.345/01DE-3A")', '{"valid":false}'],
-      ['validateCnpj("00000000000000")', '{"valid":false}'],
+      ["12351612850", '{"valid":true}'],
+      ["123.516.128-50", '{"valid":true}'],
+      ["12351612851", '{"valid":false}'],
+      ["11111111111", '{"valid":false}'],
     ];
-    for (const [code, want] of cases) {
-      expect(await runSandboxedCode(code), code).toMatchObject({
+    for (const [input, want] of cases) {
+      expect(await runSandboxedCode(CPF_SNIPPET(input)), input).toMatchObject({
         kind: "value",
         value: want,
       });
@@ -470,14 +475,13 @@ describe("runSandboxedCode", () => {
     }
   }, 30_000);
 
-  // Round 11: the helpers and the Date shim resolved `String`, `Number`, `Math`, `isNaN`, `Object`
-  // when called — after the snippet, whose own top-level `const` had shadowed them. Bound when
-  // each prelude is installed, like the renderer's and the error reader's.
-  test("a snippet that shadows a global still gets the helpers and the zone", async () => {
+  // Round 11: the Date shim resolved `String`, `Number`, `Math`, `isNaN`, `Object` when called —
+  // after the snippet, whose own top-level `const` had shadowed them. Bound when the shim is
+  // installed, like the renderer's and the error reader's.
+  test("a snippet that shadows a global still gets the zone", async () => {
     const out = await runSandboxedCode(
       `const String = 0, Number = 0, Math = 0, isNaN = 0, Object = 0;
-       [validateCpf("123.516.128-50").valid, validateCnpj("12.ABC.345/01DE-35").valid,
-        new Date(2026, 0, 15, 7, 30).toISOString(), new Date("2026-01-15T07:30").getDate(),
+       [new Date(2026, 0, 15, 7, 30).toISOString(), new Date("2026-01-15T07:30").getDate(),
         new Date(NOW_LOCAL).getHours(), new Date(NOW_LOCAL).toString(),
         typeof Date(), /^[A-Z][a-z]{2} [A-Z][a-z]{2} \\d{2} \\d{4} \\d{2}:\\d{2}:\\d{2} GMT\\+0900$/.test(Date())]`,
       {
@@ -490,8 +494,6 @@ describe("runSandboxedCode", () => {
     expect(out).toMatchObject({
       kind: "value",
       value: JSON.stringify([
-        true,
-        true,
         "2026-01-14T22:30:00.000Z",
         15,
         7,
@@ -734,7 +736,7 @@ describe("runSandboxedCode", () => {
     // where it has to be argued for.
     expect((globals as { value: string }).value).toBe(
       JSON.stringify(
-        "console,decodeURI,decodeURIComponent,encodeURI,encodeURIComponent,escape,eval,globalThis,isFinite,isNaN,parseFloat,parseInt,undefined,unescape,validateCnpj,validateCpf",
+        "console,decodeURI,decodeURIComponent,encodeURI,encodeURIComponent,escape,eval,globalThis,isFinite,isNaN,parseFloat,parseInt,undefined,unescape",
       ),
     );
   });
@@ -1213,7 +1215,7 @@ describe("function-body mode (a code tool's call)", () => {
 
   test("the helpers, the clock and the zone are there for the body", async () => {
     const out = await runSandboxedCode(
-      "return { cpf: validateCpf(input.cpf).valid, tz: TIMEZONE, offset: new Date(NOW_LOCAL).getTimezoneOffset() }",
+      "const d = String(input.cpf).replace(/\\D/g, ''); return { cpf: d.length === 11, tz: TIMEZONE, offset: new Date(NOW_LOCAL).getTimezoneOffset() }",
       {
         ...call({ cpf: "12351612850" }),
         clock: { timezone: "America/Sao_Paulo" },
@@ -1263,7 +1265,7 @@ describe("function-body mode (a code tool's call)", () => {
         "undefined",
         "undefined",
         "undefined",
-        "console,decodeURI,decodeURIComponent,encodeURI,encodeURIComponent,escape,eval,globalThis,isFinite,isNaN,parseFloat,parseInt,undefined,unescape,validateCnpj,validateCpf",
+        "console,decodeURI,decodeURIComponent,encodeURI,encodeURIComponent,escape,eval,globalThis,isFinite,isNaN,parseFloat,parseInt,undefined,unescape",
       ]),
     });
   });

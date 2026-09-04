@@ -72,7 +72,7 @@ export const writeBody = t.Object({
   code: t.Optional(
     t.String({
       description:
-        "The body of `function (input, context) { … }`, plain JavaScript (ES2023): `input` holds the arguments, `context` the conversation variables (conversation_id, message_id, contact_id, contact_name, contact_email, contact_phone, inbox_id, inbox_name, company_name, agent_name, conversationAttributes, contactAttributes), and the result is what the body `return`s (rendered as JSON for the agent; console.log output is returned with it). Available inside: validateCpf(text) and validateCnpj(text) → { valid }, TIMEZONE, NOW_LOCAL, and Date in the agent's zone. No network, no imports, no async. Limits: 1000 ms of CPU, 32 MB. A `throw` or a limit is an integration failure (alerted); a business outcome is a returned value. Code that does not parse is saved and reported in `warnings`; it fails at call time.",
+        "The body of `function (input, context) { … }`, plain JavaScript (ES2023): `input` holds the arguments, `context` the conversation variables (conversation_id, message_id, contact_id, contact_name, contact_email, contact_phone, inbox_id, inbox_name, company_name, agent_name, conversationAttributes, contactAttributes), and the result is what the body `return`s (rendered as JSON for the agent; console.log output is returned with it). Available inside: TIMEZONE, NOW_LOCAL, and Date in the agent's zone. No network, no imports, no async. Limits: 1000 ms of CPU, 32 MB. A `throw` or a limit is an integration failure (alerted); a business outcome is a returned value. Code that does not parse is saved and reported in `warnings`; it fails at call time.",
     }),
   ),
   enabled: t.Optional(

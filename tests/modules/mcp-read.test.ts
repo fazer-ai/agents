@@ -199,7 +199,7 @@ describe.skipIf(!dbUp)("MCP read tools (DB)", () => {
         label: "Validar CPF",
         description: "Valida um CPF.",
         inputSchema: { cpf: { type: "string", required: true } },
-        code: "return validateCpf(input.cpf)",
+        code: "return { valid: input.cpf.length === 11 };",
       },
       select: { id: true },
     });
@@ -221,7 +221,7 @@ describe.skipIf(!dbUp)("MCP read tools (DB)", () => {
     if (got.ok) {
       const tool = got.data.tool as { id: string; code: string };
       expect(tool.id).toBe(String(created.id));
-      expect(tool.code).toBe("return validateCpf(input.cpf)");
+      expect(tool.code).toBe("return { valid: input.cpf.length === 11 };");
     }
     const fenced = await codeToolGet(
       principal({ tenantId: tenantB, scopes: ["mcp:read"] }),

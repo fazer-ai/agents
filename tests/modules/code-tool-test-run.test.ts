@@ -11,7 +11,7 @@ import { runCodeToolTest } from "@/modules/code-tools/test-run";
 const DEF = {
   name: "validar_cpf",
   inputSchema: { cpf: { type: "string", required: true } },
-  code: "return validateCpf(input.cpf)",
+  code: "const d = String(input.cpf).replace(/\\D/g, ''); const dv = (n) => { let s = 0; for (let i = 0; i < n - 1; i++) s += Number(d[i]) * (n - i); return ((s * 10) % 11) % 10; }; return { valid: d.length === 11 && dv(10) === Number(d[9]) && dv(11) === Number(d[10]) };",
 };
 
 async function refusal(p: Promise<unknown>): Promise<AppError | null> {

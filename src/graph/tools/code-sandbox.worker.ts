@@ -284,35 +284,6 @@ function installConsole(
 // rewritten per turn. The CNPJ one accepts the alphanumeric format (letters count as their ASCII
 // code minus 48, the two check digits stay numeric), verified against the published example
 // `12.ABC.345/01DE-35`.
-const PRELUDE_SOURCE = `(function () {
-  // Taken now, before any snippet: a top-level const named String would otherwise reach these
-  // closures and break the advertised helpers (PR #485, round 11).
-  var Str = String, Num = Number;
-  function checkDigit(chars, weights) {
-    var sum = 0;
-    for (var i = 0; i < weights.length; i++) sum += (chars.charCodeAt(i) - 48) * weights[i];
-    var r = sum % 11;
-    return r < 2 ? 0 : 11 - r;
-  }
-  globalThis.validateCpf = function (input) {
-    var d = Str(input == null ? "" : input).replace(/\\D/g, "");
-    if (d.length !== 11 || /^(\\d)\\1{10}$/.test(d)) return { valid: false };
-    return {
-      valid:
-        checkDigit(d, [10, 9, 8, 7, 6, 5, 4, 3, 2]) === Num(d[9]) &&
-        checkDigit(d, [11, 10, 9, 8, 7, 6, 5, 4, 3, 2]) === Num(d[10]),
-    };
-  };
-  globalThis.validateCnpj = function (input) {
-    var s = Str(input == null ? "" : input).toUpperCase().replace(/[^A-Z0-9]/g, "");
-    if (!/^[A-Z0-9]{12}[0-9]{2}$/.test(s) || /^(.)\\1{13}$/.test(s)) return { valid: false };
-    return {
-      valid:
-        checkDigit(s, [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]) === Num(s[12]) &&
-        checkDigit(s, [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]) === Num(s[13]),
-    };
-  };
-})()`;
 
 // `Date` in the agent's zone. The interpreter's own Date follows the HOST's zone (UTC in the
 // container), and a Bun worker cannot be given another one (measured: `process.env.TZ` assigned
@@ -515,10 +486,6 @@ function installZone(vm: QuickJSContext, timezone: string): void {
   vm.setProp(vm.global, "__tzOffset", fn);
   fn.dispose();
   vm.unwrapResult(vm.evalCode(DATE_SHIM_SOURCE, "date.js")).dispose();
-}
-
-function installPrelude(vm: QuickJSContext): void {
-  vm.unwrapResult(vm.evalCode(PRELUDE_SOURCE, "prelude.js")).dispose();
 }
 
 // The agent's clock, as two strings: the IANA zone and the current instant written in that zone
@@ -777,7 +744,6 @@ function open(req: SandboxRequest): Session {
   const errors = makeErrorReader(vm, req.maxChars);
   installConsole(vm, renderer.handle, logs, req.maxChars);
   installZone(vm, req.clock.timezone);
-  installPrelude(vm);
   installClock(vm, req.clock);
   if (req.call) installCall(vm, req.call);
   return { runtime, vm, renderer, errors, logs };

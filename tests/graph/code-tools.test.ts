@@ -21,7 +21,8 @@ const VALIDAR_CPF = {
   inputSchema: {
     cpf: { type: "string", required: true, description: "CPF como escrito" },
   },
-  code: "return validateCpf(input.cpf)",
+  // The rule is the OPERATOR's, written into the body: the sandbox ships no domain helper.
+  code: "const d = String(input.cpf).replace(/\\D/g, ''); const dv = (n) => { let s = 0; for (let i = 0; i < n - 1; i++) s += Number(d[i]) * (n - i); return ((s * 10) % 11) % 10; }; return { valid: d.length === 11 && dv(10) === Number(d[9]) && dv(11) === Number(d[10]) };",
 };
 
 type Run = NonNullable<CodeToolDeps["run"]>;

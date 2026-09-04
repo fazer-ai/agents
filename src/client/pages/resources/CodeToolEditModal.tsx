@@ -488,13 +488,15 @@ export function CodeToolEditModal({
 
             <FormField
               label={
-                <span className="flex items-center gap-1.5">
+                // `inline-flex`, not `flex`: FormField appends the required `*` as a SIBLING of
+                // this node, and a block-level label pushes it onto its own line.
+                <span className="inline-flex items-center gap-1.5 align-middle">
                   {t("codeTools.code", "Code")}
                   <HelpPopover
                     label={t("codeTools.code", "Code")}
                     content={t(
                       "codeTools.codeHelp",
-                      "The body of a JavaScript function the agent calls. `input` holds the arguments you declared above; `context` holds the conversation variables (contact_name, contact_email, conversation_id, and the rest). Answer with `return`.\n\nWhatever you return is rendered as JSON for the agent, and console.log output comes back with it. validateCpf(text) and validateCnpj(text) give { valid }; TIMEZONE, NOW_LOCAL and Date run in the agent's zone.\n\nThere is no network, no imports and no async. A run gets 1000 ms and 32 MB; a throw or a limit is a failure, a returned value is a result. Invalid code is still saved and fails when the agent calls it.",
+                      "The body of a JavaScript function the agent calls. `input` holds the arguments you declared above; `context` holds the conversation variables (contact_name, contact_email, conversation_id, and the rest). Answer with `return`.\n\nWhatever you return is rendered as JSON for the agent, and console.log output comes back with it. TIMEZONE, NOW_LOCAL and Date run in the agent's zone.\n\nThere is no network, no imports and no async. A run gets 1000 ms and 32 MB; a throw or a limit is a failure, a returned value is a result. Invalid code is still saved and fails when the agent calls it.",
                     )}
                   />
                 </span>
@@ -520,11 +522,10 @@ export function CodeToolEditModal({
               <p className="-mt-2 text-warning text-xs">{warningText}</p>
             )}
 
-            <div className="-mt-2 flex flex-col gap-1">
+            <div className="-mt-2 flex flex-wrap items-center gap-x-2 gap-y-1">
               <Button
                 variant="secondary"
                 size="sm"
-                className="self-start"
                 disabled={!form.code.trim() || duplicateNames}
                 onClick={openTest}
               >
@@ -533,7 +534,7 @@ export function CodeToolEditModal({
               <span className="text-text-secondary text-xs">
                 {t(
                   "codeTools.testOpenHint",
-                  "Runs the code once in the sandbox with arguments you supply, and shows what the agent would receive.",
+                  "Runs it once with arguments you supply, and shows what the agent would receive.",
                 )}
               </span>
             </div>
@@ -541,7 +542,11 @@ export function CodeToolEditModal({
             <SwitchField
               checked={form.enabled}
               onCheckedChange={(enabled) => setForm((f) => ({ ...f, enabled }))}
-              label={t("codeTools.enabled", "Available to agents")}
+              label={t("codeTools.enabled", "Agents may call this tool")}
+              help={t(
+                "codeTools.enabledHelp",
+                "Off, the tool reaches no agent at all — including the ones it is already granted to. The definition is kept and the grants stay; nothing is offered to the model until you turn it back on.",
+              )}
             />
           </div>
         )}

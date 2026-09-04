@@ -7,7 +7,7 @@ import { checkCodeToolSyntax } from "@/lib/code-tool-syntax";
 // two agree over the table.
 describe("checkCodeToolSyntax", () => {
   const rows: Array<[string, string, unknown[]]> = [
-    ["a plain body", "return validateCpf(input.cpf)", []],
+    ["a plain body", "return { valid: input.cpf.length === 11 }", []],
     [
       "a top-level return inside a block",
       "if (input.a) {\n  return 1;\n}\nreturn 2;",

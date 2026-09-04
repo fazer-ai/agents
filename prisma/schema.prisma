@@ -1762,9 +1762,11 @@ model AuditLog {
   tenant Tenant? @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@index([tenantId, createdAt])
-  // The tenant trail's `latestAt` rides the composite above; these two are the same one-row walk for
-  // the trails #520 added, whose leading column that index cannot supply. The partial twin for
-  // `tenant_id IS NULL` is hand-written in the migration -- Prisma cannot model a WHERE on an index.
+  // The tenant trail rides the composite above for both its `latestAt` and its keyset page, because
+  // RLS supplies the leading column. The trails #520 added cannot, so they get their own: this one
+  // for `scope=all`'s `latestAt`, plus two PARTIAL indexes on `tenant_id IS NULL` -- one on
+  // `created_at` for the fleet `latestAt`, one on `id` for its first page -- hand-written in the
+  // migration, since Prisma cannot model a WHERE on an index.
   @@index([createdAt])
   @@map("audit_logs")
 }

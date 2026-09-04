@@ -55,6 +55,12 @@ const INDEX_FOR = {
   fleet: "audit_logs_fleet_created_at_idx",
 } as const;
 
+// The FIRST PAGE of the fleet trail, which is the request an operator makes by opening it: keyset
+// ordered by id, no filter at all.
+const FLEET_PAGE =
+  "SELECT id FROM audit_logs WHERE tenant_id IS NULL ORDER BY id DESC LIMIT 51";
+const FLEET_PAGE_INDEX = "audit_logs_fleet_id_idx";
+
 async function planIn(tx: PrismaClient, sql: string): Promise<string> {
   const rows = (await tx.$queryRawUnsafe(
     `EXPLAIN (FORMAT JSON) ${sql}`,
@@ -110,14 +116,79 @@ describe.skipIf(!dbUp)("latestAt reaches its index on every scope", () => {
     const names = rows.map((r) => r.indexname);
     expect(names).toContain(INDEX_FOR.all);
     expect(names).toContain(INDEX_FOR.fleet);
+    expect(names).toContain(FLEET_PAGE_INDEX);
   });
 
-  // The partial predicate is the whole point of the fleet index: without it the index would hold
+  // THE LIST, not the aggregate, and it is the request an operator makes by simply opening the fleet
+  // trail. `tenant_id IS NULL` orders and pages by `id`, which neither `created_at` index can supply,
+  // so Postgres walked the primary key backwards discarding every tenant row until it had 51 -- and
+  // the cost is not proportional to the trail's size but to how OLD its newest fleet rows are, which
+  // on a deployment that has stopped creating tenants is the whole table. Measured on 500k rows with
+  // the fleet slice at the far end: 6,731 buffers and 487,500 rows discarded to return one page,
+  // against 3 buffers off the partial index. The rows keyed to no tenant are a fraction of the trail
+  // (12.5k of 500k measured), so the index that makes it exact costs 296 kB.
+  test("the fleet trail's first page comes off its own index, not a walk of the table", async () => {
+    await expect(
+      suDb.$transaction(async (tx) => {
+        const db = tx as unknown as PrismaClient;
+        await db.$executeRawUnsafe("SET LOCAL enable_seqscan = off");
+
+        const withIndex = await planIn(db, FLEET_PAGE);
+        // WHICH ROWS ARE READ AT ALL is the assertion, and it is the one that does not move: they
+        // are selected by the fleet index, so the work is bounded by the fleet slice instead of by
+        // the trail. Whether the planner then walks that index in order or gathers it and sorts is a
+        // cost choice that flips with the slice's SIZE, and both were measured: at 12,500 fleet rows
+        // it takes the ordered walk (3 buffers), and on a table holding two it bitmap-scans the same
+        // index and sorts, which at that size is right. Pinning either would make this test pass or
+        // fail on how much other suites happened to leave in a shared table.
+        expect(withIndex).toContain(`"Index Name":"${FLEET_PAGE_INDEX}"`);
+        expect(withIndex).not.toContain('"Index Name":"audit_logs_pkey"');
+        // A `Filter` is a row read for some other reason and then rejected; the fleet index leaves
+        // nothing to reject. (A bitmap scan's `Recheck Cond` is not that -- it re-reads only rows the
+        // same index already chose.)
+        expect(withIndex).not.toContain('"Filter"');
+
+        await db.$executeRawUnsafe(`DROP INDEX ${FLEET_PAGE_INDEX}`);
+        const without = await planIn(db, FLEET_PAGE);
+        // WITHOUT it, no index gives BOTH the predicate and the id order, so the plan has to buy one
+        // of them with a full pass. Which pass depends on the table: on a large one the planner
+        // walks the primary key backwards re-checking every row (measured: 487,500 discarded for a
+        // page of 51); on a small one it gathers every fleet row off the other partial index and
+        // sorts. Either is unbounded by the page size, which is the property being asserted -- so
+        // the assertion names both rather than pinning the plan of whichever table it runs on.
+        expect(without).not.toContain(`"Index Name":"${FLEET_PAGE_INDEX}"`);
+        expect(without).toMatch(
+          /"Node Type":"Sort"|"Filter":"\(tenant_id IS NULL\)"/,
+        );
+
+        throw new Error("rollback");
+      }),
+    ).rejects.toThrow("rollback");
+  });
+
+  // The partial predicate is the whole point of the fleet indexes: without it an index would hold
   // every row of the trail and `tenant_id IS NULL` would be a filter over the full history again.
-  test("the fleet index covers only the rows keyed to no tenant", async () => {
+  for (const name of [INDEX_FOR.fleet, FLEET_PAGE_INDEX]) {
+    test(`${name} covers only the rows keyed to no tenant`, async () => {
+      const rows = (await suDb.$queryRawUnsafe(
+        `SELECT indexdef FROM pg_indexes WHERE indexname = '${name}'`,
+      )) as Array<{ indexdef: string }>;
+      expect(rows[0]?.indexdef ?? "").toContain("WHERE (tenant_id IS NULL)");
+    });
+  }
+
+  // A CONCURRENT build that is interrupted leaves the index in place and INVALID, which Postgres
+  // silently declines to use: the plan quietly goes back to the walk this migration removed, with
+  // the migration recorded as applied and nothing to see. The migration re-runs from a clean slate
+  // (`DROP INDEX IF EXISTS` before each build) so a redeploy repairs it, and this asks the catalog
+  // that no such leftover is here now.
+  test("no index on the trail was left behind invalid", async () => {
     const rows = (await suDb.$queryRawUnsafe(
-      `SELECT indexdef FROM pg_indexes WHERE indexname = '${INDEX_FOR.fleet}'`,
-    )) as Array<{ indexdef: string }>;
-    expect(rows[0]?.indexdef ?? "").toContain("WHERE (tenant_id IS NULL)");
+      `SELECT c.relname AS name FROM pg_class c
+         JOIN pg_index i ON i.indexrelid = c.oid
+         JOIN pg_class t ON t.oid = i.indrelid
+        WHERE t.relname = 'audit_logs' AND NOT i.indisvalid`,
+    )) as Array<{ name: string }>;
+    expect(rows.map((r) => r.name)).toEqual([]);
   });
 });

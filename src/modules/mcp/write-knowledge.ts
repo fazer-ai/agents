@@ -3,6 +3,7 @@ import { AppError } from "@/lib/errors";
 import type { TenantContext } from "@/lib/tenancy";
 import { firstUnstorableField } from "@/lib/text";
 import {
+  assertChunkingUpdatable,
   createDocument,
   deleteDocument,
   type EmbeddingBlock,
@@ -159,14 +160,24 @@ export async function knowledgeUpdate(
     const beforeProj = {
       name: current.name,
       description: current.description,
+      chunkSize: current.chunkSize,
+      chunkOverlap: current.chunkOverlap,
     };
     if (args.dry_run !== false) {
+      // NOTE: ADVISORY, and deliberately so: the bound is a fact about the row, and this read is outside
+      // the transaction the apply validates in, so a concurrent update can move the pair between the
+      // two halves. What it buys is that the ordinary case — an operator sending one of the two
+      // numbers — gets the same answer here as it will get there, instead of an approved preview of
+      // a write that cannot happen (#490, #524).
+      assertChunkingUpdatable(current, patch);
       const previewAfter = {
         name: patch.name ?? current.name,
         description:
           patch.description === undefined
             ? current.description
             : patch.description,
+        chunkSize: patch.chunkSize ?? current.chunkSize,
+        chunkOverlap: patch.chunkOverlap ?? current.chunkOverlap,
       };
       return ok({
         dryRun: true,

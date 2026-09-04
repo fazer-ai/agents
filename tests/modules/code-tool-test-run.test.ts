@@ -22,6 +22,42 @@ async function refusal(p: Promise<unknown>): Promise<AppError | null> {
 }
 
 describe("the code tool's test run", () => {
+  // Round 24: the route declares `inputSchema` as `t.Unknown` (round 18, so a reserved key survives
+  // to be refused by name rather than dropped by `t.Record`), and `parseToolInputSchema` is
+  // tolerant by design — it is fed rows written by older builds. Between the two, a non-record
+  // schema reached the sandbox as an EMPTY one, and the damage was not that the test "accepted"
+  // it: the declared arguments were silently dropped, so the body ran with `input` empty and the
+  // operator read a green Result for a call that never carried their argument, then hit the
+  // service's `z.record` on save. The endpoint owes the same refusals a save gives.
+  test("a schema that is not a field map is refused, the way a save refuses it", async () => {
+    for (const inputSchema of [null, [1, 2], "cpf", 7] as unknown[]) {
+      const e = await refusal(
+        runCodeToolTest({
+          definition: { ...DEF, inputSchema: inputSchema as never },
+          args: { cpf: "123.516.128-50" },
+        }),
+      );
+      expect({ inputSchema, status: e?.statusCode, field: e?.field }).toEqual({
+        inputSchema,
+        status: 422,
+        field: "inputSchema",
+      });
+    }
+  });
+
+  // ...and the shape a save ACCEPTS still runs, including the absent one.
+  test("an absent schema still runs, with no arguments", async () => {
+    const r = await runCodeToolTest({
+      definition: {
+        ...DEF,
+        inputSchema: undefined,
+        code: "return { got: input };",
+      },
+      args: { cpf: "x" },
+    });
+    expect(r).toMatchObject({ failed: false, text: 'Result: {"got":{}}' });
+  });
+
   test("answers with the text a turn would read, and the body's warnings", async () => {
     const r = await runCodeToolTest({
       definition: DEF,

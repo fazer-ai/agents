@@ -1,5 +1,6 @@
 import basePrisma from "@/api/lib/prisma";
 import { AUDIT_SCOPES, isAuditScope } from "@/lib/audit/scope";
+import { checkCodeToolSyntax } from "@/lib/code-tool-syntax";
 import { AppError } from "@/lib/errors";
 import { ACTOR_TYPES, type ActorType } from "@/lib/tenancy/actor";
 import { readAgentConfigHealth } from "@/modules/agents/config-health-read";
@@ -230,7 +231,14 @@ export async function codeToolGet(
   const id = parseMcpId(args.code_tool_id, "code_tool_id");
   if (typeof id !== "bigint") return id;
   try {
-    return ok({ tool: await getCodeTool(ctx, id, base) });
+    const tool = await getCodeTool(ctx, id, base);
+    // The static check on the STORED body, and this is the only place it is offered after the save.
+    // An invalid body is saved on purpose and answered with a warning once, at the write; a caller
+    // reading the tool later would otherwise have to run the agent to discover the tool is
+    // known-broken. It is also what the update preview promises: a patch that leaves the body alone
+    // reports `[]` and defers to this (write-code-tools.ts). Always present, `[]` when the body
+    // parses, so "no warnings" and "not checked" are not the same answer.
+    return ok({ tool, warnings: await checkCodeToolSyntax(tool.code) });
   } catch (e) {
     return failOf(e);
   }

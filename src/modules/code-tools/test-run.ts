@@ -10,6 +10,7 @@
 // reported here the way the model would see it refused.
 
 import { ToolInputParsingException } from "@langchain/core/tools";
+import { z } from "zod";
 import type { CodeToolRun } from "@/graph/tools/code";
 import { runCodeToolDefinition } from "@/graph/tools/code";
 import { SANDBOX_CODE_MAX_CHARS } from "@/graph/tools/code-sandbox-limits";
@@ -69,6 +70,26 @@ export async function runCodeToolTest(
   if (hasReservedFieldName(def.inputSchema)) {
     throw new AppError(
       "input schema field `__proto__` is reserved by JavaScript and cannot be a parameter name",
+      422,
+      "errors.invalidRequestValue",
+      { field: "inputSchema" },
+      "inputSchema",
+    );
+  }
+  // The SHAPE, before the tolerant parser sees it. `parseToolInputSchema` is fed stored rows and is
+  // deliberately forgiving, so a non-record value arrives as an EMPTY schema and the declared
+  // arguments vanish: the body runs with `input` empty and the operator reads a green result for a
+  // call that never carried their argument, then meets the service's `z.record` on save. The
+  // endpoint adds no capability over a save, so it owes the same refusals (round 17, round 24).
+  // `null` is refused with the rest: the service's `.optional()` accepts an ABSENT schema, not a
+  // null one, and reading null as "no arguments" here would be the endpoint being kinder than the
+  // save again.
+  if (
+    def.inputSchema !== undefined &&
+    !z.record(z.string(), z.unknown()).safeParse(def.inputSchema).success
+  ) {
+    throw new AppError(
+      "input schema must be an object mapping each argument name to its declaration",
       422,
       "errors.invalidRequestValue",
       { field: "inputSchema" },

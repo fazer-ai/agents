@@ -232,6 +232,55 @@ describe.skipIf(!dbUp)("MCP read tools (DB)", () => {
     if (!fenced.ok) expect(fenced.error).toContain("not found");
   });
 
+  // Round 24. An invalid body is SAVED on purpose and answered with a warning, so the warning is
+  // the only record that the tool is known-broken — and it is written once, at the save. An MCP
+  // operator reading the tool afterwards had no way to that fact: `code_tool_get` returned the
+  // source and ran no check, so the problem surfaced when an agent called it. The update preview
+  // makes it worse by pointing here: it reports `[]` for a patch that leaves the body alone,
+  // "the stored body's own warnings are code_tool_get's to show" (write-code-tools.ts).
+  test("code_tool_get reports the stored body's own warnings", async () => {
+    const broken = await suDb.codeToolDefinition.create({
+      data: {
+        tenantId: tenantA,
+        name: "quebrada",
+        label: "Quebrada",
+        description: "Um corpo que nao compila.",
+        inputSchema: {},
+        code: "const x = ;",
+      },
+      select: { id: true },
+    });
+    const got = await codeToolGet(
+      principal({ tenantId: tenantA, scopes: ["mcp:read"] }),
+      { code_tool_id: String(broken.id) },
+      { base: appDb },
+    );
+    expect(got.ok).toBe(true);
+    if (got.ok) {
+      expect(got.data.warnings).toMatchObject([{ kind: "syntax", line: 1 }]);
+    }
+    // ...and a body that parses answers with none, rather than an absent key the caller has to
+    // tell apart from "not checked".
+    const clean = await suDb.codeToolDefinition.create({
+      data: {
+        tenantId: tenantA,
+        name: "inteira",
+        label: "Inteira",
+        description: "Um corpo que compila.",
+        inputSchema: {},
+        code: "return 1;",
+      },
+      select: { id: true },
+    });
+    const fine = await codeToolGet(
+      principal({ tenantId: tenantA, scopes: ["mcp:read"] }),
+      { code_tool_id: String(clean.id) },
+      { base: appDb },
+    );
+    expect(fine.ok).toBe(true);
+    if (fine.ok) expect(fine.data.warnings).toEqual([]);
+  });
+
   test("api_key_list returns no secrets for a fresh tenant", async () => {
     const r = await apiKeyList(principal({ tenantId: tenantB }), {
       base: appDb,

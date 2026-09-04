@@ -9,6 +9,7 @@ import {
   type AgentCreate,
   type AgentUpdate,
   assertAgentCreatable,
+  assertAgentToolGrantsResolvable,
   assertAgentUpdatable,
   assertCredentialRefsUsable,
   assertSchedulesExist,
@@ -431,6 +432,10 @@ export async function agentToolsSet(
     const current = await getAgentToolSelections(ctx, id, base);
     const target = `agent:${id}`;
     if (args.dry_run !== false) {
+      // NOTE: the core's own question about the ids INSIDE the array, which the row's single
+      // `agent_id` never reaches — and INSIDE the branch, because the apply reaches
+      // `replaceAgentToolSelections`, which asks it again under its lock (#490, #510).
+      await assertAgentToolGrantsResolvable(ctx, grants, base);
       return ok({
         dryRun: true,
         target,
@@ -770,10 +775,16 @@ export async function toolUpdate(
     }
     const target = `tool:${id}`;
     if (args.dry_run !== false) {
-      // The core's own questions about a PATCH, asked before the preview answers: the shape (which
-      // canonicalizes the name, so the diff shows what would be stored), and — for a rename — the
-      // availability of that name, excluding this row. Without them a dry run described a rename
-      // the apply refuses, or one to a spelling it would not store (#490).
+      // The core's own questions about a PATCH, asked before the preview answers: the shape,
+      // which canonicalizes the name so the diff shows what would be STORED, and, for a rename, the
+      // availability of that name. Both are advisory here and authoritative inside the apply's
+      // transaction; what they buy is that a dry run stops describing a rename the apply refuses,
+      // or one to a spelling it would not store (#490, #510: this tool's fence row passed an id
+      // that names no tool, so it proved the ownership check and never the rename, and an operator
+      // reusing a name they already used read "will update" and got a 409).
+      //
+      // `id` is excluded because keeping your own name is not a collision, and `current.name` goes
+      // with it because a save that does not MOVE the name is not asking the question at all.
       const parsed = assertToolDefinitionPatchValid(built.patch);
       if (parsed.name !== undefined) {
         await assertToolNameAvailable(ctx, parsed.name, base, id, current.name);

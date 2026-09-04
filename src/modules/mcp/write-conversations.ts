@@ -1,6 +1,9 @@
 import basePrisma from "@/api/lib/prisma";
 import { AppError } from "@/lib/errors";
-import { reengageConversation } from "@/modules/conversations/reengage";
+import {
+  assertConversationReengageable,
+  reengageConversation,
+} from "@/modules/conversations/reengage";
 import {
   getConversationDetail,
   handoffConversation,
@@ -186,6 +189,10 @@ export async function conversationReengage(
   try {
     const current = await getConversationDetail(ctx, id, base);
     if (args.dry_run !== false) {
+      // NOTE: the core's own second refusal, past the existence check this `getConversationDetail`
+      // already made. An inbox with no agent bound has nothing to run the turn, and the preview
+      // promised a proactive message that could never be sent (#510).
+      await assertConversationReengageable(ctx, id, base);
       return ok({
         dryRun: true,
         action: "reengage",

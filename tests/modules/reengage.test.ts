@@ -1167,4 +1167,42 @@ describe.skipIf(!dbUp)("reengage", () => {
       expect(sent.length).toBe(1);
     });
   });
+  // The OTHER half of the preview's `skipExperiment` (#510, review round 1). A dry run must not enrol
+  // the thread in an experiment, and this is what keeps that from being answered by never resolving
+  // one at all: the apply is about to run the tested prompt, so it enrols and it uses the variant.
+  test("the apply enrols the thread in a live experiment and takes its prompt", async () => {
+    const exp = await suDb.experiment.create({
+      data: {
+        tenantId,
+        name: "reengage-ab",
+        agentId,
+        enabled: true,
+        variants: [{ key: "only", weight: 1, systemPrompt: "VARIANT PROMPT" }],
+      },
+    });
+    const id = await seedConversation(945);
+    const threadId = `${tenantId}:${instanceId}:945`;
+    const sent: Array<[number, string]> = [];
+    const capture = new PromptCapturingModel(REPLY);
+    const res = await reengageConversation(
+      ctx(),
+      id,
+      {
+        makeModel: () => capture,
+        makeClient: makeStub({
+          page: page([{ id: 1, content: "oi", type: 0 }]),
+          sent,
+        }),
+        checkpointer: new MemorySaver(),
+      },
+      appDb,
+    );
+    expect(res.outcome).toBe("posted");
+    expect(
+      await suDb.promptVariantAssignment.count({
+        where: { tenantId, threadId, experimentId: exp.id },
+      }),
+    ).toBe(1);
+    expect(capture.systemPrompts.join("\n")).toContain("VARIANT PROMPT");
+  });
 });

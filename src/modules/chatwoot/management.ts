@@ -1796,19 +1796,18 @@ export function unbindNeedsNothingRemote(err: unknown): boolean {
 //     would otherwise strand conversations as `pending`), then clear agentId.
 //   - rebinding the SAME agent is a no-op (no network).
 // Network I/O (ensure/connect/disconnect) runs OUTSIDE the scoped tx that persists agentId.
-export async function bindInbox(
+// Everything `bindInbox` decides before it touches Chatwoot: the inbox exists, the account behind it
+// is still connected, and the agent being bound exists. Split out so the MCP preview can ask the same
+// questions (#490) — its fence row passes an inbox id that names no inbox, so it proved the first and
+// neither of the other two, and a preview approved a bind onto a disconnected account that the apply
+// answers with a 409 (#510).
+export async function assertInboxBindable(
   ctx: TenantContext,
   inboxId: bigint,
   agentId: bigint | null,
-  deps: LoadChatwootClientDeps = {},
   base: PrismaClient = basePrisma,
-): Promise<InboxDto> {
-  if (ctx.tenantId === null) throw new AppError("tenant required", 400);
-  const tenantId = ctx.tenantId;
-
-  // 1. Scoped reads: the inbox (+ its Chatwoot coordinates and current binding) and, when
-  //    connecting, the target agent (validated + its name, which becomes the bot's display name).
-  const { inbox, agentName } = await runScopedOn(base, ctx, async (db) => {
+) {
+  return runScopedOn(base, ctx, async (db) => {
     const row = await db.inbox.findUnique({
       where: { id: inboxId },
       select: {
@@ -1844,6 +1843,26 @@ export async function bindInbox(
     }
     return { inbox: row, agentName: name };
   });
+}
+
+export async function bindInbox(
+  ctx: TenantContext,
+  inboxId: bigint,
+  agentId: bigint | null,
+  deps: LoadChatwootClientDeps = {},
+  base: PrismaClient = basePrisma,
+): Promise<InboxDto> {
+  if (ctx.tenantId === null) throw new AppError("tenant required", 400);
+  const tenantId = ctx.tenantId;
+
+  // 1. Scoped reads: the inbox (+ its Chatwoot coordinates and current binding) and, when
+  //    connecting, the target agent (validated + its name, which becomes the bot's display name).
+  const { inbox, agentName } = await assertInboxBindable(
+    ctx,
+    inboxId,
+    agentId,
+    base,
+  );
 
   // 2. Sync the Chatwoot side OUTSIDE any tx (only when the connection actually changes). A
   //    Chatwoot/network failure surfaces as a uniform 502 (ChatwootApiError carries PII-free status

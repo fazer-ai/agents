@@ -9,6 +9,7 @@ import {
 import { truncForAudit } from "@/modules/audit/projection";
 import {
   assertBusinessHoursCreatable,
+  assertBusinessHoursUpdatable,
   createBusinessHours,
   deleteBusinessHours,
   getBusinessHours,
@@ -22,6 +23,8 @@ import {
   variantWriteSchema,
 } from "@/modules/experiments/service";
 import {
+  assertEmbeddingCredentialUsable,
+  assertLangfuseCredentialUsable,
   getTenantSettings,
   updateEmbeddingSettings,
   updateLangfuse,
@@ -341,6 +344,9 @@ export async function businessHoursUpdate(
       exceptions: current.exceptions,
     };
     if (args.dry_run !== false) {
+      // NOTE: the core's own question, asked before the preview answers it — and INSIDE the branch,
+      // because the apply reaches `updateBusinessHours`, which asks it again (#490, #510).
+      assertBusinessHoursUpdatable(patch);
       const previewAfter = {
         name: patch.name ?? current.name,
         timezone: patch.timezone ?? current.timezone,
@@ -454,6 +460,15 @@ export async function tenantSettingsUpdate(
   const target = "tenant_settings";
   try {
     if (args.dry_run !== false) {
+      // NOTE: the core's own KIND question, which resolving the ref above does not answer — a
+      // `vault:<id>` names an entry of any kind, and this preview said "will wire" for one whose
+      // kind `updateLangfuse` refuses (#510). Only when the patch actually sets a ref.
+      if (typeof embeddingRef === "string") {
+        await assertEmbeddingCredentialUsable(ctx, embeddingRef, base);
+      }
+      if (typeof langfuseRef === "string") {
+        await assertLangfuseCredentialUsable(ctx, langfuseRef, base);
+      }
       return ok({
         dryRun: true,
         target,

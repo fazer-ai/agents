@@ -210,6 +210,30 @@ describe("runSandboxedCode", () => {
     expect(v.endsWith('{"i":19999}]')).toBe(true);
   });
 
+  // A value can still run the body's code AFTER the body returned: a getter, a proxy trap. The
+  // renderer used to swallow that and answer "[object Object]" as a successful value, so the agent
+  // read a verdict nobody produced and the operator was never alerted — the failure contract says a
+  // throw from the body is a failure, and this is one, one step later.
+  test("a throw while the value is being read is an error, not a value", async () => {
+    for (const code of [
+      'return { get x() { throw new Error("boom") } }',
+      'return new Proxy({}, { ownKeys() { throw new Error("boom") } })',
+    ]) {
+      const out = await runSandboxedCode(code, {
+        call: { input: {}, context: {} },
+      });
+      expect([code, out.kind]).toEqual([code, "error"]);
+      expect((out as { message: string }).message).toContain("boom");
+    }
+    // A console LINE that cannot be rendered is not a failed call: the fallback stays there.
+    const logged = await runSandboxedCode(
+      'console.log({ get y() { throw new Error("log") } }); return { ok: true }',
+      { call: { input: {}, context: {} } },
+    );
+    expect(logged).toMatchObject({ kind: "value", value: '{"ok":true}' });
+    expect((logged as { logs: string[] }).logs).toEqual(["[object Object]"]);
+  });
+
   test("the agent's clock is inside: TIMEZONE and NOW_LOCAL, not the interpreter's UTC", async () => {
     // 01:30 UTC on the 15th is still the 14th in São Paulo; the string says so and parses back to
     // the same instant.

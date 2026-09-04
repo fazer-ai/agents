@@ -92,7 +92,7 @@ const RENDER_SOURCE = `(function () {
   var NativeDate = Date, NativeMap = Map, NativeSet = Set, NativeError = Error;
   var isArray = Array.isArray, arrayFrom = Array.from, objectKeys = Object.keys, objectCreate = Object.create;
   var stringify = JSON.stringify, Str = String, finite = isFinite, nan = isNaN;
-  function text(root) {
+  function text(root, strict) {
   function conv(x, stack) {
     if (typeof x === "bigint") return x.toString();
     if (typeof x === "number" && !finite(x)) return Str(x);
@@ -124,13 +124,18 @@ const RENDER_SOURCE = `(function () {
     var s = stringify(conv(root, []));
     return s === undefined ? Str(root) : s;
   } catch (e) {
+    // STRICT is the value path: what threw here is the body's own code — a getter, a proxy trap, a
+    // toJSON — and swallowing it reported "[object Object]" as a successful result, so the agent
+    // read a verdict nobody produced and nobody was alerted. The console keeps the fallback: a log
+    // line that cannot be rendered is not a failed call.
+    if (strict) throw e;
     return Str(root);
   }
   }
   // One past the budget when a budget is given, so the host still sees the overflow and writes its
   // marker; the console passes none and cuts on its own side of the same boundary.
-  return function (root, max) {
-    var s = text(root);
+  return function (root, max, strict) {
+    var s = text(root, strict);
     return typeof max === "number" && s.length > max ? s.slice(0, max + 1) : s;
   };
 })()`;
@@ -138,8 +143,15 @@ const RENDER_SOURCE = `(function () {
 const UNCUT_RESULT =
   "[result reached the sandbox boundary uncut and was dropped]";
 
+// What a render answers: the text, or the error the VALUE's own code threw while being rendered
+// (a getter, a proxy trap). The second is not a rendering detail — it is the body failing after it
+// returned, and the caller turns it into the same failure a `throw` gives.
+type Rendered =
+  | { ok: true; text: string }
+  | { ok: false; error: QuickJSHandle };
+
 function makeRenderer(vm: QuickJSContext): {
-  render: (value: QuickJSHandle, max: number) => string;
+  render: (value: QuickJSHandle, max: number) => Rendered;
   handle: QuickJSHandle;
   dispose: () => void;
 } {
@@ -148,11 +160,12 @@ function makeRenderer(vm: QuickJSContext): {
     handle: fn,
     render: (value, max) => {
       const budget = vm.newNumber(max);
-      const r = vm.callFunction(fn, vm.undefined, value, budget);
+      // STRICT: on the value path a throw is the body's, and it has to reach the caller.
+      const strict = vm.true;
+      const r = vm.callFunction(fn, vm.undefined, value, budget, strict);
       budget.dispose();
       if (r.error) {
-        r.error.dispose();
-        return "[value not rendered]";
+        return { ok: false, error: r.error };
       }
       // NOTE: The length is read off the VM string without copying it, and a result the VM side did
       // not cut is refused rather than copied — the fence on "bounded before it crosses". Measured
@@ -162,11 +175,11 @@ function makeRenderer(vm: QuickJSContext): {
       lengthHandle.dispose();
       if (length > max + 1) {
         r.value.dispose();
-        return UNCUT_RESULT;
+        return { ok: true, text: UNCUT_RESULT };
       }
       const s = vm.getString(r.value);
       r.value.dispose();
-      return s;
+      return { ok: true, text: s };
     },
     // NOTE: A handle still alive when the context goes trips an assertion inside JS_FreeRuntime
     // (measured: every call printed it until this line existed). The renderer's function handle is
@@ -798,11 +811,24 @@ function run(req: SandboxRequest): SandboxReply {
       // whole budget building the value would otherwise have its result interrupted mid-render and
       // come back as "[object Object]" (measured, and fenced by test).
       renewDeadline();
-      const value = clip(render(out.value, req.maxChars), req.maxChars);
+      const rendered = render(out.value, req.maxChars);
       out.value.dispose();
+      if (!rendered.ok) {
+        // The body threw WHILE its value was being read — a getter, a proxy trap. That is the same
+        // failure a `throw` in the body is, one step later, and reporting it as a value handed the
+        // agent "[object Object]" as a successful verdict with nobody alerted (round 19).
+        const thrown = errors.read(rendered.error) as ThrownValue;
+        return {
+          kind: "error",
+          name: storable(clip(thrown.name, ERROR_NAME_MAX_CHARS)),
+          message: storable(clip(thrown.message, req.maxChars)),
+          logs: logs.map(storable),
+          ms,
+        };
+      }
       return {
         kind: "value",
-        value: storable(value),
+        value: storable(clip(rendered.text, req.maxChars)),
         logs: logs.map(storable),
         ms,
       };

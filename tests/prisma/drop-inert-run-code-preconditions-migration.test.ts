@@ -13,10 +13,15 @@ import { Client } from "pg";
 // `run_code` and put it back. Deleting unconditionally handed it back its name without its
 // condition: callable, ungated, and nothing anywhere saying a guard had been dropped.
 //
+// Round 33 widened WHAT answers. An MCP server's tool names live upstream, but what reaches the
+// model does not: the grant is fail-closed and allowlisted, so `agent_tool_selections.enabled_tools`
+// is the list of names that server can answer to, in this database. A predicate that stopped at the
+// two tables with a `name` column reinstated for MCP the exact hole round 32 closed for HTTP.
+//
 // What it pins: the key goes when nothing answers to the name, STAYS when something does (an HTTP
-// tool, a code tool, and either of them spelled in a way that only DERIVES the name), the agent's
-// other preconditions and settings are untouched, an agent without the key is not rewritten, and
-// FORCE ROW LEVEL SECURITY is back on all three tables.
+// tool, a code tool, an MCP grant naming it, and a spelling that only DERIVES the name), the
+// agent's other preconditions and settings are untouched, an agent without the key is not
+// rewritten, and FORCE ROW LEVEL SECURITY is back on all four tables.
 
 const suUrl = process.env.MIGRATION_DATABASE_URL;
 const MIGRATION =
@@ -88,6 +93,24 @@ async function codeTool(tenantId: bigint, name: string): Promise<void> {
   );
 }
 
+async function mcpGrant(
+  tenantId: bigint,
+  agentId: bigint,
+  tools: string[],
+): Promise<void> {
+  const conn = await suDb.query(
+    `INSERT INTO "mcp_server_connections" (tenant_id, name, transport, url, updated_at)
+     VALUES ($1, 'srv', 'http', 'https://example.com/mcp', NOW()) RETURNING id`,
+    [String(tenantId)],
+  );
+  await suDb.query(
+    `INSERT INTO "agent_tool_selections"
+       (tenant_id, agent_id, source, mcp_server_connection_id, knowledge_base_ids, enabled_tools, created_at, updated_at)
+     VALUES ($1, $2, 'MCP', $3, ARRAY[]::bigint[], $4::text[], NOW(), NOW())`,
+    [String(tenantId), String(agentId), conn.rows[0].id, tools],
+  );
+}
+
 async function settingsOf(id: bigint): Promise<Record<string, unknown>> {
   const r = await suDb.query('SELECT settings FROM "agents" WHERE id = $1', [
     String(id),
@@ -134,6 +157,21 @@ describe.skipIf(!dbUp)("migration: drop INERT run_code preconditions", () => {
     });
     await codeTool(coded, "run_code");
 
+    // Nothing in any table is named `run_code`, but an MCP grant allowlists it: that IS the name
+    // reaching the model, and it is the only place this database can learn it.
+    const viaMcp = await tenant("mcp");
+    ids.liveMcp = await agent(viaMcp, "live-mcp", {
+      toolPreconditions: { run_code: RULE("cpf_ok") },
+    });
+    await mcpGrant(viaMcp, ids.liveMcp as bigint, ["run_code", "search_docs"]);
+
+    // The control for that arm: an MCP grant that allowlists something else leaves the rule inert.
+    const otherMcp = await tenant("mcp-other");
+    ids.inertMcp = await agent(otherMcp, "inert-mcp", {
+      toolPreconditions: { run_code: RULE("cpf_ok") },
+    });
+    await mcpGrant(otherMcp, ids.inertMcp as bigint, ["search_docs"]);
+
     // A spelling that only DERIVES the name. The model calls it `run_code` either way, which is why
     // the migration asks the derivation and not the stored text.
     const derived = await tenant("derived");
@@ -169,10 +207,14 @@ describe.skipIf(!dbUp)("migration: drop INERT run_code preconditions", () => {
     expect(await updatedAtOf(ids.untouched as bigint)).toBe(before);
 
     expect(await settingsOf(ids.bare as bigint)).toEqual({ temperature: 0.2 });
+    // The MCP arm's control: allowlisting other names does not save the rule.
+    expect(await settingsOf(ids.inertMcp as bigint)).toEqual({
+      toolPreconditions: {},
+    });
   });
 
   test("keeps the rule wherever something still answers to the name", async () => {
-    for (const key of ["live", "liveCode", "liveDerived"] as const) {
+    for (const key of ["live", "liveCode", "liveDerived", "liveMcp"] as const) {
       const s = await settingsOf(ids[key] as bigint);
       expect([key, s.toolPreconditions]).toEqual([
         key,
@@ -188,10 +230,11 @@ describe.skipIf(!dbUp)("migration: drop INERT run_code preconditions", () => {
 
     const r = await suDb.query(
       `SELECT relname, relforcerowsecurity FROM pg_class
-        WHERE relname IN ('agents', 'tool_definitions', 'code_tool_definitions')
+        WHERE relname IN ('agents', 'agent_tool_selections', 'tool_definitions', 'code_tool_definitions')
         ORDER BY relname`,
     );
     expect(r.rows).toEqual([
+      { relname: "agent_tool_selections", relforcerowsecurity: true },
       { relname: "agents", relforcerowsecurity: true },
       { relname: "code_tool_definitions", relforcerowsecurity: true },
       { relname: "tool_definitions", relforcerowsecurity: true },

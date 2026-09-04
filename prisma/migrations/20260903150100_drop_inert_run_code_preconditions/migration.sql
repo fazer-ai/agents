@@ -29,10 +29,22 @@
 -- derivation is the one both earlier migrations used, copied rather than referenced because a
 -- migration is frozen by design and `pg_temp` does not outlive the session that made it.
 --
--- The two DB-backed kinds are asked; an MCP or toolpack tool exposing the name keeps the key by
--- default, which is the same safe direction. Data migration over FORCE RLS tables: lifted for the
--- statement on every table it writes AND reads, restored after (.claude/rules/prisma.md). The write
--- is idempotent: a second run matches no row.
+-- FOUR kinds are asked, not two, because "source-agnostic" is the whole premise and a predicate
+-- that stops at the two tables holding a `name` column reinstates exactly the hole it closes for
+-- HTTP tools (round 33). An MCP server's tool names live upstream, not here, but what reaches the
+-- model does not: the grant is fail-closed and allowlisted, so `agent_tool_selections.enabled_tools`
+-- IS the list of names that server can answer to, in this database, for MCP and for integrations
+-- alike. NATIVE and RAG rows carry the same column and are deliberately NOT consulted: the native
+-- `run_code` grant is what the migration two files earlier removes, and reading it back here would
+-- resurrect the guard for the only case this file exists to clean.
+--
+-- The integration arm cannot fire today (measured: no registered toolpack publishes a tool named
+-- `run_code`, and the set is a closed allowlist in code, not operator text), and it costs one OR to
+-- keep a toolpack added later from walking into this.
+--
+-- Data migration over FORCE RLS tables: lifted for the statement on every table it writes AND
+-- reads, restored after (.claude/rules/prisma.md). The write is idempotent: a second run matches no
+-- row.
 
 CREATE OR REPLACE FUNCTION pg_temp.console_tool_name(label text) RETURNS text
 LANGUAGE sql IMMUTABLE AS $fn$
@@ -54,6 +66,7 @@ $fn$;
 ALTER TABLE "agents" NO FORCE ROW LEVEL SECURITY;
 ALTER TABLE "tool_definitions" NO FORCE ROW LEVEL SECURITY;
 ALTER TABLE "code_tool_definitions" NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE "agent_tool_selections" NO FORCE ROW LEVEL SECURITY;
 
 UPDATE "agents" a
    SET "settings" = jsonb_set(
@@ -72,8 +85,17 @@ UPDATE "agents" a
      SELECT 1 FROM "code_tool_definitions" c
       WHERE c.tenant_id = a.tenant_id
         AND pg_temp.console_tool_name(c.name) = 'run_code'
+   )
+   AND NOT EXISTS (
+     SELECT 1
+       FROM "agent_tool_selections" s,
+            unnest(s.enabled_tools) AS granted(name)
+      WHERE s.tenant_id = a.tenant_id
+        AND s.source IN ('MCP', 'INTEGRATION')
+        AND pg_temp.console_tool_name(granted.name) = 'run_code'
    );
 
+ALTER TABLE "agent_tool_selections" FORCE ROW LEVEL SECURITY;
 ALTER TABLE "code_tool_definitions" FORCE ROW LEVEL SECURITY;
 ALTER TABLE "tool_definitions" FORCE ROW LEVEL SECURITY;
 ALTER TABLE "agents" FORCE ROW LEVEL SECURITY;

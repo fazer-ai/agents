@@ -44,6 +44,28 @@ function scanString(value: string, where: string): void {
   if (SECRET_KV_PATTERN.test(value)) throw new SecretLeakError(where);
 }
 
+// The same question asked of SOURCE CODE, where the key/value matcher above cannot be used as it
+// stands. In a JSON value, `password: <anything concrete>` is a leak. In a program it is usually a
+// variable: `const password = input.password` and `return { authorization: input.authorization }`
+// are what a body that FORWARDS a credential looks like, and refusing them makes the agent that
+// owns such a tool unexportable, with the scanner blocking the backup it exists to protect (round
+// 30, measured: four ordinary bodies refused).
+//
+// So the pair still has to be concrete, and in code "concrete" means a STRING LITERAL. An
+// expression is a reference to a value that lives elsewhere; a quoted run of characters is the
+// value itself. Everything else the scanner knows (the shaped patterns: `sk-`, `AKIA`, a JWT) is
+// applied unchanged, since those are recognisable wherever they appear, quoted or not.
+const SECRET_KV_IN_CODE_PATTERN =
+  /(?:access[_-]?token|api[_-]?key|client[_-]?secret|password|authorization|secret)["']?\s*[:=]\s*(["'])(?!\s*\{\{)([^"'\s&]{6,})\1/i;
+
+export function assertNoSecretsInCode(code: string, where: string): void {
+  if (isPlaceholder(code)) return;
+  for (const re of SECRET_VALUE_PATTERNS) {
+    if (re.test(code)) throw new SecretLeakError(where);
+  }
+  if (SECRET_KV_IN_CODE_PATTERN.test(code)) throw new SecretLeakError(where);
+}
+
 // Recursively asserts that no string VALUE anywhere in the object looks like a secret.
 export function assertNoSecrets(node: unknown, path = "$"): void {
   if (typeof node === "string") {

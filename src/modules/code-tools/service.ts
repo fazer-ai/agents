@@ -413,6 +413,15 @@ export async function deleteCodeTool(
   base: PrismaClient = basePrisma,
 ): Promise<void> {
   await runScopedOn(base, ctx, async (db) => {
+    // The namespace lock, before the row, on the DELETE too. Not for the ordering reason the update
+    // gives (this path takes no other lock) but for the window it closes: an import holds this lock
+    // while it resolves a grant and inserts the selection rows, so a delete that commits in between
+    // takes the row out from under a foreign key that has already been read. The insert then fails,
+    // and because the whole import runs in ONE transaction it does not lose a grant, it loses the
+    // agent, the tools and the knowledge bases (issue #221). Serialized behind the lock, the delete
+    // waits and the import reports `codeGrantNotFound`, or the delete goes first and the import
+    // never sees the row (round 30).
+    await lockToolNames(db);
     await db.$queryRaw`SELECT 1 FROM "code_tool_definitions" WHERE "id" = ${id} FOR UPDATE`;
     const current = await db.codeToolDefinition.findUnique({
       where: { id },

@@ -60,7 +60,10 @@ import { parseAuthoredTemplate } from "@/modules/documents/validate";
 import { disarmFullDetail } from "@/modules/flowlog/settings";
 import { normalizeSettingsForStorage } from "@/modules/images/settings";
 import { isKnownCatalogType } from "@/modules/integrations/catalog";
-import { assertNoSecrets } from "@/modules/n8n-export/n8n";
+import {
+  assertNoSecrets,
+  assertNoSecretsInCode,
+} from "@/modules/n8n-export/n8n";
 import { readAppointmentDeclaration } from "@/modules/tool-definitions/appointment";
 import {
   canonicalBodyShape,
@@ -506,10 +509,15 @@ function blankDocumentContent(data: AgentExport): AgentExport {
       for (const d of kb.documents) d.content = "";
     }
   }
-  // NOTE: a code tool's BODY is not blanked. It is the operator's program, not prose, and a key
-  // pasted into a comparison there is exactly what the scanner exists to catch: the sandbox has no
-  // credential slot, so a secret in the body is the only way one reaches a code tool, and an
-  // export that carried it would hand it to every instance the bundle lands on.
+  // NOTE: a code tool's BODY is not exempt, it is scanned by a DIFFERENT reader
+  // (assertNoSecretsInCode, called on the real bodies below) and blanked here so the structured
+  // matcher does not see it twice. The reason is that a body is neither prose nor a JSON value: in
+  // a program `password: input.password` is a reference, and refusing it makes the agent that owns
+  // such a tool unexportable, while a quoted literal in the same position is the leak the scanner
+  // exists to catch. The sandbox has no credential slot, so a secret in the body is the only way
+  // one reaches a code tool, and an export carrying it would hand it to every instance the bundle
+  // lands on.
+  for (const ct of clone.components?.codeTools ?? []) ct.code = "";
   // A document template's blocks and style are TENANT PROSE, exactly like a knowledge-base
   // document's text, and the scanner cannot tell an operator writing "api_key=abcdef" in a quote's
   // terms from a leaked credential. Left in, that quote makes its own agent unexportable — the
@@ -1000,6 +1008,10 @@ export async function exportAgent(
   // blankDocumentContent); the real `data` (with content) is what we return.
   const scanTarget = blankDocumentContent(data);
   assertNoSecrets(scanTarget);
+  // The bodies themselves, through the reader written for source rather than for values.
+  for (const ct of data.components?.codeTools ?? []) {
+    assertNoSecretsInCode(ct.code, `$.components.codeTools.${ct.name}.code`);
+  }
   // Defense-in-depth: the id→name translation covers the known credential paths, but a `vault:<id>`
   // stored under any OTHER key would be a tenant-local id leak that assertNoSecrets cannot see (an
   // id has no secret shape). Refuse to emit rather than leak the boundary this refactor protects.

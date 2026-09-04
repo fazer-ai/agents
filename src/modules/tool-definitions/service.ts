@@ -639,6 +639,11 @@ export async function deleteToolDefinition(
     // Locked, then read before the delete: after `deleteMany` there is nothing left to name what
     // was removed, and the same lock keeps a concurrent update from making the row describe a
     // definition that never looked like that.
+    // The namespace lock on the DELETE too, for the reason `deleteCodeTool` in
+    // modules/code-tools/service.ts spells out: an import resolves a grant and inserts the
+    // selection rows under this lock, and a delete committing in that window fails a foreign key
+    // that has already been read, taking the whole import down with it.
+    await lockToolNames(db);
     await db.$queryRaw`SELECT 1 FROM "tool_definitions" WHERE "id" = ${id} FOR UPDATE`;
     const current = await db.toolDefinition.findUnique({
       where: { id },

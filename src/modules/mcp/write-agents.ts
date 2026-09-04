@@ -574,6 +574,7 @@ async function appliedWiringWarning(
   method: string | null | undefined,
   shapes: ToolShapePatch,
   ackMessage: string | null | undefined,
+  allowedHosts: string[] | null | undefined,
 ): Promise<string[]> {
   try {
     return await credentialWiringWarning(
@@ -583,6 +584,7 @@ async function appliedWiringWarning(
       method,
       shapes,
       ackMessage,
+      allowedHosts,
     );
   } catch {
     return [];
@@ -596,6 +598,7 @@ async function credentialWiringWarning(
   method: string | null | undefined,
   shapes: ToolShapePatch,
   ackMessage: string | null | undefined,
+  allowedHosts: string[] | null | undefined,
 ): Promise<string[]> {
   if (!credentialRef) return [];
   const facts = await runScopedOn(base, ctx, (db) =>
@@ -610,7 +613,7 @@ async function credentialWiringWarning(
     { kind: facts.kind, paramName: facts.paramName, baseUrl: facts.baseUrl },
     method,
     shapes,
-    { ackMessage },
+    { ackMessage, allowedHosts },
   );
   return warning ? [warning] : [];
 }
@@ -667,6 +670,7 @@ export async function toolCreate(
         input.method,
         toolShapesOf(input),
         input.ackEnabled ? input.ackMessage : null,
+        input.allowedHosts,
       );
       const all = [...norm.warnings, ...wiring];
       return ok({
@@ -689,6 +693,7 @@ export async function toolCreate(
       created.method,
       toolShapesOf(created),
       created.ackEnabled ? created.ackMessage : null,
+      created.allowedHosts,
     );
     const applied = [...norm.warnings, ...appliedWiring];
     return ok({
@@ -773,6 +778,7 @@ export async function toolUpdate(
             ? built.patch.ackMessage
             : current.ackMessage
           : null,
+        built.patch.allowedHosts ?? current.allowedHosts,
       );
       const all = [...norm.warnings, ...wiring];
       return ok({
@@ -799,6 +805,7 @@ export async function toolUpdate(
       updated.method,
       toolShapesOf(updated),
       updated.ackEnabled ? updated.ackMessage : null,
+      updated.allowedHosts,
     );
     const applied = [...norm.warnings, ...appliedWiring];
     return ok({

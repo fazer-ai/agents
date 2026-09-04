@@ -2,8 +2,9 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Glob } from "bun";
 import { PrismaClient } from "@/../generated/prisma/client";
+import { encryptJson } from "@/api/lib/crypto";
 import { AppError } from "@/lib/errors";
-import type { TenantContext } from "@/lib/tenancy";
+import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { credentialCreate } from "@/modules/mcp/write";
 import {
   BASE_URL_KIND_IDS,
@@ -19,6 +20,9 @@ import {
 import {
   createPendingVaultEntry,
   createVaultEntry,
+  listVaultInfos,
+  tryResolveApiKeyEntry,
+  tryResolveVaultEntry,
   updateVaultEntry,
 } from "@/modules/vault/service";
 import { codeOnly } from "@/tests/utils/source-text";
@@ -369,6 +373,71 @@ describe.skipIf(!dbUp)("vault: a base URL the kind cannot use", () => {
       select: { baseUrl: true },
     });
     expect(row?.baseUrl).toBeNull();
+  });
+
+  test("a row that already carries a dead base URL is KEPT and never dialled", async () => {
+    // NOTE: the refusal covers what a write introduces, and covering only that would leave every
+    // install the rule was written for still redirecting — the model path, vision, STT, TTS, the
+    // HTTP-tool base and the MCP connection URL read this field off the RESOLVED entry without
+    // asking the kind. So the resolve is gated too.
+    //
+    // The row is not touched, and that half is the point: `listVaultInfos` still reports the stored
+    // value, so the console can show an operator what is sitting in a field its own form never
+    // rendered. What the runtime dials is `null`.
+    const row = await suDb.vaultEntry.create({
+      data: {
+        tenantId,
+        name: "bu-dialled",
+        secret: encryptJson("sk-legacy"),
+        kind: "openai",
+        baseUrl: ELSEWHERE,
+      },
+      select: { id: true },
+    });
+    const ref = `vault:${row.id}`;
+    const resolved = await runScopedOn(appDb, ctx(), (db) =>
+      tryResolveApiKeyEntry(db, ref),
+    );
+    expect(resolved.state).toBe("ok");
+    if (resolved.state === "ok") expect(resolved.baseUrl).toBeNull();
+    const entry = await runScopedOn(appDb, ctx(), (db) =>
+      tryResolveVaultEntry(db, ref),
+    );
+    expect(entry?.baseUrl).toBeNull();
+    // NOTE: and the listing — the surface an operator reads — still shows it.
+    const listed = await runScopedOn(appDb, ctx(), (db) => listVaultInfos(db));
+    expect(listed.find((e) => e.name === "bu-dialled")?.baseUrl).toBe(
+      ELSEWHERE,
+    );
+    expect(
+      (
+        await suDb.vaultEntry.findUnique({
+          where: { id: row.id },
+          select: { baseUrl: true },
+        })
+      )?.baseUrl,
+    ).toBe(ELSEWHERE);
+  });
+
+  test("a kind that DOES take one keeps dialling it", async () => {
+    // NOTE: the control for the gate above. It has to cut the dead field and nothing else.
+    const { id } = await createVaultEntry(
+      ctx(),
+      {
+        name: "bu-dialled-ok",
+        value: "sk-abc123",
+        kind: "openai_compatible",
+        baseUrl: ELSEWHERE,
+      },
+      undefined,
+      undefined,
+      appDb,
+    );
+    const resolved = await runScopedOn(appDb, ctx(), (db) =>
+      tryResolveApiKeyEntry(db, `vault:${id}`),
+    );
+    expect(resolved.state).toBe("ok");
+    if (resolved.state === "ok") expect(resolved.baseUrl).toBe(ELSEWHERE);
   });
 
   test("a row that already carries a dead base URL stays editable, and can be cleared", async () => {

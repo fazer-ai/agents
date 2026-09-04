@@ -205,6 +205,23 @@ export type VaultEntryResolution<T> =
   | { state: "pending" }
   | { state: "not_found" };
 
+// The base URL a consumer may DIAL, which is not always the one in the row.
+//
+// The write boundary refuses a base URL on a kind that has no use for one (#504), and refusing only
+// there leaves every row an older build wrote still redirecting: the model path, vision, STT, TTS,
+// the HTTP-tool base and the MCP connection URL all read this field off the RESOLVED entry without
+// asking the kind. A rule that only covers new writes is a rule that does not cover the installs it
+// was written for.
+//
+// The row is not touched. `listVaultInfos` still reports the stored value, so the console can show an
+// operator what is sitting in a field its own form never rendered — and nothing dials it.
+export function dialableBaseUrl(
+  kind: string | null,
+  baseUrl: string | null,
+): string | null {
+  return secretTypeRefusesBaseUrl(kind) ? null : baseUrl;
+}
+
 // State-aware variant for callers that need both operator-facing pending/not-found diagnostics and
 // active-entry metadata such as baseUrl. Keeping this separate avoids changing the generic
 // resolveVaultRefState value contract used by existing secret-only consumers.
@@ -230,7 +247,7 @@ export async function resolveVaultEntryState<T = unknown>(
     entry: {
       secret: decryptJson<T>(entry.secret),
       kind: entry.kind,
-      baseUrl: entry.baseUrl,
+      baseUrl: dialableBaseUrl(entry.kind, entry.baseUrl),
       paramName: entry.paramName,
       name: entry.name,
     },
@@ -257,7 +274,7 @@ export async function resolveVaultEntry<T = unknown>(
   return {
     secret: decryptJson<T>(entry.secret),
     kind: entry.kind,
-    baseUrl: entry.baseUrl,
+    baseUrl: dialableBaseUrl(entry.kind, entry.baseUrl),
     paramName: entry.paramName,
     name: entry.name,
   };
@@ -289,7 +306,7 @@ export async function tryResolveVaultEntry(
   return {
     secret: decryptJson(entry.secret),
     kind: entry.kind,
-    baseUrl: entry.baseUrl,
+    baseUrl: dialableBaseUrl(entry.kind, entry.baseUrl),
     paramName: entry.paramName,
     name: entry.name,
   };
@@ -328,7 +345,11 @@ export async function tryResolveApiKeyEntry(
   ) {
     return { state: "unusable", kind: entry.kind };
   }
-  return { state: "ok", secret: entry.secret, baseUrl: entry.baseUrl };
+  return {
+    state: "ok",
+    secret: entry.secret,
+    baseUrl: dialableBaseUrl(entry.kind, entry.baseUrl),
+  };
 }
 
 // The MCP surface speaks vault entry NAMES (agent-friendly: the operator tells the agent a name);

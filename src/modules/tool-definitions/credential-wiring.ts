@@ -92,14 +92,53 @@ const mentions = (templates: string[], name: string): boolean =>
 //
 // One level, because that is the runtime's: a fixed value interpolates from context and the secret,
 // never from another fixed field.
+// The declared types whose value can never stringify to the empty string: zod gives a number, an
+// integer or a boolean, and `String()` of any of them is at least one character. A `string` field
+// can be `""`, and an enum is only sure when every one of its values is non-empty.
+//
+// A required `string` is the case this cannot answer, and it is deliberately on the quiet side:
+// `zodFor` builds a bare `z.string()` with no `.min(1)`, so the model may send `""` and the runtime
+// then SKIPS that query entry and injects the credential after all. Whether the credential is sent
+// depends on what the model typed, so no executed row can assert it either way — the same shape as
+// the multi-value enum above.
+function neverEmptyByType(spec: Record<string, unknown>): boolean {
+  if (spec.type === "integer" || spec.type === "number") return true;
+  if (spec.type === "boolean") return true;
+  if (spec.type === "enum") {
+    const values = spec.enumValues;
+    return (
+      Array.isArray(values) &&
+      values.length > 0 &&
+      values.every((v) => typeof v === "string" && v !== "")
+    );
+  }
+  return false;
+}
+
+// The REQUIRED ai fields the runtime is sure to receive a non-empty value for. Required is the first
+// half — zod refuses the call without it — and the type is the second: a required `string` may still
+// arrive empty, and an empty query value is one the runtime skips.
+function alwaysFilledAiNames(schema: unknown): Set<string> {
+  const out = new Set<string>();
+  if (typeof schema !== "object" || schema === null) return out;
+  for (const [name, spec] of Object.entries(schema)) {
+    if (!isPlainObject(spec) || spec.source === "fixed") continue;
+    if (!spec.required) continue;
+    if (neverEmptyByType(spec)) out.add(name);
+  }
+  return out;
+}
+
 function alwaysNonEmpty(
   template: string,
   fixed: Map<string, string>,
   resolveFixed = true,
   ackArg = false,
+  alwaysFilled: Set<string> = new Set(),
 ): boolean {
   if (template.replace(PLACEHOLDER, "") !== "") return true;
   if (ackArg && namesIn(template).has(WAIT_MESSAGE_ARG)) return true;
+  for (const name of namesIn(template)) if (alwaysFilled.has(name)) return true;
   // ABOVE the recursion guard, not inside the loop below it: a prototype name resolves to a
   // stringified Object member at ANY depth, so a fixed value of `{{toString}}` is non-empty when it
   // is followed as well as when it is read directly.
@@ -137,6 +176,9 @@ function knownValuesByName(schema: unknown): Map<string, string> {
   for (const [name, spec] of Object.entries(schema)) {
     if (!isPlainObject(spec) || spec.source === "fixed") continue;
     if (!spec.required) continue;
+    // `zodFor` reads `enumValues` only for `type: "enum"`; on a string field it is decoration and
+    // the model may send anything, so the key stays unknowable.
+    if (spec.type !== "enum") continue;
     const values = spec.enumValues;
     if (Array.isArray(values) && values.length === 1) {
       const only = values[0];
@@ -367,6 +409,10 @@ function fixedFields(schema: unknown): { name: string; value: string }[] {
     // gives it `""` — and its NAME is what the legacy query derivation puts on the URL, blocking a
     // query credential of the same name. Dropping it here lost the name, not just the value.
     if (isPlainObject(spec) && spec.source === "fixed") {
+      // `fixedValues[f.name] = …` on a plain `{}` again: a field named `__proto__` reaches the
+      // inherited setter and no value is stored, so every reader of that map gets the prototype
+      // instead. Same swallow as the header of that name, in the map the executor builds for itself.
+      if (name === SWALLOWED_HEADER) continue;
       out.push({
         name,
         value: typeof spec.value === "string" ? spec.value : "",
@@ -405,6 +451,7 @@ function buildsARequest(
   urlTemplate: unknown,
   shapes: ToolShapePatch,
   ackArg: boolean,
+  allowedHosts: string[] | null | undefined,
 ): boolean {
   if (typeof urlTemplate !== "string") return false;
   // The ORIGIN is pinned: `buildHttpTool` takes it from the neutralized template and throws
@@ -414,6 +461,18 @@ function buildsARequest(
   const a = parseUrlTemplate(urlTemplate, new Map(), UNRESOLVED_A);
   const b = parseUrlTemplate(urlTemplate, new Map(), UNRESOLVED_B);
   if (!a || !b || a.origin !== b.origin) return false;
+  // The allowlist, which is checked before the fetch and throws. The origins above being equal is
+  // what makes the host literal, so this is a decision and not a guess: a non-empty list that does
+  // not name it refuses every call of this tool. (The credential-base exemption is for RELATIVE
+  // templates, and by here the template is absolute — a relative one was already joined to its base
+  // by `effectiveUrlTemplate`, and that host has to be listed too.)
+  if (
+    allowedHosts &&
+    allowedHosts.length > 0 &&
+    !allowedHosts.includes(a.hostname)
+  ) {
+    return false;
+  }
   try {
     new URL(urlTemplate.replace(PLACEHOLDER, "_"));
   } catch {
@@ -601,7 +660,14 @@ function autoInjectionVerdict(
   }
   const explicit = reachingQuery(shapes)[inj.name];
   const alwaysSet =
-    explicit !== undefined && alwaysNonEmpty(explicit, fixed, true, ackArg);
+    explicit !== undefined &&
+    alwaysNonEmpty(
+      explicit,
+      fixed,
+      true,
+      ackArg,
+      alwaysFilledAiNames(shapes.inputSchema),
+    );
   return alwaysSet ? shadowed("tool") : { state: "reaches" };
 }
 
@@ -647,13 +713,16 @@ export function unusedCredentialWarning(
   // The tool's own ack, when it has one. `buildHttpTool` then DECLARES a required, non-empty
   // `__wait_message` argument of its own, so a query value of `{{__wait_message}}` is set on every
   // executable call and takes its parameter — a field that is in no input schema anywhere.
-  opts: { ackMessage?: string | null } = {},
+  opts: { ackMessage?: string | null; allowedHosts?: string[] | null } = {},
 ): string | null {
   if (isNonInjectableSecret(facts.kind)) return null;
   const { shapes: normalized } = normalizeToolShapes(raw);
   const effective = effectiveUrlTemplate(normalized.urlTemplate, facts.baseUrl);
   const ackArg = !!opts.ackMessage;
-  if (effective === null || !buildsARequest(effective, normalized, ackArg)) {
+  if (
+    effective === null ||
+    !buildsARequest(effective, normalized, ackArg, opts.allowedHosts)
+  ) {
     return null;
   }
   const shapes: ToolShapePatch = {

@@ -59,6 +59,7 @@ interface Wiring {
   paramName?: string | null;
   credentialBaseUrl?: string;
   ackMessage?: string;
+  allowedHosts?: string[];
   urlTemplate?: string;
   headers?: Record<string, unknown>;
   query?: Record<string, unknown>;
@@ -70,7 +71,7 @@ const asDef = (w: Wiring): HttpToolDef => ({
   name: "thing",
   method: w.method ?? "GET",
   urlTemplate: w.urlTemplate ?? `https://${PUBLIC}/v1/thing`,
-  allowedHosts: [PUBLIC],
+  allowedHosts: w.allowedHosts ?? [PUBLIC],
   headers: (w.headers ?? {}) as Record<string, string>,
   query: w.query,
   body: w.body,
@@ -106,17 +107,24 @@ async function secretLeft(w: Wiring): Promise<boolean> {
   for (const [name, spec] of Object.entries(
     (w.inputSchema ?? {}) as Record<
       string,
-      { required?: unknown; enumValues?: unknown }
+      { required?: unknown; enumValues?: unknown; type?: unknown }
     >,
   )) {
-    // TRUTHY, like `parseFields`' own `!!s.required` — a spec may carry anything there. An enum
-    // takes one of its own values, since zod refuses anything else.
+    // TRUTHY, like `parseFields`' own `!!s.required` — a spec may carry anything there. The VALUE
+    // follows the declared type, because that is what zod enforces: an enum takes one of its own
+    // values, a number a number, and a `string` carrying an `enumValues` decoration takes anything,
+    // which is the whole point of one of the rows below.
     if (!spec?.required) continue;
     const values = spec.enumValues;
-    input[name] =
-      Array.isArray(values) && typeof values[0] === "string"
-        ? values[0]
-        : "model-value";
+    if (spec.type === "enum" && Array.isArray(values)) {
+      input[name] = values[0];
+    } else if (spec.type === "integer" || spec.type === "number") {
+      input[name] = 7;
+    } else if (spec.type === "boolean") {
+      input[name] = true;
+    } else {
+      input[name] = "model-value";
+    }
   }
   // NOTE: the runtime declares this one for itself when the tool has an ack, and zod rejects the
   // call without it — so a row with an ack has to supply it, exactly like a required field.
@@ -144,7 +152,10 @@ const scannerSaysReaches = (w: Wiring): boolean =>
     },
     w.method ?? "GET",
     asShapes(w),
-    { ackMessage: w.ackMessage ?? null },
+    {
+      ackMessage: w.ackMessage ?? null,
+      allowedHosts: w.allowedHosts ?? [PUBLIC],
+    },
   ) === null;
 
 const CASES: Wiring[] = [
@@ -776,6 +787,37 @@ const CASES: Wiring[] = [
     },
   },
 
+  {
+    label:
+      "enumValues on a plain string field binds nothing, so the key is unknown",
+    reaches: true,
+    kind: "query",
+    paramName: "token",
+    urlTemplate: `https://${PUBLIC}/v1/thing?{{authParam}}=fixed`,
+    query: { token: "{{secret}}" },
+    inputSchema: {
+      authParam: { type: "string", required: true, enumValues: ["token"] },
+    },
+  },
+  {
+    label:
+      "a required integer in a query value can never be empty, so it shadows",
+    reaches: false,
+    kind: "query",
+    paramName: "token",
+    query: { token: "{{count}}" },
+    inputSchema: { count: { type: "integer", required: true } },
+  },
+  {
+    label:
+      "a fixed field named __proto__ is swallowed by the runtime's own map",
+    reaches: false,
+    method: "POST",
+    inputSchema: JSON.parse(
+      '{"__proto__":{"type":"string","source":"fixed","value":"{{secret}}"}}',
+    ),
+  },
+
   // ── spelling ──
   {
     label:
@@ -971,6 +1013,43 @@ describe("the scanner answers what the runtime does", () => {
       ),
     ).toBeNull();
 
+    // NOTE: and the sixth: a host the tool's own allowlist does not name. The check runs before the
+    // fetch and throws, so no request leaves however the credential is wired.
+    const blocked = buildHttpTool(
+      asDef({
+        label: "",
+        reaches: false,
+        urlTemplate: "https://other.example/x",
+      }),
+      { resolveCredential: async () => SECRET, fetchImpl: stubFetch({}) },
+    );
+    await expect(blocked.invoke({})).rejects.toThrow("not in allowlist");
+    expect(
+      unusedCredentialWarning(
+        { kind: "generic", paramName: null, baseUrl: null },
+        "GET",
+        {
+          urlTemplate: "https://other.example/x",
+          headers: {},
+          inputSchema: {},
+        },
+        { allowedHosts: [PUBLIC] },
+      ),
+    ).toBeNull();
+    // NOTE: and an EMPTY allowlist blocks nothing, so that tool is judged.
+    expect(
+      unusedCredentialWarning(
+        { kind: "generic", paramName: null, baseUrl: null },
+        "GET",
+        {
+          urlTemplate: "https://other.example/x",
+          headers: {},
+          inputSchema: {},
+        },
+        { allowedHosts: [] },
+      ),
+    ).not.toBeNull();
+
     // NOTE: the control — with a base, the same tool is judged normally.
     expect(
       unusedCredentialWarning(
@@ -1017,8 +1096,8 @@ describe("the scanner answers what the runtime does", () => {
     // NOTE: the floor. Every assertion above is `toBe(w.reaches)`, so a table that drifted to a
     // single verdict would still pass while proving nothing about the boundary between them.
     const reaching = CASES.filter((c) => c.reaches).length;
-    expect(reaching).toBeGreaterThan(26);
-    expect(CASES.length - reaching).toBeGreaterThan(29);
+    expect(reaching).toBeGreaterThan(27);
+    expect(CASES.length - reaching).toBeGreaterThan(31);
   });
 });
 

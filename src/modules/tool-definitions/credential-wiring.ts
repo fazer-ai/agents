@@ -4,6 +4,19 @@
 // wire yet — but the failure it produces is unreadable: the request goes out UNAUTHENTICATED and the
 // upstream answers 401/403, which reads as a bad credential rather than as one that was never sent.
 //
+// THIS FILE IS A COPY OF `buildHttpTool`'s ASSEMBLY, AND THAT IS THE ONE THING TO KNOW ABOUT IT.
+// A warning cannot run the request it is warning about — the executor resolves DNS and SSRF-guards
+// the final URL before it would reach a stubbed fetch — so what the credential does has to be read
+// off the row instead. Four review rounds found nine places where the copy was thinner than the
+// original, every one of them confirmed by executing the real tool, and the fence in
+// tests/modules/tool-credential-wiring.test.ts is that same execution: one table, read as a tool
+// definition the executor runs and as the shapes a write would store, asserting the two agree.
+//
+// Where the copy cannot be sure, it errs QUIET — the legacy-fields body counts every fixed field as
+// emitted, a query value that may interpolate empty counts as not shadowing. A gap therefore costs a
+// warning that does not appear, never a warning about a tool that works. That is a property of the
+// choices below, not a proof about the ones nobody has thought of.
+//
 // THE QUESTION IS NOT "does a template mention {{secret}}". It is "does the credential reach the
 // request", and the two come apart in four ways the runtime decides and a text scan does not see: a
 // body is only assembled for POST/PUT/PATCH, a fixed field's value only leaves if something emitted
@@ -40,11 +53,36 @@ function namesIn(template: string): Set<string> {
 const mentions = (templates: string[], name: string): boolean =>
   templates.some((t) => namesIn(t).has(name));
 
-// What is left of a template once every placeholder is gone. Non-empty means the interpolation can
-// never produce the empty string, whatever the placeholders resolve to — which is the difference
-// between a query value the runtime is sure to set and one it may skip.
-const literalPartOf = (template: string): string =>
-  template.replace(PLACEHOLDER, "");
+// Whether interpolating this template can NEVER produce the empty string — the difference between a
+// query value the runtime is sure to set and one it may skip, and therefore between a credential
+// whose auto-injection is blocked and one whose is not.
+//
+// Two ways to be sure, and only two. What is left once every placeholder is gone is the first, and a
+// placeholder naming a FIXED field that is itself sure is the second: the runtime resolves fixed
+// values before it applies the query map, so `{{configured_token}}` over a fixed `abc` always
+// arrives as `abc`. Everything else — AI input the model may omit, a context variable that may be
+// absent — is unknowable here and answers "may be empty", which keeps this file quiet rather than
+// warning about a tool that works.
+//
+// One level, because that is the runtime's: a fixed value interpolates from context and the secret,
+// never from another fixed field.
+function alwaysNonEmpty(
+  template: string,
+  fixed: Map<string, string>,
+  resolveFixed = true,
+): boolean {
+  if (template.replace(PLACEHOLDER, "") !== "") return true;
+  if (!resolveFixed) return false;
+  for (const name of namesIn(template)) {
+    const value = fixed.get(name);
+    if (value !== undefined && alwaysNonEmpty(value, fixed, false)) return true;
+  }
+  return false;
+}
+
+function fixedValuesByName(schema: unknown): Map<string, string> {
+  return new Map(fixedFields(schema).map((f) => [f.name, f.value]));
+}
 
 // Mirrors `isBodyMethod` in graph/tools/http.ts. DELETE is deliberately absent there — a DELETE tool
 // carrying a raw body sends none of it — and a copy of that list which quietly included DELETE would
@@ -122,10 +160,17 @@ function bodyTemplates(body: unknown): string[] {
   if (!isPlainObject(body)) return [];
   if (body.mode === "raw" && typeof body.raw === "string") return [body.raw];
   if (body.mode === "kv" && Array.isArray(body.rows)) {
-    return body.rows
-      .filter((r): r is Record<string, unknown> => isPlainObject(r))
-      .map((r) => r.value)
-      .filter((v): v is string => typeof v === "string");
+    // Collapsed by TRIMMED key, last one winning, because that is what `payload[k] = …` does row by
+    // row: a `{{secret}}` written into a row a later row overwrites is assembled and thrown away.
+    // An empty key is skipped there too, and its row emits nothing at all.
+    const byKey = new Map<string, string>();
+    for (const r of body.rows) {
+      if (!isPlainObject(r) || typeof r.value !== "string") continue;
+      const k = typeof r.key === "string" ? r.key.trim() : "";
+      if (!k) continue;
+      byKey.set(k, r.value);
+    }
+    return [...byKey.values()];
   }
   return [];
 }
@@ -214,7 +259,9 @@ function autoInjectionReaches(
   // wired.
   if (urlQueryKeys(shapes.urlTemplate).has(inj.name)) return false;
   const explicit = reachingQuery(shapes)[inj.name];
-  const alwaysSet = explicit !== undefined && literalPartOf(explicit) !== "";
+  const alwaysSet =
+    explicit !== undefined &&
+    alwaysNonEmpty(explicit, fixedValuesByName(shapes.inputSchema));
   return !alwaysSet;
 }
 

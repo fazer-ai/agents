@@ -293,6 +293,61 @@ const CASES: Wiring[] = [
     urlTemplate: `https://${PUBLIC}/v1/thing#token={{secret}}`,
   },
 
+  {
+    label: "a kv row a later row overwrites is assembled and discarded",
+    reaches: false,
+    method: "POST",
+    body: {
+      mode: "kv",
+      rows: [
+        { key: "auth", value: "{{secret}}" },
+        { key: "auth", value: "fixed" },
+      ],
+    },
+  },
+  {
+    label: "…and the row that wins is the one that counts",
+    reaches: true,
+    method: "POST",
+    body: {
+      mode: "kv",
+      rows: [
+        { key: "auth", value: "fixed" },
+        { key: "auth", value: "{{secret}}" },
+      ],
+    },
+  },
+  {
+    label: "a kv row with a blank key emits nothing",
+    reaches: false,
+    method: "POST",
+    body: { mode: "kv", rows: [{ key: "  ", value: "{{secret}}" }] },
+  },
+  {
+    label: "a query kind shadowed through a fixed field that is always set",
+    reaches: false,
+    kind: "query",
+    paramName: "token",
+    query: { token: "{{configured}}" },
+    inputSchema: {
+      configured: { type: "string", source: "fixed", value: "abc" },
+    },
+  },
+  {
+    label: "…and not shadowed through one that may resolve empty",
+    reaches: true,
+    kind: "query",
+    paramName: "token",
+    query: { token: "{{configured}}" },
+    inputSchema: {
+      configured: {
+        type: "string",
+        source: "fixed",
+        value: "{{contact_name}}",
+      },
+    },
+  },
+
   // ── spelling ──
   {
     label:
@@ -360,8 +415,8 @@ describe("the scanner answers what the runtime does", () => {
     // NOTE: the floor. Every assertion above is `toBe(w.reaches)`, so a table that drifted to a
     // single verdict would still pass while proving nothing about the boundary between them.
     const reaching = CASES.filter((c) => c.reaches).length;
-    expect(reaching).toBeGreaterThan(8);
-    expect(CASES.length - reaching).toBeGreaterThan(8);
+    expect(reaching).toBeGreaterThan(10);
+    expect(CASES.length - reaching).toBeGreaterThan(10);
   });
 });
 

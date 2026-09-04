@@ -915,7 +915,10 @@ describe.skipIf(!dbUp)("a preflight covers its core's whole judgement", () => {
         writeChannels.deploymentSetAccounts(
           p,
           { account_ids: accountIds },
-          { base: counting },
+          // NOTE: the probe is stubbed because this test measures the CLAIM check, and the preview
+          // grew a second question after it (#503) whose unstubbed answer is a real network call to
+          // the seeded base URL — five seconds of it, which reads as this test having got slower.
+          { base: counting, fetchProfile: async () => ({ accounts: [] }) },
         ),
       );
       return { transactions, claimQueries, outcome };

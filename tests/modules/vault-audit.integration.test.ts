@@ -15,6 +15,7 @@ import {
   updateVaultEntry,
   vaultReferences,
 } from "@/modules/vault/service";
+import { syntheticAction } from "../utils/audit-action";
 
 // Integration test for the Phase 2 primitives (vault round-trip, audit row, entity lock)
 // against a real Postgres under a tenant-scoped transaction. Uses its own app-role client
@@ -373,15 +374,20 @@ describe.skipIf(!dbUp)("phase-2 primitives", () => {
   });
 
   test("audit: records a row scoped to the tenant", async () => {
+    // A synthetic action, because this asserts RLS scoping and nothing about the vocabulary. It used
+    // to borrow `tenant.update`, which is Full-only: once `AuditEntry.action` became `AuditAction`,
+    // this file stopped compiling in the Free tree while the master tree stayed green -- caught by
+    // `bun run build:free`, which is the only check that reads the derived tree.
+    const ACTION = syntheticAction("vault_audit.scoped");
     await scoped((db) =>
       recordAudit(db, tenantId, {
-        action: "tenant.update",
+        action: ACTION,
         target: "settings",
         after: { demoMode: true },
       }),
     );
     const rows = await scoped((db) =>
-      db.auditLog.findMany({ where: { action: "tenant.update" } }),
+      db.auditLog.findMany({ where: { action: ACTION } }),
     );
     expect(rows.length).toBe(1);
     expect(rows[0]?.tenantId).toBe(tenantId);

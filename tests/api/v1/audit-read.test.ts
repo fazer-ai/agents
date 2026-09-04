@@ -5,6 +5,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import config from "@/config";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { mockFindUnique, setupPrismaMock } from "@/tests/utils/prisma-mock";
+import { syntheticAction } from "../../utils/audit-action";
 
 // THE READ ENDPOINT (issue #401), driven through real requests.
 //
@@ -70,7 +71,7 @@ let agentCookie = "";
 // The session is resolved from the USER ROW, not from the token, so the role the endpoint gates on
 // is this one. A cookie signed as AGENT against a row that says TENANT_ADMIN is admitted, which is
 // how a "not an admin" assertion passes while proving nothing.
-let role: "TENANT_ADMIN" | "AGENT" = "TENANT_ADMIN";
+let role: "SUPER_ADMIN" | "TENANT_ADMIN" | "AGENT" = "TENANT_ADMIN";
 
 interface Page {
   entries: {
@@ -91,7 +92,9 @@ async function get(qs: string, jar = cookie): Promise<Response> {
   );
 }
 
-async function sign(role: "TENANT_ADMIN" | "AGENT"): Promise<string> {
+async function sign(
+  role: "SUPER_ADMIN" | "TENANT_ADMIN" | "AGENT",
+): Promise<string> {
   const token = await new SignJWT({
     userId: ADMIN_ID.toString(),
     email: "admin@example.com",
@@ -139,7 +142,7 @@ describe.skipIf(!dbUp)("the trail has a door the console can use", () => {
     ] as const) {
       await runScopedOn(app, ctx, (db) =>
         realAudit.recordAudit(db, tenantId, {
-          action,
+          action: syntheticAction(action),
           actorId: ADMIN_ID,
           actorType,
           after: { x: 1 },
@@ -223,5 +226,57 @@ describe.skipIf(!dbUp)("the trail has a door the console can use", () => {
     } finally {
       role = "TENANT_ADMIN";
     }
+  });
+
+  // WHICH TRAIL THE DOOR OPENS ON (#520). The rows keyed to no tenant are unreachable from the
+  // tenant read -- the policy compares `tenant_id` to the GUC and NULL satisfies no comparison -- so
+  // asking for them is a scope, and the scope is SUPER_ADMIN's.
+  describe("the fleet scopes", () => {
+    afterAll(() => {
+      role = "TENANT_ADMIN";
+    });
+
+    // REFUSED, NOT NARROWED. A scope that answered with the caller's own rows would report a fleet
+    // trail that is empty, which is the misreading this issue exists to end.
+    for (const scope of ["fleet", "all"]) {
+      test(`a tenant admin asking for ${scope} gets 403`, async () => {
+        role = "TENANT_ADMIN";
+        const res = await get(`?scope=${scope}`, await sign("TENANT_ADMIN"));
+        expect(res.status).toBe(403);
+      });
+    }
+
+    test("a scope that is not one of the three is refused at the door", async () => {
+      role = "TENANT_ADMIN";
+      const res = await get("?scope=everything", await sign("TENANT_ADMIN"));
+      expect(res.status).toBe(400);
+    });
+
+    test("a super admin reads the fleet trail, and this tenant's rows are not in it", async () => {
+      role = "SUPER_ADMIN";
+      const res = await get("?scope=fleet", await sign("SUPER_ADMIN"));
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as Page;
+      // Every row this file seeded belongs to a tenant, so a fleet read must hold none of them.
+      const seeded = new Set(["one.a", "two.b", "three.c"]);
+      expect(body.entries.filter((e) => seeded.has(e.action))).toEqual([]);
+    });
+
+    test("a super admin reading all sees this tenant's rows again", async () => {
+      role = "SUPER_ADMIN";
+      const res = await get("?scope=all", await sign("SUPER_ADMIN"));
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as Page;
+      const seeded = new Set(["one.a", "two.b", "three.c"]);
+      expect(body.entries.filter((e) => seeded.has(e.action)).length).toBe(3);
+    });
+
+    test("the tenant scope is still the default", async () => {
+      role = "TENANT_ADMIN";
+      const res = await get("", await sign("TENANT_ADMIN"));
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as Page;
+      expect(body.entries.length).toBeGreaterThan(0);
+    });
   });
 });

@@ -214,7 +214,8 @@
     "untitled": "Untitled"
   },
   "audit": {
-    "actionPlaceholder": "Action (exact)",
+    "actionPlaceholder": "Any action",
+    "actionSearch": "Search actions",
     "actor": {
       "apiKey": "API key",
       "mcp": "MCP client",
@@ -223,11 +224,15 @@
     },
     "after": "After",
     "allActors": "Any door",
+    "anyAction": "Any action",
+    "anyPeriod": "Any period",
     "before": "Before",
     "clearFilters": "Clear",
     "emptyDescription": "Changes to agents, channels, knowledge and settings are recorded here as they are made.",
     "emptyFilteredDescription": "Widen the date range, or clear the filters to see the whole trail.",
     "emptyFilteredTitle": "No entries match these filters",
+    "emptyFleetDescription": "{{action}} changes something the whole deployment shares, so its record belongs to no tenant. An empty list here does not mean it never happened.",
+    "emptyFleetTitle": "This action is not recorded on a tenant's trail",
     "emptyTitle": "No entries yet",
     "errorDesc": "Try again in a moment.",
     "errorTitle": "Could not load the trail",
@@ -236,21 +241,37 @@
     "fields_other": "{{count}} fields",
     "filterAction": "Action",
     "filterActor": "Authenticated as",
+    "filterByAction": "Show only {{action}}",
     "filterFrom": "From",
+    "filterPeriod": "Period",
+    "filterScope": "Trail",
     "filterTo": "To",
-    "latest": "Newest entry in the trail",
-    "latestHelp": "It does not change when you filter the list. Compare it with the last-updated time of a record you know was changed: if the record is newer, that change is not on the trail.",
-    "latestNone": "no entries yet",
-    "latestUnavailable": "could not be read",
+    "fleetRow": "fleet",
     "noProjection": "This action recorded no field values.",
     "page": "Page {{n}}",
+    "period": {
+      "30d": "Last 30 days",
+      "custom": "Custom",
+      "last-month": "Last month",
+      "last-week": "Last week",
+      "last-year": "Last year",
+      "this-month": "This month",
+      "this-week": "This week",
+      "this-year": "This year",
+      "today": "Today",
+      "yesterday": "Yesterday"
+    },
+    "scope": {
+      "all": "Whole fleet",
+      "fleet": "Fleet (no tenant)",
+      "tenant": "This tenant"
+    },
     "showAll_one": "Show {{count}} character",
     "showAll_other": "Show all {{count}} characters",
     "showLess": "Show less",
     "subtitle": "Every configuration change, who made it and how they were authenticated. Values are recorded when the change happens and are never re-read from the live record.",
     "title": "Audit trail",
-    "undisclosed": "A value this entry does not show was changed, such as a secret or a header.",
-    "whatIsThis": "What is this for?"
+    "undisclosed": "A value this entry does not show was changed, such as a secret or a header."
   },
   "auth": {
     "confirmPassword": "Confirm Password",
@@ -598,13 +619,21 @@
     "attendance": "Team response",
     "calls_one": "{{n}} request",
     "calls_other": "{{n}} requests",
+    "ceiling": {
+      "cta": "Set the ceiling",
+      "period": "{{month}} · the calendar month, not the selected period",
+      "title": "Spend ceiling",
+      "unenforceable": "No Langfuse for this tenant, so the month's cost cannot be read. Each half below says whether calls are still being refused on the last figure.",
+      "unread": "The ceiling could not be read."
+    },
     "chart": {
       "ariaCalls": "Daily LLM requests and conversations over time",
       "ariaCost": "Daily LLM cost, conversations, and cost per conversation over time",
       "calls": "LLM requests",
       "conversations": "Conversations",
       "cost": "Cost (USD)",
-      "costPerConversation": "Cost / conversation"
+      "costPerConversation": "Cost / conversation",
+      "label": "Chart metric"
     },
     "conversations": "Conversations",
     "costByModel": "Cost by model",
@@ -646,11 +675,13 @@
       "30d": "30d",
       "7d": "7d",
       "90d": "90d",
-      "all": "All"
+      "all": "All",
+      "label": "Period"
     },
     "source": {
       "all": "All",
       "inbox": "Real",
+      "label": "Usage segment",
       "playground": "Playground"
     },
     "subtitle": "Automation funnel, LLM cost and conversation volume.",
@@ -2202,6 +2233,7 @@
     },
     "title": "Spend ceiling",
     "usage": {
+      "carried": "Includes {{carried}} spent in a Langfuse project this tenant no longer points at, carried over when it switched mid-month, so the figure is higher than the current project's own total.",
       "coverage": "Langfuse priced {{costed}} of the {{ledger}} calls this month, so the figure undercounts.",
       "error": "Could not read the usage.",
       "langfuseMissing": "Langfuse is not configured for this tenant, so the month's cost cannot be read. Configure it in the Langfuse card.",

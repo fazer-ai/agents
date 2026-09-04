@@ -23,6 +23,36 @@ paths:
 - **A DATA migration over a tenant-scoped table lifts FORCE around the statement** (`ALTER TABLE x NO FORCE ROW LEVEL SECURITY;` … `ALTER TABLE x FORCE ROW LEVEL SECURITY;`), for every forced table it WRITES **and every forced table it READS** — a `SELECT` that decides what to write is bound the same way and decides on zero rows (measured on the rename of HTTP tools, PR #485: the rename landed, the audit lines its scan of `agents` was to leave did not) — never entering the fleet role: `migrate dev` replays into a shadow database bootstrap never touches, where that role has no grants and no membership (measured — `permission denied to set role`). Whatever a file lifts it must restore; `tests/prisma/migration-rls-bypass.test.ts` asks both, per table, for reads and writes alike.
 - RLS policies, partial/expression indexes and CHECK constraints are hand-written SQL in migrations (Prisma cannot model them). When adding a tenant-scoped table, add its `ENABLE`/`FORCE ROW LEVEL SECURITY` + `tenant_isolation` policy in the same migration (see the tail of the baseline migration).
 
+## O arquivo da migration NÃO roda em transação
+
+Medido na #520, nos dois modos: `migrate deploy` e o replay do shadow do `migrate dev` executam o
+`.sql` **fora** de transação. As duas consequências andam juntas e a segunda é a que morde.
+
+A boa: `CREATE INDEX CONCURRENTLY` funciona, e ele é o que você quer em tabela quente. O build comum
+toma `SHARE`, que conflita com o `ROW EXCLUSIVE` de um INSERT — medido segurando cada lock e tentando
+inserir com `lock_timeout`: `SHARE` responde `canceling statement due to lock timeout`,
+`SHARE UPDATE EXCLUSIVE` (o do concorrente) insere na hora. E o build não é instantâneo: 821 ms em 6M
+linhas / 299 MB, crescendo com a tabela. Na ordem de boot documentada em `docs/deploy.md` o
+`migrate deploy` roda no contêiner NOVO com o velho ainda servindo, então esse lock para a escrita de
+produção — e onde a linha de auditoria é escrita DENTRO da transação da mutação, ele para a mudança de
+configuração, não só o registro dela.
+
+A ruim: sem transação, um arquivo com vários statements **não é atômico**. E o `CONCURRENTLY`
+interrompido é o pior formato disso, porque não deixa erro: fica um índice `indisvalid = false`, que o
+Postgres recusa usar **em silêncio**. O plano volta ao que era, a migration fica marcada como
+aplicada, e nada aparece. Ponha um `DROP INDEX IF EXISTS` antes de cada build, para o redeploy
+reconstruir do zero em vez de achar o resíduo e mantê-lo, e asserte o catálogo:
+
+```sql
+SELECT c.relname FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid
+  JOIN pg_class t ON t.oid = i.indrelid
+ WHERE t.relname = '<tabela>' AND NOT i.indisvalid;   -- tem que vir vazio
+```
+
+Um índice parcial não é modelável pelo Prisma e vive só no `.sql`; o irmão não-parcial pode e deve ir
+no `schema.prisma` como `@@index`, com o nome que a convenção do Prisma geraria (`<tabela>_<coluna>_idx`),
+senão o próximo `migrate dev` gera um `RENAME INDEX`.
+
 ## Querying
 
 - **`notIn` drops NULL rows.** Prisma renders it as a bare `NOT IN (...)`, and `NULL NOT IN (...)` is `NULL` in SQL, so on a nullable column the filter silently shrinks the result. Measured seeding `[null, "vision", "agent"]`: `notIn: ["vision"]` returns `["agent"]` only. Where NULL carries meaning (rows written before the column had a default), say so: `OR: [{ col: null }, { col: { notIn: [...] } }]`. There is no error and every historical count just gets smaller.

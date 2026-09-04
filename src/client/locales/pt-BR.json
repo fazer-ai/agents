@@ -216,7 +216,8 @@
     "untitled": "Sem título"
   },
   "audit": {
-    "actionPlaceholder": "Ação (exata)",
+    "actionPlaceholder": "Qualquer ação",
+    "actionSearch": "Buscar ações",
     "actor": {
       "apiKey": "Chave de API",
       "mcp": "Cliente MCP",
@@ -225,11 +226,15 @@
     },
     "after": "Depois",
     "allActors": "Qualquer porta",
+    "anyAction": "Qualquer ação",
+    "anyPeriod": "Qualquer período",
     "before": "Antes",
     "clearFilters": "Limpar",
     "emptyDescription": "Mudanças em agentes, canais, conhecimento e configurações aparecem aqui conforme são feitas.",
     "emptyFilteredDescription": "Amplie o período ou limpe os filtros para ver a trilha inteira.",
     "emptyFilteredTitle": "Nenhum registro corresponde a estes filtros",
+    "emptyFleetDescription": "{{action}} altera algo que toda a instalação compartilha, então o registro dela não pertence a nenhum tenant. Uma lista vazia aqui não quer dizer que nunca aconteceu.",
+    "emptyFleetTitle": "Esta ação não é registrada na trilha de um tenant",
     "emptyTitle": "Nenhum registro ainda",
     "errorDesc": "Tente de novo em instantes.",
     "errorTitle": "Não foi possível carregar a trilha",
@@ -240,14 +245,31 @@
     "fields_other": "{{count}} campos",
     "filterAction": "Ação",
     "filterActor": "Autenticado como",
+    "filterByAction": "Mostrar só {{action}}",
     "filterFrom": "De",
+    "filterPeriod": "Período",
+    "filterScope": "Trilha",
     "filterTo": "Até",
-    "latest": "Registro mais recente da trilha",
-    "latestHelp": "Ele não muda quando você filtra a lista. Compare com a data de última alteração de um registro que você sabe que mudou: se o registro for mais novo, aquela mudança não está na trilha.",
-    "latestNone": "nenhum registro ainda",
-    "latestUnavailable": "não foi possível ler",
+    "fleetRow": "frota",
     "noProjection": "Esta ação não registrou valores de campo.",
     "page": "Página {{n}}",
+    "period": {
+      "30d": "Últimos 30 dias",
+      "custom": "Personalizado",
+      "last-month": "Mês passado",
+      "last-week": "Semana passada",
+      "last-year": "Ano passado",
+      "this-month": "Este mês",
+      "this-week": "Esta semana",
+      "this-year": "Este ano",
+      "today": "Hoje",
+      "yesterday": "Ontem"
+    },
+    "scope": {
+      "all": "Toda a frota",
+      "fleet": "Frota (sem tenant)",
+      "tenant": "Este tenant"
+    },
     "showAll_zero": "Mostrar os {{count}} caracteres",
     "showAll_one": "Mostrar o {{count}} caractere",
     "showAll_many": "Mostrar os {{count}} caracteres",
@@ -255,8 +277,7 @@
     "showLess": "Mostrar menos",
     "subtitle": "Cada mudança de configuração, quem fez e por qual porta se autenticou. Os valores são gravados no momento da mudança e nunca relidos do registro atual.",
     "title": "Trilha de auditoria",
-    "undisclosed": "Um valor que este registro não mostra foi alterado, como um segredo ou um cabeçalho.",
-    "whatIsThis": "Para que serve?"
+    "undisclosed": "Um valor que este registro não mostra foi alterado, como um segredo ou um cabeçalho."
   },
   "auth": {
     "confirmPassword": "Confirmar Senha",
@@ -609,13 +630,21 @@
     "calls_one": "{{n}} requisição",
     "calls_many": "{{n}} requisições",
     "calls_other": "{{n}} requisições",
+    "ceiling": {
+      "cta": "Definir o teto",
+      "period": "{{month}} · o mês-calendário, não o período selecionado",
+      "title": "Teto de gasto",
+      "unenforceable": "Este tenant não tem Langfuse, então o custo do mês não pode ser lido. Cada metade abaixo diz se as chamadas ainda estão sendo recusadas pelo último valor.",
+      "unread": "Não foi possível ler o teto."
+    },
     "chart": {
       "ariaCalls": "Requisições de LLM e conversas por dia ao longo do tempo",
       "ariaCost": "Custo de LLM, conversas e custo por conversa por dia ao longo do tempo",
       "calls": "Requisições de LLM",
       "conversations": "Conversas",
       "cost": "Custo (USD)",
-      "costPerConversation": "Custo / conversa"
+      "costPerConversation": "Custo / conversa",
+      "label": "Métrica do gráfico"
     },
     "conversations": "Conversas",
     "costByModel": "Custo por modelo",
@@ -659,11 +688,13 @@
       "30d": "30d",
       "7d": "7d",
       "90d": "90d",
-      "all": "Tudo"
+      "all": "Tudo",
+      "label": "Período"
     },
     "source": {
       "all": "Todos",
       "inbox": "Real",
+      "label": "Segmento de uso",
       "playground": "Playground"
     },
     "subtitle": "Funil de automação, custo de LLM e volume de conversas.",
@@ -2242,6 +2273,7 @@
     },
     "title": "Teto de gasto",
     "usage": {
+      "carried": "Inclui {{carried}} gastos num projeto do Langfuse que este tenant não usa mais, trazidos na troca no meio do mês, então o valor fica acima do total do projeto atual.",
       "coverage": "O Langfuse precificou {{costed}} das {{ledger}} chamadas deste mês, então o valor subestima.",
       "error": "Não foi possível ler o consumo.",
       "langfuseMissing": "O Langfuse não está configurado para este tenant, então o custo do mês não pode ser lido. Configure-o no card do Langfuse.",

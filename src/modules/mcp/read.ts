@@ -1,4 +1,5 @@
 import basePrisma from "@/api/lib/prisma";
+import { AUDIT_SCOPES, isAuditScope } from "@/lib/audit/scope";
 import { AppError } from "@/lib/errors";
 import { ACTOR_TYPES, type ActorType } from "@/lib/tenancy/actor";
 import { readAgentConfigHealth } from "@/modules/agents/config-health-read";
@@ -829,6 +830,11 @@ export interface AuditQueryArgs {
   until?: string;
   limit?: number;
   cursor?: string;
+  scope?: string;
+  // The selector `registerTenantTool` adds for a fleet-level token. Declared here only so this tool
+  // can refuse it against a fleet scope instead of letting the wrapper resolve a tenant the read
+  // will never use.
+  tenant?: unknown;
 }
 
 export async function auditList(
@@ -837,9 +843,37 @@ export async function auditList(
   deps: WriteDeps = {},
 ): Promise<WriteResult> {
   const base = deps.base ?? basePrisma;
-  const ctx = readGate(principal);
-  if ("ok" in ctx) return ctx;
   const opts: Parameters<typeof listAudit>[1] = {};
+  // The same three trails the console offers (#520), for the same reason: the rows keyed to no
+  // tenant are unreachable from a tenant read rather than filtered out of it, so an agent asking
+  // "was this MCP client ever created" against the tenant trail gets an empty answer that reads as
+  // "no". `listAudit` refuses the wider two to anyone but a SUPER_ADMIN, so the door is the same one
+  // the REST surface uses; this only forwards the ask.
+  //
+  // READ BEFORE THE GATE, because it is what the gate depends on: a tenant target is required by the
+  // SCOPE and not by the tool, exactly as `ctxOrThrow` has it on the REST side.
+  if (args.scope !== undefined) {
+    if (typeof args.scope !== "string" || !isAuditScope(args.scope)) {
+      return err(`scope must be one of: ${AUDIT_SCOPES.join(", ")}`);
+    }
+    opts.scope = args.scope;
+  }
+  const scope = opts.scope ?? "tenant";
+  // A target NAMED alongside a trail that has no place for one is a contradiction, and the two
+  // readings are far apart: `tenant: "acme"` with `scope: "all"` almost certainly meant acme's rows
+  // plus the fleet's, while `all` answers with EVERY tenant's. Dropping the argument would hand back
+  // that much wider trail as if it were what was asked for.
+  if (
+    scope !== "tenant" &&
+    typeof args.tenant === "string" &&
+    args.tenant.trim()
+  ) {
+    return err(
+      `scope=${scope} reads a trail that belongs to no tenant, so it cannot also target one: drop \`tenant\`, or ask for scope=tenant.`,
+    );
+  }
+  const ctx = readGate(principal, { requireTenant: scope === "tenant" });
+  if ("ok" in ctx) return ctx;
   // NOTE: PRESENCE is `!== undefined`, never truthiness, and it is the same rule the REST filters
   // answer to. `""` is what a caller sends for a field it meant to fill and did not, and reading it
   // as "no filter" answers a narrowed request with the WHOLE trail — which on a trail reads as "and

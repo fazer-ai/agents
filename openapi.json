@@ -5843,6 +5843,18 @@
         ],
         "parameters": [
           {
+            "name": "source",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "inbox",
+                "playground"
+              ]
+            }
+          },
+          {
             "name": "since",
             "in": "query",
             "required": false,
@@ -5914,6 +5926,28 @@
               "application/json": {
                 "schema": {
                   "description": "Not found.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unprocessable — the input is syntactically valid but semantically rejected.",
                   "type": "object",
                   "required": [
                     "error"
@@ -25539,7 +25573,7 @@
           "Audit"
         ],
         "summary": "List audit entries",
-        "description": "Lists tenant-scoped audit log entries with keyset pagination.",
+        "description": "Lists audit log entries with keyset pagination. Tenant-scoped by default; `scope=fleet|all` widens to the rows keyed to no tenant and requires SUPER_ADMIN.",
         "parameters": [
           {
             "name": "limit",
@@ -25601,6 +25635,15 @@
             "required": false,
             "schema": {
               "description": "Keyset cursor (id of the last row from the previous page).",
+              "type": "string"
+            }
+          },
+          {
+            "name": "scope",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "description": "Which trail to read: tenant | fleet | all (default tenant). `fleet` reads only the rows keyed to no tenant, `all` reads every tenant plus those; both require SUPER_ADMIN and are refused with 403 otherwise, never narrowed.",
               "type": "string"
             }
           },

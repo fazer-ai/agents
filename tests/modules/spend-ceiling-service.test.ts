@@ -69,6 +69,7 @@ async function seedSnapshot(row: {
   tracedCalls?: number;
   costedCalls?: number;
   unpricedModels?: string[];
+  carriedUsd?: number;
   tenant?: bigint;
 }) {
   await suDb.spendCostSnapshot.create({
@@ -87,6 +88,7 @@ async function seedSnapshot(row: {
       tracedCalls: row.tracedCalls ?? 0,
       costedCalls: row.costedCalls ?? 0,
       unpricedModels: row.unpricedModels ?? [],
+      carriedUsd: row.carriedUsd ?? 0,
     },
   });
 }
@@ -551,6 +553,8 @@ describe.skipIf(!dbUp)("the spend ceiling against the cost snapshot", () => {
         // Two August rows in the ledger; July's is not this month's.
         ledgerCalls: 2,
         unpricedModels: ["openrouter/free-model"],
+        // Nothing was carried from another Langfuse project into this row (issue #427).
+        carriedUsd: 0,
       });
       const play = usage.entries.find((e) => e.source === "playground");
       expect(play).toMatchObject({
@@ -559,6 +563,32 @@ describe.skipIf(!dbUp)("the spend ceiling against the cost snapshot", () => {
         state: "allowed",
         ledgerCalls: 0,
       });
+    });
+
+    // WHAT OF THE FIGURE CAME FROM A PROJECT THE TENANT LEFT (issue #427). The carry is what makes a
+    // month's figure exceed the current Langfuse project's own total, and the dashboard now shows
+    // the two beside each other, so the console has to be able to say which part is which.
+    test("the carry from a previous project reaches the console", async () => {
+      const month = "2026-11-01T00:00:00Z";
+      await seedSnapshot({
+        source: "inbox",
+        month,
+        costUsd: 10.02,
+        carriedUsd: 5.01,
+      });
+      await seedSnapshot({ source: "playground", month, costUsd: 0 });
+      const usage = await spendCeilingUsage({
+        ctx: ctx(),
+        base: appDb,
+        now: new Date("2026-11-15T00:00:00Z"),
+      });
+      expect(usage.entries.find((e) => e.source === "inbox")).toMatchObject({
+        usedUsd: 10.02,
+        carriedUsd: 5.01,
+      });
+      expect(
+        usage.entries.find((e) => e.source === "playground"),
+      ).toMatchObject({ carriedUsd: 0 });
     });
 
     // Nothing read is nothing fresh (review round 5): the gate lets every call through until the

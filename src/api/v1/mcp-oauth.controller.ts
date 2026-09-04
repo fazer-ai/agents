@@ -7,6 +7,7 @@ import basePrisma from "@/api/lib/prisma";
 import { requireSession } from "@/api/lib/step-up";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
 import config from "@/config";
+import type { AuditAction } from "@/lib/audit/actions";
 import { NotFoundError, UnauthorizedError } from "@/lib/errors";
 import {
   asSuperAdmin,
@@ -90,7 +91,7 @@ function authorizeRedirect(
 async function auditConsentDecision(
   user: { id: bigint; role: UserRole },
   tenantId: bigint | null,
-  action: string,
+  action: AuditAction,
   clientId: string,
   scopes: string[],
 ): Promise<void> {

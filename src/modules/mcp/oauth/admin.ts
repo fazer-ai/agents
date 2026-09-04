@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
+import type { AuditAction } from "@/lib/audit/actions";
 import { AppError, NotFoundError } from "@/lib/errors";
 import {
   asSuperAdminOn,
@@ -91,7 +92,12 @@ const CLIENT_SELECT = {
 async function fleetAudit(
   db: ScopedDb,
   ctx: TenantContext,
-  entry: { action: string; target: string; before?: unknown; after?: unknown },
+  entry: {
+    action: AuditAction;
+    target: string;
+    before?: unknown;
+    after?: unknown;
+  },
 ): Promise<void> {
   await auditMutationOn(db, ctx, null, entry);
 }

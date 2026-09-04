@@ -32,6 +32,7 @@ import {
   listIssuedDocuments,
   revokeIssuedDocument,
 } from "@/modules/documents/issue";
+import { syntheticAction } from "../utils/audit-action";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
@@ -1353,7 +1354,10 @@ describe.skipIf(!dbUp)(
 
     test("audit: record then list (RLS-scoped)", async () => {
       await runScopedOn(appDb, ctx(tenant), (db: ScopedDb) =>
-        recordAudit(db, tenant, { action: "test.action", target: "thing" }),
+        recordAudit(db, tenant, {
+          action: syntheticAction("test.action"),
+          target: "thing",
+        }),
       );
       const page = await listAudit(ctx(tenant), {}, appDb);
       expect(page.entries.some((e) => e.action === "test.action")).toBe(true);

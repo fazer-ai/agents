@@ -6,11 +6,11 @@ import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { auditMutation, projectionMoved } from "@/modules/audit/service";
 import { readEmbeddingSettings } from "@/modules/tenant-settings/service";
 import {
+  assertChunkingUpdatable,
   cancelPendingJob,
   createDocument,
   refuseUnstorable,
   resolveEmbeddingConfig,
-  validateChunkParams,
 } from "./documents";
 import { embedQuery } from "./embeddings";
 import { type ChunkHit, searchChunks } from "./sql";
@@ -624,6 +624,8 @@ export async function getKnowledgeBase(params: {
   name: string;
   description: string | null;
   embeddingModel: string;
+  chunkSize: number;
+  chunkOverlap: number;
   chunkCount: number;
   createdAt: Date;
   updatedAt: Date;
@@ -637,6 +639,11 @@ export async function getKnowledgeBase(params: {
         name: true,
         description: true,
         embeddingModel: true,
+        // NOTE: the pair `listKnowledgeBases` has always returned. Reading one base was the only
+        // knowledge read that omitted it, which is why the MCP preview had nothing to measure a chunking patch
+        // against (#524).
+        chunkSize: true,
+        chunkOverlap: true,
         createdAt: true,
         updatedAt: true,
       },
@@ -669,21 +676,6 @@ export async function updateKnowledgeBase(params: {
     ["description", params.description],
   ]);
 
-  if (params.chunkSize !== undefined && params.chunkOverlap !== undefined) {
-    validateChunkParams(params.chunkSize, params.chunkOverlap);
-  } else if (params.chunkSize !== undefined) {
-    if (params.chunkSize < 100 || params.chunkSize > 8000) {
-      throw new AppError("chunkSize must be between 100 and 8000", 400);
-    }
-  } else if (params.chunkOverlap !== undefined) {
-    if (params.chunkOverlap < 0 || params.chunkOverlap > 4000) {
-      throw new AppError(
-        "chunkOverlap must be between 0 and floor(chunkSize/2)",
-        400,
-      );
-    }
-  }
-
   await runScopedOn(base, params.ctx, async (db) => {
     // NOTE: LOCKED and read before the write, because this snapshot is the row's `before`. Two
     // overlapping saves would otherwise both read the same base and the second would report a
@@ -699,6 +691,9 @@ export async function updateKnowledgeBase(params: {
         "errors.knowledgeBaseNotFound",
       );
     }
+    // NOTE: inside the transaction, and after the row is locked, because the bound is a fact about
+    // the row: a patch naming one of the two numbers is measured against the other as it will stand.
+    assertChunkingUpdatable(before, params);
     const res = await db.knowledgeBase.updateMany({
       where: { id: params.id },
       data: {

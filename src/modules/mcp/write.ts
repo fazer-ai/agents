@@ -45,6 +45,7 @@ import {
 import { BEHAVIOR_PATCH_SHAPE } from "@/modules/agents/settings-schema";
 import { type AuditEntry, recordAudit } from "@/modules/audit/service";
 import type { LoadChatwootClientDeps } from "@/modules/chatwoot/instance";
+import type { ListAccountsDeps } from "@/modules/chatwoot/management";
 import { readDebugModes } from "@/modules/flowlog/debug-mode";
 import { getTenantSettings } from "@/modules/tenant-settings/service";
 import {
@@ -85,6 +86,12 @@ export interface WriteDeps {
   // than answering from its arguments (`inbox_remove`: the write refuses a live inbox, so a preview
   // that cannot ask would approve what the apply rejects). Defaults to the real SSRF-validated one.
   makeClient?: LoadChatwootClientDeps["makeClient"];
+  // NOTE: injectable account-list probe, for the same reason as `makeClient` one line up and with
+  // the same lesson behind it. `deployment_set_accounts` measures its input against the accounts the
+  // deployment reports, so a preview that cannot reach that list falls through to the fallback cap
+  // and approves ids the apply refuses — the #490 divergence, reintroduced by a dep the transport
+  // could not thread (#503).
+  fetchProfile?: ListAccountsDeps["fetchProfile"];
 }
 
 // The one id parser for every MCP surface, read and write alike.
@@ -171,13 +178,20 @@ export function adminGate(
 
 // Read gate: mcp:read scope present AND a tenant target. Tenant-scoped reads need the same fence as
 // writes (a tenant-less SUPER_ADMIN token must target a tenant), but only the read scope.
+//
+// `requireTenant: false` is for the read that names its OWN trail instead of a tenant's: `audit_list`
+// with `scope=fleet|all` reads the rows keyed to no tenant, so a target is not merely unnecessary
+// there, it is a value the read has nowhere to put -- and on a deployment with no tenants at all,
+// demanding one would make those rows unreadable from MCP. The default is unchanged, so every other
+// caller keeps the fence; the role check that actually guards the wider trails is `listAudit`'s own.
 export function readGate(
   principal: VerifiedToken,
+  opts: { requireTenant?: boolean } = {},
 ): TenantContext | WriteResult {
   if (!hasScope(principal, "mcp:read")) {
     return err("insufficient_scope: this tool requires the mcp:read scope");
   }
-  if (principal.tenantId === null) {
+  if (opts.requireTenant !== false && principal.tenantId === null) {
     return err(
       "no tenant target: the token must be scoped to a tenant (a SUPER_ADMIN must target one)",
     );
@@ -974,7 +988,7 @@ export async function brandingAssetSet(
 
   const target = `branding:asset:${kind}:${variant}`;
   try {
-    const before = await getGlobalBranding();
+    const before = await getGlobalBranding(base);
     const replacingExisting = before[kind][variant];
 
     // dry-run is the default: a binary has no field-level diff, so preview the metadata that WOULD

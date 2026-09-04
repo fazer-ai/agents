@@ -129,6 +129,32 @@ export async function resolveEmbeddingConfig(
   );
 }
 
+// The same rule asked of the ROW a patch will produce, rather than of the arguments it carries.
+//
+// A knowledge base holds both numbers, and `chunkOverlap <= floor(chunkSize/2)` relates them, so a
+// patch that names one of them is still a statement about the pair. `updateKnowledgeBase` used to
+// validate only when both arrived and, when one did, compared it against a constant — which meant
+// either single-field update landed a state the two-field update refuses by name, and the refusal it
+// did print named a bound it had not checked (issue #524).
+//
+// Merging here rather than at each caller is what keeps the rule single: the preview and the apply
+// both hand it the row they read, and neither restates the arithmetic.
+export function assertChunkingUpdatable(
+  stored: { chunkSize: number; chunkOverlap: number },
+  patch: { chunkSize?: number; chunkOverlap?: number },
+): void {
+  // NOTE: it answers a CHUNKING patch, and a patch naming neither number is not one. Without this
+  // line a row already holding an invalid pair — the state the old branch let through, and the only
+  // reason such rows exist — would refuse a rename, reporting a bound on a field the caller never
+  // sent. The invariant is enforced going forward; it is not retroactive repair, and blocking
+  // unrelated edits until someone fixes the chunking is not the same thing as fixing it.
+  if (patch.chunkSize === undefined && patch.chunkOverlap === undefined) return;
+  validateChunkParams(
+    patch.chunkSize ?? stored.chunkSize,
+    patch.chunkOverlap ?? stored.chunkOverlap,
+  );
+}
+
 // Validation: chunkSize 100–8000, chunkOverlap 0–floor(chunkSize/2)
 export function validateChunkParams(
   chunkSize: number,
@@ -138,8 +164,10 @@ export function validateChunkParams(
     throw new AppError("chunkSize must be between 100 and 8000", 400);
   }
   if (chunkOverlap < 0 || chunkOverlap > Math.floor(chunkSize / 2)) {
+    // NOTE: the ceiling is spelled out because a patch may not carry the chunk size it is measured
+    // against: an operator sending only `chunkOverlap` cannot otherwise tell which number lost.
     throw new AppError(
-      "chunkOverlap must be between 0 and floor(chunkSize/2)",
+      `chunkOverlap must be between 0 and ${Math.floor(chunkSize / 2)} (floor(chunkSize/2), for chunkSize ${chunkSize})`,
       400,
     );
   }

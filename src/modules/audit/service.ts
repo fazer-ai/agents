@@ -1,7 +1,15 @@
 import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
+import type { AuditAction } from "@/lib/audit/actions";
+import type { AuditScope } from "@/lib/audit/scope";
+import { ForbiddenError } from "@/lib/errors";
 import { assertUsableCount } from "@/lib/query-param";
-import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
+import {
+  asSuperAdminOn,
+  runScopedOn,
+  type ScopedDb,
+  type TenantContext,
+} from "@/lib/tenancy";
 import type { ActorType } from "@/lib/tenancy/context";
 import { truncForAudit } from "@/modules/audit/projection";
 
@@ -11,7 +19,7 @@ export interface AuditEntry {
   // into a column nothing validates, so a typo here is a row attributed to a door that does not
   // exist and it is only readable, never reportable.
   actorType?: ActorType;
-  action: string;
+  action: AuditAction;
   target?: string | null;
   // NOTE: before/after MUST be allowlist-sanitized by the caller — never secrets/PII in
   // the clear (the row is readable by tenant admins and, for tenant_id NULL rows, by
@@ -147,6 +155,15 @@ export interface ListAuditOpts {
   // makes the column agree with insertion order in the first place. So a time cursor over it can
   // repeat one of a tied pair or skip it; the id is the only monotonic key this table has.
   cursor?: bigint;
+  // WHICH TRAIL, and it is a question rather than a filter.
+  //
+  // `tenant` is the RLS read every caller has always had. `fleet` and `all` are a DIFFERENT QUERY:
+  // the rows keyed to no tenant are not filtered out of the tenant read, they are unreachable from
+  // it, because the policy is `tenant_id = current_setting('app.tenant_id')` and NULL satisfies no
+  // comparison. Reaching them means entering the fleet role, which is the only role the
+  // `fleet_super_admin` policy (`USING true`) admits — so the widening is a role change, and a role
+  // change is SUPER_ADMIN's alone.
+  scope?: AuditScope;
 }
 
 export interface AuditPage {
@@ -167,9 +184,27 @@ export interface AuditPage {
   latestAt: string | null;
 }
 
-// Reads the audit log for the active tenant (RLS-scoped: a TENANT_ADMIN sees only their tenant's
-// rows; fleet/global tenant_id NULL rows are visible only via the audited asSuperAdmin path, not
-// here). before/after were allowlist-sanitized at write time.
+// The columns a trail row is read by. Hoisted because the read is now assembled once and run under
+// one of two roles, and a select that drifted between the two would answer differently depending on
+// which trail was asked for.
+const AUDIT_SELECT = {
+  id: true,
+  tenantId: true,
+  actorId: true,
+  actorType: true,
+  action: true,
+  target: true,
+  before: true,
+  after: true,
+  createdAt: true,
+} as const;
+
+// Reads the audit log. `before`/`after` were allowlist-sanitized at write time.
+//
+// The default is the tenant's own trail, RLS-scoped, which is what every caller had before #520.
+// The two wider scopes enter the fleet role and are refused outright to anyone but a SUPER_ADMIN:
+// REFUSED AND NOT NARROWED, because a scope that quietly answered with the caller's own rows would
+// be the same silent omission this exists to end, wearing the name of the fix.
 export async function listAudit(
   ctx: TenantContext,
   opts: ListAuditOpts = {},
@@ -187,27 +222,36 @@ export async function listAudit(
     ...(opts.since || opts.until ? { createdAt } : {}),
     ...(opts.cursor !== undefined ? { id: { lt: opts.cursor } } : {}),
   };
-  const { rows, latest } = await runScopedOn(base, ctx, async (db) => ({
+  const scope = opts.scope ?? "tenant";
+  if (scope !== "tenant" && ctx.role !== "SUPER_ADMIN") {
+    throw new ForbiddenError(
+      "Reading the fleet trail requires SUPER_ADMIN",
+      "errors.auditScopeForbidden",
+    );
+  }
+  // The predicate that says which trail, kept SEPARATE from `where` above: `where` is the operator's
+  // filter and this is the read's own boundary, and `latestAt` is documented as the newest row of
+  // the trail PAST ANY FILTER — so it takes this one and not the other.
+  const trail: Prisma.AuditLogWhereInput =
+    scope === "fleet" ? { tenantId: null } : {};
+  const read = async (db: ScopedDb) => ({
     rows: await db.auditLog.findMany({
-      where,
+      where: { ...trail, ...where },
       orderBy: { id: "desc" },
       // NOTE: One extra row is what tells the caller a next page exists, without a second count over
       // a table that only grows.
       take: take + 1,
-      select: {
-        id: true,
-        tenantId: true,
-        actorId: true,
-        actorType: true,
-        action: true,
-        target: true,
-        before: true,
-        after: true,
-        createdAt: true,
-      },
+      select: AUDIT_SELECT,
     }),
-    latest: await db.auditLog.aggregate({ _max: { createdAt: true } }),
-  }));
+    latest: await db.auditLog.aggregate({
+      _max: { createdAt: true },
+      where: trail,
+    }),
+  });
+  const { rows, latest } =
+    scope === "tenant"
+      ? await runScopedOn(base, ctx, read)
+      : await asSuperAdminOn(base, read);
   const hasMore = rows.length > take;
   const page = hasMore ? rows.slice(0, take) : rows;
   return {

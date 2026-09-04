@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import config from "@/config";
 import type { TenantContext } from "@/lib/tenancy";
 import { getLangfuseCosts } from "@/modules/analytics/langfuse-costs";
 import { updateLangfuse } from "@/modules/tenant-settings/service";
@@ -17,6 +18,30 @@ function makeFetch(responses: unknown[]): typeof fetch {
       json: async () => body,
     } as Response;
   }) as unknown as typeof fetch;
+}
+
+// Captures the URLs asked, so a test can assert WHAT was asked and not only what came back: the
+// fence this module owes the tenant lives in the query string, and a response stub cannot show it.
+function capturingFetch(responses: unknown[]): {
+  fetchFn: typeof fetch;
+  urls: string[];
+} {
+  const urls: string[] = [];
+  let callIndex = 0;
+  const fetchFn = (async (input: RequestInfo | URL) => {
+    urls.push(String(input));
+    const body = responses[callIndex++] ?? { data: [] };
+    return { ok: true, json: async () => body } as Response;
+  }) as unknown as typeof fetch;
+  return { fetchFn, urls };
+}
+
+// The metrics query travels as a JSON blob in `?query=`; this is the filter list out of it.
+function filtersOf(url: string): Record<string, unknown>[] {
+  const raw = new URL(url).searchParams.get("query");
+  if (!raw) return [];
+  const parsed = JSON.parse(raw) as { filters?: Record<string, unknown>[] };
+  return parsed.filters ?? [];
 }
 
 function failingFetch(): typeof fetch {
@@ -49,6 +74,7 @@ const suDb = su as PrismaClient;
 const appDb = app as PrismaClient;
 
 let tenantId = 0n;
+const slug = `cost-${process.pid}`;
 
 function ctx(): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
@@ -57,7 +83,7 @@ function ctx(): TenantContext {
 describe.skipIf(!dbUp)("getLangfuseCosts (DB)", () => {
   beforeAll(async () => {
     const t = await suDb.tenant.create({
-      data: { name: "CostTest", slug: `cost-${process.pid}` },
+      data: { name: "CostTest", slug },
     });
     tenantId = t.id;
     const entry = await suDb.vaultEntry.create({
@@ -116,6 +142,81 @@ describe.skipIf(!dbUp)("getLangfuseCosts (DB)", () => {
     expect(result.byModel[0]).toEqual({ model: "gpt-4o", costUsd: 1.0 });
     expect(result.byModel[1]).toEqual({ model: "gpt-4o-mini", costUsd: 0.75 });
     expect(result.byModel[2]).toEqual({ model: "unknown", costUsd: 0 });
+  });
+
+  // THE FIGURE ON THE DASHBOARD IS THIS TENANT'S, NOT THE PROJECT'S (issue #427). Every trace we
+  // write carries the tenant slug as the Langfuse `userId` and one of our two environments; without
+  // those filters the query returns whatever else shares the project. Measured on a local Langfuse
+  // during this rodada: the unfenced 30-day total was $7.71, of which $2.70 belonged to two OTHER
+  // tenants (`live-426-r4`, `live-426-r2`) and was being shown to `local-demo` as its own cost.
+  // The type filter is the ceiling's own, so the two numbers on the same screen are the same query.
+  test("the cost is fenced to the tenant and to the segment's environment", async () => {
+    const { fetchFn, urls } = capturingFetch([{ data: [] }, { data: [] }]);
+    await getLangfuseCosts(ctx(), { source: "playground" }, appDb, fetchFn);
+    const metricUrls = urls.filter((u) => u.includes("/api/public/metrics"));
+    expect(metricUrls).toHaveLength(2);
+    for (const url of metricUrls) {
+      const filters = filtersOf(url);
+      expect(filters).toContainEqual({
+        column: "environment",
+        operator: "=",
+        value: `${config.env}-playground`,
+        type: "string",
+      });
+      expect(filters).toContainEqual({
+        column: "userId",
+        operator: "=",
+        value: slug,
+        type: "string",
+      });
+      expect(filters).toContainEqual({
+        column: "type",
+        operator: "=",
+        value: "GENERATION",
+        type: "string",
+      });
+    }
+  });
+
+  // "ALL" IS OUR TWO ENVIRONMENTS, NOT EVERYTHING IN THE PROJECT (issue #427). The segment means
+  // "real and playground together", and a project an operator also points something else at would
+  // otherwise land in the console's headline figure. Measured: the `any of` operator takes the pair
+  // under `type: "stringOptions"`; asked as `type: "string"` Langfuse refuses the request outright.
+  test("no segment asks for our two environments, not for the whole project", async () => {
+    const { fetchFn, urls } = capturingFetch([{ data: [] }, { data: [] }]);
+    await getLangfuseCosts(ctx(), {}, appDb, fetchFn);
+    const filters = filtersOf(
+      urls.filter((u) => u.includes("/api/public/metrics"))[0] as string,
+    );
+    expect(filters).toContainEqual({
+      column: "environment",
+      operator: "any of",
+      value: [config.env, `${config.env}-playground`],
+      type: "stringOptions",
+    });
+  });
+
+  // A QUERY THAT CANNOT NAME THE TENANT IS NOT ASKED (issue #427). Without the slug there is no
+  // fence, and the project's total is not this tenant's: the read fails instead of answering with
+  // someone else's spend. The poll takes the same road for the same reason.
+  test("a tenant the query cannot be fenced by is an error, not an unfenced read", async () => {
+    // `tenants.slug` is NOT NULL and carries no check constraint, so the empty string is a state the
+    // database accepts and this guard is reachable, not decorative.
+    await suDb.$executeRawUnsafe(
+      `UPDATE tenants SET slug = '' WHERE id = ${tenantId}`,
+    );
+    try {
+      const { fetchFn, urls } = capturingFetch([{ data: [] }, { data: [] }]);
+      const result = await getLangfuseCosts(ctx(), {}, appDb, fetchFn);
+      expect(result.status).toBe("error");
+      expect(
+        urls.filter((u) => u.includes("/api/public/metrics")),
+      ).toHaveLength(0);
+    } finally {
+      await suDb.$executeRawUnsafe(
+        `UPDATE tenants SET slug = '${slug}' WHERE id = ${tenantId}`,
+      );
+    }
   });
 
   test("error: fetch failure → { status: 'error' }", async () => {

@@ -1,7 +1,11 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
-import { resolveLangfuseConfig } from "@/graph/observability";
+import {
+  environmentForSource,
+  resolveLangfuseConfig,
+} from "@/graph/observability";
+import type { UsageSource } from "@/graph/usage";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 
 // Real LLM cost from Langfuse (which maintains an up-to-date price table and calculates cost
@@ -100,9 +104,47 @@ async function fetchMetrics(
   return body.data as Record<string, unknown>[];
 }
 
+// WHAT THE PROJECT HOLDS IS NOT WHAT THIS TENANT SPENT (issue #427). A Langfuse project is shared
+// by every tenant of the install and by anything else the operator points at it, so a cost query
+// without a fence answers with other people's money. Every trace we write carries the tenant's slug
+// as the `userId` and one of our two environments, which is exactly what the spend ceiling's poll
+// filters by: the same filters here are what let the dashboard's figure and the ceiling's bar be
+// two readings of one number instead of two numbers.
+//
+// Measured on a local Langfuse during this rodada: the unfenced 30-day total was $7.71, of which
+// $2.70 belonged to two other tenants and was being shown to the third as its own cost.
+//
+// `any of` needs `type: "stringOptions"`; asked as `"string"` Langfuse refuses the whole request.
+function costFilters(
+  tenantSlug: string,
+  source: UsageSource | undefined,
+): Record<string, unknown>[] {
+  const environment = source
+    ? {
+        column: "environment",
+        operator: "=",
+        value: environmentForSource(source),
+        type: "string",
+      }
+    : {
+        column: "environment",
+        operator: "any of",
+        value: [
+          environmentForSource("inbox"),
+          environmentForSource("playground"),
+        ],
+        type: "stringOptions",
+      };
+  return [
+    environment,
+    { column: "type", operator: "=", value: "GENERATION", type: "string" },
+    { column: "userId", operator: "=", value: tenantSlug, type: "string" },
+  ];
+}
+
 export async function getLangfuseCosts(
   ctx: TenantContext,
-  filter: { since?: Date },
+  filter: { since?: Date; source?: UsageSource },
   base: PrismaClient = basePrisma,
   fetchFn: typeof fetch = fetch,
 ): Promise<LangfuseCosts> {
@@ -113,6 +155,16 @@ export async function getLangfuseCosts(
     resolveLangfuseConfig(db, tenantId),
   );
   if (!cfg) return { status: "disabled" };
+  // No slug, no fence, no query. An unfenced read would answer with the project's total, which is
+  // not this tenant's; the poll refuses for the same reason. Unreachable while `tenants.slug` is
+  // filled, and reachable enough that the database would take an empty one.
+  if (!cfg.tenantSlug) {
+    logger.warn(
+      { tenantId },
+      "langfuse cost fetch skipped: the tenant has no slug to fence the query by",
+    );
+    return { status: "error" };
+  }
 
   const apiBase = cfg.baseUrl ?? "https://cloud.langfuse.com";
   const fromTimestamp = (
@@ -123,7 +175,7 @@ export async function getLangfuseCosts(
   const baseQuery = {
     view: "observations",
     metrics: [{ measure: "totalCost", aggregation: "sum" }],
-    filters: [],
+    filters: costFilters(cfg.tenantSlug, filter.source),
     fromTimestamp,
     toTimestamp,
   };

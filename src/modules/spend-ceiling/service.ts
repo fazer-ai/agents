@@ -490,6 +490,11 @@ export interface SpendCeilingUsageEntry {
   costedCalls: number;
   ledgerCalls: number;
   unpricedModels: string[];
+  // What of `usedUsd` was carried over from a PREVIOUS Langfuse project, when the tenant switched
+  // mid-month (see the carry in poll.ts). Sent so the console can say why the figure is higher than
+  // the project's own total: the dashboard now shows the two side by side (issue #427), and a bar
+  // that reads $10.02 next to a cost card that reads $5.01 explains itself or looks broken.
+  carriedUsd: number;
 }
 
 export interface SpendCeilingUsageDto {
@@ -592,6 +597,7 @@ export async function spendCeilingUsage(params: {
             costedCalls: snapshot?.costedCalls ?? 0,
             ledgerCalls,
             unpricedModels: snapshot?.unpricedModels ?? [],
+            carriedUsd: row ? Number(row.carriedUsd) : 0,
           };
         }),
       );

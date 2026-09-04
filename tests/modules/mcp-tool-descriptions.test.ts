@@ -431,11 +431,23 @@ describe("MCP tool descriptions", () => {
   // tool was added. The description ceiling goes to 28,000. The schema side grows by the third
   // value of the two `mode` enums, to 53,966; the schema ceiling holds at 54,000.
   //
-  // The five `code_tool_*` tools (#363) take the description total from 27,988 to 29,951 and the
-  // schema total from 53,649 to 54,841. (Both bases are lower than the previous round's 27,901 and
-  // 53,966 by the tree between: the native tool that #363 retired left the two native-keyed settings
-  // maps, and `agent_tools_get` now names code tools and document templates in its catalog line.)
-  // Five tools is where the cost is, and it is the cost `tool_*` paid: a list, a get and a
+  // `audit_list`'s `scope` (#520) takes the schema total from 53,966 to 54,024: 58 characters for a
+  // three-value optional enum, DERIVED from `AUDIT_SCOPES` rather than hand-listed, for the reason
+  // `actor_type` carries at its own site. It is the parameter that makes the rows keyed to no tenant
+  // reachable from this transport at all -- they are not filtered out of a tenant read, they are
+  // unreachable from it -- so a caller without it cannot ask the question, and a refusal it never
+  // sent teaches nothing. The description side pays for the semantics in nine words
+  // ("fleet/all need SUPER_ADMIN"), which is where the budget for it had to come from: descriptions
+  // stand at 27,990 of 28,000, ten characters short of anywhere to move it. The schema ceiling goes
+  // to 54,100.
+  //
+  // The five `code_tool_*` tools (#363) take the description total from 27,990 to 30,040 and the
+  // schema total from 54,024 to 54,899, remeasured against this base after the rebase over #520
+  // rather than carried over from the earlier one. The five tools are 1,963 of the description and
+  // 1,192 of the schema; the rest is the tree around them, measured per tool: `agent_tools_get` +32
+  // and `agent_tools_set` +55/+76 for the fourth source, against `agent_settings_set` -393 on the
+  // schema, which is the native tool #363 retired leaving the two native-keyed settings maps. Five
+  // tools is where the cost is, and it is the cost `tool_*` paid: a list, a get and a
   // create/update/delete, each with the dry-run line. `code_tool_create` is 1,199 of the 1,963 and
   // carries what a caller cannot learn by trying, because the sandbox never answers a question a
   // body does not ask: the twelve `context` keys, the four helpers, the CPU and memory limits, that
@@ -443,7 +455,7 @@ describe("MCP tool descriptions", () => {
   // which does not parse is SAVED and fails at call time. Trimmed first against a draft of 1,426:
   // the example use cases, the `console.log` echo, the ES level, the spelling of the two warning
   // kinds and the reason `description` is required (the schema already marks it) came out. The
-  // description ceiling goes to 30,000 and the schema ceiling to 54,900.
+  // description ceiling goes to 30,100 and the schema ceiling to 55,000.
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;
@@ -452,8 +464,8 @@ describe("MCP tool descriptions", () => {
       desc += t.description.length;
       schema += t.schema.length;
     }
-    expect(desc).toBeLessThanOrEqual(30_000);
-    expect(schema).toBeLessThanOrEqual(54_900);
+    expect(desc).toBeLessThanOrEqual(30_100);
+    expect(schema).toBeLessThanOrEqual(55_000);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

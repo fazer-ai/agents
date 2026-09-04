@@ -287,6 +287,24 @@ describe.skipIf(!dbUp)("code tools service", () => {
     );
     expect(reserved?.statusCode).toBe(422);
     expect(reserved?.field).toBe("inputSchema");
+    // The same request written as standard JSON Schema, where the field sits under `properties`:
+    // one spelling refused and the other quietly converted into a map without the field is the
+    // shape of the defect, not a fix for it.
+    const nested = await refusal(
+      createCodeTool(
+        ctx(),
+        {
+          ...VALID,
+          name: "reservado_json",
+          inputSchema: JSON.parse(
+            '{"type":"object","properties":{"__proto__":{"type":"string"},"cpf":{"type":"string"}},"required":["cpf"]}',
+          ),
+        },
+        appDb,
+      ),
+    );
+    expect(nested?.statusCode).toBe(422);
+    expect(nested?.field).toBe("inputSchema");
     expect(await listCodeTools(ctx(), appDb)).toEqual([]);
   });
 

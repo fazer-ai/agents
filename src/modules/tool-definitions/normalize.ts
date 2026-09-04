@@ -211,9 +211,15 @@ function fieldNames(schema: unknown): string[] {
 // body reading `input.__proto__` would find the prototype. Only a JSON body can carry it (an object
 // literal sets the prototype instead), so this reads the RAW value a request parsed.
 export function hasReservedFieldName(rawInputSchema: unknown): boolean {
-  return (
-    isPlainObject(rawInputSchema) && Object.hasOwn(rawInputSchema, "__proto__")
-  );
+  if (!isPlainObject(rawInputSchema)) return false;
+  if (Object.hasOwn(rawInputSchema, "__proto__")) return true;
+  // The other spelling of the same schema. A standard JSON Schema keeps the fields one level down,
+  // under `properties`, and the compact map is what this repo stores — so the name has to be caught
+  // in the form it ARRIVED in, or the two spellings of one request answer differently: refused at
+  // the top level, converted underneath into a map without the field.
+  if (!isJsonSchemaShape(rawInputSchema)) return false;
+  const props = (rawInputSchema as { properties?: unknown }).properties;
+  return isPlainObject(props) && Object.hasOwn(props, "__proto__");
 }
 
 export function normalizeToolShapes(

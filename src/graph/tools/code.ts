@@ -29,6 +29,11 @@ import { parseToolInputSchema } from "./http";
 // when the tool is CALLED, not when the turn is built: the customer gives the value,
 // `set_custom_attribute` writes it, and the code tool that reads it runs in the same turn.
 //
+// Not in the same BATCH, though, and the limit is the same one a precondition over those bags has:
+// `ToolNode` runs one message's tool calls with `Promise.all`, so a `set_custom_attribute` and a
+// code tool the model emitted TOGETHER race, and the read can land first. What holds is ordering
+// between steps — the model reads the write's result and calls the tool in its next message.
+//
 // A failure of the body — it does not parse, it throws, it hits a limit — is the OPERATOR's, not
 // the model's: the model cannot rewrite the body, and a rule that fails silently is the failure this
 // kind exists to remove. So it is a ToolFailure (failure.ts): the model reads a short sentence and

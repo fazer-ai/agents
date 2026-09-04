@@ -228,7 +228,6 @@
     "anyPeriod": "Any period",
     "before": "Before",
     "clearFilters": "Clear",
-    "coverage": "Trail recorded up to",
     "emptyDescription": "Changes to agents, channels, knowledge and settings are recorded here as they are made.",
     "emptyFilteredDescription": "Widen the date range, or clear the filters to see the whole trail.",
     "emptyFilteredTitle": "No entries match these filters",
@@ -246,9 +245,6 @@
     "filterFrom": "From",
     "filterPeriod": "Period",
     "filterTo": "To",
-    "latestHelp": "It does not change when you filter the list. Compare it with the last-updated time of a record you know was changed: if the record is newer, that change is not on the trail.",
-    "latestNone": "no entries yet",
-    "latestUnavailable": "could not be read",
     "noProjection": "This action recorded no field values.",
     "page": "Page {{n}}",
     "period": {

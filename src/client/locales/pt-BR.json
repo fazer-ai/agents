@@ -230,7 +230,6 @@
     "anyPeriod": "Qualquer período",
     "before": "Antes",
     "clearFilters": "Limpar",
-    "coverage": "Trilha registrada até",
     "emptyDescription": "Mudanças em agentes, canais, conhecimento e configurações aparecem aqui conforme são feitas.",
     "emptyFilteredDescription": "Amplie o período ou limpe os filtros para ver a trilha inteira.",
     "emptyFilteredTitle": "Nenhum registro corresponde a estes filtros",
@@ -250,9 +249,6 @@
     "filterFrom": "De",
     "filterPeriod": "Período",
     "filterTo": "Até",
-    "latestHelp": "Ele não muda quando você filtra a lista. Compare com a data de última alteração de um registro que você sabe que mudou: se o registro for mais novo, aquela mudança não está na trilha.",
-    "latestNone": "nenhum registro ainda",
-    "latestUnavailable": "não foi possível ler",
     "noProjection": "Esta ação não registrou valores de campo.",
     "page": "Página {{n}}",
     "period": {

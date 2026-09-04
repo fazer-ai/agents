@@ -2269,6 +2269,64 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     ]);
   });
 
+  // The namespace the import writes into is four kinds, not two: a document template publishes
+  // `send_<slug>` and is assembled BEFORE either tool table, so a bundled tool landing on that name
+  // is the one the assembly drops — the grant survives, pointing at a row the model never sees.
+  test("a bundled code tool named after a document's tool moves out of its way", async () => {
+    const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
+      includeComponents: true,
+    });
+    const bundle = structuredClone(exp);
+    const code = bundle.components?.codeTools?.find(
+      (c) => c.name === "validar_cpf",
+    );
+    if (!code) throw new Error("bundle missing validar_cpf");
+    const grant = bundle.agent.tools.find(
+      (g) => g?.source === "CODE" && g.tool === "validar_cpf",
+    );
+    if (grant?.source !== "CODE") throw new Error("bundle missing the grant");
+    code.name = "send_laudo_tecnico";
+    code.label = "Send laudo tecnico";
+    grant.tool = "send_laudo_tecnico";
+    await suDb.documentTemplate.create({
+      data: {
+        tenantId: dstTenant,
+        name: "Laudo técnico",
+        slug: "laudo_tecnico",
+        blocks: [],
+        fields: [],
+        style: {},
+      },
+    });
+    const { agent, warnings } = await importAgent(dstCtx(), bundle, appDb);
+    const row = await suDb.codeToolDefinition.findFirst({
+      where: {
+        tenantId: dstTenant,
+        name: { startsWith: "send_laudo_tecnico" },
+      },
+      select: { id: true, name: true },
+    });
+    expect(row?.name).toBe("send_laudo_tecnico_2");
+    expect(warnings).toContainEqual({
+      code: "codeToolRenamed",
+      params: {
+        name: "send_laudo_tecnico",
+        renamed: "send_laudo_tecnico_2",
+      },
+      target: { kind: "codeTool", name: "send_laudo_tecnico_2" },
+    });
+    const grants = await suDb.agentToolSelection.findMany({
+      where: { agentId: BigInt(agent.id), source: "CODE" },
+      select: { codeToolDefinitionId: true },
+    });
+    expect(grants.map((g) => g.codeToolDefinitionId)).toEqual([
+      row?.id ?? null,
+    ]);
+    await suDb.documentTemplate.deleteMany({
+      where: { tenantId: dstTenant, slug: "laudo_tecnico" },
+    });
+  });
+
   // A rename has to fit inside the ceiling it is renaming for. A 64-character name is legal, and
   // `<name>_2` is 66 — refused by the provider with the whole function list for a code tool, and
   // normalized back to the original by the HTTP builder, which silently undoes the rename.
@@ -2307,6 +2365,14 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     });
     expect(stored?.name.length).toBeLessThanOrEqual(64);
     expect(stored?.name.endsWith("_2")).toBe(true);
+    // And the label follows the STORED name: it derived the bundled one, so a label left deriving a
+    // name the row could not take is a tool the console cannot save again (the suffix is read off
+    // the stored name, which the trimming moved).
+    const storedRow = await suDb.codeToolDefinition.findFirstOrThrow({
+      where: { tenantId: dstTenant, name: stored?.name },
+      select: { label: true },
+    });
+    expect(storedRow.label).toBe(`${long} 2`);
     expect(
       warnings.some(
         (w) =>

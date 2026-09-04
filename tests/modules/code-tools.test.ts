@@ -14,7 +14,10 @@ import {
   updateCodeTool,
 } from "@/modules/code-tools/service";
 import { documentStarter } from "@/modules/documents/starters";
-import { createDocumentTemplate } from "@/modules/documents/templates";
+import {
+  createDocumentTemplate,
+  updateDocumentTemplate,
+} from "@/modules/documents/templates";
 import { lockToolNames } from "@/modules/tool-definitions/namespace";
 import { createToolDefinition } from "@/modules/tool-definitions/service";
 
@@ -212,6 +215,25 @@ describe.skipIf(!dbUp)("code tools service", () => {
       ),
     );
     expect(reverse?.translationKey).toBe("errors.documentToolNameTaken");
+
+    // The same question on the UPDATE door: a rename onto a slug whose tool name is taken. The
+    // create and the update reach the row through different code, and only one of them was asking.
+    const free = await createDocumentTemplate(
+      ctx(),
+      {
+        name: "Livre",
+        slug: "livre",
+        blocks: starter.blocks,
+        fields: starter.fields,
+        style: starter.style,
+      } as never,
+      appDb,
+    );
+    const renamed = await refusal(
+      updateDocumentTemplate(ctx(), BigInt(free.id), { slug: "recibo" }, appDb),
+    );
+    expect(renamed?.translationKey).toBe("errors.documentToolNameTaken");
+    await suDb.documentTemplate.deleteMany({ where: { tenantId } });
     await deleteCodeTool(ctx(), BigInt(tool.id), appDb);
   });
 

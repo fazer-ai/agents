@@ -49,6 +49,7 @@ import {
   type WindowSpec,
 } from "@/modules/business-hours/hours";
 import { parseDocumentStyle } from "@/modules/documents/blocks";
+import { documentToolName } from "@/modules/documents/slug";
 import {
   slugProblem,
   templateMetadataProblem,
@@ -64,7 +65,10 @@ import {
   canonicalBodyShape,
   unsupportedBodyShape,
 } from "@/modules/tool-definitions/body-shape";
-import { lockToolNames } from "@/modules/tool-definitions/namespace";
+import {
+  documentHoldingToolName,
+  lockToolNames,
+} from "@/modules/tool-definitions/namespace";
 import { normalizeToolShapes } from "@/modules/tool-definitions/normalize";
 import { storableResponseTemplate } from "@/modules/tool-definitions/response-template";
 import {
@@ -1539,7 +1543,11 @@ function renamedLabel(
 ): string {
   if (storedName === bundledName) return bundledLabel;
   if (normalizeToolName(bundledLabel) !== bundledName) return bundledLabel;
-  const suffixed = `${bundledLabel} ${storedName.slice(bundledName.length + 1)}`;
+  // The suffix comes off the STORED name, not from the bundled one's length: a name at the 64
+  // ceiling has its stem trimmed before `_N` is appended (renamedToolName), so counting from the
+  // bundled name starts past the end and the label keeps deriving the identifier the row could not
+  // take — leaving the tool unsaveable from the console without renaming it by hand.
+  const suffixed = `${bundledLabel} ${storedName.slice(storedName.lastIndexOf("_") + 1)}`;
   return suffixed.length > TOOL_LABEL_MAX ? storedName : suffixed;
 }
 
@@ -1606,6 +1614,12 @@ async function createMissingComponents(
     // carrying "a b" and "a_b" claims one name twice, and the raw spellings would hide it.
     ...components.httpTools.map((t) => normalizeToolName(t.name)),
     ...(components.codeTools ?? []).map((t) => normalizeToolName(t.name)),
+    // ...and the templates THIS bundle carries: their `send_<slug>` tools are assembled before
+    // either tool table, so a tool landing on one of those names is the one that disappears. The
+    // STORED templates are asked per name below; these do not exist yet to be asked about.
+    ...(components.documentTemplates ?? []).map((d) =>
+      documentToolName(d.slug),
+    ),
   ]);
   // One stored name per bundle name: a bundle carrying the same native-named component twice (a
   // hand-edited file) chose a new suffix per occurrence and the last one overwrote the grant
@@ -1628,7 +1642,10 @@ async function createMissingComponents(
           (await db.codeToolDefinition.findFirst({
             where: { name: n },
             select: { id: true },
-          })) !== null,
+          })) !== null ||
+          // A document template publishes `send_<slug>` and is assembled BEFORE either tool table,
+          // so a tool landing on that name is the one the assembly drops (namespace.ts).
+          (await documentHoldingToolName(db, n)) !== null,
       ));
     chosen.set(tdef.name, name);
     taken.add(name);
@@ -1781,7 +1798,7 @@ async function createMissingComponents(
           (await db.toolDefinition.findFirst({
             where: { name: n },
             select: { id: true },
-          })) !== null,
+          })) !== null || (await documentHoldingToolName(db, n)) !== null,
       ));
     chosenCode.set(tdef.name, name);
     taken.add(name);

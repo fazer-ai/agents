@@ -15,7 +15,10 @@ import {
   type CompanySettings,
   readCompanySettings,
 } from "@/modules/tenant-settings/service";
-import { toolHoldingName } from "@/modules/tool-definitions/namespace";
+import {
+  lockToolNames,
+  toolHoldingName,
+} from "@/modules/tool-definitions/namespace";
 import {
   type DocumentBlock,
   type DocumentField,
@@ -629,6 +632,29 @@ async function rawTemplateRow(
   return row;
 }
 
+// One namespace over four kinds, from this side of it. Takes the same lock the tool services take,
+// so a concurrent tool create cannot commit between the question and the insert; called inside the
+// write's own transaction for the same reason.
+async function assertToolNameFreeForSlug(
+  db: ScopedDb,
+  slug: string,
+  name: string | undefined,
+  explicit: boolean,
+): Promise<void> {
+  await lockToolNames(db);
+  const heldByTool = await toolHoldingName(db, slug);
+  if (!heldByTool) return;
+  refuse(
+    {
+      message: `slug: the tool name ${documentToolName(slug)} is already used by the tool "${heldByTool.name}".`,
+      key: "errors.documentToolNameTaken",
+      params: { tool: documentToolName(slug), holder: heldByTool.name },
+      field: explicit || name === undefined ? "slug" : "name",
+    },
+    409,
+  );
+}
+
 export async function createDocumentTemplate(
   ctx: TenantContext,
   input: DocumentTemplateInput,
@@ -677,23 +703,6 @@ export async function createDocumentTemplate(
   // index is still the authority — it is what catches two creates racing — but all it can say is
   // that the slug is taken, and the operator needs to know WHICH of their templates already has this
   // name. One extra read on a path that already does several.
-  // The other half of the namespace: the slug becomes `send_<slug>`, and an HTTP or code tool may
-  // already hold that name. The assembly builds documents FIRST, so the tool would be the one
-  // dropped — silently, with a flow-log line as the only trace (namespace.ts).
-  const heldByTool = await runScopedOn(base, ctx, (db) =>
-    toolHoldingName(db, slug),
-  );
-  if (heldByTool) {
-    refuse(
-      {
-        message: `slug: the tool name ${documentToolName(slug)} is already used by the tool "${heldByTool.name}".`,
-        key: "errors.documentToolNameTaken",
-        params: { tool: documentToolName(slug), holder: heldByTool.name },
-        field: "slug",
-      },
-      409,
-    );
-  }
   const clash = await existingClash(ctx, base, slug, name);
   const holder = clash.byName ?? clash.bySlug;
   if (holder) {
@@ -701,6 +710,12 @@ export async function createDocumentTemplate(
     refuse(refusal, 409);
   }
   const row = await runScopedOn(base, ctx, async (db) => {
+    // The other half of the namespace, asked INSIDE this transaction and behind the same lock the
+    // tool services take: the slug becomes `send_<slug>`, and an HTTP or code tool may hold that
+    // name. The assembly builds documents FIRST, so the tool is the one that would be dropped —
+    // silently, with a flow-log line as the only trace. No unique index spans the three tables, so
+    // the lock is what keeps two writers from each seeing the name free (namespace.ts).
+    await assertToolNameFreeForSlug(db, slug, name, !derived);
     const created = await db.documentTemplate
       .create({ data: { ...data, slug }, select: SELECT })
       .catch(writeConflict(slug, name, !derived));
@@ -934,6 +949,13 @@ async function patched(
       // it rather than restating it is what keeps POST and PATCH answering the same refusal.
       refuse(slugRefusal(problem, undefined, true, patch.slug), 400);
     }
+    // The tool-name half of the namespace, asked on the way in and inside this transaction: a
+    // rename onto a slug whose `send_<slug>` a tool already holds is the same collision a create is
+    // refused for, and the update reached the row through a different door.
+    // The tool-name half of the namespace, asked on the way in and inside this transaction: a
+    // rename onto a slug whose `send_<slug>` a tool already holds is the same collision a create is
+    // refused for, and the update reached the row through a different door.
+    await assertToolNameFreeForSlug(db, patch.slug, undefined, true);
     data.slug = patch.slug;
   }
   if (patch.description !== undefined) {

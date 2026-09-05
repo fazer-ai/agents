@@ -10,7 +10,7 @@ import {
 import { undo } from "@codemirror/commands";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { cleanup, render } from "@testing-library/react";
+import { act, cleanup, render } from "@testing-library/react";
 import {
   CodeEditor,
   completionsFor,
@@ -221,8 +221,10 @@ describe("the editor the operator actually gets", () => {
     ).toBe("true");
   });
 
-  // The cap the browser enforces on a textarea's `maxLength`, enforced here as a REFUSAL: a paste
-  // that would overflow leaves the document as it was rather than landing half a line.
+  // Measured against the sibling field in the same modal: a real paste of 2 500 characters into
+  // `<textarea maxLength={2000}>` lands 2 000 of them, so the browser TRIMS. This editor refuses
+  // instead, because a JavaScript body missing its tail saves clean and fails when the agent calls
+  // it, and the refusal is announced by the test below.
   test("a change past maxLength is refused, and an over-cap value still edits DOWN", () => {
     render(
       <CodeEditor
@@ -234,9 +236,13 @@ describe("the editor the operator actually gets", () => {
     );
     const host = document.body.querySelector(".cm-editor") as HTMLElement;
     const view = EditorView.findFromDOM(host) as EditorView;
-    view.dispatch({ changes: { from: 3, insert: "defghij" } });
+    act(() => {
+      view.dispatch({ changes: { from: 3, insert: "defghij" } });
+    });
     expect(view.state.doc.toString()).toBe("abc");
-    view.dispatch({ changes: { from: 3, insert: "de" } });
+    act(() => {
+      view.dispatch({ changes: { from: 3, insert: "de" } });
+    });
     expect(view.state.doc.toString()).toBe("abcde");
 
     cleanup();
@@ -254,6 +260,107 @@ describe("the editor the operator actually gets", () => {
     const view2 = EditorView.findFromDOM(host2) as EditorView;
     view2.dispatch({ changes: { from: 0, to: 3, insert: "" } });
     expect(view2.state.doc.toString()).toBe("defghij");
+  });
+
+  // The counter covers a body already NEAR the cap. A paste onto a short body is the case it does
+  // not cover, and it is the ordinary one: the operator drops in a body from somewhere, nothing
+  // lands, and there is no counter, no message and no error on screen to say a limit exists. So
+  // the refusal speaks for itself, and brings the counter out with it.
+  test("a refused change says so, on a body far below the counter's threshold", () => {
+    render(
+      <CodeEditor
+        value="abc"
+        onChange={() => {}}
+        maxLength={100}
+        aria-label="Code"
+      />,
+    );
+    const spans = () =>
+      [...document.body.querySelectorAll("span")].map(
+        (n) => n.textContent ?? "",
+      );
+    const refusal = () => spans().find((tx) => /Nothing was inserted/.test(tx));
+    // Three characters against a hundred: nothing on screen mentions a cap.
+    expect(spans().filter((tx) => /^\d+\/100$/.test(tx))).toEqual([]);
+    expect(refusal()).toBeUndefined();
+
+    const view = EditorView.findFromDOM(
+      document.body.querySelector(".cm-editor") as HTMLElement,
+    ) as EditorView;
+    act(() => {
+      view.dispatch({ changes: { from: 3, insert: "x".repeat(98) } });
+    });
+    expect(view.state.doc.toString()).toBe("abc");
+    // What was refused, in the terms the operator can act on: how much has to come off.
+    expect(refusal()).toContain("1 character over the 100 limit");
+    // And the counter, which is the field's own state, is no longer hidden behind the threshold.
+    expect(spans().filter((tx) => /^\d+\/100$/.test(tx))).toEqual(["3/100"]);
+  });
+
+  // A refusal is an EVENT, not a property of the field: it describes the change that did not land.
+  // Left on screen it would sit there accusing an edit the operator already made room for.
+  test("the refusal clears on the next change that fits", () => {
+    render(
+      <CodeEditor
+        value="abc"
+        onChange={() => {}}
+        maxLength={100}
+        aria-label="Code"
+      />,
+    );
+    const refusal = () =>
+      [...document.body.querySelectorAll("span")].find((n) =>
+        /Nothing was inserted/.test(n.textContent ?? ""),
+      );
+    const view = EditorView.findFromDOM(
+      document.body.querySelector(".cm-editor") as HTMLElement,
+    ) as EditorView;
+    act(() => {
+      view.dispatch({ changes: { from: 3, insert: "x".repeat(98) } });
+    });
+    expect(refusal()).toBeDefined();
+    // It is a live region, so a screen reader hears it without moving to the field.
+    expect(refusal()?.getAttribute("role")).toBe("status");
+    act(() => {
+      view.dispatch({ changes: { from: 3, insert: "de" } });
+    });
+    expect(view.state.doc.toString()).toBe("abcde");
+    expect(refusal()).toBeUndefined();
+  });
+
+  // A body written in by the FORM is exempt from the cap (that is what opens an over-cap tool for
+  // editing), so it must not be reported as a refusal either — and it retires one already on
+  // screen, which described a paste against the body being replaced.
+  test("a controlled write is not a refusal, and retires the one on screen", () => {
+    const { rerender } = render(
+      <CodeEditor
+        value="abc"
+        onChange={() => {}}
+        maxLength={100}
+        aria-label="Code"
+      />,
+    );
+    const refusal = () =>
+      [...document.body.querySelectorAll("span")].find((n) =>
+        /Nothing was inserted/.test(n.textContent ?? ""),
+      );
+    const view = EditorView.findFromDOM(
+      document.body.querySelector(".cm-editor") as HTMLElement,
+    ) as EditorView;
+    act(() => {
+      view.dispatch({ changes: { from: 3, insert: "x".repeat(98) } });
+    });
+    expect(refusal()).toBeDefined();
+    rerender(
+      <CodeEditor
+        value={"y".repeat(101)}
+        onChange={() => {}}
+        maxLength={100}
+        aria-label="Code"
+      />,
+    );
+    expect(view.state.doc.length).toBe(101);
+    expect(refusal()).toBeUndefined();
   });
 });
 

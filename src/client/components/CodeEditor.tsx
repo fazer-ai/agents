@@ -32,7 +32,7 @@ import {
 } from "@codemirror/view";
 import { tags } from "@lezer/highlight";
 import type { TFunction } from "i18next";
-import { useEffect, useId, useMemo, useRef } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/client/lib/utils";
 import { CODE_TOOL_CONTEXT_VARS } from "@/lib/code-tool-vocabulary";
@@ -394,6 +394,11 @@ export function CodeEditor({
   const attrsSlot = useMemo(() => new Compartment(), []);
   const names = useMemo(() => [...argumentNames], [argumentNames]);
   const namesKey = namesKeyOf(names);
+  // How far past the cap the last refused change would have gone, and 0 while nothing is refused.
+  // The ref is what the filter reads: it runs on every keystroke, and a setState per keystroke to
+  // write the same 0 is a render pass for nothing.
+  const [refusedExcess, setRefusedExcess] = useState(0);
+  const refused = useRef(0);
   // NOTE: the label and the description go on the element CodeMirror gives the textbox role to, not
   // on the wrapper below. A wrapper `div` has no role, so `aria-label` on it is dropped by the
   // accessibility tree and the field reads as unlabelled.
@@ -406,7 +411,8 @@ export function CodeEditor({
   const count = value.length;
   const over = typeof maxLength === "number" && count > maxLength;
   const showCount =
-    typeof maxLength === "number" && count >= maxLength * COUNTER_FROM;
+    typeof maxLength === "number" &&
+    (refusedExcess > 0 || count >= maxLength * COUNTER_FROM);
   // NOTE: the over-limit line is the only thing on screen that says why this body cannot be saved,
   // so it has to reach the accessibility tree the way `<Textarea>`'s does: an id the textbox points
   // at, plus `aria-invalid` on the textbox itself. Both live on CodeMirror's contenteditable, which
@@ -455,18 +461,28 @@ export function CodeEditor({
     ];
     if (placeholder) extensions.push(placeholderExt(placeholder));
     if (typeof maxLength === "number") {
-      // NOTE: the cap enforced where the browser enforces `maxLength` on a textarea: the change is
-      // REFUSED rather than truncated, so a paste that would overflow leaves the document as it
-      // was instead of landing half a line. A value already past the cap (imported, or written
-      // through the API before the cap existed) still opens and still edits down, because the
-      // filter only asks about the length the change would PRODUCE.
+      // NOTE: the change is refused WHOLE rather than trimmed to fit, which is where this parts
+      // from `<textarea maxLength>` on purpose. Measured: the browser truncates a paste into a
+      // textarea, and for prose losing the tail is harmless. A JavaScript body truncated to fit is
+      // a body missing its last lines that saves clean and fails when the agent calls it. So the
+      // paste is refused, and the refusal is SAID below: a refusal nobody sees is a field that
+      // stopped accepting text for no reason, and on a short body there is not even a counter on
+      // screen to hint at a cap. A value already past the cap (imported, or written through the
+      // API before the cap existed) still opens and still edits down, because the filter only asks
+      // about the length the change would PRODUCE.
       extensions.push(
         EditorState.changeFilter.of((tr) => {
           if (!tr.docChanged) return true;
           if (tr.annotation(CONTROLLED)) return true;
           const before = tr.startState.doc.length;
           const after = tr.newDoc.length;
-          return after <= maxLength || after <= before;
+          const excess =
+            after > maxLength && after > before ? after - maxLength : 0;
+          if (refused.current !== excess) {
+            refused.current = excess;
+            setRefusedExcess(excess);
+          }
+          return excess === 0;
         }),
       );
     }
@@ -515,6 +531,12 @@ export function CodeEditor({
       changes: { from: 0, to: current.length, insert: value },
       annotations: [Transaction.addToHistory.of(false), CONTROLLED.of(true)],
     });
+    // NOTE: the refusal described a paste against the body being replaced here, so it does not
+    // describe anything any more.
+    if (refused.current !== 0) {
+      refused.current = 0;
+      setRefusedExcess(0);
+    }
   }, [value]);
 
   // NOTE: the attributes the accessibility tree reads, reapplied whenever they change. `invalid`
@@ -574,6 +596,15 @@ export function CodeEditor({
             "codeTools.codeOverLimit",
             "{{count}} character over the limit. Shorten the body: a save above {{max}} is refused.",
             { count: count - maxLength, max: maxLength },
+          )}
+        </span>
+      )}
+      {refusedExcess > 0 && typeof maxLength === "number" && (
+        <span role="status" className="mt-1 block text-error text-xs">
+          {t(
+            "codeTools.codeChangeRefused",
+            "Nothing was inserted: the body would be {{count}} character over the {{max}} limit.",
+            { count: refusedExcess, max: maxLength },
           )}
         </span>
       )}

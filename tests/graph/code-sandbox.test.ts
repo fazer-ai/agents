@@ -178,41 +178,90 @@ describe("runSandboxedCode", () => {
   // value the body finished building with the deadline nearly spent would otherwise have its render
   // interrupted and come back as "[object Object]".
   //
-  // The budget is MEASURED here, not written down. The first version spent 250 ms of a fixed 300 ms
-  // and then built 60k objects, which is an assertion about how fast the machine is: it passed on a
-  // developer laptop and failed on every CI runner for four consecutive commits (#518). What the
-  // renewal is for does not depend on the machine — so the build is timed on THIS machine first,
-  // and the deadline is then set just past it. The body finishes with a sliver left, far less than
-  // its own render needs (rendering the array costs several times building it), so without the
-  // renewal the render is interrupted and with it the value comes back whole.
+  // WHAT THE BODY SPENDS IS PINNED TO THE CLOCK, NOT TO THE WORK. Two earlier versions of this test
+  // asserted how fast this machine is, and both kept the shard red (#518). The first spent 250 ms of
+  // a fixed 300 ms budget and then built 60k objects: it passed on a laptop and failed on every CI
+  // runner, deterministically. The second measured the build and set the deadline just past it --
+  // better, because it no longer wrote the machine down, but it still asked the SECOND run to finish
+  // the same build within 1.5x of what the FIRST one took, and one scheduler preemption on a shared
+  // runner is wider than that margin (measured here: the build varies 1.2x over 25 runs, and the
+  // whole margin is ~12 ms).
+  //
+  // So the body no longer races its own budget. It builds the value with the budget wide open, then
+  // SPINS on `Date.now()` until a chosen instant, which puts the end of the body at a wall-clock
+  // point that does not move with how fast the build was. A stall during the build is absorbed by
+  // the spin instead of being fatal.
+  //
+  // The leftover the render then has to live on is `setup + render/2`, and both halves are measured
+  // rather than written down, because the safe window is `(setup, setup + render)` and BOTH of its
+  // ends scale with the machine:
+  //
+  //   - above `setup`, or the BODY is interrupted (setup is the span from the deadline starting in
+  //     `open()` to the snippet's first statement -- 16-23 ms here, and it is not zero);
+  //   - below `setup + render`, or the render fits anyway and the renewal guards nothing.
+  //
+  // Halfway between them satisfies both by ALGEBRA, on any machine: the leftover is
+  // `leftMs - setupMs = render/2`, which is positive and less than `render` whatever those numbers
+  // turn out to be. Nothing here is a margin that a slower machine can exhaust.
+  //
+  // What that buys, measured by shrinking the budget, which is exactly what losing time to a stall
+  // does: the previous shape survives a stall of 14 ms and fails at 15; this one survives 89 and
+  // fails at 90. The factor matters less than WHICH quantity it is a fraction of -- the old margin
+  // was half the BUILD, which the second run had to beat, and this one is half the RENDER, which
+  // grows on exactly the machines where the old one ran out.
   test("a value built with the last of the budget is still rendered whole", async () => {
-    const BUILD = "Array.from({ length: 20000 }, (_, i) => ({ i }))";
+    const N = 100_000;
+    const BUILD = `Array.from({ length: ${N} }, (_, i) => ({ i }))`;
+    const CHARS = 20_000_000;
+
+    // SETUP: the deadline starts in `open()`, and the interpreter's prelude runs inside it, so the
+    // snippet's own first reading of the clock is already this far past the start.
+    const before = Date.now();
+    const clock = await runSandboxedCode("Date.now()", { timeoutMs: 30_000 });
+    expect(clock.kind).toBe("value");
+    const setupMs = Number((clock as { value: string }).value) - before;
+
+    // RENDER: wall minus the span `ms` covers, which ends before the render begins.
     const t0 = performance.now();
     const baseline = await runSandboxedCode(BUILD, {
       timeoutMs: 30_000,
-      maxChars: 2_000_000,
+      maxChars: CHARS,
     });
     const wall = performance.now() - t0;
     expect(baseline.kind).toBe("value");
-    // `ms` is measured through the evaluation and BEFORE the render, so it is the span the deadline
-    // covers: opening the context, the prelude and the build. What is left of `wall` is the render
-    // (plus the reply hop), the part that runs on the renewed deadline.
-    const evalMs = (baseline as { ms: number }).ms;
-    const renderMs = wall - evalMs;
-    // Half the measured span again, so a second run slower than the baseline still FINISHES its
-    // build — the interruption this test is about is the render's, not the body's.
-    const slack = Math.ceil(evalMs * 0.5) + 5;
-    // The premise, asserted instead of assumed: rendering has to cost more than the slack, or this
-    // test would pass with the renewal gone and guard nothing. It held by ~3x when written.
-    expect(renderMs).toBeGreaterThan(slack);
-    const out = await runSandboxedCode(BUILD, {
-      timeoutMs: evalMs + slack,
-      maxChars: 2_000_000,
+    const buildMs = (baseline as { ms: number }).ms;
+    const renderMs = wall - buildMs;
+    // The premise, asserted rather than assumed: there has to BE a render to interrupt.
+    expect(renderMs).toBeGreaterThan(1);
+
+    const leftMs = setupMs + Math.floor(renderMs / 2);
+    // THE SIZING IS THE TEST, so it is asserted and not merely computed. Both bounds were shown to
+    // matter by mutation: with the leftover at 3x the render, and with the spin below removed, this
+    // test PASSES while the renewal is gone -- it would guard nothing and say so to nobody.
+    const leftoverMs = leftMs - setupMs;
+    expect(leftoverMs).toBeGreaterThan(0);
+    expect(leftoverMs).toBeLessThan(renderMs);
+    // The budget is the leftover plus room the build cannot plausibly need, scaled to the build this
+    // machine actually does rather than to a number from mine: the spin absorbs whatever is left.
+    const budgetMs = leftMs + Math.max(500, buildMs * 20);
+    const spun = `const t0 = Date.now(); const v = ${BUILD}; while (Date.now() - t0 < ${budgetMs - leftMs}) {} v`;
+
+    const out = await runSandboxedCode(spun, {
+      timeoutMs: budgetMs,
+      maxChars: CHARS,
     });
+    // Not `limit`: the body ends `render/2` before the deadline by construction, so a body that was
+    // interrupted means the arithmetic above is wrong, not that the machine was slow.
     expect(out.kind).toBe("value");
+    // ...and the body really did spend the budget, which is the other half the mutation found: with
+    // the spin gone the body returns after the build, the render inherits a budget it never needed
+    // renewed, and this test passes while guarding nothing. `ms` covers the setup and the body.
+    expect((out as { ms: number }).ms).toBeGreaterThanOrEqual(
+      budgetMs - leftMs,
+    );
     const v = (out as { value: string }).value;
     expect(v.startsWith('[{"i":0},{"i":1}')).toBe(true);
-    expect(v.endsWith('{"i":19999}]')).toBe(true);
+    expect(v.endsWith(`{"i":${N - 1}}]`)).toBe(true);
   });
 
   // A value can still run the body's code AFTER the body returned: a getter, a proxy trap. The

@@ -67,6 +67,7 @@ import {
   searchKnowledge,
 } from "@/modules/rag/service";
 import { getTenantSettings } from "@/modules/tenant-settings/service";
+import { MODEL_RESPONSE_CHAR_LIMIT } from "@/modules/tool-definitions/response-template";
 import {
   getToolDefinition,
   listToolDefinitions,
@@ -263,10 +264,14 @@ export async function codeToolGet(
 // limits that turn a run into a failure. Everything here is derived from the modules that enforce
 // it, never restated, so the answer cannot drift from the sandbox.
 //
-// Six limits are served and one of them is not a failure, so they are described in two sentences
-// rather than one. `inputMaxChars` is the model's doing and comes back as an ordinary result that
-// says what to change (graph/tools/code.ts), while every other limit is marked failed; a caller told
-// they are all failures reads a correctable argument size as a broken tool and stops calling it.
+// Seven limits are served and they bite at three DIFFERENT moments, so they are described in three
+// sentences rather than one. `timeoutMs`, `memoryBytes`, `stackBytes` and `contextMaxChars` mark the
+// call failed. `inputMaxChars` is the model's doing and comes back as an ordinary result saying what
+// to change (graph/tools/code.ts). `codeMaxChars` never reaches a call at all: the write is REFUSED,
+// so nothing is saved. `resultMaxChars` is the fourth thing a body cannot discover by trying, since
+// what it returns is CLIPPED (code-sandbox.ts) and the agent cannot tell a clipped answer from a
+// short one. A caller told these are all failures reads a correctable argument size as a broken tool
+// and an authoring refusal as an outage.
 //
 // No gate of its own beyond the read gate: it is a constant, not tenant data. It still goes through
 // `readGate` so an unscoped principal gets the same refusal every other read gives, rather than a
@@ -285,11 +290,13 @@ export function codeToolSchema(principal: VerifiedToken): WriteResult {
       description: v.description,
     })),
     result:
-      "Whatever the body returns is rendered for the agent, JSON where JSON can say it. Returning nothing answers `undefined`. A returned promise is an ERROR: the sandbox has no event loop, so `async`, `await` and a returned promise are not supported.",
+      "Whatever the body returns is rendered for the agent, JSON where JSON can say it. Returning nothing answers `undefined`. A returned promise is an ERROR: the sandbox has no event loop, so `async`, `await` and a returned promise are not supported. The rendered text is CLIPPED to resultMaxChars: the value is clipped first and the console.log block gets what is left, and nothing tells the agent that anything was cut. A body with a lot to say should return the summary the agent needs rather than the whole payload.",
     failure:
       "A throw, a syntax error, or hitting timeoutMs, memoryBytes or stackBytes is the OPERATOR's failure, not the agent's: the call is marked failed, the agent answers without the tool, and the flow log keeps the reason. The conversation's attributes exceeding contextMaxChars fails the same way, and is the tenant's data rather than the body. Only a returned value is a normal result.",
     argumentsTooLarge:
-      "inputMaxChars is the one limit that is NOT a failure. Arguments over it never reach the body: the call comes back as an ordinary result telling the agent to call again with less, the way a schema refusal does, and nothing is marked failed.",
+      "inputMaxChars is not a failure. Arguments over it never reach the body: the call comes back as an ordinary result telling the agent to call again with less, the way a schema refusal does, and nothing is marked failed.",
+    authoringRefusal:
+      "codeMaxChars is not a call limit at all. A body longer than it is REFUSED by code_tool_create and code_tool_update, so nothing is saved and no call is ever marked failed for it.",
     available:
       "TIMEZONE and NOW_LOCAL as strings, and Date in the agent's zone. No network, no fetch, no imports, no require, no async.",
     limits: {
@@ -299,6 +306,7 @@ export function codeToolSchema(principal: VerifiedToken): WriteResult {
       codeMaxChars: SANDBOX_CODE_MAX_CHARS,
       inputMaxChars: CODE_TOOL_INPUT_MAX_CHARS,
       contextMaxChars: CODE_TOOL_CONTEXT_MAX_CHARS,
+      resultMaxChars: MODEL_RESPONSE_CHAR_LIMIT,
     },
   });
 }

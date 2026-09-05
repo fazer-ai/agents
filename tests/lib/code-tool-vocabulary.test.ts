@@ -55,6 +55,23 @@ describe("the code tool vocabulary answers for what the runtime builds", () => {
     }
   });
 
+  // The bags are the one pair whose description makes a claim about TIME, and the claim was too
+  // strong: they are read at call time, so a value `set_custom_attribute` wrote in an earlier STEP
+  // is there, but the tool calls of one model message run together (`ToolNode` uses `Promise.all`),
+  // so a write and a read the model emitted in the same message race. `graph/tools/code.ts` says so;
+  // a body author reading only this would build on a value that may not have landed.
+  test("the attribute bags name the step boundary, not just the turn", () => {
+    const bag = CODE_TOOL_CONTEXT_VARS.find(
+      (v) => v.name === "conversationAttributes",
+    );
+    expect(bag).toBeDefined();
+    const d = bag?.description ?? "";
+    expect(d).toContain("CALLED");
+    expect(d).toContain("EARLIER step");
+    expect(d).toContain("same step");
+    expect(d).toContain("race");
+  });
+
   // A description that says nothing is worse than none: it fills the completion popup with noise
   // and reads as documented. Each one has to be a sentence, and the optional ones have to say when
   // the value is missing, because that is the whole point of `always: false`.

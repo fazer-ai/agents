@@ -388,6 +388,8 @@
     "addTitle": "New code tool",
     "code": "Code",
     "codeHelp": "The body of a JavaScript function the agent calls. `input` holds the arguments you declared above; `context` holds the conversation's values. Type `input.` or `context.` for the full list, with the type of each and whether it can be absent. Answer with `return`.\n\nWhatever you return is rendered as JSON for the agent, and console.log output comes back with it. TIMEZONE, NOW_LOCAL and Date run in the agent's zone.\n\nThere is no network, no imports and no async: a returned promise is an error. A run gets 1000 ms and 32 MB; a throw or a limit is a failure, a returned value is a result. Invalid code is still saved and fails when the agent calls it.",
+    "codeOverLimit_one": "{{count}} character over the limit. Shorten the body: a save above {{max}} is refused.",
+    "codeOverLimit_other": "{{count}} characters over the limit. Shorten the body: a save above {{max}} is refused.",
     "completion": {
       "argumentDetail": "argument",
       "argumentInfo": "Declared in Arguments, above.",
@@ -400,7 +402,7 @@
         "contact_phone": "The contact's phone. Absent when the contact has none.",
         "contactAttributes": "The contact's custom attributes, on the same terms as conversationAttributes. Empty object when there are none.",
         "conversation_id": "Chatwoot conversation id. Absent when the tool runs outside a conversation (the playground, a test run).",
-        "conversationAttributes": "The conversation's custom attributes, mirrored from Chatwoot and read when the tool is CALLED, so a value written earlier in the same turn is already here. Empty object when there are none.",
+        "conversationAttributes": "The conversation's custom attributes, mirrored from Chatwoot and read when the tool is CALLED, so a value set_custom_attribute wrote in an EARLIER step of the turn is already here. Not one written in the same step: the tool calls of a single model message run together, so those two race. Empty object when there are none.",
         "inbox_id": "Chatwoot inbox id. Absent outside a conversation.",
         "inbox_name": "The inbox's name. Absent when the inbox has none.",
         "message_id": "Chatwoot id of the message that triggered this turn. Absent outside a conversation."

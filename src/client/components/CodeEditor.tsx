@@ -172,7 +172,7 @@ function contextDescriptions(t: TFunction): Record<string, string> {
     ),
     conversationAttributes: t(
       "codeTools.completion.context.conversationAttributes",
-      "The conversation's custom attributes, mirrored from Chatwoot and read when the tool is CALLED, so a value written earlier in the same turn is already here. Empty object when there are none.",
+      "The conversation's custom attributes, mirrored from Chatwoot and read when the tool is CALLED, so a value set_custom_attribute wrote in an EARLIER step of the turn is already here. Not one written in the same step: the tool calls of a single model message run together, so those two race. Empty object when there are none.",
     ),
     contactAttributes: t(
       "codeTools.completion.context.contactAttributes",
@@ -194,6 +194,9 @@ function contextCompletions(t: TFunction): Completion[] {
     info: described[v.name] ?? v.description,
   }));
 }
+
+// Below this fraction of the cap the counter is noise, exactly as in `Textarea`.
+const COUNTER_FROM = 0.8;
 
 const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 
@@ -356,6 +359,15 @@ export function CodeEditor({
   // accessibility tree and the field reads as unlabelled.
   const label = rest["aria-label"];
   const describedBy = mergeDescribedBy(field.describedById, undefined);
+  // NOTE: the counter `<Textarea>` renders, kept when the body moved off one: the change filter
+  // REFUSES an edit at the cap, so without it the field simply stops accepting characters with
+  // nothing on screen saying why. Same threshold as the textarea's, so warning arrives before the
+  // wall rather than at it, and the same over-limit line for a body that arrived past the cap and
+  // has to be edited down.
+  const count = value.length;
+  const over = typeof maxLength === "number" && count > maxLength;
+  const showCount =
+    typeof maxLength === "number" && count >= maxLength * COUNTER_FROM;
 
   // NOTE: the editor is built ONCE. `value` is applied by the effect below and the completion source
   // by its compartment; listing either here would tear the editor down on every keystroke, taking
@@ -453,14 +465,35 @@ export function CodeEditor({
   }, [namesKey, completionSlot, i18n.language]);
 
   return (
-    <div
-      ref={host}
-      className={cn(
-        "w-full overflow-hidden [&_.cm-editor]:min-h-[var(--code-min-h)]",
-        invalid || field.invalid ? "[&_.cm-editor]:border-error" : "",
-        className,
+    <div className="w-full">
+      <div
+        ref={host}
+        className={cn(
+          "w-full overflow-hidden [&_.cm-editor]:min-h-[var(--code-min-h)]",
+          invalid || field.invalid || over ? "[&_.cm-editor]:border-error" : "",
+          className,
+        )}
+        style={{ "--code-min-h": minHeight } as React.CSSProperties}
+      />
+      {showCount && (
+        <span
+          className={cn(
+            "mt-1 block text-right text-xs",
+            over ? "text-error" : "text-text-muted",
+          )}
+        >
+          {`${count}/${maxLength}`}
+        </span>
       )}
-      style={{ "--code-min-h": minHeight } as React.CSSProperties}
-    />
+      {over && typeof maxLength === "number" && (
+        <span className="mt-1 block text-error text-xs">
+          {t(
+            "codeTools.codeOverLimit",
+            "{{count}} character over the limit. Shorten the body: a save above {{max}} is refused.",
+            { count: count - maxLength, max: maxLength },
+          )}
+        </span>
+      )}
+    </div>
   );
 }

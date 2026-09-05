@@ -19,6 +19,7 @@ import {
   toolList,
   vaultList,
 } from "@/modules/mcp/read";
+import { MODEL_RESPONSE_CHAR_LIMIT } from "@/modules/tool-definitions/response-template";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // MCP read tools: the read gate (mcp:read scope + tenant target) is DB-free and always runs; the
@@ -97,27 +98,48 @@ describe("MCP read gate (no DB)", () => {
     expect(body.failure).toContain("OPERATOR");
   });
 
-  // Six limits are served and ONE of them is not a failure: arguments over `inputMaxChars` never
-  // reach the body and come back as an ordinary result saying to call again with less
-  // (graph/tools/code.ts marks `failed: false`), while every other limit marks the call failed. A
-  // contract that groups them reads a correctable argument size as a broken tool.
-  test("the argument-size limit is described as the correctable one it is", () => {
+  // The seven limits bite at THREE different moments, and a contract that groups them misleads in
+  // both directions: a correctable argument size reads as a broken tool, and an authoring refusal
+  // reads as an outage. `timeoutMs`/`memoryBytes`/`stackBytes`/`contextMaxChars` mark the call
+  // failed; `inputMaxChars` comes back as an ordinary result saying to call again with less
+  // (graph/tools/code.ts marks `failed: false`); `codeMaxChars` is refused on the WRITE, so no call
+  // exists to fail. Each sentence is asserted to claim its own and not the others'.
+  test("each limit is described at the moment it actually bites", () => {
     const r = codeToolSchema(principal({}));
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     const body = r.data as {
       limits: Record<string, number>;
+      result: string;
       failure: string;
       argumentsTooLarge: string;
+      authoringRefusal: string;
     };
     expect(body.limits.inputMaxChars).toBe(CODE_TOOL_INPUT_MAX_CHARS);
-    // The failure sentence names the limits that ARE failures, and does not claim the other one.
-    for (const named of ["timeoutMs", "memoryBytes", "stackBytes"]) {
+    expect(body.limits.resultMaxChars).toBe(MODEL_RESPONSE_CHAR_LIMIT);
+    for (const named of [
+      "timeoutMs",
+      "memoryBytes",
+      "stackBytes",
+      "contextMaxChars",
+    ]) {
       expect([named, body.failure.includes(named)]).toEqual([named, true]);
     }
-    expect(body.failure).not.toContain("inputMaxChars");
+    for (const notAFailure of ["inputMaxChars", "codeMaxChars"]) {
+      expect([notAFailure, body.failure.includes(notAFailure)]).toEqual([
+        notAFailure,
+        false,
+      ]);
+    }
     expect(body.argumentsTooLarge).toContain("inputMaxChars");
-    expect(body.argumentsTooLarge).toContain("NOT a failure");
+    expect(body.argumentsTooLarge).toContain("not a failure");
+    // An authoring refusal, not a call outcome: nothing is saved, so nothing can fail.
+    expect(body.authoringRefusal).toContain("codeMaxChars");
+    expect(body.authoringRefusal).toContain("REFUSED");
+    // The return value is CLIPPED, and the agent cannot tell a clipped answer from a short one, so
+    // the cap is published rather than left to be discovered by a wrong answer.
+    expect(body.result).toContain("resultMaxChars");
+    expect(body.result).toContain("CLIPPED");
   });
 });
 

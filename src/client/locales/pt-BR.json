@@ -400,6 +400,10 @@
     "addTitle": "Nova ferramenta de código",
     "code": "Código",
     "codeHelp": "O corpo de uma função JavaScript que o agente chama. `input` guarda os argumentos que você declarou acima; `context` guarda os valores da conversa. Digite `input.` ou `context.` para ver a lista inteira, com o tipo de cada um e se ele pode estar ausente. Responda com `return`.\n\nO que você retornar é entregue ao agente como JSON, e a saída de console.log volta junto. TIMEZONE, NOW_LOCAL e Date rodam no fuso do agente.\n\nNão há rede, nem imports, nem async: uma promise retornada é um erro. Uma execução tem 1000 ms e 32 MB; um throw ou um limite é uma falha, um valor retornado é um resultado. Código inválido ainda é salvo e falha quando o agente o chama.",
+    "codeOverLimit_zero": "{{count}} caracteres acima do limite. Encurte o corpo: um save acima de {{max}} é recusado.",
+    "codeOverLimit_one": "{{count}} caractere acima do limite. Encurte o corpo: um save acima de {{max}} é recusado.",
+    "codeOverLimit_many": "{{count}} caracteres acima do limite. Encurte o corpo: um save acima de {{max}} é recusado.",
+    "codeOverLimit_other": "{{count}} caracteres acima do limite. Encurte o corpo: um save acima de {{max}} é recusado.",
     "completion": {
       "argumentDetail": "argumento",
       "argumentInfo": "Declarado em Argumentos, acima.",
@@ -412,7 +416,7 @@
         "contact_phone": "O telefone do contato. Ausente quando o contato não tem telefone.",
         "contactAttributes": "Os atributos personalizados do contato, nos mesmos termos de conversationAttributes. Objeto vazio quando não há nenhum.",
         "conversation_id": "Id da conversa no Chatwoot. Ausente quando a ferramenta roda fora de uma conversa (o playground, um teste).",
-        "conversationAttributes": "Os atributos personalizados da conversa, espelhados do Chatwoot e lidos no momento da CHAMADA, então um valor escrito antes no mesmo turno já está aqui. Objeto vazio quando não há nenhum.",
+        "conversationAttributes": "Os atributos personalizados da conversa, espelhados do Chatwoot e lidos no momento da CHAMADA, então um valor que o set_custom_attribute escreveu num passo ANTERIOR do turno já está aqui. Não um escrito no mesmo passo: as chamadas de ferramenta de uma mesma mensagem do modelo rodam juntas, então essas duas correm. Objeto vazio quando não há nenhum.",
         "inbox_id": "Id da caixa de entrada no Chatwoot. Ausente fora de uma conversa.",
         "inbox_name": "O nome da caixa de entrada. Ausente quando ela não tem nome.",
         "message_id": "Id no Chatwoot da mensagem que disparou este turno. Ausente fora de uma conversa."

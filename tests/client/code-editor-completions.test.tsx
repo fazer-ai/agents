@@ -117,6 +117,50 @@ describe("the editor the operator actually gets", () => {
     expect(view.state.doc.toString()).toBe("return 2;");
   });
 
+  // The counter `<Textarea>` renders, which the body lost when it moved off one. It matters MORE
+  // here, because the filter below refuses the edit instead of clamping the value: without a
+  // counter the field simply stops accepting characters and says nothing about why.
+  test("the counter appears near the cap and marks a body already past it", () => {
+    const { rerender } = render(
+      <CodeEditor
+        value={"x".repeat(79)}
+        onChange={() => {}}
+        maxLength={100}
+        aria-label="Code"
+      />,
+    );
+    const counted = () =>
+      [...document.body.querySelectorAll("span")]
+        .map((n) => n.textContent ?? "")
+        .filter((tx) => /^\d+\/100$/.test(tx));
+    // Below the threshold the field looks like any other.
+    expect(counted()).toEqual([]);
+    rerender(
+      <CodeEditor
+        value={"x".repeat(80)}
+        onChange={() => {}}
+        maxLength={100}
+        aria-label="Code"
+      />,
+    );
+    expect(counted()).toEqual(["80/100"]);
+    rerender(
+      <CodeEditor
+        value={"x".repeat(101)}
+        onChange={() => {}}
+        maxLength={100}
+        aria-label="Code"
+      />,
+    );
+    expect(counted()).toEqual(["101/100"]);
+    // A body that ARRIVED past the cap has to say what it costs: the save is refused, not clamped.
+    const over = [...document.body.querySelectorAll("span")].find((n) =>
+      /over the limit/.test(n.textContent ?? ""),
+    );
+    expect(over?.textContent).toContain("1 character");
+    expect(over?.className).toContain("text-error");
+  });
+
   // The cap the browser enforces on a textarea's `maxLength`, enforced here as a REFUSAL: a paste
   // that would overflow leaves the document as it was rather than landing half a line.
   test("a change past maxLength is refused, and an over-cap value still edits DOWN", () => {

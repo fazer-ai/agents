@@ -98,7 +98,7 @@ export const CODE_TOOL_CONTEXT_VARS: readonly CodeToolContextVar[] = [
     type: "object",
     always: true,
     description:
-      "The conversation's custom attributes, mirrored from Chatwoot and read when the tool is CALLED, so a value written earlier in the same turn is already here. Empty object when there are none.",
+      "The conversation's custom attributes, mirrored from Chatwoot and read when the tool is CALLED, so a value set_custom_attribute wrote in an EARLIER step of the turn is already here. Not one written in the same step: the tool calls of a single model message run together, so those two race. Empty object when there are none.",
   },
   {
     name: "contactAttributes",

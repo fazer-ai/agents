@@ -263,6 +263,11 @@ export async function codeToolGet(
 // limits that turn a run into a failure. Everything here is derived from the modules that enforce
 // it, never restated, so the answer cannot drift from the sandbox.
 //
+// Six limits are served and one of them is not a failure, so they are described in two sentences
+// rather than one. `inputMaxChars` is the model's doing and comes back as an ordinary result that
+// says what to change (graph/tools/code.ts), while every other limit is marked failed; a caller told
+// they are all failures reads a correctable argument size as a broken tool and stops calling it.
+//
 // No gate of its own beyond the read gate: it is a constant, not tenant data. It still goes through
 // `readGate` so an unscoped principal gets the same refusal every other read gives, rather than a
 // surface that answers before the fence.
@@ -282,7 +287,9 @@ export function codeToolSchema(principal: VerifiedToken): WriteResult {
     result:
       "Whatever the body returns is rendered for the agent, JSON where JSON can say it. Returning nothing answers `undefined`. A returned promise is an ERROR: the sandbox has no event loop, so `async`, `await` and a returned promise are not supported.",
     failure:
-      "A throw, a syntax error, or a limit is the OPERATOR's failure, not the agent's: the call is marked failed, the agent answers without the tool, and the flow log keeps the reason. Only a returned value is a normal result.",
+      "A throw, a syntax error, or hitting timeoutMs, memoryBytes or stackBytes is the OPERATOR's failure, not the agent's: the call is marked failed, the agent answers without the tool, and the flow log keeps the reason. The conversation's attributes exceeding contextMaxChars fails the same way, and is the tenant's data rather than the body. Only a returned value is a normal result.",
+    argumentsTooLarge:
+      "inputMaxChars is the one limit that is NOT a failure. Arguments over it never reach the body: the call comes back as an ordinary result telling the agent to call again with less, the way a schema refusal does, and nothing is marked failed.",
     available:
       "TIMEZONE and NOW_LOCAL as strings, and Date in the agent's zone. No network, no fetch, no imports, no require, no async.",
     limits: {

@@ -4,6 +4,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import {
   CODE_TOOL_CONTEXT_MAX_CHARS,
+  CODE_TOOL_INPUT_MAX_CHARS,
   SANDBOX_CODE_MAX_CHARS,
   SANDBOX_TIMEOUT_MS,
 } from "@/graph/tools/code-sandbox-limits";
@@ -94,6 +95,29 @@ describe("MCP read gate (no DB)", () => {
     // The two semantics an agent cannot discover by trying without breaking a live turn.
     expect(body.result).toContain("promise");
     expect(body.failure).toContain("OPERATOR");
+  });
+
+  // Six limits are served and ONE of them is not a failure: arguments over `inputMaxChars` never
+  // reach the body and come back as an ordinary result saying to call again with less
+  // (graph/tools/code.ts marks `failed: false`), while every other limit marks the call failed. A
+  // contract that groups them reads a correctable argument size as a broken tool.
+  test("the argument-size limit is described as the correctable one it is", () => {
+    const r = codeToolSchema(principal({}));
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const body = r.data as {
+      limits: Record<string, number>;
+      failure: string;
+      argumentsTooLarge: string;
+    };
+    expect(body.limits.inputMaxChars).toBe(CODE_TOOL_INPUT_MAX_CHARS);
+    // The failure sentence names the limits that ARE failures, and does not claim the other one.
+    for (const named of ["timeoutMs", "memoryBytes", "stackBytes"]) {
+      expect([named, body.failure.includes(named)]).toEqual([named, true]);
+    }
+    expect(body.failure).not.toContain("inputMaxChars");
+    expect(body.argumentsTooLarge).toContain("inputMaxChars");
+    expect(body.argumentsTooLarge).toContain("NOT a failure");
   });
 });
 

@@ -230,9 +230,18 @@ describe("runSandboxedCode", () => {
     // Overstating it inflates `leftMs` by the same amount, which leaves the render enough real time
     // to finish WITHOUT the renewal — and the assertions below cannot see it, because they subtract
     // the same overstated number.
+    const clockT0 = performance.now();
     const clock = await runSandboxedCode("Date.now()", { timeoutMs: 30_000 });
+    const clockWall = performance.now() - clockT0;
     expect(clock.kind).toBe("value");
     const setupMs = (clock as { ms: number }).ms;
+    // ...and the same call answers a SECOND question: what a round trip costs when the value is
+    // tiny. `wall - ms` on any call folds in spawning the worker and dispatching to it, which happen
+    // before `run()` starts its own clock and are not rendering anything. Measured, that is 9-14 ms
+    // here and it is the term the round-2 finding is about: on a runner where startup drags, it
+    // inflates the render figure below without the render getting any slower.
+    const overheadMs = clockWall - setupMs;
+    expect(overheadMs).toBeGreaterThan(0);
 
     // RENDER: wall minus the span `ms` covers, which ends before the render begins.
     const t0 = performance.now();
@@ -243,17 +252,21 @@ describe("runSandboxedCode", () => {
     const wall = performance.now() - t0;
     expect(baseline.kind).toBe("value");
     const buildMs = (baseline as { ms: number }).ms;
-    const renderMs = wall - buildMs;
+    // NET of the round-trip cost above, so what is left is the render plus carrying its result back
+    // — and no longer moves with how long the worker took to come up. Measured at this N: 66-74 ms
+    // gross, 9-14 ms of that being startup, 52-64 ms net, against an interpreter render the sweep
+    // below puts at 30-40 ms.
+    const renderMs = wall - buildMs - overheadMs;
     // The premise, asserted rather than assumed: there has to BE a render to interrupt.
     expect(renderMs).toBeGreaterThan(1);
 
-    // A QUARTER of the wall figure, not half of it, because `renderMs` is not the render: it is the
-    // render PLUS carrying the result back across the thread boundary. Swept with the renewal
-    // removed, which is the only way to see the interpreter's half alone: at 20k the render is
-    // interrupted with 20 ms left and fits with 25, and at 40k it is interrupted with 30 and fits
-    // with 40 — about half of what the wall reports either way. Sizing the leftover at half the wall
-    // therefore lands ON that threshold: measured, the mutation this test exists to catch survived
-    // 2 runs in 5. A quarter is half the interpreter's own render, with the sweep either side of it.
+    // A QUARTER of that, because even net of the round trip it is the render PLUS carrying the
+    // result back. Swept with the renewal removed, which is the only way to see the interpreter's
+    // half alone: at 20k the render is interrupted with 20 ms left and fits with 25, and at 40k it
+    // is interrupted with 30 and fits with 40. Against the 52-64 ms net that is a ratio near 0.6, so
+    // sizing the leftover at HALF would land on the threshold — measured, the mutation this test
+    // exists to catch survived 2 runs in 5 that way. A quarter is 13-16 ms against a threshold of
+    // 30, and the two ends of that margin are the sweep and the measurement, not a guess.
     const leftMs = setupMs + Math.floor(renderMs / 4);
     // THE SIZING IS THE TEST, so it is asserted and not merely computed. Both bounds were shown to
     // matter by mutation: with the leftover at 3x the render, and with the spin below removed, this

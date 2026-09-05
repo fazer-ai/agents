@@ -16,6 +16,7 @@ import {
   HighlightStyle,
   indentOnInput,
   syntaxHighlighting,
+  syntaxTree,
 } from "@codemirror/language";
 import {
   Annotation,
@@ -291,9 +292,33 @@ function rootCompletions(t: TFunction): Completion[] {
 // there writes code about the wrong object. The character before the match settles it: an
 // identifier character means the name is the end of a longer one, and a dot means it is already a
 // member of something else.
+//
+// `\p{ID_Continue}` and not `\w`, because `\w` is ASCII and a JavaScript identifier is not:
+// `\u00e9context` is one name a body may legally declare, and an ASCII-only test reads the `\u00e9`
+// as a boundary and calls the tail a root.
+const IDENTIFIER_CHAR = /[\p{ID_Continue}$.\u200c\u200d]/u;
+
 function isRootWord(ctx: CompletionContext, from: number): boolean {
   if (from === 0) return true;
-  return !/[\w$.]/.test(ctx.state.doc.sliceString(from - 1, from));
+  return !IDENTIFIER_CHAR.test(ctx.state.doc.sliceString(from - 1, from));
+}
+
+// A string or a comment is TEXT, and a dot in text is punctuation rather than a member access.
+// Offering there describes the sandbox's vocabulary to prose, and accepting an entry rewrites the
+// quoted words. The parse is already in the state for the highlighting, so this costs a lookup.
+//
+// The INNERMOST node and no walk up the ancestors: the hole in a template string resolves to the
+// expression inside it, while its ancestors include the `TemplateString`, so a walk would block
+// `${context.name}`, which is code and is where a body most often reads a variable.
+const TEXT_NODES = new Set([
+  "String",
+  "TemplateString",
+  "LineComment",
+  "BlockComment",
+]);
+
+function inText(ctx: CompletionContext): boolean {
+  return TEXT_NODES.has(syntaxTree(ctx.state).resolveInner(ctx.pos, -1).name);
 }
 
 export function sourceFor(
@@ -301,6 +326,7 @@ export function sourceFor(
   t: TFunction,
 ): (ctx: CompletionContext) => CompletionResult | null {
   return (ctx) => {
+    if (inText(ctx)) return null;
     // NOTE: after a DOT, and the dot is what makes this cheap: no parse, no scope analysis, just the two
     // roots this sandbox actually has. `context ?. name` and `context.  name` are the same request,
     // so the whitespace the formatter may leave is allowed on both sides of the dot.

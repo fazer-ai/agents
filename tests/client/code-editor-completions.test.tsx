@@ -8,6 +8,7 @@ import {
   startCompletion,
 } from "@codemirror/autocomplete";
 import { undo } from "@codemirror/commands";
+import { javascript } from "@codemirror/lang-javascript";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { act, cleanup, render } from "@testing-library/react";
@@ -488,8 +489,10 @@ describe("the popup speaks the console's language", () => {
 // the same regex: `mycontext.` is one identifier, `config.input.` is somebody else's member, and
 // offering this sandbox's vocabulary there writes code about the wrong object.
 describe("only the root `context` and `input` complete", () => {
+  // With the language, because the editor always has it and the guard below reads the syntax tree:
+  // a state without `javascript()` parses to nothing and would answer every question the same way.
   function ask(doc: string) {
-    const state = EditorState.create({ doc });
+    const state = EditorState.create({ doc, extensions: [javascript()] });
     return sourceFor(
       ["cpf"],
       i18n.t,
@@ -522,6 +525,67 @@ describe("only the root `context` and `input` complete", () => {
     expect(ask("payload?.context.")).toBeNull();
     // The bare-word branch has the same hole: after a dot, `context` and `input` are not in scope.
     expect(ask("obj.con")).toBeNull();
+  });
+});
+
+// The dot is what makes the offer cheap, and it is also what a string and a comment are full of.
+// `console.log("context.")` is not a member access, and neither is a note the operator left for
+// themselves: completing there offers this sandbox's vocabulary about text, and accepting an entry
+// rewrites the quoted words. The language is already loaded for the highlighting, so the parse is
+// there to be asked.
+describe("text is not code: no completion inside a string or a comment", () => {
+  function ask(doc: string) {
+    const state = EditorState.create({ doc, extensions: [javascript()] });
+    return sourceFor(
+      ["cpf"],
+      i18n.t,
+    )(new CompletionContext(state, doc.length, true));
+  }
+
+  const quiet: Array<[string, string]> = [
+    ["an argument being logged", 'console.log("context.'],
+    ["a finished string", 'const s = "context.'],
+    ["a single-quoted one", "const s = 'input."],
+    ["a template with no hole", "const s = `context."],
+    ["a line comment", "// context."],
+    ["a block comment", "/* context."],
+    ["a bare word inside a string", 'const s = "cont'],
+  ];
+  for (const [name, doc] of quiet) {
+    test(name, () => {
+      expect(ask(doc)).toBeNull();
+    });
+  }
+
+  // The hole in a template IS code, and the commonest place a body builds a message from a
+  // variable. Blocking the whole template string would take this with it.
+  test("but the hole in a template string completes", () => {
+    expect(
+      ask("const s = `hi ${context.")?.options.map((o) => o.label),
+    ).toContain("contact_name");
+  });
+});
+
+// `\w` is ASCII, and a JavaScript identifier is not: `\u00e9context` is one name, not `context`
+// preceded by a letter the check cannot see. Offering there writes members of this sandbox onto
+// somebody else's object, which is the same defect the root anchoring exists to prevent.
+describe("a non-ASCII identifier is still one identifier", () => {
+  function ask(doc: string) {
+    const state = EditorState.create({ doc, extensions: [javascript()] });
+    return sourceFor(
+      ["cpf"],
+      i18n.t,
+    )(new CompletionContext(state, doc.length, true));
+  }
+
+  for (const doc of ["\u00e9context.", "ma\u00e7input.", "\u4e0acontext."]) {
+    test(`${doc} is not a root`, () => {
+      expect(ask(doc)).toBeNull();
+    });
+  }
+
+  test("and the roots themselves still answer", () => {
+    expect(ask("context.")?.options.length).toBeGreaterThan(0);
   });
 });
 

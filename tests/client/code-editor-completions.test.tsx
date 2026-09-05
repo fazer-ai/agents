@@ -153,6 +153,13 @@ describe("the editor the operator actually gets", () => {
       />,
     );
     expect(counted()).toEqual(["101/100"]);
+    // And the editor HOLDS it. The cap refuses an edit, and a write from the prop is not an edit:
+    // refusing one would leave the counter saying 101 over a document still holding 80, and the
+    // next keystroke would write that stale text back over a value never shown.
+    const view = EditorView.findFromDOM(
+      document.body.querySelector(".cm-editor") as HTMLElement,
+    ) as EditorView;
+    expect(view.state.doc.length).toBe(101);
     // A body that ARRIVED past the cap has to say what it costs: the save is refused, not clamped.
     const over = [...document.body.querySelectorAll("span")].find((n) =>
       /over the limit/.test(n.textContent ?? ""),

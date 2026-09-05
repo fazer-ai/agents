@@ -16,6 +16,7 @@ import {
   syntaxHighlighting,
 } from "@codemirror/language";
 import {
+  Annotation,
   Compartment,
   EditorState,
   type Extension,
@@ -197,6 +198,13 @@ function contextCompletions(t: TFunction): Completion[] {
 
 // Below this fraction of the cap the counter is noise, exactly as in `Textarea`.
 const COUNTER_FROM = 0.8;
+
+// The mark on a write that came from the PROP rather than from the keyboard. The cap below refuses
+// an edit, and a controlled write is not an edit: refusing one leaves CodeMirror showing a document
+// the form no longer holds, silently, and the operator's next keystroke then writes that stale text
+// back over the value they never saw. A body arriving over the cap is exactly the case this
+// component exists to let them shorten.
+const CONTROLLED = Annotation.define<boolean>();
 
 const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 
@@ -443,6 +451,7 @@ export function CodeEditor({
       extensions.push(
         EditorState.changeFilter.of((tr) => {
           if (!tr.docChanged) return true;
+          if (tr.annotation(CONTROLLED)) return true;
           const before = tr.startState.doc.length;
           const after = tr.newDoc.length;
           return after <= maxLength || after <= before;
@@ -475,7 +484,7 @@ export function CodeEditor({
     if (current === value) return;
     v.dispatch({
       changes: { from: 0, to: current.length, insert: value },
-      annotations: Transaction.addToHistory.of(false),
+      annotations: [Transaction.addToHistory.of(false), CONTROLLED.of(true)],
     });
   }, [value]);
 

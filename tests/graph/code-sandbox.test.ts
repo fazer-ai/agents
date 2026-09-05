@@ -189,26 +189,26 @@ describe("runSandboxedCode", () => {
   //
   // So the body no longer races its own budget. It builds the value with the budget wide open, then
   // SPINS on `Date.now()` until a chosen instant, which puts the end of the body at a wall-clock
-  // point that does not move with how fast the build was. A stall during the build is absorbed by
-  // the spin instead of being fatal.
+  // point that does not move with how fast the build was. A stall during the build is absorbed
+  // whole, because the spin targets an absolute instant and not a duration.
   //
-  // The leftover the render then has to live on is `setup + render/2`, and both halves are measured
-  // rather than written down, because the safe window is `(setup, setup + render)` and BOTH of its
-  // ends scale with the machine:
+  // WHAT IS LEFT WHEN THE BODY RETURNS IS MEASURED, ON THIS MACHINE, FROM THE REPLY. One quantity
+  // decides the whole test: the span between the deadline starting in `open()` and the snippet's
+  // first statement -- call it the setup. Ask for a leftover below it and the BODY is interrupted;
+  // ask for one above `setup + render` and the render fits anyway and the renewal guards nothing.
+  // Four review rounds each found a different contaminant in a host-side ESTIMATE of that span
+  // (worker startup, dispatch, result transfer, per-call jitter, disposal after the render), because
+  // `wall - ms` is not the setup and no correction term turns it into one.
   //
-  //   - above `setup`, or the BODY is interrupted (setup is the span from the deadline starting in
-  //     `open()` to the snippet's first statement -- 16-23 ms here, and it is not zero);
-  //   - below `setup + render`, or the render fits anyway and the renewal guards nothing.
+  // It does not have to be estimated. On a run that came back at all, `ms` covers the setup plus the
+  // body, and the body ends at an instant this test chose, so the setup falls straight out of the
+  // reply:
   //
-  // Halfway between them satisfies both by ALGEBRA, on any machine: the leftover is
-  // `leftMs - setupMs = render/2`, which is positive and less than `render` whatever those numbers
-  // turn out to be. Nothing here is a margin that a slower machine can exhaust.
+  //     setupMs = leftMs - (budgetMs - ms)
   //
-  // What that buys, measured by shrinking the budget, which is exactly what losing time to a stall
-  // does: the previous shape survives a stall of 14 ms and fails at 15; this one survives 89 and
-  // fails at 90. The factor matters less than WHICH quantity it is a fraction of -- the old margin
-  // was half the BUILD, which the second run had to beat, and this one is half the RENDER, which
-  // grows on exactly the machines where the old one ran out.
+  // A calibration run with a leftover nothing could exhaust reads it off; the run that is asserted
+  // on then asks for that plus a sliver. A machine three times slower measures three times more and
+  // asks for three times more, and no constant written here has to cover it.
   test("a value built with the last of the budget is still rendered whole", async () => {
     // N IS BOUNDED FROM ABOVE BY A DEADLINE THIS TEST DOES NOT CONTROL. The renewal installs a
     // FIXED `RENDER_BUDGET_MS`, so a value too big to render inside it fails even on a call with a
@@ -218,23 +218,6 @@ describe("runSandboxedCode", () => {
     const BUILD = `Array.from({ length: ${N} }, (_, i) => ({ i }))`;
     const CHARS = 20_000_000;
 
-    // NOTHING HERE ESTIMATES THE RENDER, and that is the point. Four review rounds each found a
-    // different contaminant in the same host-side estimate of it -- worker startup, dispatch,
-    // result transfer, per-call jitter, disposal after the render -- because `wall - ms` is not the
-    // render and no correction term makes it into one. So the leftover is not sized against it: it
-    // is made SMALL ENOUGH that any render at all exceeds it, and the body is protected by what the
-    // run itself reports rather than by a figure guessed beforehand.
-    //
-    // The two ways this can end are distinguishable, which is what makes the correction below safe
-    // (measured, both shapes):
-    //
-    //   body interrupted   -> kind "limit", limit "time", and NO `ms`
-    //   render interrupted -> kind "error", name "InternalError", WITH `ms`
-    //
-    // So a `limit` means the leftover was too small and the arithmetic is corrected by the amount
-    // the run itself gives up; an `error` is the defect this test exists to catch and is never
-    // retried past. A retry loop that could not tell them apart would grow the leftover until the
-    // render fits and report green.
     const attempt = async (leftMs: number) => {
       const budgetMs = leftMs + 500;
       const spun = `const t0 = Date.now(); const v = ${BUILD}; while (Date.now() - t0 < ${budgetMs - leftMs}) {} v`;
@@ -242,30 +225,66 @@ describe("runSandboxedCode", () => {
         timeoutMs: budgetMs,
         maxChars: CHARS,
       });
-      // `ms` covers the setup plus the body, so what is left of the budget when the body returned is
-      // exactly this -- measured on the run that matters, not carried over from another one.
+      // What the run itself says was left of the budget when the body returned -- measured on the run
+      // that matters, never carried over from another one. A `limit` reply carries no `ms` at all
+      // (the host drops it), so nothing here can read a number off an interrupted run by accident.
       const leftoverMs =
         "ms" in out ? budgetMs - (out as { ms: number }).ms : null;
       return { out, leftoverMs };
     };
 
-    // Three milliseconds, which is below any render of 40,000 objects on any machine. Where it is
-    // too small, the body is interrupted and says by how much.
-    let leftMs = 3;
-    let r = await attempt(leftMs);
-    for (let i = 0; i < 4 && r.out.kind === "limit"; i++) {
-      // The body needed more than it had. Give it exactly the shortfall the run reports, plus a
-      // millisecond, and no more: every millisecond added here is one the render gets for free.
-      leftMs += 1 + (r.leftoverMs === null ? 3 : Math.ceil(-r.leftoverMs));
-      r = await attempt(leftMs);
+    // 64 ms is six times the setup measured here (10-12 ms), and its job is only to be survivable,
+    // not to be right: whatever the leftover turns out to be, the subtraction gives the setup. A
+    // machine slow enough to spend more than that measures itself at 128, then 256; the ceiling is a
+    // runaway guard, not a budget, and hitting it fails on the null rather than inventing a number.
+    let calMs = 64;
+    const calibrate = async () => {
+      let probe = await attempt(calMs);
+      while (probe.out.kind === "limit" && calMs < 1024) {
+        calMs *= 2;
+        probe = await attempt(calMs);
+      }
+      expect(probe.leftoverMs).not.toBeNull();
+      return calMs - (probe.leftoverMs as number);
+    };
+    // TWICE, KEEPING THE SMALLER, because the two directions of error are not symmetric. A setup
+    // read too small makes the asserted run ask for less than it needs, which comes back `limit` and
+    // the loop below corrects. One read too large hands the render a leftover it should never have
+    // had, and a render that fits is exactly what this test cannot tell from a render that was
+    // renewed -- it would report green over the defect. So the estimate is biased to the recoverable
+    // side. The first call is also what warms the interpreter, which running this test alone would
+    // otherwise pay inside the only measurement it has.
+    const firstSetupMs = await calibrate();
+    const setupMs = Math.min(firstSetupMs, await calibrate());
+
+    // Now the setup plus a sliver. The sliver is allowed to be a constant BECAUSE it no longer
+    // covers the setup, which is measured above: it covers only how much that setup moves between
+    // two runs on the same machine, which is small and does not grow with how slow the machine is
+    // (measured here: 10-12 ms over 8 runs, a spread of 2). Three retries walk it from 2 ms to 5,
+    // and a run still coming back `limit` after that is arithmetic that does not converge rather
+    // than a runner having a bad day.
+    //
+    // The two ways this can end are distinguishable, which is what makes retrying on one of them
+    // safe (measured, both shapes):
+    //
+    //   body interrupted   -> kind "limit", limit "time", and NO `ms`
+    //   render interrupted -> kind "error", name "InternalError", WITH `ms`
+    //
+    // So `limit` means the sliver lost to jitter and is retried; `error` is the defect this test
+    // exists to catch and is never retried past. A retry loop blind to the difference would grow the
+    // leftover until the render fits and report green.
+    let r = await attempt(setupMs + 2);
+    for (let i = 1; i <= 3 && r.out.kind === "limit"; i++) {
+      r = await attempt(setupMs + 2 + i);
     }
     const { out, leftoverMs } = r;
 
-    // Not `limit`: after the corrections above, a body still being interrupted is not a slow machine
-    // but arithmetic that does not converge.
     expect(out.kind).toBe("value");
-    // ...and the leftover the render actually had is a couple of milliseconds, which no render of
-    // this value fits into. Measured here: the loop settles at 1-3 ms from a starting 3.
+    // ...and the leftover that render actually had is a couple of milliseconds, far under any
+    // render of this value: swept with the defect present, a leftover of 30 ms still interrupts the
+    // render at this N and 40 ms lets it through, so 15 keeps a factor of two under the boundary.
+    // Measured end to end, the whole shape above settles at a leftover of 1-2 ms and needed no retry
+    // in 5 tries.
     //
     // ONLY THE UPPER BOUND IS ASSERTED. `ms` is rounded to the millisecond and the deadline is a
     // poll, so a body that finished perfectly well reports a leftover of 0 or -1 often enough to
@@ -277,7 +296,7 @@ describe("runSandboxedCode", () => {
     const v = (out as { value: string }).value;
     expect(v.startsWith('[{"i":0},{"i":1}')).toBe(true);
     expect(v.endsWith(`{"i":${N - 1}}]`)).toBe(true);
-    // Comfortably above the five round trips this can take, so nothing here is bounded by a default
+    // Comfortably above the six round trips this can take, so nothing here is bounded by a default
     // nobody chose.
   }, 20_000);
 

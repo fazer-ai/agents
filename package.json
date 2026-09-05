@@ -56,6 +56,7 @@
     "@langchain/mcp-adapters": "1.1.4",
     "@langchain/openai": "1.5.10",
     "@langchain/textsplitters": "1.0.1",
+    "@lezer/highlight": "^1.2.3",
     "@modelcontextprotocol/sdk": "^1",
     "@prisma/adapter-pg": "^7.9.1",
     "@prisma/client": "^7.9.1",

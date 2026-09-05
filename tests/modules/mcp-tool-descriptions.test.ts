@@ -458,6 +458,15 @@ describe("MCP tool descriptions", () => {
   // the two CPF/CNPJ helpers came out with the helpers themselves, which is the 54 characters that
   // pay for #520's `scope` and let the description ceiling stay where it was: 30,000, with the
   // same 14-character margin #520 left itself. The schema ceiling goes to 54,900.
+  // A fifteenth read tool, `code_tool_schema` (issue #538), and it is the cheap half of the trade it
+  // exists to make: 246 characters of description and 85 of schema, against the `context` vocabulary
+  // it serves, which would otherwise have to grow `code_tool_create`'s description by every key,
+  // type and absent-when clause. Same shape as `document_template_schema` two paragraphs down, for
+  // the same measured reason.
+  //
+  // REMEASURED on the tree that ships, never summed: 30,232 and 54,984, so the ceilings go to 30,250
+  // and 55,000. The margins are 18 and 16, as thin as the ones they replace and on
+  // purpose: the point of a ceiling here is that the next tool has to be measured too.
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;
@@ -466,8 +475,8 @@ describe("MCP tool descriptions", () => {
       desc += t.description.length;
       schema += t.schema.length;
     }
-    expect(desc).toBeLessThanOrEqual(30_000);
-    expect(schema).toBeLessThanOrEqual(54_900);
+    expect(desc).toBeLessThanOrEqual(30_250);
+    expect(schema).toBeLessThanOrEqual(55_000);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

@@ -387,7 +387,7 @@
   "codeTools": {
     "addTitle": "New code tool",
     "code": "Code",
-    "codeHelp": "The body of a JavaScript function the agent calls. `input` holds the arguments you declared above; `context` holds the conversation variables (contact_name, contact_email, conversation_id, and the rest). Answer with `return`.\n\nWhatever you return is rendered as JSON for the agent, and console.log output comes back with it. TIMEZONE, NOW_LOCAL and Date run in the agent's zone.\n\nThere is no network, no imports and no async. A run gets 1000 ms and 32 MB; a throw or a limit is a failure, a returned value is a result. Invalid code is still saved and fails when the agent calls it.",
+    "codeHelp": "The body of a JavaScript function the agent calls. `input` holds the arguments you declared above; `context` holds the conversation's values. Type `input.` or `context.` for the full list, with the type of each and whether it can be absent. Answer with `return`.\n\nWhatever you return is rendered as JSON for the agent, and console.log output comes back with it. TIMEZONE, NOW_LOCAL and Date run in the agent's zone.\n\nThere is no network, no imports and no async: a returned promise is an error. A run gets 1000 ms and 32 MB; a throw or a limit is a failure, a returned value is a result. Invalid code is still saved and fails when the agent calls it.",
     "description": "Description",
     "descriptionHint": "What the tool answers and when to call it. The agent reads this to decide, so it is required.",
     "descriptionPlaceholder": "e.g. Check whether a CPF is valid before quoting.",

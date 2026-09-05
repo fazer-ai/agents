@@ -1,6 +1,15 @@
 import basePrisma from "@/api/lib/prisma";
+import {
+  CODE_TOOL_CONTEXT_MAX_CHARS,
+  CODE_TOOL_INPUT_MAX_CHARS,
+  SANDBOX_CODE_MAX_CHARS,
+  SANDBOX_MEMORY_BYTES,
+  SANDBOX_STACK_BYTES,
+  SANDBOX_TIMEOUT_MS,
+} from "@/graph/tools/code-sandbox-limits";
 import { AUDIT_SCOPES, isAuditScope } from "@/lib/audit/scope";
 import { checkCodeToolSyntax } from "@/lib/code-tool-syntax";
+import { CODE_TOOL_CONTEXT_VARS } from "@/lib/code-tool-vocabulary";
 import { AppError } from "@/lib/errors";
 import { ACTOR_TYPES, type ActorType } from "@/lib/tenancy/actor";
 import { readAgentConfigHealth } from "@/modules/agents/config-health-read";
@@ -242,6 +251,49 @@ export async function codeToolGet(
   } catch (e) {
     return failOf(e);
   }
+}
+
+// The authoring contract for a code tool body, served on demand rather than inlined into
+// `code_tool_create`'s description (issue #538). The precedent is `document_template_schema`, and
+// the reason is the same one measured there: a vocabulary that every caller pays for on every
+// session, for a contract only a caller actually WRITING a body needs.
+//
+// It answers what a body cannot discover by trying: which `context` keys exist, which of them can be
+// ABSENT (all but three, because the runtime builds that object by spreading conditionals), and the
+// limits that turn a run into a failure. Everything here is derived from the modules that enforce
+// it, never restated, so the answer cannot drift from the sandbox.
+//
+// No gate of its own beyond the read gate: it is a constant, not tenant data. It still goes through
+// `readGate` so an unscoped principal gets the same refusal every other read gives, rather than a
+// surface that answers before the fence.
+export function codeToolSchema(principal: VerifiedToken): WriteResult {
+  const ctx = readGate(principal);
+  if ("ok" in ctx) return ctx;
+  return ok({
+    signature: "function (input, context) { ... }",
+    input:
+      "The arguments the agent sent, validated against the tool's inputSchema before the body runs. Only the fields you declared are present.",
+    context: CODE_TOOL_CONTEXT_VARS.map((v) => ({
+      name: v.name,
+      type: v.type,
+      always: v.always,
+      description: v.description,
+    })),
+    result:
+      "Whatever the body returns is rendered for the agent, JSON where JSON can say it. Returning nothing answers `undefined`. A returned promise is an ERROR: the sandbox has no event loop, so `async`, `await` and a returned promise are not supported.",
+    failure:
+      "A throw, a syntax error, or a limit is the OPERATOR's failure, not the agent's: the call is marked failed, the agent answers without the tool, and the flow log keeps the reason. Only a returned value is a normal result.",
+    available:
+      "TIMEZONE and NOW_LOCAL as strings, and Date in the agent's zone. No network, no fetch, no imports, no require, no async.",
+    limits: {
+      timeoutMs: SANDBOX_TIMEOUT_MS,
+      memoryBytes: SANDBOX_MEMORY_BYTES,
+      stackBytes: SANDBOX_STACK_BYTES,
+      codeMaxChars: SANDBOX_CODE_MAX_CHARS,
+      inputMaxChars: CODE_TOOL_INPUT_MAX_CHARS,
+      contextMaxChars: CODE_TOOL_CONTEXT_MAX_CHARS,
+    },
+  });
 }
 
 // ── document templates ──

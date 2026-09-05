@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Button,
+  CodeEditor,
   FormField,
   HelpPopover,
   Input,
@@ -507,7 +508,7 @@ export function CodeToolEditModal({
                     label={t("codeTools.code", "Code")}
                     content={t(
                       "codeTools.codeHelp",
-                      "The body of a JavaScript function the agent calls. `input` holds the arguments you declared above; `context` holds the conversation variables (contact_name, contact_email, conversation_id, and the rest). Answer with `return`.\n\nWhatever you return is rendered as JSON for the agent, and console.log output comes back with it. TIMEZONE, NOW_LOCAL and Date run in the agent's zone.\n\nThere is no network, no imports and no async. A run gets 1000 ms and 32 MB; a throw or a limit is a failure, a returned value is a result. Invalid code is still saved and fails when the agent calls it.",
+                      "The body of a JavaScript function the agent calls. `input` holds the arguments you declared above; `context` holds the conversation's values. Type `input.` or `context.` for the full list, with the type of each and whether it can be absent. Answer with `return`.\n\nWhatever you return is rendered as JSON for the agent, and console.log output comes back with it. TIMEZONE, NOW_LOCAL and Date run in the agent's zone.\n\nThere is no network, no imports and no async: a returned promise is an error. A run gets 1000 ms and 32 MB; a throw or a limit is a failure, a returned value is a result. Invalid code is still saved and fails when the agent calls it.",
                     )}
                   />
                 </span>
@@ -516,15 +517,13 @@ export function CodeToolEditModal({
               required
               error={refusal.at("code", current.code)}
             >
-              <Textarea
+              <CodeEditor
                 value={form.code}
-                onChange={(e) =>
-                  setForm((f) => ({ ...f, code: e.target.value }))
-                }
-                rows={14}
-                spellCheck={false}
+                onChange={(code) => setForm((f) => ({ ...f, code }))}
+                // NOTE: the names as they stand in the panel above, so `input.` completes to an
+                // argument the operator renamed a second ago, not the one that was last saved.
+                argumentNames={trimmedNames}
                 maxLength={SANDBOX_CODE_MAX_CHARS}
-                className="font-mono text-xs"
                 placeholder={STARTER_CODE}
                 aria-label={t("codeTools.code", "Code")}
               />

@@ -34,6 +34,12 @@
     "prepare": "husky"
   },
   "dependencies": {
+    "@codemirror/autocomplete": "^6.20.3",
+    "@codemirror/commands": "^6.11.0",
+    "@codemirror/lang-javascript": "^6.2.5",
+    "@codemirror/language": "^6.12.4",
+    "@codemirror/state": "^6.7.4",
+    "@codemirror/view": "^6.43.11",
     "@elysiajs/cookie": "^0.8.0",
     "@elysiajs/cors": "^1.4.2",
     "@elysiajs/eden": "^1.4.9",

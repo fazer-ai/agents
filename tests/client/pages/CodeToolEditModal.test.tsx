@@ -2,6 +2,7 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { EditorView } from "@codemirror/view";
 import {
   cleanup,
   fireEvent,
@@ -23,6 +24,24 @@ import {
 // Save (invalid code is SAVED and fails at call time, as the operator's failure).
 
 afterEach(cleanup);
+
+// The body is no longer a `<textarea>`: it is CodeMirror (issue #538), so `fireEvent.change` has
+// nothing to change. `EditorView.findFromDOM` is CodeMirror's own way to reach the view that owns a
+// node, so the test drives the REAL editor and its onChange rather than a stand-in for it, which is
+// what keeps these tests about the modal instead of about the widget.
+function setCode(text: string) {
+  const host = document.body.querySelector(".cm-editor") as HTMLElement;
+  const view = EditorView.findFromDOM(host);
+  if (!view) throw new Error("the code editor did not mount");
+  view.dispatch({
+    changes: { from: 0, to: view.state.doc.length, insert: text },
+  });
+}
+
+// The one textarea left in the form.
+function descriptionField(): HTMLTextAreaElement {
+  return document.body.querySelector("textarea") as HTMLTextAreaElement;
+}
 
 function codeTool(over: Partial<CodeTool> = {}): CodeTool {
   return {
@@ -179,16 +198,9 @@ test("an invalid body warns but leaves Save enabled", async () => {
   const input = document.body.querySelector("input") as HTMLInputElement;
   fireEvent.change(input, { target: { value: "Look up CPF" } });
 
-  const textareas = [...document.body.querySelectorAll("textarea")];
-  const description = textareas.find(
-    (ta) => !ta.className.includes("font-mono"),
-  ) as HTMLTextAreaElement;
-  const code = textareas.find((ta) =>
-    ta.className.includes("font-mono"),
-  ) as HTMLTextAreaElement;
-  fireEvent.change(description, { target: { value: "a description" } });
+  fireEvent.change(descriptionField(), { target: { value: "a description" } });
   // Does not parse: an unfinished expression.
-  fireEvent.change(code, { target: { value: "return input.cpf." } });
+  setCode("return input.cpf.");
 
   // The warning is debounced (300 ms) then computed by the same acorn check the server runs.
   await screen.findByText(/Line \d+, column \d+:/, {}, { timeout: 2000 });
@@ -204,15 +216,8 @@ test("a body with no return warns without disabling Save", async () => {
 
   const input = document.body.querySelector("input") as HTMLInputElement;
   fireEvent.change(input, { target: { value: "No return" } });
-  const textareas = [...document.body.querySelectorAll("textarea")];
-  const description = textareas.find(
-    (ta) => !ta.className.includes("font-mono"),
-  ) as HTMLTextAreaElement;
-  const code = textareas.find((ta) =>
-    ta.className.includes("font-mono"),
-  ) as HTMLTextAreaElement;
-  fireEvent.change(description, { target: { value: "a description" } });
-  fireEvent.change(code, { target: { value: "const x = 1;" } });
+  fireEvent.change(descriptionField(), { target: { value: "a description" } });
+  setCode("const x = 1;");
 
   await waitFor(
     () =>
@@ -331,16 +336,10 @@ test("a save the server warned about says so in the toast, not only under the fi
     fireEvent.click(screen.getByText("open"));
     const label = document.body.querySelector("input") as HTMLInputElement;
     fireEvent.change(label, { target: { value: "Look up CPF" } });
-    const textareas = [...document.body.querySelectorAll("textarea")];
-    const description = textareas.find(
-      (ta) => !ta.className.includes("font-mono"),
-    ) as HTMLTextAreaElement;
-    const code = textareas.find((ta) =>
-      ta.className.includes("font-mono"),
-    ) as HTMLTextAreaElement;
+    const description = descriptionField();
     fireEvent.change(description, { target: { value: "a description" } });
     // Saved immediately, before the debounced check has drawn anything.
-    fireEvent.change(code, { target: { value: "return input.cpf." } });
+    setCode("return input.cpf.");
     fireEvent.click(screen.getByText("Save").closest("button") as HTMLElement);
     await waitFor(() =>
       expect(
@@ -419,19 +418,10 @@ test("a save that lands after the dialog was dismissed does not close the next o
     const fill = () => {
       const label = document.body.querySelector("input") as HTMLInputElement;
       fireEvent.change(label, { target: { value: "Look up CPF" } });
-      const areas = [...document.body.querySelectorAll("textarea")];
-      fireEvent.change(
-        areas.find(
-          (ta) => !ta.className.includes("font-mono"),
-        ) as HTMLTextAreaElement,
-        { target: { value: "a description" } },
-      );
-      fireEvent.change(
-        areas.find((ta) =>
-          ta.className.includes("font-mono"),
-        ) as HTMLTextAreaElement,
-        { target: { value: "return 1" } },
-      );
+      fireEvent.change(descriptionField(), {
+        target: { value: "a description" },
+      });
+      setCode("return 1");
     };
     fill();
     fireEvent.click(screen.getByText("Save").closest("button") as HTMLElement);
@@ -491,19 +481,10 @@ test("a save that FAILS after the dialog was dismissed does not mark the next on
           target: { value: "Look up CPF" },
         },
       );
-      const areas = [...document.body.querySelectorAll("textarea")];
-      fireEvent.change(
-        areas.find(
-          (ta) => !ta.className.includes("font-mono"),
-        ) as HTMLTextAreaElement,
-        { target: { value: "a description" } },
-      );
-      fireEvent.change(
-        areas.find((ta) =>
-          ta.className.includes("font-mono"),
-        ) as HTMLTextAreaElement,
-        { target: { value: "return 1" } },
-      );
+      fireEvent.change(descriptionField(), {
+        target: { value: "a description" },
+      });
+      setCode("return 1");
     };
     fill();
     fireEvent.click(screen.getByText("Save").closest("button") as HTMLElement);

@@ -2,12 +2,18 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import {
+  CODE_TOOL_CONTEXT_MAX_CHARS,
+  SANDBOX_CODE_MAX_CHARS,
+  SANDBOX_TIMEOUT_MS,
+} from "@/graph/tools/code-sandbox-limits";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import {
   agentGet,
   apiKeyList,
   codeToolGet,
   codeToolList,
+  codeToolSchema,
   instanceList,
   toolList,
   vaultList,
@@ -48,6 +54,46 @@ describe("MCP read gate (no DB)", () => {
     const r = await agentGet(principal({}), { agent_id: "not-a-number" });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toContain("invalid agent_id");
+  });
+
+  // `code_tool_schema` is a CONSTANT, not tenant data, and it still goes through the read gate: a
+  // surface that answers before the fence is one more thing to remember, and the answer costs the
+  // same either way (issue #538).
+  test("code_tool_schema is behind the gate like every other read", () => {
+    const r = codeToolSchema(principal({ scopes: [] }));
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("insufficient_scope");
+  });
+
+  // What it answers, and the assertions are about the two things the description cannot carry: the
+  // `context` keys WITH their absent-when, and the limits read off the modules that enforce them
+  // rather than restated here.
+  test("code_tool_schema serves the vocabulary and the enforced limits", () => {
+    const r = codeToolSchema(principal({}));
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const body = r.data as {
+      context: Array<{ name: string; type: string; always: boolean }>;
+      limits: Record<string, number>;
+      result: string;
+      failure: string;
+    };
+    const names = body.context.map((v) => v.name);
+    expect(names).toContain("contact_email");
+    expect(names).toContain("conversationAttributes");
+    // The three that are always there, and the rest that are not: the field a body acts on.
+    expect(
+      body.context
+        .filter((v) => v.always)
+        .map((v) => v.name)
+        .sort(),
+    ).toEqual(["agent_name", "contactAttributes", "conversationAttributes"]);
+    expect(body.limits.timeoutMs).toBe(SANDBOX_TIMEOUT_MS);
+    expect(body.limits.codeMaxChars).toBe(SANDBOX_CODE_MAX_CHARS);
+    expect(body.limits.contextMaxChars).toBe(CODE_TOOL_CONTEXT_MAX_CHARS);
+    // The two semantics an agent cannot discover by trying without breaking a live turn.
+    expect(body.result).toContain("promise");
+    expect(body.failure).toContain("OPERATOR");
   });
 });
 

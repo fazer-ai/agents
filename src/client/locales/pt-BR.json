@@ -399,7 +399,7 @@
   "codeTools": {
     "addTitle": "Nova ferramenta de código",
     "code": "Código",
-    "codeHelp": "O corpo de uma função JavaScript que o agente chama. `input` guarda os argumentos que você declarou acima; `context` guarda as variáveis da conversa (contact_name, contact_email, conversation_id e as demais). Responda com `return`.\n\nO que você retornar é entregue ao agente como JSON, e a saída de console.log volta junto. TIMEZONE, NOW_LOCAL e Date rodam no fuso do agente.\n\nNão há rede, nem imports, nem async. Uma execução tem 1000 ms e 32 MB; um throw ou um limite é uma falha, um valor retornado é um resultado. Código inválido ainda é salvo e falha quando o agente o chama.",
+    "codeHelp": "O corpo de uma função JavaScript que o agente chama. `input` guarda os argumentos que você declarou acima; `context` guarda os valores da conversa. Digite `input.` ou `context.` para ver a lista inteira, com o tipo de cada um e se ele pode estar ausente. Responda com `return`.\n\nO que você retornar é entregue ao agente como JSON, e a saída de console.log volta junto. TIMEZONE, NOW_LOCAL e Date rodam no fuso do agente.\n\nNão há rede, nem imports, nem async: uma promise retornada é um erro. Uma execução tem 1000 ms e 32 MB; um throw ou um limite é uma falha, um valor retornado é um resultado. Código inválido ainda é salvo e falha quando o agente o chama.",
     "description": "Descrição",
     "descriptionHint": "O que a ferramenta responde e quando chamá-la. O agente lê isto para decidir, por isso é obrigatório.",
     "descriptionPlaceholder": "ex.: Verifica se um CPF é válido antes de orçar.",

@@ -36,6 +36,7 @@ import {
   businessHoursList,
   codeToolGet,
   codeToolList,
+  codeToolSchema,
   conversationGet,
   conversationMessages,
   documentStarterList,
@@ -760,6 +761,21 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       },
       async (args: { code_tool_id: string }, eff) =>
         writeContent(await codeToolGet(eff, args)),
+    );
+
+    // The authoring contract, served on demand for the reason document_template_schema is: a
+    // vocabulary inlined into code_tool_create's description is paid by every caller on every
+    // session, and only a caller actually writing a body needs it (issue #538).
+    registerTenantTool(
+      server,
+      principal,
+      "code_tool_schema",
+      {
+        description:
+          "The authoring contract for a code tool body: every `context` key with its type and whether it can be ABSENT, what a return and a throw mean, and the sandbox limits. Generated from the modules that enforce them. Call it once before writing `code`.",
+        inputSchema: {},
+      },
+      async (_args, eff) => writeContent(codeToolSchema(eff)),
     );
 
     registerTenantTool(

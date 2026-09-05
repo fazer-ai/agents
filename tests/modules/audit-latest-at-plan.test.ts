@@ -87,11 +87,38 @@ async function seedTrailFor(tx: PrismaClient): Promise<void> {
   // (12,500 of 500,000 measured, and the header's numbers are read off that shape). Seeding only
   // the fleet rows would leave a table that is almost entirely fleet, where the partial indexes and
   // the plain ones cost the same and the plan says nothing about either.
-  await tx.$executeRawUnsafe(`
-    INSERT INTO audit_logs (tenant_id, actor_id, actor_type, action, target, created_at)
-    SELECT (SELECT min(id) FROM tenants), NULL, 'system', 'plan.probe', 'q:' || g,
-           now() - ((g % 200) || ' days')::interval
-    FROM generate_series(1, 100000) g`);
+  //
+  // The tenant is CREATED here rather than looked up. `(SELECT min(id) FROM tenants)` reads as the
+  // same thing and is not: on a shard whose slice of the suite has not made a tenant yet it returns
+  // NULL, every one of these rows lands in the FLEET slice instead, and the table this claims to
+  // shape ends up 100% fleet -- at which point the planner takes the plain index with a filter that
+  // is trivially true and the assertion below fails for a reason that has nothing to do with the
+  // indexes. Measured: it passed locally, where tenants exist, and failed on CI shard 3 of 4.
+  const seeded = (await tx.$queryRawUnsafe(`
+    WITH t AS (
+      INSERT INTO tenants (name, slug, updated_at)
+      VALUES ('plan-probe', 'plan-probe-' || gen_random_uuid(), now())
+      RETURNING id
+    ), ins AS (
+      INSERT INTO audit_logs (tenant_id, actor_id, actor_type, action, target, created_at)
+      SELECT (SELECT id FROM t), NULL, 'system', 'plan.probe', 'q:' || g,
+             now() - ((g % 200) || ' days')::interval
+      FROM generate_series(1, 100000) g
+      RETURNING tenant_id
+    )
+    SELECT count(*)::int AS n, count(tenant_id)::int AS keyed FROM ins`)) as Array<{
+    n: number;
+    keyed: number;
+  }>;
+  // ...and the shape is ASSERTED, not assumed, because the way this goes wrong is silent: rows that
+  // were meant to carry a tenant carrying none instead still insert, still count, and only show up
+  // as a plan nobody can explain.
+  const row = seeded[0];
+  if (row === undefined || row.n !== row.keyed || row.n === 0) {
+    throw new Error(
+      `plan probe: ${row?.keyed ?? 0} of ${row?.n ?? 0} rows carry a tenant — the probe would be all fleet`,
+    );
+  }
   await tx.$executeRawUnsafe("ANALYZE audit_logs");
 }
 

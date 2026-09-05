@@ -59,6 +59,10 @@ describe("the code tool catalog says what the source says", () => {
     // If this drops to zero the sweep has stopped reading anything, which is the failure that looks
     // like success.
     expect(seen).toBeGreaterThan(15);
+    // The starter body is console text the same as a label: it is the first thing an author of a
+    // code tool reads, and it shipped in English until a browser showed it over a pt-BR form.
+    expect(at(en, "codeTools.starterInput")).toBeDefined();
+    expect(at(ptBR, "codeTools.starterReturn")).toBeDefined();
     expect(wrong).toEqual([]);
   });
 

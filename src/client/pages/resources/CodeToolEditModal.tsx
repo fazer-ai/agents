@@ -65,17 +65,28 @@ export type CodeToolListed = NonNullable<CodeToolsData>["tools"][number];
 
 // A starter body that shows the contract at a glance; the operator replaces it. Empty would do (Save
 // gates on non-empty code), but the shape is the thing a first-time author most needs to see.
-const STARTER_CODE = `// input holds the typed arguments you declared; context the conversation.
-// Answer with a return; console.log output comes back with it.
-return { ok: true };
-`;
+//
+// Its comments are the first console text an author of a code tool reads, so they are TRANSLATED
+// like everything else on this screen. The code around them is not: `return` is the language's word,
+// not ours. Shipped in English since #517 and caught in a browser against a pt-BR console.
+export function starterCode(t: TFunction): string {
+  const what = t(
+    "codeTools.starterInput",
+    "input holds the typed arguments you declared; context the conversation.",
+  );
+  const how = t(
+    "codeTools.starterReturn",
+    "Answer with a return; console.log output comes back with it.",
+  );
+  return `// ${what}\n// ${how}\nreturn { ok: true };\n`;
+}
 
-function emptyForm() {
+function emptyForm(t: TFunction) {
   return {
     label: "",
     description: "",
     aiFields: [] as AiFieldRow[],
-    code: STARTER_CODE,
+    code: starterCode(t),
   };
 }
 
@@ -161,7 +172,7 @@ export function CodeToolEditModal({
 }) {
   const { t } = useTranslation();
   const { showToast } = useToast();
-  const [form, setForm] = useState(emptyForm());
+  const [form, setForm] = useState(() => emptyForm(t));
   // The CURRENT form, readable from inside a request that started before it: the operator can type
   // during the save, and a refusal about a value they have already replaced belongs in the banner
   // rather than under a box that no longer holds it.
@@ -236,7 +247,7 @@ export function CodeToolEditModal({
       // is what used to clear this flag on its way out — leaving the create form skeletonized
       // forever if it never arrived. Every state this handler sets belongs to THIS opening.
       setLoadingForm(false);
-      const initial = emptyForm();
+      const initial = emptyForm(t);
       setForm(initial);
       baselineRef.current = JSON.stringify(initial);
     }
@@ -524,7 +535,7 @@ export function CodeToolEditModal({
                 // argument the operator renamed a second ago, not the one that was last saved.
                 argumentNames={trimmedNames}
                 maxLength={SANDBOX_CODE_MAX_CHARS}
-                placeholder={STARTER_CODE}
+                placeholder={starterCode(t)}
                 aria-label={t("codeTools.code", "Code")}
               />
             </FormField>

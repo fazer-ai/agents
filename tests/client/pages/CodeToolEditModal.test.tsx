@@ -13,11 +13,13 @@ import {
 } from "@testing-library/react";
 import { ToastProvider } from "@/client/components";
 import { useModalController } from "@/client/components/Modal";
+import i18n from "@/client/lib/i18n";
 import {
   type CodeTool,
   CodeToolEditModal,
   formFromCodeTool,
   payloadOfCodeTool,
+  starterCode,
 } from "@/client/pages/resources/CodeToolEditModal";
 
 // The dominant pattern in this suite: pure-function tests over the exported form helpers, plus one
@@ -588,4 +590,25 @@ test("a save in flight cannot be dismissed, and its finally belongs to its own o
       "} finally {\n      if (sessionRef.current === session) setSaving(false);",
     ),
   ).toBe(true);
+});
+
+// The starter body's comments are the first console text an author of a code tool reads, so they
+// follow the console's language like every label around them. The `return` line does not: that is
+// the language's own word. Shipped in English since #517, caught in a browser over a pt-BR form.
+test("the starter body speaks the console's language, and its code does not", async () => {
+  const en = starterCode(i18n.t);
+  expect(en).toContain("return { ok: true };");
+  await i18n.changeLanguage("pt-BR");
+  const pt = starterCode(i18n.t);
+  await i18n.changeLanguage("en");
+  // The comments moved.
+  expect(pt).not.toBe(en);
+  expect(pt.split("\n")[0]).not.toBe(en.split("\n")[0]);
+  // The code did not.
+  expect(pt).toContain("return { ok: true };");
+  // Both lines are comments, so an untranslated one cannot hide as code.
+  for (const body of [en, pt]) {
+    const lines = body.trimEnd().split("\n");
+    expect(lines.slice(0, 2).every((l) => l.startsWith("// "))).toBe(true);
+  }
 });

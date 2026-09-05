@@ -310,7 +310,17 @@ const WORD_ONLY = new RegExp(`^[${WORD_CHARS}]*$`, "u");
 
 function isRootWord(ctx: CompletionContext, from: number): boolean {
   if (from === 0) return true;
-  return !IDENTIFIER_CHAR.test(ctx.state.doc.sliceString(from - 1, from));
+  const doc = ctx.state.doc;
+  // Adjacent, the character decides on its own: an identifier character means this name is the tail
+  // of a longer one, and a `.` or a `#` that it is already a member.
+  if (IDENTIFIER_CHAR.test(doc.sliceString(from - 1, from))) return false;
+  // Across whitespace it does not, and the two cases sit one space apart: `config. context` is a
+  // member and `return context` is a variable. So only a member operator disqualifies it there,
+  // never an identifier, which across a gap is a different token entirely.
+  let at = from;
+  while (at > 0 && /\s/.test(doc.sliceString(at - 1, at))) at--;
+  if (at === from || at === 0) return true;
+  return doc.sliceString(at - 1, at) !== ".";
 }
 
 // A string, a comment and a regexp are all places where a dot is a character rather than a member

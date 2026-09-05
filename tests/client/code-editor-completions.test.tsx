@@ -776,16 +776,39 @@ describe("an accented argument name stays filterable", () => {
   });
 });
 
-// `\w` is ASCII, and a JavaScript identifier is not: `\u00e9context` is one name, not `context`
-// preceded by a letter the check cannot see. Offering there writes members of this sandbox onto
-// somebody else's object, which is the same defect the root anchoring exists to prevent.
-describe("a non-ASCII identifier is still one identifier", () => {
+// What separates the sandbox's `context` from a name that merely ENDS in it, in every spelling the
+// look-back has been wrong about: a non-ASCII letter before it (`\w` is ASCII and a JavaScript
+// identifier is not), a private-field `#`, and a member dot on the other side of a space. Each one
+// offered this sandbox's members for somebody else's object.
+describe("what is a root, and what is somebody else's member", () => {
   function ask(doc: string) {
     const state = EditorState.create({ doc, extensions: [javascript()] });
     return sourceFor(
       ["cpf"],
       i18n.t,
     )(new CompletionContext(state, doc.length, true));
+  }
+
+  // The whitespace the matcher tolerates after a dot cuts both ways: with `config. context.` the
+  // character before the name is a SPACE, so a one-character look-back called it a root and offered
+  // this sandbox's members for somebody else's object. Skipping the whitespace is not enough on its
+  // own either, because `return context.` also has a space there and IS a root: what disqualifies
+  // the name is a member operator on the other side of the gap, never an identifier across it.
+  for (const doc of [
+    "config. context.",
+    "obj?. con",
+    "config.  input.",
+    "a.b. context.",
+  ]) {
+    test(`${doc} is a member of something else`, () => {
+      expect(ask(doc)).toBeNull();
+    });
+  }
+
+  for (const doc of ["return context.", "  context.", "} context."]) {
+    test(`${doc} is still a root`, () => {
+      expect(ask(doc)?.options.length).toBeGreaterThan(0);
+    });
   }
 
   // `#` is not an identifier character, but as a PREDECESSOR it says the name is a private field:

@@ -67,8 +67,14 @@ export function contextToSend(
   for (const name of names) {
     const v = collected[name] ?? "";
     if (v !== "") out[name] = v;
-    else if (name === "agent_name") out[name] = agentNameDefault;
   }
+  // NOTE: outside the loop because `names` comes from a SCAN of the body, and a scan can miss the
+  // read: `const { agent_name } = context` names it nowhere a regex over member access can see, so
+  // the name would not be in the list to fall back for. The guarantee is about the RUNTIME, which
+  // spreads the key unconditionally, so it cannot depend on the dialog having recognised how the
+  // body spells the read.
+  const typed = collected.agent_name ?? "";
+  out.agent_name = typed !== "" ? typed : agentNameDefault;
   return out;
 }
 

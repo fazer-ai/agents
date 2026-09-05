@@ -103,7 +103,8 @@ describe("what the dialog sends", () => {
         ["contact_name", "contact_email", "inbox_name"],
         "Agent",
       ),
-    ).toEqual({ contact_name: "Maria" });
+      // `agent_name` rides along on every send, scanned or not: the two tests below say why.
+    ).toEqual({ contact_name: "Maria", agent_name: "Agent" });
   });
 
   test("agent_name is never absent: blank sends the default", () => {
@@ -120,9 +121,26 @@ describe("what the dialog sends", () => {
   });
 
   // The list is the one the dialog drew, so a variable it never asked about is not sent either.
+  // `agent_name` is the one exception, and the test below is why.
   test("a name outside the collected list is not invented", () => {
     expect(contextToSend({ inbox_id: "7" }, ["contact_name"], "Agent")).toEqual(
-      {},
+      {
+        agent_name: "Agent",
+      },
     );
+  });
+
+  // The list is a SCAN of the body, and the scan reads member access. A body that destructures
+  // (`const { agent_name } = context`) or aliases (`const c = context`) names nothing the regex can
+  // see, so `names` comes back empty and the fallback inside the loop never ran: the dialog tested
+  // a turn without `agent_name`, which is a turn that cannot happen, and failed a body the runtime
+  // would have served. The guarantee belongs to the runtime, not to the scanner's eyesight.
+  test("agent_name survives a body whose read the scan cannot see", () => {
+    expect(contextNamesUsedBy("const { agent_name } = context;")).toEqual([]);
+    expect(contextToSend({}, [], "Agente")).toEqual({ agent_name: "Agente" });
+    // And what the operator typed still wins, even with the box off screen.
+    expect(contextToSend({ agent_name: "Sofia" }, [], "Agente")).toEqual({
+      agent_name: "Sofia",
+    });
   });
 });

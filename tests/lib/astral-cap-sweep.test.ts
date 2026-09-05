@@ -427,6 +427,9 @@ const BARE_SLICES: Record<
   // ISO string, which is ASCII by construction. The byte budget cuts BETWEEN rows and never inside
   // one, so the file cannot end on half a character either.
   "src/modules/audit/export.ts": [2, "array + ascii"],
+  // The page's overshoot row, dropped off an ARRAY (`limit + 1`, to learn whether more matched). The
+  // cursor codec's own two went with the round-9 rewrite: it splits on the separator it wrote rather
+  // than cutting at an offset, so there is no index left for a surrogate pair to straddle.
   "src/modules/audit/service.ts": [1, "array"],
   "src/modules/business-hours/announce.ts": [2, "fixed-format"],
   "src/modules/business-hours/hours.ts": [1, "fixed-format"],

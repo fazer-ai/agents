@@ -25634,7 +25634,7 @@
             "in": "query",
             "required": false,
             "schema": {
-              "description": "Keyset cursor (id of the last row from the previous page).",
+              "description": "Keyset cursor: pass back `nextCursor` from the previous page, verbatim. Opaque -- do not build one. A cursor from before #530 (a bare id) is read as that release's own `id <` bound, so a walk that spans a rolling deploy finishes without losing a row; anything else is refused.",
               "type": "string"
             }
           },

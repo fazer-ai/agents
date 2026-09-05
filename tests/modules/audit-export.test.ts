@@ -8,6 +8,7 @@ import {
   AUDIT_EXPORT_MAX_ROWS,
   clampAuditExportCeilings,
   exportAudit,
+  highWaterFrom,
 } from "@/modules/audit/export";
 import { recordAudit } from "@/modules/audit/service";
 import { syntheticAction } from "../utils/audit-action";
@@ -197,8 +198,18 @@ describe.skipIf(!dbUp)("exporting the trail", () => {
 
   // THE ONE ASSERTION THIS FEATURE IS ABOUT. Not "the filter works" -- that the export and the page
   // answer the same question, compared against each other rather than against a hand-written list.
+  // A ROW WHOSE ID AND STAMP DISAGREE, seeded for the whole comparison below. Without it the two
+  // orders coincide on this trail -- rows are appended stamp-ascending -- so the assertion would
+  // hold against an export still walking by `id` alone, which is exactly what it must not do since
+  // #530. Measured: dropping this row lets the comparison pass with the two readers ordered
+  // differently.
   test("the rows are the rows the page shows, for the same filter", async () => {
     const { listAudit } = await import("@/modules/audit/service");
+    await seed(mine, "agent.update", `${TAG}:skew`, {
+      at: "2026-04-01T00:00:00Z",
+      actorType: "mcp",
+      actorId: OTHER,
+    });
     for (const filter of [
       {},
       { action: "agent.update" },
@@ -210,6 +221,16 @@ describe.skipIf(!dbUp)("exporting the trail", () => {
       const page = await listAudit(ctx(), { ...filter, limit: 500 }, appDb);
       const csv = parseCsv((await exportAudit(ctx(), filter, appDb)).content);
       expect(col(csv, "id")).toEqual(page.entries.map((e) => e.id));
+      // ...and the shared order really is the time's, not the id's. The skew row was written last
+      // and stamped earliest, so it carries the HIGHEST id and the OLDEST instant: ordered by id it
+      // would come first, ordered by time it comes last. Asserted wherever the filter admits it.
+      const targets = col(csv, "target");
+      const at = targets.indexOf(`${TAG}:skew`);
+      if (at >= 0) {
+        expect(at).toBe(targets.length - 1);
+        const ids = col(csv, "id").map(BigInt);
+        expect(ids[at]).toBe(ids.reduce((a, b) => (a > b ? a : b)));
+      }
     }
   });
 
@@ -558,6 +579,127 @@ describe.skipIf(!dbUp)("exporting the trail", () => {
       await suDb.$executeRawUnsafe(
         `DELETE FROM audit_logs WHERE target LIKE '${TAG}:json-%'`,
       );
+    }
+  });
+
+  // A TIE THAT CROSSES A TRIP BOUNDARY. The export walks in trips, and the first is deliberately
+  // small, so a run of rows sharing one instant is split across two round trips as a matter of
+  // course. The keyset carries the id for exactly this: on the time alone, `created_at < t` would
+  // drop the rest of the tied run and `<=` would repeat the whole of it. Twelve rows on one stamp,
+  // which is more than the probe trip holds.
+  test("a run of rows sharing one instant is neither repeated nor dropped", async () => {
+    try {
+      for (let i = 0; i < 12; i++) {
+        await seed(mine, "agent.update", `${TAG}:tie${i}`, {
+          at: "2026-06-01T09:00:00Z",
+        });
+      }
+      const r = await exportAudit(ctx(), {}, appDb);
+      const targets = parseCsv(r.content)
+        .slice(1)
+        .map((row) => row[5] ?? "")
+        .filter((t) => t.startsWith(`${TAG}:tie`));
+      expect(targets).toHaveLength(12);
+      expect(new Set(targets).size).toBe(12);
+    } finally {
+      await suDb.$executeRawUnsafe(
+        `DELETE FROM audit_logs WHERE target LIKE '${TAG}:tie%'`,
+      );
+    }
+  });
+
+  // ONE SNAPSHOT, ACROSS EVERY TRIP. The walk takes several round trips and rows keep arriving
+  // between them. Ordered by `id` that was free -- a new row carries a higher id than the descending
+  // walk will ever reach again -- but `(created_at, id)` reads a clock the writer owns, so a row
+  // appended by a replica running behind lands BELOW the cursor and a later trip picks it up, while
+  // one stamped ahead does not. The file would then mix two snapshots under a filename claiming one.
+  //
+  // Simulated by writing a back-stamped row from inside the walk, on the trip boundary, which is
+  // exactly where a concurrent write lands.
+  test("a row written mid-walk with an older stamp does not enter the file", async () => {
+    try {
+      for (let i = 0; i < 14; i++) {
+        await seed(mine, "agent.update", `${TAG}:snap${i}`);
+      }
+      let trips = 0;
+      const spy = appDb.$extends({
+        query: {
+          auditLog: {
+            async findMany({ args, query }) {
+              const rows = await query(args);
+              // After the first trip and only once: the interloper is stamped a year back, so the
+              // time keyset cannot exclude it -- only the id bound can.
+              if (++trips === 1) {
+                await seed(mine, "agent.update", `${TAG}:snapLATE`, {
+                  at: "2025-01-01T00:00:00Z",
+                });
+              }
+              return rows;
+            },
+          },
+        },
+      }) as unknown as PrismaClient;
+
+      const r = await exportAudit(ctx(), {}, spy);
+      expect(trips).toBeGreaterThan(1);
+      expect(r.content).not.toContain(`${TAG}:snapLATE`);
+      // ...and it is genuinely in the table, so the absence is the bound and not a failed insert.
+      const after = await exportAudit(ctx(), {}, appDb);
+      expect(after.content).toContain(`${TAG}:snapLATE`);
+    } finally {
+      await suDb.$executeRawUnsafe(
+        `DELETE FROM audit_logs WHERE target LIKE '${TAG}:snap%'`,
+      );
+    }
+  });
+
+  // A FILTER THAT MATCHES NOTHING still produces a file, and the bound does not get in the way. Worth
+  // its own case because the bound moved from `max(id)` over the trail -- which is null on an empty
+  // one -- to the sequence, which always answers; the branch that used to handle "no bound" is gone,
+  // so this is what stands in for it.
+  test("a filter that matches nothing exports a header and says so", async () => {
+    const r = await exportAudit(
+      ctx(),
+      { action: syntheticAction("nothing.matches.this") },
+      appDb,
+    );
+    expect(r.count).toBe(0);
+    expect(r.truncated).toBe(false);
+    expect(r.content.split("\r\n")).toHaveLength(1);
+    expect(r.content).toContain("created_at");
+  });
+
+  // THE UNCALLED SEQUENCE, which is a fresh deployment's first export. Postgres reports
+  // `last_value = 1` both for a sequence that has never run and for one that has handed out exactly
+  // one id; only `is_called` tells them apart (measured against a real sequence, below). Reading the
+  // value alone would bound an EMPTY trail at 1, so the very first audit row ever written -- landing
+  // between the bound being taken and the first trip -- would appear in a file that started before
+  // it existed.
+  test("an uncalled sequence bounds below its start, a called one at its value", () => {
+    expect(highWaterFrom({ last_value: 1n, is_called: false })).toBe(0n);
+    expect(highWaterFrom({ last_value: 1n, is_called: true })).toBe(1n);
+    expect(highWaterFrom({ last_value: 4096n, is_called: true })).toBe(4096n);
+  });
+
+  test("and Postgres really does report both states that way", async () => {
+    await suDb.$executeRawUnsafe(`DROP SEQUENCE IF EXISTS probe_seq_x530`);
+    await suDb.$executeRawUnsafe(`CREATE SEQUENCE probe_seq_x530`);
+    try {
+      const read = async () =>
+        (
+          (await suDb.$queryRawUnsafe(
+            `SELECT last_value, is_called FROM probe_seq_x530`,
+          )) as { last_value: bigint; is_called: boolean }[]
+        )[0] as { last_value: bigint; is_called: boolean };
+      const fresh = await read();
+      expect(fresh).toEqual({ last_value: 1n, is_called: false });
+      await suDb.$queryRawUnsafe(`SELECT nextval('probe_seq_x530')`);
+      const used = await read();
+      // The same number, and only the flag moved -- which is the whole reason it is read.
+      expect(used).toEqual({ last_value: 1n, is_called: true });
+      expect(highWaterFrom(fresh)).toBeLessThan(highWaterFrom(used));
+    } finally {
+      await suDb.$executeRawUnsafe(`DROP SEQUENCE IF EXISTS probe_seq_x530`);
     }
   });
 

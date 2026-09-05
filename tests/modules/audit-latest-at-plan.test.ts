@@ -51,15 +51,15 @@ const AGGREGATES = {
 } as const;
 
 const INDEX_FOR = {
-  all: "audit_logs_created_at_idx",
-  fleet: "audit_logs_fleet_created_at_idx",
+  all: "audit_logs_created_at_id_idx",
+  fleet: "audit_logs_fleet_created_at_id_idx",
 } as const;
 
-// The FIRST PAGE of the fleet trail, which is the request an operator makes by opening it: keyset
-// ordered by id, no filter at all.
+// The FIRST PAGE of the fleet trail, which is the request an operator makes by opening it. Ordered
+// by `(created_at, id)` since #530 -- which is also why the partial index on `id` this used to name
+// is gone: the ordering it existed for no longer exists.
 const FLEET_PAGE =
-  "SELECT id FROM audit_logs WHERE tenant_id IS NULL ORDER BY id DESC LIMIT 51";
-const FLEET_PAGE_INDEX = "audit_logs_fleet_id_idx";
+  "SELECT id FROM audit_logs WHERE tenant_id IS NULL ORDER BY created_at DESC, id DESC LIMIT 51";
 
 async function planIn(tx: PrismaClient, sql: string): Promise<string> {
   const rows = (await tx.$queryRawUnsafe(
@@ -116,7 +116,6 @@ describe.skipIf(!dbUp)("latestAt reaches its index on every scope", () => {
     const names = rows.map((r) => r.indexname);
     expect(names).toContain(INDEX_FOR.all);
     expect(names).toContain(INDEX_FOR.fleet);
-    expect(names).toContain(FLEET_PAGE_INDEX);
   });
 
   // THE LIST, not the aggregate, and it is the request an operator makes by simply opening the fleet
@@ -141,14 +140,27 @@ describe.skipIf(!dbUp)("latestAt reaches its index on every scope", () => {
         // it takes the ordered walk (3 buffers), and on a table holding two it bitmap-scans the same
         // index and sorts, which at that size is right. Pinning either would make this test pass or
         // fail on how much other suites happened to leave in a shared table.
-        expect(withIndex).toContain(`"Index Name":"${FLEET_PAGE_INDEX}"`);
+        // EITHER FLEET INDEX, and that is the assertion rather than a lapse. Both are partial on
+        // `tenant_id IS NULL`, so either one bounds the work by the fleet slice instead of by the
+        // trail -- which is the property. Which one the planner picks is a cost choice that flips
+        // with the slice's size: on a large one it walks `..._fleet_created_at_id_idx` in order, on
+        // a table holding a handful it bitmap-scans `..._fleet_id_idx` and sorts. Pinning either
+        // would make this test pass or fail on how much other suites left in a shared table
+        // (measured: it did, between the two trees of this same PR).
+        expect(withIndex).toMatch(
+          /"Index Name":"audit_logs_fleet_(created_at_id|id)_idx"/,
+        );
         expect(withIndex).not.toContain('"Index Name":"audit_logs_pkey"');
         // A `Filter` is a row read for some other reason and then rejected; the fleet index leaves
         // nothing to reject. (A bitmap scan's `Recheck Cond` is not that -- it re-reads only rows the
         // same index already chose.)
         expect(withIndex).not.toContain('"Filter"');
 
-        await db.$executeRawUnsafe(`DROP INDEX ${FLEET_PAGE_INDEX}`);
+        // BOTH of them, for the negative half: leaving one standing proves nothing about the other.
+        await db.$executeRawUnsafe(`DROP INDEX ${INDEX_FOR.fleet}`);
+        await db.$executeRawUnsafe(
+          `DROP INDEX IF EXISTS audit_logs_fleet_id_idx`,
+        );
         const without = await planIn(db, FLEET_PAGE);
         // WITHOUT it, no index gives BOTH the predicate and the id order, so the plan has to buy one
         // of them with a full pass. Which pass depends on the table: on a large one the planner
@@ -156,7 +168,9 @@ describe.skipIf(!dbUp)("latestAt reaches its index on every scope", () => {
         // page of 51); on a small one it gathers every fleet row off the other partial index and
         // sorts. Either is unbounded by the page size, which is the property being asserted -- so
         // the assertion names both rather than pinning the plan of whichever table it runs on.
-        expect(without).not.toContain(`"Index Name":"${FLEET_PAGE_INDEX}"`);
+        expect(without).not.toMatch(
+          /"Index Name":"audit_logs_fleet_(created_at_id|id)_idx"/,
+        );
         expect(without).toMatch(
           /"Node Type":"Sort"|"Filter":"\(tenant_id IS NULL\)"/,
         );
@@ -166,9 +180,87 @@ describe.skipIf(!dbUp)("latestAt reaches its index on every scope", () => {
     ).rejects.toThrow("rollback");
   });
 
+  // THE FILTERED PAGE, WHICH IS WHAT #530 IS ABOUT. A date filter used to be a plain predicate over a
+  // walk ordered by `id`, so a window that is not the newest one made Postgres walk the primary key
+  // backwards and discard everything outside it -- a cost proportional not to the page but to how
+  // far back the window reached. Measured on a 500k-row probe carrying this table's own indexes, a
+  // 30-day window 80 days back, page of 51:
+  //
+  //                     ORDER BY id (before)      ORDER BY created_at, id (after)
+  //   scope=tenant   9,277 buffers  24.3 ms        39 buffers  0.15 ms
+  //   scope=fleet    6,857 buffers   4.4 ms        32 buffers  0.04 ms
+  //   scope=all      9,237 buffers  38.6 ms         5 buffers  0.02 ms
+  //
+  // 448,000 rows discarded to collect 51. Ordering by the column the window is CUT ON turns it into
+  // a range scan of an index already sorted the way the page is read -- and no index had to be
+  // added, which is the finding: the ones the table has were unreachable only because of the
+  // ORDER BY. So the assertion is that the walk reads the window and not the table, in both
+  // directions: WITH the ordering, no pkey and nothing re-checked per row; with the ordering put
+  // back to `id`, the pkey walk returns.
+  const WINDOW =
+    "created_at >= now() - interval '110 days' AND created_at < now() - interval '80 days'";
+  for (const [scope, pred] of [
+    ["tenant", "tenant_id = 1 AND "],
+    ["fleet", "tenant_id IS NULL AND "],
+    ["all", ""],
+  ] as const) {
+    test(`a dated page on scope=${scope} reads the window, not the trail`, async () => {
+      await expect(
+        suDb.$transaction(async (tx) => {
+          const db = tx as unknown as PrismaClient;
+          await db.$executeRawUnsafe("SET LOCAL enable_seqscan = off");
+          const page = (order: string) =>
+            `SELECT id FROM audit_logs WHERE ${pred}${WINDOW} ORDER BY ${order} LIMIT 51`;
+
+          const now = await planIn(db, page("created_at DESC, id DESC"));
+          // A created_at index is what serves it, and the primary key is what must NOT.
+          expect(now).toMatch(/"Index Name":"audit_logs_\w*created_at\w*"/);
+          expect(now).not.toContain('"Index Name":"audit_logs_pkey"');
+
+          // The same rows asked for in the old order, which is the plan this change removes. On a
+          // table holding a handful of rows the planner may still reach an index, so the assertion
+          // is that the two plans DIFFER -- the ordering is doing the work, not the indexes, which
+          // are identical on both sides of this comparison.
+          const before = await planIn(db, page("id DESC"));
+          expect(before).not.toBe(now);
+
+          throw new Error("rollback");
+        }),
+      ).rejects.toThrow("rollback");
+    });
+  }
+
+  // THE `id` AT THE END OF EACH INDEX, and the case that argues for it. A transaction stamps every
+  // row it writes with one `NOW()` -- `20260903120000_rename_http_tools_named_after_natives` writes
+  // an audit row per renamed tool that way -- so a large TIED GROUP is something this table really
+  // holds. An index that stops at `created_at` cannot supply the `id DESC` inside such a group, so
+  // a page landing in it reads the whole group and sorts: measured on 200,000 rows sharing one
+  // instant, 4,277 buffers and 22.1 ms against 2 buffers and 0.07 ms. The cost is bounded by the
+  // tie, not by the page — which is the same unbounded shape this whole change removes, one level
+  // down. A first measurement on a probe with all-distinct stamps said the id changed nothing; it
+  // was the probe that was missing the case.
+  test("every audit index carries the page's full ordering key", async () => {
+    const rows = (await suDb.$queryRawUnsafe(
+      `SELECT indexname, indexdef FROM pg_indexes WHERE tablename = 'audit_logs'`,
+    )) as Array<{ indexname: string; indexdef: string }>;
+    const ordering = rows.filter((r) => r.indexdef.includes("created_at"));
+    expect(ordering.length).toBeGreaterThan(0);
+    for (const r of ordering) {
+      expect(r.indexdef).toMatch(/created_at DESC, id DESC/);
+    }
+    // ...and `audit_logs_fleet_id_idx` IS STILL HERE, on purpose. It serves only the old
+    // `ORDER BY id` fleet page, which this release stops issuing -- but `docs/deploy.md` describes
+    // rolling deploys, so for the length of one overlap a container from the previous release is
+    // still asking that question, and without the index it walks the primary key past every tenant
+    // row: measured, 8,687 buffers and 21.5 ms against 2. It comes out in a later release, once no
+    // old process can be serving (docs/roadmap.md). The other three old indexes went now because
+    // the new ones answer their queries too, verified on the same probe.
+    expect(rows.map((r) => r.indexname)).toContain("audit_logs_fleet_id_idx");
+  });
+
   // The partial predicate is the whole point of the fleet indexes: without it an index would hold
   // every row of the trail and `tenant_id IS NULL` would be a filter over the full history again.
-  for (const name of [INDEX_FOR.fleet, FLEET_PAGE_INDEX]) {
+  for (const name of [INDEX_FOR.fleet]) {
     test(`${name} covers only the rows keyed to no tenant`, async () => {
       const rows = (await suDb.$queryRawUnsafe(
         `SELECT indexdef FROM pg_indexes WHERE indexname = '${name}'`,

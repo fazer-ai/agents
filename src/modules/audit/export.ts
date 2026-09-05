@@ -184,6 +184,23 @@ function timestampSlug(d: Date): string {
   return d.toISOString().slice(0, 19).replace(/:/g, "-");
 }
 
+// THE BOUND A SEQUENCE ROW MEANS, and `is_called` is half of it rather than a detail. A sequence
+// never called reports `last_value = 1` -- the value it WILL hand out -- and one that has handed out
+// exactly one row reports 1 as well; only this flag separates them (measured). Taking 1 in the first
+// case puts the bound one id ABOVE an empty trail, so the very first row ever written, landing
+// between the read and the first trip, would arrive inside a file that started before it existed.
+// Uncalled means the bound sits below the sequence's start.
+//
+// Split out because it is the one part of the bound a test can reach: the sequence behind a real
+// trail has always been called, so the branch that matters is not reproducible through `exportAudit`
+// without resetting shared state under every other suite.
+export function highWaterFrom(row: {
+  last_value: bigint;
+  is_called: boolean;
+}): bigint {
+  return row.is_called ? row.last_value : row.last_value - 1n;
+}
+
 export async function exportAudit(
   ctx: TenantContext,
   opts: ExportAuditOpts = {},
@@ -213,13 +230,59 @@ export async function exportAudit(
   // is nothing.
   let bytes = Buffer.byteLength(header, "utf8");
   let truncatedBy: "rows" | "bytes" | null = null;
-  // NOTE: newest first, walked by the same keyset the page uses, so "the newest `count` win" is the same
-  // sentence for both readers.
-  let cursor: bigint | null = null;
+  // NOTE: newest first, walked by the same keyset the page uses, so "the newest `count` win" is the
+  // same sentence for both readers. Since #530 that keyset is `(created_at, id)` -- and it has to
+  // move here in the same commit, because the promise this module exists to keep is that the file
+  // holds the rows the screen holds, in the screen's order. A walk still ordered by `id` would keep
+  // returning the same SET for most trails and a different ORDER for any trail whose stamps and ids
+  // disagree, which is the quietest way for the two readers to drift apart.
+  let cursor: { createdAt: Date; id: bigint } | null = null;
   // NOTE: the widest row of the last trip, which is what sizes the next one (see BATCH_PROBE above).
   let widest = 0;
   let batch = BATCH_PROBE;
-
+  // WHERE THE TRAIL ENDED WHEN THE EXPORT STARTED, held across every trip so the file is ONE
+  // snapshot. The walk takes several round trips and rows keep arriving between them; the old
+  // id-ordered walk excluded them for free, because a new row carries a higher id than any the
+  // descending walk will ever reach again. Ordered by `(created_at, id)` that stops being true:
+  // `created_at` comes from the writing process's clock, so a row appended by a replica running
+  // behind lands BELOW the cursor and gets picked up by a later trip, while one stamped ahead of it
+  // does not -- a file mixing two snapshots, under a filename claiming one. The id is the only
+  // monotonic thing here, so it is what bounds the walk.
+  //
+  // AND IT IS A BOUND, NOT AN MVCC SNAPSHOT, which is a narrower promise and the one this makes. A
+  // sequence hands out ids at INSERT time and the row becomes visible at COMMIT, so a transaction
+  // that had already taken an id below this bound can commit after the aggregate ran and be read by
+  // a later trip. What closed is the wide case -- any write during the whole export -- and what is
+  // left is the width of a transaction already open when the walk started. Closing that too would
+  // mean holding one REPEATABLE READ transaction across every trip, which is `readInScope`'s shape
+  // for the list as well; deliberately not done here (issue #530, review round 5).
+  //
+  // TAKEN FROM THE SEQUENCE, not from a `max(id)` over anything. A `max` needs an index led by `id`
+  // to answer in one row, and after this change no audit index is: over the operator's window it
+  // reads the window out (7,947 buffers, 23.0 ms for 30 days, 80 days back), and over the trail
+  // alone it degrades on an INACTIVE one -- a tenant whose rows are all old makes the planner walk
+  // the primary key backwards past every newer row belonging to somebody else (8,900 buffers,
+  // 21.6 ms measured on a trail of 500 old rows inside 500k). The sequence answers in 0.05 ms
+  // whatever the trail looks like, needs no index, and is readable by the runtime role.
+  //
+  // It is a LOOSER bound than `max(id)` -- it counts ids already handed out to transactions that
+  // have not committed -- which widens the gap named above rather than opening a new one: those are
+  // exactly the writes an id bound cannot separate either way. What it buys is that no export pays
+  // for the shape of the trail it is reading.
+  const seq = await readInScope(
+    base,
+    ctx,
+    scope,
+    (db) =>
+      db.$queryRaw<
+        { last_value: bigint; is_called: boolean }[]
+      >`SELECT last_value, is_called FROM audit_logs_id_seq`,
+  );
+  const row = seq[0];
+  if (row === undefined) {
+    throw new Error("audit export: the id sequence returned no row");
+  }
+  const highWater = highWaterFrom(row);
   while (truncatedBy === null) {
     const want = Math.min(batch, maxRows - lines.length);
     // NOTE: one extra row per trip answers "is there more?" without a second count over a growing table.
@@ -228,9 +291,17 @@ export async function exportAudit(
         where: {
           ...trail,
           ...where,
-          ...(cursor !== null ? { id: { lt: cursor } } : {}),
+          id: { lte: highWater },
+          ...(cursor !== null
+            ? {
+                OR: [
+                  { createdAt: { lt: cursor.createdAt } },
+                  { createdAt: cursor.createdAt, id: { lt: cursor.id } },
+                ],
+              }
+            : {}),
         },
-        orderBy: { id: "desc" },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
         take: want + 1,
         select: SELECT,
       }),
@@ -262,8 +333,9 @@ export async function exportAudit(
       break;
     }
     if (!more) break;
-    cursor = rows[want - 1]?.id ?? null;
-    if (cursor === null) break;
+    const last = rows[want - 1];
+    if (!last) break;
+    cursor = { createdAt: last.createdAt, id: last.id };
   }
 
   return {

@@ -2,6 +2,7 @@ import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import type { AuditAction } from "@/lib/audit/actions";
 import type { AuditScope } from "@/lib/audit/scope";
+import { parseDbId } from "@/lib/db-id";
 import { ForbiddenError } from "@/lib/errors";
 import { assertUsableCount } from "@/lib/query-param";
 import {
@@ -153,13 +154,9 @@ export interface AuditFilterOpts {
 
 export interface ListAuditOpts extends AuditFilterOpts {
   limit?: number;
-  // Keyset: rows with id < cursor. On the ID and never on the time, because `created_at` here is
-  // written by the CLIENT and not by the database (measured: rows appended inside one transaction
-  // come back with stamps LATER than that transaction's own `now()`, and differing from each
-  // other). At millisecond resolution a tie between two rows of one burst is ordinary, and nothing
-  // makes the column agree with insertion order in the first place. So a time cursor over it can
-  // repeat one of a tied pair or skip it; the id is the only monotonic key this table has.
-  cursor?: bigint;
+  // Keyset on `(created_at, id)`, which is also the order the page is read in. See `AuditCursor`
+  // below for why it is both columns and not either one alone.
+  cursor?: AuditCursor;
   // WHICH TRAIL, and it is a question rather than a filter.
   //
   // `tenant` is the RLS read every caller has always had. `fleet` and `all` are a DIFFERENT QUERY:
@@ -173,7 +170,8 @@ export interface ListAuditOpts extends AuditFilterOpts {
 
 export interface AuditPage {
   entries: AuditLogItem[];
-  // Pass back as `cursor` for the next (older) page; null when there are no more rows.
+  // Pass back as `cursor` for the next (older) page; null when there are no more rows. Opaque:
+  // `<ISO instant>|<id>`, and callers are not to build one (see `parseAuditCursor`).
   nextCursor: string | null;
   // The newest row IN THE WHOLE TRAIL, past any filter, and null when the trail is empty.
   //
@@ -271,14 +269,33 @@ export async function listAudit(
   const take = Math.min(opts.limit ?? 100, 500);
   const where: Prisma.AuditLogWhereInput = {
     ...buildAuditWhere(opts),
-    ...(opts.cursor !== undefined ? { id: { lt: opts.cursor } } : {}),
+    // NOTE: the row-comparison `(created_at, id) < (t, i)`, spelled the way Prisma can express it.
+    // Measured against the tuple form on the same probe: identical plans, 45 buffers against 39 for
+    // a tenant and 5 against 5 for `all` -- so this costs nothing, and it keeps the predicate inside
+    // the same `where` the list and the export already share.
+    ...(opts.cursor?.at
+      ? {
+          OR: [
+            { createdAt: { lt: opts.cursor.at.createdAt } },
+            {
+              createdAt: opts.cursor.at.createdAt,
+              id: { lt: opts.cursor.at.id },
+            },
+          ],
+        }
+      : {}),
+    // The pre-#530 bound, ANDed with the keyset above rather than replacing it: the walk is ordered
+    // the new way and cut where the old one stopped. See `AuditCursor.beforeId`.
+    ...(opts.cursor?.beforeId != null
+      ? { id: { lt: opts.cursor.beforeId } }
+      : {}),
   };
   const scope = opts.scope ?? "tenant";
   const trail = auditTrailFor(ctx, scope);
   const read = async (db: ScopedDb) => ({
     rows: await db.auditLog.findMany({
       where: { ...trail, ...where },
-      orderBy: { id: "desc" },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
       // NOTE: One extra row is what tells the caller a next page exists, without a second count over
       // a table that only grows.
       take: take + 1,
@@ -304,7 +321,132 @@ export async function listAudit(
       after: r.after,
       createdAt: r.createdAt.toISOString(),
     })),
-    nextCursor: hasMore ? String(page[page.length - 1]?.id) : null,
+    nextCursor: hasMore
+      ? nextAuditCursor(page[page.length - 1], opts.cursor?.beforeId ?? null)
+      : null,
     latestAt: latest._max.createdAt?.toISOString() ?? null,
   };
+}
+
+// THE PAGE'S POSITION, AS THE TWO COLUMNS IT IS ORDERED BY (issue #530).
+//
+// It used to be the id alone, and that was cheap to say and expensive to run: `created_at` was a
+// plain predicate over a walk ordered by `id`, so a window that is not the newest one made Postgres
+// walk the primary key backwards discarding everything outside it. Measured on a 500k-row probe with
+// this table's own indexes, a 30-day window 80 days back: 9,277 buffers and 24.3 ms for a tenant,
+// 9,237 and 38.6 ms for `all`, throwing away 448,000 rows to collect 51. Ordering by the column the
+// window is cut on turns the same question into a range scan of an index that is already sorted the
+// way the page is read: 39 buffers and 0.15 ms, 5 and 0.02 ms. No new index -- the ones the table
+// already has serve it once the ORDER BY matches them.
+//
+// The id STAYS, as the tie-break, because `created_at` is not unique and is not the database's:
+// Prisma sends the value from the Node process on every insert (measured -- the column's
+// `DEFAULT CURRENT_TIMESTAMP` never runs), so a burst can share a millisecond and two processes can
+// disagree about the order. A keyset on the time alone would repeat a row of a tied pair or skip it.
+export interface AuditKeyset {
+  createdAt: Date;
+  id: bigint;
+}
+
+export interface AuditCursor {
+  // Where the last page stopped. Null on the FIRST page of a walk that began before #530, which
+  // has a bound and no position yet.
+  at: AuditKeyset | null;
+  // THE PRE-#530 BOUND, AND IT RIDES TO THE END OF THE WALK.
+  //
+  // The previous release paged `id < X` under `ORDER BY id`, so a cursor it handed out means "every
+  // row with id >= X is already on the caller's screen". That set is NOT a prefix of the new order:
+  // `created_at` is written by the client (measured), so a row can carry a stamp older than a row
+  // with a smaller id. Translating X into the `(created_at, id)` of row X therefore answers from a
+  // different place -- every unseen row stamped ahead of X sits ahead of that tuple and is never
+  // returned. Measured on the dev trail, one process and 75 rows: from id 88 the old walk owed 19
+  // rows and the translated cursor returned 2, skipping all 19.
+  //
+  // Kept as a bound instead, and carried, the page is ordered the new way and cut the old way,
+  // which enumerates exactly what the old walk still owed: nothing skipped, nothing repeated.
+  // Dropping it after the first page would stop skipping and start repeating, because the pages
+  // that follow would be keyed on the tuple alone and reach back into rows already shown.
+  //
+  // THE OTHER HALF OF THE OVERLAP CANNOT BE CLOSED FROM HERE: a container still on the old release
+  // refuses the `<instant>|<id>` this one emits, because its own parser predates the format. That
+  // is a 400 for the length of the drain, recoverable by reloading the page.
+  //
+  // TEMPORARY. Remove one release after #530 ships, together with the fleet index kept for the same
+  // reason (docs/roadmap.md).
+  beforeId: bigint | null;
+}
+
+// `<ISO instant>|<id>`. Opaque to callers by contract, readable on purpose when a support question
+// is "which page was it on": a cursor nobody can read is one nobody can check.
+const CURSOR_SEP = "|";
+
+// The instant half, as `toISOString` spells it for a four-digit year that is not `0000`.
+//
+// THE SHAPE IS THE RANGE CHECK, and it is exhaustive rather than a list of bad spellings. Beyond
+// four digits that method switches to the EXPANDED form (`-100000-…`, `+275760-…`), which is
+// canonical JavaScript and reaches years no `timestamptz` holds; `0000` is a four-digit year the
+// calendar Postgres uses does not have at all. Both are refused at bind time, which turns a
+// malformed cursor into a 500 where this endpoint promises a 400.
+//
+// Swept rather than guessed: every one of the 10,000 four-digit years was built, round-tripped and
+// bound against Postgres, and `0000` is the only one it refuses. So four digits minus that year IS
+// the set the column accepts, and the canonical round trip below already rules out dates that do not
+// exist inside it -- there is no third case for a later reader to discover.
+const CURSOR_INSTANT = /^(?!0000)\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+
+export function encodeAuditCursor(
+  at: AuditKeyset,
+  beforeId: bigint | null = null,
+): string {
+  const head = `${at.createdAt.toISOString()}${CURSOR_SEP}${at.id}`;
+  return beforeId === null ? head : `${head}${CURSOR_SEP}${beforeId}`;
+}
+
+// Returns null for anything that is not one of ours.
+//
+// A BARE ID IS READ AS A BOUND, NOT AS A POSITION, which is the distinction round 1 of this PR's
+// review was about and round 9 sharpened: reading the number as the new key answers from a different
+// place in the trail under a pager that goes on saying "Page 2", and so does translating it into
+// that row's instant. As the old query's own `id <` bound it answers from the same place, and it is
+// the only reading of the three that does. See `AuditCursor.beforeId`.
+//
+// No lookup, so no scope and no database: the bound is a number the trail filter then applies on
+// top of. An id naming no row, or another tenant's, is a bound that simply matches nothing -- which
+// is what the previous release did with it too, and it leaves no way to ask this endpoint whether
+// some id exists.
+export function parseAuditCursor(raw: string): AuditCursor | null {
+  const parts = raw.split(CURSOR_SEP);
+  if (parts.length === 1) {
+    const bound = parseDbId(parts[0] ?? "");
+    return bound !== null && bound > 0n ? { at: null, beforeId: bound } : null;
+  }
+  if (parts.length > 3) return null;
+  const head = parts[0] as string;
+  const when = new Date(head);
+  // CANONICAL OR NOTHING, checked by round trip against the exact spelling this codec emits.
+  // `new Date` is not a validator: it ROLLS FORWARD a date that does not exist (`2026-02-30` becomes
+  // March 2nd, so the walk resumes at an instant nobody asked for and skips whatever lies between),
+  // and it accepts forms with no offset -- `Sep 4 2026`, `2026-09-04T12:00` -- by reading them in the
+  // SERVER'S OWN ZONE, which measured three hours off here and would make one cursor name different
+  // instants on two deployments. Six of seven such spellings were accepted before this line.
+  if (!CURSOR_INSTANT.test(head)) return null;
+  if (Number.isNaN(when.getTime()) || when.toISOString() !== head) return null;
+  // `parseDbId` and not a `BigInt` cast: it is the one bounded parse in the tree, so the id half of
+  // a cursor is held to the same range as an id arriving anywhere else. A cast would take a
+  // 40-digit string and hand Postgres a value it answers with a 500 at bind time.
+  const id = parseDbId(parts[1] ?? "");
+  if (id === null || id <= 0n) return null;
+  let beforeId: bigint | null = null;
+  if (parts.length === 3) {
+    beforeId = parseDbId(parts[2] as string);
+    if (beforeId === null || beforeId <= 0n) return null;
+  }
+  return { at: { createdAt: when, id }, beforeId };
+}
+
+function nextAuditCursor(
+  last: AuditKeyset | undefined,
+  beforeId: bigint | null,
+): string | null {
+  return last ? encodeAuditCursor(last, beforeId) : null;
 }

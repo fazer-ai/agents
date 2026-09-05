@@ -180,7 +180,11 @@ describe.skipIf(!dbUp)("the trail has a door the console can use", () => {
     expect(body.entries.map((e) => e.action)).toEqual(["three.c", "two.b"]);
     // Without this the caller has no way to reach row three, and no way to tell a full page from
     // the end of the trail.
-    expect(body.nextCursor).toBe(body.entries[1]?.id ?? "");
+    // The cursor names the row the page stopped on, in BOTH columns the walk is ordered by (#530).
+    // Opaque by contract, so this reads it apart rather than rebuilding it.
+    expect(body.nextCursor).toBe(
+      `${body.entries[1]?.createdAt}|${body.entries[1]?.id}`,
+    );
     expect(body.latestAt).toBe(body.entries[0]?.createdAt ?? "");
   });
 
@@ -256,6 +260,58 @@ describe.skipIf(!dbUp)("the trail has a door the console can use", () => {
         expect(res.status).toBe(403);
       });
     }
+
+    // A CURSOR FROM BEFORE #530 IS A BARE ID, and it is read as THAT RELEASE'S OWN `id <` BOUND
+    // rather than reinterpreted or translated. The format changed and deploys are rolling, so for
+    // one overlap the previous release is still handing these out; refusing would be a 400 in the
+    // middle of an operator's walk. The bound continues from the same place the old walk would
+    // have, which neither reading the number as the new key nor translating it into that row's
+    // instant does -- see `AuditCursor.beforeId`, and the walk asserted in the service's own file.
+    test("a cursor from before the keyset change continues the same walk", async () => {
+      role = "TENANT_ADMIN";
+      const first = await get("?limit=1", await sign("TENANT_ADMIN"));
+      const page = (await first.json()) as Page & { nextCursor: string };
+      const oldStyle = page.nextCursor.split("|")[1] as string;
+
+      const viaOld = await get(
+        `?limit=1&cursor=${encodeURIComponent(oldStyle)}`,
+        await sign("TENANT_ADMIN"),
+      );
+      const viaNew = await get(
+        `?limit=1&cursor=${encodeURIComponent(page.nextCursor)}`,
+        await sign("TENANT_ADMIN"),
+      );
+      expect(viaOld.status).toBe(200);
+      expect((await viaOld.json()).entries).toEqual(
+        (await viaNew.json()).entries,
+      );
+    });
+
+    test("a cursor that is neither shape is still refused", async () => {
+      role = "TENANT_ADMIN";
+      for (const bad of [
+        "abc",
+        "|",
+        "2026-01-01T00:00:00.000Z|x",
+        // Bounded like every other id: past 2^63-1 Postgres refuses it at bind time, so parsing it
+        // here would answer a plainly malformed value with a 500.
+        "9".repeat(40),
+      ]) {
+        const res = await get(
+          `?cursor=${encodeURIComponent(bad)}`,
+          await sign("TENANT_ADMIN"),
+        );
+        expect(res.status).toBe(400);
+      }
+      // ...and the cursor the endpoint itself just handed out is accepted.
+      const first = await get("?limit=1", await sign("TENANT_ADMIN"));
+      const { nextCursor } = (await first.json()) as { nextCursor: string };
+      const next = await get(
+        `?limit=1&cursor=${encodeURIComponent(nextCursor)}`,
+        await sign("TENANT_ADMIN"),
+      );
+      expect(next.status).toBe(200);
+    });
 
     test("a scope that is not one of the three is refused at the door", async () => {
       role = "TENANT_ADMIN";

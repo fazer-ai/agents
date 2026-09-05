@@ -229,6 +229,156 @@ describe.skipIf(!dbUp)("what a targetless audit_list actually reads", () => {
     expect(text).toContain(`${TAG}:mine`);
   });
 
+  // BOTH DOORS AGREE ON THE CURSOR TOO. The REST endpoint answers a pre-#530 cursor with a 400; this
+  // one has to refuse it as well, and for the same reason -- read as the new key it would continue
+  // the walk from somewhere else while the caller believes it is paging the same trail. An agent
+  // that stored a cursor is the likeliest holder of an old one.
+  test("a cursor that is neither shape is refused here too", async () => {
+    for (const bad of [
+      "abc",
+      "|",
+      "2026-01-01T00:00:00.000Z|x",
+      "9".repeat(40),
+    ]) {
+      const r = await read(
+        principal({ tenantId: mine, role: "TENANT_ADMIN" }),
+        {
+          cursor: bad,
+        },
+      );
+      expect(JSON.stringify(r)).toContain("nextCursor` from a previous");
+    }
+  });
+
+  // AND A BARE ID FROM THE PREVIOUS RELEASE IS READ AS THAT RELEASE'S OWN BOUND, not refused: an
+  // agent that stored one mid-walk keeps walking, from the same place that cursor named rather than
+  // from a different one. Both doors agree on that, as they do on the refusals above.
+  test("a bare id from before the keyset change continues the same walk", async () => {
+    const p = principal();
+    const first = (await auditList(
+      p,
+      { limit: 1, scope: "all" },
+      { base: appDb },
+    )) as { ok: true; data: { nextCursor: string | null } };
+    const cursor = first.data.nextCursor ?? "";
+    const bareId = cursor.split("|")[1] as string;
+    const viaOld = await auditList(
+      p,
+      { limit: 1, scope: "all", cursor: bareId },
+      { base: appDb },
+    );
+    const viaNew = await auditList(
+      p,
+      { limit: 1, scope: "all", cursor },
+      { base: appDb },
+    );
+    expect(JSON.stringify(viaOld)).not.toContain("nextCursor` from a previous");
+    const rows = (r: unknown) =>
+      JSON.stringify((r as { data: { entries: unknown } }).data.entries);
+    expect(rows(viaOld)).toBe(rows(viaNew));
+
+    // ...and the bound holds for the WHOLE walk, not just its first page: every id it hands back
+    // stays under the ceiling the old release stopped at, and none comes back twice. Asserted over
+    // the walk rather than over one `nextCursor`, because how many pages this shared fixture yields
+    // is not this test's to know -- pinned to a second page it passed here and failed on a CI shard
+    // where the `all` trail had one row under the bound.
+    const seen: string[] = [];
+    let at: string | null = bareId;
+    for (let i = 0; i < 20 && at; i++) {
+      const page = (await auditList(
+        p,
+        { limit: 1, scope: "all", cursor: at },
+        { base: appDb },
+      )) as {
+        ok: true;
+        data: { entries: { id: string }[]; nextCursor: string | null };
+      };
+      seen.push(...page.data.entries.map((e) => e.id));
+      at = page.data.nextCursor;
+      // While the walk continues, the ceiling travels with it.
+      if (at) expect(at.split("|")[2]).toBe(bareId);
+    }
+    expect(seen.length).toBeGreaterThan(0);
+    expect(new Set(seen).size).toBe(seen.length);
+    for (const id of seen) expect(BigInt(id) < BigInt(bareId)).toBe(true);
+  });
+
+  // A BARE ID IS A BOUND AND NOT A LOOKUP, so it cannot reach across trails at all -- which is what
+  // the earlier resolving version had to be scoped by hand to avoid, because `fleet` and `all` are
+  // read under the fleet role where every row is visible and RLS separates nothing. A number
+  // narrowing a walk names no row, so a tenant row's id offered to the fleet trail is just a smaller
+  // ceiling: the walk stays on the fleet trail, and there is no id whose existence this answer
+  // reveals.
+  test("a bare id from another trail bounds the walk without reaching it", async () => {
+    const p = principal();
+    // The id of a row that belongs to a tenant, offered as a cursor for the fleet trail.
+    const mineRow = (await auditList(
+      principal({ tenantId: mine, role: "TENANT_ADMIN" }),
+      { limit: 1 },
+      { base: appDb },
+    )) as { ok: true; data: { entries: { id: string }[] } };
+    const tenantRowId = mineRow.data.entries[0]?.id as string;
+    expect(tenantRowId).toBeTruthy();
+
+    const r = await auditList(
+      p,
+      { limit: 500, scope: "fleet", cursor: tenantRowId },
+      { base: appDb },
+    );
+    const text = JSON.stringify(r);
+    expect(text).not.toContain("nextCursor` from a previous");
+    // Still the fleet trail, whichever trail the number came from.
+    expect(text).not.toContain(`${TAG}:mine`);
+  });
+
+  // THE UNAUTHORIZED SCOPE IS STILL THE TOOL'S OWN ERROR, cursor or no cursor. Resolving a bare id
+  // needed the trail predicate, which needs the scope, which throws for a caller who may not ask for
+  // it -- and it threw OUTSIDE the handler's `try`, so this one combination rejected the promise
+  // instead of answering with `isError` like every other refusal (round 9 of #537). Reading the id
+  // as a bound touches neither the scope nor the database, so the refusal comes from the one place
+  // it always did.
+  test("an unauthorized scope answers the same way with a bare cursor as without", async () => {
+    const tenantAdmin = principal({ tenantId: mine, role: "TENANT_ADMIN" });
+    for (const scope of ["fleet", "all"]) {
+      const bare = await auditList(
+        tenantAdmin,
+        { limit: 1, scope, cursor: "115" },
+        { base: appDb },
+      );
+      const none = await auditList(
+        tenantAdmin,
+        { limit: 1, scope },
+        { base: appDb },
+      );
+      expect(JSON.stringify(bare)).toBe(JSON.stringify(none));
+      expect(JSON.stringify(bare)).toContain("SUPER_ADMIN");
+    }
+  });
+
+  test("the cursor this tool handed out is accepted, and continues the walk", async () => {
+    // `all`, because it is the scope that reaches more than one row here and a cursor only exists
+    // when there is a next page.
+    const p = principal();
+    const first = (await auditList(
+      p,
+      { limit: 1, scope: "all" },
+      { base: appDb },
+    )) as {
+      ok: true;
+      data: { nextCursor: string | null };
+    };
+    const cursor = first.data.nextCursor ?? "";
+    expect(cursor).toContain("|");
+    const second = await auditList(
+      p,
+      { limit: 1, scope: "all", cursor },
+      { base: appDb },
+    );
+    expect(JSON.stringify(second)).not.toContain("nextCursor` from a previous");
+    // ...and it really moved: the second page is not the first one again.
+    expect(JSON.stringify(second)).not.toBe(JSON.stringify(first));
+  });
+
   test("a tenant token still reads its own trail and only that", async () => {
     const text = JSON.stringify(
       await read(principal({ tenantId: mine, role: "TENANT_ADMIN" }), {}),

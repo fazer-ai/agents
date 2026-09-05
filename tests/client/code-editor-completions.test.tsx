@@ -544,6 +544,10 @@ describe("text is not code: no completion inside a string or a comment", () => {
 
   const quiet: Array<[string, string]> = [
     ["an argument being logged", 'console.log("context.'],
+    // A pattern is not code either, and lezer gives it a node of its own: the operator writing
+    // `/input./` is describing characters to match, not reading a field.
+    ["a regexp being typed", "const re = /input."],
+    ["a finished regexp", "const re = /input./"],
     ["a finished string", 'const s = "context.'],
     ["a single-quoted one", "const s = 'input."],
     ["a template with no hole", "const s = `context."],
@@ -557,12 +561,56 @@ describe("text is not code: no completion inside a string or a comment", () => {
     });
   }
 
+  // A slash is division far more often than it is a pattern, and lezer tells the two apart. This is
+  // the case the guard must NOT take with it.
+  test("but a division is code, and still completes", () => {
+    expect(ask("const x = a / input.")?.options.length).toBeGreaterThan(0);
+  });
+
   // The hole in a template IS code, and the commonest place a body builds a message from a
   // variable. Blocking the whole template string would take this with it.
   test("but the hole in a template string completes", () => {
     expect(
       ask("const s = `hi ${context.")?.options.map((o) => o.label),
     ).toContain("contact_name");
+  });
+});
+
+// An argument name is any string the operator declares, and this console is written in Portuguese:
+// `ação` is an ordinary field name here. The offer opened on `input.` and then vanished at the
+// `\u00e7`, because the matcher and its `validFor` were ASCII, so the operator saw the list they
+// wanted disappear exactly as they typed the letter that identifies it.
+describe("an accented argument name stays filterable", () => {
+  function ask(doc: string) {
+    const state = EditorState.create({ doc, extensions: [javascript()] });
+    return sourceFor(
+      ["a\u00e7\u00e3o", "cpf"],
+      i18n.t,
+    )(new CompletionContext(state, doc.length, true));
+  }
+
+  test("the list survives the accented character", () => {
+    expect(ask("input.")?.options.map((o) => o.label)).toContain(
+      "a\u00e7\u00e3o",
+    );
+    expect(ask("input.a")?.options.map((o) => o.label)).toContain(
+      "a\u00e7\u00e3o",
+    );
+    expect(ask("input.a\u00e7")?.options.map((o) => o.label)).toContain(
+      "a\u00e7\u00e3o",
+    );
+    expect(ask("input.a\u00e7\u00e3")?.options.map((o) => o.label)).toContain(
+      "a\u00e7\u00e3o",
+    );
+  });
+
+  // `validFor` is what lets CodeMirror keep filtering without asking again, so an ASCII-only one
+  // ends the session at the same character even when the query above would have answered.
+  test("and the range it stays valid for accepts them too", () => {
+    const r = ask("input.a\u00e7");
+    expect(r?.validFor).toBeDefined();
+    const validFor = r?.validFor as RegExp;
+    expect(validFor.test("a\u00e7\u00e3o")).toBe(true);
   });
 });
 

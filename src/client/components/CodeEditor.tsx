@@ -298,27 +298,36 @@ function rootCompletions(t: TFunction): Completion[] {
 // as a boundary and calls the tail a root.
 const IDENTIFIER_CHAR = /[\p{ID_Continue}$.\u200c\u200d]/u;
 
+// The same alphabet without the dot, for matching the word being typed. An argument name is any
+// string the operator declares and this console is Portuguese: `ação` is an ordinary field name,
+// and an ASCII matcher drops the offer at the `ç`, which is the letter that identifies it.
+const WORD_CHARS = "\\p{ID_Continue}$";
+const WORD_ONLY = new RegExp(`^[${WORD_CHARS}]*$`, "u");
+
 function isRootWord(ctx: CompletionContext, from: number): boolean {
   if (from === 0) return true;
   return !IDENTIFIER_CHAR.test(ctx.state.doc.sliceString(from - 1, from));
 }
 
-// A string or a comment is TEXT, and a dot in text is punctuation rather than a member access.
-// Offering there describes the sandbox's vocabulary to prose, and accepting an entry rewrites the
-// quoted words. The parse is already in the state for the highlighting, so this costs a lookup.
+// A string, a comment and a regexp are all places where a dot is a character rather than a member
+// access. Offering there describes the sandbox's vocabulary to prose, and accepting an entry
+// rewrites the quoted words or the pattern. The parse is already in the state for the highlighting,
+// so this costs a lookup, and it is also what tells `a / input` (division, code) from `/input./`
+// (a pattern), which no amount of looking at the characters can.
 //
 // The INNERMOST node and no walk up the ancestors: the hole in a template string resolves to the
 // expression inside it, while its ancestors include the `TemplateString`, so a walk would block
 // `${context.name}`, which is code and is where a body most often reads a variable.
-const TEXT_NODES = new Set([
+const NOT_CODE = new Set([
   "String",
   "TemplateString",
+  "RegExp",
   "LineComment",
   "BlockComment",
 ]);
 
-function inText(ctx: CompletionContext): boolean {
-  return TEXT_NODES.has(syntaxTree(ctx.state).resolveInner(ctx.pos, -1).name);
+function inNotCode(ctx: CompletionContext): boolean {
+  return NOT_CODE.has(syntaxTree(ctx.state).resolveInner(ctx.pos, -1).name);
 }
 
 export function sourceFor(
@@ -326,11 +335,13 @@ export function sourceFor(
   t: TFunction,
 ): (ctx: CompletionContext) => CompletionResult | null {
   return (ctx) => {
-    if (inText(ctx)) return null;
+    if (inNotCode(ctx)) return null;
     // NOTE: after a DOT, and the dot is what makes this cheap: no parse, no scope analysis, just the two
     // roots this sandbox actually has. `context ?. name` and `context.  name` are the same request,
     // so the whitespace the formatter may leave is allowed on both sides of the dot.
-    const dotted = ctx.matchBefore(/(context|input)\s*\??\.\s*[\w$]*/);
+    const dotted = ctx.matchBefore(
+      new RegExp(`(context|input)\\s*\\??\\.\\s*[${WORD_CHARS}]*`, "u"),
+    );
     if (dotted && isRootWord(ctx, dotted.from)) {
       const path = dotted.text.trimStart().startsWith("context")
         ? "context"
@@ -341,15 +352,15 @@ export function sourceFor(
       // `context.` the operator already typed. A name that is not an identifier is the exception,
       // and it eats the dot itself in `bracketApply`.
       const from = dotted.from + dotted.text.lastIndexOf(".") + 1;
-      return { from, options, validFor: /^[\w$]*$/ };
+      return { from, options, validFor: WORD_ONLY };
     }
-    const word = ctx.matchBefore(/[\w$]+/);
+    const word = ctx.matchBefore(new RegExp(`[${WORD_CHARS}]+`, "u"));
     if (!word || (word.from === word.to && !ctx.explicit)) return null;
     if (!isRootWord(ctx, word.from)) return null;
     return {
       from: word.from,
       options: rootCompletions(t),
-      validFor: /^[\w$]*$/,
+      validFor: WORD_ONLY,
     };
   };
 }

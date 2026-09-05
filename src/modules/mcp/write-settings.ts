@@ -21,6 +21,7 @@ import {
   createExperiment,
   deleteExperiment,
   getExperiment,
+  requireExperimentAgent,
   updateExperiment,
   variantWriteSchema,
 } from "@/modules/experiments/service";
@@ -113,17 +114,20 @@ export async function experimentCreate(
       // because the apply reaches the core, which asks them again (#490). The first is pure; the
       // second READS, outside the transaction the apply writes in, and is ADVISORY for it.
       assertExperimentNameUsable(args.name);
-      if (agentId !== undefined) {
-        await assertExperimentAgentExists(ctx, agentId, base);
-      }
+      // In the apply's own order: name, then variants, then the agent. The first two are pure and
+      // the third READS, so a preview that asked the agent first would refuse a call the apply
+      // refuses for another reason, and would take a round trip to do it.
+      const variants = mapVariants(args.variants);
+      const named = requireExperimentAgent(agentId);
+      await assertExperimentAgentExists(ctx, named, base);
       return ok({
         dryRun: true,
         action: "create",
         resource: "experiment",
         preview: {
           name: args.name,
-          agentId: agentId ? String(agentId) : null,
-          variants: mapVariants(args.variants),
+          agentId: String(named),
+          variants,
           enabled: args.enabled ?? true,
         },
       });
@@ -196,9 +200,15 @@ export async function experimentUpdate(
     const target = `experiment:${id}`;
     if (args.dry_run !== false) {
       assertExperimentNameUsable(patch.name);
-      // NOTE: ADVISORY, like the create half. `null` clears the binding and names nobody to look up.
-      if (patch.agentId !== undefined && patch.agentId !== null) {
-        await assertExperimentAgentExists(ctx, patch.agentId, base);
+      // NOTE: ADVISORY, like the create half. A patch that does not mention the agent leaves the
+      // stored one alone; one that mentions it names an agent, which `requireExperimentAgent` asks
+      // first because it is pure and the lookup below is a read.
+      if (patch.agentId !== undefined) {
+        await assertExperimentAgentExists(
+          ctx,
+          requireExperimentAgent(patch.agentId),
+          base,
+        );
       }
       return ok({
         dryRun: true,

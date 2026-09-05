@@ -2611,10 +2611,10 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "experiment_create",
       {
         description:
-          "Create an A/B prompt experiment. variants is an array of { key, weight?, system_prompt? }. agent_id optionally scopes it. Previews and creates NOTHING unless dry_run is false.",
+          "Create an A/B prompt experiment. variants is an array of { key, weight?, system_prompt? }. agent_id is required: a variant resolves for one agent. Previews and creates NOTHING unless dry_run is false.",
         inputSchema: {
           name: z.string(),
-          agent_id: z.string().nullable().optional(),
+          agent_id: z.string(),
           variants: z.array(
             z.object({
               key: z.string(),
@@ -2652,7 +2652,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
         inputSchema: {
           experiment_id: z.string(),
           name: z.string().optional(),
-          agent_id: z.string().nullable().optional(),
+          agent_id: z.string().optional(),
           variants: z
             .array(
               z.object({

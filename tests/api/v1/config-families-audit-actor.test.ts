@@ -200,6 +200,8 @@ afterAll(() => {
 
 const ADMIN_ID = 9398n;
 let tenantId = 0n;
+// An experiment names the agent it applies to, so the family below needs one to exist.
+let experimentAgentId = 0n;
 let cookie = "";
 
 const rows = async () =>
@@ -278,6 +280,7 @@ const REST: RestFamily[] = [
     createPath: "/experiments",
     createBody: () => ({
       name: `re${uniq()}`,
+      agentId: String(experimentAgentId),
       variants: [
         { key: "a", systemPrompt: "A" },
         { key: "b", systemPrompt: "B" },
@@ -309,6 +312,11 @@ describe.skipIf(!dbUp)("the console's own doors name who wrote", () => {
       data: { name: "CFGREST", slug: `cfgrest-${process.pid}` },
     });
     tenantId = t.id;
+    const a = await su.agent.create({
+      data: { tenantId, name: "CFGREST target", systemPrompt: "" },
+      select: { id: true },
+    });
+    experimentAgentId = a.id;
     mockFindUnique.mockImplementation(() =>
       Promise.resolve({
         id: ADMIN_ID,

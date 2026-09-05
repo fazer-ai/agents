@@ -1304,13 +1304,34 @@ describe.skipIf(!dbUp)(
         await suDb.tenant.delete({ where: { id: other.id } });
       });
 
-      test("no agent at all is still accepted, and still overrides nobody", async () => {
-        const r = await experimentCreate(
-          principal(),
-          { name: "loose", variants, dry_run: false },
-          D,
-        );
-        expect(r.ok).toBe(true);
+      // The round that measured this file left it as the one accepted shape here, with the note that
+      // `agentId: null` matches no agent because the resolver filters by an exact id, and that the
+      // REST body documented it as "any agent". #547 is that note answered: no agent named is input
+      // no reader can use, which is the whole thesis of this file.
+      test("no agent at all is refused by both halves, and the row nobody can reach proves why", async () => {
+        // The REASON, not just the refusal: with the rule gone, `assertAgentPresent` chokes on an id
+        // that is not there and refuses anyway, so a bare `applied: false` passes over a tree that
+        // no longer asks this question at all.
+        expect(
+          await halves(experimentCreate as never, { name: "loose", variants }),
+        ).toMatchObject({
+          applied: false,
+          previewed: false,
+          error: expect.stringContaining("names none"),
+        });
+        expect(await suDb.experiment.count({ where: { tenantId } })).toBe(0);
+
+        // Seeded past the write, because the write is what now refuses it: this is the row a
+        // deployment carries from before the rule, and it overrides nobody.
+        await suDb.experiment.create({
+          data: {
+            tenantId,
+            name: "loose",
+            agentId: null,
+            variants: [{ key: "v", weight: 1, systemPrompt: "VARIANT" }],
+            enabled: true,
+          },
+        });
         const ctx = {
           tenantId,
           userId: 1n,
@@ -1323,9 +1344,38 @@ describe.skipIf(!dbUp)(
             threadId: "loose-thread",
           }),
         );
-        // An `agentId: null` experiment matches no agent: the resolver filters by an exact id. The
-        // REST body documents null as "any agent"; it is not. Measured, not fixed here.
         expect(override).toBeNull();
+        await suDb.experiment.deleteMany({ where: { tenantId } });
+      });
+
+      test("clearing the agent of an experiment that works is refused, not read as widening it", async () => {
+        const created = await experimentCreate(
+          principal(),
+          { name: "kept", agent_id: agentId, variants, dry_run: false },
+          D,
+        );
+        expect(created.ok).toBe(true);
+        const id = idOf(created, "id");
+        expect(
+          await halves(experimentUpdate as never, {
+            experiment_id: id,
+            agent_id: null,
+          }),
+        ).toMatchObject({
+          applied: false,
+          previewed: false,
+          error: expect.stringContaining("names none"),
+        });
+        expect(
+          String(
+            (
+              await suDb.experiment.findUniqueOrThrow({
+                where: { id: BigInt(id) },
+                select: { agentId: true },
+              })
+            ).agentId,
+          ),
+        ).toBe(agentId);
         await suDb.experiment.deleteMany({ where: { tenantId } });
       });
 
@@ -1479,7 +1529,7 @@ describe.skipIf(!dbUp)(
         });
         const created = await experimentCreate(
           principal(),
-          { name: "movable", variants, dry_run: false },
+          { name: "movable", agent_id: agentId, variants, dry_run: false },
           D,
         );
         const expId = idOf(created, "id");

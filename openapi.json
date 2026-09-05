@@ -18146,6 +18146,7 @@
                 "type": "object",
                 "required": [
                   "name",
+                  "agentId",
                   "variants"
                 ],
                 "properties": {
@@ -18156,15 +18157,8 @@
                     "type": "string"
                   },
                   "agentId": {
-                    "description": "Agent this experiment applies to (BigInt as a string), or null for any agent.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
+                    "description": "The agent this experiment applies to (BigInt as a string). Required: variants are resolved for one agent, so an experiment that names none is one that overrides no turn.",
+                    "type": "string"
                   },
                   "variants": {
                     "description": "The variants under test; assignment is deterministic per conversation thread.",
@@ -18205,6 +18199,7 @@
                 "type": "object",
                 "required": [
                   "name",
+                  "agentId",
                   "variants"
                 ],
                 "properties": {
@@ -18215,15 +18210,8 @@
                     "type": "string"
                   },
                   "agentId": {
-                    "description": "Agent this experiment applies to (BigInt as a string), or null for any agent.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
+                    "description": "The agent this experiment applies to (BigInt as a string). Required: variants are resolved for one agent, so an experiment that names none is one that overrides no turn.",
+                    "type": "string"
                   },
                   "variants": {
                     "description": "The variants under test; assignment is deterministic per conversation thread.",
@@ -18264,6 +18252,7 @@
                 "type": "object",
                 "required": [
                   "name",
+                  "agentId",
                   "variants"
                 ],
                 "properties": {
@@ -18274,15 +18263,8 @@
                     "type": "string"
                   },
                   "agentId": {
-                    "description": "Agent this experiment applies to (BigInt as a string), or null for any agent.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
+                    "description": "The agent this experiment applies to (BigInt as a string). Required: variants are resolved for one agent, so an experiment that names none is one that overrides no turn.",
+                    "type": "string"
                   },
                   "variants": {
                     "description": "The variants under test; assignment is deterministic per conversation thread.",
@@ -18611,15 +18593,8 @@
                     "type": "string"
                   },
                   "agentId": {
-                    "description": "New target agent (BigInt as a string), or null to apply to any agent.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
+                    "description": "Move the experiment to this agent (BigInt as a string). Omit to leave the current one; there is no value that means every agent.",
+                    "type": "string"
                   },
                   "variants": {
                     "description": "Replacement set of variants for the experiment.",
@@ -18666,15 +18641,8 @@
                     "type": "string"
                   },
                   "agentId": {
-                    "description": "New target agent (BigInt as a string), or null to apply to any agent.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
+                    "description": "Move the experiment to this agent (BigInt as a string). Omit to leave the current one; there is no value that means every agent.",
+                    "type": "string"
                   },
                   "variants": {
                     "description": "Replacement set of variants for the experiment.",
@@ -18721,15 +18689,8 @@
                     "type": "string"
                   },
                   "agentId": {
-                    "description": "New target agent (BigInt as a string), or null to apply to any agent.",
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
+                    "description": "Move the experiment to this agent (BigInt as a string). Omit to leave the current one; there is no value that means every agent.",
+                    "type": "string"
                   },
                   "variants": {
                     "description": "Replacement set of variants for the experiment.",

@@ -1033,12 +1033,18 @@ describe("the MCP dry run answers the same as the apply", () => {
     });
 
   // THE CONTROL, and it is the point of this pair: without it the refusal below passes on a call
-  // that never reached the check at all. It did — the first version of this test asserted a refusal
+  // that never reached the check at all. It did: the first version of this test asserted a refusal
   // and was handed `insufficient_scope`, which is a refusal about something else entirely.
-  test("a short variant prompt previews successfully", async () => {
+  //
+  // It stopped asserting `ok: true` when #547 made naming an agent part of a create, since these
+  // calls carry no database to look one up in. What it asserts instead is the same discrimination
+  // one step earlier: a short prompt is not what this preview refuses. The variants are parsed
+  // BEFORE the agent is looked up, in the apply's own order, so the pair still separates a refusal
+  // about the prompt from a refusal about anything else.
+  test("a short variant prompt is not what the preview refuses", async () => {
     const res = JSON.stringify(await preview("curto"));
-    expect(res).toContain('"ok":true');
     expect(res).not.toContain("insufficient_scope");
+    expect(res).not.toContain("variants");
   });
 
   test("an update with an oversized variant answers, it does not throw", async () => {

@@ -83,6 +83,8 @@ describe.skipIf(!dbUp)("MCP resource-write tools (DB)", () => {
   let tenantB = 0n;
   let kbA = 0n;
   let apiKeyA = 0n;
+  // An experiment names the agent it applies to, so the two below need one to exist.
+  let agentA = 0n;
 
   beforeAll(async () => {
     const a = await suDb.tenant.create({
@@ -98,6 +100,11 @@ describe.skipIf(!dbUp)("MCP resource-write tools (DB)", () => {
       select: { id: true },
     });
     kbA = kb.id;
+    const ag = await suDb.agent.create({
+      data: { tenantId: tenantA, name: "RWA target", systemPrompt: "" },
+      select: { id: true },
+    });
+    agentA = ag.id;
     const key = await suDb.apiKey.create({
       data: {
         tenantId: tenantA,
@@ -280,6 +287,7 @@ describe.skipIf(!dbUp)("MCP resource-write tools (DB)", () => {
       p,
       {
         name: "Tone test",
+        agent_id: String(agentA),
         variants: [
           { key: "a", weight: 1, system_prompt: "be formal" },
           { key: "b", weight: 1, system_prompt: "be casual" },
@@ -307,6 +315,7 @@ describe.skipIf(!dbUp)("MCP resource-write tools (DB)", () => {
       p,
       {
         name,
+        agent_id: String(agentA),
         variants: [
           { key: "a", weight: 1, system_prompt: "be formal" },
           { key: "b", weight: 1, system_prompt: "be casual" },

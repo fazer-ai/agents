@@ -62,6 +62,7 @@
     "emptyMessage": "The message is empty.",
     "emptyVaultSecret": "A vault secret must not be empty.",
     "experimentAgentNotFound": "That experiment names no agent of this tenant",
+    "experimentAgentRequired": "An experiment applies to one agent, and this write names none",
     "experimentNotFound": "Experiment not found.",
     "fileTooLarge": "File is too large",
     "forbidden": "Forbidden",

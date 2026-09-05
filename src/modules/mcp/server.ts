@@ -36,6 +36,7 @@ import {
   businessHoursList,
   codeToolGet,
   codeToolList,
+  codeToolSchema,
   conversationGet,
   conversationMessages,
   documentStarterList,
@@ -1334,25 +1335,6 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
         writeContent(await documentTemplateGet(eff, args)),
     );
 
-    // NOTE: the block vocabulary is served HERE, on demand, instead of being published in every
-    // tools/list as the input schema of the two write tools. A document block is a six-variant
-    // discriminated union, and JSON Schema publishes a union by inlining every variant — measured at
-    // ~3.2k characters per tool, paid by every client on every session, for a contract only a caller
-    // actually authoring a template needs. Nothing on the client side renders a form for a six-way
-    // oneOf, so the cost buys nothing. The enforcement is not weakened: the service validates
-    // strictly, and its refusal names the block and the rule.
-    registerTenantTool(
-      server,
-      principal,
-      "document_template_schema",
-      {
-        description:
-          "The authoring contract for document templates: JSON Schema for every block type, for a declared field and for the style, plus the full {{token}} list. Generated from the validator itself, so it is exactly what document_template_create accepts. Call it once before authoring blocks.",
-        inputSchema: {},
-      },
-      async (_args, eff) => writeContent(await documentTemplateSchema(eff)),
-    );
-
     registerTenantTool(
       server,
       principal,
@@ -1383,6 +1365,48 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
         args: { template_id?: string; thread_id?: string; limit?: number },
         eff,
       ) => writeContent(await issuedDocumentList(eff, args)),
+    );
+  }
+
+  // The two AUTHORING CONTRACTS, outside both blocks because they belong to both. Each is a
+  // constant that a write tool's description names as the place its contract lives, and
+  // `filterScopes` grants exactly the scopes a client asked for, so `mcp:write` without
+  // `mcp:read` is a real token; registering these in the read block alone pointed that client at
+  // a tool it could neither list nor call. They stay visible to a read-only token too, which is
+  // what the `*_schema` sweep in tests/modules/mcp-tool-descriptions.test.ts asserts.
+  if (hasScope(principal, "mcp:read") || hasScope(principal, "mcp:write")) {
+    // The authoring contract, served on demand for the reason document_template_schema is: a
+    // vocabulary inlined into code_tool_create's description is paid by every caller on every
+    // session, and only a caller actually writing a body needs it (issue #538).
+    registerTenantTool(
+      server,
+      principal,
+      "code_tool_schema",
+      {
+        description:
+          "The authoring contract for a code tool body: every `context` key with its type and whether it can be ABSENT, what a return and a throw mean, and the sandbox limits. Generated from the modules that enforce them. Call it once before writing `code`.",
+        inputSchema: {},
+      },
+      async (_args, eff) => writeContent(codeToolSchema(eff)),
+    );
+
+    // NOTE: the block vocabulary is served HERE, on demand, instead of being published in every
+    // tools/list as the input schema of the two write tools. A document block is a six-variant
+    // discriminated union, and JSON Schema publishes a union by inlining every variant — measured at
+    // ~3.2k characters per tool, paid by every client on every session, for a contract only a caller
+    // actually authoring a template needs. Nothing on the client side renders a form for a six-way
+    // oneOf, so the cost buys nothing. The enforcement is not weakened: the service validates
+    // strictly, and its refusal names the block and the rule.
+    registerTenantTool(
+      server,
+      principal,
+      "document_template_schema",
+      {
+        description:
+          "The authoring contract for document templates: JSON Schema for every block type, for a declared field and for the style, plus the full {{token}} list. Generated from the validator itself, so it is exactly what document_template_create accepts. Call it once before authoring blocks.",
+        inputSchema: {},
+      },
+      async (_args, eff) => writeContent(await documentTemplateSchema(eff)),
     );
   }
 
@@ -1791,7 +1815,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       "code_tool_create",
       {
         description:
-          "Create a code tool: a JavaScript function the operator writes, which an agent calls with typed arguments and whose return value it reads. Previews the normalized input plus the body's static warnings and creates NOTHING unless dry_run is false. code is the body of `function (input, context) { … }` and answers with `return` (the value reaches the agent as JSON). input is the arguments declared in input_schema, the compact field map tool_create takes (standard JSON Schema is accepted and converted). context carries conversation_id, message_id, contact_id, contact_name, contact_email, contact_phone, inbox_id, inbox_name, company_name, agent_name, conversationAttributes, contactAttributes. Available inside: TIMEZONE, NOW_LOCAL, and Date in the agent's zone. No network, no imports, no async. Limits: 1000 ms of CPU, 32 MB. A `throw` or a limit is an integration failure (alerted); a business outcome is a returned value. Code that does not parse is SAVED and reported in `warnings`; it fails at call time. name shares one namespace with HTTP tools and the built-in tools. Grant it with agent_tools_set: source \"CODE\", codeToolDefinitionId.",
+          'Create a code tool: a JavaScript function the operator writes, which an agent calls with typed arguments and whose return value it reads. Previews the normalized input plus the body\'s static warnings and creates NOTHING unless dry_run is false. code is the body of `function (input, context) { … }` and answers with `return` (the value reaches the agent as JSON). input is the arguments declared in input_schema, the compact field map tool_create takes (standard JSON Schema is accepted and converted). Call code_tool_schema for what `context` carries, what is available inside the body, the limits, and which of them mark the call failed. Code that does not parse is SAVED and reported in `warnings`; it fails at call time. name shares one namespace with HTTP tools and the built-in tools. Grant it with agent_tools_set: source "CODE", codeToolDefinitionId.',
         inputSchema: {
           name: z.string(),
           label: z.string().optional(),

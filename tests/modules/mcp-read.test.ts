@@ -2,16 +2,25 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import {
+  CODE_TOOL_CONTEXT_MAX_CHARS,
+  CODE_TOOL_INPUT_MAX_CHARS,
+  SANDBOX_CODE_MAX_CHARS,
+  SANDBOX_TIMEOUT_MS,
+} from "@/graph/tools/code-sandbox-limits";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import {
   agentGet,
   apiKeyList,
   codeToolGet,
   codeToolList,
+  codeToolSchema,
+  documentTemplateSchema,
   instanceList,
   toolList,
   vaultList,
 } from "@/modules/mcp/read";
+import { MODEL_RESPONSE_CHAR_LIMIT } from "@/modules/tool-definitions/response-template";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // MCP read tools: the read gate (mcp:read scope + tenant target) is DB-free and always runs; the
@@ -48,6 +57,117 @@ describe("MCP read gate (no DB)", () => {
     const r = await agentGet(principal({}), { agent_id: "not-a-number" });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toContain("invalid agent_id");
+  });
+
+  // `code_tool_schema` is a CONSTANT, not tenant data, and it still goes through the read gate: a
+  // surface that answers before the fence is one more thing to remember, and the answer costs the
+  // same either way (issue #538).
+  test("code_tool_schema is behind the gate like every other read", () => {
+    const r = codeToolSchema(principal({ scopes: [] }));
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("insufficient_scope");
+  });
+
+  // What it answers, and the assertions are about the two things the description cannot carry: the
+  // `context` keys WITH their absent-when, and the limits read off the modules that enforce them
+  // rather than restated here.
+  test("code_tool_schema serves the vocabulary and the enforced limits", () => {
+    const r = codeToolSchema(principal({}));
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const body = r.data as {
+      context: Array<{ name: string; type: string; always: boolean }>;
+      limits: Record<string, number>;
+      result: string;
+      failure: string;
+    };
+    const names = body.context.map((v) => v.name);
+    expect(names).toContain("contact_email");
+    expect(names).toContain("conversationAttributes");
+    // The three that are always there, and the rest that are not: the field a body acts on.
+    expect(
+      body.context
+        .filter((v) => v.always)
+        .map((v) => v.name)
+        .sort(),
+    ).toEqual(["agent_name", "contactAttributes", "conversationAttributes"]);
+    expect(body.limits.timeoutMs).toBe(SANDBOX_TIMEOUT_MS);
+    expect(body.limits.codeMaxChars).toBe(SANDBOX_CODE_MAX_CHARS);
+    expect(body.limits.contextMaxChars).toBe(CODE_TOOL_CONTEXT_MAX_CHARS);
+    // The two semantics an agent cannot discover by trying without breaking a live turn.
+    expect(body.result).toContain("promise");
+    expect(body.failure).toContain("OPERATOR");
+  });
+
+  // The seven limits bite at THREE different moments, and a contract that groups them misleads in
+  // both directions: a correctable argument size reads as a broken tool, and an authoring refusal
+  // reads as an outage. `timeoutMs`/`memoryBytes`/`stackBytes`/`contextMaxChars` mark the call
+  // failed; `inputMaxChars` comes back as an ordinary result saying to call again with less
+  // (graph/tools/code.ts marks `failed: false`); `codeMaxChars` is refused on the WRITE, so no call
+  // exists to fail. Each sentence is asserted to claim its own and not the others'.
+  test("each limit is described at the moment it actually bites", () => {
+    const r = codeToolSchema(principal({}));
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const body = r.data as {
+      limits: Record<string, number>;
+      result: string;
+      failure: string;
+      argumentsTooLarge: string;
+      authoringRefusal: string;
+    };
+    expect(body.limits.inputMaxChars).toBe(CODE_TOOL_INPUT_MAX_CHARS);
+    expect(body.limits.resultMaxChars).toBe(MODEL_RESPONSE_CHAR_LIMIT);
+    for (const named of [
+      "timeoutMs",
+      "memoryBytes",
+      "stackBytes",
+      "contextMaxChars",
+    ]) {
+      expect([named, body.failure.includes(named)]).toEqual([named, true]);
+    }
+    for (const notAFailure of ["inputMaxChars", "codeMaxChars"]) {
+      expect([notAFailure, body.failure.includes(notAFailure)]).toEqual([
+        notAFailure,
+        false,
+      ]);
+    }
+    expect(body.argumentsTooLarge).toContain("inputMaxChars");
+    expect(body.argumentsTooLarge).toContain("not a failure");
+    // An authoring refusal, not a call outcome: nothing is saved, so nothing can fail.
+    expect(body.authoringRefusal).toContain("codeMaxChars");
+    expect(body.authoringRefusal).toContain("REFUSED");
+    // The return value is cut, so the cap is published rather than left to be discovered by a wrong
+    // answer, and it is published for what it BOUNDS: the value, not the rendered line. The marker
+    // the clipper appends is named too, because it is what tells a reader the answer is partial, and
+    // so is the one case that carries no marker at all.
+    expect(body.result).toContain("resultMaxChars");
+    expect(body.result).toContain("VALUE, not the whole line");
+    expect(body.result).toContain("[truncated]");
+    expect(body.result).toContain("[output truncated]");
+    expect(body.result).toContain("dropped ENTIRELY");
+  });
+
+  // `code_tool_create` no longer carries the contract, it names this tool for it, and `filterScopes`
+  // grants exactly the scopes a client asked for: a token with `mcp:write` and no `mcp:read` is a
+  // real token, and gating this on read alone pointed it at a tool it could neither list nor call.
+  // Same for `document_template_schema`, which `document_template_create` names the same way.
+  test("a write-only token reaches both authoring contracts", async () => {
+    const writeOnly = principal({ scopes: ["mcp:write"] });
+    expect(codeToolSchema(writeOnly).ok).toBe(true);
+    expect((await documentTemplateSchema(writeOnly)).ok).toBe(true);
+    // And neither scope is still a refusal: the gate moved, it did not disappear.
+    const none = principal({ scopes: [] });
+    const r = codeToolSchema(none);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("insufficient_scope");
+    // And the tenant fence is still there: a SUPER_ADMIN token that has not targeted one gets the
+    // same refusal every other tenant tool gives, rather than an answer from outside any tenant.
+    const untargeted = codeToolSchema(
+      principal({ tenantId: null, role: "SUPER_ADMIN" }),
+    );
+    expect(untargeted.ok).toBe(false);
+    if (!untargeted.ok) expect(untargeted.error).toContain("no tenant target");
   });
 });
 

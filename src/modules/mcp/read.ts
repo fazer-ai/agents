@@ -1,6 +1,15 @@
 import basePrisma from "@/api/lib/prisma";
+import {
+  CODE_TOOL_CONTEXT_MAX_CHARS,
+  CODE_TOOL_INPUT_MAX_CHARS,
+  SANDBOX_CODE_MAX_CHARS,
+  SANDBOX_MEMORY_BYTES,
+  SANDBOX_STACK_BYTES,
+  SANDBOX_TIMEOUT_MS,
+} from "@/graph/tools/code-sandbox-limits";
 import { AUDIT_SCOPES, isAuditScope } from "@/lib/audit/scope";
 import { checkCodeToolSyntax } from "@/lib/code-tool-syntax";
+import { CODE_TOOL_CONTEXT_VARS } from "@/lib/code-tool-vocabulary";
 import { AppError } from "@/lib/errors";
 import { ACTOR_TYPES, type ActorType } from "@/lib/tenancy/actor";
 import { readAgentConfigHealth } from "@/modules/agents/config-health-read";
@@ -58,6 +67,7 @@ import {
   searchKnowledge,
 } from "@/modules/rag/service";
 import { getTenantSettings } from "@/modules/tenant-settings/service";
+import { MODEL_RESPONSE_CHAR_LIMIT } from "@/modules/tool-definitions/response-template";
 import {
   getToolDefinition,
   listToolDefinitions,
@@ -75,6 +85,7 @@ import { OUTBOUND_EVENTS } from "@/modules/webhooks/outbound/events";
 import { listWebhookSubscriptions } from "@/modules/webhooks/outbound/subscriptions";
 import type { VerifiedToken } from "./oauth/tokens";
 import {
+  authoringGate,
   err,
   ok,
   parseMcpId,
@@ -244,6 +255,67 @@ export async function codeToolGet(
   }
 }
 
+// The authoring contract for a code tool body, served on demand rather than inlined into
+// `code_tool_create`'s description (issue #538). The precedent is `document_template_schema`, and
+// the reason is the same one measured there: a vocabulary that every caller pays for on every
+// session, for a contract only a caller actually WRITING a body needs.
+//
+// It answers what a body cannot discover by trying: which `context` keys exist, which of them can be
+// ABSENT (all but three, because the runtime builds that object by spreading conditionals), and the
+// limits that turn a run into a failure. Everything here is derived from the modules that enforce
+// it, never restated, so the answer cannot drift from the sandbox.
+//
+// Seven limits are served and they bite at three DIFFERENT moments, so they are described in three
+// sentences rather than one. `timeoutMs`, `memoryBytes`, `stackBytes` and `contextMaxChars` mark the
+// call failed. `inputMaxChars` is the model's doing and comes back as an ordinary result saying what
+// to change (graph/tools/code.ts). `codeMaxChars` never reaches a call at all: the write is REFUSED,
+// so nothing is saved. `resultMaxChars` is the fourth thing a body cannot discover by trying: what
+// the body returns is CLIPPED (code-sandbox.ts), and it bounds the VALUE rather than the rendered
+// line, so a caller reading it as a bound on the whole text sizes a return by the wrong number. The
+// cut itself is marked, but the `console.log` block is dropped WHOLE when the value leaves it under
+// forty characters of budget, and that is the one case nothing marks. A caller told these are all
+// failures reads a correctable argument size as a broken tool and an authoring refusal as an outage.
+//
+// The gate is `authoringGate`, not `readGate`: `code_tool_create` names this tool for the contract
+// it no longer restates, and `filterScopes` grants exactly the scopes a client asked for, so a token
+// holding `mcp:write` without `mcp:read` is a real token that would otherwise be sent to a tool it
+// can neither list nor call. It answers a constant either way, so admitting the writer gives away
+// nothing the reader was not already given.
+export function codeToolSchema(principal: VerifiedToken): WriteResult {
+  const ctx = authoringGate(principal);
+  if ("ok" in ctx) return ctx;
+  return ok({
+    signature: "function (input, context) { ... }",
+    input:
+      "The arguments the agent sent, validated against the tool's inputSchema before the body runs. Only the fields you declared are present.",
+    context: CODE_TOOL_CONTEXT_VARS.map((v) => ({
+      name: v.name,
+      type: v.type,
+      always: v.always,
+      description: v.description,
+    })),
+    result:
+      "Whatever the body returns is rendered for the agent, JSON where JSON can say it. Returning nothing answers `undefined`. A returned promise is an ERROR: the sandbox has no event loop, so `async`, `await` and a returned promise are not supported. resultMaxChars bounds the returned VALUE, not the whole line: over it the value is cut at that many characters and `…[truncated]` is appended, and the console.log block is then given whatever budget the main line leaves and cut with `…[output truncated]` of its own. If that leaves under 40 characters the output block is dropped ENTIRELY, which is the one case nothing marks. Return the summary the agent needs rather than the whole payload.",
+    failure:
+      "A throw, a syntax error, or hitting timeoutMs, memoryBytes or stackBytes is the OPERATOR's failure, not the agent's: the call is marked failed, the agent answers without the tool, and the flow log keeps the reason. The conversation's attributes exceeding contextMaxChars fails the same way, and is the tenant's data rather than the body. Only a returned value is a normal result.",
+    argumentsTooLarge:
+      "inputMaxChars is not a failure. Arguments over it never reach the body: the call comes back as an ordinary result telling the agent to call again with less, the way a schema refusal does, and nothing is marked failed.",
+    authoringRefusal:
+      "codeMaxChars is not a call limit at all. A body longer than it is REFUSED by code_tool_create and code_tool_update, so nothing is saved and no call is ever marked failed for it.",
+    available:
+      "TIMEZONE and NOW_LOCAL as strings, and Date in the agent's zone. No network, no fetch, no imports, no require, no async.",
+    limits: {
+      timeoutMs: SANDBOX_TIMEOUT_MS,
+      memoryBytes: SANDBOX_MEMORY_BYTES,
+      stackBytes: SANDBOX_STACK_BYTES,
+      codeMaxChars: SANDBOX_CODE_MAX_CHARS,
+      inputMaxChars: CODE_TOOL_INPUT_MAX_CHARS,
+      contextMaxChars: CODE_TOOL_CONTEXT_MAX_CHARS,
+      resultMaxChars: MODEL_RESPONSE_CHAR_LIMIT,
+    },
+  });
+}
+
 // ── document templates ──
 
 export async function documentTemplateList(
@@ -301,7 +373,7 @@ export async function documentTemplateGet(
 export async function documentTemplateSchema(
   principal: VerifiedToken,
 ): Promise<WriteResult> {
-  const ctx = readGate(principal);
+  const ctx = authoringGate(principal);
   if ("ok" in ctx) return ctx;
   return ok({
     ...documentAuthoringSchema(),

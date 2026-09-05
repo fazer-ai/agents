@@ -199,6 +199,28 @@ export function readGate(
   return ctxOf(principal);
 }
 
+// The gate for a tool that serves an AUTHORING CONTRACT: `code_tool_schema` and
+// `document_template_schema`. Both are constants, both are named by a write tool's description as
+// the place the contract lives, and `filterScopes` (api/v1/mcp-oauth.controller.ts) grants exactly
+// the scopes a client asked for, so a token holding `mcp:write` and not `mcp:read` is a real token.
+// Gating these on read alone points that client at a tool it can neither list nor call, which is the
+// whole cost of having moved the contract out of the create description.
+export function authoringGate(
+  principal: VerifiedToken,
+): TenantContext | WriteResult {
+  if (!hasScope(principal, "mcp:read") && !hasScope(principal, "mcp:write")) {
+    return err(
+      "insufficient_scope: this tool requires the mcp:read or mcp:write scope",
+    );
+  }
+  if (principal.tenantId === null) {
+    return err(
+      "no tenant target: the token must be scoped to a tenant (a SUPER_ADMIN must target one)",
+    );
+  }
+  return ctxOf(principal);
+}
+
 // Appends the audit row in a tx where the RLS WITH CHECK passes (asSuperAdmin for a SUPER_ADMIN
 // token, the scoped tenant tx otherwise).
 export async function recordMcpAudit(

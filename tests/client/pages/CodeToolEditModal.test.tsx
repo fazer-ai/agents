@@ -2,6 +2,8 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { completionStatus, startCompletion } from "@codemirror/autocomplete";
+import { EditorView } from "@codemirror/view";
 import {
   cleanup,
   fireEvent,
@@ -11,11 +13,13 @@ import {
 } from "@testing-library/react";
 import { ToastProvider } from "@/client/components";
 import { useModalController } from "@/client/components/Modal";
+import i18n from "@/client/lib/i18n";
 import {
   type CodeTool,
   CodeToolEditModal,
   formFromCodeTool,
   payloadOfCodeTool,
+  starterCode,
 } from "@/client/pages/resources/CodeToolEditModal";
 
 // The dominant pattern in this suite: pure-function tests over the exported form helpers, plus one
@@ -23,6 +27,24 @@ import {
 // Save (invalid code is SAVED and fails at call time, as the operator's failure).
 
 afterEach(cleanup);
+
+// The body is no longer a `<textarea>`: it is CodeMirror (issue #538), so `fireEvent.change` has
+// nothing to change. `EditorView.findFromDOM` is CodeMirror's own way to reach the view that owns a
+// node, so the test drives the REAL editor and its onChange rather than a stand-in for it, which is
+// what keeps these tests about the modal instead of about the widget.
+function setCode(text: string) {
+  const host = document.body.querySelector(".cm-editor") as HTMLElement;
+  const view = EditorView.findFromDOM(host);
+  if (!view) throw new Error("the code editor did not mount");
+  view.dispatch({
+    changes: { from: 0, to: view.state.doc.length, insert: text },
+  });
+}
+
+// The one textarea left in the form.
+function descriptionField(): HTMLTextAreaElement {
+  return document.body.querySelector("textarea") as HTMLTextAreaElement;
+}
 
 function codeTool(over: Partial<CodeTool> = {}): CodeTool {
   return {
@@ -179,16 +201,9 @@ test("an invalid body warns but leaves Save enabled", async () => {
   const input = document.body.querySelector("input") as HTMLInputElement;
   fireEvent.change(input, { target: { value: "Look up CPF" } });
 
-  const textareas = [...document.body.querySelectorAll("textarea")];
-  const description = textareas.find(
-    (ta) => !ta.className.includes("font-mono"),
-  ) as HTMLTextAreaElement;
-  const code = textareas.find((ta) =>
-    ta.className.includes("font-mono"),
-  ) as HTMLTextAreaElement;
-  fireEvent.change(description, { target: { value: "a description" } });
+  fireEvent.change(descriptionField(), { target: { value: "a description" } });
   // Does not parse: an unfinished expression.
-  fireEvent.change(code, { target: { value: "return input.cpf." } });
+  setCode("return input.cpf.");
 
   // The warning is debounced (300 ms) then computed by the same acorn check the server runs.
   await screen.findByText(/Line \d+, column \d+:/, {}, { timeout: 2000 });
@@ -198,21 +213,118 @@ test("an invalid body warns but leaves Save enabled", async () => {
   expect(save?.hasAttribute("disabled")).toBe(false);
 });
 
+// The defect as the operator meets it, and the only place it is visible: Escape is how a suggestion
+// is dismissed, and it is also how this dialog closes. Radix hears the press first (capture phase on
+// `document`), so before the claim in escapeClaim.ts the same key that put the popup away asked
+// whether to throw the body out. Measured in a browser; this is the regression fence for it.
+test("Escape dismisses the suggestion without offering to discard the body", async () => {
+  render(<Harness />);
+  fireEvent.click(screen.getByText("open"));
+
+  const input = document.body.querySelector("input") as HTMLInputElement;
+  fireEvent.change(input, { target: { value: "Look up CPF" } });
+  fireEvent.change(descriptionField(), { target: { value: "a description" } });
+  // Dirty, so the dialog would ask before closing: that prompt is exactly what must not appear.
+  setCode("return context.");
+
+  const host = document.body.querySelector(".cm-editor") as HTMLElement;
+  const view = EditorView.findFromDOM(host) as EditorView;
+  const content = host.querySelector(".cm-content") as HTMLElement;
+  view.dispatch({ selection: { anchor: view.state.doc.length } });
+  startCompletion(view);
+  await waitFor(() => expect(completionStatus(view.state)).toBe("active"));
+
+  content.dispatchEvent(
+    // `cancelable`, as a real keydown is: the fix works by `preventDefault`, which Radix reads back
+    // (react-dismissable-layer), and `preventDefault` on a non-cancelable event does nothing.
+    new KeyboardEvent("keydown", {
+      key: "Escape",
+      bubbles: true,
+      cancelable: true,
+    }),
+  );
+  await waitFor(() => expect(completionStatus(view.state)).not.toBe("active"));
+  expect(document.body.textContent).not.toContain("Discard changes?");
+  // And the body the operator was writing is still there.
+  expect(view.state.doc.toString()).toBe("return context.");
+
+  // With nothing open, Escape belongs to the dialog again, which is the half a blanket fix breaks.
+  content.dispatchEvent(
+    new KeyboardEvent("keydown", {
+      key: "Escape",
+      bubbles: true,
+      cancelable: true,
+    }),
+  );
+  await waitFor(() =>
+    expect(document.body.textContent).toContain("Discard changes?"),
+  );
+});
+
+// The defect as the operator meets it: open a tool, touch nothing, press Escape, and be asked
+// whether to discard changes. A body stored with CRLF (saved over MCP from a Windows client, or
+// carried in by an import) cannot survive CodeMirror, which normalizes line endings on the way in,
+// and the normalized text used to come back through `onChange` as if the operator had typed it.
+test("a tool stored with CRLF opens clean, and closes without asking", async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const href =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.href
+          : input.url;
+    if (
+      !/\/code-tools\/1(\?|$)/.test(href) ||
+      (init?.method ?? "GET").toUpperCase() !== "GET"
+    ) {
+      return realFetch(input as RequestInfo, init);
+    }
+    return new Response(
+      JSON.stringify({
+        tool: codeTool({ code: "const a = 1;\r\nreturn a;" }),
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  }) as typeof fetch;
+  try {
+    render(<TwoToolsHarness />);
+    fireEvent.click(screen.getByText("open-1"));
+    await waitFor(() =>
+      expect(!!document.body.querySelector(".cm-editor")).toBe(true),
+    );
+    const view = EditorView.findFromDOM(
+      document.body.querySelector(".cm-editor") as HTMLElement,
+    ) as EditorView;
+    // The document is LF, which is CodeMirror's doing and not something to fight.
+    await waitFor(() =>
+      expect(view.state.doc.toString()).toBe("const a = 1;\nreturn a;"),
+    );
+    // Nothing was typed, so nothing is dirty: Escape closes instead of asking.
+    (document.body.querySelector(".cm-content") as HTMLElement).dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Escape",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await waitFor(() =>
+      expect(!!document.body.querySelector(".cm-editor")).toBe(false),
+    );
+    expect(document.body.textContent).not.toContain("Discard changes?");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
 test("a body with no return warns without disabling Save", async () => {
   render(<Harness />);
   fireEvent.click(screen.getByText("open"));
 
   const input = document.body.querySelector("input") as HTMLInputElement;
   fireEvent.change(input, { target: { value: "No return" } });
-  const textareas = [...document.body.querySelectorAll("textarea")];
-  const description = textareas.find(
-    (ta) => !ta.className.includes("font-mono"),
-  ) as HTMLTextAreaElement;
-  const code = textareas.find((ta) =>
-    ta.className.includes("font-mono"),
-  ) as HTMLTextAreaElement;
-  fireEvent.change(description, { target: { value: "a description" } });
-  fireEvent.change(code, { target: { value: "const x = 1;" } });
+  fireEvent.change(descriptionField(), { target: { value: "a description" } });
+  setCode("const x = 1;");
 
   await waitFor(
     () =>
@@ -331,16 +443,10 @@ test("a save the server warned about says so in the toast, not only under the fi
     fireEvent.click(screen.getByText("open"));
     const label = document.body.querySelector("input") as HTMLInputElement;
     fireEvent.change(label, { target: { value: "Look up CPF" } });
-    const textareas = [...document.body.querySelectorAll("textarea")];
-    const description = textareas.find(
-      (ta) => !ta.className.includes("font-mono"),
-    ) as HTMLTextAreaElement;
-    const code = textareas.find((ta) =>
-      ta.className.includes("font-mono"),
-    ) as HTMLTextAreaElement;
+    const description = descriptionField();
     fireEvent.change(description, { target: { value: "a description" } });
     // Saved immediately, before the debounced check has drawn anything.
-    fireEvent.change(code, { target: { value: "return input.cpf." } });
+    setCode("return input.cpf.");
     fireEvent.click(screen.getByText("Save").closest("button") as HTMLElement);
     await waitFor(() =>
       expect(
@@ -419,19 +525,10 @@ test("a save that lands after the dialog was dismissed does not close the next o
     const fill = () => {
       const label = document.body.querySelector("input") as HTMLInputElement;
       fireEvent.change(label, { target: { value: "Look up CPF" } });
-      const areas = [...document.body.querySelectorAll("textarea")];
-      fireEvent.change(
-        areas.find(
-          (ta) => !ta.className.includes("font-mono"),
-        ) as HTMLTextAreaElement,
-        { target: { value: "a description" } },
-      );
-      fireEvent.change(
-        areas.find((ta) =>
-          ta.className.includes("font-mono"),
-        ) as HTMLTextAreaElement,
-        { target: { value: "return 1" } },
-      );
+      fireEvent.change(descriptionField(), {
+        target: { value: "a description" },
+      });
+      setCode("return 1");
     };
     fill();
     fireEvent.click(screen.getByText("Save").closest("button") as HTMLElement);
@@ -491,19 +588,10 @@ test("a save that FAILS after the dialog was dismissed does not mark the next on
           target: { value: "Look up CPF" },
         },
       );
-      const areas = [...document.body.querySelectorAll("textarea")];
-      fireEvent.change(
-        areas.find(
-          (ta) => !ta.className.includes("font-mono"),
-        ) as HTMLTextAreaElement,
-        { target: { value: "a description" } },
-      );
-      fireEvent.change(
-        areas.find((ta) =>
-          ta.className.includes("font-mono"),
-        ) as HTMLTextAreaElement,
-        { target: { value: "return 1" } },
-      );
+      fireEvent.change(descriptionField(), {
+        target: { value: "a description" },
+      });
+      setCode("return 1");
     };
     fill();
     fireEvent.click(screen.getByText("Save").closest("button") as HTMLElement);
@@ -558,4 +646,25 @@ test("a save in flight cannot be dismissed, and its finally belongs to its own o
       "} finally {\n      if (sessionRef.current === session) setSaving(false);",
     ),
   ).toBe(true);
+});
+
+// The starter body's comments are the first console text an author of a code tool reads, so they
+// follow the console's language like every label around them. The `return` line does not: that is
+// the language's own word. Shipped in English since #517, caught in a browser over a pt-BR form.
+test("the starter body speaks the console's language, and its code does not", async () => {
+  const en = starterCode(i18n.t);
+  expect(en).toContain("return { ok: true };");
+  await i18n.changeLanguage("pt-BR");
+  const pt = starterCode(i18n.t);
+  await i18n.changeLanguage("en");
+  // The comments moved.
+  expect(pt).not.toBe(en);
+  expect(pt.split("\n")[0]).not.toBe(en.split("\n")[0]);
+  // The code did not.
+  expect(pt).toContain("return { ok: true };");
+  // Both lines are comments, so an untranslated one cannot hide as code.
+  for (const body of [en, pt]) {
+    const lines = body.trimEnd().split("\n");
+    expect(lines.slice(0, 2).every((l) => l.startsWith("// "))).toBe(true);
+  }
 });

@@ -49,6 +49,35 @@ import { fieldTypeLabels } from "./toolFieldTypes";
 //
 // Only the ten the runtime exposes as strings. `conversationAttributes` and `contactAttributes` are
 // objects a turn loads from the database, and no text field can stand for them.
+// What the dialog actually SENDS, out of the boxes it collected. Only what the operator filled in:
+// a blank box is a variable the turn did not have either, which is a real case the body has to
+// survive, and sending "" for it would test a different one.
+//
+// `agent_name` is the exception, because it is the exception at RUN time: `httpToolContext` spreads
+// it unconditionally, and the vocabulary says `always: true` on that basis, so a body may
+// dereference it without a `??`. A dialog that can omit it simulates a turn that cannot happen, and
+// fails a body the runtime never fails. Blank falls back to the default the box opens with rather
+// than dropping the key.
+export function contextToSend(
+  collected: Record<string, string>,
+  names: readonly string[],
+  agentNameDefault: string,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const name of names) {
+    const v = collected[name] ?? "";
+    if (v !== "") out[name] = v;
+  }
+  // NOTE: outside the loop because `names` comes from a SCAN of the body, and a scan can miss the
+  // read: `const { agent_name } = context` names it nowhere a regex over member access can see, so
+  // the name would not be in the list to fall back for. The guarantee is about the RUNTIME, which
+  // spreads the key unconditionally, so it cannot depend on the dialog having recognised how the
+  // body spells the read.
+  const typed = collected.agent_name ?? "";
+  out.agent_name = typed !== "" ? typed : agentNameDefault;
+  return out;
+}
+
 export function contextNamesUsedBy(code: string): string[] {
   const used = new Set<string>();
   for (const m of code.matchAll(
@@ -158,7 +187,7 @@ export function CodeToolTestModal({
     sessionRef.current += 1;
     setValues({});
     setSendEmpty({});
-    setContext({});
+    setContext({ agent_name: t("codeTools.testAgentName", "Agent") });
     setAllContext(false);
     setTimezone(browserZone());
     setError(null);
@@ -194,14 +223,11 @@ export function CodeToolTestModal({
         if (!coerced.ok) return;
         args[f.name] = coerced.value;
       }
-      // Only what the operator actually filled in: a blank box is a variable the turn did not have
-      // either, which is a real case the body has to survive, and sending "" for it would test a
-      // different one.
-      const ctx: Record<string, string> = {};
-      for (const name of contextNames) {
-        const v = context[name] ?? "";
-        if (v !== "") ctx[name] = v;
-      }
+      const ctx = contextToSend(
+        context,
+        contextNames,
+        t("codeTools.testAgentName", "Agent"),
+      );
       const { data, error: err } = await api.api.v1["code-tools"].test.post({
         definition: target.definition,
         args,
@@ -371,7 +397,7 @@ export function CodeToolTestModal({
           group
           description={t(
             "codeTools.testContextHint",
-            "The values a turn would carry, for the variables this body reads. Leave one blank to test what the body does when the turn did not have it.",
+            "The values a turn would carry, for the variables this body reads. Blank tests what the body does without one. agent_name is the exception: a turn always has it, so blank sends the default.",
           )}
         >
           <div className="flex flex-col gap-2">

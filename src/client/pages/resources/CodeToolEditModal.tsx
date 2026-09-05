@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Button,
+  CodeEditor,
   FormField,
   HelpPopover,
   Input,
@@ -64,17 +65,28 @@ export type CodeToolListed = NonNullable<CodeToolsData>["tools"][number];
 
 // A starter body that shows the contract at a glance; the operator replaces it. Empty would do (Save
 // gates on non-empty code), but the shape is the thing a first-time author most needs to see.
-const STARTER_CODE = `// input holds the typed arguments you declared; context the conversation.
-// Answer with a return; console.log output comes back with it.
-return { ok: true };
-`;
+//
+// Its comments are the first console text an author of a code tool reads, so they are TRANSLATED
+// like everything else on this screen. The code around them is not: `return` is the language's word,
+// not ours. Shipped in English since #517 and caught in a browser against a pt-BR console.
+export function starterCode(t: TFunction): string {
+  const what = t(
+    "codeTools.starterInput",
+    "input holds the typed arguments you declared; context the conversation.",
+  );
+  const how = t(
+    "codeTools.starterReturn",
+    "Answer with a return; console.log output comes back with it.",
+  );
+  return `// ${what}\n// ${how}\nreturn { ok: true };\n`;
+}
 
-function emptyForm() {
+function emptyForm(t: TFunction) {
   return {
     label: "",
     description: "",
     aiFields: [] as AiFieldRow[],
-    code: STARTER_CODE,
+    code: starterCode(t),
   };
 }
 
@@ -160,7 +172,7 @@ export function CodeToolEditModal({
 }) {
   const { t } = useTranslation();
   const { showToast } = useToast();
-  const [form, setForm] = useState(emptyForm());
+  const [form, setForm] = useState(() => emptyForm(t));
   // The CURRENT form, readable from inside a request that started before it: the operator can type
   // during the save, and a refusal about a value they have already replaced belongs in the banner
   // rather than under a box that no longer holds it.
@@ -235,7 +247,7 @@ export function CodeToolEditModal({
       // is what used to clear this flag on its way out — leaving the create form skeletonized
       // forever if it never arrived. Every state this handler sets belongs to THIS opening.
       setLoadingForm(false);
-      const initial = emptyForm();
+      const initial = emptyForm(t);
       setForm(initial);
       baselineRef.current = JSON.stringify(initial);
     }
@@ -507,7 +519,7 @@ export function CodeToolEditModal({
                     label={t("codeTools.code", "Code")}
                     content={t(
                       "codeTools.codeHelp",
-                      "The body of a JavaScript function the agent calls. `input` holds the arguments you declared above; `context` holds the conversation variables (contact_name, contact_email, conversation_id, and the rest). Answer with `return`.\n\nWhatever you return is rendered as JSON for the agent, and console.log output comes back with it. TIMEZONE, NOW_LOCAL and Date run in the agent's zone.\n\nThere is no network, no imports and no async. A run gets 1000 ms and 32 MB; a throw or a limit is a failure, a returned value is a result. Invalid code is still saved and fails when the agent calls it.",
+                      "The body of a JavaScript function the agent calls. `input` holds the arguments you declared above; `context` holds the conversation's values. Type `input.` or `context.` for the full list, with the type of each and whether it can be absent. Answer with `return`.\n\nWhatever you return is rendered as JSON for the agent, and console.log output comes back with it. TIMEZONE, NOW_LOCAL and Date run in the agent's zone.\n\nThere is no network, no imports and no async: a returned promise is an error. A run gets 1000 ms and 32 MB; a throw or a limit is a failure, a returned value is a result. Invalid code is still saved and fails when the agent calls it.",
                     )}
                   />
                 </span>
@@ -516,16 +528,14 @@ export function CodeToolEditModal({
               required
               error={refusal.at("code", current.code)}
             >
-              <Textarea
+              <CodeEditor
                 value={form.code}
-                onChange={(e) =>
-                  setForm((f) => ({ ...f, code: e.target.value }))
-                }
-                rows={14}
-                spellCheck={false}
+                onChange={(code) => setForm((f) => ({ ...f, code }))}
+                // NOTE: the names as they stand in the panel above, so `input.` completes to an
+                // argument the operator renamed a second ago, not the one that was last saved.
+                argumentNames={trimmedNames}
                 maxLength={SANDBOX_CODE_MAX_CHARS}
-                className="font-mono text-xs"
-                placeholder={STARTER_CODE}
+                placeholder={starterCode(t)}
                 aria-label={t("codeTools.code", "Code")}
               />
             </FormField>

@@ -290,8 +290,11 @@ async function downloadPng(svgEl: SVGSVGElement, fileName: string, bg: string) {
 }
 
 // Renders the agent graph as an SVG inside the modal and lets the operator save it. mermaid is
-// lazy-imported (heavy dep, kept out of the initial bundle — loaded only when the operator opens the
-// graph) and rendered via mermaid.render (its dompurify sanitizes the SVG). On any failure it shows a
+// lazy-imported so its module body is only EVALUATED when the operator opens the graph, and rendered
+// via mermaid.render (its dompurify sanitizes the SVG). It is not kept out of the bundle: `Bun.build`
+// in build.ts sets no `splitting`, so it emits a single chunk and every `await import()` is inlined
+// into it. Measured on the current tree: mermaid is in dist/index-*.js, and wrapping another heavy
+// component in `React.lazy` grew that file instead of shrinking it. On any failure it shows a
 // fallback message. `fileName` is the slugified download name for the saved image.
 function GraphModalBody({
   code,

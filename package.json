@@ -34,6 +34,12 @@
     "prepare": "husky"
   },
   "dependencies": {
+    "@codemirror/autocomplete": "^6.20.3",
+    "@codemirror/commands": "^6.11.0",
+    "@codemirror/lang-javascript": "^6.2.5",
+    "@codemirror/language": "^6.12.4",
+    "@codemirror/state": "^6.7.4",
+    "@codemirror/view": "^6.43.11",
     "@elysiajs/cookie": "^0.8.0",
     "@elysiajs/cors": "^1.4.2",
     "@elysiajs/eden": "^1.4.9",
@@ -50,6 +56,7 @@
     "@langchain/mcp-adapters": "1.1.4",
     "@langchain/openai": "1.5.10",
     "@langchain/textsplitters": "1.0.1",
+    "@lezer/highlight": "^1.2.3",
     "@modelcontextprotocol/sdk": "^1",
     "@prisma/adapter-pg": "^7.9.1",
     "@prisma/client": "^7.9.1",

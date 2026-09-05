@@ -1,10 +1,16 @@
 /// <reference lib="dom" />
 
 import { afterEach, describe, expect, test } from "bun:test";
+import { CompletionContext } from "@codemirror/autocomplete";
 import { undo } from "@codemirror/commands";
+import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { cleanup, render } from "@testing-library/react";
-import { CodeEditor, completionsFor } from "@/client/components/CodeEditor";
+import {
+  CodeEditor,
+  completionsFor,
+  sourceFor,
+} from "@/client/components/CodeEditor";
 import i18n from "@/client/lib/i18n";
 import enLocale from "@/client/locales/en.json";
 import ptLocale from "@/client/locales/pt-BR.json";
@@ -264,5 +270,46 @@ describe("the popup speaks the console's language", () => {
       en.argumentDetail,
       en.argumentInfo,
     ]);
+  });
+});
+
+// `matchBefore` matches a SUFFIX of the line, so any expression ENDING in one of the two names hits
+// the same regex: `mycontext.` is one identifier, `config.input.` is somebody else's member, and
+// offering this sandbox's vocabulary there writes code about the wrong object.
+describe("only the root `context` and `input` complete", () => {
+  function ask(doc: string) {
+    const state = EditorState.create({ doc });
+    return sourceFor(
+      ["cpf"],
+      i18n.t,
+    )(new CompletionContext(state, doc.length, true));
+  }
+
+  test("the root variables still complete, dotted and bare", () => {
+    expect(ask("context.")?.options.map((o) => o.label)).toContain(
+      "contact_name",
+    );
+    expect(ask("return input.")?.options.map((o) => o.label)).toEqual(["cpf"]);
+    expect(ask("  context?. co")?.options.map((o) => o.label)).toContain(
+      "contact_name",
+    );
+    expect(ask("const x = con")?.options.map((o) => o.label)).toEqual([
+      "context",
+      "input",
+    ]);
+  });
+
+  test("a longer identifier ending in the same letters offers nothing", () => {
+    expect(ask("mycontext.")).toBeNull();
+    expect(ask("my_input.")).toBeNull();
+    expect(ask("$context.")).toBeNull();
+  });
+
+  test("a member of something else offers nothing", () => {
+    expect(ask("config.input.")).toBeNull();
+    expect(ask("a.b.context.")).toBeNull();
+    expect(ask("payload?.context.")).toBeNull();
+    // The bare-word branch has the same hole: after a dot, `context` and `input` are not in scope.
+    expect(ask("obj.con")).toBeNull();
   });
 });

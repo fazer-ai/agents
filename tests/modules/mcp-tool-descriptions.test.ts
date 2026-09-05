@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { CODE_TOOL_CONTEXT_NAMES } from "@/lib/code-tool-vocabulary";
 import { BEHAVIOR_PATCH_SHAPE } from "@/modules/agents/settings-schema";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import { buildMcpServer } from "@/modules/mcp/server";
@@ -464,9 +465,35 @@ describe("MCP tool descriptions", () => {
   // type and absent-when clause. Same shape as `document_template_schema` two paragraphs down, for
   // the same measured reason.
   //
-  // REMEASURED on the tree that ships, never summed: 30,232 and 54,984, so the ceilings go to 30,250
-  // and 55,000. The margins are 18 and 16, as thin as the ones they replace and on
+  // Then `code_tool_create` gave back what the schema tool exists to carry. It had been publishing
+  // the twelve `context` names, the limits and the failure clause in its own description, so every
+  // session paid for both copies of a contract only a caller writing a body needs, and the two could
+  // disagree — they already had, since the create description still called every limit a failure
+  // after `code_tool_schema` learned that arguments over `inputMaxChars` are not one. It now names
+  // the schema tool instead: 287 characters back.
+  //
+  // REMEASURED on the tree that ships, never summed: 29,945 and 54,984, so the ceilings go to 29,960
+  // and 55,000. The margins are 15 and 16, as thin as the ones they replace and on
   // purpose: the point of a ceiling here is that the next tool has to be measured too.
+  // The trade `code_tool_schema` exists to make, asserted on the side that keeps giving it back:
+  // `code_tool_create` used to publish the whole vocabulary in its own description, so every session
+  // paid for both copies and the two could disagree — and had, on which limits count as failures. A
+  // ceiling would not catch the regression (it is an upper bound and the payload has room), so the
+  // rule is named here: the create description points at the schema tool and enumerates nothing.
+  test("code_tool_create points at the schema instead of restating it", async () => {
+    const d = (await descriptions()).get("code_tool_create");
+    expect(d).toBeDefined();
+    const desc = d as string;
+    expect(desc).toContain("code_tool_schema");
+    // The context vocabulary, the limits and the failure semantics are the schema tool's to serve.
+    for (const restated of CODE_TOOL_CONTEXT_NAMES) {
+      expect([restated, desc.includes(restated)]).toEqual([restated, false]);
+    }
+    for (const restated of ["TIMEZONE", "NOW_LOCAL", "1000 ms", "32 MB"]) {
+      expect([restated, desc.includes(restated)]).toEqual([restated, false]);
+    }
+  });
+
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;
@@ -475,7 +502,7 @@ describe("MCP tool descriptions", () => {
       desc += t.description.length;
       schema += t.schema.length;
     }
-    expect(desc).toBeLessThanOrEqual(30_250);
+    expect(desc).toBeLessThanOrEqual(29_960);
     expect(schema).toBeLessThanOrEqual(55_000);
   });
 

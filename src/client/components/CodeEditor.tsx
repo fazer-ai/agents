@@ -271,7 +271,18 @@ function rootCompletions(t: TFunction): Completion[] {
   ];
 }
 
-function sourceFor(
+// Whether the word that ends at `from` is a ROOT variable rather than the tail of something else.
+// `matchBefore` matches a SUFFIX, so `mycontext.` and `config.input.` both end in one of the two
+// names without either of them being the variable in scope, and offering this sandbox's members
+// there writes code about the wrong object. The character before the match settles it: an
+// identifier character means the name is the end of a longer one, and a dot means it is already a
+// member of something else.
+function isRootWord(ctx: CompletionContext, from: number): boolean {
+  if (from === 0) return true;
+  return !/[\w$.]/.test(ctx.state.doc.sliceString(from - 1, from));
+}
+
+export function sourceFor(
   argumentNames: readonly string[],
   t: TFunction,
 ): (ctx: CompletionContext) => CompletionResult | null {
@@ -280,7 +291,7 @@ function sourceFor(
     // roots this sandbox actually has. `context ?. name` and `context.  name` are the same request,
     // so the whitespace the formatter may leave is allowed on both sides of the dot.
     const dotted = ctx.matchBefore(/(context|input)\s*\??\.\s*[\w$]*/);
-    if (dotted) {
+    if (dotted && isRootWord(ctx, dotted.from)) {
       const path = dotted.text.trimStart().startsWith("context")
         ? "context"
         : "input";
@@ -294,6 +305,7 @@ function sourceFor(
     }
     const word = ctx.matchBefore(/[\w$]+/);
     if (!word || (word.from === word.to && !ctx.explicit)) return null;
+    if (!isRootWord(ctx, word.from)) return null;
     return {
       from: word.from,
       options: rootCompletions(t),

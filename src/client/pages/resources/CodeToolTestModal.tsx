@@ -391,7 +391,7 @@ export function CodeToolTestModal({
           group
           description={t(
             "codeTools.testContextHint",
-            "The values a turn would carry, for the variables this body reads. Leave one blank to test what the body does when the turn did not have it. agent_name is the exception: a turn always carries it, so a blank box sends the default.",
+            "The values a turn would carry, for the variables this body reads. Blank tests what the body does without one. agent_name is the exception: a turn always has it, so blank sends the default.",
           )}
         >
           <div className="flex flex-col gap-2">

@@ -1,7 +1,11 @@
 /// <reference lib="dom" />
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { CompletionContext } from "@codemirror/autocomplete";
+import {
+  CompletionContext,
+  currentCompletions,
+  startCompletion,
+} from "@codemirror/autocomplete";
 import { undo } from "@codemirror/commands";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
@@ -9,6 +13,7 @@ import { cleanup, render } from "@testing-library/react";
 import {
   CodeEditor,
   completionsFor,
+  namesKeyOf,
   sourceFor,
 } from "@/client/components/CodeEditor";
 import i18n from "@/client/lib/i18n";
@@ -408,5 +413,61 @@ describe("only the root `context` and `input` complete", () => {
     expect(ask("payload?.context.")).toBeNull();
     // The bare-word branch has the same hole: after a dot, `context` and `input` are not in scope.
     expect(ask("obj.con")).toBeNull();
+  });
+});
+
+// The list identity the reconfigure effect keys on. An argument name is not required to be an
+// identifier, so it can hold whatever separator a join would use: two different lists that collapse
+// to one key leave `input.` offering names the panel no longer declares, and nothing on screen says
+// the completion is stale.
+describe("the key that decides a rename happened", () => {
+  test("lists that a join would confuse stay distinct", () => {
+    expect(namesKeyOf(["first name", "age"])).not.toBe(
+      namesKeyOf(["first", "name age"]),
+    );
+    expect(namesKeyOf(["a,b"])).not.toBe(namesKeyOf(["a", "b"]));
+    expect(namesKeyOf(['say "hi"', "x"])).not.toBe(namesKeyOf(['say "hi" x']));
+  });
+
+  // And the component has to USE it. Driving CodeMirror's own completion is the only way to see the
+  // reconfigure land: the source is closed over by the compartment, so a rename that the effect did
+  // not notice leaves the editor offering the previous names with nothing on screen saying so.
+  test("a rename between two lists that collide on a join still reoffers", async () => {
+    async function offered(view: EditorView) {
+      view.dispatch({ selection: { anchor: view.state.doc.length } });
+      startCompletion(view);
+      await new Promise((r) => setTimeout(r, 200));
+      return currentCompletions(view.state)
+        .map((c) => c.label)
+        .sort();
+    }
+    const { rerender } = render(
+      <CodeEditor
+        value="input."
+        onChange={() => {}}
+        argumentNames={["first name", "age"]}
+        aria-label="Code"
+      />,
+    );
+    const view = EditorView.findFromDOM(
+      document.body.querySelector(".cm-editor") as HTMLElement,
+    ) as EditorView;
+    view.focus();
+    expect(await offered(view)).toEqual(["age", "first name"]);
+    rerender(
+      <CodeEditor
+        value="input."
+        onChange={() => {}}
+        argumentNames={["first", "name age"]}
+        aria-label="Code"
+      />,
+    );
+    expect(await offered(view)).toEqual(["first", "name age"]);
+  });
+
+  test("the same list is the same key, and order is part of it", () => {
+    expect(namesKeyOf(["cpf", "valor"])).toBe(namesKeyOf(["cpf", "valor"]));
+    expect(namesKeyOf(["cpf", "valor"])).not.toBe(namesKeyOf(["valor", "cpf"]));
+    expect(namesKeyOf([])).toBe(namesKeyOf([]));
   });
 });

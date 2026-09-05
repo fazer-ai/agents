@@ -340,6 +340,15 @@ function contentAttrs(
   };
 }
 
+// The identity of a declared-argument LIST, for the effect that reconfigures the completion source.
+// Joining on a separator is wrong here because an argument name is not required to be an identifier:
+// it can hold the separator itself, so `["first name", "age"]` and `["first", "name age"]` join to
+// the same string and a rename between those two shapes leaves `input.` offering the old names.
+// `JSON.stringify` escapes what it has to and cannot collide.
+export function namesKeyOf(names: readonly string[]): string {
+  return JSON.stringify(names);
+}
+
 export interface CodeEditorProps {
   value: string;
   onChange: (value: string) => void;
@@ -381,7 +390,7 @@ export function CodeEditor({
   // rendered, which for `aria-invalid` means never.
   const attrsSlot = useMemo(() => new Compartment(), []);
   const names = useMemo(() => [...argumentNames], [argumentNames]);
-  const namesKey = names.join(" ");
+  const namesKey = namesKeyOf(names);
   // NOTE: the label and the description go on the element CodeMirror gives the textbox role to, not
   // on the wrapper below. A wrapper `div` has no role, so `aria-label` on it is dropped by the
   // accessibility tree and the field reads as unlabelled.

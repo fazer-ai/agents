@@ -226,13 +226,17 @@ function bracketApply(name: string) {
     to: number,
   ) => {
     const doc = view.state.doc;
-    const afterDot = from >= 1 && doc.sliceString(from - 1, from) === ".";
+    // NOTE: back over the whitespace the source's regex allows after the dot, because the range
+    // starts at the NAME: `input.  ord` replaced from `ord` alone would leave `input.  ["order-id"]`.
+    let dot = from;
+    while (dot > 0 && /\s/.test(doc.sliceString(dot - 1, dot))) dot--;
+    const afterDot = dot >= 1 && doc.sliceString(dot - 1, dot) === ".";
     // NOTE: `?.` survives, because `input?["x"]` is a conditional expression and `input?.["x"]` is
     // the access. The two characters are always adjacent when they reach here: the source's regex
     // allows whitespace before the `?` and after the `.`, never between them.
     const optional =
-      afterDot && from >= 2 && doc.sliceString(from - 2, from - 1) === "?";
-    const start = afterDot && !optional ? from - 1 : from;
+      afterDot && dot >= 2 && doc.sliceString(dot - 2, dot - 1) === "?";
+    const start = afterDot ? (optional ? dot : dot - 1) : from;
     view.dispatch({
       changes: { from: start, to, insert },
       selection: { anchor: start + insert.length },
@@ -296,7 +300,7 @@ function rootCompletions(t: TFunction): Completion[] {
 // `\p{ID_Continue}` and not `\w`, because `\w` is ASCII and a JavaScript identifier is not:
 // `\u00e9context` is one name a body may legally declare, and an ASCII-only test reads the `\u00e9`
 // as a boundary and calls the tail a root.
-const IDENTIFIER_CHAR = /[\p{ID_Continue}$.\u200c\u200d]/u;
+const IDENTIFIER_CHAR = /[\p{ID_Continue}$.#\u200c\u200d]/u;
 
 // The same alphabet without the dot, for matching the word being typed. An argument name is any
 // string the operator declares and this console is Portuguese: `ação` is an ordinary field name,
@@ -351,7 +355,9 @@ export function sourceFor(
       // NOTE: the replaced range starts after the LAST dot, so accepting a completion never eats the
       // `context.` the operator already typed. A name that is not an identifier is the exception,
       // and it eats the dot itself in `bracketApply`.
-      const from = dotted.from + dotted.text.lastIndexOf(".") + 1;
+      const afterDot = dotted.text.lastIndexOf(".") + 1;
+      const gap = /^\s*/.exec(dotted.text.slice(afterDot))?.[0].length ?? 0;
+      const from = dotted.from + afterDot + gap;
       return { from, options, validFor: WORD_ONLY };
     }
     const word = ctx.matchBefore(new RegExp(`[${WORD_CHARS}]+`, "u"));

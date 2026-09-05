@@ -452,6 +452,18 @@ describe("a name that is not an identifier completes to a subscript", () => {
     );
   });
 
+  // The spacing the matcher allows reaches here too: the dot AND the whitespace after it are what
+  // the subscript replaces, or accepting `order-id` would leave `input. ["order-id"]`.
+  test("the whitespace after the dot goes with it", () => {
+    expect(applyInto("input.  ", "order-id", 8, 8)).toBe('input["order-id"]');
+  });
+
+  test("and an optional chain keeps its `?.` across the gap", () => {
+    expect(applyInto("input?.  ", "first name", 9, 9)).toBe(
+      'input?.["first name"]',
+    );
+  });
+
   test("a quote in the name is escaped rather than closing the string", () => {
     expect(applyInto("input.", 'sa"id', 6, 6)).toBe('input["sa\\"id"]');
   });
@@ -619,6 +631,29 @@ describe("text is not code: no completion inside a string or a comment", () => {
   });
 });
 
+// The matcher allows whitespace on both sides of the dot, and then the range it returned started
+// at the dot, so CodeMirror filtered the list by a query beginning with spaces. Nothing matches
+// that, so an operator who typed `context. co` saw no popup at all while `context.co` worked:
+// half-supporting the spacing is worse than not allowing it, because the offer is silently empty.
+describe("the range starts at the NAME, not at the dot", () => {
+  // What CodeMirror will filter the options by: everything from `from` to the cursor.
+  function query(doc: string) {
+    const state = EditorState.create({ doc, extensions: [javascript()] });
+    const r = sourceFor(
+      ["cpf"],
+      i18n.t,
+    )(new CompletionContext(state, doc.length, true));
+    return r ? doc.slice(r.from) : null;
+  }
+
+  test("whitespace after the dot is not part of the query", () => {
+    expect(query("context.co")).toBe("co");
+    expect(query("context.  co")).toBe("co");
+    expect(query("context?. co")).toBe("co");
+    expect(query("context. ")).toBe("");
+  });
+});
+
 // An argument name is any string the operator declares, and this console is written in Portuguese:
 // `ação` is an ordinary field name here. The offer opened on `input.` and then vanished at the
 // `\u00e7`, because the matcher and its `validFor` were ASCII, so the operator saw the list they
@@ -669,7 +704,14 @@ describe("a non-ASCII identifier is still one identifier", () => {
     )(new CompletionContext(state, doc.length, true));
   }
 
-  for (const doc of ["\u00e9context.", "ma\u00e7input.", "\u4e0acontext."]) {
+  // `#` is not an identifier character, but as a PREDECESSOR it says the name is a private field:
+  // `this.#context` is one member of somebody's class, not this sandbox's `context`.
+  for (const doc of [
+    "\u00e9context.",
+    "ma\u00e7input.",
+    "\u4e0acontext.",
+    "class A { #context = {}; m() { return this.#context.",
+  ]) {
     test(`${doc} is not a root`, () => {
       expect(ask(doc)).toBeNull();
     });

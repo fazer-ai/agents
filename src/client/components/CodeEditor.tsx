@@ -22,8 +22,10 @@ import {
   lineNumbers,
   placeholder as placeholderExt,
 } from "@codemirror/view";
-import { tags as t } from "@lezer/highlight";
+import { tags } from "@lezer/highlight";
+import type { TFunction } from "i18next";
 import { useEffect, useMemo, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { cn } from "@/client/lib/utils";
 import { CODE_TOOL_CONTEXT_VARS } from "@/lib/code-tool-vocabulary";
 import { mergeDescribedBy, useFormField } from "./FormFieldContext";
@@ -42,15 +44,22 @@ import { mergeDescribedBy, useFormField } from "./FormFieldContext";
 // of arithmetic over `input`, and the thing worth seeing at a glance is which words are STRINGS and
 // which are keywords, because an unterminated string is the mistake a textarea hides best.
 const highlight = HighlightStyle.define([
-  { tag: t.keyword, color: "var(--color-purple)" },
-  { tag: [t.string, t.special(t.string)], color: "var(--color-success)" },
-  { tag: [t.number, t.bool, t.null], color: "var(--color-warning)" },
-  { tag: t.comment, color: "var(--color-text-muted)", fontStyle: "italic" },
+  { tag: tags.keyword, color: "var(--color-purple)" },
   {
-    tag: [t.propertyName, t.definition(t.variableName)],
+    tag: [tags.string, tags.special(tags.string)],
+    color: "var(--color-success)",
+  },
+  { tag: [tags.number, tags.bool, tags.null], color: "var(--color-warning)" },
+  {
+    tag: tags.comment,
+    color: "var(--color-text-muted)",
+    fontStyle: "italic",
+  },
+  {
+    tag: [tags.propertyName, tags.definition(tags.variableName)],
     color: "var(--color-accent)",
   },
-  { tag: t.invalid, color: "var(--color-error)" },
+  { tag: tags.invalid, color: "var(--color-error)" },
 ]);
 
 const theme = EditorView.theme({
@@ -108,15 +117,108 @@ const theme = EditorView.theme({
   },
 });
 
-// The completions for `context.`, built once from the vocabulary module. `detail` carries the type
-// and whether the value is always there, because that is what decides if the body needs a `??` and
-// it is the one thing a name alone cannot tell you.
-const CONTEXT_COMPLETIONS: Completion[] = CODE_TOOL_CONTEXT_VARS.map((v) => ({
-  label: v.name,
-  type: v.type === "object" ? "class" : "property",
-  detail: v.always ? v.type : `${v.type}?`,
-  info: v.description,
-}));
+// The context descriptions as they reach the POPUP, which is console text and therefore bilingual.
+// Twelve static `t()` calls rather than one keyed by `v.name`: a computed key is invisible to
+// `bun i18n:extract`, which deletes every key it cannot see, and it is refused by
+// `no-dynamic-i18n-key`. Same shape as `nativeTools.ts`, for the same reason. The English defaults
+// are the vocabulary's own sentences and a test holds the two equal, so this copy cannot drift from
+// the one `code_tool_schema` serves over MCP.
+function contextDescriptions(t: TFunction): Record<string, string> {
+  return {
+    conversation_id: t(
+      "codeTools.completion.context.conversation_id",
+      "Chatwoot conversation id. Absent when the tool runs outside a conversation (the playground, a test run).",
+    ),
+    message_id: t(
+      "codeTools.completion.context.message_id",
+      "Chatwoot id of the message that triggered this turn. Absent outside a conversation.",
+    ),
+    contact_id: t(
+      "codeTools.completion.context.contact_id",
+      "Chatwoot contact id. Absent when the conversation has none.",
+    ),
+    contact_name: t(
+      "codeTools.completion.context.contact_name",
+      "The contact's name. Absent when the contact has none.",
+    ),
+    contact_email: t(
+      "codeTools.completion.context.contact_email",
+      "The contact's e-mail. Absent when the contact has none.",
+    ),
+    contact_phone: t(
+      "codeTools.completion.context.contact_phone",
+      "The contact's phone. Absent when the contact has none.",
+    ),
+    inbox_id: t(
+      "codeTools.completion.context.inbox_id",
+      "Chatwoot inbox id. Absent outside a conversation.",
+    ),
+    inbox_name: t(
+      "codeTools.completion.context.inbox_name",
+      "The inbox's name. Absent when the inbox has none.",
+    ),
+    company_name: t(
+      "codeTools.completion.context.company_name",
+      "The tenant's name. Absent when the tenant has none.",
+    ),
+    agent_name: t(
+      "codeTools.completion.context.agent_name",
+      "The agent's name. The one value that is always present.",
+    ),
+    conversationAttributes: t(
+      "codeTools.completion.context.conversationAttributes",
+      "The conversation's custom attributes, mirrored from Chatwoot and read when the tool is CALLED, so a value written earlier in the same turn is already here. Empty object when there are none.",
+    ),
+    contactAttributes: t(
+      "codeTools.completion.context.contactAttributes",
+      "The contact's custom attributes, on the same terms as conversationAttributes. Empty object when there are none.",
+    ),
+  };
+}
+
+// The completions for `context.`, built from the vocabulary module. `detail` carries the type and
+// whether the value is always there, because that is what decides if the body needs a `??` and it is
+// the one thing a name alone cannot tell you. It stays untranslated on purpose: `string` and
+// `object` are the language's own words for those types, not prose about them.
+function contextCompletions(t: TFunction): Completion[] {
+  const described = contextDescriptions(t);
+  return CODE_TOOL_CONTEXT_VARS.map((v) => ({
+    label: v.name,
+    type: v.type === "object" ? "class" : "property",
+    detail: v.always ? v.type : `${v.type}?`,
+    info: described[v.name] ?? v.description,
+  }));
+}
+
+const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+
+// An argument name is any non-empty string: `schemaFromAiFields` only trims it, the service stores a
+// `z.record(z.string())`, and the model is offered the key verbatim. So `order-id` and `first name`
+// are declarable, and completing them after the dot would write `input.order-id`, which parses as a
+// subtraction, or `input.first name`, which does not parse at all. Those names complete to a
+// SUBSCRIPT instead, which means eating the dot the operator already typed.
+function bracketApply(name: string) {
+  const insert = `[${JSON.stringify(name)}]`;
+  return (
+    view: EditorView,
+    _completion: Completion,
+    from: number,
+    to: number,
+  ) => {
+    const doc = view.state.doc;
+    const afterDot = from >= 1 && doc.sliceString(from - 1, from) === ".";
+    // NOTE: `?.` survives, because `input?["x"]` is a conditional expression and `input?.["x"]` is
+    // the access. The two characters are always adjacent when they reach here: the source's regex
+    // allows whitespace before the `?` and after the `.`, never between them.
+    const optional =
+      afterDot && from >= 2 && doc.sliceString(from - 2, from - 1) === "?";
+    const start = afterDot && !optional ? from - 1 : from;
+    view.dispatch({
+      changes: { from: start, to, insert },
+      selection: { anchor: start + insert.length },
+    });
+  };
+}
 
 // EXPORTED for the test: what the editor offers after `context.` and after `input.`, as a function
 // of the declared argument names. Driving CodeMirror's own completion through a headless DOM to ask
@@ -124,28 +226,49 @@ const CONTEXT_COMPLETIONS: Completion[] = CODE_TOOL_CONTEXT_VARS.map((v) => ({
 export function completionsFor(
   path: "context" | "input",
   argumentNames: readonly string[],
+  t: TFunction,
 ): Completion[] {
-  if (path === "context") return CONTEXT_COMPLETIONS;
+  if (path === "context") return contextCompletions(t);
+  const detail = t("codeTools.completion.argumentDetail", "argument");
+  const info = t(
+    "codeTools.completion.argumentInfo",
+    "Declared in Arguments, above.",
+  );
   // NOTE: the arguments as they stand in the panel above, not as they were last saved: renaming one and
   // typing `input.` has to offer the new name, or the completion is a second source of truth about
   // the same form.
   return argumentNames.map((name) => ({
     label: name,
     type: "property",
-    detail: "argument",
-    info: "Declared in Arguments, above.",
+    detail,
+    info,
+    ...(IDENTIFIER.test(name) ? {} : { apply: bracketApply(name) }),
   }));
 }
 
 // `context` and `input` are the two names in scope, so a bare word completes to them too. Anything
 // else the body writes is the operator's own.
-const ROOT_COMPLETIONS: Completion[] = [
-  { label: "context", type: "variable", info: "The conversation's values." },
-  { label: "input", type: "variable", info: "The arguments the agent sent." },
-];
+function rootCompletions(t: TFunction): Completion[] {
+  return [
+    {
+      label: "context",
+      type: "variable",
+      info: t("codeTools.completion.contextRoot", "The conversation's values."),
+    },
+    {
+      label: "input",
+      type: "variable",
+      info: t(
+        "codeTools.completion.inputRoot",
+        "The arguments the agent sent.",
+      ),
+    },
+  ];
+}
 
 function sourceFor(
   argumentNames: readonly string[],
+  t: TFunction,
 ): (ctx: CompletionContext) => CompletionResult | null {
   return (ctx) => {
     // NOTE: after a DOT, and the dot is what makes this cheap: no parse, no scope analysis, just the two
@@ -156,16 +279,21 @@ function sourceFor(
       const path = dotted.text.trimStart().startsWith("context")
         ? "context"
         : "input";
-      const options = completionsFor(path, argumentNames);
+      const options = completionsFor(path, argumentNames, t);
       if (options.length === 0) return null;
       // NOTE: the replaced range starts after the LAST dot, so accepting a completion never eats the
-      // `context.` the operator already typed.
+      // `context.` the operator already typed. A name that is not an identifier is the exception,
+      // and it eats the dot itself in `bracketApply`.
       const from = dotted.from + dotted.text.lastIndexOf(".") + 1;
       return { from, options, validFor: /^[\w$]*$/ };
     }
     const word = ctx.matchBefore(/[\w$]+/);
     if (!word || (word.from === word.to && !ctx.explicit)) return null;
-    return { from: word.from, options: ROOT_COMPLETIONS, validFor: /^[\w$]*$/ };
+    return {
+      from: word.from,
+      options: rootCompletions(t),
+      validFor: /^[\w$]*$/,
+    };
   };
 }
 
@@ -198,6 +326,7 @@ export function CodeEditor({
   const view = useRef<EditorView | null>(null);
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
+  const { t, i18n } = useTranslation();
   const field = useFormField();
   // NOTE: a compartment so a renamed argument reconfigures the completion source in place.
   // Rebuilding the whole editor would drop the cursor and the undo history on every keystroke in
@@ -235,7 +364,7 @@ export function CodeEditor({
         ...completionKeymap,
       ]),
       completionSlot.of(
-        autocompletion({ override: [sourceFor(names)], icons: false }),
+        autocompletion({ override: [sourceFor(names, t)], icons: false }),
       ),
       EditorView.updateListener.of((u) => {
         if (u.docChanged) onChangeRef.current(u.state.doc.toString());
@@ -285,17 +414,19 @@ export function CodeEditor({
   }, [value]);
 
   // NOTE: `namesKey` and not `names`: a new array holding the same names is not a change worth
-  // reconfiguring for, and the parent rebuilds that array on every render.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `namesKey` is what changes
+  // reconfiguring for, and the parent rebuilds that array on every render. The language is here for
+  // the other half of what the source closes over: the popup's own text, which has to follow a
+  // language switch without the operator reopening the modal.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `namesKey` and the language are what change
   useEffect(() => {
     const v = view.current;
     if (!v) return;
     v.dispatch({
       effects: completionSlot.reconfigure(
-        autocompletion({ override: [sourceFor(names)], icons: false }),
+        autocompletion({ override: [sourceFor(names, t)], icons: false }),
       ),
     });
-  }, [namesKey, completionSlot]);
+  }, [namesKey, completionSlot, i18n.language]);
 
   return (
     <div

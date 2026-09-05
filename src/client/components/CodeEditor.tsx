@@ -15,7 +15,12 @@ import {
   indentOnInput,
   syntaxHighlighting,
 } from "@codemirror/language";
-import { Compartment, EditorState, type Extension } from "@codemirror/state";
+import {
+  Compartment,
+  EditorState,
+  type Extension,
+  Transaction,
+} from "@codemirror/state";
 import {
   EditorView,
   keymap,
@@ -402,7 +407,13 @@ export function CodeEditor({
   }, [completionSlot, maxLength, placeholder, label, describedBy]);
 
   // NOTE: an external change (the form resetting, a starter body applied) written into the document
-  // without disturbing a cursor that is already where the operator put it.
+  // without disturbing a cursor that is already where the operator put it, and kept OUT of the undo
+  // history: it is not an edit the operator made, so Ctrl-Z must not resurrect what it replaced.
+  // Measured on the tree as it stands, the reachable openings are already safe by accident — the
+  // dialog unmounts its content on close, so a reopening builds a new view with an empty history,
+  // and an edit's body only arrives before the editor mounts, behind the loading skeleton. This
+  // makes it true by construction instead, for the first caller that writes `value` while the
+  // editor is on screen.
   useEffect(() => {
     const v = view.current;
     if (!v) return;
@@ -410,6 +421,7 @@ export function CodeEditor({
     if (current === value) return;
     v.dispatch({
       changes: { from: 0, to: current.length, insert: value },
+      annotations: Transaction.addToHistory.of(false),
     });
   }, [value]);
 

@@ -1,6 +1,7 @@
 /// <reference lib="dom" />
 
 import { afterEach, describe, expect, test } from "bun:test";
+import { undo } from "@codemirror/commands";
 import { EditorView } from "@codemirror/view";
 import { cleanup, render } from "@testing-library/react";
 import { CodeEditor, completionsFor } from "@/client/components/CodeEditor";
@@ -88,6 +89,26 @@ describe("the editor the operator actually gets", () => {
     const view = EditorView.findFromDOM(host);
     view?.dispatch({ changes: { from: 9, insert: "\nreturn 2;" } });
     expect(seen).toBe("return 1;\nreturn 2;");
+  });
+
+  // A value written from OUTSIDE is not an edit the operator made, so Ctrl-Z must not resurrect what
+  // it replaced: the form resetting, or a body arriving from the server, would otherwise sit in the
+  // undo stack and hand the previous tool's code back to a form that is no longer about it.
+  test("an external value change is not undoable", () => {
+    const { rerender } = render(
+      <CodeEditor value="return 1;" onChange={() => {}} aria-label="Code" />,
+    );
+    const host = document.body.querySelector(".cm-editor") as HTMLElement;
+    const view = EditorView.findFromDOM(host) as EditorView;
+    // An edit of the operator's own first, so the history is not empty and undo has somewhere to go.
+    view.dispatch({ changes: { from: 9, insert: " // mine" } });
+    rerender(
+      <CodeEditor value="return 2;" onChange={() => {}} aria-label="Code" />,
+    );
+    expect(view.state.doc.toString()).toBe("return 2;");
+    undo(view);
+    undo(view);
+    expect(view.state.doc.toString()).toBe("return 2;");
   });
 
   // The cap the browser enforces on a textarea's `maxLength`, enforced here as a REFUSAL: a paste

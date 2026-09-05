@@ -290,37 +290,39 @@ function rootCompletions(t: TFunction): Completion[] {
   ];
 }
 
-// Whether the word that ends at `from` is a ROOT variable rather than the tail of something else.
-// `matchBefore` matches a SUFFIX, so `mycontext.` and `config.input.` both end in one of the two
-// names without either of them being the variable in scope, and offering this sandbox's members
-// there writes code about the wrong object. The character before the match settles it: an
-// identifier character means the name is the end of a longer one, and a dot means it is already a
-// member of something else.
-//
-// `\p{ID_Continue}` and not `\w`, because `\w` is ASCII and a JavaScript identifier is not:
-// `\u00e9context` is one name a body may legally declare, and an ASCII-only test reads the `\u00e9`
-// as a boundary and calls the tail a root.
-const IDENTIFIER_CHAR = /[\p{ID_Continue}$.#\u200c\u200d]/u;
-
-// The same alphabet without the dot, for matching the word being typed. An argument name is any
-// string the operator declares and this console is Portuguese: `ação` is an ordinary field name,
-// and an ASCII matcher drops the offer at the `ç`, which is the letter that identifies it.
+// The alphabet of the word being typed. An argument name is any string the operator declares and
+// this console is Portuguese: `a\u00e7\u00e3o` is an ordinary field name, and an ASCII matcher drops
+// the offer at the `\u00e7`, which is the letter that identifies it.
 const WORD_CHARS = "\\p{ID_Continue}$";
 const WORD_ONLY = new RegExp(`^[${WORD_CHARS}]*$`, "u");
 
+// Whether the name that starts at `from` is a ROOT variable rather than a member of something
+// else, asked of the PARSER. `matchBefore` matches a suffix, so `mycontext.` and `config.input.`
+// both end in one of the two names without either being the variable in scope, and offering this
+// sandbox's members there writes code about the wrong object.
+//
+// This used to count characters backwards, and five review rounds found five more spellings it got
+// wrong: a non-ASCII letter before the name (`\w` is ASCII, `\u00e9context` is one identifier), a
+// private field's `#`, a member dot on the far side of a space, and a comment sitting between that
+// dot and the name. They are all the same question, and the grammar already answers it: the parser
+// calls a variable reference `VariableName` and a member `PropertyName`, and the node has to START
+// here, which is what separates `context` from the tail of `mycontext`.
 function isRootWord(ctx: CompletionContext, from: number): boolean {
-  if (from === 0) return true;
-  const doc = ctx.state.doc;
-  // Adjacent, the character decides on its own: an identifier character means this name is the tail
-  // of a longer one, and a `.` or a `#` that it is already a member.
-  if (IDENTIFIER_CHAR.test(doc.sliceString(from - 1, from))) return false;
-  // Across whitespace it does not, and the two cases sit one space apart: `config. context` is a
-  // member and `return context` is a variable. So only a member operator disqualifies it there,
-  // never an identifier, which across a gap is a different token entirely.
-  let at = from;
-  while (at > 0 && /\s/.test(doc.sliceString(at - 1, at))) at--;
-  if (at === from || at === 0) return true;
-  return doc.sliceString(at - 1, at) !== ".";
+  const node = syntaxTree(ctx.state).resolveInner(from, 1);
+  return node.name === "VariableName" && node.from === from;
+}
+
+// The same question where there is no name yet: an explicit request with nothing typed. A cursor
+// sitting right after a member operator is a property position, however much whitespace or comment
+// precedes it, and the roots are not properties of anything.
+//
+// `\u26a0` is the parser saying it could not place what is here at all, which is what `const context.`
+// and `class A { context.` look like: a member dot the grammar cannot accept there. Measured, the
+// positions where Ctrl-Space is worth pressing produce none of it: an empty body and a fresh line
+// are `Script`, and `const x = `, `a + `, `let z=`, `foo(` and `{a: ` all name a node of their own.
+function atRootPosition(ctx: CompletionContext): boolean {
+  const name = syntaxTree(ctx.state).resolveInner(ctx.pos, -1).name;
+  return name !== "." && name !== "\u26a0";
 }
 
 // A string, a comment and a regexp are all places where a dot is a character rather than a member
@@ -377,8 +379,8 @@ export function sourceFor(
     // its own. The root check runs either way, so a request made after `foo.` still offers nothing:
     // `context` and `input` are variables, never members of somebody else's object.
     if (!word && !ctx.explicit) return null;
+    if (word ? !isRootWord(ctx, word.from) : !atRootPosition(ctx)) return null;
     const from = word ? word.from : ctx.pos;
-    if (!isRootWord(ctx, from)) return null;
     return { from, options: rootCompletions(t), validFor: WORD_ONLY };
   };
 }

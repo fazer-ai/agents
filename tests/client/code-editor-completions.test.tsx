@@ -799,6 +799,18 @@ describe("what is a root, and what is somebody else's member", () => {
     "obj?. con",
     "config.  input.",
     "a.b. context.",
+    // A comment is trivia between the dot and the property, and the character walk stopped at the
+    // slash and called what followed a variable.
+    "config./*x*/ context.",
+    "config. /* still a member */ input.",
+    // A member access split across lines: `matchBefore` never leaves the line, so the walk saw a
+    // newline, called it a boundary, and offered.
+    "config.\ncontext.",
+    // And the name in a position where it is being DECLARED rather than read, which is every node
+    // the grammar has other than a reference: only `VariableName` is one, which is why the check
+    // names what it accepts instead of listing what it refuses.
+    "const context.",
+    "class A { context.",
   ]) {
     test(`${doc} is a member of something else`, () => {
       expect(ask(doc)).toBeNull();

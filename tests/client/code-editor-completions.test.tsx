@@ -3,6 +3,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   CompletionContext,
+  completionStatus,
   currentCompletions,
   startCompletion,
 } from "@codemirror/autocomplete";
@@ -16,6 +17,7 @@ import {
   namesKeyOf,
   sourceFor,
 } from "@/client/components/CodeEditor";
+import { handOverEscape } from "@/client/components/escapeClaim";
 import i18n from "@/client/lib/i18n";
 import enLocale from "@/client/locales/en.json";
 import ptLocale from "@/client/locales/pt-BR.json";
@@ -469,5 +471,69 @@ describe("the key that decides a rename happened", () => {
     expect(namesKeyOf(["cpf", "valor"])).toBe(namesKeyOf(["cpf", "valor"]));
     expect(namesKeyOf(["cpf", "valor"])).not.toBe(namesKeyOf(["valor", "cpf"]));
     expect(namesKeyOf([])).toBe(namesKeyOf([]));
+  });
+});
+
+// Escape is the standard key for dismissing a suggestion, and this editor lives in a dialog that
+// closes on Escape. Radix hears the press first (capture phase on `document`), so the editor cannot
+// stop it: it CLAIMS the press, and `<Modal>` turns the claim into the `preventDefault` Radix reads
+// back. Measured in a browser before this existed: dismissing a suggestion opened "Discard
+// changes?" over a body the operator was still writing.
+describe("who owns Escape while the popup is open", () => {
+  function mount(value: string) {
+    render(
+      <CodeEditor
+        value={value}
+        onChange={() => {}}
+        argumentNames={["cpf"]}
+        aria-label="Code"
+      />,
+    );
+    const view = EditorView.findFromDOM(
+      document.body.querySelector(".cm-editor") as HTMLElement,
+    ) as EditorView;
+    return { view, content: document.body.querySelector(".cm-content") };
+  }
+
+  test("a press inside the editor is claimed only while a completion is active", async () => {
+    const { view, content } = mount("return context.");
+    // Nothing open: the dialog keeps Escape, which is how a modal is meant to close.
+    expect(handOverEscape(content)).toBe(false);
+
+    view.dispatch({ selection: { anchor: view.state.doc.length } });
+    startCompletion(view);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(completionStatus(view.state)).toBe("active");
+    expect(handOverEscape(content)).toBe(true);
+    // Answering the claim also CLOSES the popup, because the press it answered was the press meant
+    // to close it: reporting alone would leave the suggestion on screen and swallow the key.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(completionStatus(view.state)).not.toBe("active");
+    expect(handOverEscape(content)).toBe(false);
+  });
+
+  test("a press outside this editor is not this editor's to claim", async () => {
+    const { view } = mount("return context.");
+    view.dispatch({ selection: { anchor: view.state.doc.length } });
+    startCompletion(view);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(completionStatus(view.state)).toBe("active");
+    expect(handOverEscape(document.body)).toBe(false);
+  });
+
+  // The claim is released on unmount, or it would answer for a node that is gone and the dialog
+  // would stop closing on Escape with nothing on screen explaining why.
+  test("unmounting gives Escape back", async () => {
+    const { view, content } = mount("return context.");
+    view.dispatch({ selection: { anchor: view.state.doc.length } });
+    startCompletion(view);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(completionStatus(view.state)).toBe("active");
+    // NOT consulted before unmounting, on purpose: consulting closes the popup, and the claim would
+    // then answer `false` for that reason instead of for the release, which is a test that passes
+    // whether or not the release exists. Destroying a view leaves its last state behind, so a claim
+    // that outlived its editor still reads "active" and still owns the key.
+    cleanup();
+    expect(handOverEscape(content)).toBe(false);
   });
 });

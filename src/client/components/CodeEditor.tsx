@@ -5,7 +5,9 @@ import {
   type CompletionResult,
   closeBrackets,
   closeBracketsKeymap,
+  closeCompletion,
   completionKeymap,
+  completionStatus,
 } from "@codemirror/autocomplete";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { javascript } from "@codemirror/lang-javascript";
@@ -34,6 +36,7 @@ import { useEffect, useId, useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/client/lib/utils";
 import { CODE_TOOL_CONTEXT_VARS } from "@/lib/code-tool-vocabulary";
+import { claimEscape } from "./escapeClaim";
 import { mergeDescribedBy, useFormField } from "./FormFieldContext";
 
 // The code tool's editor (issue #538). CodeMirror 6 rather than Monaco for one reason that is a
@@ -472,7 +475,19 @@ export function CodeEditor({
       parent,
     });
     view.current = v;
+    // NOTE: Escape belongs to the completion popup while it is open. The dialog around this editor
+    // closes on Escape, and Radix hears it first (capture phase on `document`), so the editor
+    // cannot stop the event: it declares the claim and `<Modal>` cancels the dismissal. The popup
+    // itself is closed here, because a claim that only reported would leave it open when the press
+    // it answered was the press meant to close it.
+    const release = claimEscape((target) => {
+      if (!(target instanceof Node) || !v.dom.contains(target)) return false;
+      if (completionStatus(v.state) !== "active") return false;
+      closeCompletion(v);
+      return true;
+    });
     return () => {
+      release();
       v.destroy();
       view.current = null;
     };

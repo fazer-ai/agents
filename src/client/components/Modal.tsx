@@ -17,6 +17,7 @@ import { useBackGuard, useBeforeUnload } from "@/client/lib/unsavedGuard";
 import { cn } from "@/client/lib/utils";
 import { Button } from "./Button";
 import { DiscardDialog } from "./DiscardDialog";
+import { handOverEscape } from "./escapeClaim";
 
 // NOTE: stacked modals resolve their z-index at runtime via
 // `calc(var(--z-modal) + level * step)` — `level` is the modal's position in the open-stack
@@ -490,6 +491,15 @@ export function Modal({
               // callback deferred, after pointerup, which is too late to gate the release).
               onPointerDownOutside={(e) => {
                 e.preventDefault();
+              }}
+              // A control INSIDE the dialog may own Escape. The code editor's completion popup is
+              // the measured case: Escape is the standard key for dismissing a suggestion, and
+              // closing the dialog on that same press asked the operator whether to discard the
+              // body they were writing. It cannot stop the event itself, because Radix listens on
+              // `document` in the CAPTURE phase and therefore runs first; `defaultPrevented` is
+              // what it reads back, so the claim is declared and cancelled here.
+              onEscapeKeyDown={(e) => {
+                if (handOverEscape(e.target)) e.preventDefault();
               }}
               // NOTE: Radix Dialog warns in dev when Content has no Description
               // child. Passing `undefined` explicitly acknowledges the absence so

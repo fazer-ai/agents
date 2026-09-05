@@ -2,6 +2,7 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { completionStatus, startCompletion } from "@codemirror/autocomplete";
 import { EditorView } from "@codemirror/view";
 import {
   cleanup,
@@ -208,6 +209,54 @@ test("an invalid body warns but leaves Save enabled", async () => {
   // Save is still enabled: an invalid body is saved and fails at call time, never refused here.
   const save = screen.getByText("Save").closest("button");
   expect(save?.hasAttribute("disabled")).toBe(false);
+});
+
+// The defect as the operator meets it, and the only place it is visible: Escape is how a suggestion
+// is dismissed, and it is also how this dialog closes. Radix hears the press first (capture phase on
+// `document`), so before the claim in escapeClaim.ts the same key that put the popup away asked
+// whether to throw the body out. Measured in a browser; this is the regression fence for it.
+test("Escape dismisses the suggestion without offering to discard the body", async () => {
+  render(<Harness />);
+  fireEvent.click(screen.getByText("open"));
+
+  const input = document.body.querySelector("input") as HTMLInputElement;
+  fireEvent.change(input, { target: { value: "Look up CPF" } });
+  fireEvent.change(descriptionField(), { target: { value: "a description" } });
+  // Dirty, so the dialog would ask before closing: that prompt is exactly what must not appear.
+  setCode("return context.");
+
+  const host = document.body.querySelector(".cm-editor") as HTMLElement;
+  const view = EditorView.findFromDOM(host) as EditorView;
+  const content = host.querySelector(".cm-content") as HTMLElement;
+  view.dispatch({ selection: { anchor: view.state.doc.length } });
+  startCompletion(view);
+  await waitFor(() => expect(completionStatus(view.state)).toBe("active"));
+
+  content.dispatchEvent(
+    // `cancelable`, as a real keydown is: the fix works by `preventDefault`, which Radix reads back
+    // (react-dismissable-layer), and `preventDefault` on a non-cancelable event does nothing.
+    new KeyboardEvent("keydown", {
+      key: "Escape",
+      bubbles: true,
+      cancelable: true,
+    }),
+  );
+  await waitFor(() => expect(completionStatus(view.state)).not.toBe("active"));
+  expect(document.body.textContent).not.toContain("Discard changes?");
+  // And the body the operator was writing is still there.
+  expect(view.state.doc.toString()).toBe("return context.");
+
+  // With nothing open, Escape belongs to the dialog again, which is the half a blanket fix breaks.
+  content.dispatchEvent(
+    new KeyboardEvent("keydown", {
+      key: "Escape",
+      bubbles: true,
+      cancelable: true,
+    }),
+  );
+  await waitFor(() =>
+    expect(document.body.textContent).toContain("Discard changes?"),
+  );
 });
 
 test("a body with no return warns without disabling Save", async () => {

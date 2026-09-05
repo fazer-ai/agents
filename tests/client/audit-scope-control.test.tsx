@@ -202,12 +202,19 @@ test("switching scope restarts the walk instead of carrying the cursor over", as
   expect(view.container.textContent).toContain("Page 2");
 
   const scopeSelect = view.selects()[0] as HTMLSelectElement;
+  const mark = sent.length;
   act(() => {
     fireEvent.change(scopeSelect, { target: { value: "fleet" } });
   });
   await waitFor(() => expect(asked()).toContain("scope=fleet"));
   expect(asked()).not.toContain("cursor=");
   expect(view.container.textContent).toContain("Page 1");
+  // EVERY REQUEST THE CHANGE PRODUCED, and not just the one that won. Asserting the last request
+  // only is what let the old cursor be fired at the new trail unnoticed: the reset lived in an
+  // effect, so a render's worth of requests went out with the new filter and the previous walk's
+  // cursor still paired together. `reqRef` then discarded the answer, which is why the screen was
+  // right and the round trip was still made -- against a growing table, and under the fleet role.
+  expect(sent.slice(mark).filter((u) => u.includes("cursor="))).toEqual([]);
 });
 
 // THE EMPTY STATE HAS TO SAY WHAT WAS SEARCHED. On a tenant's trail a fleet-level action can only

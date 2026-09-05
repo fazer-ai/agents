@@ -500,14 +500,25 @@ export function AuditPage() {
   // that does not match the URL on screen — and pagination would then walk from the wrong place.
   const reqRef = useRef(0);
 
-  // NOTE: THE SCOPE IS ON THIS LIST BECAUSE IT CHOOSES THE TRAIL, not because it is another filter.
-  // A keyset cursor is an id cut from the page before, and it only means "continue" against the rows
-  // it was cut from; handed to a different trail it still means `id < N` and silently drops
-  // everything newer, under a pager that goes on saying "Page 2".
-  // biome-ignore lint/correctness/useExhaustiveDependencies: reset on filter change only
-  useEffect(() => {
+  // WHAT THE WALK BELONGS TO. A keyset cursor is an id cut from the page before, and it only means
+  // "continue" against the rows it was cut from; handed to a different trail it still means
+  // `id < N` and silently drops everything newer, under a pager that goes on saying "Page 2". THE
+  // SCOPE IS ON THIS LIST because it chooses the trail, not because it is another filter.
+  const filterKey = [action, actorType, from, to, scope].join("\u0000");
+
+  // RESET DURING RENDER, NOT IN AN EFFECT, and that is the whole of issue #532. As an effect this
+  // ran after the same commit as the load, so one render's worth of requests went out pairing the
+  // NEW filter with the PREVIOUS walk's cursor before the reset landed -- measured: changing the
+  // scope on page two sent `?scope=fleet&cursor=42` and only then `?scope=fleet`. `reqRef` discarded
+  // the answer, so the screen was always right, which is exactly why it went unnoticed; what it cost
+  // was a scoped transaction against a table that only grows, run under the fleet role on the wider
+  // scopes. Adjusting state during render is React's own answer for this, and it re-renders before
+  // committing, so `load` is never created holding the mismatched pair.
+  const [stackKey, setStackKey] = useState(filterKey);
+  if (stackKey !== filterKey) {
+    setStackKey(filterKey);
     setCursorStack([null]);
-  }, [action, actorType, from, to, scope]);
+  }
 
   const setFilter = (key: string, value: string) => {
     setSearchParams(

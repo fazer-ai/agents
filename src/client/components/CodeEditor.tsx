@@ -361,13 +361,15 @@ export function sourceFor(
       return { from, options, validFor: WORD_ONLY };
     }
     const word = ctx.matchBefore(new RegExp(`[${WORD_CHARS}]+`, "u"));
-    if (!word || (word.from === word.to && !ctx.explicit)) return null;
-    if (!isRootWord(ctx, word.from)) return null;
-    return {
-      from: word.from,
-      options: rootCompletions(t),
-      validFor: WORD_ONLY,
-    };
+    // NOTE: `matchBefore` needs a character to match, so on a blank line it answers `null`. That is
+    // exactly where Ctrl-Space is worth pressing: an operator staring at an empty body asking what
+    // exists. An EXPLICIT request answers at the cursor; typing whitespace still opens nothing on
+    // its own. The root check runs either way, so a request made after `foo.` still offers nothing:
+    // `context` and `input` are variables, never members of somebody else's object.
+    if (!word && !ctx.explicit) return null;
+    const from = word ? word.from : ctx.pos;
+    if (!isRootWord(ctx, from)) return null;
+    return { from, options: rootCompletions(t), validFor: WORD_ONLY };
   };
 }
 

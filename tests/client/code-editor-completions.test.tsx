@@ -631,6 +631,49 @@ describe("text is not code: no completion inside a string or a comment", () => {
   });
 });
 
+// Ctrl-Space is how an operator asks what exists, and the blank body is where they most need to
+// ask. `matchBefore` needs at least one character, so it answered `null` there and the source
+// returned nothing: the one affordance for discovering `context` and `input` was silent at the
+// moment it was for. The dead `word.from === word.to` branch is what the original intent looked
+// like, and this is it, working.
+describe("Ctrl-Space on nothing still offers the two roots", () => {
+  function ask(doc: string, explicit: boolean) {
+    const state = EditorState.create({ doc, extensions: [javascript()] });
+    return sourceFor(
+      ["cpf"],
+      i18n.t,
+    )(new CompletionContext(state, doc.length, explicit));
+  }
+  const labels = (r: ReturnType<ReturnType<typeof sourceFor>>) =>
+    r?.options.map((o) => o.label) ?? null;
+
+  test("an explicit request on an empty body offers them", () => {
+    expect(labels(ask("", true))).toEqual(["context", "input"]);
+  });
+
+  test("and after a space, where the next word would go", () => {
+    expect(labels(ask("return ", true))).toEqual(["context", "input"]);
+    expect(ask("return ", true)?.from).toBe(7);
+  });
+
+  // Typing whitespace is not a request: the popup must not appear on its own.
+  test("but typing a space opens nothing", () => {
+    expect(ask("return ", false)).toBeNull();
+  });
+
+  // And an explicit request is still not a licence to describe somebody else's object: after
+  // `foo.` the two roots would be offered as MEMBERS of `foo`.
+  test("and an explicit request after another object's dot offers nothing", () => {
+    expect(ask("foo.", true)).toBeNull();
+  });
+
+  // A word being typed is a root position, so the list comes back and CodeMirror filters it: that
+  // is how `co` narrows to `context`, and it is why the check above has to be about the DOT.
+  test("while a word being typed is still a root", () => {
+    expect(labels(ask("co", true))).toEqual(["context", "input"]);
+  });
+});
+
 // The matcher allows whitespace on both sides of the dot, and then the range it returned started
 // at the dot, so CodeMirror filtered the list by a query beginning with spaces. Nothing matches
 // that, so an operator who typed `context. co` saw no popup at all while `context.co` worked:

@@ -437,6 +437,12 @@ export function CodeEditor({
   // construction. Without it the attributes freeze at whatever they were when the body first
   // rendered, which for `aria-invalid` means never.
   const attrsSlot = useMemo(() => new Compartment(), []);
+  // NOTE: and a third, for the same event the completion source reconfigures for. The placeholder
+  // is console text (`starterCode(t)`), so it changes when the operator switches the language with
+  // the modal open, and as a lifecycle dependency that switch rebuilt the whole view: cursor,
+  // selection and undo history gone, mid-body. The cap below is NOT one of these, because it is a
+  // constant of the sandbox and cannot change under a mounted editor.
+  const holderSlot = useMemo(() => new Compartment(), []);
   const names = useMemo(() => [...argumentNames], [argumentNames]);
   const namesKey = namesKeyOf(names);
   // How far past the cap the last refused change would have gone, and 0 while nothing is refused.
@@ -515,7 +521,9 @@ export function CodeEditor({
         ),
       ),
     ];
-    if (placeholder) extensions.push(placeholderExt(placeholder));
+    extensions.push(
+      holderSlot.of(placeholder ? placeholderExt(placeholder) : []),
+    );
     if (typeof maxLength === "number") {
       // NOTE: the change is refused WHOLE rather than trimmed to fit, which is where this parts
       // from `<textarea maxLength>` on purpose. Measured: the browser truncates a paste into a
@@ -568,7 +576,7 @@ export function CodeEditor({
       v.destroy();
       view.current = null;
     };
-  }, [completionSlot, attrsSlot, maxLength, placeholder]);
+  }, [completionSlot, attrsSlot, holderSlot, maxLength]);
 
   // NOTE: an external change (the form resetting, a starter body applied) written into the document
   // without disturbing a cursor that is already where the operator put it, and kept OUT of the undo
@@ -609,6 +617,16 @@ export function CodeEditor({
       ),
     });
   }, [attrsSlot, label, describedBy, invalidNow]);
+
+  useEffect(() => {
+    const v = view.current;
+    if (!v) return;
+    v.dispatch({
+      effects: holderSlot.reconfigure(
+        placeholder ? placeholderExt(placeholder) : [],
+      ),
+    });
+  }, [holderSlot, placeholder]);
 
   // NOTE: `namesKey` and not `names`: a new array holding the same names is not a change worth
   // reconfiguring for, and the parent rebuilds that array on every render. The language is here for

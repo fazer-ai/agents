@@ -372,6 +372,47 @@ describe("the editor the operator actually gets", () => {
     expect(seen).toEqual(["abcde"]);
   });
 
+  // The placeholder is console text, so it follows a language switch, and the completion source
+  // already reconfigures for exactly that event rather than rebuilding. The placeholder was the one
+  // that still tore the editor down: the operator switching the console to English mid-body would
+  // get a new view, losing the cursor, the selection and the undo history behind it.
+  test("a placeholder change keeps the editor, with its history", () => {
+    const { rerender } = render(
+      <CodeEditor
+        value=""
+        onChange={() => {}}
+        placeholder="antes"
+        aria-label="Code"
+      />,
+    );
+    const placeholderText = () =>
+      document.body.querySelector(".cm-placeholder")?.textContent ?? null;
+    expect(placeholderText()).toBe("antes");
+    const first = EditorView.findFromDOM(
+      document.body.querySelector(".cm-editor") as HTMLElement,
+    ) as EditorView;
+    act(() => {
+      first.dispatch({ changes: { from: 0, insert: "return 1;" } });
+    });
+    rerender(
+      <CodeEditor
+        value=""
+        onChange={() => {}}
+        placeholder="depois"
+        aria-label="Code"
+      />,
+    );
+    const second = EditorView.findFromDOM(
+      document.body.querySelector(".cm-editor") as HTMLElement,
+    ) as EditorView;
+    // The SAME view: not a new one that happens to hold the same text.
+    expect(second).toBe(first);
+    // And its history came with it, which is what a rebuild silently throws away.
+    undo(second);
+    expect(second.state.doc.toString()).toBe("");
+    expect(placeholderText()).toBe("depois");
+  });
+
   // A body written in by the FORM is exempt from the cap (that is what opens an over-cap tool for
   // editing), so it must not be reported as a refusal either — and it retires one already on
   // screen, which described a paste against the body being replaced.

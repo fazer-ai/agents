@@ -161,6 +161,52 @@ describe("the editor the operator actually gets", () => {
     expect(over?.className).toContain("text-error");
   });
 
+  // The over-limit line is the only thing on screen that says why the body cannot be saved, so it
+  // has to reach the accessibility tree the way `<Textarea>`'s does. Both attributes go on the
+  // contenteditable, which is where the `textbox` role is; on the wrapper they would be dropped.
+  test("an over-limit body is announced as invalid, with the reason attached", () => {
+    const { rerender } = render(
+      <CodeEditor
+        value={"x".repeat(50)}
+        onChange={() => {}}
+        maxLength={100}
+        aria-label="Code"
+      />,
+    );
+    const content = () => document.body.querySelector(".cm-content");
+    expect(content()?.getAttribute("aria-invalid")).toBeNull();
+    rerender(
+      <CodeEditor
+        value={"x".repeat(101)}
+        onChange={() => {}}
+        maxLength={100}
+        aria-label="Code"
+      />,
+    );
+    expect(content()?.getAttribute("aria-invalid")).toBe("true");
+    const described = content()?.getAttribute("aria-describedby") ?? "";
+    expect(described).not.toBe("");
+    // The id actually names the message, rather than pointing at nothing.
+    const target = document.getElementById(described.split(/\s+/)[0] as string);
+    expect(target?.textContent ?? "").toContain("over the limit");
+  });
+
+  // A refusal the FORM decided is the other half of the same attribute, and it is the case that
+  // never had one: `invalid` reached the border and stopped there.
+  test("the invalid prop reaches the textbox too", () => {
+    render(
+      <CodeEditor
+        value="return 1;"
+        onChange={() => {}}
+        invalid
+        aria-label="Code"
+      />,
+    );
+    expect(
+      document.body.querySelector(".cm-content")?.getAttribute("aria-invalid"),
+    ).toBe("true");
+  });
+
   // The cap the browser enforces on a textarea's `maxLength`, enforced here as a REFUSAL: a paste
   // that would overflow leaves the document as it was rather than landing half a line.
   test("a change past maxLength is refused, and an over-cap value still edits DOWN", () => {

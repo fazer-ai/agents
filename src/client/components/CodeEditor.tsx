@@ -29,7 +29,7 @@ import {
 } from "@codemirror/view";
 import { tags } from "@lezer/highlight";
 import type { TFunction } from "i18next";
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useId, useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/client/lib/utils";
 import { CODE_TOOL_CONTEXT_VARS } from "@/lib/code-tool-vocabulary";
@@ -317,6 +317,21 @@ export function sourceFor(
   };
 }
 
+// The attributes that go on CodeMirror's contenteditable, which is the element it gives the
+// `textbox` role to. On the wrapper `div` below they would be dropped by the accessibility tree:
+// a `div` has no role, so it has no name to label and no validity to report.
+function contentAttrs(
+  label: string | undefined,
+  describedBy: string | undefined,
+  invalid: boolean,
+): Record<string, string> {
+  return {
+    ...(label ? { "aria-label": label } : {}),
+    ...(describedBy ? { "aria-describedby": describedBy } : {}),
+    ...(invalid ? { "aria-invalid": "true" } : {}),
+  };
+}
+
 export interface CodeEditorProps {
   value: string;
   onChange: (value: string) => void;
@@ -352,13 +367,17 @@ export function CodeEditor({
   // Rebuilding the whole editor would drop the cursor and the undo history on every keystroke in
   // the panel above.
   const completionSlot = useMemo(() => new Compartment(), []);
+  // NOTE: a second compartment for the same reason: the label, the invalid state and the
+  // description all change while the editor stays mounted, and `contentAttributes` is read at
+  // construction. Without it the attributes freeze at whatever they were when the body first
+  // rendered, which for `aria-invalid` means never.
+  const attrsSlot = useMemo(() => new Compartment(), []);
   const names = useMemo(() => [...argumentNames], [argumentNames]);
   const namesKey = names.join(" ");
   // NOTE: the label and the description go on the element CodeMirror gives the textbox role to, not
   // on the wrapper below. A wrapper `div` has no role, so `aria-label` on it is dropped by the
   // accessibility tree and the field reads as unlabelled.
   const label = rest["aria-label"];
-  const describedBy = mergeDescribedBy(field.describedById, undefined);
   // NOTE: the counter `<Textarea>` renders, kept when the body moved off one: the change filter
   // REFUSES an edit at the cap, so without it the field simply stops accepting characters with
   // nothing on screen saying why. Same threshold as the textarea's, so warning arrives before the
@@ -368,6 +387,16 @@ export function CodeEditor({
   const over = typeof maxLength === "number" && count > maxLength;
   const showCount =
     typeof maxLength === "number" && count >= maxLength * COUNTER_FROM;
+  // NOTE: the over-limit line is the only thing on screen that says why this body cannot be saved,
+  // so it has to reach the accessibility tree the way `<Textarea>`'s does: an id the textbox points
+  // at, plus `aria-invalid` on the textbox itself. Both live on CodeMirror's contenteditable, which
+  // is the element carrying the `textbox` role.
+  const overId = useId();
+  const invalidNow = !!invalid || !!field.invalid || over;
+  const describedBy = mergeDescribedBy(
+    field.describedById,
+    over ? overId : undefined,
+  );
 
   // NOTE: the editor is built ONCE. `value` is applied by the effect below and the completion source
   // by its compartment; listing either here would tear the editor down on every keystroke, taking
@@ -398,10 +427,11 @@ export function CodeEditor({
       EditorView.updateListener.of((u) => {
         if (u.docChanged) onChangeRef.current(u.state.doc.toString());
       }),
-      EditorView.contentAttributes.of({
-        ...(label ? { "aria-label": label } : {}),
-        ...(describedBy ? { "aria-describedby": describedBy } : {}),
-      }),
+      attrsSlot.of(
+        EditorView.contentAttributes.of(
+          contentAttrs(label, describedBy, invalidNow),
+        ),
+      ),
     ];
     if (placeholder) extensions.push(placeholderExt(placeholder));
     if (typeof maxLength === "number") {
@@ -428,7 +458,7 @@ export function CodeEditor({
       v.destroy();
       view.current = null;
     };
-  }, [completionSlot, maxLength, placeholder, label, describedBy]);
+  }, [completionSlot, attrsSlot, maxLength, placeholder]);
 
   // NOTE: an external change (the form resetting, a starter body applied) written into the document
   // without disturbing a cursor that is already where the operator put it, and kept OUT of the undo
@@ -448,6 +478,21 @@ export function CodeEditor({
       annotations: Transaction.addToHistory.of(false),
     });
   }, [value]);
+
+  // NOTE: the attributes the accessibility tree reads, reapplied whenever they change. `invalid`
+  // and the over-limit description are runtime state, so a construction-time read of them would be
+  // a `aria-invalid` that is decided once, before the operator has typed anything.
+  useEffect(() => {
+    const v = view.current;
+    if (!v) return;
+    v.dispatch({
+      effects: attrsSlot.reconfigure(
+        EditorView.contentAttributes.of(
+          contentAttrs(label, describedBy, invalidNow),
+        ),
+      ),
+    });
+  }, [attrsSlot, label, describedBy, invalidNow]);
 
   // NOTE: `namesKey` and not `names`: a new array holding the same names is not a change worth
   // reconfiguring for, and the parent rebuilds that array on every render. The language is here for
@@ -486,7 +531,7 @@ export function CodeEditor({
         </span>
       )}
       {over && typeof maxLength === "number" && (
-        <span className="mt-1 block text-error text-xs">
+        <span id={overId} className="mt-1 block text-error text-xs">
           {t(
             "codeTools.codeOverLimit",
             "{{count}} character over the limit. Shorten the body: a save above {{max}} is refused.",

@@ -61,6 +61,40 @@ const INDEX_FOR = {
 const FLEET_PAGE =
   "SELECT id FROM audit_logs WHERE tenant_id IS NULL ORDER BY created_at DESC, id DESC LIMIT 51";
 
+// A TRAIL WORTH PLANNING FOR, seeded inside the caller's own (rolled-back) transaction.
+//
+// Every assertion in this file is about which index the planner REACHES, and that is a cost choice:
+// on a table holding a handful of fleet rows every partial index costs about the same, so the
+// planner picks whichever is narrower -- `audit_logs_fleet_id_idx`, which is kept only for the
+// pre-#530 rolling overlap -- and pays a `Sort` and a `Filter` on top. That is the exact shape these
+// tests exist to forbid, and it appeared only because the plan was being read off whatever rows
+// other suites happened to leave in a shared table: the same assertions pass alone and failed inside
+// the full run (measured, on the master tree, where the suite writes more of them).
+//
+// So the rows the plan is read off are the test's own. `ANALYZE` is transactional like the inserts,
+// so both are gone at the rollback, and the choice stops depending on the order the suite ran in.
+async function seedTrailFor(tx: PrismaClient): Promise<void> {
+  // Keyed to NO tenant, which is both what the fleet slice IS and what keeps this free of the
+  // tenants table: a row with `tenant_id` set would need one that exists, and the ids in a shared
+  // test database are not this file's to know (measured: the lowest is in the hundreds, so the
+  // literal `tenant_id = 1` below matches nothing and always did).
+  await tx.$executeRawUnsafe(`
+    INSERT INTO audit_logs (tenant_id, actor_id, actor_type, action, target, created_at)
+    SELECT NULL, NULL, 'system', 'plan.probe', 'p:' || g,
+           now() - ((g % 200) || ' days')::interval
+    FROM generate_series(1, 12500) g`);
+  // ...and the trail AROUND it, so the fleet slice is the MINORITY it is on a real deployment
+  // (12,500 of 500,000 measured, and the header's numbers are read off that shape). Seeding only
+  // the fleet rows would leave a table that is almost entirely fleet, where the partial indexes and
+  // the plain ones cost the same and the plan says nothing about either.
+  await tx.$executeRawUnsafe(`
+    INSERT INTO audit_logs (tenant_id, actor_id, actor_type, action, target, created_at)
+    SELECT (SELECT min(id) FROM tenants), NULL, 'system', 'plan.probe', 'q:' || g,
+           now() - ((g % 200) || ' days')::interval
+    FROM generate_series(1, 100000) g`);
+  await tx.$executeRawUnsafe("ANALYZE audit_logs");
+}
+
 async function planIn(tx: PrismaClient, sql: string): Promise<string> {
   const rows = (await tx.$queryRawUnsafe(
     `EXPLAIN (FORMAT JSON) ${sql}`,
@@ -79,6 +113,7 @@ describe.skipIf(!dbUp)("latestAt reaches its index on every scope", () => {
         suDb.$transaction(async (tx) => {
           const db = tx as unknown as PrismaClient;
           await db.$executeRawUnsafe("SET LOCAL enable_seqscan = off");
+          await seedTrailFor(db);
 
           const withIndex = await planIn(db, AGGREGATES[scope]);
           expect(withIndex).toContain(`"Index Name":"${INDEX_FOR[scope]}"`);
@@ -140,16 +175,17 @@ describe.skipIf(!dbUp)("latestAt reaches its index on every scope", () => {
         // it takes the ordered walk (3 buffers), and on a table holding two it bitmap-scans the same
         // index and sorts, which at that size is right. Pinning either would make this test pass or
         // fail on how much other suites happened to leave in a shared table.
-        // EITHER FLEET INDEX, and that is the assertion rather than a lapse. Both are partial on
-        // `tenant_id IS NULL`, so either one bounds the work by the fleet slice instead of by the
-        // trail -- which is the property. Which one the planner picks is a cost choice that flips
-        // with the slice's size: on a large one it walks `..._fleet_created_at_id_idx` in order, on
-        // a table holding a handful it bitmap-scans `..._fleet_id_idx` and sorts. Pinning either
-        // would make this test pass or fail on how much other suites left in a shared table
-        // (measured: it did, between the two trees of this same PR).
-        expect(withIndex).toMatch(
-          /"Index Name":"audit_logs_fleet_(created_at_id|id)_idx"/,
+        // THE ORDERED FLEET INDEX, named rather than either-of-two. An earlier version of this
+        // accepted `..._fleet_id_idx` as well, on the reasoning that both are partial on
+        // `tenant_id IS NULL` and so both bound the work by the fleet slice. They do -- but only one
+        // of them also gives the ORDER the page is read in, and the other buys it with a `Sort`,
+        // which is half of what #530 removed. Accepting both hid that, and it was accepted only
+        // because the plan was being read off a table whose contents belong to the rest of the
+        // suite. With the slice seeded above it is a fact about the indexes again.
+        expect(withIndex).toContain(
+          '"Index Name":"audit_logs_fleet_created_at_id_idx"',
         );
+        expect(withIndex).not.toContain('"Node Type":"Sort"');
         expect(withIndex).not.toContain('"Index Name":"audit_logs_pkey"');
         // A `Filter` is a row read for some other reason and then rejected; the fleet index leaves
         // nothing to reject. (A bitmap scan's `Recheck Cond` is not that -- it re-reads only rows the
@@ -209,6 +245,7 @@ describe.skipIf(!dbUp)("latestAt reaches its index on every scope", () => {
         suDb.$transaction(async (tx) => {
           const db = tx as unknown as PrismaClient;
           await db.$executeRawUnsafe("SET LOCAL enable_seqscan = off");
+          await seedTrailFor(db);
           const page = (order: string) =>
             `SELECT id FROM audit_logs WHERE ${pred}${WINDOW} ORDER BY ${order} LIMIT 51`;
 

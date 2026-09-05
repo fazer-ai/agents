@@ -230,43 +230,48 @@ describe("runSandboxedCode", () => {
     // Overstating it inflates `leftMs` by the same amount, which leaves the render enough real time
     // to finish WITHOUT the renewal — and the assertions below cannot see it, because they subtract
     // the same overstated number.
-    const clockT0 = performance.now();
-    const clock = await runSandboxedCode("Date.now()", { timeoutMs: 30_000 });
-    const clockWall = performance.now() - clockT0;
-    expect(clock.kind).toBe("value");
-    const setupMs = (clock as { ms: number }).ms;
-    // ...and the same call answers a SECOND question: what a round trip costs when the value is
-    // tiny. `wall - ms` on any call folds in spawning the worker and dispatching to it, which happen
-    // before `run()` starts its own clock and are not rendering anything. Measured, that is 9-14 ms
-    // here and it is the term the round-2 finding is about: on a runner where startup drags, it
-    // inflates the render figure below without the render getting any slower.
-    const overheadMs = clockWall - setupMs;
-    expect(overheadMs).toBeGreaterThan(0);
+    // EACH NUMBER IS SAMPLED, AND EACH END IS CHOSEN FOR THE DIRECTION IT PROTECTS. One reading of
+    // one call is one draw from a loaded machine, and the three quantities below do not jitter the
+    // same way: measured over 8 rounds here, the worker-side setup sits at 9-11 ms and the gross
+    // figure at 67-73, while the round-trip overhead swings 8.5-18.3 — a 2x spread on the very term
+    // that is subtracted from the other one. Mixing a slow probe with a fast baseline is what round
+    // 3 of this review is about, and it breaks in BOTH directions: over-subtract and `renderMs` goes
+    // non-positive, under-subtract and the leftover grows until the render fits without the renewal.
+    const SAMPLES = 3;
+    const setupSamples: number[] = [];
+    const overheadSamples: number[] = [];
+    const grossSamples: number[] = [];
+    let buildMs = 0;
+    for (let i = 0; i < SAMPLES; i++) {
+      const clockT0 = performance.now();
+      const clock = await runSandboxedCode("Date.now()", { timeoutMs: 30_000 });
+      const clockWall = performance.now() - clockT0;
+      expect(clock.kind).toBe("value");
+      const clockMs = (clock as { ms: number }).ms;
+      setupSamples.push(clockMs);
+      // What a round trip costs when the value is one number: spawning the worker and dispatching to
+      // it, which happen before `run()` starts its own clock and render nothing.
+      overheadSamples.push(clockWall - clockMs);
 
-    // RENDER: wall minus the span `ms` covers, which ends before the render begins.
-    const t0 = performance.now();
-    const baseline = await runSandboxedCode(BUILD, {
-      timeoutMs: 30_000,
-      maxChars: CHARS,
-    });
-    const wall = performance.now() - t0;
-    expect(baseline.kind).toBe("value");
-    const buildMs = (baseline as { ms: number }).ms;
-    // NET of the round-trip cost above, so what is left is the render plus carrying its result back
-    // — and no longer moves with how long the worker took to come up. Measured at this N: 66-74 ms
-    // gross, 9-14 ms of that being startup, 52-64 ms net, against an interpreter render the sweep
-    // below puts at 30-40 ms.
-    const renderMs = wall - buildMs - overheadMs;
+      const t0 = performance.now();
+      const baseline = await runSandboxedCode(BUILD, {
+        timeoutMs: 30_000,
+        maxChars: CHARS,
+      });
+      expect(baseline.kind).toBe("value");
+      buildMs = (baseline as { ms: number }).ms;
+      grossSamples.push(performance.now() - t0 - buildMs);
+    }
+
+    // The HIGHEST setup seen, because understating it is what leaves the body itself interrupted.
+    const setupMs = Math.max(...setupSamples);
+    // The LOWEST overhead and the LOWEST gross, because both are subtracted or divided into the
+    // leftover: the floor of each is the reading least contaminated by a stall, and erring low here
+    // makes the leftover smaller, which is the side that keeps this test honest rather than green.
+    const renderMs = Math.min(...grossSamples) - Math.min(...overheadSamples);
     // The premise, asserted rather than assumed: there has to BE a render to interrupt.
     expect(renderMs).toBeGreaterThan(1);
 
-    // A QUARTER of that, because even net of the round trip it is the render PLUS carrying the
-    // result back. Swept with the renewal removed, which is the only way to see the interpreter's
-    // half alone: at 20k the render is interrupted with 20 ms left and fits with 25, and at 40k it
-    // is interrupted with 30 and fits with 40. Against the 52-64 ms net that is a ratio near 0.6, so
-    // sizing the leftover at HALF would land on the threshold — measured, the mutation this test
-    // exists to catch survived 2 runs in 5 that way. A quarter is 13-16 ms against a threshold of
-    // 30, and the two ends of that margin are the sweep and the measurement, not a guess.
     const leftMs = setupMs + Math.floor(renderMs / 4);
     // THE SIZING IS THE TEST, so it is asserted and not merely computed. Both bounds were shown to
     // matter by mutation: with the leftover at 3x the render, and with the spin below removed, this

@@ -320,6 +320,26 @@ describe.skipIf(!dbUp)("experiments CRUD + results", () => {
         }),
       ),
     ).toBeNull();
+
+    // The PR says such a row "stays inert, and naming an agent is what repairs it". The first half
+    // is the assertion above; this is the second, which was prose until it was run. The patch names
+    // only the agent, which is the whole repair an operator has, and the same resolver then answers
+    // with the variant on a thread that has no assignment yet.
+    await updateExperiment({
+      ctx: ctxOf(tnt),
+      id: legacy.id,
+      agentId: target,
+      base: appDb,
+    });
+    expect(
+      await runScopedOn(appDb, ctxOf(tnt), (db) =>
+        resolveVariantOverride(db, {
+          tenantId: tnt,
+          agentId: target,
+          threadId: `${tnt}:1:547-repaired`,
+        }),
+      ),
+    ).toBe("LEGACY");
     await suDb.experiment.delete({ where: { id: legacy.id } });
   });
 });

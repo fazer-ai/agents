@@ -15,6 +15,7 @@ import {
   codeToolGet,
   codeToolList,
   codeToolSchema,
+  documentTemplateSchema,
   instanceList,
   toolList,
   vaultList,
@@ -136,10 +137,37 @@ describe("MCP read gate (no DB)", () => {
     // An authoring refusal, not a call outcome: nothing is saved, so nothing can fail.
     expect(body.authoringRefusal).toContain("codeMaxChars");
     expect(body.authoringRefusal).toContain("REFUSED");
-    // The return value is CLIPPED, and the agent cannot tell a clipped answer from a short one, so
-    // the cap is published rather than left to be discovered by a wrong answer.
+    // The return value is cut, so the cap is published rather than left to be discovered by a wrong
+    // answer, and it is published for what it BOUNDS: the value, not the rendered line. The marker
+    // the clipper appends is named too, because it is what tells a reader the answer is partial, and
+    // so is the one case that carries no marker at all.
     expect(body.result).toContain("resultMaxChars");
-    expect(body.result).toContain("CLIPPED");
+    expect(body.result).toContain("VALUE, not the whole line");
+    expect(body.result).toContain("[truncated]");
+    expect(body.result).toContain("[output truncated]");
+    expect(body.result).toContain("dropped ENTIRELY");
+  });
+
+  // `code_tool_create` no longer carries the contract, it names this tool for it, and `filterScopes`
+  // grants exactly the scopes a client asked for: a token with `mcp:write` and no `mcp:read` is a
+  // real token, and gating this on read alone pointed it at a tool it could neither list nor call.
+  // Same for `document_template_schema`, which `document_template_create` names the same way.
+  test("a write-only token reaches both authoring contracts", async () => {
+    const writeOnly = principal({ scopes: ["mcp:write"] });
+    expect(codeToolSchema(writeOnly).ok).toBe(true);
+    expect((await documentTemplateSchema(writeOnly)).ok).toBe(true);
+    // And neither scope is still a refusal: the gate moved, it did not disappear.
+    const none = principal({ scopes: [] });
+    const r = codeToolSchema(none);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("insufficient_scope");
+    // And the tenant fence is still there: a SUPER_ADMIN token that has not targeted one gets the
+    // same refusal every other tenant tool gives, rather than an answer from outside any tenant.
+    const untargeted = codeToolSchema(
+      principal({ tenantId: null, role: "SUPER_ADMIN" }),
+    );
+    expect(untargeted.ok).toBe(false);
+    if (!untargeted.ok) expect(untargeted.error).toContain("no tenant target");
   });
 });
 

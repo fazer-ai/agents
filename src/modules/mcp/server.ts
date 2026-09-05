@@ -763,21 +763,6 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
         writeContent(await codeToolGet(eff, args)),
     );
 
-    // The authoring contract, served on demand for the reason document_template_schema is: a
-    // vocabulary inlined into code_tool_create's description is paid by every caller on every
-    // session, and only a caller actually writing a body needs it (issue #538).
-    registerTenantTool(
-      server,
-      principal,
-      "code_tool_schema",
-      {
-        description:
-          "The authoring contract for a code tool body: every `context` key with its type and whether it can be ABSENT, what a return and a throw mean, and the sandbox limits. Generated from the modules that enforce them. Call it once before writing `code`.",
-        inputSchema: {},
-      },
-      async (_args, eff) => writeContent(codeToolSchema(eff)),
-    );
-
     registerTenantTool(
       server,
       principal,
@@ -1350,25 +1335,6 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
         writeContent(await documentTemplateGet(eff, args)),
     );
 
-    // NOTE: the block vocabulary is served HERE, on demand, instead of being published in every
-    // tools/list as the input schema of the two write tools. A document block is a six-variant
-    // discriminated union, and JSON Schema publishes a union by inlining every variant — measured at
-    // ~3.2k characters per tool, paid by every client on every session, for a contract only a caller
-    // actually authoring a template needs. Nothing on the client side renders a form for a six-way
-    // oneOf, so the cost buys nothing. The enforcement is not weakened: the service validates
-    // strictly, and its refusal names the block and the rule.
-    registerTenantTool(
-      server,
-      principal,
-      "document_template_schema",
-      {
-        description:
-          "The authoring contract for document templates: JSON Schema for every block type, for a declared field and for the style, plus the full {{token}} list. Generated from the validator itself, so it is exactly what document_template_create accepts. Call it once before authoring blocks.",
-        inputSchema: {},
-      },
-      async (_args, eff) => writeContent(await documentTemplateSchema(eff)),
-    );
-
     registerTenantTool(
       server,
       principal,
@@ -1399,6 +1365,48 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
         args: { template_id?: string; thread_id?: string; limit?: number },
         eff,
       ) => writeContent(await issuedDocumentList(eff, args)),
+    );
+  }
+
+  // The two AUTHORING CONTRACTS, outside both blocks because they belong to both. Each is a
+  // constant that a write tool's description names as the place its contract lives, and
+  // `filterScopes` grants exactly the scopes a client asked for, so `mcp:write` without
+  // `mcp:read` is a real token; registering these in the read block alone pointed that client at
+  // a tool it could neither list nor call. They stay visible to a read-only token too, which is
+  // what the `*_schema` sweep in tests/modules/mcp-tool-descriptions.test.ts asserts.
+  if (hasScope(principal, "mcp:read") || hasScope(principal, "mcp:write")) {
+    // The authoring contract, served on demand for the reason document_template_schema is: a
+    // vocabulary inlined into code_tool_create's description is paid by every caller on every
+    // session, and only a caller actually writing a body needs it (issue #538).
+    registerTenantTool(
+      server,
+      principal,
+      "code_tool_schema",
+      {
+        description:
+          "The authoring contract for a code tool body: every `context` key with its type and whether it can be ABSENT, what a return and a throw mean, and the sandbox limits. Generated from the modules that enforce them. Call it once before writing `code`.",
+        inputSchema: {},
+      },
+      async (_args, eff) => writeContent(codeToolSchema(eff)),
+    );
+
+    // NOTE: the block vocabulary is served HERE, on demand, instead of being published in every
+    // tools/list as the input schema of the two write tools. A document block is a six-variant
+    // discriminated union, and JSON Schema publishes a union by inlining every variant — measured at
+    // ~3.2k characters per tool, paid by every client on every session, for a contract only a caller
+    // actually authoring a template needs. Nothing on the client side renders a form for a six-way
+    // oneOf, so the cost buys nothing. The enforcement is not weakened: the service validates
+    // strictly, and its refusal names the block and the rule.
+    registerTenantTool(
+      server,
+      principal,
+      "document_template_schema",
+      {
+        description:
+          "The authoring contract for document templates: JSON Schema for every block type, for a declared field and for the style, plus the full {{token}} list. Generated from the validator itself, so it is exactly what document_template_create accepts. Call it once before authoring blocks.",
+        inputSchema: {},
+      },
+      async (_args, eff) => writeContent(await documentTemplateSchema(eff)),
     );
   }
 

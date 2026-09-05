@@ -85,6 +85,7 @@ import { OUTBOUND_EVENTS } from "@/modules/webhooks/outbound/events";
 import { listWebhookSubscriptions } from "@/modules/webhooks/outbound/subscriptions";
 import type { VerifiedToken } from "./oauth/tokens";
 import {
+  authoringGate,
   err,
   ok,
   parseMcpId,
@@ -268,16 +269,20 @@ export async function codeToolGet(
 // sentences rather than one. `timeoutMs`, `memoryBytes`, `stackBytes` and `contextMaxChars` mark the
 // call failed. `inputMaxChars` is the model's doing and comes back as an ordinary result saying what
 // to change (graph/tools/code.ts). `codeMaxChars` never reaches a call at all: the write is REFUSED,
-// so nothing is saved. `resultMaxChars` is the fourth thing a body cannot discover by trying, since
-// what it returns is CLIPPED (code-sandbox.ts) and the agent cannot tell a clipped answer from a
-// short one. A caller told these are all failures reads a correctable argument size as a broken tool
-// and an authoring refusal as an outage.
+// so nothing is saved. `resultMaxChars` is the fourth thing a body cannot discover by trying: what
+// the body returns is CLIPPED (code-sandbox.ts), and it bounds the VALUE rather than the rendered
+// line, so a caller reading it as a bound on the whole text sizes a return by the wrong number. The
+// cut itself is marked, but the `console.log` block is dropped WHOLE when the value leaves it under
+// forty characters of budget, and that is the one case nothing marks. A caller told these are all
+// failures reads a correctable argument size as a broken tool and an authoring refusal as an outage.
 //
-// No gate of its own beyond the read gate: it is a constant, not tenant data. It still goes through
-// `readGate` so an unscoped principal gets the same refusal every other read gives, rather than a
-// surface that answers before the fence.
+// The gate is `authoringGate`, not `readGate`: `code_tool_create` names this tool for the contract
+// it no longer restates, and `filterScopes` grants exactly the scopes a client asked for, so a token
+// holding `mcp:write` without `mcp:read` is a real token that would otherwise be sent to a tool it
+// can neither list nor call. It answers a constant either way, so admitting the writer gives away
+// nothing the reader was not already given.
 export function codeToolSchema(principal: VerifiedToken): WriteResult {
-  const ctx = readGate(principal);
+  const ctx = authoringGate(principal);
   if ("ok" in ctx) return ctx;
   return ok({
     signature: "function (input, context) { ... }",
@@ -290,7 +295,7 @@ export function codeToolSchema(principal: VerifiedToken): WriteResult {
       description: v.description,
     })),
     result:
-      "Whatever the body returns is rendered for the agent, JSON where JSON can say it. Returning nothing answers `undefined`. A returned promise is an ERROR: the sandbox has no event loop, so `async`, `await` and a returned promise are not supported. The rendered text is CLIPPED to resultMaxChars: the value is clipped first and the console.log block gets what is left, and nothing tells the agent that anything was cut. A body with a lot to say should return the summary the agent needs rather than the whole payload.",
+      "Whatever the body returns is rendered for the agent, JSON where JSON can say it. Returning nothing answers `undefined`. A returned promise is an ERROR: the sandbox has no event loop, so `async`, `await` and a returned promise are not supported. resultMaxChars bounds the returned VALUE, not the whole line: over it the value is cut at that many characters and `…[truncated]` is appended, and the console.log block is then given whatever budget the main line leaves and cut with `…[output truncated]` of its own. If that leaves under 40 characters the output block is dropped ENTIRELY, which is the one case nothing marks. Return the summary the agent needs rather than the whole payload.",
     failure:
       "A throw, a syntax error, or hitting timeoutMs, memoryBytes or stackBytes is the OPERATOR's failure, not the agent's: the call is marked failed, the agent answers without the tool, and the flow log keeps the reason. The conversation's attributes exceeding contextMaxChars fails the same way, and is the tenant's data rather than the body. Only a returned value is a normal result.",
     argumentsTooLarge:
@@ -368,7 +373,7 @@ export async function documentTemplateGet(
 export async function documentTemplateSchema(
   principal: VerifiedToken,
 ): Promise<WriteResult> {
-  const ctx = readGate(principal);
+  const ctx = authoringGate(principal);
   if ("ok" in ctx) return ctx;
   return ok({
     ...documentAuthoringSchema(),

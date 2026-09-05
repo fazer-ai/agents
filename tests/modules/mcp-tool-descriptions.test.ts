@@ -82,6 +82,22 @@ describe("scope contract", () => {
     expect(reads.filter((n) => !readOnly.has(n))).toEqual([]);
   });
 
+  // `filterScopes` grants exactly the scopes a client asked for, so `mcp:write` without `mcp:read`
+  // is a real token. Its write tools point at the two authoring contracts for the vocabulary and the
+  // limits they no longer restate, so those two have to be LISTED for it: a description naming a
+  // tool the caller cannot see is worse than the duplication it replaced.
+  test("a write-only token lists the tools its writes point at", async () => {
+    const writeOnly = await listedFor(["mcp:write"]);
+    for (const named of ["code_tool_schema", "document_template_schema"]) {
+      expect([named, writeOnly.has(named)]).toEqual([named, true]);
+    }
+    // And they are still there for a reader, which is what the sweep above assumes.
+    const readOnly = await listedFor(["mcp:read"]);
+    for (const named of ["code_tool_schema", "document_template_schema"]) {
+      expect([named, readOnly.has(named)]).toEqual([named, true]);
+    }
+  });
+
   test("a read-only token sees no write tool", async () => {
     const readOnly = await listedFor(["mcp:read"]);
     expect(

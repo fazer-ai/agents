@@ -488,7 +488,18 @@ export function CodeEditor({
         autocompletion({ override: [sourceFor(names, t)], icons: false }),
       ),
       EditorView.updateListener.of((u) => {
-        if (u.docChanged) onChangeRef.current(u.state.doc.toString());
+        if (!u.docChanged) return;
+        // NOTE: a write from the PROP is not an edit, and reporting it hands the form a string it
+        // never chose. CodeMirror splits an incoming document on `\r\n?|\n` and re-serializes with
+        // `\n`, so a body stored with CRLF (saved over MCP from a Windows client, or imported) can
+        // never be held as written: the sync effect sees a document that differs from the prop,
+        // writes the prop in again, and the form would take the normalized text as the operator's
+        // work. The tool would then be dirty the moment it opens, with Escape offering to discard
+        // changes nobody made. `every` and not `some` so that a batch carrying a real edit
+        // alongside a controlled write is still reported; the two are indistinguishable today,
+        // because the sync effect dispatches alone, and no test can separate them from out here.
+        if (u.transactions.every((tr) => tr.annotation(CONTROLLED))) return;
+        onChangeRef.current(u.state.doc.toString());
       }),
       attrsSlot.of(
         EditorView.contentAttributes.of(

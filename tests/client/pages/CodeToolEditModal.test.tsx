@@ -261,6 +261,62 @@ test("Escape dismisses the suggestion without offering to discard the body", asy
   );
 });
 
+// The defect as the operator meets it: open a tool, touch nothing, press Escape, and be asked
+// whether to discard changes. A body stored with CRLF (saved over MCP from a Windows client, or
+// carried in by an import) cannot survive CodeMirror, which normalizes line endings on the way in,
+// and the normalized text used to come back through `onChange` as if the operator had typed it.
+test("a tool stored with CRLF opens clean, and closes without asking", async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const href =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.href
+          : input.url;
+    if (
+      !/\/code-tools\/1(\?|$)/.test(href) ||
+      (init?.method ?? "GET").toUpperCase() !== "GET"
+    ) {
+      return realFetch(input as RequestInfo, init);
+    }
+    return new Response(
+      JSON.stringify({
+        tool: codeTool({ code: "const a = 1;\r\nreturn a;" }),
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  }) as typeof fetch;
+  try {
+    render(<TwoToolsHarness />);
+    fireEvent.click(screen.getByText("open-1"));
+    await waitFor(() =>
+      expect(!!document.body.querySelector(".cm-editor")).toBe(true),
+    );
+    const view = EditorView.findFromDOM(
+      document.body.querySelector(".cm-editor") as HTMLElement,
+    ) as EditorView;
+    // The document is LF, which is CodeMirror's doing and not something to fight.
+    await waitFor(() =>
+      expect(view.state.doc.toString()).toBe("const a = 1;\nreturn a;"),
+    );
+    // Nothing was typed, so nothing is dirty: Escape closes instead of asking.
+    (document.body.querySelector(".cm-content") as HTMLElement).dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Escape",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    await waitFor(() =>
+      expect(!!document.body.querySelector(".cm-editor")).toBe(false),
+    );
+    expect(document.body.textContent).not.toContain("Discard changes?");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
 test("a body with no return warns without disabling Save", async () => {
   render(<Harness />);
   fireEvent.click(screen.getByText("open"));

@@ -329,6 +329,49 @@ describe("the editor the operator actually gets", () => {
     expect(refusal()).toBeUndefined();
   });
 
+  // CodeMirror splits an incoming document on `\r\n?|\n` and re-serializes with `\n`, so a body
+  // stored with CRLF (saved over MCP from a Windows client, or imported) can never be held as it
+  // was written. The sync effect then sees a document that differs from the prop and writes the
+  // prop in again, and reporting THAT through `onChange` hands the form a string it never chose:
+  // the tool is dirty the moment it opens, and Escape offers to discard changes nobody made.
+  test("a controlled write is not reported back as an edit", () => {
+    const seen: string[] = [];
+    render(
+      <CodeEditor
+        value={"const a = 1;\r\nreturn a;"}
+        onChange={(v) => seen.push(v)}
+        aria-label="Code"
+      />,
+    );
+    const view = EditorView.findFromDOM(
+      document.body.querySelector(".cm-editor") as HTMLElement,
+    ) as EditorView;
+    // The document itself is normalized, which is CodeMirror's, not ours to prevent.
+    expect(view.state.doc.toString()).toBe("const a = 1;\nreturn a;");
+    // The form is told nothing, because nobody edited anything.
+    expect(seen).toEqual([]);
+  });
+
+  // The control for the test above: an edit the operator makes is still reported, or the field
+  // would be write-only.
+  test("and a real edit still is", () => {
+    const seen: string[] = [];
+    render(
+      <CodeEditor
+        value="abc"
+        onChange={(v) => seen.push(v)}
+        aria-label="Code"
+      />,
+    );
+    const view = EditorView.findFromDOM(
+      document.body.querySelector(".cm-editor") as HTMLElement,
+    ) as EditorView;
+    act(() => {
+      view.dispatch({ changes: { from: 3, insert: "de" } });
+    });
+    expect(seen).toEqual(["abcde"]);
+  });
+
   // A body written in by the FORM is exempt from the cap (that is what opens an over-cap tool for
   // editing), so it must not be reported as a refusal either — and it retires one already on
   // screen, which described a paste against the body being replaced.

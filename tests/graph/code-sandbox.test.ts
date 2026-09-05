@@ -211,101 +211,74 @@ describe("runSandboxedCode", () => {
   // grows on exactly the machines where the old one ran out.
   test("a value built with the last of the budget is still rendered whole", async () => {
     // N IS BOUNDED FROM ABOVE BY A DEADLINE THIS TEST DOES NOT CONTROL. The renewal installs a
-    // FIXED `RENDER_BUDGET_MS`, so a value too big to render inside it fails even on the baseline
-    // call, whatever `timeoutMs` says -- which would put the machine's speed back into the test by
-    // the other door. Measured here by walking N up: 200k still renders whole, 300k does not, so the
-    // ceiling is between them and 40k leaves about 6x. The first draft of this rewrite used 100k,
-    // which leaves 2-3x, and a runner that slow is exactly the one this test exists for.
+    // FIXED `RENDER_BUDGET_MS`, so a value too big to render inside it fails even on a call with a
+    // 30-second timeout, which would put the machine's speed back in by the other door. Measured by
+    // walking N up: 200k still renders whole here, 300k does not, so 40k leaves about 6x.
     const N = 40_000;
     const BUILD = `Array.from({ length: ${N} }, (_, i) => ({ i }))`;
     const CHARS = 20_000_000;
 
-    // SETUP: the deadline starts in `open()`, and the interpreter's prelude runs inside it, so the
-    // snippet's own first statement is already this far past the start.
+    // NOTHING HERE ESTIMATES THE RENDER, and that is the point. Four review rounds each found a
+    // different contaminant in the same host-side estimate of it -- worker startup, dispatch,
+    // result transfer, per-call jitter, disposal after the render -- because `wall - ms` is not the
+    // render and no correction term makes it into one. So the leftover is not sized against it: it
+    // is made SMALL ENOUGH that any render at all exceeds it, and the body is protected by what the
+    // run itself reports rather than by a figure guessed beforehand.
     //
-    // Read from the WORKER's own `ms`, which starts at the top of `run()` — a hair before `open()`
-    // — and not from this side of the call. Measuring it here would fold in spawning the worker and
-    // dispatching to it, which happen BEFORE the deadline exists: measured, 16-25 ms from here
-    // against 9 ms of deadline-covered setup, an inflation the same size as the leftover itself.
-    // Overstating it inflates `leftMs` by the same amount, which leaves the render enough real time
-    // to finish WITHOUT the renewal — and the assertions below cannot see it, because they subtract
-    // the same overstated number.
-    // EACH NUMBER IS SAMPLED, AND EACH END IS CHOSEN FOR THE DIRECTION IT PROTECTS. One reading of
-    // one call is one draw from a loaded machine, and the three quantities below do not jitter the
-    // same way: measured over 8 rounds here, the worker-side setup sits at 9-11 ms and the gross
-    // figure at 67-73, while the round-trip overhead swings 8.5-18.3 — a 2x spread on the very term
-    // that is subtracted from the other one. Mixing a slow probe with a fast baseline is what round
-    // 3 of this review is about, and it breaks in BOTH directions: over-subtract and `renderMs` goes
-    // non-positive, under-subtract and the leftover grows until the render fits without the renewal.
-    const SAMPLES = 3;
-    const setupSamples: number[] = [];
-    const overheadSamples: number[] = [];
-    const grossSamples: number[] = [];
-    let buildMs = 0;
-    for (let i = 0; i < SAMPLES; i++) {
-      const clockT0 = performance.now();
-      const clock = await runSandboxedCode("Date.now()", { timeoutMs: 30_000 });
-      const clockWall = performance.now() - clockT0;
-      expect(clock.kind).toBe("value");
-      const clockMs = (clock as { ms: number }).ms;
-      setupSamples.push(clockMs);
-      // What a round trip costs when the value is one number: spawning the worker and dispatching to
-      // it, which happen before `run()` starts its own clock and render nothing.
-      overheadSamples.push(clockWall - clockMs);
-
-      const t0 = performance.now();
-      const baseline = await runSandboxedCode(BUILD, {
-        timeoutMs: 30_000,
+    // The two ways this can end are distinguishable, which is what makes the correction below safe
+    // (measured, both shapes):
+    //
+    //   body interrupted   -> kind "limit", limit "time", and NO `ms`
+    //   render interrupted -> kind "error", name "InternalError", WITH `ms`
+    //
+    // So a `limit` means the leftover was too small and the arithmetic is corrected by the amount
+    // the run itself gives up; an `error` is the defect this test exists to catch and is never
+    // retried past. A retry loop that could not tell them apart would grow the leftover until the
+    // render fits and report green.
+    const attempt = async (leftMs: number) => {
+      const budgetMs = leftMs + 500;
+      const spun = `const t0 = Date.now(); const v = ${BUILD}; while (Date.now() - t0 < ${budgetMs - leftMs}) {} v`;
+      const out = await runSandboxedCode(spun, {
+        timeoutMs: budgetMs,
         maxChars: CHARS,
       });
-      expect(baseline.kind).toBe("value");
-      buildMs = (baseline as { ms: number }).ms;
-      grossSamples.push(performance.now() - t0 - buildMs);
+      // `ms` covers the setup plus the body, so what is left of the budget when the body returned is
+      // exactly this -- measured on the run that matters, not carried over from another one.
+      const leftoverMs =
+        "ms" in out ? budgetMs - (out as { ms: number }).ms : null;
+      return { out, leftoverMs };
+    };
+
+    // Three milliseconds, which is below any render of 40,000 objects on any machine. Where it is
+    // too small, the body is interrupted and says by how much.
+    let leftMs = 3;
+    let r = await attempt(leftMs);
+    for (let i = 0; i < 4 && r.out.kind === "limit"; i++) {
+      // The body needed more than it had. Give it exactly the shortfall the run reports, plus a
+      // millisecond, and no more: every millisecond added here is one the render gets for free.
+      leftMs += 1 + (r.leftoverMs === null ? 3 : Math.ceil(-r.leftoverMs));
+      r = await attempt(leftMs);
     }
+    const { out, leftoverMs } = r;
 
-    // The HIGHEST setup seen, because understating it is what leaves the body itself interrupted.
-    const setupMs = Math.max(...setupSamples);
-    // The LOWEST overhead and the LOWEST gross, because both are subtracted or divided into the
-    // leftover: the floor of each is the reading least contaminated by a stall, and erring low here
-    // makes the leftover smaller, which is the side that keeps this test honest rather than green.
-    const renderMs = Math.min(...grossSamples) - Math.min(...overheadSamples);
-    // The premise, asserted rather than assumed: there has to BE a render to interrupt.
-    expect(renderMs).toBeGreaterThan(1);
-
-    const leftMs = setupMs + Math.floor(renderMs / 4);
-    // THE SIZING IS THE TEST, so it is asserted and not merely computed. Both bounds were shown to
-    // matter by mutation: with the leftover at 3x the render, and with the spin below removed, this
-    // test PASSES while the renewal is gone -- it would guard nothing and say so to nobody.
-    const leftoverMs = leftMs - setupMs;
-    expect(leftoverMs).toBeGreaterThan(0);
-    expect(leftoverMs).toBeLessThan(renderMs);
-    // The budget is the leftover plus room the build cannot plausibly need, scaled to the build this
-    // machine actually does rather than to a number from mine: the spin absorbs whatever is left.
-    // ...and CAPPED, because this number is a busy spin the test itself has to sit through. A
-    // baseline preempted into a 240 ms build would make `buildMs * 20` a 4.8-second spin, and Bun's
-    // own per-test deadline is 5 s: the test would then fail by timing out on exactly the stalled
-    // runner it is meant to survive.
-    const budgetMs = leftMs + Math.min(2_000, Math.max(500, buildMs * 20));
-    const spun = `const t0 = Date.now(); const v = ${BUILD}; while (Date.now() - t0 < ${budgetMs - leftMs}) {} v`;
-
-    const out = await runSandboxedCode(spun, {
-      timeoutMs: budgetMs,
-      maxChars: CHARS,
-    });
-    // Not `limit`: the body ends `render/2` before the deadline by construction, so a body that was
-    // interrupted means the arithmetic above is wrong, not that the machine was slow.
+    // Not `limit`: after the corrections above, a body still being interrupted is not a slow machine
+    // but arithmetic that does not converge.
     expect(out.kind).toBe("value");
-    // ...and the body really did spend the budget, which is the other half the mutation found: with
-    // the spin gone the body returns after the build, the render inherits a budget it never needed
-    // renewed, and this test passes while guarding nothing. `ms` covers the setup and the body.
-    expect((out as { ms: number }).ms).toBeGreaterThanOrEqual(
-      budgetMs - leftMs,
-    );
+    // ...and the leftover the render actually had is a couple of milliseconds, which no render of
+    // this value fits into. Measured here: the loop settles at 1-3 ms from a starting 3.
+    //
+    // ONLY THE UPPER BOUND IS ASSERTED. `ms` is rounded to the millisecond and the deadline is a
+    // poll, so a body that finished perfectly well reports a leftover of 0 or -1 often enough to
+    // matter -- measured, 2 runs in 5 of a HEALTHY build failed a `> 0` assertion here, which is the
+    // same disease this PR is treating. What says the body was interrupted is `kind`, and the loop
+    // above already acts on it.
+    expect(leftoverMs).not.toBeNull();
+    expect(leftoverMs as number).toBeLessThan(15);
     const v = (out as { value: string }).value;
     expect(v.startsWith('[{"i":0},{"i":1}')).toBe(true);
     expect(v.endsWith(`{"i":${N - 1}}]`)).toBe(true);
-    // Comfortably above the cap plus the three calls that precede the spin, so the cap is what
-    // bounds this test and not a default nobody here chose.
+    // Comfortably above the five round trips this can take, so nothing here is bounded by a default
+    // nobody chose.
   }, 20_000);
 
   // A value can still run the body's code AFTER the body returned: a getter, a proxy trap. The

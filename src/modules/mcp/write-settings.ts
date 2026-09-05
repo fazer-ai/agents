@@ -16,6 +16,8 @@ import {
   updateBusinessHours,
 } from "@/modules/business-hours/service";
 import {
+  assertExperimentAgentExists,
+  assertExperimentNameUsable,
   createExperiment,
   deleteExperiment,
   getExperiment,
@@ -107,6 +109,13 @@ export async function experimentCreate(
   }
   try {
     if (args.dry_run !== false) {
+      // NOTE: the core's own questions, asked before the preview answers them and INSIDE the branch,
+      // because the apply reaches the core, which asks them again (#490). The first is pure; the
+      // second READS, outside the transaction the apply writes in, and is ADVISORY for it.
+      assertExperimentNameUsable(args.name);
+      if (agentId !== undefined) {
+        await assertExperimentAgentExists(ctx, agentId, base);
+      }
       return ok({
         dryRun: true,
         action: "create",
@@ -186,6 +195,11 @@ export async function experimentUpdate(
     const current = await getExperiment(ctx, id, base);
     const target = `experiment:${id}`;
     if (args.dry_run !== false) {
+      assertExperimentNameUsable(patch.name);
+      // NOTE: ADVISORY, like the create half. `null` clears the binding and names nobody to look up.
+      if (patch.agentId !== undefined && patch.agentId !== null) {
+        await assertExperimentAgentExists(ctx, patch.agentId, base);
+      }
       return ok({
         dryRun: true,
         target,

@@ -1745,11 +1745,31 @@ describe.skipIf(!dbUp)("tool_create / tool_update say so", () => {
     // NOTE: the tool sets its own `Authorization`, which is what makes an `openai` credential
     // reportable at all — it injects a bearer, and the operator's own header wins. Without that the
     // credential is wired whatever the base is, and the row proves nothing.
-    const r = await create({
-      credential_ref: `vault:${legacy.id}`,
-      url_template: "/v1/thing",
-      headers: { Authorization: "constant" },
+    //
+    // Written straight through Prisma, because #501 now refuses this pair on the way in: a relative
+    // template whose credential supplies no dialable base is a tool `buildHttpTool` will not build,
+    // so the write stopped storing it. The rows an upgraded database already holds are exactly what
+    // this reader still has to answer about, which is why the row is seeded rather than created.
+    const relative = await suDb.toolDefinition.create({
+      data: {
+        tenantId,
+        name: "wiring-legacy-relative",
+        label: "Legacy",
+        method: "GET",
+        urlTemplate: "/v1/thing",
+        allowedHosts: [PUBLIC],
+        headers: { Authorization: "constant" },
+        credentialRef: `vault:${legacy.id}`,
+      },
+      select: { id: true },
     });
+    // A patch that names neither the template nor the credential, so the pairing rule above does not
+    // apply and the wiring reader is what answers.
+    const r = await toolUpdate(
+      principal(),
+      { tool_id: String(relative.id), label: "Legacy renamed" },
+      { base: appDb },
+    );
     expect(r.ok).toBe(true);
     expect(wiringWarning(r)).toHaveLength(0);
   });

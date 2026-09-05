@@ -2189,6 +2189,18 @@ function AgentEditor() {
           'Tool "{{name}}" asks for the HTTP method {{method}}, which is not one this platform sends, so the tool was not imported. The rest of the agent was.',
           p,
         );
+      case "httpToolUrlTemplateUnusable":
+        return t(
+          "editor.importWarning.httpToolUrlTemplateUnusable",
+          'Tool "{{name}}" has a request URL this platform cannot call, so the tool was not imported. The rest of the agent was.',
+          p,
+        );
+      case "knowledgeBaseNameUnusable":
+        return t(
+          "editor.importWarning.knowledgeBaseNameUnusable",
+          'Knowledge base "{{name}}" has a name this platform cannot store, so it was not imported. The rest of the agent was.',
+          p,
+        );
       case "httpToolReused":
         return t(
           "editor.importWarning.httpToolReused",

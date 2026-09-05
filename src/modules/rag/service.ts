@@ -140,6 +140,39 @@ const KB_AUDIT_SELECT = {
   chunkOverlap: true,
 } as const;
 
+export const KB_NAME_MAX = 200;
+
+// A knowledge base's name is not decoration: `buildRagTools` filters the tenant's bases on
+// `name.trim()` and builds the `knowledge_base` enum from what survives, so a blank name is a base
+// the agent cannot scope a search to — and, with only one other base left named, the parameter
+// disappears for THAT base too. At the other end the name goes whole into the search tool's
+// description, which keeps a 1000-character budget so "a verbose KB never bloats the prompt": the
+// description is clipped to 140 characters and the name was never bounded at all, so one long name
+// spends the budget and the remaining bases are dropped to `<more count="N"/>`.
+//
+// The rule lived on the REST body (`minLength: 1`) and nowhere else, so the MCP road walked past it.
+// Here instead, where all of REST, the MCP tools and their previews reach it. Undefined is NOT
+// judged: a patch that never names the name is not a statement about it, the same way an absent body
+// is not judged in tool-definitions (issue #501).
+// The rule, without the throw, because the agent import needs the answer rather than the refusal: a
+// bundle carrying an unusable name is one component to leave out and name, not a bundle to reject.
+export function knowledgeBaseNameUsable(name: string): boolean {
+  return name.trim().length > 0 && name.length <= KB_NAME_MAX;
+}
+
+export function assertKnowledgeBaseNameUsable(name: string | undefined): void {
+  if (name === undefined) return;
+  if (!knowledgeBaseNameUsable(name)) {
+    throw new AppError(
+      `name must be 1 to ${KB_NAME_MAX} characters and cannot be blank`,
+      400,
+      "errors.invalidKnowledgeBaseName",
+      { max: KB_NAME_MAX },
+      "name",
+    );
+  }
+}
+
 // Every text this module stores is held to what its column can hold, at the core rather than at a
 // transport, because three roads reach these writes: REST, the MCP write tools, and the agent's own
 // suggestion tool. Refused rather than repaired: the writer here reads the answer and can send the
@@ -157,6 +190,7 @@ export async function createKnowledgeBase(params: {
     ["description", params.description],
     ["embeddingModel", params.embeddingModel],
   ]);
+  assertKnowledgeBaseNameUsable(params.name);
   return runScopedOn(base, params.ctx, async (db) => {
     // New bases inherit the tenant's default embedding model (so the tenant's one embedding config
     // applies uniformly) unless the caller pins one explicitly.
@@ -675,6 +709,7 @@ export async function updateKnowledgeBase(params: {
     ["name", params.name],
     ["description", params.description],
   ]);
+  assertKnowledgeBaseNameUsable(params.name);
 
   await runScopedOn(base, params.ctx, async (db) => {
     // NOTE: LOCKED and read before the write, because this snapshot is the row's `before`. Two

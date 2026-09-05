@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
-import { NotFoundError } from "@/lib/errors";
+import { AppError, NotFoundError } from "@/lib/errors";
 import { parseInput } from "@/lib/parse-input";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { markUndisclosed, undisclosedMoved } from "@/modules/audit/projection";
@@ -147,6 +147,79 @@ function auditProjection(r: {
 // free text a row may not keep; what the row shows is which keys exist and how the traffic splits.
 const UNDISCLOSED = ["variants"] as const;
 
+// ── what a write may say ──
+
+export const EXPERIMENT_NAME_MAX = 200;
+
+// The name is how a human tells one experiment from another in a list, and it was bounded on the
+// REST body (1-200) and nowhere else — so the MCP road stored a blank one and a 5000-character one
+// alike. Here instead, on the two functions both roads converge on, which is where the variants'
+// ceiling already lives and for the same reason.
+export function assertExperimentNameUsable(name: string | undefined): void {
+  if (name === undefined) return;
+  if (name.trim().length === 0 || name.length > EXPERIMENT_NAME_MAX) {
+    throw new AppError(
+      `name must be 1 to ${EXPERIMENT_NAME_MAX} characters and cannot be blank`,
+      400,
+      "errors.invalidExperimentName",
+      { max: EXPERIMENT_NAME_MAX },
+      "name",
+    );
+  }
+}
+
+// `Experiment.agentId` is a plain BigInt with no `@relation`, so no foreign key ever caught an id
+// that names nothing — and `resolveVariantOverride` looks the agent up by exact id, so such a row is
+// an experiment that overrides no turn, ever, while reading `enabled: true` in the console and in
+// `experiment_list`. The same is true of another tenant's agent id, which RLS then hides from the
+// only query that would use it.
+//
+// Not a foreign key, because the delete side is already answered: `deleteAgent` nulls
+// `Experiment.agentId` inside its own transaction, deliberately, so a deleted agent leaves no
+// dangling binding. What was missing is the write side, and this is it.
+//
+// Null stays legal and means "no agent" (the resolver matches an exact id, so a null-agent
+// experiment resolves for nobody). The REST body documents null as "any agent"; it is not, and that
+// is a separate defect this does not touch.
+async function assertAgentPresent(
+  db: ScopedDb,
+  agentId: bigint,
+): Promise<void> {
+  // LOCKED, with the lock a foreign key would have taken, and that is the whole argument: there is
+  // no FK here, so at READ COMMITTED nothing stops `deleteAgent` from committing between an
+  // unlocked read and the write that references the row — it takes the agent's own `FOR UPDATE`,
+  // nulls the experiments that point at it, deletes it, and this write then commits the dangling
+  // reference it exists to refuse. `FOR KEY SHARE` is what an FK's referencing insert takes: it
+  // conflicts with the DELETE and with a key change, and with nothing else, so renaming the agent
+  // is not blocked and two experiments on one agent do not serialise against each other.
+  //
+  // RLS applies to the raw statement exactly as it does to the reads around it, so another tenant's
+  // agent comes back as zero rows and is refused here rather than stored and hidden later.
+  const rows = await db.$queryRaw<Array<{ id: bigint }>>`
+    SELECT id FROM agents WHERE id = ${agentId} FOR KEY SHARE`;
+  if (rows.length === 0) {
+    throw new AppError(
+      "agentId names no agent in this tenant",
+      404,
+      "errors.experimentAgentNotFound",
+      undefined,
+      "agentId",
+    );
+  }
+}
+
+// The read-backed half, for a preview to ask. ADVISORY, and the word is load-bearing: this runs its
+// own scoped read outside the transaction the apply writes in, so the agent can be deleted between
+// the two halves. `assertAgentPresent` INSIDE the write is what actually holds. This only moves the
+// refusal an operator will hit almost every time — an id they mistyped — to where they asked (#490).
+export async function assertExperimentAgentExists(
+  ctx: TenantContext,
+  agentId: bigint,
+  base: PrismaClient = basePrisma,
+): Promise<void> {
+  await runScopedOn(base, ctx, (db) => assertAgentPresent(db, agentId));
+}
+
 // ── CRUD ──
 
 export async function listExperiments(
@@ -177,12 +250,15 @@ export async function createExperiment(params: {
   base?: PrismaClient;
 }): Promise<{ id: bigint }> {
   const base = params.base ?? basePrisma;
+  assertExperimentNameUsable(params.name);
   const variants = parseInput(
     z.array(variantWriteSchema),
     params.variants,
     "variants",
   );
   return runScopedOn(base, params.ctx, async (db) => {
+    if (params.agentId !== undefined)
+      await assertAgentPresent(db, params.agentId);
     const exp = await db.experiment.create({
       data: {
         tenantId: params.ctx.tenantId as bigint,
@@ -239,11 +315,19 @@ export async function updateExperiment(params: {
   base?: PrismaClient;
 }) {
   const base = params.base ?? basePrisma;
+  assertExperimentNameUsable(params.name);
   const variants =
     params.variants !== undefined
       ? parseInput(z.array(variantWriteSchema), params.variants, "variants")
       : undefined;
   return runScopedOn(base, params.ctx, async (db) => {
+    // NOTE: null CLEARS the binding and names no agent to look up; only a value is judged. And it
+    // goes BEFORE the experiment's own lock, not after: `deleteAgent` takes the agent and then the
+    // experiments that point at it, so taking them in the other order here is a deadlock between
+    // two writes that are each individually correct.
+    if (params.agentId !== undefined && params.agentId !== null) {
+      await assertAgentPresent(db, params.agentId);
+    }
     // LOCKED before the snapshot the trail compares against: at READ COMMITTED two concurrent
     // updates both read state A, the first commits B, and the second files a row saying A became C.
     await db.$queryRaw`SELECT 1 FROM "experiments" WHERE "id" = ${params.id} FOR UPDATE`;

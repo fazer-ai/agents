@@ -19,7 +19,12 @@ import {
   readResponseTemplateResult,
   storableResponseTemplate,
 } from "@/modules/tool-definitions/response-template";
-import { readableVaultRef, requireVaultRef } from "@/modules/vault/service";
+import {
+  dialableBaseUrl,
+  readableVaultRef,
+  readVaultRefFacts,
+  requireVaultRef,
+} from "@/modules/vault/service";
 import { unsupportedBodyShape } from "./body-shape";
 import {
   documentHoldingToolName,
@@ -414,12 +419,153 @@ function assertSupportedBody(body: unknown): void {
   if (reason) throw new AppError(reason, 400);
 }
 
+// The same regex `graph/tools/http.ts` interpolates with, because the question here is that file's
+// question asked earlier. A template is not a URL — it carries `{{placeholders}}` the runtime fills
+// per call — so the runtime neutralizes them before parsing (`replace(PLACEHOLDER, "_")`) and
+// requires the result to be a URL whose origin the interpolation cannot then move. Anything the
+// runtime cannot parse is a tool that builds, gets granted, is offered to the model, and THROWS on
+// the first call with `tool <name>: invalid urlTemplate` — a raw AppError rather than a failure the
+// model can read. Nothing before this refused it, so the row was stored either way (issue #501).
+// BOTH spellings, and the second is not decoration (review round 6). `normalizeToolShapes` rewrites
+// an OpenAPI-style `{name}` into `{{name}}` when it matches a declared field or a context variable,
+// and it does that AFTER this check runs — so a raw `https://api.{contact_id}.example.com/x` parses
+// here with the braces left alone, is stored normalized, and the runtime then refuses it on every
+// call with `interpolation altered the origin`. Measured. Neutralizing the single-brace form too
+// costs no false positive: in a PATH it does not move the origin, and in a HOST a literal brace is
+// not a name anything resolves, so the tool could never have called out either way.
+const URL_TEMPLATE_PLACEHOLDER =
+  /\{\{\s*[a-zA-Z0-9_]+\s*\}\}|\{\s*[a-zA-Z0-9_]+\s*\}/g;
+
+// Relative (`/path`) is legal and stays legal: the host comes from the credential's baseUrl, which
+// this function cannot see and which the runtime resolves per call. What it judges is the shape a
+// caller controls entirely.
+//
+// Three problems and three keys rather than one key and a computed sentence: the catalog answers in
+// the reader's language, and a reason built here is English prose that would arrive inside a pt-BR
+// template (the rule tests/api/error-catalog.test.ts holds, and the one `refuseUnstorable` follows).
+export function urlTemplateProblem(
+  urlTemplate: string,
+): "not-a-url" | "origin-interpolated" | { protocol: string } | null {
+  if (urlTemplate.startsWith("/")) return null;
+  const originWith = (filler: string): string | null => {
+    try {
+      return new URL(urlTemplate.replace(URL_TEMPLATE_PLACEHOLDER, filler))
+        .origin;
+    } catch {
+      return null;
+    }
+  };
+  let parsed: URL;
+  try {
+    parsed = new URL(urlTemplate.replace(URL_TEMPLATE_PLACEHOLDER, "_"));
+  } catch {
+    return "not-a-url";
+  }
+  // The scheme the outbound guard allows, asked here so a `ftp:`/`mailto:` template is refused where
+  // it is typed instead of at the call. The guard's other half — private ranges, DNS — is read-backed
+  // and time-varying, so it stays where it is and is NOT mirrored here.
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    return { protocol: parsed.protocol };
+  }
+  // The origin is never interpolatable, which the runtime enforces by probing with a neutral filler
+  // and comparing the real interpolation's origin against it — so a placeholder ANYWHERE in the
+  // origin is a tool that parses here and is refused on every call it will ever make. Two fillers
+  // rather than one: what tells a host placeholder apart from a path one is that the origin moves.
+  if (originWith("aa") !== originWith("bb")) return "origin-interpolated";
+  return null;
+}
+
+// The fourth site of the same sentence, and it is read-backed. A template that starts with `/` is
+// RELATIVE: `buildHttpTool` prepends the credential's own base URL and, with no base to prepend,
+// refuses to build the tool at all — `relative urlTemplate requires a credential with a base URL`,
+// thrown before there is a request. The console's form already blocks that pair on save
+// (`relativeWithoutBase` in `ToolEditModal`), and the runtime already refuses it, so the row written
+// through REST or MCP is the one nothing asks about: it stores, gets granted, is offered to the
+// model, and throws on the first call.
+//
+// `dialableBaseUrl` and not the raw column, because that is the reader the runtime itself uses when
+// it assembles the tool: a credential kind whose base URL it ignores supplies no host either.
+export async function relativeTemplateHasBase(
+  db: ScopedDb,
+  urlTemplate: string | null | undefined,
+  credentialRef: string | null | undefined,
+): Promise<boolean> {
+  if (typeof urlTemplate !== "string" || !urlTemplate.startsWith("/")) {
+    return true;
+  }
+  const facts = credentialRef
+    ? await readVaultRefFacts(db, credentialRef)
+    : null;
+  return facts != null && dialableBaseUrl(facts.kind, facts.baseUrl) != null;
+}
+
+export async function assertRelativeTemplateHasBase(
+  db: ScopedDb,
+  urlTemplate: string | null | undefined,
+  credentialRef: string | null | undefined,
+): Promise<void> {
+  if (await relativeTemplateHasBase(db, urlTemplate, credentialRef)) return;
+  throw new AppError(
+    "a urlTemplate starting with / takes its host from the credential's base URL, and no credential here supplies one",
+    400,
+    "errors.urlTemplateRelativeWithoutBase",
+    undefined,
+    "urlTemplate",
+  );
+}
+
+// The preview's half of the rule above. ADVISORY, like every read-backed rule since #490: the check
+// inside the write's transaction is the authority, and this one only stops a dry run from approving
+// a row the apply refuses.
+export async function assertToolRelativeTemplateResolvable(
+  ctx: TenantContext,
+  urlTemplate: string | null | undefined,
+  credentialRef: string | null | undefined,
+  base: PrismaClient = basePrisma,
+): Promise<void> {
+  await runScopedOn(base, ctx, (db) =>
+    assertRelativeTemplateHasBase(db, urlTemplate, credentialRef),
+  );
+}
+
+function assertUsableUrlTemplate(urlTemplate: string | undefined): void {
+  if (urlTemplate === undefined) return;
+  const problem = urlTemplateProblem(urlTemplate);
+  if (problem === null) return;
+  if (problem === "not-a-url") {
+    throw new AppError(
+      "urlTemplate must be an http(s) URL, or a path starting with / when the credential carries a base URL",
+      400,
+      "errors.urlTemplateNotAUrl",
+      undefined,
+      "urlTemplate",
+    );
+  }
+  if (problem === "origin-interpolated") {
+    throw new AppError(
+      "urlTemplate may not put a placeholder in the scheme, host or port: the origin is fixed when the tool is written",
+      400,
+      "errors.urlTemplateOriginInterpolated",
+      undefined,
+      "urlTemplate",
+    );
+  }
+  throw new AppError(
+    `urlTemplate must be http or https; ${problem.protocol} is not sent by this tool`,
+    400,
+    "errors.urlTemplateNotHttp",
+    { protocol: problem.protocol },
+    "urlTemplate",
+  );
+}
+
 // Everything `createToolDefinition` decides about its INPUT — the schema (the name pattern, the
 // URL template, the declared response template) and the body shape — before any database is
 // involved. Split out so the MCP preview can ask the same question the apply asks (#490).
 export function assertToolDefinitionCreatable(input: ToolDefinitionCreate) {
   const data = parseInput(toolDefinitionCreateSchema, input);
   assertSupportedBody(data.body);
+  assertUsableUrlTemplate(data.urlTemplate);
   return data;
 }
 
@@ -450,10 +596,19 @@ export async function assertToolNameAvailable(
 // The patch an update would apply, judged before any database is involved — the twin of
 // `assertToolDefinitionCreatable`, and the reason the MCP preview can show the name the apply will
 // store rather than the spelling the caller typed.
+//
+// It carries the body shape and the url template as well as the schema, because `updateToolDefinition`
+// asks all three and the preview has to ask what the apply asks (#490, #501). An undefined field is
+// NOT judged, and that is the half a patch makes load-bearing: the console re-sends the whole record
+// but an MCP patch that only moves the description names neither, and refusing it would put the
+// divergence back inverted — the dry run saying no to a write the apply performs.
 export function assertToolDefinitionPatchValid(
   patch: ToolDefinitionUpdate,
 ): ToolDefinitionUpdate {
-  return parseInput(toolDefinitionUpdateSchema, patch);
+  const data = parseInput(toolDefinitionUpdateSchema, patch);
+  assertSupportedBody(data.body);
+  assertUsableUrlTemplate(data.urlTemplate);
+  return data;
 }
 
 export async function createToolDefinition(
@@ -480,6 +635,11 @@ export async function createToolDefinition(
     const credentialRef = data.credentialRef
       ? await requireVaultRef(db, data.credentialRef, "credentialRef")
       : null;
+    await assertRelativeTemplateHasBase(
+      db,
+      (shapes.urlTemplate ?? data.urlTemplate) as string,
+      credentialRef,
+    );
     const row = await db.toolDefinition.create({
       data: {
         tenantId,
@@ -524,10 +684,7 @@ export async function updateToolDefinition(
   patch: ToolDefinitionUpdate,
   base: PrismaClient = basePrisma,
 ): Promise<ToolDefinitionDto> {
-  const data = parseInput(toolDefinitionUpdateSchema, patch);
-  // NOTE: an absent body is not judged, so a row stored before this check stays editable — only a
-  // write that sets the body is refused.
-  assertSupportedBody(data.body);
+  const data = assertToolDefinitionPatchValid(patch);
   return runScopedOn(base, ctx, async (db) => {
     // LOCKED before the snapshot the trail compares against, which is the rule the audited families
     // already follow (`agents`, `tenants`, `tenant_settings`, branding, the delivery requeue, and
@@ -600,6 +757,21 @@ export async function updateToolDefinition(
       patchData.credentialRef = data.credentialRef
         ? await requireVaultRef(db, data.credentialRef, "credentialRef")
         : null;
+    // The EFFECTIVE pair, patch over stored, and only when the patch NAMES one of the two: a save
+    // that moves neither the template nor the credential is not a statement about their pairing, so
+    // a row written before this rule stays editable through everything else. Same shape as the
+    // chunking bound in #524, and the same reason.
+    if (data.urlTemplate !== undefined || data.credentialRef !== undefined) {
+      await assertRelativeTemplateHasBase(
+        db,
+        patchData.urlTemplate !== undefined
+          ? (patchData.urlTemplate as string)
+          : current.urlTemplate,
+        patchData.credentialRef !== undefined
+          ? (patchData.credentialRef as string | null)
+          : current.credentialRef,
+      );
+    }
     if (data.enabled !== undefined) patchData.enabled = data.enabled;
     if (data.expectedStatuses !== undefined)
       patchData.expectedStatuses = normalizeExpectedStatuses(

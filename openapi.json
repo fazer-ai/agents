@@ -28942,6 +28942,7 @@
                 "properties": {
                   "name": {
                     "minLength": 1,
+                    "maxLength": 200,
                     "description": "Human-readable name of the knowledge base.",
                     "type": "string"
                   },
@@ -28965,6 +28966,7 @@
                 "properties": {
                   "name": {
                     "minLength": 1,
+                    "maxLength": 200,
                     "description": "Human-readable name of the knowledge base.",
                     "type": "string"
                   },
@@ -28988,6 +28990,7 @@
                 "properties": {
                   "name": {
                     "minLength": 1,
+                    "maxLength": 200,
                     "description": "Human-readable name of the knowledge base.",
                     "type": "string"
                   },
@@ -29290,6 +29293,7 @@
                 "properties": {
                   "name": {
                     "minLength": 1,
+                    "maxLength": 200,
                     "description": "New name for the knowledge base.",
                     "type": "string"
                   },
@@ -29349,6 +29353,7 @@
                 "properties": {
                   "name": {
                     "minLength": 1,
+                    "maxLength": 200,
                     "description": "New name for the knowledge base.",
                     "type": "string"
                   },
@@ -29408,6 +29413,7 @@
                 "properties": {
                   "name": {
                     "minLength": 1,
+                    "maxLength": 200,
                     "description": "New name for the knowledge base.",
                     "type": "string"
                   },

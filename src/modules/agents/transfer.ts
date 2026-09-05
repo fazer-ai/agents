@@ -64,6 +64,7 @@ import {
   assertNoSecrets,
   assertNoSecretsInCode,
 } from "@/modules/n8n-export/n8n";
+import { knowledgeBaseNameUsable } from "@/modules/rag/service";
 import { readAppointmentDeclaration } from "@/modules/tool-definitions/appointment";
 import {
   canonicalBodyShape,
@@ -80,17 +81,22 @@ import {
 import { normalizeToolShapes } from "@/modules/tool-definitions/normalize";
 import { storableResponseTemplate } from "@/modules/tool-definitions/response-template";
 import {
+  type HttpToolMethod,
   readHttpMethod,
+  relativeTemplateHasBase,
   TOOL_LABEL_MAX,
+  urlTemplateProblem,
 } from "@/modules/tool-definitions/service";
 import { credentialServes } from "@/modules/vault/secret-types";
 import {
-  createPendingVaultEntry,
+  assertPendingVaultEntryCreatable,
+  ensurePendingVaultEntryOn,
   formatVaultRef,
   isVaultIdRef,
   readVaultRefFacts,
   readVaultRefId,
-  resolveVaultRefByName,
+  resolveVaultRefByNameOn,
+  storedVaultName,
   VAULT_REF_PREFIX,
   type VaultEntryFacts,
 } from "@/modules/vault/service";
@@ -354,6 +360,7 @@ export const agentExportSchema = z.object({
 
 export type AgentExport = z.infer<typeof agentExportSchema>;
 type ExportedGrant = z.infer<typeof exportedGrantSchema>;
+export type ExportedHttpTool = z.infer<typeof exportedHttpToolSchema>;
 type ExportedComponents = z.infer<typeof exportedComponentsSchema>;
 type ExportedKnowledgeDocument = z.infer<
   typeof exportedKnowledgeDocumentSchema
@@ -388,7 +395,15 @@ function dedupeWarnings(ws: ImportWarning[]): ImportWarning[] {
   const seen = new Set<string>();
   const out: ImportWarning[] = [];
   for (const w of ws) {
-    const key = `${w.code}|${JSON.stringify(w.params ?? {})}`;
+    // The TARGET is part of the identity, not decoration: two warnings with the same code and the
+    // same rendered params can still be about two different components. That is not hypothetical
+    // once any param is clipped — two knowledge bases whose names share their first 60 characters
+    // render identically, and both are skipped while only one is reported (#501, review round 16).
+    // Where the duplicates this function exists for come from — one credential referenced from
+    // several paths — the target is the same object, so they still collapse.
+    const key = `${w.code}|${JSON.stringify(w.params ?? {})}|${JSON.stringify(
+      w.target ?? {},
+    )}`;
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(w);
@@ -1031,10 +1046,35 @@ export interface ImportAgentResult {
   warnings: ImportWarning[];
 }
 
+// THE DRY RUN IS THE APPLY, ROLLED BACK.
+//
+// The alternative was a second walk that mirrors this one's decisions, and three review rounds of
+// #501 were spent discovering how many there are to mirror: a name that moves off a native or off
+// the other kind's namespace, a row already under the stored MODEL-FACING name (reused), two rows
+// under it (ambiguous, skipped), a template that publishes the same name, a method or a url template
+// this build cannot store, and the same questions again for code tools. Every one of those was a
+// preview claiming a component the apply would not create, or naming as skipped one it reuses.
+//
+// So the preview runs the import and throws this at the end, inside the transaction, instead of
+// answering from a copy of the rules. What it reports is what the apply produces, by construction,
+// and it cannot drift because there is nothing to drift from.
+//
+// What it costs, said plainly: a dry run now does the work of an import and takes its locks —
+// `lockToolNames` included — for the duration, and the sequences it consumes do not come back. That
+// is real, and it is the price of a preview that is not a second implementation. It is bounded by
+// the same transaction the apply is bounded by, and a dry run is an operator action rather than a
+// per-turn one.
+class DryRunRollback extends Error {
+  constructor(readonly result: ImportAgentResult) {
+    super("dry run");
+  }
+}
+
 export async function importAgent(
   ctx: TenantContext,
   raw: unknown,
   base: PrismaClient = basePrisma,
+  opts: { dryRun?: boolean } = {},
 ): Promise<ImportAgentResult> {
   const tenantId = requireTenant(ctx);
   // NOTE: size check BEFORE the schema parse — past the cap the operator gets the specific
@@ -1137,7 +1177,24 @@ export async function importAgent(
         refByName.set(name, null);
         continue;
       }
-      const resolution = await resolveVaultRefByName(ctx, name, kind, base);
+      // The name the vault would STORE, which is what the lookup below has to ask about: the write
+      // trims, so resolving the bundle's spelling verbatim reported ` cred ` as missing and the
+      // insert then collided with the row it had just failed to find (review round 10).
+      const storedName = storedVaultName(name);
+      if (storedName === null) {
+        warnings.push({
+          code: "credentialNotFound",
+          params: { name },
+          target: credTarget(name),
+        });
+        refByName.set(name, null);
+        continue;
+      }
+      // ON `db`: this read belongs to the import's transaction, like the write below. A lookup on a
+      // separate connection cannot see what the import has already written, so a bundle naming the
+      // same missing credential twice under trim-equivalent spellings resolved the second one as
+      // missing too and the insert collided with the row from the first (review round 11).
+      const resolution = await resolveVaultRefByNameOn(db, storedName, kind);
       if (resolution.status === "found") {
         refByName.set(name, resolution.ref);
       } else {
@@ -1145,26 +1202,45 @@ export async function importAgent(
         // vault entry (name + kind) and KEEP the ref wired. The operator then only fills the secret
         // (config-health + the vault list surface a pending entry), never re-links by hand after import.
         // Some kinds can't be pending — managed OAuth, or ones needing a baseUrl/paramName the export
-        // metadata doesn't carry — so fall back to leaving the field unset for those.
+        // metadata doesn't carry — so fall back to leaving the field unset for those. That question
+        // is asked BEFORE the write, by the guard the write itself asks, rather than by catching
+        // whatever the write throws: this runs inside the import's transaction now, and a statement
+        // that fails in there aborts the transaction, so swallowing a database error would carry on
+        // over a connection where every following statement fails.
+        let creatable = true;
         try {
-          const pending = await createPendingVaultEntry(
-            ctx,
-            { name, kind },
-            base,
-          );
-          refByName.set(name, pending.ref);
-          warnings.push({
-            code: "credentialPending",
-            params: { name },
-            target: { kind: "vault" },
-          });
+          assertPendingVaultEntryCreatable({ name: storedName, kind });
         } catch {
+          creatable = false;
+        }
+        if (!creatable) {
           warnings.push({
             code: "credentialNotFound",
             params: { name },
             target: credTarget(name),
           });
           refByName.set(name, null);
+          continue;
+        }
+        // ON `db`, not on `base`: this write belongs to the import's own transaction. A call that
+        // opened its own committed independently of it, so the dry run's rollback left the entry
+        // and its audit row behind, and the preview then answered differently the second time.
+        //
+        // And it does not raise on a row that is already there: inside this transaction a failed
+        // INSERT aborts everything, so a second import of the same bundle racing this one would take
+        // the whole agent down instead of finding the credential. A row that was already there is
+        // one to reuse, and reusing it silently is what `resolution.status === "found"` above does.
+        const pending = await ensurePendingVaultEntryOn(db, ctx, {
+          name: storedName,
+          kind,
+        });
+        refByName.set(name, pending.ref);
+        if (pending.created) {
+          warnings.push({
+            code: "credentialPending",
+            params: { name },
+            target: { kind: "vault" },
+          });
         }
       }
     }
@@ -1301,7 +1377,15 @@ export async function importAgent(
     });
     // De-dupe: the same credential/component referenced in several places should warn once, and the
     // toast count ("{{n}} warnings") must match the rendered list.
-    return { agent, warnings: dedupeWarnings(warnings) };
+    const result = { agent, warnings: dedupeWarnings(warnings) };
+    // The dry run leaves with the answer and without the rows: thrown from INSIDE, so the
+    // transaction that produced it is the one that unwinds. Every write above — the components, the
+    // grants, the agent, the audit row — goes with it.
+    if (opts.dryRun) throw new DryRunRollback(result);
+    return result;
+  }).catch((e: unknown) => {
+    if (e instanceof DryRunRollback) return e.result;
+    throw e;
   });
 }
 
@@ -1598,6 +1682,50 @@ function renamedLabel(
   return normalizeToolName(clipped) === storedName ? clipped : storedName;
 }
 
+// CAN THIS BUILD STORE THE TOOL THIS BUNDLE DESCRIBES.
+//
+// Two readers, one answer, because the two refusals are the same shape: warn-and-skip rather than
+// canonicalize, since there IS no equivalent request. Falling back to GET would change what the tool
+// does, and there is no destination to invent for a template this build cannot turn into a URL — a
+// tool stored with one imports, gets granted, is offered to the model and throws on the first call
+// with `tool <name>: invalid urlTemplate`. Measured on a hand-edited bundle, which imported clean
+// with an empty warnings array and the row stored (#501).
+//
+// The url question comes from `urlTemplateProblem`, the function the write asks, rather than being
+// restated here: this path writes past the service, and a second copy of a rule is how the two come
+// to disagree.
+export function importableHttpTool(
+  tdef: ExportedHttpTool,
+):
+  | { ok: true; method: HttpToolMethod }
+  | { ok: false; warning: ImportWarning } {
+  const method = readHttpMethod(tdef.method);
+  if (method === null) {
+    return {
+      ok: false,
+      warning: {
+        code: "httpToolMethodUnsupported",
+        // The bundle's own name: no row is written, so there is no stored name to point at.
+        params: { name: tdef.name, method: String(tdef.method) },
+        target: { kind: "tool", name: tdef.name },
+      },
+    };
+  }
+  if (urlTemplateProblem(tdef.urlTemplate) !== null) {
+    return {
+      ok: false,
+      warning: {
+        code: "httpToolUrlTemplateUnusable",
+        // The NAME alone: a URL an operator typed is redacted wherever it appears (the rule in
+        // docs/api-and-fleet.md), and the tool it names is the only thing this warning acts on.
+        params: { name: tdef.name },
+        target: { kind: "tool", name: tdef.name },
+      },
+    };
+  }
+  return { ok: true, method };
+}
+
 // The name a bundled HTTP or code tool is stored under. A native's name moves first, decided by
 // the bundle alone (above). Then a rule the two kinds share: ONE namespace reaches the model, and
 // each service refuses a name the OTHER kind holds where it is typed (tool-definitions/service.ts
@@ -1870,17 +1998,14 @@ async function createMissingComponents(
     // canonicalize, and the difference from the body two lines down is that there IS no equivalent
     // request: a body shape this version refuses still describes the same call, while falling back
     // to GET would change what the tool does.
-    const method = readHttpMethod(tdef.method);
-    if (method === null) {
-      // The bundle's own name: no row was written, so there is no stored name to point at.
-      warnings.push({
-        code: "httpToolMethodUnsupported",
-        params: { name: tdef.name, method: String(tdef.method) },
-        target: { kind: "tool", name: tdef.name },
-      });
+    const usable = importableHttpTool(tdef);
+    if (!usable.ok) {
+      warnings.push(usable.warning);
       continue;
     }
+    const { method } = usable;
     const badBody = unsupportedBodyShape(tdef.body);
+
     const { shapes, warnings: shapeWarnings } = normalizeToolShapes({
       urlTemplate: tdef.urlTemplate,
       query: tdef.query ?? {},
@@ -1890,12 +2015,34 @@ async function createMissingComponents(
     });
     // Same rule as the code loop below: what the normalization had to change is the operator's to
     // review, not something to discard on the way in.
+    // The template as it will be STORED (the shapes pass canonicalizes single-brace placeholders),
+    // because that is the string the runtime reads back.
+    const storedUrlTemplate = (shapes.urlTemplate ??
+      tdef.urlTemplate) as string;
     for (const reason of shapeWarnings) {
       warnings.push({
         code: "toolSchemaAdjusted",
         params: { name, reason },
         target: { kind: "tool", name },
       });
+    }
+    // And the pairing the write asks, on the row this is about to store (#501, review round 15). A
+    // template starting with `/` is RELATIVE: `buildHttpTool` prepends the credential's base URL,
+    // and with none to prepend it THROWS — out of `buildHttpTools`, which is a bare `.map` inside the
+    // toolset literal, so the agent loses every tool it has and not just this one. Measured: two
+    // definitions in, one of them relative with no base, and the assembly throws instead of
+    // returning the other. That is why this is not left to be completed later like a pending
+    // credential: an import that stores it lands an agent whose next turn has no tools at all.
+    const credentialRef = resolveCredName(tdef.credentialRef);
+    if (
+      !(await relativeTemplateHasBase(db, storedUrlTemplate, credentialRef))
+    ) {
+      warnings.push({
+        code: "httpToolUrlTemplateUnusable",
+        params: { name: tdef.name },
+        target: { kind: "tool", name: tdef.name },
+      });
+      continue;
     }
     // `createMany({ skipDuplicates })` rather than `create`, for the reason spelled out on the
     // document-template loop below: the pre-check above can answer "free" and a concurrent writer
@@ -1913,7 +2060,7 @@ async function createMissingComponents(
             ? clipDescription(tdef.description)
             : null,
           method,
-          urlTemplate: (shapes.urlTemplate ?? tdef.urlTemplate) as string,
+          urlTemplate: storedUrlTemplate,
           allowedHosts: tdef.allowedHosts,
           headers: shapes.headers as Prisma.InputJsonValue,
           inputSchema: shapes.inputSchema as Prisma.InputJsonValue,
@@ -1935,7 +2082,7 @@ async function createMissingComponents(
             Prisma.DbNull) as unknown as Prisma.InputJsonValue,
           ackEnabled: tdef.ackEnabled,
           ackMessage: tdef.ackMessage ?? null,
-          credentialRef: resolveCredName(tdef.credentialRef),
+          credentialRef,
           enabled: true,
         },
       ],
@@ -2361,6 +2508,26 @@ async function createMissingComponents(
               target: { kind: "knowledge", name: kb.name },
             },
       );
+      continue;
+    }
+    // The name the bundle carries, held to the rule the write holds it to (#501). A blank one is a
+    // base the agent cannot scope a search to — and, with one other base left named, the
+    // `knowledge_base` parameter disappears for that base too; a 5000-character one eats the tool
+    // description's whole budget and pushes the other bases out of what the model reads. The import
+    // writes straight through Prisma, so the service's own check is not on this path. Warn and skip,
+    // like every other component this build cannot store: the grants that name it then report
+    // `kbGrantNotFound`, and the rest of the agent imports.
+    //
+    // AFTER the reuse branch above, deliberately: a row already stored under that name is one to
+    // reuse whatever the bundle says, which is the order #501's round 7 had to learn for tools.
+    if (!knowledgeBaseNameUsable(kb.name)) {
+      warnings.push({
+        code: "knowledgeBaseNameUnusable",
+        // Clipped, and through the safe cutter: this warning fires precisely because the name may be
+        // enormous, so echoing it whole is the same payload problem read back to the operator.
+        params: { name: clipText(kb.name, 60) },
+        target: { kind: "knowledge", name: kb.name },
+      });
       continue;
     }
     const createdKb = await db.knowledgeBase.create({

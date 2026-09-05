@@ -210,16 +210,29 @@ describe("runSandboxedCode", () => {
   // was half the BUILD, which the second run had to beat, and this one is half the RENDER, which
   // grows on exactly the machines where the old one ran out.
   test("a value built with the last of the budget is still rendered whole", async () => {
-    const N = 100_000;
+    // N IS BOUNDED FROM ABOVE BY A DEADLINE THIS TEST DOES NOT CONTROL. The renewal installs a
+    // FIXED `RENDER_BUDGET_MS`, so a value too big to render inside it fails even on the baseline
+    // call, whatever `timeoutMs` says -- which would put the machine's speed back into the test by
+    // the other door. Measured here by walking N up: 200k still renders whole, 300k does not, so the
+    // ceiling is between them and 40k leaves about 6x. The first draft of this rewrite used 100k,
+    // which leaves 2-3x, and a runner that slow is exactly the one this test exists for.
+    const N = 40_000;
     const BUILD = `Array.from({ length: ${N} }, (_, i) => ({ i }))`;
     const CHARS = 20_000_000;
 
     // SETUP: the deadline starts in `open()`, and the interpreter's prelude runs inside it, so the
-    // snippet's own first reading of the clock is already this far past the start.
-    const before = Date.now();
+    // snippet's own first statement is already this far past the start.
+    //
+    // Read from the WORKER's own `ms`, which starts at the top of `run()` — a hair before `open()`
+    // — and not from this side of the call. Measuring it here would fold in spawning the worker and
+    // dispatching to it, which happen BEFORE the deadline exists: measured, 16-25 ms from here
+    // against 9 ms of deadline-covered setup, an inflation the same size as the leftover itself.
+    // Overstating it inflates `leftMs` by the same amount, which leaves the render enough real time
+    // to finish WITHOUT the renewal — and the assertions below cannot see it, because they subtract
+    // the same overstated number.
     const clock = await runSandboxedCode("Date.now()", { timeoutMs: 30_000 });
     expect(clock.kind).toBe("value");
-    const setupMs = Number((clock as { value: string }).value) - before;
+    const setupMs = (clock as { ms: number }).ms;
 
     // RENDER: wall minus the span `ms` covers, which ends before the render begins.
     const t0 = performance.now();
@@ -234,7 +247,14 @@ describe("runSandboxedCode", () => {
     // The premise, asserted rather than assumed: there has to BE a render to interrupt.
     expect(renderMs).toBeGreaterThan(1);
 
-    const leftMs = setupMs + Math.floor(renderMs / 2);
+    // A QUARTER of the wall figure, not half of it, because `renderMs` is not the render: it is the
+    // render PLUS carrying the result back across the thread boundary. Swept with the renewal
+    // removed, which is the only way to see the interpreter's half alone: at 20k the render is
+    // interrupted with 20 ms left and fits with 25, and at 40k it is interrupted with 30 and fits
+    // with 40 — about half of what the wall reports either way. Sizing the leftover at half the wall
+    // therefore lands ON that threshold: measured, the mutation this test exists to catch survived
+    // 2 runs in 5. A quarter is half the interpreter's own render, with the sweep either side of it.
+    const leftMs = setupMs + Math.floor(renderMs / 4);
     // THE SIZING IS THE TEST, so it is asserted and not merely computed. Both bounds were shown to
     // matter by mutation: with the leftover at 3x the render, and with the spin below removed, this
     // test PASSES while the renewal is gone -- it would guard nothing and say so to nobody.
@@ -243,7 +263,11 @@ describe("runSandboxedCode", () => {
     expect(leftoverMs).toBeLessThan(renderMs);
     // The budget is the leftover plus room the build cannot plausibly need, scaled to the build this
     // machine actually does rather than to a number from mine: the spin absorbs whatever is left.
-    const budgetMs = leftMs + Math.max(500, buildMs * 20);
+    // ...and CAPPED, because this number is a busy spin the test itself has to sit through. A
+    // baseline preempted into a 240 ms build would make `buildMs * 20` a 4.8-second spin, and Bun's
+    // own per-test deadline is 5 s: the test would then fail by timing out on exactly the stalled
+    // runner it is meant to survive.
+    const budgetMs = leftMs + Math.min(2_000, Math.max(500, buildMs * 20));
     const spun = `const t0 = Date.now(); const v = ${BUILD}; while (Date.now() - t0 < ${budgetMs - leftMs}) {} v`;
 
     const out = await runSandboxedCode(spun, {
@@ -262,7 +286,9 @@ describe("runSandboxedCode", () => {
     const v = (out as { value: string }).value;
     expect(v.startsWith('[{"i":0},{"i":1}')).toBe(true);
     expect(v.endsWith(`{"i":${N - 1}}]`)).toBe(true);
-  });
+    // Comfortably above the cap plus the three calls that precede the spin, so the cap is what
+    // bounds this test and not a default nobody here chose.
+  }, 20_000);
 
   // A value can still run the body's code AFTER the body returned: a getter, a proxy trap. The
   // renderer used to swallow that and answer "[object Object]" as a successful value, so the agent

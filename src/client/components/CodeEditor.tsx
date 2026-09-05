@@ -482,7 +482,12 @@ export function CodeEditor({
     // it answered was the press meant to close it.
     const release = claimEscape((target) => {
       if (!(target instanceof Node) || !v.dom.contains(target)) return false;
-      if (completionStatus(v.state) !== "active") return false;
+      // NOTE: `null` is the only status that gives Escape back to the dialog. `"pending"` is the
+      // debounce window CodeMirror opens the moment a trigger is typed, so an operator who types
+      // `context.` and reaches for Escape within ~75 ms would otherwise be asked whether to discard
+      // the body: the popup they were dismissing had not finished arriving. `closeCompletion`
+      // cancels a pending query as well as an open one.
+      if (completionStatus(v.state) === null) return false;
       closeCompletion(v);
       return true;
     });

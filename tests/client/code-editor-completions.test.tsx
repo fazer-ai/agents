@@ -512,6 +512,21 @@ describe("who owns Escape while the popup is open", () => {
     expect(handOverEscape(content)).toBe(false);
   });
 
+  // The debounce window. CodeMirror reports `"pending"` from the moment a trigger is typed until the
+  // query settles, and an operator typing `context.` reaches Escape well inside it: claiming only
+  // `"active"` hands that press to the dialog, which asks whether to discard the body over a popup
+  // that had not finished arriving.
+  test("a press during the debounce is claimed too", async () => {
+    const { view, content } = mount("return context.");
+    view.dispatch({ selection: { anchor: view.state.doc.length } });
+    startCompletion(view);
+    expect(completionStatus(view.state)).toBe("pending");
+    expect(handOverEscape(content)).toBe(true);
+    // Answering it cancels the pending query rather than leaving one to open after the press.
+    await new Promise((r) => setTimeout(r, 250));
+    expect(completionStatus(view.state)).toBeNull();
+  });
+
   test("a press outside this editor is not this editor's to claim", async () => {
     const { view } = mount("return context.");
     view.dispatch({ selection: { anchor: view.state.doc.length } });

@@ -243,6 +243,15 @@ const TABLE: Record<string, Row> = {
   experiment_create: {
     args: { name: "e", agent_id: "abc", variants: [] },
     why: "agent_id is not a number",
+    also: [
+      {
+        args: { name: "e", agent_id: NOPE, variants: [] },
+        why: "agent_id names no agent",
+      },
+      { args: { name: " ", variants: [] }, why: "a blank experiment name" },
+    ],
+    pastOwnership:
+      "measured on an agent that EXISTS: the experiment applies and its variant overrides that agent's next turn. Past the agent, the core decides only the variants' own schema — a prompt over the agent's ceiling is refused by both halves — and nothing else.",
   },
   experiment_delete: {
     args: { experiment_id: NOPE },
@@ -253,7 +262,7 @@ const TABLE: Record<string, Row> = {
     args: { experiment_id: NOPE, name: "x" },
     why: "experiment does not exist",
     pastOwnership:
-      "measured on an experiment that EXISTS: no divergence. An `agent_id` naming no agent is STORED by both halves (a defect of the core, not of the preview) and a malformed variant is refused by both, from the schema.",
+      "measured on an experiment that EXISTS: a malformed variant is refused by both halves, from the schema. An `agent_id` naming no agent used to be STORED by both — a defect of the core rather than of the preview, which is why the halves agreed — and since #501 both refuse it, along with a blank or oversized name.",
   },
   inbox_bind: {
     args: { inbox_id: NOPE },
@@ -309,10 +318,19 @@ const TABLE: Record<string, Row> = {
     why: "approval_id is not a number",
   },
   knowledge_create: {
-    // NOTE: a NUL, because this core refuses almost nothing else about a create — an empty name, a
-    // 5000-character name and a chunk_size of 99999999 all APPLY. That leniency is its own issue.
+    // NOTE: a NUL, which is the column's own limit and the oldest rule here (#247). The name's OTHER
+    // rule arrived with #501: this core used to store an empty name and a 5000-character one alike,
+    // which the rows below now pin, because a base the agent cannot scope a search to is not a
+    // knowledge base it has.
     args: { name: "a\u0000b" },
     why: "the column cannot store a NUL",
+    also: [
+      {
+        args: { name: "   " },
+        why: "a blank name is a base `buildRagTools` filters out of the model's scope list",
+      },
+      { args: { name: "x".repeat(201) }, why: "past the name's ceiling" },
+    ],
   },
   knowledge_delete: {
     args: { knowledge_base_id: NOPE },
@@ -356,7 +374,13 @@ const TABLE: Record<string, Row> = {
     args: { knowledge_base_id: NOPE, name: "x" },
     why: "base does not exist",
     pastOwnership:
-      "measured on a base that EXISTS: `assertChunkingUpdatable` is already called in the preview (#524), and a name another base has is not a collision here.",
+      "measured on a base that EXISTS: `assertChunkingUpdatable` is already called in the preview (#524), `assertKnowledgeBaseNameUsable` since #501, and a name another base has is not a collision here.",
+    also: [
+      {
+        args: { knowledge_base_id: NOPE, name: "" },
+        why: "a blank name, refused before the base is even looked up",
+      },
+    ],
   },
   langfuse_connect: {
     args: { public_key: "pk", secret_key: "sk", base_url: "not-a-url" },
@@ -401,15 +425,26 @@ const TABLE: Record<string, Row> = {
   },
   tenant_update: { args: { name: "" }, why: "empty name" },
   tool_create: {
-    // NOTE: the NAME, not the URL and not the method. `createToolDefinition` never validates
-    // `url_template`, so "not-a-url" is stored and both halves say ok; and the method IS an enum on
-    // the published schema, so "PURGE" is a row the transport could never deliver. Measured.
+    // NOTE: the NAME, not the method — the method IS an enum on the published schema, so "PURGE" is
+    // a row the transport could never deliver. The URL was the other half of this note until #501:
+    // `createToolDefinition` did not validate `url_template` at all, so "not-a-url" was stored, the
+    // tool was granted, and the model got a thrown `invalid urlTemplate` on the first call.
     args: {
       name: "not a valid name!",
       url_template: "https://example.com/x",
       allowed_hosts: ["example.com"],
     },
     why: "name is not [A-Za-z0-9_-]{1,64}",
+    also: [
+      {
+        args: {
+          name: "ok_name",
+          url_template: "not-a-url",
+          allowed_hosts: ["example.com"],
+        },
+        why: "a template `new URL` cannot parse once its placeholders are neutralized",
+      },
+    ],
   },
   tool_delete: {
     args: { tool_id: NOPE },
@@ -421,7 +456,7 @@ const TABLE: Record<string, Row> = {
     args: { tool_id: NOPE, name: "x" },
     why: "tool does not exist",
     pastOwnership:
-      'measured, and it DIVERGED: renaming onto a name the tenant already used. Fixed and covered in "a preview asks what the core asks once it has the row".',
+      'measured, and it DIVERGED twice: renaming onto a name the tenant already used (#510), and every PURE rule of the patch — this preview never parsed it, so the schema, the body shape and the url template were asked by the apply alone until `assertToolDefinitionUpdatable` (#501). Both fixed, and covered in "a preview asks what the core asks once it has the row" and in write-input-without-use.test.ts.',
   },
   webhook_create: {
     args: { url: "not-a-url", events: ["message.created"] },

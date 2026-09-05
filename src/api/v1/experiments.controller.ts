@@ -21,6 +21,8 @@ import {
 // `ErrorTranslationKey` (src/lib/errors.ts) makes a key that is missing here a type error at the
 // throw site rather than an English sentence on a pt-BR caller's screen.
 // translate('errors.experimentNotFound', 'Experiment not found.')
+// translate('errors.invalidExperimentName', 'Name must be 1 to {{max}} characters and cannot be blank')
+// translate('errors.experimentAgentNotFound', 'That experiment names no agent of this tenant')
 
 // Prompt A/B experiments (per-tenant). TENANT_ADMIN. Variant assignment is deterministic per
 // thread; /results joins assignments with ConversionEvents for the win-rate breakdown.

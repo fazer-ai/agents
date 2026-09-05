@@ -24,6 +24,7 @@ import {
   deleteKnowledgeBase,
   editApprovalItem,
   getKnowledgeBase,
+  KB_NAME_MAX,
   listKnowledgeBases,
   listPendingApprovals,
   rejectApprovalItem,
@@ -41,6 +42,7 @@ import type { ChunkHit } from "@/modules/rag/sql";
 // so they are declared here for the i18n extractor (keepRemoved: false). Keep in sync with
 // src/modules/rag/loaders.ts and src/modules/rag/documents.ts.
 // translate('errors.documentTooLarge', 'Document is too large to process')
+// translate('errors.invalidKnowledgeBaseName', 'Name must be 1 to {{max}} characters and cannot be blank')
 // translate('errors.embeddingEmpty', 'The embedding credential is empty.')
 // translate('errors.embeddingNotConfigured', 'Embeddings are not configured for this workspace.')
 // translate('errors.embeddingPending', 'The embedding credential is not filled in yet.')
@@ -132,6 +134,7 @@ export const knowledgeController = new Elysia({
       body: t.Object({
         name: t.String({
           minLength: 1,
+          maxLength: KB_NAME_MAX,
           description: "Human-readable name of the knowledge base.",
         }),
         description: t.Optional(
@@ -200,6 +203,7 @@ export const knowledgeController = new Elysia({
         name: t.Optional(
           t.String({
             minLength: 1,
+            maxLength: KB_NAME_MAX,
             description: "New name for the knowledge base.",
           }),
         ),

@@ -49,6 +49,7 @@ import {
   assertToolDefinitionCreatable,
   assertToolDefinitionPatchValid,
   assertToolNameAvailable,
+  assertToolRelativeTemplateResolvable,
   createToolDefinition,
   deleteToolDefinition,
   getToolDefinition,
@@ -320,6 +321,21 @@ export async function agentImport(
   // mode). Credentials absent in this tenant are created as PENDING placeholders on apply (the ref
   // stays wired); the operator only fills each secret afterward (deep-link → vault) — write nothing now.
   if (args.dry_run !== false) {
+    // The apply itself, rolled back (transfer.ts), so the warnings below are the ones the operator
+    // will actually get rather than a second reading of the same rules. Three rounds of #501 were
+    // spent finding out how many decisions that copy would have to mirror — a name moving off a
+    // native or off the other kind's namespace, a row already under the stored model-facing name,
+    // two rows under it, a template publishing the same name, a method or url template this build
+    // cannot store, and all of it again for code tools — and each miss was the preview claiming a
+    // component the apply would not create, or calling skipped one it reuses.
+    const rehearsal = await importAgent(ctx, args.export, base, {
+      dryRun: true,
+    }).catch((e: unknown) => {
+      // A refusal here is one the apply would give too, and it belongs to the caller either way.
+      if (e instanceof AppError) return { failed: err(e.message) } as const;
+      throw e;
+    });
+    if ("failed" in rehearsal) return rehearsal.failed;
     return ok({
       dryRun: true,
       action: "import",
@@ -329,10 +345,16 @@ export async function agentImport(
         name: c.name,
         kind: c.kind,
       })),
-      // Every component array the apply can CREATE, counted. A preview that omits one approves a
-      // write the operator was never shown: the apply reuses or creates the templates before it
-      // assigns the grants, so leaving them out here is the dry run answering about a different
-      // operation than the one it is standing in for.
+      // What the apply ANSWERED, not what this function guessed it would: reuses, renames, skips
+      // and every credential it could not find, verbatim from the rehearsal above.
+      ...(rehearsal.warnings.length > 0
+        ? { warnings: rehearsal.warnings }
+        : {}),
+      // Every component array the bundle CARRIES, counted. It is a different number from what the
+      // apply creates — a component the destination already has is reused, and one this build
+      // cannot store is skipped — and which is which is in the warnings above, per component, by
+      // name. A preview that omitted an array entirely would be worse than one that over-counts:
+      // the apply reuses or creates all of them before it assigns the grants.
       components: {
         httpTools: comps?.httpTools.length ?? 0,
         mcpServers: comps?.mcpServers.length ?? 0,
@@ -677,6 +699,16 @@ export async function toolCreate(
       // collision that actually happens (a name the operator already used), and the unique index
       // inside the write remains what guarantees one name to one row (#490).
       await assertToolNameAvailable(ctx, parsed.name, base);
+      // Same kind of rule, same ADVISORY footing: whether a relative template has a credential base
+      // URL to take its host from is a question about a vault row, so the apply's own check inside
+      // the transaction is the authority and this one only stops the preview approving a tool the
+      // apply refuses.
+      await assertToolRelativeTemplateResolvable(
+        ctx,
+        parsed.urlTemplate,
+        input.credentialRef,
+        base,
+      );
       // NOTE: INSIDE the branch, like the two checks above it and for a plainer reason: the apply
       // recomputes this from the row it wrote, so reading the vault out here was a scoped
       // transaction whose answer that path throws away.
@@ -786,6 +818,22 @@ export async function toolUpdate(
       // `id` is excluded because keeping your own name is not a collision, and `current.name` goes
       // with it because a save that does not MOVE the name is not asking the question at all.
       const parsed = assertToolDefinitionPatchValid(built.patch);
+      // The EFFECTIVE pair, patch over stored, judged only when the patch names one of the two —
+      // the same condition the apply uses, so the two halves agree on when the question applies as
+      // well as on the answer.
+      if (
+        parsed.urlTemplate !== undefined ||
+        built.patch.credentialRef !== undefined
+      ) {
+        await assertToolRelativeTemplateResolvable(
+          ctx,
+          parsed.urlTemplate ?? current.urlTemplate,
+          built.patch.credentialRef !== undefined
+            ? built.patch.credentialRef
+            : current.credentialRef,
+          base,
+        );
+      }
       if (parsed.name !== undefined) {
         await assertToolNameAvailable(ctx, parsed.name, base, id, current.name);
         afterProj.name = parsed.name;

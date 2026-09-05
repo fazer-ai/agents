@@ -14,6 +14,7 @@ import {
 } from "@/modules/rag/documents";
 import {
   approveApprovalItem,
+  assertKnowledgeBaseNameUsable,
   createKnowledgeBase,
   deleteKnowledgeBase,
   editApprovalItem,
@@ -93,6 +94,9 @@ export async function knowledgeCreate(
   if (bad) return bad;
   try {
     if (args.dry_run !== false) {
+      // NOTE: the core's own question, asked before the preview answers it, and INSIDE the branch
+      // because the apply reaches the core, which asks it again (#490). Pure: it reads no row.
+      assertKnowledgeBaseNameUsable(args.name);
       return ok({
         dryRun: true,
         action: "create",
@@ -165,6 +169,7 @@ export async function knowledgeUpdate(
       chunkOverlap: current.chunkOverlap,
     };
     if (args.dry_run !== false) {
+      assertKnowledgeBaseNameUsable(patch.name);
       // NOTE: ADVISORY, and deliberately so: the bound is a fact about the row, and this read is outside
       // the transaction the apply validates in, so a concurrent update can move the pair between the
       // two halves. What it buys is that the ordinary case — an operator sending one of the two

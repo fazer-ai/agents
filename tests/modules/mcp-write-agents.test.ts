@@ -71,7 +71,36 @@ describe("MCP agent-builder gate (no DB)", () => {
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error).toContain("invalid agent export");
   });
+});
 
+const appUrl = process.env.TEST_APP_DATABASE_URL;
+const suUrl = process.env.MIGRATION_DATABASE_URL;
+let dbUp = false;
+let su: PrismaClient | undefined;
+let app: PrismaClient | undefined;
+if (appUrl && suUrl) {
+  try {
+    su = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: suUrl }),
+    });
+    await su.$queryRaw`SELECT 1`;
+    app = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: appUrl }),
+    });
+    await app.$queryRaw`SELECT 1`;
+    dbUp = true;
+  } catch {
+    dbUp = false;
+  }
+}
+const appDb = app as PrismaClient;
+const suDb = su as PrismaClient;
+
+describe.skipIf(!dbUp)("MCP agent-builder tools (DB)", () => {
+  // MOVED OUT OF THE DB-FREE BLOCK, because the dry run stopped being a summary of the payload and
+  // became the apply itself, rolled back (#501): what it reports is what the apply produces, and
+  // producing it needs the database. That is the direction this file's header already describes —
+  // the gate is DB-free, the dry run is not.
   test("agent_import dry-run (default) previews without writing", async () => {
     const exp = {
       version: AGENT_EXPORT_VERSION,
@@ -88,7 +117,11 @@ describe("MCP agent-builder gate (no DB)", () => {
         credentials: [{ name: "OpenAI", kind: "openai" }],
       },
     };
-    const r = await agentImport(principal({}), { export: exp });
+    const r = await agentImport(
+      principal({ tenantId: tenantA }),
+      { export: exp },
+      { base: appDb },
+    );
     expect(r.ok).toBe(true);
     if (r.ok) {
       expect(r.data.dryRun).toBe(true);
@@ -137,7 +170,11 @@ describe("MCP agent-builder gate (no DB)", () => {
         ],
       },
     };
-    const r = await agentImport(principal({}), { export: exp });
+    const r = await agentImport(
+      principal({ tenantId: tenantA }),
+      { export: exp },
+      { base: appDb },
+    );
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     const components = r.data.components as Record<string, number>;
@@ -146,32 +183,7 @@ describe("MCP agent-builder gate (no DB)", () => {
     );
     expect(components.documentTemplates).toBe(1);
   });
-});
 
-const appUrl = process.env.TEST_APP_DATABASE_URL;
-const suUrl = process.env.MIGRATION_DATABASE_URL;
-let dbUp = false;
-let su: PrismaClient | undefined;
-let app: PrismaClient | undefined;
-if (appUrl && suUrl) {
-  try {
-    su = new PrismaClient({
-      adapter: new PrismaPg({ connectionString: suUrl }),
-    });
-    await su.$queryRaw`SELECT 1`;
-    app = new PrismaClient({
-      adapter: new PrismaPg({ connectionString: appUrl }),
-    });
-    await app.$queryRaw`SELECT 1`;
-    dbUp = true;
-  } catch {
-    dbUp = false;
-  }
-}
-const appDb = app as PrismaClient;
-const suDb = su as PrismaClient;
-
-describe.skipIf(!dbUp)("MCP agent-builder tools (DB)", () => {
   let tenantA = 0n;
   let tenantB = 0n;
   let agentA = 0n;

@@ -371,7 +371,23 @@ export async function resolveVaultRefByName(
   kind?: string | null,
   base: PrismaClient = basePrisma,
 ): Promise<VaultNameResolution> {
-  return runScopedOn(base, ctx, async (db) => {
+  return runScopedOn(base, ctx, (db) =>
+    resolveVaultRefByNameOn(db, name, kind),
+  );
+}
+
+// The same lookup, on a transaction the caller already opened — the read half of the pair whose
+// write half is `ensurePendingVaultEntryOn`. The agent import asks this question once per credential
+// the bundle names and then creates what it did not find, so a lookup on a separate connection
+// cannot see the rows the import has already written: a bundle referencing the same missing
+// credential twice under trim-equivalent spellings resolved the second one as missing too, and the
+// insert then collided with the row from the first. Same transaction, same answer.
+export async function resolveVaultRefByNameOn(
+  db: ScopedDb,
+  name: string,
+  kind?: string | null,
+): Promise<VaultNameResolution> {
+  {
     const where = kind != null ? { name, kind } : { name };
     const rows = await db.vaultEntry.findMany({
       where,
@@ -392,7 +408,7 @@ export async function resolveVaultRefByName(
     // Multiple entries share the name with different kinds.
     const kinds = [...new Set(rows.map((r) => r.kind))].sort();
     return { status: "ambiguous", kinds } as const;
-  });
+  }
 }
 
 // A ref on its way INTO a column, checked against the tenant's vault and returned in the one
@@ -857,9 +873,22 @@ export async function listVaultInfos(db: ScopedDb): Promise<VaultEntryInfo[]> {
 // biome-ignore lint/suspicious/noControlCharactersInRegex: intentional — detecting control chars
 const VAULT_NAME_CTRL_RE = /[\x00-\x1f\x7f]/;
 
-function validateVaultName(raw: string): string {
+// The name a row is STORED under, or null when it could never be stored. A caller that looks a
+// credential up BEFORE deciding to create it has to ask about the same string the write will use,
+// and the write trims: the agent import resolved a bundle's ` cred ` as missing, reached the insert,
+// and collided with the row it had just failed to find. `validateVaultName` is this function plus
+// the throw, so the rule has one spelling rather than two.
+export function storedVaultName(raw: string): string | null {
   const name = raw.trim();
   if (name.length === 0 || name.length > 128 || VAULT_NAME_CTRL_RE.test(name)) {
+    return null;
+  }
+  return name;
+}
+
+function validateVaultName(raw: string): string {
+  const name = storedVaultName(raw);
+  if (name === null) {
     throw new AppError(
       "invalid vault entry name",
       400,
@@ -1263,7 +1292,40 @@ export async function createPendingVaultEntry(
   base: PrismaClient = basePrisma,
 ): Promise<{ id: bigint; ref: string }> {
   if (ctx.tenantId === null) throw new AppError("tenant required", 400);
-  const tenantId = ctx.tenantId;
+  return runScopedOn(base, ctx, async (db) => {
+    const entry = await ensurePendingVaultEntryOn(db, ctx, input);
+    if (!entry.created) {
+      throw new ConflictError(
+        "vault entry name and type already in use",
+        "errors.vaultNameInUse",
+        "name",
+      );
+    }
+    return { id: entry.id, ref: entry.ref };
+  });
+}
+
+// The same write, on a transaction the caller already opened, and conflict-free.
+//
+// Two things forced both halves of that sentence, and the agent import is why. It creates one of
+// these per credential the bundle names and the tenant lacks, from INSIDE its own transaction: a
+// call that opened its own committed independently of it, so an import that unwound left the entries
+// and their audit rows behind (measured on the dry run, which is that case every time). And a plain
+// INSERT that hits `(tenantId, name, kind)` raises inside that transaction, which aborts it — so a
+// second import of the same bundle, racing this one, took the whole agent down instead of finding
+// the row. `ON CONFLICT DO NOTHING` plus a read makes a concurrent creation a fact to report rather
+// than an error to survive.
+//
+// What a pre-existing row MEANS is the caller's, which is why this reports rather than decides: the
+// MCP `credential_create` tool answers 409, and the import reuses the row and says nothing.
+export async function ensurePendingVaultEntryOn(
+  db: ScopedDb,
+  ctx: TenantContext,
+  input: CreatePendingVaultEntryInput,
+): Promise<{ id: bigint; ref: string; created: boolean }> {
+  // NOTE: not re-asked here. A `ScopedDb` only comes out of `runScopedOn`, which refuses a null
+  // tenant before it opens the transaction, so by the time this holds one the question is answered.
+  const tenantId = ctx.tenantId as bigint;
   const {
     name: validName,
     kind: normalizedKind,
@@ -1271,57 +1333,43 @@ export async function createPendingVaultEntry(
     paramName: normalizedParamName,
   } = assertPendingVaultEntryCreatable(input);
 
-  return runScopedOn(base, ctx, async (db) => {
-    const existing = await db.vaultEntry.findFirst({
-      where: { name: validName, kind: normalizedKind },
-      select: { id: true },
-    });
-    if (existing) {
-      throw new ConflictError(
-        "vault entry name and type already in use",
-        "errors.vaultNameInUse",
-        "name",
-      );
-    }
-    // Placeholder blob: an empty object, never a real secret. `status` discriminates it from active.
-    const blob = encryptJson({});
-    try {
-      const created = await db.vaultEntry.create({
-        data: {
-          tenantId,
-          name: validName,
-          secret: blob,
-          kind: normalizedKind,
-          baseUrl: normalizedBaseUrl,
-          paramName: normalizedParamName || null,
-          status: "pending",
-        },
-        select: VAULT_AUDIT_SELECT,
-      });
-      // NOTE: The same action as a filled create, because it is the same act: a credential now
-      // exists under this name. `status` is what tells the two apart, and it is on the row.
-      //
-      // This is also where the agent import starts leaving a trail. It creates one reference-only
-      // entry per credential the bundle names and the tenant does not have, and its own `agent.import`
-      // row projects the AGENT, so six pending credentials used to appear in the vault with nothing
-      // naming where they came from. One row each, under the operator who ran the import.
-      await auditMutation(db, ctx, {
-        action: "credential.create",
-        target: formatVaultRef(created.id),
-        after: auditProjection(created),
-      });
-      return { id: created.id, ref: formatVaultRef(created.id) };
-    } catch (e) {
-      if ((e as { code?: string }).code === "P2002") {
-        throw new ConflictError(
-          "vault entry name and type already in use",
-          "errors.vaultNameInUse",
-          "name",
-        );
-      }
-      throw e;
-    }
+  // Placeholder blob: an empty object, never a real secret. `status` discriminates it from active.
+  const blob = encryptJson({});
+  const { count } = await db.vaultEntry.createMany({
+    data: [
+      {
+        tenantId,
+        name: validName,
+        secret: blob,
+        kind: normalizedKind,
+        baseUrl: normalizedBaseUrl,
+        paramName: normalizedParamName || null,
+        status: "pending",
+      },
+    ],
+    skipDuplicates: true,
   });
+  const row = await db.vaultEntry.findFirstOrThrow({
+    where: { name: validName, kind: normalizedKind },
+    select: VAULT_AUDIT_SELECT,
+  });
+  const created = count === 1;
+  if (created) {
+    // NOTE: The same action as a filled create, because it is the same act: a credential now
+    // exists under this name. `status` is what tells the two apart, and it is on the row.
+    //
+    // This is also where the agent import starts leaving a trail. It creates one reference-only
+    // entry per credential the bundle names and the tenant does not have, and its own `agent.import`
+    // row projects the AGENT, so six pending credentials used to appear in the vault with nothing
+    // naming where they came from. One row each, under the operator who ran the import. A row that
+    // was already there is not this operator's act and files nothing.
+    await auditMutation(db, ctx, {
+      action: "credential.create",
+      target: formatVaultRef(row.id),
+      after: auditProjection(row),
+    });
+  }
+  return { id: row.id, ref: formatVaultRef(row.id), created };
 }
 
 export interface UpdateVaultEntryPatch {

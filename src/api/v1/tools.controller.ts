@@ -27,6 +27,10 @@ import {
 // translate('errors.toolDefinitionNotFound', 'Tool definition not found.')
 // translate('errors.toolNameTaken', 'That tool name is already in use.')
 // translate('errors.toolNameReserved', 'That name belongs to a built-in tool; choose another.')
+// translate('errors.urlTemplateNotAUrl', 'The request URL must be an http(s) URL, or a path starting with / when the credential carries a base URL')
+// translate('errors.urlTemplateNotHttp', 'The request URL must use http or https; {{protocol}} is not sent by this tool')
+// translate('errors.urlTemplateOriginInterpolated', 'The request URL may not put a placeholder in the scheme, host or port: the origin is fixed when the tool is written')
+// translate('errors.urlTemplateRelativeWithoutBase', 'A request URL starting with / takes its host from the credential base URL, and no credential here supplies one')
 
 // Custom HTTP tool definitions (per-tenant). TENANT_ADMIN; the scoped service is the hard
 // boundary. The deeper field validation lives in the service zod schema; the credential is a vault

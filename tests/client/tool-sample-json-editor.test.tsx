@@ -185,3 +185,48 @@ test("format is refused while the sample cannot be read, and the paste is untouc
   fireEvent.click(formatButton());
   expect(sampleView().state.doc.toString()).toBe(broken);
 });
+
+// Round 1 of review, and both findings are the same root: two readers of one field disagreeing
+// about which string they are talking about.
+
+// THE LINE IT NAMES IS THE LINE ON SCREEN. The field trimmed before asking, so a paste with blank
+// lines above it was measured against a string the operator is not looking at.
+test("the reported line counts from the document as pasted", async () => {
+  await openEditor();
+  writeSample('\n\n  {"a": }');
+  await waitFor(() => {
+    expect(document.body.textContent).toMatch(
+      /line 3, column 9|linha 3, coluna 9/i,
+    );
+  });
+});
+
+// AN ENABLED BUTTON THAT DOES NOTHING is the silent refusal this whole feature exists to remove.
+// A paste that opens with a byte-order mark READS — `String.trim` counts U+FEFF as whitespace, so
+// `JSON.parse` gets a clean document and the pickers fill — and the formatter refused it, so Format
+// stood enabled and the click went nowhere.
+test("format enabled means format does something", async () => {
+  await openEditor();
+  writeSample('﻿{"data":{"id":"ap_1"}}');
+  await waitFor(() => expect(formatButton().disabled).toBe(false));
+  const before = sampleView().state.doc.toString();
+  fireEvent.click(formatButton());
+  await waitFor(() =>
+    expect(sampleView().state.doc.toString()).not.toBe(before),
+  );
+  expect(sampleView().state.doc.toString()).toBe(`{
+  "data": {
+    "id": "ap_1"
+  }
+}`);
+});
+
+// And the other half of the same rule: once the sample IS formatted, the button has nothing left to
+// do, and saying so is better than a click that changes nothing.
+test("format is spent once the sample is already formatted", async () => {
+  await openEditor();
+  writeSample('{"a":1}');
+  await waitFor(() => expect(formatButton().disabled).toBe(false));
+  fireEvent.click(formatButton());
+  await waitFor(() => expect(formatButton().disabled).toBe(true));
+});

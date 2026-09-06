@@ -1437,10 +1437,22 @@ export function ToolEditModal({
       // (Safari) to none. When the two disagree the sentence simply says less (issue #562).
       return {
         state: "invalid" as const,
-        problem: firstJsonProblem(raw),
+        // NOTE: the SAMPLE, not the trimmed copy above. This number is read by a person looking at
+        // their own document, and measuring the trimmed one points at line 1 for a break on line 3
+        // (round 1 of review).
+        problem: firstJsonProblem(sample),
         ...none,
       };
     }
+  }, [sample]);
+  // The formatted sample, or null when there is nothing to write: a document that does not read, or
+  // one already formatted. The BUTTON is gated on this and not on `sampleParse`, so "enabled" can
+  // only mean "there is a different text ready". Two readers of one field WILL disagree eventually —
+  // round 1 of review found the first pair, where a byte-order mark parsed (`String.trim` eats it)
+  // and the formatter refused — and the disagreement showed up as an enabled button doing nothing.
+  const sampleTidy = useMemo(() => {
+    const tidy = reindentJson(sample);
+    return tidy === null || tidy === sample ? null : tidy;
   }, [sample]);
   // What the template picker offers for the caret it was opened at: outside every block, the
   // absolute fields and the lists; inside one, the fields of that list's items, relative. The
@@ -1972,49 +1984,13 @@ export function ToolEditModal({
                   aria-label={t("tools.sample", "Sample response (optional)")}
                 />
               </FormField>
+              {/* One row for both buttons and one sentence. They are the same decision — fill the
+                  sample, tidy the sample — and stacked they spent a hundred pixels of a modal that
+                  is already tall on two controls and a hint. */}
               <div className="-mt-2 flex flex-wrap items-center gap-x-2 gap-y-1">
                 <Button
                   variant="secondary"
                   size="sm"
-                  // Formatting requires reading, so on a paste that does not read there is nothing
-                  // it could do but drop what it could not understand — and the operator got that
-                  // text from somewhere and cannot get it back from us. The line beside this button
-                  // is the refusal, and it says where.
-                  disabled={sampleParse.state !== "ok"}
-                  onClick={() => {
-                    const tidy = reindentJson(sample);
-                    if (tidy === null || tidy === sample) return;
-                    // NOTE: the status is NOT cleared here, unlike on a keystroke: re-indenting
-                    // changes the whitespace and never a value, so the last run's status still
-                    // describes this body.
-                    setSample(tidy);
-                  }}
-                >
-                  {t("tools.sampleFormat", "Format")}
-                </Button>
-                {sampleParse.state === "invalid" && (
-                  <span className="text-error text-xs">
-                    {sampleParse.problem
-                      ? t(
-                          "tools.sampleInvalidAt",
-                          "Not valid JSON at line {{line}}, column {{column}}, so there is nothing to pick from. The fields below still work if you type the paths.",
-                          {
-                            line: sampleParse.problem.line,
-                            column: sampleParse.problem.column,
-                          },
-                        )
-                      : t(
-                          "tools.sampleInvalid",
-                          "That is not valid JSON, so there is nothing to pick from. The fields below still work if you type the paths.",
-                        )}
-                  </span>
-                )}
-              </div>
-              <div className="-mt-2 flex flex-col gap-1">
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  className="self-start"
                   // Same gate Save carries, and for a sharper reason: the server refuses a
                   // declared template it would not honour, so leaving this enabled spends a REAL
                   // request against the provider to come back with a 400 the box above already
@@ -2033,12 +2009,51 @@ export function ToolEditModal({
                 >
                   {t("tools.testOpen", "Send a test request")}
                 </Button>
-                <span className="text-text-secondary text-xs">
-                  {t(
-                    "tools.testOpenHint",
-                    "Runs this tool once against the real API and fills the sample above with the answer.",
-                  )}
-                </span>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  // Formatting requires reading, so on a paste that does not read there is nothing
+                  // it could do but drop what it could not understand — and the operator got that
+                  // text from somewhere and cannot get it back from us. The line beside this button
+                  // is the refusal, and it says where.
+                  disabled={sampleTidy === null}
+                  onClick={() => {
+                    if (sampleTidy === null) return;
+                    // NOTE: the status is NOT cleared here, unlike on a keystroke: re-indenting
+                    // changes the whitespace and never a value, so the last run's status still
+                    // describes this body.
+                    setSample(sampleTidy);
+                  }}
+                >
+                  {t("tools.sampleFormat", "Format")}
+                </Button>
+                {/* ONE sentence, and a sample that cannot be read wins it: the hint explains a
+                    button, the refusal explains why nothing on the screen below works, and it
+                    names the line. The hint comes back the moment the sample parses. */}
+                {sampleParse.state === "invalid" ? (
+                  <span className="text-error text-xs">
+                    {sampleParse.problem
+                      ? t(
+                          "tools.sampleInvalidAt",
+                          "Not valid JSON at line {{line}}, column {{column}}, so there is nothing to pick from. The fields below still work if you type the paths.",
+                          {
+                            line: sampleParse.problem.line,
+                            column: sampleParse.problem.column,
+                          },
+                        )
+                      : t(
+                          "tools.sampleInvalid",
+                          "That is not valid JSON, so there is nothing to pick from. The fields below still work if you type the paths.",
+                        )}
+                  </span>
+                ) : (
+                  <span className="text-text-secondary text-xs">
+                    {t(
+                      "tools.testOpenHint",
+                      "Runs this tool once against the real API and fills the sample above with the answer.",
+                    )}
+                  </span>
+                )}
               </div>
               <FormField
                 label={t("tools.outputTemplate", "What the agent receives")}

@@ -55,14 +55,28 @@ function firstErrorNode(tree: Tree): SyntaxNode | null {
   return found;
 }
 
+// What both readers below agree to ignore around the document: the surrounding whitespace, and with
+// it the byte-order mark, which `String.trim` counts as whitespace and `JSON.parse` therefore never
+// sees. Normalizing in ONE place is what keeps them from disagreeing — round 1 of review found a BOM
+// that the field called readable (the pickers filled) and the formatter refused, which is an enabled
+// button that does nothing when pressed.
+function bodyOf(text: string): { body: string; lead: number } {
+  return { body: text.trim(), lead: text.length - text.trimStart().length };
+}
+
 // Where this text stops being JSON, or null when it does not stop.
+//
+// The coordinates are about the text AS GIVEN, never about the normalized copy: this number is read
+// by a person looking at their own document, and a caller that trimmed first would point at line 1
+// for a break on line 3 (round 1 of review).
 //
 // An empty document is a problem at the start, not an absence of one: the caller decides that an
 // empty field is simply empty, and never asks.
 export function firstJsonProblem(text: string): JsonSpot | null {
-  const tree = parser.parse(text);
+  const { body, lead } = bodyOf(text);
+  const tree = parser.parse(body);
   const error = firstErrorNode(tree);
-  if (error) return spotAt(text, error.from);
+  if (error) return spotAt(text, lead + error.from);
   // NOTE: an error NODE is not the only way to be broken. A tree with no error node still has a
   // shape, and two values pasted back to back parse as a first value plus something the grammar has
   // no room for; `JSON.parse` refuses that too, and so does the picker that reads this field. Asking
@@ -74,7 +88,7 @@ export function firstJsonProblem(text: string): JsonSpot | null {
   // grammar spells some other way.
   let values = 0;
   for (let c = top.firstChild; c; c = c.nextSibling) values++;
-  if (values !== 1) return spotAt(text, valueEndFor(top, text));
+  if (values !== 1) return spotAt(text, lead + valueEndFor(top, body));
   return null;
 }
 
@@ -92,10 +106,11 @@ function valueEndFor(top: SyntaxNode, text: string): number {
 // somewhere and cannot get it back from us.
 export function reindentJson(text: string): string | null {
   if (firstJsonProblem(text) !== null) return null;
-  const tree = parser.parse(text);
+  const { body } = bodyOf(text);
+  const tree = parser.parse(body);
   const top = tree.topNode.firstChild;
   if (!top) return null;
-  return render(top, text, 0);
+  return render(top, body, 0);
 }
 
 function render(node: SyntaxNode, text: string, depth: number): string {

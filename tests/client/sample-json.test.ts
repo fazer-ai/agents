@@ -47,6 +47,20 @@ describe("firstJsonProblem", () => {
     });
   });
 
+  // THE COORDINATES ARE ABOUT THE TEXT ON SCREEN, which is the whole point of reporting them.
+  //
+  // Round 1 of review: the field trimmed before asking, so a paste with blank lines above it was
+  // measured against a string the operator is not looking at and pointed at line 1 for a break on
+  // line 3. Whatever normalizing happens, happens in here, and what comes back is a place in the
+  // document as given.
+  test("counts lines from the document it was given, not from a trimmed copy", () => {
+    expect(firstJsonProblem('\n\n  {"a": }')).toEqual({
+      offset: 10,
+      line: 3,
+      column: 9,
+    });
+  });
+
   // A response is not a fragment: two objects pasted back to back are a mistake worth naming, and
   // `JSON.parse` names it too. What must not happen is the tree reporting only the first value and
   // calling the rest fine.
@@ -102,6 +116,25 @@ describe("reindentJson", () => {
     expect(out).toContain('"a \\"quoted\\" {word}, and a \\\\ slash"');
     // And what it produced still parses to the same thing.
     expect(JSON.parse(out)).toEqual(JSON.parse(text));
+  });
+
+  // A BOM IS NOT A VALUE, and the field already decided that.
+  //
+  // Round 1 of review: a paste that begins with a byte-order mark parses here (`String.trim` counts
+  // U+FEFF as whitespace, so `JSON.parse` gets a clean document and the pickers fill), and the
+  // formatter refused it — an enabled button that did nothing when clicked, which is the silent
+  // refusal this feature exists to remove. The two now normalize the same way. Nothing of the
+  // operator's is dropped: a BOM is an encoding marker, not something the response says.
+  test("formats a document that opens with a byte-order mark", () => {
+    expect(reindentJson('\uFEFF{"a":1}')).toBe(`{
+  "a": 1
+}`);
+  });
+
+  test("formats a document padded with whitespace", () => {
+    expect(reindentJson('  {"a":1}\n\n')).toBe(`{
+  "a": 1
+}`);
   });
 
   test("leaves an empty object and an empty array on one line", () => {

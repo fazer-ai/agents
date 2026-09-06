@@ -1072,6 +1072,18 @@ describe("deliverReply: a send that proves itself by name (issue #499)", () => {
     ["a body that is not a list", {}],
     ["a null body", null],
     ["a page whose rows are all unreadable", { payload: [{ nope: 1 }, {}] }],
+    // The one that turned three shapes into one rule: a page that MOSTLY parsed. The entry that did
+    // not could be the message being looked for, and a cursor taken from the rows that did parse
+    // would walk straight past it.
+    [
+      "a page where only some rows are readable",
+      {
+        payload: [
+          { id: 8999, content: "legível", message_type: 1, private: false },
+          { nope: 1 },
+        ],
+      },
+    ],
   ])(
     "a later page answering %s is unknown, not the end of the history",
     async (_label, second) => {
@@ -1110,6 +1122,52 @@ describe("deliverReply: a send that proves itself by name (issue #499)", () => {
       expect(out).toEqual({ delivered: 0, failed: true });
     },
   );
+
+  // THE CASE THAT MADE THE RULE, spelled out on its own because the table above cannot reach it: it
+  // needs a boundary, and a boundary only exists once a send has succeeded. Balloon 1 lands and
+  // gives one; balloon 2 times out with the message written; the read-back comes back with a page
+  // whose readable rows reach BACK PAST that boundary — and one row it could not read, which is our
+  // message. Proving absence off that page drops the chunk into the retry and duplicates it.
+  test("an unreadable row on a page that reaches the boundary still blocks the proof", async () => {
+    const sent: string[] = [];
+    let n = 0;
+    let nextId = 500;
+    let firstSendId: number | null = null;
+    const client = {
+      sendMessage: async (_c: number, content: string) => {
+        n += 1;
+        const id = nextId++;
+        if (n === 2) throw new Error("chatwoot timeout"); // escrita feita, resposta perdida
+        sent.push(content);
+        if (n === 1) firstSendId = id;
+        return { id };
+      },
+      // Everything readable is OLDER than balloon 1, so the page reaches the boundary; the message
+      // we are asking about is the entry that could not be read.
+      getMessages: async () => ({
+        payload: [
+          { nope: "a mensagem que estamos procurando, ilegível" },
+          {
+            id: (firstSendId as number) - 1,
+            content: "oi",
+            message_type: 0,
+            private: false,
+          },
+        ],
+      }),
+      toggleTyping: async () => ({}),
+    } as unknown as ChatwootClient;
+    const out = await deliverReply(
+      client,
+      1,
+      "Olá!\n\nComo vai?\n\nPosso ajudar?",
+      { ...SPLIT_DEFAULTS, enabled: true },
+      noSleep,
+    );
+    // Balloon 2 must NOT be in the retry: it may be the row nothing could read.
+    expect(sent).toEqual(["Olá!", "Posso ajudar?"]);
+    expect(out).toEqual({ delivered: 2, failed: true });
+  });
 
   // The other side of that rule, so "degraded" cannot become "every empty page": a WELL-FORMED empty
   // list on a later page IS the top of the history. Without this the walk could never prove absence

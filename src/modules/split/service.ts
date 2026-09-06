@@ -471,13 +471,19 @@ async function findLandedMessage(
       // first is an answer; the other two are a degraded read.
       const carried = chatwootMessageListLength(raw);
       const rows = parseChatwootMessages(raw);
-      // A RESPONSE THAT IS NOT A LIST IS UNKNOWN, whichever page it arrives on. `{}`, `null` and a
-      // 200 carrying prose all reach here as `null`, and reading any of them as "the history ends
-      // here" is the same collapse this whole function exists to undo, one page deeper.
-      if (carried === null) return { known: false };
-      // AND SO IS A PAGE WHOSE ROWS WERE ALL UNREADABLE. The endpoint said it was handing us twenty
-      // messages and we could name none of them, so the id we are looking for may be among them.
-      if (carried > 0 && rows.length === 0) return { known: false };
+      // ABSENCE MAY ONLY REST ON A PAGE THAT WAS READ WHOLE, and this one line is the rule three
+      // review rounds arrived at one case at a time: a body that is not a list, a page whose rows
+      // were all unreadable, a page where only SOME rows were. They are not three cases. An entry
+      // this build could not name is an entry that might be the message being looked for, so a page
+      // holding even one of them cannot rule anything out — and `carried === null` is the same
+      // statement about a response that was not a list at all.
+      //
+      // Written as a comparison rather than as a list of shapes, so the next shape nobody has seen
+      // yet is covered by construction instead of by a fourth branch. `null` needs no arm of its
+      // own: a response that was not a list can never equal a row count, and a mutation battery is
+      // what showed that spelling it out was a dominated term rather than a second rule.
+      const readWhole = rows.length === carried;
+      if (!readWhole) return { known: false };
       // AN EMPTY LIST MEANS TWO THINGS, and which one depends on whether we were paging. On the
       // FIRST read it is unknown: a conversation we have just written to cannot really be empty, so
       // an empty newest page is a degraded read — the same verdict `recoverDelivery` reaches on its

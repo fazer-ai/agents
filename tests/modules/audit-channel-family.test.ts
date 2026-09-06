@@ -975,6 +975,13 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
   // Every lock in the module, in one place, because the mode is a property of the MODULE and not of
   // whichever path happened to need one first: a new `FOR UPDATE` added later deadlocks against the
   // mirror exactly the same way, and a deadlock has no green test that can catch it.
+  //
+  // TWO modes are admissible, not one, and the second is the reason this matches every row-lock
+  // spelling rather than only the UPDATE family. `FOR KEY SHARE` is exactly what a child insert's
+  // foreign key takes, so it cannot be the lock that blocks one; `bindInbox` takes it on the AGENT
+  // (#546) to stand in for the foreign key `Inbox.agentId` does not have. `FOR UPDATE` and
+  // `FOR SHARE` stay out: the first is the mirror deadlock above, and the second conflicts with the
+  // NO KEY UPDATE this module takes everywhere, which would serialise paths that have no reason to.
   test("no path in the module takes a lock strong enough to block a child insert", async () => {
     const src = await Bun.file(
       new URL("../../src/modules/chatwoot/management.ts", import.meta.url),
@@ -982,9 +989,12 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
     // Comments stripped first: this very file's NOTEs discuss `FOR UPDATE` by name, and a fence that
     // counts prose as code fails on its own explanation.
     const code = src.replace(/^\s*\/\/.*$/gm, "");
-    const locks = code.match(/FOR (?:NO KEY )?UPDATE/g) ?? [];
-    expect(locks.length).toBeGreaterThanOrEqual(11);
-    expect(new Set(locks)).toEqual(new Set(["FOR NO KEY UPDATE"]));
+    const locks =
+      code.match(/FOR (?:NO KEY )?UPDATE|FOR (?:KEY )?SHARE/g) ?? [];
+    expect(locks.length).toBeGreaterThanOrEqual(12);
+    expect(new Set(locks)).toEqual(
+      new Set(["FOR NO KEY UPDATE", "FOR KEY SHARE"]),
+    );
   });
 
   // The bot IS attached in Chatwoot by the time the binding is persisted, and this transaction can

@@ -121,7 +121,12 @@ export function lockedBeforeSnapshot(
     .split("\n")
     .filter((l) => !l.trim().startsWith("//"))
     .join("\n");
-  const lock = code.indexOf("FOR UPDATE");
+  // The UPDATE family, both spellings, because what this fence is about is a lock that SERIALIZES
+  // the write, and `FOR NO KEY UPDATE` conflicts with itself exactly like `FOR UPDATE` does (#546
+  // weakened two of these writers to it so a bind's `FOR KEY SHARE` would stop waiting on them).
+  // The SHARE family deliberately does NOT count: two writers can hold it at once, so a snapshot
+  // read under one is the same race as a snapshot read under nothing.
+  const lock = code.search(/FOR (?:NO KEY )?UPDATE/);
   const snap = code.indexOf(snapshot);
   if (lock < 0 || snap < 0) return "not found";
   return lock < snap ? "locked" : "unlocked";
@@ -146,6 +151,19 @@ describe("the audit snapshot is read under the write's lock", () => {
     expect(lockedBeforeSnapshot(wrong, "SNAP")).toBe("unlocked");
     expect(lockedBeforeSnapshot(right, "SNAP")).toBe("locked");
     expect(lockedBeforeSnapshot("nothing here", "SNAP")).toBe("not found");
+    // NO KEY UPDATE serializes and counts; a share lock does not, and must read as no lock at all.
+    expect(
+      lockedBeforeSnapshot(
+        "await sql`… FOR NO KEY UPDATE`;\nconst before = read(SNAP);",
+        "SNAP",
+      ),
+    ).toBe("locked");
+    expect(
+      lockedBeforeSnapshot(
+        "await sql`… FOR KEY SHARE`;\nconst before = read(SNAP);",
+        "SNAP",
+      ),
+    ).toBe("not found");
     // And the prose that broke the first version of this fence.
     const commented = `// the FOR UPDATE below serializes it\n${wrong}`;
     expect(lockedBeforeSnapshot(commented, "SNAP")).toBe("unlocked");

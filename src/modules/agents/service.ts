@@ -726,10 +726,18 @@ export async function updateAgent(
     if (hasBh) updateData.businessHoursId = bhId;
     if (hasFuh) updateData.followUpHoursId = fuhId;
     // NOTE: Arm the follow-up backlog fence on the OFF→ON transition of the effective state. The row
-    // lock (FOR UPDATE, held to commit — runScopedOn is one interactive transaction) serializes the
+    // lock (held to commit — runScopedOn is one interactive transaction) serializes the
     // read-compute-write against concurrent saves: without it, a save that read the old ON state
     // could land last after another save turned follow-up OFF, restoring ON with the STALE watermark
     // and re-exposing the pre-arm backlog to the sweep. RLS still applies to the raw read.
+    //
+    // NO KEY UPDATE rather than FOR UPDATE, and the difference is who else waits. Both conflict with
+    // each other and with the `FOR UPDATE` that `deleteAgent` takes, so the serialization this note
+    // is about is unchanged; what NO KEY UPDATE stops conflicting with is `FOR KEY SHARE`, which is
+    // the lock a foreign key takes to REFERENCE this row. A save that also blocked references would
+    // block `bindInbox`, which holds the Chatwoot account row while it asks (#546), so renaming an
+    // agent would stall binds, syncs and disconnects for an account it has nothing to do with. This
+    // statement changes no key, which is exactly the case the weaker mode exists for.
     const beforeRows = await db.$queryRaw<
       Array<{
         enabled: boolean;
@@ -738,7 +746,7 @@ export async function updateAgent(
         model_config: unknown;
         updated_at: Date;
       }>
-    >`SELECT enabled, mode, settings, model_config, updated_at FROM agents WHERE id = ${id} FOR UPDATE`;
+    >`SELECT enabled, mode, settings, model_config, updated_at FROM agents WHERE id = ${id} FOR NO KEY UPDATE`;
     const before = beforeRows[0];
     // NOTE: read AFTER the lock, and that order is the whole point. The raw lock above reads the
     // four columns the follow-up fence needs; the trail answers for every column an operator can
@@ -2001,8 +2009,12 @@ export async function replaceAgentToolSelections(
     // wait while another commits B, and then write A back while its audit row claims A→A. The
     // agent is also what `expectedUpdatedAt` is checked against, so the precondition and the
     // snapshot now answer for the same instant. RLS still applies to the raw read.
+    //
+    // NO KEY UPDATE for the reason `updateAgent` gives above: it serializes replacements and still
+    // conflicts with the delete, and it stops conflicting with the `FOR KEY SHARE` a reference to
+    // this agent takes, which is what keeps a grant save out of the way of `bindInbox` (#546).
     const locked = await db.$queryRaw<Array<{ updated_at: Date }>>`
-      SELECT updated_at FROM agents WHERE id = ${agentId} FOR UPDATE`;
+      SELECT updated_at FROM agents WHERE id = ${agentId} FOR NO KEY UPDATE`;
     const agent = locked[0] ? { updatedAt: locked[0].updated_at } : null;
     if (!agent) {
       throw new NotFoundError("agent not found", "errors.agentNotFound");

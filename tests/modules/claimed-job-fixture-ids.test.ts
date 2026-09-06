@@ -46,12 +46,18 @@ const ROOT = join(import.meta.dir, "..");
 //   - every argument `BigInt` itself accepts and turns into a reachable id: `BigInt(1)`,
 //     `BigInt("1")`, `` BigInt(`1`) ``, `BigInt(1e3)`, `BigInt(1.0)`. The fraction and the exponent
 //     are not valid in a bigint LITERAL, so they only ever appear here, and admitting them costs
-//     nothing: an `id: 1.5n` that matched would be a syntax error long before this sweep read it.
+//     nothing: an `id: 1.5n` that matched would be a syntax error long before this sweep read it;
+//   - either sign, since `BigInt(+1)` is 1n and a pattern that reads only the minus calls it absent.
+//
+// The bound, stated rather than discovered next round: this reads LITERALS. An id computed at run
+// time (`BigInt(someVar)`, `ids[0]`, a call) is out of reach of any text sweep, and is exactly the
+// shape `burnSchedulerJobId` produces, so the sweep's blind spot and the fix's output are the same
+// thing. What it has to see is the spelling somebody types by hand, in any base, sign or quote.
 //
 // `reachableBySequence` normalises what is captured, so the grammar lives here and the arithmetic
 // lives there.
 // Every base a bigint literal takes, plus the separator, normalised by `reachableBySequence` below.
-const NUMBER = String.raw`-?\d[\d_]*(?:\.[\d_]*)?(?:[eE][+-]?\d+)?|0[xX][\dA-Fa-f_]+|0[oO][0-7_]+|0[bB][01_]+`;
+const NUMBER = String.raw`[+-]?\d[\d_]*(?:\.[\d_]*)?(?:[eE][+-]?\d+)?|[+-]?0[xX][\dA-Fa-f_]+|[+-]?0[oO][0-7_]+|[+-]?0[bB][01_]+`;
 const LITERAL_ID = new RegExp(
   String.raw`(?:\bid|["']id["'])\s*[:=]\s*(?:(${NUMBER})n|BigInt\(\s*["'\`]?(${NUMBER})["'\`]?\s*\))`,
   "g",
@@ -181,6 +187,8 @@ describe("a scheduler fixture may not name a row the sequence can hand out", () 
     ["a BigInt() call", fixture("BigInt(7)"), true],
     ["a BigInt() call over a string", fixture('BigInt("7")'), true],
     ["a BigInt() call over a template", fixture("BigInt(`7`)"), true],
+    ["a BigInt() call over a signed number", fixture("BigInt(+7)"), true],
+    ["a BigInt() call over a signed string", fixture('BigInt("+7")'), true],
     // Neither is a bigint literal, and both are what BigInt turns into one.
     ["a BigInt() call over an exponent", fixture("BigInt(1e3)"), true],
     ["a BigInt() call over a whole float", fixture("BigInt(1.0)"), true],

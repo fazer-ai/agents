@@ -229,8 +229,25 @@ describe("runSandboxedCode", () => {
     // unrenewed render through; halving it would buy ceiling headroom that the precondition below
     // already guards, and spend margin that nothing guards.
     const N = 40_000;
-    const BUILD = `Array.from({ length: ${N} }, (_, i) => ({ i }))`;
     const CHARS = 20_000_000;
+    // NOTE: THE RENDER IS MEASURED FROM INSIDE, by the only clock that is not contaminated: its own.
+    // A getter runs when the renderer reaches it (the test below this one is the fence for that), so
+    // a getter on the first element and one on the last bracket the walk, and their `console.log`
+    // comes back in the reply. Nothing host-side is in the span -- not the worker spawn, not the
+    // dispatch, not the transfer, not the disposal -- which is what four earlier rounds each failed
+    // to subtract out of `wall - ms`. Measured: 43-45 ms here, stable over 4 runs.
+    const BUILD = `(() => {
+      const v = Array.from({ length: ${N} }, (_, i) => ({ i }));
+      v[0] = { get i() { console.log("A" + Date.now()); return 0 } };
+      v[${N - 1}] = { get i() { console.log("B" + Date.now()); return ${N - 1} } };
+      return v;
+    })()`;
+    const renderMsOf = (out: SandboxOutcome) => {
+      const logs = "logs" in out ? (out.logs as string[]) : [];
+      const a = logs.find((l) => l.startsWith("A"));
+      const b = logs.find((l) => l.startsWith("B"));
+      return a && b ? Number(b.slice(1)) - Number(a.slice(1)) : null;
+    };
 
     // NOTE: The ceiling is a production constant and the render is machine work, so a slow enough
     // machine cannot render this fixture at all -- and it would fail as `InternalError`, which is
@@ -332,6 +349,18 @@ describe("runSandboxedCode", () => {
     // machine the same way: rendering 40k objects is the same interpreter doing the same kind of
     // work as setting one up. Measured, the two ends stay a factor of 3.6 apart.
     expect(leftoverMs as number).toBeLessThanOrEqual(TOL_MS);
+    // NOTE: AND THIS IS THE PROOF, both halves off the same run. `leftMs` is the exact upper bound of
+    // what the render could have had on the ORIGINAL deadline -- exact because the prefix cancels:
+    //
+    //     real leftover = prefix + leftoverMs <= setup + leftoverMs = leftMs,  since prefix <= setup
+    //
+    // and `renderMs` is what the render actually took, on the interpreter's own clock. One being
+    // larger than the other says the render could not have finished on the deadline it inherited, so
+    // the whole value coming back is the renewal and nothing else. No proportionality argument, no
+    // timing carried between workers, no host clock. Measured: 11 against 44, a factor of 4.
+    const renderMs = renderMsOf(out);
+    expect(renderMs).not.toBeNull();
+    expect(renderMs as number).toBeGreaterThan(leftMs);
     const v = (out as { value: string }).value;
     expect(v.startsWith('[{"i":0},{"i":1}')).toBe(true);
     expect(v.endsWith(`{"i":${N - 1}}]`)).toBe(true);

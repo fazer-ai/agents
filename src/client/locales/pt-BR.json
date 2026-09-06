@@ -2560,6 +2560,8 @@
     "outputTemplatePreviewHint": "Exatamente o que o agente receberia para o exemplo acima.",
     "outputTemplateStrayBrace": "Há uma chave sem par perto de \"{{stray}}\". Um campo leva duas chaves de cada lado, e uma chave solta chegaria ao agente como texto literal.",
     "outputTemplateTooLong": "Isto tem {{length}} caracteres e o limite é {{max}}. Ele é enviado ao agente em toda chamada desta ferramenta.",
+    "pathPickerFilter": "Filtrar caminhos…",
+    "pathPickerNoMatch": "Nenhum caminho corresponde a isso.",
     "query": "Parâmetros de query",
     "queryHint": "Pares chave/valor adicionados à URL (qualquer método). Use Inserir variável para um campo da IA, {{context}} ou {{secret}}.",
     "queryKey": "Parâmetro",

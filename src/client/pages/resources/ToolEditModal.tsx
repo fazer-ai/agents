@@ -1,6 +1,14 @@
 import * as DropdownMenuPrimitive from "@radix-ui/react-dropdown-menu";
+import * as PopoverPrimitive from "@radix-ui/react-popover";
 import { AlertTriangle, Braces, Plus, Trash2 } from "lucide-react";
-import { type ReactNode, useId, useMemo, useRef, useState } from "react";
+import {
+  type ReactNode,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useTranslation } from "react-i18next";
 import {
   Button,
@@ -608,6 +616,7 @@ export function PathPicker({
   closeLabel,
   listsLabel,
   listLength,
+  restoresFocus = false,
 }: {
   leaves: SampleLeaf[];
   lists?: SampleList[];
@@ -623,64 +632,172 @@ export function PathPicker({
   closeLabel: string;
   listsLabel?: string;
   listLength?: (n: number) => string;
+  // Declares that this caller's `onPick` puts focus somewhere ITSELF, so Radix's return to the
+  // trigger has to be suppressed or it would land after and take the focus back. Only the template
+  // does that (it refocuses the textarea at the caret it wrote); the single-path fields just write
+  // a value, and for them the trigger IS the right place to come back to. The picker cannot observe
+  // the difference: the caller's focus move happens in a later frame, which is the whole reason the
+  // suppression exists (round 2 of review).
+  restoresFocus?: boolean;
 }) {
+  const { t } = useTranslation();
+  const [query, setQuery] = useState("");
+  const anchorRef = useRef<HTMLDivElement | null>(null);
+  // Set by a pick when this caller restores focus itself, read once by `onCloseAutoFocus`. Every
+  // other way out of the offer keeps Radix's return to the trigger (round 1 of review).
+  const pickedRef = useRef(false);
+  // The filter is per visit, and clearing it in `onOpenChange` would miss the ordinary way out.
+  // Every caller closes by setting the controlled `open` prop from its own `onPick`, which Radix
+  // never sees: `onOpenChange` fires for the interactions IT handles, not for a prop the parent
+  // changed. So the transition itself is what clears, whoever caused it (round 1 of review).
+  useEffect(() => {
+    if (!open) setQuery("");
+  }, [open]);
+  const q = query.trim().toLowerCase();
+  // Filtered by PATH, never by the sample value beside it: the value is a preview of one response
+  // and typing part of it would offer paths that hold something else on the next call.
+  const shownLeaves = q
+    ? leaves.filter((l) => l.path.toLowerCase().includes(q))
+    : leaves;
+  const shownLists = q
+    ? lists.filter((l) => l.path.toLowerCase().includes(q))
+    : lists;
   const empty = leaves.length === 0 && lists.length === 0;
   if (empty && !emptyLabel) return null;
   return (
-    <div className="-mt-2 flex flex-col gap-1">
-      <button
-        type="button"
-        onClick={onToggle}
-        className="self-start text-text-secondary text-xs underline underline-offset-2 hover:text-text-primary"
+    <PopoverPrimitive.Root
+      open={open}
+      onOpenChange={(next) => {
+        if (next !== open) onToggle();
+      }}
+    >
+      <div className="-mt-2 flex flex-col gap-1" ref={anchorRef}>
+        <PopoverPrimitive.Trigger asChild>
+          <button
+            type="button"
+            className="self-start text-text-secondary text-xs underline underline-offset-2 hover:text-text-primary"
+          >
+            {open ? closeLabel : openLabel}
+          </button>
+        </PopoverPrimitive.Trigger>
+      </div>
+      {/* INTO THE DIALOG, not into `document.body`. The modal's scroll lock (`react-remove-scroll`,
+          which Radix's Dialog installs) cancels wheel events whose target sits outside its subtree,
+          so a popover portalled to the body has a list that clicks fine and does not scroll — the
+          `overflow-y: auto` is honoured, `scrollTop` moves programmatically, and the wheel arrives
+          already `preventDefault`ed. Portalling into the dialog keeps the offer out of the FIELD's
+          flow container, which is what the portal was for, without leaving the area the lock allows.
+          Falls back to the default body portal outside a dialog, which is where the unit tests
+          render it. */}
+      <PopoverPrimitive.Portal
+        container={anchorRef.current?.closest<HTMLElement>('[role="dialog"]')}
       >
-        {open ? closeLabel : openLabel}
-      </button>
-      {open && (
-        <ul className="max-h-48 overflow-y-auto rounded-md border border-border">
-          {heading && (
-            <li className="px-2 py-1 text-text-secondary text-xs">{heading}</li>
-          )}
-          {empty && (
-            <li className="px-2 py-1 text-text-secondary text-xs">
-              {emptyLabel}
-            </li>
-          )}
-          {leaves.map((leaf) => (
-            <li key={leaf.path}>
-              <button
-                type="button"
-                onClick={() => onPick(leaf.path)}
-                className="flex w-full items-baseline gap-2 px-2 py-1 text-left text-xs hover:bg-bg-hover"
-              >
-                <code className="shrink-0 text-text-primary">{leaf.path}</code>
-                <span className="truncate text-text-secondary">
-                  {leaf.value}
-                </span>
-              </button>
-            </li>
-          ))}
-          {lists.length > 0 && listsLabel && (
-            <li className="border-border border-t px-2 py-1 text-text-secondary text-xs">
-              {listsLabel}
-            </li>
-          )}
-          {lists.map((list) => (
-            <li key={`each:${list.path}`}>
-              <button
-                type="button"
-                onClick={() => onPickList?.(list.path)}
-                className="flex w-full items-baseline gap-2 px-2 py-1 text-left text-xs hover:bg-bg-hover"
-              >
-                <code className="shrink-0 text-text-primary">{list.path}</code>
-                <span className="truncate text-text-secondary">
-                  {listLength ? listLength(list.length) : list.length}
-                </span>
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
+        <PopoverPrimitive.Content
+          side="bottom"
+          align="start"
+          sideOffset={6}
+          // THE OFFER LEAVES THE FLOW (issue #462). Rendered inline it sat in the same container as
+          // the field below, so opening it pushed that field down mid-edit; a portal makes the shift
+          // impossible rather than small.
+          // `--z-popover` (85), not a Tailwind `z-*` class: the scale in `public/index.css` is a set
+          // of tokens, and `z-50` there is `--z-drawer`, which sits BELOW `--z-modal` (80). This
+          // picker only ever opens inside a modal, so a bare `z-50` renders the offer behind the
+          // dialog — positioned correctly, sized correctly, and invisible. Found by opening it in a
+          // browser; happy-dom has no stacking context to fail in.
+          className="z-(--z-popover) w-[min(28rem,calc(100vw-2rem))] rounded-md border border-border bg-bg-secondary shadow-lg"
+          // Radix renders this as `role="dialog"`, and this screen opens three of them from three
+          // fields that differ only in what they fill. The filter's own label names the input, never
+          // the dialog around it, so an unnamed one is announced as a bare dialog.
+          aria-label={openLabel}
+          // The caret restore wins over Radix's focus return, FOR A PICK. `insertToken` refocuses
+          // the textarea in a `requestAnimationFrame` and puts the caret after the token it wrote;
+          // Radix's default close behaviour focuses the TRIGGER, which lands after that frame and
+          // takes the caret away from the box the operator is writing in.
+          //
+          // Only for a pick BY A CALLER THAT RESTORES FOCUS: everywhere else nothing refocuses
+          // anything, so preventing it unmounts the content under the focused element and drops
+          // focus to the document body, restarting the keyboard operator's next Tab from the top of
+          // the page. That covers Escape and an outside click, and also a pick on the three
+          // single-path fields, whose `onPick` only writes a value (round 2 of review).
+          onCloseAutoFocus={(e) => {
+            if (!pickedRef.current) return;
+            pickedRef.current = false;
+            e.preventDefault();
+          }}
+        >
+          <div className="border-border border-b p-2">
+            <input
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder={t("tools.pathPickerFilter", "Filter paths…")}
+              aria-label={t("tools.pathPickerFilter", "Filter paths…")}
+              className="w-full rounded-md border border-border bg-bg-tertiary px-2 py-1 text-sm text-text-primary focus:border-border-focus focus:outline-none"
+            />
+          </div>
+          <ul className="max-h-48 overflow-y-auto">
+            {heading && (
+              <li className="px-2 py-1 text-text-secondary text-xs">
+                {heading}
+              </li>
+            )}
+            {empty && (
+              <li className="px-2 py-1 text-text-secondary text-xs">
+                {emptyLabel}
+              </li>
+            )}
+            {!empty && shownLeaves.length === 0 && shownLists.length === 0 && (
+              <li className="px-2 py-1 text-text-secondary text-xs">
+                {t("tools.pathPickerNoMatch", "No path matches that.")}
+              </li>
+            )}
+            {shownLeaves.map((leaf) => (
+              <li key={leaf.path}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    pickedRef.current = restoresFocus;
+                    onPick(leaf.path);
+                  }}
+                  className="flex w-full items-baseline gap-2 px-2 py-1 text-left text-xs hover:bg-bg-hover"
+                >
+                  <code className="shrink-0 text-text-primary">
+                    {leaf.path}
+                  </code>
+                  <span className="truncate text-text-secondary">
+                    {leaf.value}
+                  </span>
+                </button>
+              </li>
+            ))}
+            {shownLists.length > 0 && listsLabel && (
+              <li className="border-border border-t px-2 py-1 text-text-secondary text-xs">
+                {listsLabel}
+              </li>
+            )}
+            {shownLists.map((list) => (
+              <li key={`each:${list.path}`}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    pickedRef.current = restoresFocus;
+                    onPickList?.(list.path);
+                  }}
+                  className="flex w-full items-baseline gap-2 px-2 py-1 text-left text-xs hover:bg-bg-hover"
+                >
+                  <code className="shrink-0 text-text-primary">
+                    {list.path}
+                  </code>
+                  <span className="truncate text-text-secondary">
+                    {listLength ? listLength(list.length) : list.length}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </PopoverPrimitive.Content>
+      </PopoverPrimitive.Portal>
+    </PopoverPrimitive.Root>
   );
 }
 
@@ -1953,6 +2070,7 @@ export function ToolEditModal({
                     : undefined
                 }
                 open={templatePickerOpen}
+                restoresFocus
                 onToggle={() => {
                   if (!templatePickerOpen) {
                     setTemplateCaret(

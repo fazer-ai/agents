@@ -1729,7 +1729,7 @@
           "Admin"
         ],
         "summary": "Update user role",
-        "description": "Change a user's role within the caller's tenant scope. Refuses (409) to demote the last administrator of a scope.",
+        "description": "Change a user's role within the caller's tenant scope. Demoting a fleet administrator must name the tenant they join. Refuses (409) to demote the last administrator of a scope.",
         "parameters": [
           {
             "name": "id",
@@ -1768,6 +1768,10 @@
                       "AGENT",
                       "TENANT_ADMIN"
                     ]
+                  },
+                  "tenantId": {
+                    "description": "Tenant the user joins (BigInt string). REQUIRED when demoting a fleet administrator, who belongs to no tenant and cannot be stored without one; refused for anybody else.",
+                    "type": "string"
                   }
                 }
               }
@@ -1785,6 +1789,10 @@
                       "AGENT",
                       "TENANT_ADMIN"
                     ]
+                  },
+                  "tenantId": {
+                    "description": "Tenant the user joins (BigInt string). REQUIRED when demoting a fleet administrator, who belongs to no tenant and cannot be stored without one; refused for anybody else.",
+                    "type": "string"
                   }
                 }
               }
@@ -1802,6 +1810,10 @@
                       "AGENT",
                       "TENANT_ADMIN"
                     ]
+                  },
+                  "tenantId": {
+                    "description": "Tenant the user joins (BigInt string). REQUIRED when demoting a fleet administrator, who belongs to no tenant and cannot be stored without one; refused for anybody else.",
+                    "type": "string"
                   }
                 }
               }

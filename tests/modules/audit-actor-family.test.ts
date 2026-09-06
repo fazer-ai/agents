@@ -444,7 +444,7 @@ describe.skipIf(!dbUp)("the actor family records its own changes", () => {
     await clearAudit();
     // The fleet admin re-roles somebody in a tenant they do not belong to. Keyed on the actor, this
     // row would be fleet-level and the tenant it happened to could never read it.
-    await updateUserRole(fleetAdmin, user.id, "TENANT_ADMIN", appDb);
+    await updateUserRole(fleetAdmin, user.id, { role: "TENANT_ADMIN" }, appDb);
     const [row] = await tenantRows(tenantId, "user.role_set");
     expect(row?.tenantId).toBe(tenantId);
     expect(row?.actorId).toBe(FLEET_ACTOR);
@@ -457,14 +457,19 @@ describe.skipIf(!dbUp)("the actor family records its own changes", () => {
   test("re-applying the role somebody already has records nothing", async () => {
     const user = await newUser(tenantId, "AGENT");
     await clearAudit();
-    await updateUserRole(fleetAdmin, user.id, "AGENT", appDb);
+    await updateUserRole(fleetAdmin, user.id, { role: "AGENT" }, appDb);
     expect(await tenantRows(tenantId, "user.role_set")).toEqual([]);
   });
 
   test("a tenant admin cannot re-role outside their own tenant", async () => {
     const outsider = await newUser(otherTenantId, "AGENT");
     await expect(
-      updateUserRole(tenantAdmin(), outsider.id, "TENANT_ADMIN", appDb),
+      updateUserRole(
+        tenantAdmin(),
+        outsider.id,
+        { role: "TENANT_ADMIN" },
+        appDb,
+      ),
     ).rejects.toThrow();
     expect(
       (await suDb.user.findFirstOrThrow({ where: { id: outsider.id } })).role,
@@ -493,7 +498,13 @@ describe.skipIf(!dbUp)("the actor family records its own changes", () => {
     await clearAudit();
 
     for (const attempt of [
-      () => updateUserRole(tenantAdmin(), outsider.id, "TENANT_ADMIN", appDb),
+      () =>
+        updateUserRole(
+          tenantAdmin(),
+          outsider.id,
+          { role: "TENANT_ADMIN" },
+          appDb,
+        ),
       () => deleteUser(tenantAdmin(), outsider.id, appDb),
       () => revokeInvite(tenantAdmin(), invite.id, appDb),
     ]) {
@@ -609,7 +620,7 @@ describe.skipIf(!dbUp)("the actor family records its own changes", () => {
     await updateUserRole(
       { ...fleetAdmin, actorType: "api_key" },
       user.id,
-      "TENANT_ADMIN",
+      { role: "TENANT_ADMIN" },
       appDb,
     );
     const [row] = await tenantRows(tenantId, "user.role_set");

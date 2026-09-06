@@ -25,6 +25,8 @@
     "deleteUserError": "Could not delete the user.",
     "deleteUserWarning": "This permanently deletes {{email}} and revokes their access. It cannot be undone.",
     "demote": "Demote",
+    "demoteFleetAdmin": "Demote fleet administrator",
+    "demoteFleetAdminHint": "{{email}} administers the whole fleet and belongs to no tenant. Demoting them makes them a user of one tenant, which you choose here.",
     "demoteTooltip": "Demote to User",
     "email": "Email",
     "filterByTenant": "Filter by tenant",

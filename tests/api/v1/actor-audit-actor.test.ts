@@ -299,6 +299,80 @@ describe.skipIf(!dbUp)("the admin pages name who wrote", () => {
     }
   });
 
+  // #534 at the door: a fleet administrator's demotion describes a row the database cannot store
+  // unless the write also names where they land, and it used to be attempted anyway — the operator
+  // got `users_role_tenant_check` back as a 500. The seeded second fleet administrator is not
+  // decoration: without it the last-admin guard (#496) answers first, with a 409, and this test
+  // would be measuring that instead.
+  test("demoting a fleet administrator answers 422 without a tenant, and moves them with one", async () => {
+    cookie = await signIn({
+      id: FLEET_ADMIN_ID,
+      tenantId: null,
+      role: "SUPER_ADMIN",
+    });
+    const mkFleet = async (tag: string) =>
+      await (su as PrismaClient).user.create({
+        data: {
+          tenantId: null,
+          email: `f534-${process.pid}-${tag}@aud400.test`,
+          role: "SUPER_ADMIN",
+          passwordHash: "x",
+        },
+        select: { id: true },
+      });
+    const keep = await mkFleet("keep");
+    const target = await mkFleet("target");
+    try {
+      const refused = await server.handle(
+        req(`/admin/users/${target.id}/role`, {
+          method: "PATCH",
+          body: JSON.stringify({ role: "AGENT" }),
+        }),
+      );
+      expect(refused.status).toBe(422);
+      expect(typeof (await refused.json()).error).toBe("string");
+
+      const moved = await server.handle(
+        req(`/admin/users/${target.id}/role`, {
+          method: "PATCH",
+          body: JSON.stringify({ role: "AGENT", tenantId: tenantA.toString() }),
+        }),
+      );
+      expect(moved.status).toBe(200);
+      const row = await (su as PrismaClient).user.findUnique({
+        where: { id: target.id },
+        select: { role: true, tenantId: true },
+      });
+      expect(row).toEqual({ role: "AGENT", tenantId: tenantA });
+    } finally {
+      await (su as PrismaClient).$executeRawUnsafe(
+        `DELETE FROM users WHERE id IN (${keep.id},${target.id})`,
+      );
+    }
+  });
+
+  // Self-demotion was guarded only for the transition to AGENT, and that was complete only while the
+  // others could not be stored: naming a tenant now makes "fleet administrator → this tenant's admin"
+  // a storable row, and the caller would lose their own fleet access at the next authentication
+  // lookup, past a route that promises it cannot happen (#534).
+  test("a fleet administrator cannot re-role themselves, tenant named or not", async () => {
+    cookie = await signIn({
+      id: FLEET_ADMIN_ID,
+      tenantId: null,
+      role: "SUPER_ADMIN",
+    });
+    const res = await server.handle(
+      req(`/admin/users/${FLEET_ADMIN_ID}/role`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          role: "TENANT_ADMIN",
+          tenantId: tenantA.toString(),
+        }),
+      }),
+    );
+    expect(res.status).toBe(403);
+  });
+
   test("deleting a user from the console records what the account was", async () => {
     cookie = await signIn({
       id: TENANT_ADMIN_ID,

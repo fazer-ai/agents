@@ -25,6 +25,8 @@
     "deleteUserError": "Não foi possível excluir o usuário.",
     "deleteUserWarning": "Isto exclui permanentemente {{email}} e revoga o acesso. Não pode ser desfeito.",
     "demote": "Rebaixar",
+    "demoteFleetAdmin": "Rebaixar administrador da frota",
+    "demoteFleetAdminHint": "{{email}} administra a frota inteira e não pertence a nenhum tenant. Rebaixar essa pessoa a torna usuária de um tenant, que você escolhe aqui.",
     "demoteTooltip": "Rebaixar para Usuário",
     "email": "Email",
     "filterByTenant": "Filtrar por tenant",

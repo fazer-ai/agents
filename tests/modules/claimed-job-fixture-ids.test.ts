@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { withoutComments } from "../utils/source-text";
+import { codeOnly, withoutComments } from "../utils/source-text";
 
 // A `ClaimedJob` built by hand in a test is a FIXTURE, not a row: the handler only ever reads it
 // back. `jobRetired` (modules/scheduler/service.ts) looks the id up to find the tombstone a `/reset`
@@ -59,7 +59,7 @@ const ROOT = join(import.meta.dir, "..");
 // Every base a bigint literal takes, plus the separator, normalised by `reachableBySequence` below.
 const NUMBER = String.raw`[+-]?\d[\d_]*(?:\.[\d_]*)?(?:[eE][+-]?\d+)?|[+-]?0[xX][\dA-Fa-f_]+|[+-]?0[oO][0-7_]+|[+-]?0[bB][01_]+`;
 const LITERAL_ID = new RegExp(
-  String.raw`(?:\bid|["']id["'])\s*[:=]\s*(?:(${NUMBER})n|BigInt\(\s*["'\`]?(${NUMBER})["'\`]?\s*\))`,
+  String.raw`(?:\bid|["']id["'])\s*[:=]\s*(?:(${NUMBER})n|BigInt\(\s*["'\`]?(${NUMBER})n?["'\`]?\s*\))`,
   "g",
 );
 
@@ -88,7 +88,11 @@ const MARKERS = /\bclaimSeq\b/;
 // `Number` reads every base the pattern above admits once the separators are gone, and answers NaN
 // for what it cannot read, which is not a positive number either.
 function reachableBySequence(value: string): boolean {
-  return Number(value.replace(/_/g, "")) > 0;
+  // The leading `+` goes because `Number("+0x1")` is NaN while `BigInt(+0x1)` is `1n`, and a sweep
+  // that reads a reachable id as unreadable calls it safe. The leading `-` STAYS, for the same
+  // arithmetic in the other direction: `Number("-0x1")` is NaN, and a negative id is unreachable
+  // anyway, so the NaN and the sign agree.
+  return Number(value.replace(/_/g, "").replace(/^\+/, "")) > 0;
 }
 
 export function fixtureIdHits(source: string): number[] {
@@ -98,11 +102,18 @@ export function fixtureIdHits(source: string): number[] {
   // preserves offsets, so the line numbers below still name the line the reader will open. Comments
   // only, not string bodies: a quoted key (`"id": 1n`) is code, and this pattern reads it.
   const src = withoutComments(source);
+  // The same source with string BODIES blanked too, offsets intact. It is not what the pattern runs
+  // over, because half of what the pattern reads is legitimately inside quotes: a quoted key
+  // (`"id": 1n`) and a stringified argument (`BigInt("7")`) are both real spellings of a fixture.
+  // What it answers is one question, about the FIRST character of the match: a match that STARTS
+  // inside a string body is text that spells a fixture (`payload: "id: 1n"`), not one.
+  const code = codeOnly(source);
   const lines = src.split("\n");
   const hits: number[] = [];
   for (const m of src.matchAll(LITERAL_ID)) {
     const value = m[1] ?? m[2];
     if (!value || !reachableBySequence(value)) continue;
+    if (m.index === undefined || code[m.index] !== src[m.index]) continue;
     const line = src.slice(0, m.index).split("\n").length;
     const window = lines
       .slice(Math.max(0, line - 1 - NEARBY), line + NEARBY)
@@ -189,6 +200,11 @@ describe("a scheduler fixture may not name a row the sequence can hand out", () 
     ["a BigInt() call over a template", fixture("BigInt(`7`)"), true],
     ["a BigInt() call over a signed number", fixture("BigInt(+7)"), true],
     ["a BigInt() call over a signed string", fixture('BigInt("+7")'), true],
+    // `Number("+0x1")` is NaN while `BigInt(+0x1)` is `1n`, so the sign has to come off before the
+    // arithmetic or a reachable id reads as unreadable, and unreadable reads as safe.
+    ["a BigInt() call over a signed hex", fixture("BigInt(+0x7)"), true],
+    // BigInt over a bigint is the identity, and the `n` used to end the match before the `)`.
+    ["a BigInt() call over a bigint", fixture("BigInt(7n)"), true],
     // Neither is a bigint literal, and both are what BigInt turns into one.
     ["a BigInt() call over an exponent", fixture("BigInt(1e3)"), true],
     ["a BigInt() call over a whole float", fixture("BigInt(1.0)"), true],
@@ -255,6 +271,20 @@ describe("a scheduler fixture may not name a row the sequence can hand out", () 
   // The whole word, not a prefix of it: `claimDueJobs`, `claimed` and `claimOf` sit beside every real
   // row in the scheduler tests, and a marker matching "claim" would call each of those rows a
   // fixture.
+  // Neither is a string that spells one. A payload or an expected message can carry the shape as
+  // DATA, and a sweep that reads it as code fails the tree over somebody's fixture text, which is
+  // the same red-for-nothing that a comment produces.
+  test("a string that spells a fixture is not a fixture", () => {
+    const src = [
+      "  const job: ClaimedJob = {",
+      "    id: phantomJobId,",
+      '    payload: { note: "id: 1n" },',
+      "    claimSeq: 0,",
+      "  };",
+    ].join("\n");
+    expect(fixtureIdHits(src)).toEqual([]);
+  });
+
   // Prose about a fixture is not a fixture. The comment that explains what a line used to spell sits
   // inside the window of the line it explains, so a sweep reading raw text turns the explanation into
   // a red CI, and the cheapest way to green is deleting the explanation.

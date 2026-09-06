@@ -8,6 +8,7 @@ import {
   SANDBOX_CODE_MAX_CHARS,
   SANDBOX_TIMEOUT_MS,
 } from "@/graph/tools/code-sandbox-limits";
+import { CODE_TOOL_GLOBALS } from "@/lib/code-tool-vocabulary";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import {
   agentGet,
@@ -97,6 +98,33 @@ describe("MCP read gate (no DB)", () => {
     // The two semantics an agent cannot discover by trying without breaking a live turn.
     expect(body.result).toContain("promise");
     expect(body.failure).toContain("OPERATOR");
+  });
+
+  // The globals half of the same vocabulary. It was a SENTENCE naming three of them until #538's
+  // follow-up, and the console's Ctrl-Space listing twenty while this answered three is exactly the
+  // drift `lib/code-tool-vocabulary.ts` exists to close: a body written through MCP and a body
+  // written in the console are the same body, in the same sandbox.
+  test("code_tool_schema serves the globals the console offers", () => {
+    const r = codeToolSchema(principal({}));
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const body = r.data as {
+      available: {
+        globals: Array<{ name: string; kind: string; description?: string }>;
+        absent: string;
+      };
+    };
+    expect(body.available.globals.map((g) => g.name)).toEqual(
+      CODE_TOOL_GLOBALS.map((g) => g.name),
+    );
+    // The four the sandbox itself installs are the four that carry a description: the standard
+    // library explains itself, and `Date` here is NOT the standard one (it runs in the agent's
+    // zone), which is the difference a body has to be told.
+    expect(
+      body.available.globals.filter((g) => g.description).map((g) => g.name),
+    ).toEqual(["TIMEZONE", "NOW_LOCAL", "console", "Date"]);
+    // What no list can say, and what a caller would otherwise try: there is no event loop.
+    expect(body.available.absent).toContain("async");
   });
 
   // The seven limits bite at THREE different moments, and a contract that groups them misleads in

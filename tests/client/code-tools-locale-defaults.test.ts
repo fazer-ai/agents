@@ -60,9 +60,12 @@ describe("the code tool catalog says what the source says", () => {
     // like success.
     expect(seen).toBeGreaterThan(15);
     // The starter body is console text the same as a label: it is the first thing an author of a
-    // code tool reads, and it shipped in English until a browser showed it over a pt-BR form.
-    expect(at(en, "codeTools.starterInput")).toBeDefined();
-    expect(at(ptBR, "codeTools.starterReturn")).toBeDefined();
+    // code tool reads, and it shipped in English until a browser showed it over a pt-BR form. It is
+    // ONE line now (`starterHint` replaced `starterInput` and `starterReturn`), and it carries the
+    // hotkey, so it is also the line most likely to be edited in one catalog and forgotten in the
+    // other.
+    expect(at(en, "codeTools.starterHint")).toBeDefined();
+    expect(at(ptBR, "codeTools.starterHint")).toBeDefined();
     expect(wrong).toEqual([]);
   });
 

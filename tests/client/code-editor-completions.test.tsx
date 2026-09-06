@@ -1,8 +1,10 @@
 /// <reference lib="dom" />
 
 import { afterEach, describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import {
   CompletionContext,
+  closeCompletion,
   completionStatus,
   currentCompletions,
   startCompletion,
@@ -15,14 +17,20 @@ import { act, cleanup, render } from "@testing-library/react";
 import {
   CodeEditor,
   completionsFor,
+  hoverInfo,
   namesKeyOf,
+  SHOW_SCOPE_KEYS,
+  scopeKeyLabel,
   sourceFor,
 } from "@/client/components/CodeEditor";
 import { handOverEscape } from "@/client/components/escapeClaim";
 import i18n from "@/client/lib/i18n";
 import enLocale from "@/client/locales/en.json";
 import ptLocale from "@/client/locales/pt-BR.json";
-import { CODE_TOOL_CONTEXT_VARS } from "@/lib/code-tool-vocabulary";
+import {
+  CODE_TOOL_CONTEXT_VARS,
+  CODE_TOOL_GLOBALS,
+} from "@/lib/code-tool-vocabulary";
 
 // What the editor OFFERS, which is the half of issue #538 that pays: highlighting makes a broken
 // body easier to see, and completion is what makes the `context` vocabulary discoverable at all.
@@ -544,6 +552,33 @@ describe("the popup speaks the console's language", () => {
     }
   });
 
+  // The same fence for the globals half. Only the four the sandbox installs carry a sentence, and
+  // that sentence exists TWICE: in the vocabulary, which `code_tool_schema` serves to a model in
+  // English, and under `t()`, which is what the operator reads. Equal in English or the two drift
+  // in silence, since nothing else compares them.
+  test("the described globals carry the vocabulary's sentence, in both catalogs", () => {
+    const described = CODE_TOOL_GLOBALS.filter((g) => g.description);
+    expect(described.map((g) => g.name)).toEqual([
+      "TIMEZONE",
+      "NOW_LOCAL",
+      "console",
+      "Date",
+    ]);
+    const enGlobal: Record<string, string> = en.global;
+    const ptGlobal: Record<string, string> = pt.global;
+    expect(Object.keys(enGlobal).sort()).toEqual(
+      described.map((g) => g.name).sort(),
+    );
+    for (const g of described) {
+      expect([g.name, enGlobal[g.name]]).toEqual([g.name, g.description]);
+      expect([g.name, typeof ptGlobal[g.name]]).toEqual([g.name, "string"]);
+      expect([g.name, ptGlobal[g.name] === g.description]).toEqual([
+        g.name,
+        false,
+      ]);
+    }
+  });
+
   test("the argument and root entries are translated too", () => {
     const keys = [
       "argumentDetail",
@@ -603,10 +638,13 @@ describe("only the root `context` and `input` complete", () => {
     expect(ask("  context?. co")?.options.map((o) => o.label)).toContain(
       "contact_name",
     );
-    expect(ask("const x = con")?.options.map((o) => o.label)).toEqual([
-      "context",
-      "input",
-    ]);
+    // The two parameters lead the root list; the sandbox globals follow them (see the scope tests
+    // below), so this pins the head rather than the whole list.
+    expect(
+      ask("const x = con")
+        ?.options.map((o) => o.label)
+        .slice(0, 2),
+    ).toEqual(["context", "input"]);
   });
 
   test("a longer identifier ending in the same letters offers nothing", () => {
@@ -689,11 +727,16 @@ describe("Ctrl-Space on nothing still offers the two roots", () => {
     r?.options.map((o) => o.label) ?? null;
 
   test("an explicit request on an empty body offers them", () => {
-    expect(labels(ask("", true))).toEqual(["context", "input"]);
+    // The two parameters lead, and the sandbox globals follow them: the assertion is about the
+    // position answering at all, which is what was silent before.
+    expect(labels(ask("", true))?.slice(0, 2)).toEqual(["context", "input"]);
   });
 
   test("and after a space, where the next word would go", () => {
-    expect(labels(ask("return ", true))).toEqual(["context", "input"]);
+    expect(labels(ask("return ", true))?.slice(0, 2)).toEqual([
+      "context",
+      "input",
+    ]);
     expect(ask("return ", true)?.from).toBe(7);
   });
 
@@ -711,7 +754,265 @@ describe("Ctrl-Space on nothing still offers the two roots", () => {
   // A word being typed is a root position, so the list comes back and CodeMirror filters it: that
   // is how `co` narrows to `context`, and it is why the check above has to be about the DOT.
   test("while a word being typed is still a root", () => {
-    expect(labels(ask("co", true))).toEqual(["context", "input"]);
+    expect(labels(ask("co", true))?.slice(0, 2)).toEqual(["context", "input"]);
+  });
+});
+
+// The hotkey is meant to answer "what can I write here", and it answered with two names: the two
+// parameters. Everything else in scope was invisible, because `override` REPLACES the language's
+// own sources rather than adding to them, and the sandbox's own globals were in no list at all.
+describe("the hotkey lists what is in scope, not just the two roots", () => {
+  function ask(doc: string) {
+    const state = EditorState.create({ doc, extensions: [javascript()] });
+    return sourceFor(
+      ["cpf"],
+      i18n.t,
+    )(new CompletionContext(state, doc.length, true));
+  }
+  const labels = (doc: string) => ask(doc)?.options.map((o) => o.label) ?? [];
+
+  test("the sandbox's own globals are offered", () => {
+    const all = labels("");
+    expect(all).toContain("context");
+    expect(all).toContain("input");
+    for (const name of ["TIMEZONE", "NOW_LOCAL", "console", "Date"]) {
+      expect(all).toContain(name);
+    }
+    // And the standard library an operator reaches for in twenty lines.
+    for (const name of ["JSON", "Math", "Number", "parseInt"]) {
+      expect(all).toContain(name);
+    }
+  });
+
+  // The four the sandbox installs itself are the ones nobody can guess, so they carry the sentence
+  // that says what they hold; `JSON` does not, and that asymmetry is the decision, not an omission.
+  test("and the four this sandbox adds explain themselves", () => {
+    const options = ask("")?.options ?? [];
+    const at = (label: string) => options.find((o) => o.label === label);
+    expect(at("TIMEZONE")?.info).toBeDefined();
+    expect(at("Date")?.info).toBeDefined();
+    expect(at("JSON")?.info).toBeUndefined();
+    // Every global says where it comes from, which is what separates it from a local.
+    expect(at("JSON")?.detail).toBe("sandbox");
+  });
+
+  // A name the OPERATOR declared is the other half of "what is in scope", and it is the half a
+  // custom `override` silently drops: passing sources there REPLACES the language's own, including
+  // the `localCompletionSource` that ships with it and reads the same tree. Driven through the
+  // mounted editor rather than by calling that source directly, because what is being tested is the
+  // composition: calling it by hand passes with the editor configured either way.
+  test("a variable the operator declared completes", async () => {
+    render(
+      <CodeEditor
+        value={"const meuValor = 1;\nmeuV"}
+        onChange={() => {}}
+        aria-label="Code"
+      />,
+    );
+    const view = EditorView.findFromDOM(
+      document.body.querySelector(".cm-editor") as HTMLElement,
+    ) as EditorView;
+    view.dispatch({ selection: { anchor: view.state.doc.length } });
+    startCompletion(view);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(currentCompletions(view.state).map((c) => c.label)).toContain(
+      "meuValor",
+    );
+  });
+});
+
+// The hotkey the console advertises. CodeMirror ships Ctrl-Space plus Alt-i/Alt-` on macOS, and on
+// a Mac none of the three arrives: macOS keeps Ctrl-Space for the input-source switcher, and on a US
+// International layout Alt-i is the circumflex DEAD key, so Chrome delivers `key: "Dead"` and a
+// keymap that matches on the key name has nothing to match. The operator saw a list that opened
+// while they typed and could not be reopened, which reads as a broken editor rather than as a
+// keyboard layout. The events below are the ones the OS actually produces.
+describe("the advertised hotkey opens the list", () => {
+  function mount() {
+    render(<CodeEditor value="" onChange={() => {}} aria-label="Code" />);
+    const view = EditorView.findFromDOM(
+      document.body.querySelector(".cm-editor") as HTMLElement,
+    ) as EditorView;
+    return view;
+  }
+
+  function press(view: EditorView, init: KeyboardEventInit) {
+    view.contentDOM.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        bubbles: true,
+        cancelable: true,
+        ...init,
+      }),
+    );
+  }
+
+  // `Mod-i` is ⌘I on a Mac and Ctrl-I everywhere else, so the chord pressed here is the one THIS
+  // platform binds, taken from the same predicate the label uses. Both arrive as `key: "i"` with
+  // `keyCode: 73`, which is what separates them from the dead key below.
+  const mac = scopeKeyLabel() === "\u2318I";
+  const modI = {
+    key: "i",
+    code: "KeyI",
+    keyCode: 73,
+    ...(mac ? { metaKey: true } : { ctrlKey: true }),
+  };
+
+  test("the Mod-i chord does, and the Mac dead key does not", async () => {
+    const view = mount();
+    press(view, modI);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(currentCompletions(view.state).length).toBeGreaterThan(0);
+
+    closeCompletion(view);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(currentCompletions(view.state).length).toBe(0);
+
+    // What ⌥I sends on a US International layout: the keymap sees "Dead", not "i".
+    press(view, { key: "Dead", code: "KeyI", keyCode: 73, altKey: true });
+    await new Promise((r) => setTimeout(r, 200));
+    expect(currentCompletions(view.state).length).toBe(0);
+  });
+
+  // Closing the list has to leave it reopenable, which is the half the operator reported: the popup
+  // came up on its own while typing and never came back after it was dismissed.
+  test("and it reopens after the list was closed", async () => {
+    const view = mount();
+    const open = async () => {
+      press(view, modI);
+      await new Promise((r) => setTimeout(r, 200));
+      return currentCompletions(view.state).length;
+    };
+    expect(await open()).toBeGreaterThan(0);
+    closeCompletion(view);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(await open()).toBeGreaterThan(0);
+  });
+});
+
+// What the POINTER answers. The rule is that hover and the list are one object: whatever the list
+// would have offered for that name is what the tooltip renders, so the two cannot drift into saying
+// different things about `contact_email`. And the question goes to the parser for the same reason
+// the completion's does, which is why `mycontext.contact_id` answers nothing.
+describe("hover answers with the completion the list would have offered", () => {
+  function ask(doc: string, at: number) {
+    const state = EditorState.create({ doc, extensions: [javascript()] });
+    return hoverInfo(state, at, ["cpf", "order-id"], i18n.t);
+  }
+  // The index of the first character of `needle`, plus one, which lands INSIDE the word.
+  const inside = (doc: string, needle: string) => doc.indexOf(needle) + 1;
+
+  test("a context variable carries its type and whether it can be absent", () => {
+    const doc = "return context.contact_email;";
+    const hit = ask(doc, inside(doc, "contact_email"));
+    expect(hit?.completion.label).toBe("contact_email");
+    // `string?` is the whole point: it is what decides whether the body needs a `??`.
+    expect(hit?.completion.detail).toBe("string?");
+    expect(String(hit?.completion.info)).toContain("mail");
+    // The range covers the NAME, so the tooltip points at the word and not at the whole expression.
+    expect(doc.slice(hit?.from ?? 0, hit?.to ?? 0)).toBe("contact_email");
+  });
+
+  test("the one that is always there says so", () => {
+    const doc = "context.agent_name";
+    expect(ask(doc, inside(doc, "agent_name"))?.completion.detail).toBe(
+      "string",
+    );
+  });
+
+  test("a declared argument, including the one that needs a subscript", () => {
+    const doc = "input.cpf";
+    expect(ask(doc, inside(doc, "cpf"))?.completion.label).toBe("cpf");
+    const bracket = 'input["order-id"]';
+    expect(ask(bracket, inside(bracket, "order-id"))?.completion.label).toBe(
+      "order-id",
+    );
+  });
+
+  // An argument name is any non-empty string, so a quote is declarable, and the subscript the
+  // COMPLETION writes for it is `JSON.stringify`'d. Stripping the two quote characters then leaves
+  // the escape in the middle, matching no declared name: the pointer went silent over a line this
+  // editor had just generated. Both quote styles, because the operator types the other one.
+  test("a name whose subscript carries an escape", () => {
+    const state = (doc: string) =>
+      EditorState.create({ doc, extensions: [javascript()] });
+    const askNamed = (doc: string, at: number, names: string[]) =>
+      hoverInfo(state(doc), at, names, i18n.t);
+    const doubled = 'input["sa\\"id"]';
+    expect(
+      askNamed(doubled, doubled.indexOf("sa") + 1, ['sa"id'])?.completion.label,
+    ).toBe('sa"id');
+    const single = "context['contact_id']";
+    expect(
+      askNamed(single, single.indexOf("contact_id") + 1, [])?.completion.label,
+    ).toBe("contact_id");
+    // Every escape `JSON.stringify` can emit, not the two a hand-written table thought of: an
+    // argument name is any non-empty string, so a control character reaches one through the API and
+    // the completion writes it as `\\r` or `\\u0007`. Decoding those as the letters `r` and `u`
+    // matched no declared name, over an accessor this editor had generated.
+    const control = "a\rb\u0007c";
+    const written = `input[${JSON.stringify(control)}]`;
+    expect(
+      askNamed(written, written.indexOf("a") + 1, [control])?.completion.label,
+    ).toBe(control);
+
+    // A literal still being typed names nothing yet. The case that pins the terminator check is a
+    // PREFIX that happens to be another declared name: without it the last character is simply
+    // dropped, so `input["cpf` while typing would answer with the sentence for an argument called
+    // `cp`, under a pointer resting on a name the operator has not finished writing.
+    const open = 'input["cpf';
+    expect(askNamed(open, open.length - 2, ["cp", "cpf"])).toBeNull();
+  });
+
+  test("the two roots and a sandbox global", () => {
+    for (const [doc, label] of [
+      ["context.contact_id", "context"],
+      ["input.cpf", "input"],
+      ["return TIMEZONE;", "TIMEZONE"],
+      ["JSON.stringify(1)", "JSON"],
+    ] as const) {
+      expect(ask(doc, inside(doc, label))?.completion.label).toBe(label);
+    }
+  });
+
+  // Pressing the chord proves ONE of the two bindings, the one this platform resolves `Mod-` to, and
+  // the other exists for the case this suite cannot stage: CodeMirror decides `Mod-` from the real
+  // `navigator` at module load, so a Mac cannot be simulated here, and the case is precisely a Mac
+  // whose label came out `Ctrl+I`. What the second binding buys is that a wrong label still names a
+  // key that works, so the decision is pinned as data rather than left to the one chord a test can
+  // press.
+  test("both chords are bound, so a wrong label still names a working key", () => {
+    expect(SHOW_SCOPE_KEYS.map((b) => b.key)).toEqual(["Mod-i", "Ctrl-i"]);
+    // Without this the browser's own Ctrl+I (page info, in Firefox) fires alongside the list.
+    expect(SHOW_SCOPE_KEYS.every((b) => b.preventDefault)).toBe(true);
+  });
+
+  // The tests above ask `hoverInfo` directly, and removing the hover from the editor's extensions
+  // leaves every one of them green: the same hole the local-completion test had, one file over. A
+  // hover cannot be driven here, though, and that was measured rather than assumed: happy-dom
+  // answers `posAtCoords` with 0 and CodeMirror's hover plugin still renders nothing, because it
+  // needs real geometry to decide what the pointer is over. So this is a source fence, for the
+  // reason the fences in CodeToolEditModal.test.tsx give, and what it asserts is the WIRING: the
+  // hover rides in the same extension the completion does, which is what makes a renamed argument
+  // reach both on one dispatch.
+  test("the hover is actually installed, in the completion's own compartment", () => {
+    const src = readFileSync("src/client/components/CodeEditor.tsx", "utf8");
+    const ext = src.slice(
+      src.indexOf("function completionExt("),
+      src.indexOf("function completionExt(") + 900,
+    );
+    expect(ext.includes("scopeHover(names, t)")).toBe(true);
+  });
+
+  test("and nothing at all for a name this editor does not know", () => {
+    // The look-alike the completion's root rule exists for: it ENDS in `context` without being it.
+    const doc = "mycontext.contact_id";
+    expect(ask(doc, inside(doc, "contact_id"))).toBeNull();
+    expect(ask(doc, inside(doc, "mycontext"))).toBeNull();
+    // A field nobody declared, and a name outside the vocabulary.
+    expect(
+      ask("input.whatever", inside("input.whatever", "whatever")),
+    ).toBeNull();
+    expect(ask("const x = 1;", inside("const x = 1;", "x"))).toBeNull();
   });
 });
 

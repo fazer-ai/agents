@@ -12,6 +12,7 @@ import {
   ModalCancelButton,
   type ModalController,
   Skeleton,
+  scopeKeyLabel,
   Textarea,
   useModalController,
   useOnModalOpen,
@@ -70,15 +71,17 @@ export type CodeToolListed = NonNullable<CodeToolsData>["tools"][number];
 // like everything else on this screen. The code around them is not: `return` is the language's word,
 // not ours. Shipped in English since #517 and caught in a browser against a pt-BR console.
 export function starterCode(t: TFunction): string {
-  const what = t(
-    "codeTools.starterInput",
-    "input holds the typed arguments you declared; context the conversation.",
+  // One line, and it is the one thing that cannot be discovered from the editor: the key that opens
+  // the list. Everything the two lines here used to say (what `input` and `context` hold, that the
+  // answer is a `return`, that console output rides along) is in that list, in the `?` beside the
+  // field, and in the completion's own descriptions. Repeating it in the body made the first thing
+  // an author reads a paragraph about the body they are about to delete.
+  const hint = t(
+    "codeTools.starterHint",
+    "{{hotkey}} lists the variables available here.",
+    { hotkey: scopeKeyLabel() },
   );
-  const how = t(
-    "codeTools.starterReturn",
-    "Answer with a return; console.log output comes back with it.",
-  );
-  return `// ${what}\n// ${how}\nreturn { ok: true };\n`;
+  return `// ${hint}\nreturn { ok: true };\n`;
 }
 
 function emptyForm(t: TFunction) {
@@ -519,7 +522,8 @@ export function CodeToolEditModal({
                     label={t("codeTools.code", "Code")}
                     content={t(
                       "codeTools.codeHelp",
-                      "The body of a JavaScript function the agent calls. `input` holds the arguments you declared above; `context` holds the conversation's values. Type `input.` or `context.` for the full list, with the type of each and whether it can be absent. Answer with `return`.\n\nWhatever you return is rendered as JSON for the agent, and console.log output comes back with it. TIMEZONE, NOW_LOCAL and Date run in the agent's zone.\n\nThere is no network, no imports and no async: a returned promise is an error. A run gets 1000 ms and 32 MB; a throw or a limit is a failure, a returned value is a result. Invalid code is still saved and fails when the agent calls it.",
+                      "The body of a JavaScript function the agent calls. `input` holds the arguments you declared above; `context` the conversation's values. Type `input.` or `context.`, or press {{hotkey}}, to list what is available with each type and whether it can be absent. Answer with `return`.\n\nWhatever you return is rendered as JSON for the agent, and console.log output comes back with it. TIMEZONE, NOW_LOCAL and Date run in the agent's zone.\n\nThere is no network, no imports and no async: a returned promise is an error. A run gets 1000 ms and 32 MB; a throw or a limit is a failure, a returned value is a result. Invalid code is still saved and fails when the agent calls it.",
+                      { hotkey: scopeKeyLabel() },
                     )}
                   />
                 </span>

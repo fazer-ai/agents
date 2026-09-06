@@ -15,6 +15,10 @@ module.exports = {
   // console to fall back to the English default for the pt-BR reader. If that file is ever renamed
   // or moved, the extract deletes them again — loudly, since CI runs `i18n:extract` and then fails on
   // a dirty tree.
+  // A second way to lose a key, and it looks nothing like the first: an interpolation variable NAMED
+  // `key`. `t("codeTools.starterHint", "{{key}} lists…", { key: label })` makes the lexer read that
+  // property as the translation key, so the real one is never registered and `keepRemoved: false`
+  // deletes it from BOTH catalogs, translation included. Name the variable anything else (`hotkey`).
   input: [
     "src/client/**/*.{ts,tsx}",
     "src/modules/agents/config-health-message.ts",

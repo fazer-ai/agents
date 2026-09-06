@@ -8,9 +8,10 @@ import {
   closeCompletion,
   completionKeymap,
   completionStatus,
+  startCompletion,
 } from "@codemirror/autocomplete";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
-import { javascript } from "@codemirror/lang-javascript";
+import { javascript, localCompletionSource } from "@codemirror/lang-javascript";
 import {
   bracketMatching,
   HighlightStyle,
@@ -27,6 +28,8 @@ import {
 } from "@codemirror/state";
 import {
   EditorView,
+  hoverTooltip,
+  type KeyBinding,
   keymap,
   lineNumbers,
   placeholder as placeholderExt,
@@ -36,7 +39,10 @@ import type { TFunction } from "i18next";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/client/lib/utils";
-import { CODE_TOOL_CONTEXT_VARS } from "@/lib/code-tool-vocabulary";
+import {
+  CODE_TOOL_CONTEXT_VARS,
+  CODE_TOOL_GLOBALS,
+} from "@/lib/code-tool-vocabulary";
 import { claimEscape } from "./escapeClaim";
 import { mergeDescribedBy, useFormField } from "./FormFieldContext";
 
@@ -124,6 +130,21 @@ const theme = EditorView.theme({
     color: "var(--color-text-secondary)",
     maxWidth: "22rem",
     padding: "0.5rem 0.625rem",
+  },
+  ".cm-scopeHover": { maxWidth: "22rem", padding: "0.5rem 0.625rem" },
+  ".cm-scopeHoverHead": {
+    alignItems: "baseline",
+    display: "flex",
+    gap: "0.5rem",
+  },
+  ".cm-scopeHoverName": { fontWeight: "500" },
+  ".cm-scopeHoverDetail": {
+    color: "var(--color-text-muted)",
+    fontSize: "0.75rem",
+  },
+  ".cm-scopeHoverInfo": {
+    color: "var(--color-text-secondary)",
+    margin: "0.25rem 0 0",
   },
 });
 
@@ -287,7 +308,246 @@ function rootCompletions(t: TFunction): Completion[] {
         "The arguments the agent sent.",
       ),
     },
+    ...globalCompletions(t),
   ];
+}
+
+// What the sandbox puts in scope besides the two parameters. Only the four it installs itself carry
+// a description; `JSON` and `Math` explain themselves, and a sentence per constructor is prose
+// nobody reads in four locales.
+function globalCompletions(t: TFunction): Completion[] {
+  const described = describedGlobals(t);
+  return CODE_TOOL_GLOBALS.map((g) => ({
+    label: g.name,
+    type: g.kind,
+    detail: t("codeTools.completion.globalDetail", "sandbox"),
+    ...(described[g.name] ? { info: described[g.name] } : {}),
+  }));
+}
+
+// What the pointer is over, answered with the SAME `Completion` the list would have offered for
+// that name (issue #538 follow-up). Hover and completion cannot disagree, because there is one
+// object: the popup renders its `label`, `detail` and `info`, and a name this editor does not know
+// answers nothing rather than answering a guess.
+//
+// The question is asked of the PARSER, not of the characters around the cursor, for the reason the
+// completion's root/member decision gives below: `mycontext.contact_id` ends in one of the names
+// without being it, and a look-back cannot tell the difference without re-implementing the lexer.
+export function hoverInfo(
+  state: EditorState,
+  pos: number,
+  argumentNames: readonly string[],
+  t: TFunction,
+): { from: number; to: number; completion: Completion } | null {
+  const tree = syntaxTree(state);
+  // Both sides, because a pointer resting ON the last character of a name resolves to what follows
+  // it: hovering the `d` of `contact_id` would otherwise answer for the `.` or the `)` after it.
+  for (const side of [1, -1] as const) {
+    const node = tree.resolveInner(pos, side);
+    const text = state.doc.sliceString(node.from, node.to);
+    const range = { from: node.from, to: node.to };
+
+    if (node.name === "VariableName") {
+      const found = rootCompletions(t).find((c) => c.label === text);
+      if (found) return { ...range, completion: found };
+      continue;
+    }
+
+    // `context.contact_id` and `input.cpf`, plus `context["contact_id"]` for the names that are not
+    // identifiers, which is the same pair of spellings the completion writes.
+    const quoted = node.name === "String";
+    if (node.name !== "PropertyName" && !quoted) continue;
+    const member = node.parent;
+    if (member?.name !== "MemberExpression") continue;
+    const objectNode = member.firstChild;
+    if (objectNode?.name !== "VariableName") continue;
+    const root = state.doc.sliceString(objectNode.from, objectNode.to);
+    if (root !== "context" && root !== "input") continue;
+    // A quoted subscript carries its quotes AND its escapes; the label never does. Stripping the
+    // two quote characters is not enough, and the case is one the editor writes itself: an argument
+    // named `sa"id` completes through `bracketApply` as `input["sa\"id"]` (JSON.stringify), and
+    // `sa\"id` matches no declared name, so the pointer went silent over code this editor generated.
+    const name = quoted ? decodeStringLiteral(text) : text;
+    if (name === null) continue;
+    const found = completionsFor(root, argumentNames, t).find(
+      (c) => c.label === name,
+    );
+    if (found) return { ...range, completion: found };
+  }
+  return null;
+}
+
+// The text a quoted subscript actually names. `JSON.parse` rather than a table of escapes written
+// out here: the double-quoted form is exactly what this editor writes (`bracketApply` uses
+// `JSON.stringify`), so the parser that produced it is the one that reads it back, including the
+// `\\b`, `\\f`, `\\r` and `\\uXXXX` a control character in an argument name turns into. A hand-rolled
+// table decoded the two escapes its author thought of and turned the rest into literal letters.
+//
+// A single-quoted literal is not JSON, and the operator types that one by hand. It is re-quoted
+// rather than parsed separately: the escape grammar is otherwise the same, so unescaping `\\'` and
+// escaping a bare `"` turns it into the JSON literal for the same string, and one parser still
+// answers for both. Unterminated returns null, because a literal being typed is not a name yet and
+// answering for its prefix would put another argument's sentence under the pointer.
+function decodeStringLiteral(literal: string): string | null {
+  const quote = literal[0];
+  if (quote !== '"' && quote !== "'") return null;
+  if (literal.length < 2 || literal[literal.length - 1] !== quote) return null;
+  let json = literal;
+  if (quote === "'") {
+    let inner = "";
+    for (let i = 1; i < literal.length - 1; i++) {
+      const ch = literal[i];
+      if (ch === "\\") {
+        const escaped = literal[++i];
+        if (escaped === undefined) return null;
+        inner += escaped === "'" ? "'" : `\\${escaped}`;
+        continue;
+      }
+      inner += ch === '"' ? '\\"' : ch;
+    }
+    json = `"${inner}"`;
+  }
+  try {
+    const parsed: unknown = JSON.parse(json);
+    return typeof parsed === "string" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+// The tooltip itself. `above` so it does not cover the line being read, and no `strictSide` because
+// a tooltip that flips below at the top of the field is better than one that is clipped away.
+function scopeHover(argumentNames: string[], t: TFunction): Extension {
+  return hoverTooltip((view, pos) => {
+    const hit = hoverInfo(view.state, pos, argumentNames, t);
+    if (!hit) return null;
+    return {
+      pos: hit.from,
+      end: hit.to,
+      above: true,
+      create: () => {
+        const dom = document.createElement("div");
+        dom.className = "cm-scopeHover";
+        const head = dom.appendChild(document.createElement("div"));
+        head.className = "cm-scopeHoverHead";
+        const name = head.appendChild(document.createElement("span"));
+        name.className = "cm-scopeHoverName";
+        name.textContent = String(hit.completion.label);
+        if (hit.completion.detail) {
+          const detail = head.appendChild(document.createElement("span"));
+          detail.className = "cm-scopeHoverDetail";
+          detail.textContent = hit.completion.detail;
+        }
+        if (typeof hit.completion.info === "string") {
+          const info = dom.appendChild(document.createElement("p"));
+          info.className = "cm-scopeHoverInfo";
+          info.textContent = hit.completion.info;
+        }
+        return { dom };
+      },
+    };
+  });
+}
+
+// The ONE key the console advertises, and it is ours rather than CodeMirror's, because none of
+// CodeMirror's three reaches a Mac and none of them fails visibly: the list opens by itself while
+// the operator types and cannot be reopened once dismissed, which reads as a broken editor.
+//
+// Measured by logging `keydown` in the browser while a person pressed each chord on a macOS machine
+// with a US International layout, which is the only method that answers this. What the page
+// receives:
+//
+//   ⌃Space      → the Control keydown, and NO Space: macOS keeps the whole ⌃+Space family for the
+//                  input-source switcher. ⌃⇧Space is eaten the same way, which reading the system's
+//                  own hotkey list does NOT show (it names ⌃, ⌃⌥, ⌘ and ⌥⌘).
+//   ⌥I          → `key: "Dead"`, `keyCode: 229`. On that layout ⌥I is the circumflex dead key, so
+//                  the keymap has no name to match and even CodeMirror's keyCode fallback is gone
+//                  (229 is the composition sentinel, not 73).
+//   ⌘I and ⌃I  → `key: "i"`, `keyCode: 73`. Both arrive intact.
+//
+// So the binding is `Mod-i`, which CodeMirror reads as ⌘I on a Mac and Ctrl-I everywhere else: ONE
+// binding, and the key each operator is told about is the one their machine actually delivers
+// (`scopeKeyLabel`). CodeMirror's three stay installed as a silent fallback for whoever knows them.
+// TWO bindings for one chord, and the second is what makes the label's platform guess cosmetic.
+// `Mod-` is resolved by CodeMirror's own idea of the platform (⌘ on a Mac, Ctrl elsewhere), which is
+// not exported and which the label below has to mirror; while the binding depended on that mirror,
+// any disagreement produced the worst possible outcome, a printed key that does nothing. `Ctrl-i` is
+// free on every platform that matters (measured arriving as `key: "i"`, `keyCode: 73` on macOS, and
+// Win+I never reaches a browser at all), so binding both means a wrong label still names a key that
+// WORKS, and the mirror only decides which of the two names is shown.
+export const SHOW_SCOPE_KEYS: readonly KeyBinding[] = [
+  { key: "Mod-i", run: startCompletion, preventDefault: true },
+  { key: "Ctrl-i", run: startCompletion, preventDefault: true },
+];
+
+// What to CALL that key in front of the operator. `Mod` is one binding and two names, and printing
+// the wrong one is worse than printing none: it is a key the reader can press and watch do nothing.
+//
+// Each name follows its own platform, not CodeMirror's notation: Apple writes modifiers joined and
+// symbolic (⌘I, never ⌘+I or Cmd-I), Microsoft writes them spelled out and joined by a plus
+// (Ctrl+I). `Mod-i` is the BINDING's name and belongs in the keymap, not in front of a reader.
+export function scopeKeyLabel(mac: boolean = isMacLike()): string {
+  return mac ? "\u2318I" : "Ctrl+I";
+}
+
+// A MIRROR of `browser.mac` in @codemirror/view (dist/index.js:16-18), which is not exported. The
+// rule is not "the platform string says Mac": iOS is Mac-like there, and it is detected through the
+// Apple vendor plus a touch or Mobile signal, because iPadOS reports `MacIntel` while an iPhone
+// reports `iPhone`. Testing `platform` alone therefore called an iPhone with a hardware keyboard a
+// PC and printed `Ctrl+I` at a reader whose ⌘I is the one bound. The stakes are only the NAME now,
+// since both chords are bound above.
+export function isMacLike(
+  nav: Navigator | undefined = globalThis.navigator,
+): boolean {
+  if (!nav) return false;
+  const safari = /Apple Computer/.test(nav.vendor || "");
+  const ios =
+    safari &&
+    (/Mobile\/\w+/.test(nav.userAgent || "") || nav.maxTouchPoints > 2);
+  return ios || /Mac/.test(nav.platform || "");
+}
+
+// The completion extension, in ONE place. It is installed twice, at build and again by the
+// reconfigure effect below, and the effect runs on mount as well, so the copy at build time never
+// serves a completion: a difference between the two sites is invisible to every test, and the last
+// one was real (only the reconfigured site composed the language's own source back in). One
+// function is what makes the two sites the same by construction rather than by review.
+function completionExt(names: string[], t: TFunction): Extension {
+  return [
+    autocompletion({
+      // `override` REPLACES the language's sources, so `localCompletionSource` is composed back in
+      // here: without it the operator's own `const` is in scope for the parser and in no list.
+      override: [sourceFor(names, t), localCompletionSource],
+      icons: false,
+    }),
+    // The hover closes over the same two values the sources do, so it rides in the same compartment
+    // and the reconfigure below carries both: a renamed argument changes what the pointer answers on
+    // the same dispatch that changes what the list offers.
+    scopeHover(names, t),
+  ];
+}
+
+// Static `t()` calls, because the extractor cannot see a computed key (the same reason
+// `contextDescriptions` is written out by hand).
+function describedGlobals(t: TFunction): Record<string, string> {
+  return {
+    TIMEZONE: t(
+      "codeTools.completion.global.TIMEZONE",
+      "The agent's IANA time zone, as a string.",
+    ),
+    NOW_LOCAL: t(
+      "codeTools.completion.global.NOW_LOCAL",
+      "The moment the call started, in the agent's zone, as an ISO string.",
+    ),
+    console: t(
+      "codeTools.completion.global.console",
+      "log, warn, error, info and debug. What they print reaches the agent as the Output block, after the returned value.",
+    ),
+    Date: t(
+      "codeTools.completion.global.Date",
+      "Runs in the agent's zone rather than UTC, so `new Date().getHours()` is the hour where the agent is.",
+    ),
+  };
 }
 
 // The alphabet of the word being typed. An argument name is any string the operator declares and
@@ -318,7 +578,7 @@ function isRootWord(ctx: CompletionContext, from: number): boolean {
 //
 // `\u26a0` is the parser saying it could not place what is here at all, which is what `const context.`
 // and `class A { context.` look like: a member dot the grammar cannot accept there. Measured, the
-// positions where Ctrl-Space is worth pressing produce none of it: an empty body and a fresh line
+// positions where the scope key is worth pressing produce none of it: an empty body and a fresh line
 // are `Script`, and `const x = `, `a + `, `let z=`, `foo(` and `{a: ` all name a node of their own.
 function atRootPosition(ctx: CompletionContext): boolean {
   const name = syntaxTree(ctx.state).resolveInner(ctx.pos, -1).name;
@@ -374,7 +634,7 @@ export function sourceFor(
     }
     const word = ctx.matchBefore(new RegExp(`[${WORD_CHARS}]+`, "u"));
     // NOTE: `matchBefore` needs a character to match, so on a blank line it answers `null`. That is
-    // exactly where Ctrl-Space is worth pressing: an operator staring at an empty body asking what
+    // exactly where the scope key is worth pressing: an operator staring at an empty body asking what
     // exists. An EXPLICIT request answers at the cursor; typing whitespace still opens nothing on
     // its own. The root check runs either way, so a request made after `foo.` still offers nothing:
     // `context` and `input` are variables, never members of somebody else's object.
@@ -505,14 +765,13 @@ export function CodeEditor({
       theme,
       EditorView.lineWrapping,
       keymap.of([
+        ...SHOW_SCOPE_KEYS,
         ...closeBracketsKeymap,
         ...defaultKeymap,
         ...historyKeymap,
         ...completionKeymap,
       ]),
-      completionSlot.of(
-        autocompletion({ override: [sourceFor(names, t)], icons: false }),
-      ),
+      completionSlot.of(completionExt(names, t)),
       EditorView.updateListener.of((u) => {
         if (!u.docChanged) return;
         // NOTE: a write from the PROP is not an edit, and reporting it hands the form a string it
@@ -649,9 +908,7 @@ export function CodeEditor({
     const v = view.current;
     if (!v) return;
     v.dispatch({
-      effects: completionSlot.reconfigure(
-        autocompletion({ override: [sourceFor(names, t)], icons: false }),
-      ),
+      effects: completionSlot.reconfigure(completionExt(names, t)),
     });
   }, [namesKey, completionSlot, i18n.language]);
 

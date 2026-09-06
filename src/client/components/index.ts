@@ -8,7 +8,11 @@ export {
 } from "./BusinessHoursForm";
 export { Button } from "./Button";
 export { Card } from "./Card";
-export { CodeEditor, type CodeEditorProps } from "./CodeEditor";
+export {
+  CodeEditor,
+  type CodeEditorProps,
+  scopeKeyLabel,
+} from "./CodeEditor";
 export { ComboBox, type ComboItem } from "./ComboBox";
 export { ConfirmDialog, type ConfirmPayload } from "./ConfirmDialog";
 export { CredentialForm } from "./CredentialForm";

@@ -12,8 +12,11 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { ToastProvider } from "@/client/components";
+import { isMacLike, scopeKeyLabel } from "@/client/components/CodeEditor";
 import { useModalController } from "@/client/components/Modal";
 import i18n from "@/client/lib/i18n";
+import enLocale from "@/client/locales/en.json";
+import ptLocale from "@/client/locales/pt-BR.json";
 import {
   type CodeTool,
   CodeToolEditModal,
@@ -648,8 +651,8 @@ test("a save in flight cannot be dismissed, and its finally belongs to its own o
   ).toBe(true);
 });
 
-// The starter body's comments are the first console text an author of a code tool reads, so they
-// follow the console's language like every label around them. The `return` line does not: that is
+// The starter body's comment is the first console text an author of a code tool reads, so it
+// follows the console's language like every label around it. The `return` line does not: that is
 // the language's own word. Shipped in English since #517, caught in a browser over a pt-BR form.
 test("the starter body speaks the console's language, and its code does not", async () => {
   const en = starterCode(i18n.t);
@@ -657,14 +660,131 @@ test("the starter body speaks the console's language, and its code does not", as
   await i18n.changeLanguage("pt-BR");
   const pt = starterCode(i18n.t);
   await i18n.changeLanguage("en");
-  // The comments moved.
+  // The comment moved.
   expect(pt).not.toBe(en);
   expect(pt.split("\n")[0]).not.toBe(en.split("\n")[0]);
   // The code did not.
   expect(pt).toContain("return { ok: true };");
-  // Both lines are comments, so an untranslated one cannot hide as code.
+  // The prose is a comment, so an untranslated line cannot hide as code.
   for (const body of [en, pt]) {
-    const lines = body.trimEnd().split("\n");
-    expect(lines.slice(0, 2).every((l) => l.startsWith("// "))).toBe(true);
+    expect(body.split("\n")[0]?.startsWith("// ")).toBe(true);
   }
+});
+
+// Two lines, and the first one earns its place: it names the key that opens the list, which is the
+// one thing the editor cannot teach by itself. What it used to say instead (what `input` and
+// `context` hold, that the answer is a `return`) is what the completion and the `?` already answer,
+// so it was a paragraph about the body the author is about to delete.
+//
+// ONE key is named, and it is the one the READER's machine delivers: `SHOW_SCOPE_KEY` in
+// CodeEditor.tsx carries the keydown log that settled it (macOS eats the whole Ctrl+Space family,
+// and Alt-i is the circumflex dead key on a US International layout, so Chrome sends `key: "Dead"`
+// with `keyCode: 229`). `Mod-i` is one binding with two names, and printing the wrong one is worse
+// than printing none: it is a key the reader can press and watch do nothing. So the assertion is
+// that the line names the current platform's name and NOT the other, in both catalogs.
+test("the starter body is two lines, and names the platform's key", () => {
+  for (const lang of ["en", "pt-BR"] as const) {
+    const body = starterCode(i18n.getFixedT(lang));
+    const lines = body.trimEnd().split("\n");
+    expect(lines.length).toBe(2);
+    expect(lines[1]).toBe("return { ok: true };");
+    expect(lines[0]).toContain(scopeKeyLabel());
+    const other = scopeKeyLabel() === "Ctrl+I" ? "\u2318I" : "Ctrl+I";
+    expect(lines[0]).not.toContain(other);
+    // And never the keys that measured as unreachable.
+    expect(/Ctrl-Space|Alt-i|Alt-`/.test(lines[0] ?? "")).toBe(false);
+  }
+});
+
+// The other place the key is named, and the one that went stale in ENGLISH ONLY while every fence
+// stayed green: `code-tools-locale-defaults` compares each `t()` default against the English catalog,
+// so a chord hard-coded in BOTH agrees with itself and passes. pt-BR was right, English pointed at a
+// key that had already been measured as unreachable on a Mac, and the starter body two fields up
+// said something else. So the assertion is about the class rather than that line: nothing the
+// operator reads may spell a chord: the key has two names and only `scopeKeyLabel` knows which.
+test("no codeTools string spells a hotkey, they interpolate it", () => {
+  const CHORD = /Ctrl-|Cmd-|Alt-|\u2318|\u2325|Ctrl\+|Shift\+/;
+  const flat: Array<[string, string]> = [];
+  const walk = (node: unknown, path: string) => {
+    if (typeof node === "string") return void flat.push([path, node]);
+    if (!node || typeof node !== "object") return;
+    for (const [k, v] of Object.entries(node))
+      walk(v, path ? `${path}.${k}` : k);
+  };
+  for (const [lang, cat] of [
+    ["en", enLocale.codeTools],
+    ["pt-BR", ptLocale.codeTools],
+  ] as const) {
+    walk(cat, lang);
+  }
+  expect(flat.filter(([, v]) => CHORD.test(v)).map(([k]) => k)).toEqual([]);
+  // And the two that talk about it do interpolate, in both catalogs, or the sweep above would pass
+  // on a text that simply stopped mentioning the key at all.
+  for (const cat of [enLocale.codeTools, ptLocale.codeTools]) {
+    expect(cat.starterHint).toContain("{{hotkey}}");
+    expect(cat.codeHelp).toContain("{{hotkey}}");
+  }
+});
+
+// Both names exist, each is the whole hint on its own platform, and each follows ITS platform's
+// typography rather than CodeMirror's: Apple joins modifiers symbolically (⌘I, not ⌘+I or Cmd-I),
+// Microsoft spells them and joins with a plus (Ctrl+I, not Ctrl-I). `Mod-i` names the binding and
+// is never shown.
+test("the key is named per platform, in that platform's notation", () => {
+  expect(scopeKeyLabel(true)).toBe("\u2318I");
+  expect(scopeKeyLabel(false)).toBe("Ctrl+I");
+});
+
+// Which platform gets which name is CodeMirror's decision, taken from `browser.mac`, which is not
+// exported: `isMacLike` mirrors it and the cases below are the ones a `platform` test alone gets
+// wrong. An iPhone with a hardware keyboard reports `iPhone` and would have been called a PC, and
+// an iPad reports `MacIntel` and is Mac-like for a second reason. Both chords are bound, so a
+// disagreement here costs the NAME rather than the key, which is why this is a table and not a
+// runtime guard.
+test("the mirror of CodeMirror's platform rule, at the edges", () => {
+  // Not `Partial<Navigator>`: this lib types `platform` as a union of a few literals, and the whole
+  // point of the table is the strings a real device reports.
+  type NavFacts = {
+    vendor?: string;
+    userAgent?: string;
+    platform?: string;
+    maxTouchPoints?: number;
+  };
+  const nav = (over: NavFacts) =>
+    ({
+      vendor: "",
+      userAgent: "",
+      platform: "",
+      maxTouchPoints: 0,
+      ...over,
+    }) as unknown as Navigator;
+  const rows: Array<[string, NavFacts, boolean]> = [
+    ["a Mac", { platform: "MacIntel" }, true],
+    [
+      "an iPhone, which reports its own platform and no Mac",
+      {
+        vendor: "Apple Computer, Inc.",
+        userAgent: "… Mobile/15E148 Safari/604.1",
+        platform: "iPhone",
+      },
+      true,
+    ],
+    [
+      "an iPad on iPadOS, which reports MacIntel and many touch points",
+      {
+        vendor: "Apple Computer, Inc.",
+        platform: "MacIntel",
+        maxTouchPoints: 5,
+      },
+      true,
+    ],
+    ["Windows", { platform: "Win32" }, false],
+    ["Linux", { platform: "Linux x86_64" }, false],
+    // Touch alone is not Apple: a Windows laptop with a touchscreen reports plenty of points.
+    ["a touchscreen PC", { platform: "Win32", maxTouchPoints: 10 }, false],
+  ];
+  for (const [name, over, want] of rows) {
+    expect([name, isMacLike(nav(over))]).toEqual([name, want]);
+  }
+  expect(isMacLike(undefined)).toBe(false);
 });

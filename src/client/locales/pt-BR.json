@@ -403,7 +403,7 @@
     "codeChangeRefused_one": "Nada foi inserido: o corpo ficaria {{count}} caractere acima do limite de {{max}}.",
     "codeChangeRefused_many": "Nada foi inserido: o corpo ficaria {{count}} caracteres acima do limite de {{max}}.",
     "codeChangeRefused_other": "Nada foi inserido: o corpo ficaria {{count}} caracteres acima do limite de {{max}}.",
-    "codeHelp": "O corpo de uma função JavaScript que o agente chama. `input` guarda os argumentos que você declarou acima; `context` guarda os valores da conversa. Digite `input.` ou `context.` para ver a lista inteira, com o tipo de cada um e se ele pode estar ausente. Responda com `return`.\n\nO que você retornar é entregue ao agente como JSON, e a saída de console.log volta junto. TIMEZONE, NOW_LOCAL e Date rodam no fuso do agente.\n\nNão há rede, nem imports, nem async: uma promise retornada é um erro. Uma execução tem 1000 ms e 32 MB; um throw ou um limite é uma falha, um valor retornado é um resultado. Código inválido ainda é salvo e falha quando o agente o chama.",
+    "codeHelp": "O corpo de uma função JavaScript que o agente chama. `input` guarda os argumentos que você declarou; `context`, os valores da conversa. Digite `input.` ou `context.`, ou tecle {{hotkey}}, para listar o que está disponível com o tipo de cada um e se pode faltar. Responda com `return`.\n\nO que você retornar é entregue ao agente como JSON, e a saída de console.log volta junto. TIMEZONE, NOW_LOCAL e Date rodam no fuso do agente.\n\nNão há rede, nem imports, nem async: uma promise retornada é um erro. Uma execução tem 1000 ms e 32 MB; um throw ou um limite é uma falha, um valor retornado é um resultado. Código inválido ainda é salvo e falha quando o agente o chama.",
     "codeOverLimit_zero": "{{count}} caracteres acima do limite. Encurte o corpo: um save acima de {{max}} é recusado.",
     "codeOverLimit_one": "{{count}} caractere acima do limite. Encurte o corpo: um save acima de {{max}} é recusado.",
     "codeOverLimit_many": "{{count}} caracteres acima do limite. Encurte o corpo: um save acima de {{max}} é recusado.",
@@ -426,6 +426,13 @@
         "message_id": "Id no Chatwoot da mensagem que disparou este turno. Ausente fora de uma conversa."
       },
       "contextRoot": "Os valores da conversa.",
+      "global": {
+        "console": "log, warn, error, info e debug. O que eles imprimem chega ao agente como o bloco Output, depois do valor retornado.",
+        "Date": "Roda no fuso do agente, não em UTC, então `new Date().getHours()` é a hora de onde o agente está.",
+        "NOW_LOCAL": "O instante em que a chamada começou, no fuso do agente, como string ISO.",
+        "TIMEZONE": "O fuso horário IANA do agente, como string."
+      },
+      "globalDetail": "do sandbox",
       "inputRoot": "Os argumentos que o agente enviou."
     },
     "description": "Descrição",
@@ -446,8 +453,7 @@
     "savedWithWarning": "Ferramenta de código salva. {{warning}}",
     "saveError": "Não foi possível salvar.",
     "sharedNotice": "Esta é uma ferramenta de código compartilhada. Alterações afetam todos os agentes que a usam.",
-    "starterInput": "input traz os argumentos tipados que você declarou; context, os da conversa.",
-    "starterReturn": "Responda com um return; a saída de console.log volta junto.",
+    "starterHint": "{{hotkey}} lista as variáveis disponíveis aqui.",
     "syntaxWarning": "Linha {{line}}, coluna {{column}}: {{message}}",
     "testAgentName": "Agente",
     "testBadArg": "\"{{field}}\" precisa ser: {{type}}.",

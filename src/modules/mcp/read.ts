@@ -9,7 +9,10 @@ import {
 } from "@/graph/tools/code-sandbox-limits";
 import { AUDIT_SCOPES, isAuditScope } from "@/lib/audit/scope";
 import { checkCodeToolSyntax } from "@/lib/code-tool-syntax";
-import { CODE_TOOL_CONTEXT_VARS } from "@/lib/code-tool-vocabulary";
+import {
+  CODE_TOOL_CONTEXT_VARS,
+  CODE_TOOL_GLOBALS,
+} from "@/lib/code-tool-vocabulary";
 import { AppError } from "@/lib/errors";
 import { ACTOR_TYPES, type ActorType } from "@/lib/tenancy/actor";
 import { readAgentConfigHealth } from "@/modules/agents/config-health-read";
@@ -261,9 +264,15 @@ export async function codeToolGet(
 // session, for a contract only a caller actually WRITING a body needs.
 //
 // It answers what a body cannot discover by trying: which `context` keys exist, which of them can be
-// ABSENT (all but three, because the runtime builds that object by spreading conditionals), and the
-// limits that turn a run into a failure. Everything here is derived from the modules that enforce
-// it, never restated, so the answer cannot drift from the sandbox.
+// ABSENT (all but three, because the runtime builds that object by spreading conditionals), which
+// GLOBALS the sandbox puts in scope, and the limits that turn a run into a failure. Everything here
+// is derived from the modules that enforce it, never restated, so the answer cannot drift from the
+// sandbox.
+//
+// `available` is the same `CODE_TOOL_GLOBALS` the console's Ctrl-Space offers, as data rather than
+// as the sentence it used to be. The sentence named three of the twenty and went stale the moment a
+// name moved, which is the drift the vocabulary module exists to close: a caller writing through MCP
+// and a caller writing in the console have to be told the same list.
 //
 // Seven limits are served and they bite at three DIFFERENT moments, so they are described in three
 // sentences rather than one. `timeoutMs`, `memoryBytes`, `stackBytes` and `contextMaxChars` mark the
@@ -302,8 +311,15 @@ export function codeToolSchema(principal: VerifiedToken): WriteResult {
       "inputMaxChars is not a failure. Arguments over it never reach the body: the call comes back as an ordinary result telling the agent to call again with less, the way a schema refusal does, and nothing is marked failed.",
     authoringRefusal:
       "codeMaxChars is not a call limit at all. A body longer than it is REFUSED by code_tool_create and code_tool_update, so nothing is saved and no call is ever marked failed for it.",
-    available:
-      "TIMEZONE and NOW_LOCAL as strings, and Date in the agent's zone. No network, no fetch, no imports, no require, no async.",
+    available: {
+      globals: CODE_TOOL_GLOBALS.map((g) => ({
+        name: g.name,
+        kind: g.kind,
+        ...(g.description ? { description: g.description } : {}),
+      })),
+      absent:
+        "No network, no fetch, no imports, no require, no async, no timers: the sandbox has no event loop and no host bindings.",
+    },
     limits: {
       timeoutMs: SANDBOX_TIMEOUT_MS,
       memoryBytes: SANDBOX_MEMORY_BYTES,

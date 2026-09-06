@@ -460,6 +460,19 @@ export interface ProjectedResponse {
   skipped: "no-template" | "not-2xx" | "not-json" | null;
 }
 
+// Whether the model reads this body AS IT ARRIVED, with no template over it. 2xx alone gets a
+// template, the same gate `registerDeclaredAppointment` uses and for the same kind of reason: a
+// non-2xx body is the error the model has to read literally, and a template aimed at success fields
+// would render a block of absent markers over it.
+//
+// Exported because the console has to ask the same question rather than answer it again. Everything
+// the preview decided for itself drifted from this function within a round; the sample field now
+// asks it too, before offering to reformat a body that is going to be shown exactly as it arrived
+// (round 5 of review).
+export function readsBodyVerbatim(status: number): boolean {
+  return status < 200 || status >= 300;
+}
+
 export function projectToolResponse(
   outputSchema: unknown,
   status: number,
@@ -468,10 +481,7 @@ export function projectToolResponse(
 ): ProjectedResponse {
   const tpl = readResponseTemplate(outputSchema);
   if (!tpl) return { text: null, missing: [], skipped: "no-template" };
-  // 2xx alone, the same gate `registerDeclaredAppointment` uses and for the same kind of reason: a
-  // non-2xx body is the error the model has to read literally, and a template aimed at success
-  // fields would render a block of absent markers over it.
-  if (status < 200 || status >= 300) {
+  if (readsBodyVerbatim(status)) {
     return { text: null, missing: [], skipped: "not-2xx" };
   }
   // A template that reads nothing says the same thing whatever the body is, so it must not be
